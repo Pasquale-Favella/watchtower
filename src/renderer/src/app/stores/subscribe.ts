@@ -1,0 +1,53 @@
+import { parseEvent } from '@/shared/lib/api'
+import { activeCurrencySchema } from '../../../../shared/schemas/fx.js'
+import {
+  scanProgressMessageSchema,
+  storeChangedMessageSchema,
+} from '../../../../shared/schemas/ipc.js'
+import { useScanStore } from './scan-store'
+import { useSettingsStore } from '../../features/settings/store'
+
+/** The central IPC wiring (map ticket 02/04): all six `window.api.on*`
+ * subscriptions feed store actions, never component state. Call once from the
+ * shell's mount; the returned teardown removes every listener. Stores stay
+ * pure (no `window` at module load), so this is the only `window`-touching
+ * module in the layer besides `lib/api.ts`. */
+export function subscribeToIpc(): () => void {
+  const unsubs: Array<() => void> = []
+
+  unsubs.push(window.api.onProgress(progress => {
+    // Tripwire (ticket 09): a malformed broadcast is dropped, never painted.
+    const parsed = parseEvent(scanProgressMessageSchema, 'scan progress', progress)
+    if (!parsed) return
+    useScanStore.getState().onProgress(
+      parsed.provider ?? '',
+      parsed.processed ?? 0,
+      parsed.total ?? 0,
+      parsed.stage === 'port-in',
+    )
+  }))
+
+  unsubs.push(window.api.onError(message => useScanStore.getState().onError(message)))
+
+  unsubs.push(window.api.onChanged(message => {
+    const parsed = parseEvent(storeChangedMessageSchema, 'store changed', message)
+    if (!parsed) return
+    void useScanStore.getState().applyChange()
+  }))
+
+  unsubs.push(window.api.onIdle(() => useScanStore.getState().onIdle()))
+
+  // A background FX fetch landed a fresh rate (ticket 32) — repaint money
+  // values with it, replacing the fallback rate the selection returned.
+  unsubs.push(window.api.onCurrencyChanged(next => {
+    const parsed = parseEvent(activeCurrencySchema, 'currency changed', next)
+    if (!parsed) return
+    useSettingsStore.getState().onCurrencyChanged(parsed)
+  }))
+
+  // A config write (price override / model alias) lands: refetch via the scan
+  // store's change path — no rebuild, no rescan.
+  unsubs.push(window.api.onConfigChanged(() => { void useScanStore.getState().applyChange() }))
+
+  return () => { for (const unsub of unsubs) unsub() }
+}

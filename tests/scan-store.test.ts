@@ -1,0 +1,172 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { subscribeToRefresh, useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
+
+/** Stub the preload surface for the fetch wrappers' IPC-call sites. */
+function mockWindow(api: unknown): void {
+  ;(globalThis as { window?: unknown }).window = { api }
+}
+
+const statusScanned = {
+  scanned: true,
+  metadata: {
+    scanId: 'scan-1',
+    startedAt: '2026-01-01T00:00:00Z',
+    completedAt: '2026-01-01T00:00:01Z',
+    portedFiles: 1,
+    unchangedFiles: 0,
+    failedFiles: 0,
+    perProvider: [{ provider: 'openai', ported: 1, unchanged: 0, failed: 0, unparsed: 3 }],
+    aborted: false,
+  },
+}
+
+const analytics = {
+  providers: [{ name: 'openai', cost: 1, calls: 2, sessions: 3 }],
+  models: [],
+  categories: [],
+  skills: [],
+  subagents: [],
+}
+
+beforeEach(() => {
+  useScanStore.setState(useScanStore.getInitialState(), true)
+})
+
+describe('useScanStore scan lifecycle (map ticket 02/05)', () => {
+  it('starts unhydrated and idle', () => {
+    const s = useScanStore.getState()
+    expect(s.hydrated).toBe(false)
+    expect(s.scanning).toBe(false)
+    expect(s.scanError).toBeNull()
+    expect(s.refreshVersion).toBe(0)
+    expect(s.progress).toEqual([])
+    expect(s.detectedProviders).toEqual([])
+  })
+
+  it('onProgress upserts the per-provider entry and marks scanning', () => {
+    useScanStore.getState().onProgress('openai', 10, 100, false)
+    useScanStore.getState().onProgress('cursor', 5, 50, false)
+    useScanStore.getState().onProgress('openai', 40, 100, false)
+    const s = useScanStore.getState()
+    expect(s.scanning).toBe(true)
+    expect(s.progress).toHaveLength(2)
+    expect(s.progress.find(p => p.provider === 'openai'))
+      .toEqual({ provider: 'openai', processed: 40, total: 100, done: false })
+  })
+
+  it('onProgress marks a port-in stage as done', () => {
+    useScanStore.getState().onProgress('openai', 100, 100, true)
+    expect(useScanStore.getState().progress[0]!.done).toBe(true)
+  })
+
+  it('onProgress with no provider only marks scanning (parity with AppShell)', () => {
+    useScanStore.getState().onProgress('', 0, 0, false)
+    const s = useScanStore.getState()
+    expect(s.scanning).toBe(true)
+    expect(s.progress).toEqual([])
+  })
+
+  it('onError surfaces the message and stops scanning', () => {
+    useScanStore.getState().onError('boom')
+    const s = useScanStore.getState()
+    expect(s.scanError).toBe('boom')
+    expect(s.scanning).toBe(false)
+  })
+
+  it('onIdle clears the non-blocking progress indicator', () => {
+    useScanStore.getState().onProgress('openai', 1, 1, false)
+    useScanStore.getState().onIdle()
+    const s = useScanStore.getState()
+    expect(s.scanning).toBe(false)
+    expect(s.progress).toEqual([])
+  })
+
+  it('applyChange hydrates, sums unparsed, loads providers and bumps the shared tick', async () => {
+    mockWindow({
+      getScanStatus: () => Promise.resolve(statusScanned),
+      getAnalytics: () => Promise.resolve(analytics),
+    })
+    const reload = vi.fn()
+    subscribeToRefresh(reload)
+
+    await useScanStore.getState().applyChange()
+
+    const s = useScanStore.getState()
+    expect(s.hydrated).toBe(true)
+    expect(s.unparsedTotal).toBe(3)
+    expect(s.detectedProviders).toEqual(['openai'])
+    expect(s.scanning).toBe(false)
+    expect(s.progress).toEqual([])
+    expect(s.refreshVersion).toBe(1)
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('applyChange with an unscanned status does not hydrate', async () => {
+    mockWindow({
+      getScanStatus: () => Promise.resolve({ scanned: false }),
+      getAnalytics: () => Promise.resolve(analytics),
+    })
+    await useScanStore.getState().applyChange()
+    const s = useScanStore.getState()
+    expect(s.hydrated).toBe(false)
+    expect(s.refreshVersion).toBe(1)
+  })
+
+  it('applyChange clears detected providers when analytics fails (parity with AppShell)', async () => {
+    useScanStore.setState({ detectedProviders: ['openai'] })
+    mockWindow({
+      getScanStatus: () => Promise.resolve(statusScanned),
+      getAnalytics: () => Promise.resolve({ ok: false, error: 'analytics unavailable' }),
+    })
+    await useScanStore.getState().applyChange()
+    expect(useScanStore.getState().detectedProviders).toEqual([])
+    expect(useScanStore.getState().hydrated).toBe(true)
+  })
+
+  it('applyChange with a schema-invalid scan status is a no-op', async () => {
+    mockWindow({ getScanStatus: () => Promise.resolve({ scanned: 'yes' }) })
+    await useScanStore.getState().applyChange()
+    const s = useScanStore.getState()
+    expect(s.hydrated).toBe(false)
+    expect(s.refreshVersion).toBe(0)
+  })
+
+  it('refresh failure surfaces the error and stops scanning', async () => {
+    mockWindow({ scan: () => Promise.resolve({ ok: false, error: 'provider unreadable' }) })
+    await useScanStore.getState().refresh()
+    const s = useScanStore.getState()
+    expect(s.scanError).toBe('provider unreadable')
+    expect(s.scanning).toBe(false)
+  })
+
+  it('refresh falls back to the generic failure message when the main gives none', async () => {
+    mockWindow({ scan: () => Promise.resolve({ ok: false }) })
+    await useScanStore.getState().refresh()
+    expect(useScanStore.getState().scanError).toBe('Scan failed. Check your provider sources and try again.')
+  })
+
+  it('refresh keeps scanning when a scan is already running', async () => {
+    mockWindow({ scan: () => Promise.resolve({ ok: true, alreadyRunning: true }) })
+    await useScanStore.getState().refresh()
+    const s = useScanStore.getState()
+    expect(s.scanning).toBe(true)
+    expect(s.scanError).toBeNull()
+  })
+
+  it('refresh never surfaces an aborted scan as an error', async () => {
+    mockWindow({ scan: () => Promise.resolve({ ok: false, aborted: true }) })
+    await useScanStore.getState().refresh()
+    const s = useScanStore.getState()
+    expect(s.scanning).toBe(true)
+    expect(s.scanError).toBeNull()
+  })
+
+  it('refresh surfaces a schema-invalid scan result as an error', async () => {
+    mockWindow({ scan: () => Promise.resolve({ ok: 'maybe' }) })
+    await useScanStore.getState().refresh()
+    const s = useScanStore.getState()
+    expect(s.scanning).toBe(false)
+    expect(s.scanError).toMatch(/Invalid scan payload/)
+  })
+})

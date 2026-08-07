@@ -1,0 +1,5 @@
+interface:
+  display_name: "Roast with Docs"
+  short_description: "Roast a design and write its docs"
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,247 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Native surface tokens (--canvas/--side/--panel/--phead). */
+  --color-canvas: var(--canvas);
+  --color-side: var(--side);
+  --color-panel: var(--panel);
+  --color-phead: var(--phead);
+  --color-ink: var(--ink);
+  --color-mut: var(--mut);
+  --color-mut2: var(--mut2);
+  --color-line: var(--line);
+  --color-line2: var(--line2);
+  --color-bar: var(--bar);
+  --color-bar-hi: var(--bar-hi);
+  --color-fill: var(--fill);
+  --color-hover: var(--hover);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  /* Brand accent — distinct from the neutral shadcn --accent slot. */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-text: var(--brand-text);
+  /* Model series colors. */
+  --color-s-opus: var(--s-opus);
+  --color-s-fable: var(--s-fable);
+  --color-s-sonnet: var(--s-sonnet);
+  --color-s-haiku: var(--s-haiku);
+  --color-s-gpt: var(--s-gpt);
+  --color-s-other: var(--s-other);
+  /* Type/spacing ladders surfaced as font utilities. */
+  --text-hero: var(--fs-hero);
+  --text-stat: var(--fs-stat);
+  --text-kpi: var(--fs-kpi);
+  --text-subhead: var(--fs-subhead);
+  --text-body: var(--fs-body);
+  --text-meta: var(--fs-meta);
+  --text-label: var(--fs-label);
+  --text-micro: var(--fs-micro);
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+}
+
+:root {
+  --radius: 0.625rem;
+  /* "plain" theme (light) — surfaces, ink, lines, status, series. */
+  --canvas: #f5f6f8;
+  --side: #ffffff;
+  --panel: #ffffff;
+  --phead: #fafbfc;
+  --ink: #181b20;
+  --mut: #697181;
+  --mut2: #68707c;
+  --line: #e6e8ec;
+  --line2: #eef0f3;
+  --bar: #d7dbe1;
+  --bar-hi: #3a4150;
+  --fill: #f1f2f4;
+  --hover: #f2f3f5;
+  --success: #12805c;
+  --warning: #a76a00;
+  /* Brand accent (teal, #007595) — kept apart from the neutral shadcn --accent slot below. */
+  --brand: #007595;
+  --brand-foreground: #ffffff;
+  --brand-text: #0e7490;
+  --s-opus: #2a78d6;
+  --s-fable: #1baf7a;
+  --s-sonnet: #e87ba4;
+  --s-haiku: #eda100;
+  --s-gpt: #008300;
+  --s-other: #8b93a1;
+  /* Type/spacing ladders (theme-independent). */
+  --fs-hero: 40px; --fs-stat: 24px; --fs-kpi: 17px; --fs-subhead: 13px;
+  --fs-body: 12.5px; --fs-meta: 11.5px; --fs-label: 10.5px; --fs-micro: 9.5px;
+  --sans: system-ui, -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Berkeley Mono", Menlo, Consolas, monospace;
+  /* shadcn semantic slots mapped onto the native palette. */
+  --background: var(--canvas);
+  --foreground: var(--ink);
+  --card: var(--panel);
+  --card-foreground: var(--ink);
+  --popover: var(--panel);
+  --popover-foreground: var(--ink);
+  --primary: var(--brand);
+  --primary-foreground: #ffffff;
+  --secondary: var(--fill);
+  --secondary-foreground: var(--ink);
+  --muted: var(--fill);
+  --muted-foreground: var(--mut);
+  --accent: var(--fill);
+  --accent-foreground: var(--ink);
+  --destructive: #c2382f;
+  --destructive-foreground: #ffffff;
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--brand);
+  --chart-1: var(--brand);
+  --chart-2: var(--s-fable);
+  --chart-3: var(--s-sonnet);
+  --chart-4: var(--s-haiku);
+  --chart-5: var(--s-other);
+  --sidebar: var(--side);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--hover);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--line);
+  --sidebar-ring: var(--brand);
+}
+
+.dark {
+  /* "plain" theme (dark). */
+  --canvas: #0e1013;
+  --side: #131519;
+  --panel: #16181d;
+  --phead: #1a1d22;
+  --ink: #e8eaee;
+  --mut: #959ca8;
+  --mut2: #8b93a1;
+  --line: #282c33;
+  --line2: #20242a;
+  --bar: #2b3038;
+  --bar-hi: #c6ccd6;
+  --fill: #20242b;
+  --hover: #20242b;
+  --success: #3ecf8e;
+  --warning: #e8b93e;
+  --brand: #06b6d4;
+  --brand-foreground: #ffffff;
+  --brand-text: #06b6d4;
+  --s-opus: #3987e5;
+  --s-fable: #199e70;
+  --s-sonnet: #d55181;
+  --s-haiku: #c98500;
+  --s-gpt: #008300;
+  --s-other: #6b7280;
+  --background: var(--canvas);
+  --foreground: var(--ink);
+  --card: var(--panel);
+  --card-foreground: var(--ink);
+  --popover: var(--panel);
+  --popover-foreground: var(--ink);
+  --primary: #0e7490;
+  --primary-foreground: #ffffff;
+  --secondary: var(--fill);
+  --secondary-foreground: var(--ink);
+  --muted: var(--fill);
+  --muted-foreground: var(--mut);
+  --accent: var(--fill);
+  --accent-foreground: var(--ink);
+  --destructive: #f26d6d;
+  --destructive-foreground: #ffffff;
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--brand);
+  --chart-1: var(--brand);
+  --chart-2: var(--s-fable);
+  --chart-3: var(--s-sonnet);
+  --chart-4: var(--s-haiku);
+  --chart-5: var(--s-other);
+  --sidebar: var(--side);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--hover);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--line);
+  --sidebar-ring: var(--brand);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ---- motion (ticket 05) ---- */
+.section-fade {
+  animation: section-in 180ms ease-out;
+}
+@keyframes section-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.switch-line.on {
+  background: linear-gradient(90deg, transparent, var(--brand), transparent);
+  background-size: 200% 100%;
+  animation: switch-line-shimmer 1.1s linear infinite;
+}
+@keyframes switch-line-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .section-fade, .switch-line.on { animation: none; }
+}
+

@@ -1,0 +1,13 @@
+appId: com.favella.watchtower
+productName: Watchtower
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+win:
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

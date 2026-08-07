@@ -1,0 +1,5 @@
+interface:
+  display_name: "Roast Me"
+  short_description: "Stress-test a plan or design one question at a time"
+policy:
+  allow_implicit_invocation: false
