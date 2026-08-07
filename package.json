@@ -2,6 +2,7 @@
   "name": "watchtower-desktop",
   "version": "0.1.0",
   "description": "Desktop app for local code-assistant token and cost telemetry",
+  "license": "MIT",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

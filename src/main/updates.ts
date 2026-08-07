@@ -1,5 +1,5 @@
-// Manual "Check for updates" for the munnin desktop app: on demand, it reads
-// the public GitHub releases feed of the munnin repo, finds the newest
+// Manual "Check for updates" for the Watchtower desktop app: on demand, it reads
+// the public GitHub releases feed of the Watchtower repo, finds the newest
 // release whose tag looks like a version, and semver-compares it to the
 // running version.
 //
@@ -19,7 +19,7 @@ import type { UpdateStatus } from '../shared/schemas/updates.js'
 
 export type { UpdateStatus } from '../shared/schemas/updates.js'
 
-const RELEASES_URL = 'https://api.github.com/repos/Pasquale-Favella/munnin/releases?per_page=15'
+const RELEASES_URL = 'https://api.github.com/repos/Pasquale-Favella/watchtower/releases?per_page=15'
 const FETCH_TIMEOUT_MS = 15_000
 // Release tags are accepted as plain semver (`v0.2.0`, GitHub's conventional
 // format) or with a `desktop-v` prefix (`desktop-v0.2.0`), so

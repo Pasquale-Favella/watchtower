@@ -90,7 +90,7 @@ function warnUnrecognizedSchemaOnce(providerLabel: string, missing: string[]): v
   warnedSchemas.set(providerLabel, providerSet)
   process.stderr.write(
     `watchtower: ${providerLabel} database is missing expected tables (${missing.join(', ')}). ` +
-    `Run ${providerLabel} once to apply migrations, or report at https://github.com/Pasquale-Favella/munnin/issues if this persists.\n`
+    `Run ${providerLabel} once to apply migrations, or report at https://github.com/Pasquale-Favella/watchtower/issues if this persists.\n`
   )
 }
 

@@ -1,14 +1,31 @@
+<div align="center">
+
+<img src="assets/watchtower-logo.svg" alt="Watchtower" width="96" align="left" />
+
 # Watchtower
 
-<p align="center"><strong>Every agent. One dashboard.</strong></p>
+**Every agent. One dashboard.**
 
-Watchtower is a **local-first desktop dashboard** that turns the session files your AI coding tools already write to disk into a clear picture of your token usage and spend — broken down by **tool, model, project, and task**, with efficiency signals (one-shot rate, retry tax, routing waste) and read-only optimization advice.
+A **local-first desktop dashboard** that turns the session files your AI coding tools already write to disk into a clear picture of your **token usage and spend** — broken down by **tool, model, project, and task**, with efficiency signals (one-shot rate, retry tax, routing waste) and read-only optimization advice.
 
-Claude Code, Codex, Cursor, Copilot, Gemini, and 30+ more tools are read straight from this machine. Nothing is uploaded, nothing is proxied, and no API keys are needed: the app is the reader, your tools are the source of truth.
+[![Version](https://img.shields.io/badge/version-0.1.0-1e3a8a?style=flat-square)](package.json)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![Electron 43](https://img.shields.io/badge/Electron-43-47848f?style=flat-square&logo=electron&logoColor=white)](package.json)
+[![React 19](https://img.shields.io/badge/React-19-61dafb?style=flat-square&logo=react&logoColor=white)](package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?style=flat-square&logo=typescript&logoColor=white)](package.json)
+[![Node 22+](https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=node.js&logoColor=white)](package.json)
+[![Windows | macOS | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](electron-builder.yml)
+[![Local-first](https://img.shields.io/badge/privacy-local--first-success?style=flat-square)](#data--privacy)
 
-- **38 providers** detected automatically from their on-disk stores
+</div>
+
+Claude Code, Codex, Cursor, Copilot, Gemini, and 30+ more tools are read **straight from this machine**. Nothing is uploaded, nothing is proxied, and no API keys are needed: the app is the reader, your tools are the source of truth.
+
+## Highlights
+
+- **38 providers** detected automatically from their on-disk stores (SQLite / JSONL / JSON)
 - **Incremental scans** — a background cadence ports only what changed, not full history
-- **Accumulating ledger** (SQLite) — raw transcript facts in, every view derived at query time
+- **Accumulating ledger** — raw transcript facts in (SQLite), every view derived at query time
 - **Sandboxed renderer** — all data stays in the main process; the UI receives shaped, schema-validated payloads over IPC
 - **No telemetry** — the only network traffic is optional pricing and exchange-rate refreshes
 
@@ -16,18 +33,20 @@ Claude Code, Codex, Cursor, Copilot, Gemini, and 30+ more tools are read straigh
 
 ## The eight sections
 
-| Section | Shortcut | What it shows |
-|---------|----------|---------------|
-| **Overview** | `⌘1` | KPIs (cost, calls, sessions, tokens, cache hit, savings), daily spend chart, top models/activities/tools, an A–F efficiency grade, workflow signals, and local-model savings |
-| **Sessions** | `⌘2` | Every working session, searchable and filterable — click any row to drill into a turn-by-turn timeline with per-call usage |
-| **Pull Requests** | `⌘3` | Spend attributed to each PR from real git history, so the cost of shipped work is trustworthy |
-| **Spend** | `⌘4` | Daily spend stacked by model and by project, plus a Sankey flow showing where money moves from models to projects |
-| **Optimize** | `⌘5` | Sixteen waste detectors with copy-paste fixes, an A–F setup-health grade, and a Yield tab for productive vs. reverted/abandoned spend |
-| **Models** | `⌘6` | Per-model cost, tokens, and calls, broken down by task and audited down to the token — with inline quick-add pricing for unpriced models |
-| **Compare** | `⌘7` | Pick two models and see one-shot rate, retry rate, cost per call, and cache-hit rate side by side |
-| **Settings** | `⌘,` | Theme, refresh cadence, default period, provider info, model aliases, pricing overrides, export, and privacy controls |
+| Section | Shortcut* | What it shows |
+|---------|-----------|---------------|
+| **Overview** | `1` | KPIs (cost, calls, sessions, tokens, cache hit, savings), daily spend chart, top models/activities/tools, an A–F efficiency grade, workflow signals, and local-model savings |
+| **Sessions** | `2` | Every working session, searchable and filterable — click any row to drill into a turn-by-turn timeline with per-call usage |
+| **Pull Requests** | `3` | Spend attributed to each PR from real git history, so the cost of shipped work is trustworthy |
+| **Spend** | `4` | Daily spend stacked by model and by project, plus a Sankey flow showing where money moves from models to projects |
+| **Optimize** | `5` | Sixteen waste detectors with copy-paste fixes, an A–F setup-health grade, and a Yield tab for productive vs. reverted/abandoned spend |
+| **Models** | `6` | Per-model cost, tokens, and calls, broken down by task and audited down to the token — with inline quick-add pricing for unpriced models |
+| **Compare** | `7` | Pick two models and see one-shot rate, retry rate, cost per call, and cache-hit rate side by side |
+| **Settings** | `,` | Theme, refresh cadence, default period, provider info, model aliases, pricing overrides, export, and privacy controls |
 
-Every section shares the same **period switcher** (Today, 7D, 30D, Month, 6M, Life, or a custom date range) and **provider filter**. `⌘R` re-scans on demand; `⌘B` toggles the sidebar.
+*\* Press `⌘`/`Ctrl` + the number (`⌘1`, `Ctrl+2`, …). `⌘R`/`Ctrl+R` re-scans on demand; `⌘B`/`Ctrl+B` toggles the sidebar.*
+
+Every section shares the same **period switcher** (Today, 7D, 30D, Month, 6M, Life, or a custom date range) and **provider filter**.
 
 ### Overview
 
@@ -134,7 +153,19 @@ Scan metadata carries per-provider **unparsed** counts, so a vendor's schema dri
 
 ### The scan loop
 
-The main process owns the pipeline. A manual `⌘R` or the background cadence timer runs one scan pass that streams per-file deltas into the ledger and broadcasts a single `store:changed` event — the renderer's only refetch trigger. There is no renderer polling loop, scans coalesce (a background scan and a manual scan never overlap), and a failing background scan leaves your last-known data visible (stale-while-revalidate). Every scan is abortable and reports progress per provider.
+The main process owns the pipeline. A manual `⌘R`/`Ctrl+R` or the background cadence timer runs one scan pass that streams per-file deltas into the ledger and broadcasts a single `store:changed` event — the renderer's only refetch trigger. There is no renderer polling loop, scans coalesce (a background scan and a manual scan never overlap), and a failing background scan leaves your last-known data visible (stale-while-revalidate). Every scan is abortable and reports progress per provider.
+
+---
+
+## Tech stack
+
+| Layer | Tech |
+|-------|------|
+| **Main process** | Electron 43 · Node 22+ (`node:sqlite` for the ledger) · TypeScript 5.8 |
+| **Renderer** | React 19 · Tailwind CSS 4 · shadcn/ui · Zustand · Recharts · GSAP · TanStack Hotkeys |
+| **Data & contracts** | SQLite (built-in `node:sqlite`) · Zod 4 schemas shared between main and renderer |
+| **Build & packaging** | electron-vite 5 · Vite 7 · electron-builder (Windows NSIS installer) |
+| **Tests** | Vitest (`tests/`) |
 
 ---
 
@@ -173,6 +204,8 @@ Watchtower auto-detects which AI tools you use by probing their on-disk data loc
 
 That's **38 providers** in total. Each lives in a single file under `src/main/pipeline/providers/` and follows a common `Provider` contract — discovery, a session parser, and per-provider quirks. A provider that throws during discovery is skipped with a one-line warning; it can never take down the rest of the scan.
 
+---
+
 ## Pricing & currency
 
 - **Pricing** is fetched from [LiteLLM](https://github.com/BerriAI/litellm) (daily, cached locally), with a bundled snapshot and hardcoded fallbacks so a missing model degrades to a `$0.00` row you can price inline rather than a wrong number.
@@ -204,33 +237,41 @@ Per-provider data locations honor each tool's own overrides where supported (e.g
 src/
 ├─ main/                    # Electron main process — owns everything
 │  ├─ index.ts              # window, IPC surface, scan orchestration, cadence
+│  ├─ cadence.ts            # background scan / FX refresh cadence
+│  ├─ views.ts              # dashboard, session, project, and search payloads
+│  ├─ overview.ts           # Overview payload (KPIs, efficiency, workflow)
+│  ├─ sessions-view.ts      # Sessions payload
+│  ├─ pull-requests-view.ts # PR spend payload
+│  ├─ spend-view.ts         # daily spend + Sankey payload
+│  ├─ models-view.ts        # by-model / by-task / audit payloads
+│  ├─ compare-view.ts       # model-pair comparison payload
+│  ├─ optimize-view.ts      # the 16 waste detectors + setup-health grade
+│  ├─ yield-view.ts         # productive / reverted / abandoned git attribution
+│  ├─ fx.ts                 # Frankfurter exchange-rate cache
+│  ├─ export.ts             # CSV/JSON export
+│  ├─ updates.ts            # manual update check (GitHub releases)
 │  ├─ pipeline/             # discovery → extraction → parse → classify → price
-│  │  ├─ parser.ts          # the parse pipeline and delta seam
 │  │  ├─ scan.ts            # runScan: one scan pass, metadata out
+│  │  ├─ parser.ts          # the parse pipeline and delta seam
 │  │  ├─ session-cache.ts   # on-disk cache with per-file fingerprints
 │  │  ├─ models.ts          # LiteLLM pricing + fallbacks + aliases
 │  │  └─ providers/         # one file per tool (38 providers)
-│  ├─ store/
-│  │  ├─ ledger.ts          # accumulating SQLite ledger (source/call/turn/session)
-│  │  ├─ port.ts            # cache-file → ledger-row mapping
-│  │  └─ aggregate.ts       # query-time aggregation helpers
-│  ├─ overview.ts           # Overview payload (KPIs, efficiency, workflow)
-│  ├─ sessions-view.ts      # sessions + pull-requests + spend payloads
-│  ├─ optimize-view.ts      # the 16 waste detectors + setup-health grade
-│  ├─ compare-view.ts       # model-pair comparison payload
-│  ├─ yield-view.ts         # productive/reverted/abandoned git attribution
-│  ├─ fx.ts                 # Frankfurter exchange-rate cache
-│  └─ export.ts             # CSV/JSON export
+│  └─ store/
+│     ├─ ledger.ts          # accumulating SQLite ledger (source/call/turn/session)
+│     ├─ port.ts            # cache-file → ledger-row mapping
+│     └─ aggregate.ts       # query-time aggregation helpers
 ├─ preload/                 # typed contextBridge API (the renderer's only door)
 ├─ shared/schemas/          # zod schemas — single source of truth
 └─ renderer/                # React 19 + Tailwind + shadcn/ui (sandboxed)
-   └─ src/views/            # one view per section
+   ├─ app/                  # AppShell, sidebar/topbar, onboarding, stores, shortcuts
+   ├─ features/             # one folder per section (overview, sessions, spend, …)
+   └─ shared/               # UI kit, libs, and hooks
 ```
 
-Architectural decisions are recorded in `docs/adr/`: the ledger replacing the snapshot report (0002), zod schemas as the single source of truth (0003), and the TanStack Hotkeys shortcut registry (0001).
+Key architectural decisions are recorded as ADRs referenced inline in the code — e.g. the shortcut registry (ADR 0001) in `src/renderer/src/app/shortcuts.ts`.
 
 ---
 
 ## License
 
-MIT. Pricing data from [LiteLLM](https://github.com/BerriAI/litellm); exchange rates from [Frankfurter](https://www.frankfurter.app/).
+MIT — see [LICENSE](./LICENSE). Pricing data from [LiteLLM](https://github.com/BerriAI/litellm); exchange rates from [Frankfurter](https://www.frankfurter.app/).

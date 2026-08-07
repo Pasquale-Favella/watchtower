@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ExternalLink, RefreshCcw } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
-import { releasePageUrl, type UpdateStatus } from '@/features/settings/updates'
+import { REPO_URL, releasePageUrl, type UpdateStatus } from '@/features/settings/updates'
 import { fetchAppVersion, fetchCheckForUpdates } from '@/shared/lib/api'
 
 /**
  * Settings › General's About/version area (ticket 31): shows the running
  * version and a manual "Check for updates" button. Clicking it queries the
- * munnin repo's GitHub Releases feed once and only informs the user whether a
- * newer version exists — it never downloads or installs, and there is no
- * automatic background check anywhere.
+ * Watchtower repo's GitHub Releases feed once and only informs the user
+ * whether a newer version exists — it never downloads or installs, and there
+ * is no automatic background check anywhere.
  */
 export function AboutSection() {
   const [version, setVersion] = useState<string | null>(null)
@@ -74,6 +74,16 @@ export function AboutSection() {
           )}
         </p>
       )}
+      <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
+        Watchtower is open source —{' '}
+        <button
+          type="button"
+          className="inline underline decoration-brand-text/40 underline-offset-2 text-brand-text"
+          onClick={() => void window.api.openExternal(REPO_URL)}
+        >
+          GitHub repository <ExternalLink className="inline size-3" />
+        </button>
+      </p>
     </div>
   )
 }

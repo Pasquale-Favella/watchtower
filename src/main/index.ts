@@ -486,7 +486,7 @@ function registerIpc(): void {
   ipcMain.handle('app:version', () => app.getVersion())
 
   /** Manual "Check for updates" (ticket 31): forces one fresh read of the
-   * munnin repo's GitHub Releases feed and reports whether a newer desktop
+   * the Watchtower repo's GitHub Releases feed and reports whether a newer desktop
    * version exists. Never downloads or installs, and there is no background
    * schedule — this fires only when the user clicks the button. All failures
    * (offline, private repo, timeout) degrade to an informational "unable to

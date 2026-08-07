@@ -126,8 +126,8 @@ describe('createUpdateChecker', () => {
 
 describe('releasePageUrl (renderer lib)', () => {
   it('links the informational release page for a tag', () => {
-    expect(releasePageUrl('v0.2.0')).toBe('https://github.com/Pasquale-Favella/munnin/releases/tag/v0.2.0')
-    expect(releasePageUrl('desktop-v0.2.0')).toBe('https://github.com/Pasquale-Favella/munnin/releases/tag/desktop-v0.2.0')
+    expect(releasePageUrl('v0.2.0')).toBe('https://github.com/Pasquale-Favella/watchtower/releases/tag/v0.2.0')
+    expect(releasePageUrl('desktop-v0.2.0')).toBe('https://github.com/Pasquale-Favella/watchtower/releases/tag/desktop-v0.2.0')
   })
 })
 
