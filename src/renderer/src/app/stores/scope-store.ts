@@ -1,33 +1,23 @@
 import { create } from 'zustand'
-import type { DateRange, Section } from '../../../../shared/schemas/renderer.js'
+import type { DateRange } from '../../../../shared/schemas/renderer.js'
 import type { OverviewPeriod, OverviewScope } from '../../../../shared/schemas/overview.js'
 import { useSettingsStore } from '../../features/settings/store'
 
-/** The canonical section order, shared by nav, shortcuts and the decomposed
- * ContentRegion switch (ADR 0011). */
-export const SECTIONS: readonly Section[] = [
-  'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'settings',
-]
-
-/** Pure UI state — never fetched, never persisted. (ADR 0011) */
-export interface ShellState {
-  section: Section
-  openSession: string | null
+/** Pure UI state — never fetched, never persisted. (ADR 0011) Navigation
+ * state left the store in ADR 0014: the router owns route identity; this
+ * store owns only the scope selectors every data fetch consumes. */
+export interface ScopeState {
   period: OverviewPeriod
   customRange: DateRange | null
   provider: string
-  navigate: (section: Section) => void
-  navigateString: (next: string) => void
   setPeriod: (period: OverviewPeriod) => void
   setCustomRange: (range: DateRange | null) => void
   setProvider: (provider: string) => void
-  openSessionById: (id: string) => void
-  closeSession: () => void
 }
 
 /** Derived selector: the `OverviewScope` every data fetch consumes. 'all' is
  * the "no provider filter" sentinel, matching today's AppShell mapping. */
-export const selectScope = (s: ShellState): OverviewScope => ({
+export const selectScope = (s: ScopeState): OverviewScope => ({
   period: s.period,
   provider: s.provider === 'all' ? undefined : s.provider,
   range: s.customRange ?? undefined,
@@ -38,21 +28,11 @@ export const selectScope = (s: ShellState): OverviewScope => ({
 // synchronously at module load, so this read is correct before any render.
 const initialPeriod = useSettingsStore.getState().defaultPeriod as OverviewPeriod
 
-export const useShellStore = create<ShellState>()((set) => ({
-  section: 'overview',
-  openSession: null,
+export const useScopeStore = create<ScopeState>()((set) => ({
   period: initialPeriod,
   customRange: null,
   provider: 'all',
-  navigate: (section) => set({ section, openSession: null }),
-  navigateString: (next) => {
-    if ((SECTIONS as readonly string[]).includes(next)) {
-      set({ section: next as Section, openSession: null })
-    }
-  },
   setPeriod: (period) => set({ period, customRange: null }),
   setCustomRange: (customRange) => set({ customRange }),
   setProvider: (provider) => set({ provider }),
-  openSessionById: (id) => set({ openSession: id }),
-  closeSession: () => set({ openSession: null }),
 }))

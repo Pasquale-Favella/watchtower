@@ -17,7 +17,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { fetchAddModelAlias, fetchSetModelPrice } from '@/shared/lib/api'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { useModelsStore } from '@/features/models/store'
-import { selectScope, useShellStore } from '@/app/stores/shell-store'
+import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
 import type { AuditRow, ModelReportRow } from '../../../../shared/schemas/models.js'
 
@@ -365,13 +365,13 @@ function QuickAddModal({
 }
 
 export function ModelsView(): React.JSX.Element {
-  const scope = useShellStore(useShallow(selectScope))
+  const scope = useScopeStore(useShallow(selectScope))
   const payload = useModelsStore(s => s.data)
   const error = useModelsStore(s => s.error)
   const load = useModelsStore(s => s.load)
   const reload = useModelsStore(s => s.reload)
-  const provider = useShellStore(s => s.provider)
-  const setProvider = useShellStore(s => s.setProvider)
+  const provider = useScopeStore(s => s.provider)
+  const setProvider = useScopeStore(s => s.setProvider)
   const detectedProviders = useScanStore(s => s.detectedProviders)
   const [lens, setLens] = useState<ModelsLens>('model')
   const [quickAdd, setQuickAdd] = useState<QuickAddTarget | null>(null)

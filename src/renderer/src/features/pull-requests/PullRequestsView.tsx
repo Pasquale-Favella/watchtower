@@ -12,7 +12,7 @@ import { spanLabel, sessionWord, summarizePullRequests } from '@/features/pull-r
 import { formatUsd } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { usePullRequestsStore } from '@/features/pull-requests/store'
-import { selectScope, useShellStore } from '@/app/stores/shell-store'
+import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
 import type { PullRequestRow } from '../../../../shared/schemas/pull-requests.js'
 
@@ -115,12 +115,12 @@ function PrRowView({ pr, expanded, onToggle }: { pr: PullRequestRow; expanded: b
 }
 
 export function PullRequestsView(): React.JSX.Element {
-  const scope = useShellStore(useShallow(selectScope))
+  const scope = useScopeStore(useShallow(selectScope))
   const payload = usePullRequestsStore(s => s.data)
   const error = usePullRequestsStore(s => s.error)
   const load = usePullRequestsStore(s => s.load)
-  const provider = useShellStore(s => s.provider)
-  const setProvider = useShellStore(s => s.setProvider)
+  const provider = useScopeStore(s => s.provider)
+  const setProvider = useScopeStore(s => s.setProvider)
   const detectedProviders = useScanStore(s => s.detectedProviders)
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
 

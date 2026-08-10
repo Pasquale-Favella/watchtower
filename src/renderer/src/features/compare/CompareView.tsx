@@ -12,7 +12,7 @@ import { compareValue } from '@/features/compare/lib'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { useCompareStore } from '@/features/compare/store'
-import { selectScope, useShellStore } from '@/app/stores/shell-store'
+import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
 import type {
   CategoryComparison,
@@ -159,13 +159,13 @@ function ModelPicker({
 }
 
 export function CompareView(): React.JSX.Element {
-  const scope = useShellStore(useShallow(selectScope))
+  const scope = useScopeStore(useShallow(selectScope))
   const payload = useCompareStore(s => s.data)
   const error = useCompareStore(s => s.error)
   const pair = useCompareStore(s => s.pair)
   const load = useCompareStore(s => s.load)
-  const provider = useShellStore(s => s.provider)
-  const setProvider = useShellStore(s => s.setProvider)
+  const provider = useScopeStore(s => s.provider)
+  const setProvider = useScopeStore(s => s.setProvider)
   const detectedProviders = useScanStore(s => s.detectedProviders)
 
   // Load on mount and on shell scope changes; the store keeps the committed

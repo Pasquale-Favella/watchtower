@@ -13,7 +13,7 @@ import { isOtherNode, seriesColorForModel } from '@/shared/lib/modelSeries'
 import { formatUsd, formatConverted } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { useSpendStore } from '@/features/spend/store'
-import { selectScope, useShellStore } from '@/app/stores/shell-store'
+import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
 import type { SpendDayEntry, SpendFlow } from '../../../../shared/schemas/spend.js'
 
@@ -170,12 +170,12 @@ function SankeyFlow({ flow }: { flow: SpendFlow }) {
 }
 
 export function SpendView(): React.JSX.Element {
-  const scope = useShellStore(useShallow(selectScope))
+  const scope = useScopeStore(useShallow(selectScope))
   const payload = useSpendStore(s => s.data)
   const error = useSpendStore(s => s.error)
   const load = useSpendStore(s => s.load)
-  const provider = useShellStore(s => s.provider)
-  const setProvider = useShellStore(s => s.setProvider)
+  const provider = useScopeStore(s => s.provider)
+  const setProvider = useScopeStore(s => s.setProvider)
   const detectedProviders = useScanStore(s => s.detectedProviders)
 
   useEffect(() => {

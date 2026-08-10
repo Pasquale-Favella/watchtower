@@ -10,7 +10,8 @@ import { motionClass } from '@/shared/lib/motion'
 import { formatUsd, formatConverted } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { useOverviewStore } from '@/features/overview/store'
-import { selectScope, useShellStore } from '@/app/stores/shell-store'
+import { selectScope, useScopeStore } from '@/app/stores/scope-store'
+import { navigateToSection } from '@/app/navigation'
 import type { OverviewPayload } from '../../../../shared/schemas/overview.js'
 
 function formatCompact(n: number): string {
@@ -172,11 +173,10 @@ function LocalSavingsPanel({ payload }: { payload: OverviewPayload }) {
 }
 
 export function OverviewView() {
-  const scope = useShellStore(useShallow(selectScope))
+  const scope = useScopeStore(useShallow(selectScope))
   const payload = useOverviewStore(s => s.data)
   const error = useOverviewStore(s => s.error)
   const load = useOverviewStore(s => s.load)
-  const navigateString = useShellStore(s => s.navigateString)
 
   // Store-driven load (ADR 0011): the store owns fetching — same-scope
   // refetches (refresh tick) keep the last-known payload (true SWR), scope
@@ -221,7 +221,7 @@ export function OverviewView() {
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Panel title="Top models" right={
-              <button type="button" className="font-medium text-primary" onClick={() => navigateString('models')}>See all ›</button>
+              <button type="button" className="font-medium text-primary" onClick={() => navigateToSection('models')}>See all ›</button>
             }>
               <ModelsTable payload={payload} />
             </Panel>

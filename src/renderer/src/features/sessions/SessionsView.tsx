@@ -12,7 +12,8 @@ import {
 import { formatUsd } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { useSessionsStore } from '@/features/sessions/store'
-import { selectScope, useShellStore } from '@/app/stores/shell-store'
+import { selectScope, useScopeStore } from '@/app/stores/scope-store'
+import { navigateToSession } from '@/app/navigation'
 import { useScanStore } from '@/app/stores/scan-store'
 import type { SessionRow } from '@/features/sessions/drilldown'
 
@@ -80,14 +81,13 @@ function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: 
 }
 
 export function SessionsView(): React.JSX.Element {
-  const scope = useShellStore(useShallow(selectScope))
+  const scope = useScopeStore(useShallow(selectScope))
   const rows = useSessionsStore(s => s.data)
   const error = useSessionsStore(s => s.error)
   const load = useSessionsStore(s => s.load)
-  const provider = useShellStore(s => s.provider)
-  const setProvider = useShellStore(s => s.setProvider)
+  const provider = useScopeStore(s => s.provider)
+  const setProvider = useScopeStore(s => s.setProvider)
   const detectedProviders = useScanStore(s => s.detectedProviders)
-  const openSessionById = useShellStore(s => s.openSessionById)
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SessionSort>('cost')
   const [grouped, setGrouped] = useState(true)
@@ -162,10 +162,10 @@ export function SessionsView(): React.JSX.Element {
                       <span>{group.count} {group.count === 1 ? 'session' : 'sessions'}</span>
                       <span className="ml-auto font-mono tabular-nums">{formatUsd(group.cost)}</span>
                     </div>
-                    {group.rows.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={openSessionById} />)}
+                    {group.rows.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
                   </div>
                 ))
-                : flat.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={openSessionById} />)}
+                : flat.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
             </div>
           )}
         </>

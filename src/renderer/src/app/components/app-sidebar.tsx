@@ -21,7 +21,9 @@ import {
 } from '@/shared/components/ui/sidebar'
 import { PERIOD_LABELS } from '@/shared/lib/settings-constants'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { useShellStore } from '@/app/stores/shell-store'
+import { useRouterState } from '@tanstack/react-router'
+import { navigateToSection, sectionForPath } from '@/app/navigation'
+import { useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
 
 const SECTION_ICONS: Record<Section, ReactNode> = {
@@ -113,14 +115,15 @@ export function AppSidebarShell({
   )
 }
 
-/** AppSidebar — store-driven (ADR 0011): reads the active section, nav,
- * filters, and detected providers from the shell/scan stores. */
+/** AppSidebar — scope-driven (ADR 0011) + router-driven (ADR 0014): the
+ * active section comes from the current route, clicks route through
+ * app/navigation.ts, and the footer caption reads the scope store. */
 export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
-  const active = useShellStore(s => s.section)
-  const navigate = useShellStore(s => s.navigate)
-  const period = useShellStore(s => s.period)
-  const customRange = useShellStore(s => s.customRange)
-  const provider = useShellStore(s => s.provider)
+  const pathname = useRouterState({ select: s => s.location.pathname })
+  const active = sectionForPath(pathname)
+  const period = useScopeStore(s => s.period)
+  const customRange = useScopeStore(s => s.customRange)
+  const provider = useScopeStore(s => s.provider)
   const detectedProviders = useScanStore(s => s.detectedProviders)
 
   const providerOptions = providerOptionsFromDetected(detectedProviders)
@@ -130,5 +133,5 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
     : (PERIOD_LABELS[period] ?? period)
   const status = <span>{periodLabel} <b className="font-medium text-foreground">{providerLabel}</b></span>
 
-  return <AppSidebarShell active={active} onNavigate={navigate} status={status} {...props} />
+  return <AppSidebarShell active={active} onNavigate={navigateToSection} status={status} {...props} />
 }

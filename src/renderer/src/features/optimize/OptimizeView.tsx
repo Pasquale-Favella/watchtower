@@ -10,7 +10,7 @@ import { formatCompact, formatUsd } from '@/shared/lib/models'
 import { impactDot, healthClass, trendLabel } from '@/features/optimize/lib'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { useOptimizeStore } from '@/features/optimize/store'
-import { selectScope, useShellStore } from '@/app/stores/shell-store'
+import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
 import type { OptimizeFinding, WasteAction } from '../../../../shared/schemas/optimize.js'
 import type { YieldCategory, YieldPayload } from '../../../../shared/schemas/yield.js'
@@ -226,12 +226,12 @@ function YieldTab({ scope, category }: {
 }
 
 export function OptimizeView(): React.JSX.Element {
-  const scope = useShellStore(useShallow(selectScope))
+  const scope = useScopeStore(useShallow(selectScope))
   const payload = useOptimizeStore(s => s.waste.data)
   const error = useOptimizeStore(s => s.waste.error)
   const load = useOptimizeStore(s => s.waste.load)
-  const provider = useShellStore(s => s.provider)
-  const setProvider = useShellStore(s => s.setProvider)
+  const provider = useScopeStore(s => s.provider)
+  const setProvider = useScopeStore(s => s.setProvider)
   const detectedProviders = useScanStore(s => s.detectedProviders)
   const [tab, setTab] = useState<OptimizeTab>('waste')
 

@@ -35,6 +35,17 @@ this as `fda` (e.g. `fdaNeeded`, `open-fda-settings`); prose should use the
 full term.
 _Avoid_: disk access, permissions
 
+**Scope**:
+The active filter for analytics views — a period (or custom date range) plus an
+optional provider filter; every data fetch consumes it.
+_Avoid_: filter settings, date range
+
+**Section**:
+The app's top-level screens — overview, sessions, pull requests, spend, optimize,
+models, compare, settings. The sidebar and the numbered shortcuts navigate
+between them.
+_Avoid_: page, tab
+
 ## Rules
 
 - The README's platform claim (Windows | macOS | Linux) is the product

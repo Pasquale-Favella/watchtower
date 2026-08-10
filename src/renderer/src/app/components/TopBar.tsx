@@ -14,7 +14,9 @@ import { Separator } from '@/shared/components/ui/separator'
 import { SidebarTrigger } from '@/shared/components/ui/sidebar'
 import { buildScopeCaption, providerOptionsFromDetected } from '@/shared/lib/shell'
 import { shortcutForAction } from '@/app/shortcuts'
-import { useShellStore } from '@/app/stores/shell-store'
+import { useRouterState } from '@tanstack/react-router'
+import { sectionForPath } from '@/app/navigation'
+import { useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
 import { CustomRangePicker } from '@/app/components/CustomRangePicker'
 import type { OverviewPeriod } from '../../../../shared/schemas/overview.js'
@@ -72,13 +74,14 @@ export function TopBarShell({
  * filters, and detected providers from the shell/scan stores; no more
  * 7-prop package from AppShell. */
 export function TopBar() {
-  const section = useShellStore(s => s.section)
-  const period = useShellStore(s => s.period)
-  const customRange = useShellStore(s => s.customRange)
-  const provider = useShellStore(s => s.provider)
-  const setPeriod = useShellStore(s => s.setPeriod)
-  const setProvider = useShellStore(s => s.setProvider)
-  const setCustomRange = useShellStore(s => s.setCustomRange)
+  const pathname = useRouterState({ select: s => s.location.pathname })
+  const section = sectionForPath(pathname)
+  const period = useScopeStore(s => s.period)
+  const customRange = useScopeStore(s => s.customRange)
+  const provider = useScopeStore(s => s.provider)
+  const setPeriod = useScopeStore(s => s.setPeriod)
+  const setProvider = useScopeStore(s => s.setProvider)
+  const setCustomRange = useScopeStore(s => s.setCustomRange)
   const detectedProviders = useScanStore(s => s.detectedProviders)
 
   const providerOptions = providerOptionsFromDetected(detectedProviders)

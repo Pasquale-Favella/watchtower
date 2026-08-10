@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, ChevronDown, GitBranch, Link2, Tag } from 'lucide-react'
+import { useParams } from '@tanstack/react-router'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/shared/components/ui/card'
 import { Button } from '@/shared/components/ui/button'
 import { Badge } from '@/shared/components/ui/badge'
@@ -7,7 +8,7 @@ import { cn } from '@/shared/lib/utils'
 import { formatUsd } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { useSessionsStore } from '@/features/sessions/store'
-import { useShellStore } from '@/app/stores/shell-store'
+import { navigateToSection } from '@/app/navigation'
 import type { SessionDetail } from '@/features/sessions/drilldown'
 
 function formatDate(iso: string): string {
@@ -95,8 +96,7 @@ function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Ele
 }
 
 export function SessionView(): React.JSX.Element {
-  const sessionId = useShellStore(s => s.openSession)
-  const closeSession = useShellStore(s => s.closeSession)
+  const { sessionId } = useParams({ strict: false })
   const session = useSessionsStore(s => s.session)
   const error = useSessionsStore(s => s.sessionError)
   const loadSession = useSessionsStore(s => s.loadSession)
@@ -116,7 +116,7 @@ export function SessionView(): React.JSX.Element {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={closeSession}>
+        <Button variant="ghost" size="sm" onClick={() => navigateToSection('sessions')}>
           <ArrowLeft className="h-4 w-4" /> Back
         </Button>
         <div>
