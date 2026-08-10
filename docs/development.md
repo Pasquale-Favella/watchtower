@@ -1,0 +1,79 @@
+# Developing Watchtower
+
+## Prerequisites
+
+Node.js **22+** (the ledger uses the built-in `node:sqlite` module) and npm.
+
+## Getting started
+
+Install dependencies and launch the app in development:
+
+```bash
+npm install
+npm run dev        # launches the Electron app with hot reload
+```
+
+The README's [Quick start](../README.md#quick-start) covers first-launch
+behavior and the macOS Full Disk Access requirement.
+
+## Scripts
+
+| Command | What it does |
+|---------|--------------|
+| `npm run dev` | Run the app in development (electron-vite) |
+| `npm run build` | Compile main, preload, and renderer bundles |
+| `npm run preview` | Preview a built app |
+| `npm run typecheck` | Type-check both node and web targets (`typecheck:node` / `typecheck:web`) |
+| `npm test` | Run the vitest suite (`tests/`) |
+| `npm run package` | Build + package for the platform you are on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux) |
+| `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS) |
+| `npm run icons` | Regenerate `build/icon.png` from `assets/watchtower-logo.svg` |
+
+## Project layout
+
+```
+src/
+├─ main/                    # Electron main process, owns everything
+│  ├─ index.ts              # window, IPC surface, scan orchestration, cadence
+│  ├─ cadence.ts            # background scan / FX refresh cadence
+│  ├─ views.ts              # dashboard, session, project, and search payloads
+│  ├─ overview.ts           # Overview payload (KPIs, efficiency, workflow)
+│  ├─ sessions-view.ts      # Sessions payload
+│  ├─ pull-requests-view.ts # PR spend payload
+│  ├─ spend-view.ts         # daily spend + Sankey payload
+│  ├─ models-view.ts        # by-model / by-task / audit payloads
+│  ├─ compare-view.ts       # model-pair comparison payload
+│  ├─ optimize-view.ts      # the 16 waste detectors + setup-health grade
+│  ├─ yield-view.ts         # productive / reverted / abandoned git attribution
+│  ├─ fx.ts                 # Frankfurter exchange-rate cache
+│  ├─ export.ts             # CSV/JSON export
+│  ├─ updates.ts            # manual update check (GitHub releases)
+│  ├─ pipeline/             # discovery -> extraction -> parse -> classify -> price
+│  │  ├─ scan.ts            # runScan: one scan pass, metadata out
+│  │  ├─ parser.ts          # the parse pipeline and delta seam
+│  │  ├─ session-cache.ts   # on-disk cache with per-file fingerprints
+│  │  ├─ models.ts          # LiteLLM pricing + fallbacks + aliases
+│  │  └─ providers/         # one file per tool (38 providers)
+│  └─ store/
+│     ├─ ledger.ts          # accumulating SQLite ledger (source/call/turn/session)
+│     ├─ port.ts            # cache-file -> ledger-row mapping
+│     └─ aggregate.ts       # query-time aggregation helpers
+├─ preload/                 # typed contextBridge API (the renderer's only door)
+├─ shared/schemas/          # zod schemas, the single source of truth
+└─ renderer/                # React 19 + Tailwind + shadcn/ui (sandboxed)
+   ├─ app/                  # AppShell, sidebar/topbar, onboarding, stores, shortcuts
+   ├─ features/             # one folder per section (overview, sessions, spend, ...)
+   └─ shared/               # UI kit, libs, and hooks
+```
+
+Architecture decisions are recorded as ADRs in [`docs/adr`](./adr) and
+referenced inline in the code, for example the shortcut registry (ADR 0001) in
+`src/renderer/src/app/shortcuts.ts`. A glossary of domain terms lives in
+[`CONTEXT.md`](../CONTEXT.md).
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `WATCHTOWER_CACHE_DIR` | Override the session-cache directory (set automatically to `<userData>/cache` at startup) |
+| `CSC_LINK` / `CSC_KEY_PASSWORD` | (Optional) code-signing certificate for Windows/macOS builds; signs when present, skips when absent |
