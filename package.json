@@ -26,6 +26,13 @@
   "dependencies": {
     "@base-ui/react": "^1.6.0",
     "@gsap/react": "^2.1.2",
+    "@tanstack/ai": "^0.43.1",
+    "@tanstack/ai-acp": "^0.2.4",
+    "@tanstack/ai-claude-code": "^0.3.0",
+    "@tanstack/ai-codex": "^0.3.0",
+    "@tanstack/ai-opencode": "^0.2.4",
+    "@tanstack/ai-sandbox": "^0.3.0",
+    "@tanstack/ai-sandbox-local-process": "^0.2.1",
     "@tanstack/react-hotkeys": "^0.10.0",
     "@tanstack/react-router": "^1.170.25",
     "class-variance-authority": "^0.7.1",
