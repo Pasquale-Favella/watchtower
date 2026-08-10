@@ -28,7 +28,7 @@ export function Onboarding() {
         aria-label="Welcome to Watchtower"
         className="flex w-[min(420px,calc(100vw-64px))] flex-col items-center gap-3 px-9 pb-6 pt-9 text-center sm:max-w-none"
       >
-        <div className="mb-0.5 flex text-brand" aria-hidden>
+        <div className="mb-0.5 flex text-primary" aria-hidden>
           {/* The welcome step carries the app's brand icon; later steps keep
            * their section icon so the walkthrough still reads as a tour. */}
           {current.id === 'welcome'
@@ -64,7 +64,7 @@ export function Onboarding() {
           )}
         </div>
 
-        <Button type="button" variant="link" size="xs" className="mt-0.5 text-[10.5px] text-mut2 hover:text-foreground" onClick={markOnboarded}>
+        <Button type="button" variant="link" size="xs" className="mt-0.5 text-[10.5px] text-muted-foreground hover:text-foreground" onClick={markOnboarded}>
           Skip
         </Button>
       </DialogContent>

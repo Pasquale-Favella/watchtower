@@ -40,7 +40,7 @@ function projectColorFor(name: string): string {
  * Sankey layoutNodes fill rule). */
 function colorForSankeyNode(name: string, kind: 'model' | 'project'): string {
   if (isOtherNode(name)) return 'var(--color-s-other)'
-  return kind === 'model' ? seriesColorForModel(name) : 'var(--color-mut2)'
+  return kind === 'model' ? seriesColorForModel(name) : 'var(--color-muted-foreground)'
 }
 
 function renderSankeyNode(props: SankeyNodeProps): React.JSX.Element {
@@ -65,11 +65,11 @@ function renderSankeyLink(props: SankeyLinkProps): React.JSX.Element {
 }
 
 const tooltipStyle: React.CSSProperties = {
-  background: 'var(--panel)',
-  border: '1px solid var(--line)',
+  background: 'var(--card)',
+  border: '1px solid var(--border)',
   borderRadius: 8,
   fontSize: 12,
-  color: 'var(--ink)',
+  color: 'var(--foreground)',
 }
 
 function DailyStackedChart({
@@ -96,20 +96,20 @@ function DailyStackedChart({
       <div className="h-48">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--line2)" vertical={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 11, fill: 'var(--mut2)' }}
+              tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
               tickFormatter={formatDayLabel}
               axisLine={false}
               tickLine={false}
               minTickGap={40}
             />
-            <YAxis tick={{ fontSize: 11, fill: 'var(--mut2)' }} tickFormatter={(value: number) => formatConverted(value).replace(/\.\d+$/, '')} axisLine={false} tickLine={false} width={42} />
+            <YAxis tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }} tickFormatter={(value: number) => formatConverted(value).replace(/\.\d+$/, '')} axisLine={false} tickLine={false} width={42} />
             <Tooltip
               formatter={(value) => formatUsd(Number(value))}
               contentStyle={tooltipStyle}
-              cursor={{ fill: 'var(--hover)' }}
+              cursor={{ fill: 'var(--accent)' }}
             />
             {series.map(name => (
               <Bar
@@ -134,7 +134,7 @@ function DailyStackedChart({
         </div>
       )}
       {leadingNoData && (
-        <p className="text-[10.5px] text-mut2">Days before {formatDayLabel(dataStart ?? '')} recorded no activity.</p>
+        <p className="text-[10.5px] text-muted-foreground">Days before {formatDayLabel(dataStart ?? '')} recorded no activity.</p>
       )}
     </div>
   )

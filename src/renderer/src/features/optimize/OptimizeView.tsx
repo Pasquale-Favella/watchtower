@@ -47,22 +47,22 @@ function FindingRows({ findings }: { findings: OptimizeFinding[] }) {
       {findings.map(finding => {
         const expanded = expandedId === finding.id
         return (
-          <div key={finding.id} className="border-b border-line2 last:border-b-0">
+          <div key={finding.id} className="border-b border-border last:border-b-0">
             <button
               type="button"
               aria-expanded={expanded}
               onClick={() => setExpandedId(current => current === finding.id ? null : finding.id)}
-              className="flex w-full cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-left hover:bg-hover"
+              className="flex w-full cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-left hover:bg-accent"
             >
               <span className={cn('size-[8px] shrink-0 rounded-full', impactDot(finding.severity))} aria-hidden="true" />
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-[12px] font-medium text-foreground">{finding.title}</span>
-                <span className="text-[10.5px] text-mut2">
+                <span className="text-[10.5px] text-muted-foreground">
                   {trendLabel(finding.trend)} · {formatCompact(finding.tokensSaved)} tokens
                 </span>
               </span>
               <span className="shrink-0 font-mono text-[11.5px] text-foreground">{formatUsd(finding.estimatedSavingsUSD)}</span>
-              <span className={cn('text-mut2 transition-transform', expanded && 'rotate-90')} aria-hidden="true">›</span>
+              <span className={cn('text-muted-foreground transition-transform', expanded && 'rotate-90')} aria-hidden="true">›</span>
             </button>
             {expanded && (
               <div className="px-3.5 pb-3 pt-0.5" role="region" aria-label={`${finding.title} details`}>
@@ -89,18 +89,18 @@ function FixBlock({
   onCopy: () => void
 }) {
   return (
-    <div className="rounded-md border border-line2 bg-background p-2.5">
+    <div className="rounded-md border border-border bg-background p-2.5">
       <div className="mb-1.5 flex items-center gap-2">
         <div className="min-w-0 flex-1">
           <b className="block text-[10.5px] text-foreground">{finding.fix.label}</b>
           {finding.fix.type === 'file-content' && (
-            <span className="text-[10px] font-mono text-mut2">{finding.fix.path}</span>
+            <span className="text-[10px] font-mono text-muted-foreground">{finding.fix.path}</span>
           )}
         </div>
         <button
           type="button"
           onClick={onCopy}
-          className="shrink-0 rounded-md border border-line2 bg-card px-2 py-[3px] text-[10.5px] text-muted-foreground hover:text-foreground"
+          className="shrink-0 rounded-md border border-border bg-card px-2 py-[3px] text-[10.5px] text-muted-foreground hover:text-foreground"
         >
           {copied ? 'Copied' : 'Copy'}
         </button>
@@ -133,11 +133,11 @@ function FixRows({ findings }: { findings: OptimizeFinding[] }) {
   return (
     <div className="flex flex-col">
       {findings.map(finding => (
-        <div key={finding.id} className="border-b border-line2 last:border-b-0">
+        <div key={finding.id} className="border-b border-border last:border-b-0">
           <div className="flex items-center gap-2.5 px-3.5 pb-1 pt-2.5">
             <span className={cn('size-[8px] shrink-0 rounded-full', impactDot(finding.severity))} aria-hidden="true" />
             <span className="truncate text-[12px] font-medium text-foreground">{finding.title}</span>
-            <span className="ml-auto shrink-0 font-mono text-[11.5px] text-mut2">{formatUsd(finding.estimatedSavingsUSD)}</span>
+            <span className="ml-auto shrink-0 font-mono text-[11.5px] text-muted-foreground">{formatUsd(finding.estimatedSavingsUSD)}</span>
           </div>
           <div className="px-3.5 pb-3">
             <FixBlock finding={finding} copied={copiedId === finding.id} onCopy={() => void copyFix(finding)} />
@@ -168,10 +168,10 @@ function YieldRows({ payload, category, empty }: {
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center justify-between border-b border-line2 px-0.5 pb-2">
+      <div className="flex items-center justify-between border-b border-border px-0.5 pb-2">
         <div>
           <b className="text-[12px] text-foreground">{category === 'reverted' ? 'Reverted' : 'Abandoned'}</b>
-          <p className="text-[10.5px] text-mut2">
+          <p className="text-[10.5px] text-muted-foreground">
             {bucket.sessions.toLocaleString('en-US')} {bucket.sessions === 1 ? 'session' : 'sessions'} ·{' '}
             {bucket.costPercent.toFixed(1)}% of period cost · {bucket.sessionPercent.toFixed(1)}% of sessions
           </p>
@@ -182,11 +182,11 @@ function YieldRows({ payload, category, empty }: {
       </div>
 
       {rows.map((row, i) => (
-        <div key={row.sessionId} className="flex items-center gap-3 border-b border-line2 px-3.5 py-2.5 last:border-b-0">
-          <span className="w-6 shrink-0 font-mono text-[11px] text-mut2">{String(i + 1).padStart(2, '0')}</span>
+        <div key={row.sessionId} className="flex items-center gap-3 border-b border-border px-3.5 py-2.5 last:border-b-0">
+          <span className="w-6 shrink-0 font-mono text-[11px] text-muted-foreground">{String(i + 1).padStart(2, '0')}</span>
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate text-[12px] font-medium text-foreground">{row.project}</span>
-            <span className="truncate text-[10.5px] text-mut2">
+            <span className="truncate text-[10.5px] text-muted-foreground">
               {row.commitCount.toLocaleString('en-US')} {row.commitCount === 1 ? 'commit' : 'commits'} · {row.sessionId}
             </span>
           </span>
@@ -274,10 +274,10 @@ export function OptimizeView(): React.JSX.Element {
       ) : (
         <Panel>
           {healthGrade && (
-            <div className="mb-2 flex items-center justify-between border-b border-line2 px-0.5 pb-2">
+            <div className="mb-2 flex items-center justify-between border-b border-border px-0.5 pb-2">
               <div>
                 <b className="text-[12px] text-foreground">Setup health</b>
-                <p className="text-[10.5px] text-mut2">
+                <p className="text-[10.5px] text-muted-foreground">
                   {wasteCount.toLocaleString('en-US')} findings · {formatUsd(savingsUSD)} potential savings
                   {payload.summary.periodCostUSD > 0 && payload.summary.potentialSavingsPercent !== null
                     ? ` · ${payload.summary.potentialSavingsPercent.toFixed(1)}% of period cost`
@@ -288,7 +288,7 @@ export function OptimizeView(): React.JSX.Element {
                 <span className={cn('font-mono text-[22px] font-semibold leading-none', healthClass(healthGrade))}>
                   {healthGrade}
                 </span>
-                <p className="text-[10.5px] text-mut2">{healthScore}/100</p>
+                <p className="text-[10.5px] text-muted-foreground">{healthScore}/100</p>
               </div>
             </div>
           )}

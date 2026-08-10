@@ -37,7 +37,7 @@ export function ScanIndicator() {
   const scanning = useScanStore(s => s.scanning)
   return (
     <div
-      className={`h-[2px] shrink-0 transition-colors ${scanning ? 'animate-pulse bg-brand' : 'bg-transparent'}`}
+      className={`h-[2px] shrink-0 transition-colors ${scanning ? 'animate-pulse bg-primary' : 'bg-transparent'}`}
       role="status"
       aria-label={scanning ? 'Refreshing data in the background' : undefined}
     />
@@ -85,11 +85,11 @@ export function StatusBar() {
   const sectionsRange = sectionsRangeLabel()
 
   return (
-    <div className="flex items-center gap-3.5 border-t border-border px-4 py-2 text-[10.5px] text-mut2">
-      {sectionsRange && <span><kbd className="mr-1 rounded border border-line2 px-1 font-mono text-muted-foreground">{sectionsRange}</kbd>Navigate</span>}
-      <span><kbd className="mr-1 rounded border border-line2 px-1 font-mono text-muted-foreground">{displayShortcutForAction('settings')}</kbd>Settings</span>
+    <div className="flex items-center gap-3.5 border-t border-border px-4 py-2 text-[10.5px] text-muted-foreground">
+      {sectionsRange && <span><kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{sectionsRange}</kbd>Navigate</span>}
+      <span><kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('settings')}</kbd>Settings</span>
       <span>
-        <kbd className="mr-1 rounded border border-line2 px-1 font-mono text-muted-foreground">{displayShortcutForAction('refresh')}</kbd>
+        <kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('refresh')}</kbd>
         {scanning ? 'Refreshing…' : 'Refresh'}
       </span>
       {unparsedTotal > 0 && (

@@ -33,7 +33,7 @@ export function SegTabs({
           }}
           className={cn(
             'cursor-pointer rounded-[5px] px-2.5 py-[3px] text-[11px] whitespace-nowrap',
-            opt.value === value ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_var(--brand)]' : 'text-muted-foreground',
+            opt.value === value ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_var(--primary)]' : 'text-muted-foreground',
           )}
         >
           {opt.label}

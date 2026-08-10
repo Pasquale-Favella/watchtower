@@ -42,7 +42,7 @@ function ModelsTable({ payload }: { payload: OverviewPayload }) {
   return (
     <div className="flex flex-col">
       {payload.models.map(model => (
-        <div key={model.name} className="flex items-center gap-3 border-t border-line2 py-1.5 first:border-t-0">
+        <div key={model.name} className="flex items-center gap-3 border-t border-border py-1.5 first:border-t-0">
           <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{model.name}</span>
           <span className="w-14 text-right font-mono text-[11px] tabular-nums text-muted-foreground">{formatCompact(model.inputTokens)}</span>
           <span className="w-14 text-right font-mono text-[11px] tabular-nums text-muted-foreground">{formatCompact(model.outputTokens)}</span>
@@ -76,7 +76,7 @@ function EfficiencyPanel({ payload }: { payload: OverviewPayload }) {
           <div className="text-[11px] font-medium text-muted-foreground">Efficiency score</div>
           <div className="font-mono text-[20px] font-semibold tabular-nums text-foreground">{Math.round(eff.score)} / 100</div>
         </div>
-        <div className={cn('rounded-md px-2 py-1 font-mono text-[15px] font-semibold', grade === 'A+' || grade === 'A' ? 'text-brand' : grade === 'F' ? 'text-destructive' : 'text-foreground')}>
+        <div className={cn('rounded-md px-2 py-1 font-mono text-[15px] font-semibold', grade === 'A+' || grade === 'A' ? 'text-primary' : grade === 'F' ? 'text-destructive' : 'text-foreground')}>
           {grade}
         </div>
       </div>
@@ -88,7 +88,7 @@ function EfficiencyPanel({ payload }: { payload: OverviewPayload }) {
       {eff.routingWaste.totalSavingsUSD > 0 && (
         <p className="text-[11.5px] text-muted-foreground">Routing to <strong className="text-foreground">{eff.routingWaste.baselineModel}</strong> could save <strong className="text-foreground">{formatUsd(eff.routingWaste.totalSavingsUSD)}</strong> this period.</p>
       )}
-      <p className="text-[11px] text-mut2">{pricingPct}% of spend priced · composite of one-shot, cache hit, and retry tax.</p>
+      <p className="text-[11px] text-muted-foreground">{pricingPct}% of spend priced · composite of one-shot, cache hit, and retry tax.</p>
     </div>
   )
 }
@@ -119,14 +119,14 @@ function WorkflowPanel({ payload }: { payload: OverviewPayload }) {
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11.5px]">
-        <span className="text-muted-foreground">Correction rate <strong className="text-foreground">{formatRate(wf.correctionRate)}</strong>{wf.corrections > 0 && <span className="text-mut2"> · {wf.corrections} {wf.corrections === 1 ? 'correction' : 'corrections'}</span>}</span>
+        <span className="text-muted-foreground">Correction rate <strong className="text-foreground">{formatRate(wf.correctionRate)}</strong>{wf.corrections > 0 && <span className="text-muted-foreground"> · {wf.corrections} {wf.corrections === 1 ? 'correction' : 'corrections'}</span>}</span>
         <span className="text-muted-foreground">Time to first edit <strong className="text-foreground">{wf.medianTimeToFirstEditMs === null ? '—' : formatDuration(wf.medianTimeToFirstEditMs)}</strong></span>
-        {showCoverage && <span className="rounded border border-line2 px-1.5 py-0.5 text-[10px] text-muted-foreground">{Math.min(99, Math.round(coverage * 100))}% priced</span>}
+        {showCoverage && <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">{Math.min(99, Math.round(coverage * 100))}% priced</span>}
       </div>
       {reworked && (
         <p className="text-[11.5px] text-muted-foreground">Top rework: <strong className="text-foreground">{reworked.path}</strong> · {reworked.sessions} {reworked.sessions === 1 ? 'session' : 'sessions'} · {reworked.edits} {reworked.edits === 1 ? 'edit' : 'edits'}</p>
       )}
-      <p className="text-[11px] text-mut2">{note ?? 'Corrections, first-edit latency, and file churn across your sessions.'}</p>
+      <p className="text-[11px] text-muted-foreground">{note ?? 'Corrections, first-edit latency, and file churn across your sessions.'}</p>
     </div>
   )
 }
@@ -142,8 +142,8 @@ function BreakdownPanel({ payload }: { payload: OverviewPayload }) {
   return (
     <div className="flex flex-col">
       {rows.map(row => (
-        <div key={`${row.label}:${row.name}`} className="flex items-center gap-3 border-t border-line2 py-1 first:border-t-0">
-          <span className="w-16 shrink-0 text-[10.5px] font-medium uppercase tracking-wide text-mut2">{row.label}</span>
+        <div key={`${row.label}:${row.name}`} className="flex items-center gap-3 border-t border-border py-1 first:border-t-0">
+          <span className="w-16 shrink-0 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">{row.label}</span>
           <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{row.name}</span>
           <span className="shrink-0 text-[11px] text-muted-foreground">{row.detail}</span>
         </div>
@@ -157,7 +157,7 @@ function LocalSavingsPanel({ payload }: { payload: OverviewPayload }) {
   if (!savings.totalUSD) return emptyNote('No local-model savings in this range yet.')
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-baseline justify-between border-b border-line2 pb-2">
+      <div className="flex items-baseline justify-between border-b border-border pb-2">
         <span className="text-[11px] font-medium text-muted-foreground">Saved via local models</span>
         <strong className="font-mono text-[16px] tabular-nums text-foreground">{formatUsd(savings.totalUSD)}</strong>
       </div>
@@ -215,13 +215,13 @@ export function OverviewView() {
                 />
               )}
             {payload.dataStart !== null && (chartData[0]?.date ?? '') < payload.dataStart && (
-              <p className="mt-1.5 text-[10.5px] text-mut2">Days before {formatChartDate(payload.dataStart)} recorded no activity.</p>
+              <p className="mt-1.5 text-[10.5px] text-muted-foreground">Days before {formatChartDate(payload.dataStart)} recorded no activity.</p>
             )}
           </Panel>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Panel title="Top models" right={
-              <button type="button" className="font-medium text-brand-text" onClick={() => navigateString('models')}>See all ›</button>
+              <button type="button" className="font-medium text-primary" onClick={() => navigateString('models')}>See all ›</button>
             }>
               <ModelsTable payload={payload} />
             </Panel>

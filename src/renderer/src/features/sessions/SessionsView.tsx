@@ -43,7 +43,7 @@ const COLUMNS = 'grid-cols-[minmax(0,1.4fr)_88px_minmax(0,1fr)_136px_44px_76px_8
 
 function ColumnHeaders(): React.JSX.Element {
   return (
-    <div className={cn('grid items-center gap-3 px-3 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-mut2', COLUMNS)}>
+    <div className={cn('grid items-center gap-3 px-3 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground', COLUMNS)}>
       <span>Session</span>
       <span>Provider</span>
       <span>Models</span>
@@ -61,13 +61,13 @@ function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: 
       type="button"
       onClick={() => onOpen(row.sessionId)}
       className={cn(
-        'grid w-full items-center gap-3 border-t border-line2 px-3 py-1.5 text-left transition-colors hover:bg-hover',
+        'grid w-full items-center gap-3 border-t border-border px-3 py-1.5 text-left transition-colors hover:bg-accent',
         COLUMNS,
       )}
     >
       <span className="min-w-0">
         <span className="block truncate text-[12.5px] font-medium text-foreground">{row.title || row.project || 'Untitled session'}</span>
-        <span className="block truncate font-mono text-[10px] text-mut2">{row.project} · {row.sessionId}</span>
+        <span className="block truncate font-mono text-[10px] text-muted-foreground">{row.project} · {row.sessionId}</span>
       </span>
       <span className="truncate text-[11px] text-muted-foreground">{row.provider}</span>
       <span className="truncate text-[11px] text-muted-foreground">{row.models.join(', ') || '—'}</span>
@@ -124,7 +124,7 @@ export function SessionsView(): React.JSX.Element {
               placeholder="Search project, model, or id…"
               value={query}
               onChange={e => setQuery(e.target.value)}
-              className="h-[25px] w-full max-w-xs rounded-md border border-line2 bg-card px-2 text-[11px] text-foreground outline-none placeholder:text-mut2 focus:border-brand"
+              className="h-[25px] w-full max-w-xs rounded-md border border-border bg-card px-2 text-[11px] text-foreground outline-none placeholder:text-muted-foreground focus:border-brand"
             />
             <SegTabs options={SORT_OPTIONS} value={sort} onChange={value => setSort(value as SessionSort)} />
             <button
@@ -133,14 +133,14 @@ export function SessionsView(): React.JSX.Element {
               onClick={() => setGrouped(v => !v)}
               className={cn(
                 'rounded-md border px-2.5 py-[3px] text-[11px] transition-colors',
-                grouped ? 'border-brand bg-card font-medium text-foreground' : 'border-line2 text-muted-foreground hover:text-foreground',
+                grouped ? 'border-brand bg-card font-medium text-foreground' : 'border-border text-muted-foreground hover:text-foreground',
               )}
             >
               Group by provider
             </button>
           </div>
 
-          <div className="text-[11px] text-mut2">
+          <div className="text-[11px] text-muted-foreground">
             {summary.count.toLocaleString('en-US')} {summary.count === 1 ? 'session' : 'sessions'} · {formatUsd(summary.costUSD)} · {formatCompact(summary.tokens)} tokens
           </div>
 

@@ -48,11 +48,11 @@ export function TopBarShell({
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="mr-1 h-4" />
       <div className="text-sm font-semibold tracking-tight">{title}</div>
-      {scope !== undefined && <span className="text-[11px] text-mut2">{scope}</span>}
+      {scope !== undefined && <span className="text-[11px] text-muted-foreground">{scope}</span>}
       <div className="flex-1" />
       <SegTabs options={DEFAULT_PERIOD_OPTIONS} value={period} onChange={onPeriodChange} />
       <Select value={provider} onValueChange={(value) => { if (value) onProviderSelect(value) }}>
-        <SelectTrigger size="sm" className={cn('h-[25px] rounded-md border-line2 px-2 text-[11px] text-muted-foreground', provider !== 'all' && 'text-foreground')}>
+        <SelectTrigger size="sm" className={cn('h-[25px] rounded-md border-border px-2 text-[11px] text-muted-foreground', provider !== 'all' && 'text-foreground')}>
           <SelectValue>{providerLabel}</SelectValue>
         </SelectTrigger>
         <SelectContent>

@@ -36,7 +36,7 @@ function AddAliasButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       type="button"
-      className="font-medium text-brand-text hover:underline"
+      className="font-medium text-primary hover:underline"
       onClick={onClick}
     >
       add alias ›
@@ -70,7 +70,7 @@ function savedCell(row: ModelReportRow): string {
   return row.savingsUSD > 0 ? formatUsd(row.savingsUSD) : formatUsd(0)
 }
 
-const TH = 'text-[10.5px] uppercase tracking-wide text-mut2'
+const TH = 'text-[10.5px] uppercase tracking-wide text-muted-foreground'
 
 /** The Calls/Input/Output/Cache read/Cost/Saved header cells shared by the
  * by-model and by-task tables (only the first column's label differs). */
@@ -122,7 +122,7 @@ function ModelsTable({ rows, onAddAlias }: { rows: ModelReportRow[]; onAddAlias:
                   <ModelDot model={row.modelDisplayName || row.model} />
                   <span className="flex min-w-0 flex-col">
                     <span className="truncate" title={row.model}>{row.modelDisplayName}</span>
-                    <span className="truncate text-[9.5px] font-normal text-mut2">{providerTitle(row.provider)}</span>
+                    <span className="truncate text-[9.5px] font-normal text-muted-foreground">{providerTitle(row.provider)}</span>
                   </span>
                   {unpriced && <AddAliasButton onClick={() => onAddAlias(row)} />}
                 </span>
@@ -164,7 +164,7 @@ function ModelsByTaskGroup({ group, onAddAlias }: { group: ModelTaskGroup; onAdd
             <ModelDot model={lead.modelDisplayName || lead.model} />
             <span className="flex min-w-0 flex-col">
               <span className="truncate">{lead.modelDisplayName}</span>
-              <span className="truncate text-[9.5px] font-normal text-mut2">{providerTitle(lead.provider)}</span>
+              <span className="truncate text-[9.5px] font-normal text-muted-foreground">{providerTitle(lead.provider)}</span>
             </span>
             {unpriced && <AddAliasButton onClick={() => onAddAlias(lead)} />}
           </span>
@@ -193,15 +193,15 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
     <Table>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
-          <TableHead className="text-[10.5px] uppercase tracking-wide text-mut2">Model</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-mut2">Calls</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-mut2">Input</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-mut2">Output</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-mut2">Reasoning</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-mut2">Norm out</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-mut2">Cache wr</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-mut2">Cache rd</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-mut2">Cost</TableHead>
+          <TableHead className="text-[10.5px] uppercase tracking-wide text-muted-foreground">Model</TableHead>
+          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Calls</TableHead>
+          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Input</TableHead>
+          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Output</TableHead>
+          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Reasoning</TableHead>
+          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Norm out</TableHead>
+          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Cache wr</TableHead>
+          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Cache rd</TableHead>
+          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Cost</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -303,7 +303,7 @@ function QuickAddModal({
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
           <DialogTitle className="text-[13px] tracking-tight">Price {target.modelDisplayName}</DialogTitle>
-          <DialogDescription className="truncate text-[10px] text-mut2">{providerTitle(target.provider)} · {target.model}</DialogDescription>
+          <DialogDescription className="truncate text-[10px] text-muted-foreground">{providerTitle(target.provider)} · {target.model}</DialogDescription>
         </DialogHeader>
 
         <SegTabs
@@ -325,7 +325,7 @@ function QuickAddModal({
               placeholder="claude-sonnet-4-5"
               className="h-7 text-[12px]"
             />
-            <p className="text-[10px] text-mut2">Adds a <code className="font-mono">{target.model}</code> → target model alias. Existing calls repriced from their token usage, no rescan needed.</p>
+            <p className="text-[10px] text-muted-foreground">Adds a <code className="font-mono">{target.model}</code> → target model alias. Existing calls repriced from their token usage, no rescan needed.</p>
           </div>
         ) : (
           <div className="flex flex-col gap-1.5">
@@ -347,7 +347,7 @@ function QuickAddModal({
               placeholder="0"
               className="h-7 text-[12px]"
             />
-            <p className="text-[10px] text-mut2">Writes a manual price override; the affected rows update without a rescan.</p>
+            <p className="text-[10px] text-muted-foreground">Writes a manual price override; the affected rows update without a rescan.</p>
           </div>
         )}
 

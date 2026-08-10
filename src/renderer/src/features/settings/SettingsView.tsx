@@ -131,7 +131,7 @@ function GeneralPane() {
   return (
     <div className="flex max-w-md flex-col gap-5">
       <div className="flex flex-col gap-2">
-        <p className="text-[10.5px] font-semibold tracking-[0.05em] text-mut2 uppercase">Appearance</p>
+        <p className="text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">Appearance</p>
         <div className="flex items-center justify-between gap-3">
           <span className="text-[12.5px] text-foreground">Theme</span>
           <SegTabs options={THEME_OPTIONS} value={theme} onChange={value => setTheme(value as Theme)} />
@@ -140,7 +140,7 @@ function GeneralPane() {
       </div>
 
       <div className="flex flex-col gap-2">
-        <p className="text-[10.5px] font-semibold tracking-[0.05em] text-mut2 uppercase">Display</p>
+        <p className="text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">Display</p>
         <div className="flex flex-col gap-1.5">
           <label htmlFor="settings-currency" className="text-[12.5px] font-medium text-foreground">Currency</label>
           <p className="text-[11px] text-muted-foreground">Display currency for every cost in the app and in CSV/JSON exports. Rates come from the Frankfurter API (ECB data) and are cached 24h.</p>
@@ -170,10 +170,10 @@ function GeneralPane() {
             </Button>
           </div>
           {currency.code !== 'USD' && currency.updatedAt && (
-            <p className="text-[10.5px] text-mut2">Rate fetched {new Date(currency.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.</p>
+            <p className="text-[10.5px] text-muted-foreground">Rate fetched {new Date(currency.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.</p>
           )}
           {currency.code !== 'USD' && !currency.updatedAt && (
-            <p className="text-[10.5px] text-mut2">No rate cached yet — showing USD-equivalent values until a fetch succeeds.</p>
+            <p className="text-[10.5px] text-muted-foreground">No rate cached yet — showing USD-equivalent values until a fetch succeeds.</p>
           )}
         </div>
 
@@ -210,7 +210,7 @@ function GeneralPane() {
 
       {showClaudeConfigRow && (
         <div className="flex flex-col gap-2">
-          <p className="text-[10.5px] font-semibold tracking-[0.05em] text-mut2 uppercase">Claude config</p>
+          <p className="text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">Claude config</p>
           <div className="flex items-center justify-between gap-3">
             <span className="text-[12.5px] text-foreground">Active config</span>
             <span className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground">All Claude configs</span>
@@ -263,7 +263,7 @@ function ProvidersPane() {
                 Detected
               </span>
             </div>
-            <div className="mt-2 flex gap-4 text-[11px] text-mut2">
+            <div className="mt-2 flex gap-4 text-[11px] text-muted-foreground">
               <span>{formatUsd(provider.cost)}</span>
               <span>{provider.calls.toLocaleString('en-US')} calls</span>
               <span>{provider.sessions.toLocaleString('en-US')} sessions</span>
@@ -352,7 +352,7 @@ function AliasesPane() {
             {aliases.map(alias => (
               <li key={alias.model} className="flex items-center gap-2">
                 <code className="min-w-0 flex-1 truncate font-mono text-[11.5px]">{alias.model}</code>
-                <span className="text-mut2">→</span>
+                <span className="text-muted-foreground">→</span>
                 <code className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-foreground">{alias.aliasOf}</code>
                 <ConfirmRemove
                   label="Remove"
@@ -372,7 +372,7 @@ function AliasesPane() {
             placeholder="unrecognized model"
             className="h-7 flex-1 font-mono text-[11.5px]"
           />
-          <span className="text-mut2">→</span>
+          <span className="text-muted-foreground">→</span>
           <Input
             aria-label="Priced model"
             value={to}
@@ -469,7 +469,7 @@ function PricingPane() {
             {overrides.map(override => (
               <li key={override.model} className="flex items-center gap-2">
                 <code className="min-w-0 flex-1 truncate font-mono text-[11.5px]">{override.model}</code>
-                <span className="shrink-0 font-mono text-[10.5px] text-mut2">
+                <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">
                   in {override.inputPricePerMillion} · out {override.outputPricePerMillion}
                 </span>
                 <ConfirmRemove
@@ -634,7 +634,7 @@ function PrivacyPane() {
       </Card>
 
       <Card className="px-4 py-3">
-        <p className="flex items-center gap-2 text-[10.5px] font-semibold tracking-[0.05em] text-mut2 uppercase">
+        <p className="flex items-center gap-2 text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">
           <Database className="size-3.5" /> Store
         </p>
         <div className="mt-2 flex flex-col gap-1.5 text-[11.5px]">
@@ -692,7 +692,7 @@ export function SettingsView(): React.JSX.Element {
               type="button"
               aria-current={pane === item.id ? 'page' : undefined}
               onClick={() => setPane(item.id)}
-              className={`cursor-pointer rounded-md px-2.5 py-[7px] text-left text-[12.5px] hover:bg-hover hover:text-foreground ${pane === item.id ? 'bg-hover text-foreground' : 'text-muted-foreground'}`}
+              className={`cursor-pointer rounded-md px-2.5 py-[7px] text-left text-[12.5px] hover:bg-accent hover:text-foreground ${pane === item.id ? 'bg-accent text-foreground' : 'text-muted-foreground'}`}
             >
               {item.label}
             </button>

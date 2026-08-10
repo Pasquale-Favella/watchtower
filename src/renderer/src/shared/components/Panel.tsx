@@ -29,10 +29,10 @@ export function Panel({
       )}
     >
       {hasHead && (
-        <CardHeader className="flex flex-row items-center justify-between gap-2 border-b border-line2 px-3.5 py-2">
+        <CardHeader className="flex flex-row items-center justify-between gap-2 border-b border-border px-3.5 py-2">
           {title !== undefined && <CardTitle className="text-subhead font-subhead text-foreground">{title}</CardTitle>}
           {right !== undefined && (
-            <span className={cn('text-meta', rightLink && 'font-medium text-brand-text')}>{right}</span>
+            <span className={cn('text-meta', rightLink && 'font-medium text-primary')}>{right}</span>
           )}
         </CardHeader>
       )}
@@ -44,9 +44,9 @@ export function Panel({
 /** Stat — a KPI cell mapped onto a padded Card. */
 export function Stat({ label, value, sub, accent }: { label: ReactNode; value: ReactNode; sub?: ReactNode; accent?: boolean }) {
   return (
-    <div className={cn('flex flex-col justify-center gap-1 px-3 py-2', accent && 'shadow-[inset_0_2px_0_var(--brand)]')}>
-      <span className={cn('text-label font-medium', accent && 'text-brand')}>{label}</span>
-      <strong className={cn('truncate font-mono text-kpi font-semibold leading-tight tabular-nums', accent ? 'text-brand' : 'text-foreground')}>
+    <div className={cn('flex flex-col justify-center gap-1 px-3 py-2', accent && 'shadow-[inset_0_2px_0_var(--primary)]')}>
+      <span className={cn('text-label font-medium', accent && 'text-primary')}>{label}</span>
+      <strong className={cn('truncate font-mono text-kpi font-semibold leading-tight tabular-nums', accent ? 'text-primary' : 'text-foreground')}>
         {value}
       </strong>
       {sub && <small className="truncate text-[9.5px] text-muted-foreground">{sub}</small>}

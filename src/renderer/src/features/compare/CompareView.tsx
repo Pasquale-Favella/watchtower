@@ -50,8 +50,8 @@ function CompareRows({
 }) {
   return (
     <div className="flex flex-col">
-      <div className={cn(ROW_GRID, 'border-b border-line2 pb-1.5')}>
-        <span className="text-[10.5px] uppercase tracking-wide text-mut2">Metric</span>
+      <div className={cn(ROW_GRID, 'border-b border-border pb-1.5')}>
+        <span className="text-[10.5px] uppercase tracking-wide text-muted-foreground">Metric</span>
         <span className={cn(VALUE_CELL, 'truncate text-[10.5px] font-medium text-foreground')} title={modelA}>{modelA}</span>
         <span className={cn(VALUE_CELL, 'truncate text-[10.5px] font-medium text-foreground')} title={modelB}>{modelB}</span>
       </div>
@@ -116,7 +116,7 @@ function BarRow({ rate, turns, winner, color }: { rate: number | null; turns: nu
         <span className="block h-full rounded-full" style={{ width: `${rate ?? 0}%`, background: color }} />
       </span>
       <span className={cn(VALUE_CELL, 'w-[72px] text-[10.5px]', winner ? 'text-success' : 'text-muted-foreground')}>
-        {compareValue(rate, 'percent')} <span className="text-mut2">({turns})</span>
+        {compareValue(rate, 'percent')} <span className="text-muted-foreground">({turns})</span>
       </span>
     </div>
   )
@@ -144,7 +144,7 @@ function ModelPicker({
   const selected = models.find(model => model.model === value)
   return (
     <Select value={value ?? ''} onValueChange={next => { if (next) onChange(next) }}>
-      <SelectTrigger size="sm" aria-label={label} className="h-[26px] rounded-md border-line2 px-2 text-[11px] text-foreground">
+      <SelectTrigger size="sm" aria-label={label} className="h-[26px] rounded-md border-border px-2 text-[11px] text-foreground">
         <SelectValue>{selected?.displayName ?? 'Pick a model'}</SelectValue>
       </SelectTrigger>
       <SelectContent align="center">
@@ -233,7 +233,7 @@ export function CompareView(): React.JSX.Element {
               onChange={next => pick('a', next)}
               label="First model"
             />
-            <span className="text-[11px] font-medium uppercase tracking-wide text-mut2">vs</span>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">vs</span>
             <ModelPicker
               models={models}
               value={pair?.modelB ?? null}

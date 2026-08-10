@@ -17,7 +17,7 @@ export function BarList({ items, total }: { items: BarItem[]; total?: number }) 
             <div className="truncate font-medium text-foreground">{item.name}</div>
             <div className="h-2 overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full rounded-full bg-brand"
+                className="h-full rounded-full bg-primary"
                 style={{ width: `${pct}%` }}
               />
             </div>

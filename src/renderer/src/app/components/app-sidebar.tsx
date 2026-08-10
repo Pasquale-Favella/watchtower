@@ -63,7 +63,7 @@ export function AppSidebarShell({
                * collapsed 32px icon rail the button itself is size-8 with
                * padding, so the box shrinks to a plain centered icon — the
                * same shape as the nav items beside it. */}
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand/10 text-brand group-data-[collapsible=icon]:size-4 group-data-[collapsible=icon]:rounded-sm group-data-[collapsible=icon]:bg-transparent">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary group-data-[collapsible=icon]:size-4 group-data-[collapsible=icon]:rounded-sm group-data-[collapsible=icon]:bg-transparent">
                 {/* Expanded rail: the logo fills most of the 40px brand tile;
                  * collapsed to icon-only, it drops back to the nav-item size.
                  * The `!` important beats the sidebar button's own

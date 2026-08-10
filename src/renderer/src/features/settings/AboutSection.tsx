@@ -37,7 +37,7 @@ export function AboutSection() {
 
   return (
     <div>
-      <p className="text-[10.5px] font-semibold tracking-[0.05em] text-mut2 uppercase">About</p>
+      <p className="text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">About</p>
       <div className="mt-2 flex items-center gap-3">
         <span className="text-[12.5px] text-foreground">
           {version ? `Version ${version}` : '…'}

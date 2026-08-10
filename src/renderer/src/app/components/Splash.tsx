@@ -18,18 +18,18 @@ export function Splash() {
   return (
     <div className="flex h-screen w-full flex-col items-center justify-center gap-6 bg-background text-foreground">
       <div className="flex items-center gap-2">
-        <WatchtowerIcon className="size-7 text-brand" />
+        <WatchtowerIcon className="size-7 text-primary" />
         <b className="text-lg font-bold tracking-tight">Watchtower</b>
       </div>
       <p className="text-[12.5px] text-muted-foreground">Scanning your machine's code-assistant sources…</p>
       <div className="flex w-72 flex-col gap-1.5">
         {providers.length === 0 && !error && (
-          <span className="text-center text-[11px] text-mut2">Starting…</span>
+          <span className="text-center text-[11px] text-muted-foreground">Starting…</span>
         )}
         {providers.map(p => (
           <div key={p.provider} className="flex items-center justify-between rounded-md border border-border bg-card px-2.5 py-1.5 text-[11.5px]">
             <span className="capitalize">{p.provider}</span>
-            <span className={p.done ? 'text-brand' : 'text-mut2'}>
+            <span className={p.done ? 'text-primary' : 'text-muted-foreground'}>
               {p.done ? 'done' : p.total ? `${p.processed ?? 0}/${p.total}` : '…'}
             </span>
           </div>

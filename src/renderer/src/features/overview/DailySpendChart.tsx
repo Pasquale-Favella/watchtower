@@ -8,7 +8,7 @@ import type { OverviewDailyEntry } from '../../../../shared/schemas/overview.js'
 const overviewChartConfig = {
   spend: {
     label: 'Spend',
-    color: 'var(--brand)',
+    color: 'var(--primary)',
   },
 } satisfies ChartConfig
 
@@ -37,24 +37,24 @@ export function DailySpendChart({
   return (
     <ChartContainer config={overviewChartConfig} className="h-48 w-full">
       <BarChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--line2)" vertical={false} />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
         <XAxis
           dataKey="date"
-          tick={{ fontSize: 11, fill: 'var(--mut2)' }}
+          tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
           tickFormatter={formatDate}
           axisLine={false}
           tickLine={false}
           minTickGap={40}
         />
         <YAxis
-          tick={{ fontSize: 11, fill: 'var(--mut2)' }}
+          tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
           tickFormatter={(value: number) => formatValue(value)}
           axisLine={false}
           tickLine={false}
           width={42}
         />
         <ChartTooltip
-          cursor={{ fill: 'var(--hover)' }}
+          cursor={{ fill: 'var(--accent)' }}
           content={
             <ChartTooltipContent
               labelFormatter={(label) => formatDate(String(label))}
@@ -62,10 +62,10 @@ export function DailySpendChart({
                 const entry = item?.payload as OverviewDailyEntry | undefined
                 return (
                   <span className="inline-flex items-center gap-2">
-                    <span className="size-2 shrink-0 rounded-[2px] bg-brand" aria-hidden="true" />
+                    <span className="size-2 shrink-0 rounded-[2px] bg-primary" aria-hidden="true" />
                     <span className="text-muted-foreground">Spend</span>
-                    <span className="font-mono font-semibold text-ink tabular-nums">{formatValue(Number(value))}</span>
-                    {entry && entry.calls > 0 && <span className="text-mut2">{entry.calls} {entry.calls === 1 ? 'call' : 'calls'}</span>}
+                    <span className="font-mono font-semibold text-foreground tabular-nums">{formatValue(Number(value))}</span>
+                    {entry && entry.calls > 0 && <span className="text-muted-foreground">{entry.calls} {entry.calls === 1 ? 'call' : 'calls'}</span>}
                   </span>
                 )
               }}
@@ -76,7 +76,7 @@ export function DailySpendChart({
           {data.map((d, i) => (
             <Cell
               key={d.date}
-              fill={i === peak ? 'var(--brand)' : i === second ? 'var(--brand)' : 'var(--bar)'}
+              fill={i === peak ? 'var(--primary)' : i === second ? 'var(--primary)' : 'var(--muted)'}
               fillOpacity={i === peak ? 1 : i === second ? 0.4 : 1}
             />
           ))}
