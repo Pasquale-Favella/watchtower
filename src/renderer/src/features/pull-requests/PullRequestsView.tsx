@@ -11,6 +11,8 @@ import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { spanLabel, sessionWord, summarizePullRequests } from '@/features/pull-requests/lib'
 import { formatUsd } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { LoadingRegion, SkeletonCard, SkeletonRows } from '@/shared/components/skeletons'
 import { usePullRequestsStore } from '@/features/pull-requests/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
@@ -140,7 +142,22 @@ export function PullRequestsView(): React.JSX.Element {
 
       {payload === null ? (
         error ? <ErrorPanel message={error} /> : (
-          <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-[12px] text-muted-foreground">Loading pull requests…</div>
+          <LoadingRegion label="Loading pull requests…" className="flex flex-col gap-3">
+            <SkeletonCard title>
+              <div className="grid grid-cols-4">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="p-3">
+                    <Skeleton className="h-3 w-20" />
+                    <Skeleton className="mt-1.5 h-5 w-16" />
+                  </div>
+                ))}
+              </div>
+              <div className="mt-1 border-t border-border pt-2">
+                <Skeleton className="h-3.5 w-48" />
+              </div>
+              <SkeletonRows rows={5} className="mt-1 px-3.5" />
+            </SkeletonCard>
+          </LoadingRegion>
         )
       ) : payload.rows.length === 0 ? (
         <Panel title="Pull request spend">

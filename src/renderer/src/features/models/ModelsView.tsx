@@ -16,6 +16,8 @@ import { Input } from '@/shared/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
 import { fetchAddModelAlias, fetchSetModelPrice } from '@/shared/lib/api'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { useModelsStore } from '@/features/models/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
@@ -415,7 +417,15 @@ export function ModelsView(): React.JSX.Element {
 
       {payload === null ? (
         error ? <ErrorPanel message={error} /> : (
-          <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-[12px] text-muted-foreground">Loading models…</div>
+          <LoadingRegion label="Loading models…" className="overflow-hidden rounded-lg border border-border bg-card">
+            <div className="flex items-center gap-3 border-b border-border px-3.5 py-2.5">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="ml-auto h-3 w-14" />
+              <Skeleton className="h-3 w-14" />
+              <Skeleton className="h-3 w-14" />
+            </div>
+            <SkeletonRows rows={9} className="px-3.5" />
+          </LoadingRegion>
         )
       ) : lens === 'audit' ? (
         <div className="overflow-hidden rounded-lg border border-border bg-card">

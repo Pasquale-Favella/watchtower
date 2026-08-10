@@ -11,6 +11,8 @@ import {
 } from '@/features/sessions/sessions-lib'
 import { formatUsd } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { useSessionsStore } from '@/features/sessions/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { navigateToSession } from '@/app/navigation'
@@ -112,7 +114,14 @@ export function SessionsView(): React.JSX.Element {
 
       {rows === null ? (
         error ? <ErrorPanel message={error} /> : (
-          <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-[12px] text-muted-foreground">Loading sessions…</div>
+          <LoadingRegion label="Loading sessions…" className="overflow-hidden rounded-lg border border-border bg-card">
+            <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-3.5 py-3">
+              <Skeleton className="h-[25px] w-full max-w-xs rounded-md" />
+              <Skeleton className="h-[25px] w-44 rounded-md" />
+              <Skeleton className="h-[25px] w-28 rounded-md" />
+            </div>
+            <SkeletonRows rows={8} className="px-3.5" />
+          </LoadingRegion>
         )
       ) : rows.length === 0 ? (
         <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-[12px] text-muted-foreground">No sessions in this range yet.</div>

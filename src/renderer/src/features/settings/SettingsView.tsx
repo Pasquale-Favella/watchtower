@@ -5,6 +5,8 @@ import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { LoadingRegion } from '@/shared/components/skeletons'
 import { SidebarTrigger } from '@/shared/components/ui/sidebar'
 import {
   Select,
@@ -280,7 +282,22 @@ function ProvidersPane() {
         subtitle="The app auto-detects coding tools from local session files. No setup needed — this list is read-only."
       />
       {providers === null ? (
-        <p className="text-[11.5px] text-muted-foreground">Loading detected providers…</p>
+        <LoadingRegion label="Loading detected providers…" className="flex flex-col gap-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Card key={i} className="px-4 py-3">
+              <div className="flex items-center gap-2.5">
+                <Skeleton className="size-[9px] rounded-full" />
+                <Skeleton className="h-3.5 w-28" />
+                <Skeleton className="ml-auto h-3 w-16" />
+              </div>
+              <div className="mt-2 flex gap-4">
+                <Skeleton className="h-3 w-16" />
+                <Skeleton className="h-3 w-14" />
+                <Skeleton className="h-3 w-14" />
+              </div>
+            </Card>
+          ))}
+        </LoadingRegion>
       ) : providers.length === 0 ? (
         <p className="text-[11.5px] text-muted-foreground">No providers detected yet — run a scan first.</p>
       ) : (
@@ -379,7 +396,16 @@ function AliasesPane() {
       />
       <Card className="px-4 py-3">
         {aliases === null ? (
-          <p className="text-[11.5px] text-muted-foreground">Loading aliases…</p>
+          <LoadingRegion label="Loading aliases…" className="flex flex-col gap-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <Skeleton className="h-3.5 w-40" />
+                <Skeleton className="h-3 w-4" />
+                <Skeleton className="h-3.5 w-32" />
+                <Skeleton className="ml-auto h-6 w-16 rounded-md" />
+              </div>
+            ))}
+          </LoadingRegion>
         ) : aliases.length === 0 ? (
           <p className="text-[11.5px] text-muted-foreground">No aliases configured. Unknown models are priced at $0 until aliased.</p>
         ) : (
@@ -496,7 +522,15 @@ function PricingPane() {
       />
       <Card className="px-4 py-3">
         {overrides === null ? (
-          <p className="text-[11.5px] text-muted-foreground">Loading price overrides…</p>
+          <LoadingRegion label="Loading price overrides…" className="flex flex-col gap-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <Skeleton className="h-3.5 w-44" />
+                <Skeleton className="ml-auto h-3 w-28" />
+                <Skeleton className="h-6 w-16 rounded-md" />
+              </div>
+            ))}
+          </LoadingRegion>
         ) : overrides.length === 0 ? (
           <p className="text-[11.5px] text-muted-foreground">No price overrides configured. Add one below to price an unrecognized or local model.</p>
         ) : (

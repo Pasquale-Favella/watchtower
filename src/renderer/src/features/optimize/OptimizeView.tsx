@@ -9,6 +9,8 @@ import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { formatCompact, formatUsd } from '@/shared/lib/models'
 import { impactDot, healthClass, trendLabel } from '@/features/optimize/lib'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { useOptimizeStore } from '@/features/optimize/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
@@ -157,7 +159,18 @@ function YieldRows({ payload, category, empty }: {
   empty: string
 }) {
   if (payload === null) {
-    return <p className="py-6 text-center text-[12px] text-muted-foreground">Scanning yield data…</p>
+    return (
+      <LoadingRegion label="Scanning yield data…" className="flex flex-col">
+        <div className="flex items-center justify-between border-b border-border px-0.5 pb-2">
+          <div className="flex flex-col gap-1.5">
+            <Skeleton className="h-3.5 w-24" />
+            <Skeleton className="h-3 w-36" />
+          </div>
+          <Skeleton className="h-6 w-20" />
+        </div>
+        <SkeletonRows rows={4} className="mt-1 px-3.5" />
+      </LoadingRegion>
+    )
   }
 
   const bucket = payload.summary[category]
@@ -267,9 +280,19 @@ export function OptimizeView(): React.JSX.Element {
 
       {payload === null ? (
         error ? <ErrorPanel message={error} /> : (
-          <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-center text-[12px] text-muted-foreground">
-            Scanning optimize findings…
-          </div>
+          <LoadingRegion label="Scanning optimize findings…" className="overflow-hidden rounded-lg border border-border bg-card">
+            <div className="flex items-center justify-between border-b border-border px-3.5 py-3">
+              <div className="flex flex-col gap-1.5">
+                <Skeleton className="h-3.5 w-28" />
+                <Skeleton className="h-3 w-44" />
+              </div>
+              <div className="flex flex-col items-end gap-1.5">
+                <Skeleton className="h-5 w-10" />
+                <Skeleton className="h-3 w-10" />
+              </div>
+            </div>
+            <SkeletonRows rows={6} className="px-3.5" />
+          </LoadingRegion>
         )
       ) : (
         <Panel>

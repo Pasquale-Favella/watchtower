@@ -9,6 +9,7 @@ import { DailySpendChart } from '@/features/overview/DailySpendChart'
 import { motionClass } from '@/shared/lib/motion'
 import { formatUsd, formatConverted } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { LoadingRegion, SkeletonCard, SkeletonLines, SkeletonBars, SkeletonMetricCard } from '@/shared/components/skeletons'
 import { useOverviewStore } from '@/features/overview/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { navigateToSection } from '@/app/navigation'
@@ -192,7 +193,22 @@ export function OverviewView() {
     <div className={cn('w-full max-w-[1180px]', motionClass('flex flex-col gap-4', 'section-fade'))}>
       {payload === null ? (
         error ? <ErrorPanel message={error} /> : (
-          <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-[12px] text-muted-foreground">Loading overview…</div>
+          <LoadingRegion label="Loading overview…" className="flex flex-col gap-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+              {Array.from({ length: 6 }).map((_, i) => <SkeletonMetricCard key={i} />)}
+            </div>
+            <SkeletonCard title>
+              <SkeletonBars className="h-40" />
+            </SkeletonCard>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <SkeletonCard title><SkeletonLines lines={5} /></SkeletonCard>
+              <SkeletonCard title><SkeletonLines lines={5} /></SkeletonCard>
+            </div>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <SkeletonCard title><SkeletonLines lines={4} /></SkeletonCard>
+              <SkeletonCard title><SkeletonLines lines={4} /></SkeletonCard>
+            </div>
+          </LoadingRegion>
         )
       ) : (
         <>

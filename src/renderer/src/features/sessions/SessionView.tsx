@@ -7,6 +7,8 @@ import { Badge } from '@/shared/components/ui/badge'
 import { cn } from '@/shared/lib/utils'
 import { formatUsd } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
 import { useSessionsStore } from '@/features/sessions/store'
 import { navigateToSection } from '@/app/navigation'
 import type { SessionDetail } from '@/features/sessions/drilldown'
@@ -113,7 +115,26 @@ export function SessionView(): React.JSX.Element {
       {error ? (
         <ErrorPanel message={error} />
       ) : !session ? (
-        <p className="text-sm text-muted-foreground">Loading session…</p>
+        <LoadingRegion label="Loading session…" className="flex flex-col gap-4">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-7 w-16 rounded-md" />
+            <div className="flex flex-col gap-1.5">
+              <Skeleton className="h-4 w-64" />
+              <Skeleton className="h-3 w-40" />
+            </div>
+          </div>
+          <div className="grid grid-cols-4 gap-3">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="rounded-lg border bg-card p-3">
+                <Skeleton className="h-3 w-14" />
+                <Skeleton className="mt-1.5 h-4 w-20" />
+              </div>
+            ))}
+          </div>
+          <SkeletonCard title>
+            <SkeletonLines lines={6} />
+          </SkeletonCard>
+        </LoadingRegion>
       ) : (
         <>
           <div className="flex items-center gap-3">

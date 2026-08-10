@@ -12,6 +12,7 @@ import { formatDayLabel, providerLabel, sankeyData, stackedRows, type SpendRow, 
 import { isOtherNode, seriesColorForModel } from '@/shared/lib/modelSeries'
 import { formatUsd, formatConverted } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { LoadingRegion, SkeletonCard, SkeletonBars } from '@/shared/components/skeletons'
 import { useSpendStore } from '@/features/spend/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
@@ -194,7 +195,13 @@ export function SpendView(): React.JSX.Element {
 
       {payload === null ? (
         error ? <ErrorPanel message={error} /> : (
-          <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-[12px] text-muted-foreground">Loading spend…</div>
+          <LoadingRegion label="Loading spend…" className="flex flex-col gap-3">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <SkeletonCard title><SkeletonBars className="h-40" /></SkeletonCard>
+              <SkeletonCard title><SkeletonBars className="h-40" /></SkeletonCard>
+            </div>
+            <SkeletonCard title><SkeletonBars className="h-44" /></SkeletonCard>
+          </LoadingRegion>
         )
       ) : (
         <>

@@ -10,6 +10,8 @@ import { seriesColorForModel } from '@/shared/lib/modelSeries'
 import { categoryLabel } from '@/shared/lib/models'
 import { compareValue } from '@/features/compare/lib'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { useCompareStore } from '@/features/compare/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
@@ -218,7 +220,18 @@ export function CompareView(): React.JSX.Element {
 
       {payload === null ? (
         error ? <ErrorPanel message={error} /> : (
-          <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-center text-[12px] text-muted-foreground">Loading comparison…</div>
+          <LoadingRegion label="Loading comparison…" className="flex flex-col gap-4">
+            <div className="flex items-center justify-center gap-2.5">
+              <Skeleton className="h-[26px] w-44 rounded-md" />
+              <Skeleton className="h-3 w-6" />
+              <Skeleton className="h-[26px] w-44 rounded-md" />
+            </div>
+            <SkeletonCard title><SkeletonLines lines={6} /></SkeletonCard>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <SkeletonCard title><SkeletonLines lines={5} /></SkeletonCard>
+              <SkeletonCard title><SkeletonLines lines={5} /></SkeletonCard>
+            </div>
+          </LoadingRegion>
         )
       ) : models.length < 2 ? (
         <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-center text-[12px] text-muted-foreground">
