@@ -5,7 +5,7 @@ import {
   Layers, ArrowLeftRight, Settings,
 } from 'lucide-react'
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
-import { NAV_SECTIONS, shortcutForAction, displayShortcutForAction, type Section } from '@/app/shortcuts'
+import { shortcutForAction, displayShortcutForAction, type Section } from '@/app/shortcuts'
 import {
   Sidebar,
   SidebarContent,
@@ -22,7 +22,7 @@ import {
 import { PERIOD_LABELS } from '@/shared/lib/settings-constants'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { useRouterState } from '@tanstack/react-router'
-import { navigateToSection, sectionForPath } from '@/app/navigation'
+import { SECTIONS, navigateToSection, sectionForPath } from '@/app/navigation'
 import { useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
 
@@ -37,9 +37,9 @@ const SECTION_ICONS: Record<Section, ReactNode> = {
   settings: <Settings />,
 }
 
-/** Sidebar nav — ids and order come from the shortcuts
- * registry's NAV_SECTIONS; labels and keycap hints come from SHORTCUTS. */
-const NAV = NAV_SECTIONS.map(id => ({ id, icon: SECTION_ICONS[id] }))
+/** Sidebar nav — ids and order come from navigation (ADR 0014, SECTIONS);
+ * labels and keycap hints come from the shortcuts registry (ADR 0001). */
+const NAV = SECTIONS.map(id => ({ id, icon: SECTION_ICONS[id] }))
 
 /** AppSidebarShell — presentational sidebar (shadcn `sidebar-07` pattern):
  * brand header, flat section nav with keyboard-shortcut badges and active-state
