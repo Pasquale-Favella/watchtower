@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { subscribeToRefresh, useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
 
-/** Stub the preload surface for the fetch wrappers' IPC-call sites. */
-function mockWindow(api: unknown): void {
-  ;(globalThis as { window?: unknown }).window = { api }
+/** Stub the preload surface for the fetch wrappers' IPC-call sites. The real
+ * preload exposes `platform` inside the `api` object (preload/index.ts). */
+function mockWindow(api: unknown, platform = 'win32'): void {
+  ;(globalThis as { window?: unknown }).window = {
+    api: { ...(api as Record<string, unknown>), platform },
+  }
 }
 
 const statusScanned = {
@@ -17,6 +20,21 @@ const statusScanned = {
     unchangedFiles: 0,
     failedFiles: 0,
     perProvider: [{ provider: 'openai', ported: 1, unchanged: 0, failed: 0, unparsed: 3 }],
+    aborted: false,
+  },
+}
+
+/** A darwin zero-source scan — the macOS Full Disk Access signal (ADR 0015). */
+const statusEmptyDarwin = {
+  scanned: true,
+  metadata: {
+    scanId: 'scan-empty',
+    startedAt: '2026-01-01T00:00:00Z',
+    completedAt: '2026-01-01T00:00:01Z',
+    portedFiles: 0,
+    unchangedFiles: 0,
+    failedFiles: 0,
+    perProvider: [],
     aborted: false,
   },
 }
@@ -130,6 +148,24 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
     const s = useScanStore.getState()
     expect(s.hydrated).toBe(false)
     expect(s.refreshVersion).toBe(0)
+  })
+
+  it('flags fdaNeeded on macOS when the last scan found zero sources (ADR 0015)', async () => {
+    mockWindow({ getScanStatus: () => Promise.resolve(statusEmptyDarwin) }, 'darwin')
+    await useScanStore.getState().applyChange()
+    expect(useScanStore.getState().fdaNeeded).toBe(true)
+  })
+
+  it('never flags fdaNeeded on macOS when a scan found data', async () => {
+    mockWindow({ getScanStatus: () => Promise.resolve(statusScanned) }, 'darwin')
+    await useScanStore.getState().applyChange()
+    expect(useScanStore.getState().fdaNeeded).toBe(false)
+  })
+
+  it('never flags fdaNeeded on non-macOS platforms, even for zero-source scans', async () => {
+    mockWindow({ getScanStatus: () => Promise.resolve(statusEmptyDarwin) }, 'win32')
+    await useScanStore.getState().applyChange()
+    expect(useScanStore.getState().fdaNeeded).toBe(false)
   })
 
   it('refresh failure surfaces the error and stops scanning', async () => {

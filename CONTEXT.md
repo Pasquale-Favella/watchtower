@@ -1,0 +1,42 @@
+# Watchtower
+
+Desktop app for local code-assistant token and cost telemetry. Scans on-disk
+session data of AI coding tools (providers) into a local SQLite ledger, then
+serves query-time analytics views.
+
+## Language
+
+**Packaging target**:
+The installer formats the app is built into for an operating system — Windows
+NSIS, macOS DMG/zip, Linux AppImage/deb.
+_Avoid_: platform build, distributable
+
+**Artifact**:
+A packaged installer produced by the build pipeline. One per packaging target.
+_Avoid_: build output, installer
+
+**Release**:
+A version tag (`v0.x.y`) on the repo whose artifacts are published as a
+GitHub Release with all three packaging targets attached. Nothing is a release
+until the tag exists.
+_Avoid_: drop, build
+
+**Sign-ready**:
+A packaging configuration that signs artifacts when signing credentials are
+present in the environment and skips signing cleanly when they are absent.
+Sign-ready is not signed.
+_Avoid_: code-signed
+
+**Full Disk Access**:
+The macOS TCC permission required for the app to read other applications'
+data (provider session files). Without it, a scan finds zero sources on macOS
+only; Windows and Linux have no equivalent gate. Code identifiers abbreviate
+this as `fda` (e.g. `fdaNeeded`, `open-fda-settings`); prose should use the
+full term.
+_Avoid_: disk access, permissions
+
+## Rules
+
+- The README's platform claim (Windows | macOS | Linux) is the product
+  promise; packaging config must never regress below it (ADR 0015).
+- Providers auto-detect from local files and never require API keys (ADR 0012).

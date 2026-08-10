@@ -1,0 +1,88 @@
+name: build
+
+# Cross-platform packaging and CI (ADR 0015):
+#   - pull requests: typecheck + tests only (fast feedback)
+#   - pushes to main: build all three packaging targets, upload installers as
+#     testable artifacts
+#   - version tags (v*): publish a GitHub Release with every installer attached
+# macOS can only be built on macOS, so the matrix is the source of truth.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+# Cancel a superseded run (new push/PR update) instead of burning runner time.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test -- --run
+
+  package:
+    name: Package ${{ matrix.target }}
+    needs: check
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win
+            os: windows-latest
+          - target: mac
+            os: macos-latest
+          - target: linux
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run package:${{ matrix.target }}
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchtower-${{ matrix.target }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # the only job that writes — attach installers to the tagged release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Attach installers to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**

@@ -11,3 +11,23 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+mac:
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal
+  category: public.app-category.developer-tools
+  # Sign-ready (ADR 0015): electron-builder signs with CSC_LINK/
+  # CSC_KEY_PASSWORD when present and skips signing when absent.
+  # Notarization is NOT wired: electron-builder requires `notarize: true`
+  # (plus APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID secrets) to
+  # notarize — env vars alone are ignored. Flip it on when Apple creds exist.
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Development
+  maintainer: Pasquale Favella <Pasquale-Favella@users.noreply.github.com>

@@ -164,7 +164,7 @@ The main process owns the pipeline. A manual `⌘R`/`Ctrl+R` or the background c
 | **Main process** | Electron 43 · Node 22+ (`node:sqlite` for the ledger) · TypeScript 5.8 |
 | **Renderer** | React 19 · Tailwind CSS 4 · shadcn/ui · Zustand · Recharts · GSAP · TanStack Hotkeys |
 | **Data & contracts** | SQLite (built-in `node:sqlite`) · Zod 4 schemas shared between main and renderer |
-| **Build & packaging** | electron-vite 5 · Vite 7 · electron-builder (Windows NSIS installer) |
+| **Build & packaging** | electron-vite 5 · Vite 7 · electron-builder (Windows NSIS · macOS DMG/zip universal · Linux AppImage/deb, built in CI) |
 | **Tests** | Vitest (`tests/`) |
 
 ---
@@ -180,6 +180,8 @@ npm run dev        # launches the Electron app with hot reload
 
 On first launch the app scans your machine, finds every supported tool with session data on disk, and ports its history into the ledger. From then on the background cadence keeps it fresh.
 
+> **macOS note:** reading tool data requires granting Watchtower **Full Disk Access** in System Settings (Privacy & Security). If a scan finds nothing on macOS, Settings shows a one-time banner that opens the right pane. Windows and Linux need no such grant (ADR 0015).
+
 ### Scripts
 
 | Command | What it does |
@@ -189,7 +191,9 @@ On first launch the app scans your machine, finds every supported tool with sess
 | `npm run preview` | Preview a built app |
 | `npm run typecheck` | Type-check both node and web targets (`typecheck:node` / `typecheck:web`) |
 | `npm test` | Run the vitest suite (`tests/`) |
-| `npm run package` | Build + package a Windows NSIS installer (`electron-builder --win`) |
+| `npm run package` | Build + package for the platform you're on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux) |
+| `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS) |
+| `npm run icons` | Regenerate `build/icon.png` from `assets/watchtower-logo.svg` |
 
 ---
 
@@ -214,6 +218,14 @@ That's **38 providers** in total. Each lives in a single file under `src/main/pi
 
 ---
 
+## Releases & platforms
+
+Installers for **Windows (NSIS), macOS (DMG/zip, one universal binary for Apple Silicon and Intel), and Linux (AppImage/deb)** are built in CI — typecheck + tests on every PR, installers as artifacts on `main`, and a GitHub Release with all three attached when a `v*` tag is pushed (ADR 0015).
+
+Artifacts are currently **unsigned** by design: Windows shows a SmartScreen "unknown publisher" warning and macOS users must right-click → Open the first time. Code signing is sign-ready — drop `CSC_LINK`/`CSC_KEY_PASSWORD` into CI secrets and builds sign themselves. macOS notarization needs a one-line config flip (`mac.notarize: true`) plus Apple secrets first (ADR 0015).
+
+---
+
 ## Data & privacy
 
 - Watchtower **reads only local files** that your tools already wrote — it never intercepts, proxies, or modifies them (the Optimize section is read-only).
@@ -226,6 +238,7 @@ That's **38 providers** in total. Each lives in a single file under `src/main/pi
 | Variable | Description |
 |----------|-------------|
 | `WATCHTOWER_CACHE_DIR` | Override the session-cache directory (set automatically to `<userData>/cache` at startup) |
+| `CSC_LINK` / `CSC_KEY_PASSWORD` | (Optional) code-signing certificate for Windows/macOS builds — signs when present, skips when absent |
 
 Per-provider data locations honor each tool's own overrides where supported (e.g. `CLAUDE_CONFIG_DIR`, `CLAUDE_CONFIG_DIRS`, `CODEX_HOME`).
 

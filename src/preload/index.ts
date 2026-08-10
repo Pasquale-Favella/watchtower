@@ -102,6 +102,8 @@ const api = {
     ipcRenderer.invoke('models:getPriceOverrides'),
   removePriceOverride: (model: string): Promise<{ ok: true }> => ipcRenderer.invoke('models:removePriceOverride', model),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('open-external', url),
+  /** macOS Full Disk Access pane (ADR 0015); a no-op on other platforms. */
+  openSystemSettings: (): Promise<boolean> => ipcRenderer.invoke('open-fda-settings'),
   search: (query: string): Promise<SearchHit[]> => ipcRenderer.invoke('store:search', query),
   getSettings: (): Promise<SettingsInfo> => ipcRenderer.invoke('settings:info'),
   clearData: (): Promise<SettingsInfo> => ipcRenderer.invoke('settings:clear'),

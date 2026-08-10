@@ -1,5 +1,5 @@
 import { join } from 'path'
-import { statSync, readdirSync } from 'fs'
+import { statSync, readdirSync, existsSync } from 'fs'
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { refreshPricingNow } from './pipeline/models.js'
 import { resolveCadenceMs } from './cadence.js'
@@ -435,6 +435,18 @@ function registerIpc(): void {
     return undefined
   })
 
+  /** Open the macOS Full Disk Access pane (ADR 0015). The generic
+   * `open-external` channel refuses non-http(s) schemes, so the TCC pane's
+   * `x-apple.systempreferences:` URL gets its own narrow handler — a no-op
+   * anywhere that isn't macOS. */
+  ipcMain.handle('open-fda-settings', (): boolean => {
+    if (process.platform !== 'darwin') return false
+    // Best-effort like `open-external`: a refused URL must never surface as
+    // an unhandled rejection.
+    shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles').catch(() => {})
+    return true
+  })
+
   ipcMain.handle('store:session', (_event, sessionId: string) => {
     if (!ledger) throw new Error('ledger not initialised')
     return getSessionDetailFromLedger(ledger, sessionId)
@@ -575,11 +587,16 @@ function registerIpc(): void {
 }
 
 function createWindow(): void {
+  // Dev/standalone windows get the generated brand icon (ADR 0015); packaged
+  // builds carry it in the exe/dmg/AppImage, and build/ isn't shipped (files:
+  // out/**), so this resolves to no icon at runtime.
+  const devIcon = join(__dirname, '../../build/icon.png')
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
     show: false,
     autoHideMenuBar: true,
+    ...(existsSync(devIcon) ? { icon: devIcon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

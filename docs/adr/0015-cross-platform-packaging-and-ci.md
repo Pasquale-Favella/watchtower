@@ -1,0 +1,15 @@
+# Cross-platform packaging and CI
+
+Status: accepted
+
+Watchtower ships as a desktop app for **Windows, macOS, and Linux** — the README's platform badge promised all three while `electron-builder.yml` declared only a Windows NSIS target and `npm run package` hardcoded `--win`, so the claim and the build config disagreed. This ADR closes that gap: the app's code was already ~90% cross-platform (every provider branches on `darwin`/`win32`, paths use `homedir()`/`app.getPath`, `node:sqlite` avoids native rebuilds, and the shortcut layer renders ⌘/Ctrl per platform), so the work is packaging, icons, CI, and one macOS-specific UX gate.
+
+Decisions:
+
+- **Three packaging targets, one release.** `electron-builder.yml` defines `win` (NSIS), `mac` (DMG + zip, **universal** — one binary for Apple Silicon and Intel; the app has no native modules so merging is safe), and `linux` (AppImage + deb). The `package` script drops the hardcoded `--win` and builds for whatever platform it runs on.
+- **CI owns releases (tag-triggered).** A GitHub Actions workflow runs typecheck + tests on every PR, builds all three installers on pushes to `main` (uploaded as testable artifacts), and publishes a GitHub Release with all three installers when a `v*` tag is pushed. macOS cannot be built from Windows, so CI is the only honest way to "support all platforms".
+- **Sign-ready, ship unsigned.** Windows and macOS code signing are sign-ready: electron-builder signs automatically when `CSC_LINK`/`CSC_KEY_PASSWORD` are present and skips signing when absent — at zero cost today. macOS **notarization is not wired yet**: electron-builder ignores the Apple notarization env vars unless `mac.notarize: true` is configured, so notarizing is a one-line config flip plus secrets, not something env vars alone can trigger. Consequences, documented in the README: Windows shows a SmartScreen warning and macOS users must right-click → Open until certs are bought.
+- **One generated icon.** `build/icon.png` (1024², rasterized from `assets/watchtower-logo.svg` by `scripts/generate-icons.cjs` via Electron offscreen rendering — no image toolchain) is auto-converted by electron-builder to `.ico`/`.icns`/Linux PNG at package time. Swap-in real assets later with zero config change.
+- **macOS Full Disk Access, warn-only.** Reading provider data on macOS requires the user to grant Full Disk Access in System Settings; without it a scan silently finds zero sources. The app shows a Settings banner (dismissible per visit, driven by the last scan's metadata) with a link to the System Settings pane, only on macOS — never nagging elsewhere, and Windows/Linux have no such gate and see nothing.
+
+**Why:** the alternative — treating the app as Windows-only — contradicts the README and excludes the macOS-first AI-tool ecosystem Watchtower is built to observe. Signing was deliberately deferred (cost, and it is fully reversible), and the Full Disk Access gate was deliberately kept to a warn-only banner (the least intrusive fix for the one platform with a privacy gate).

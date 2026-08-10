@@ -8,6 +8,21 @@ import type { SplashProviderProgress } from '../../../../shared/schemas/renderer
 const unparsedCount = (metadata?: ScanMetadata): number =>
   metadata ? metadata.perProvider.reduce((n, p) => n + p.unparsed, 0) : 0
 
+/** A scan that found no coding-tool data at all: no provider rows and no
+ * files in any verdict bucket (ported/unchanged/failed). ADR 0015's
+ * "zero sources" gate for the macOS Full Disk Access banner. */
+const scanFoundNoSources = (metadata?: ScanMetadata): boolean =>
+  metadata !== undefined &&
+  metadata.perProvider.length === 0 &&
+  metadata.portedFiles + metadata.unchangedFiles + metadata.failedFiles === 0
+
+/** macOS-only TCC gate (ADR 0015): reading provider data requires Full Disk
+ * Access, and a zero-source scan is the signal that it's missing. Reads
+ * `window` at call time (same as fetchScanStatus), keeping the store pure at
+ * module load (ADR 0011). */
+const needsFullDiskAccess = (metadata?: ScanMetadata): boolean =>
+  (window?.api?.platform ?? '') === 'darwin' && scanFoundNoSources(metadata)
+
 /** Scan lifecycle + the shared refresh tick. (ADR 0011) */
 export interface ScanState {
   hydrated: boolean
@@ -17,6 +32,10 @@ export interface ScanState {
   detectedProviders: string[]
   progress: SplashProviderProgress[]
   refreshVersion: number
+  /** macOS only (ADR 0015): the last scan found zero sources, which on macOS
+   * usually means Full Disk Access was never granted — drives the Settings
+   * banner. False everywhere else. */
+  fdaNeeded: boolean
   /** Refreshes the scan status and reloads detected providers after a
    * store:changed / config:changed broadcast, then bumps the shared tick. */
   applyChange: () => Promise<void>
@@ -52,6 +71,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
   detectedProviders: [],
   progress: [],
   refreshVersion: 0,
+  fdaNeeded: false,
   applyChange: async () => {
     const statusResult = await fetchScanStatus()
     if (!statusResult.ok) return
@@ -61,6 +81,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
       scanError: statusResult.data.scanned ? null : get().scanError,
       scanning: false,
       progress: [],
+      fdaNeeded: needsFullDiskAccess(statusResult.data.metadata),
     })
     const analytics = await fetchAnalytics()
     // Parity with AppShell: a bad analytics fetch clears the provider list

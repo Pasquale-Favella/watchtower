@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Database, Download, KeyRound, ShieldCheck } from 'lucide-react'
+import { Database, Download, ExternalLink, KeyRound, ShieldAlert, ShieldCheck, X } from 'lucide-react'
 
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
@@ -99,6 +99,8 @@ function ConfirmRemove({ label, prompt, onConfirm }: { label: string; prompt: st
  * currency dropdown (ADR 0009), and the About/version area (ADR 0012).
  * Deliberately no daily-budget row (lives in Plans) and no Scope row. */
 function GeneralPane() {
+  const fdaNeeded = useScanStore(s => s.fdaNeeded)
+  const [fdaDismissed, setFdaDismissed] = useState(false)
   const theme = useSettingsStore(s => s.theme)
   const setTheme = useSettingsStore(s => s.setTheme)
   const cadence = useSettingsStore(s => s.cadence)
@@ -130,6 +132,39 @@ function GeneralPane() {
 
   return (
     <div className="flex max-w-md flex-col gap-5">
+      {/* macOS Full Disk Access gate (ADR 0015): shown only when the last scan
+       * found zero sources on a Mac — the one platform whose privacy gate
+       * silently hides provider data. Dismissal is pane-local: leaving and
+       * returning to Settings (or the next zero-source scan) shows it again. */}
+      {fdaNeeded && !fdaDismissed && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/5 px-3 py-2.5">
+          <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warning" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[12px] font-medium text-foreground">No coding-tool data found</p>
+            <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+              On macOS, Watchtower needs{' '}
+              <span className="font-medium text-foreground">Full Disk Access</span> to read Claude,
+              Cursor, and other tool data. Grant it in System Settings, then refresh with{' '}
+              <span className="font-medium text-foreground">⌘R</span>.
+            </p>
+            <button
+              type="button"
+              className="mt-1.5 inline-flex cursor-pointer items-center gap-1 text-[11px] font-medium text-brand-text"
+              onClick={() => void window.api.openSystemSettings()}
+            >
+              Open System Settings <ExternalLink className="size-3" />
+            </button>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            className="cursor-pointer rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+            onClick={() => setFdaDismissed(true)}
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
       <div className="flex flex-col gap-2">
         <p className="text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">Appearance</p>
         <div className="flex items-center justify-between gap-3">

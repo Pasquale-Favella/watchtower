@@ -2,6 +2,10 @@
   "name": "watchtower-desktop",
   "version": "0.1.0",
   "description": "Desktop app for local code-assistant token and cost telemetry",
+  "author": {
+    "name": "Pasquale Favella",
+    "email": "Pasquale-Favella@users.noreply.github.com"
+  },
   "license": "MIT",
   "main": "./out/main/index.js",
   "scripts": {
@@ -12,7 +16,11 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest",
-    "package": "electron-vite build && electron-builder --win",
+    "icons": "node scripts/generate-icons.cjs",
+    "package": "electron-vite build && electron-builder --publish never",
+    "package:win": "electron-vite build && electron-builder --win --publish never",
+    "package:mac": "electron-vite build && electron-builder --mac --publish never",
+    "package:linux": "electron-vite build && electron-builder --linux --publish never",
     "postinstall": "node scripts/ensure-electron.cjs"
   },
   "dependencies": {
