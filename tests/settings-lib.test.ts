@@ -78,7 +78,6 @@ describe('default-period helpers (Settings › General)', () => {
     expect(DEFAULT_PERIOD_VALUES).toContain('today')
     expect(DEFAULT_PERIOD_VALUES).toContain('week')
     expect(DEFAULT_PERIOD_VALUES).toContain('30days')
-    expect(DEFAULT_PERIOD_VALUES).toContain('month')
     expect(DEFAULT_PERIOD_VALUES).toContain('all')
     expect(DEFAULT_PERIOD_VALUES).toContain('lifetime')
   })
@@ -95,10 +94,10 @@ describe('default-period helpers (Settings › General)', () => {
 
   it('writes only valid periods', () => {
     const storage = new FakeStorage()
-    writeStoredDefaultPeriod(storage, 'month')
-    expect(storage.getItem('watchtower:defaultPeriod')).toBe('month')
+    writeStoredDefaultPeriod(storage, '30days')
+    expect(storage.getItem('watchtower:defaultPeriod')).toBe('30days')
 
     writeStoredDefaultPeriod(storage, 'nope')
-    expect(storage.getItem('watchtower:defaultPeriod')).toBe('month')
+    expect(storage.getItem('watchtower:defaultPeriod')).toBe('30days')
   })
 })

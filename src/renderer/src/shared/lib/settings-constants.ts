@@ -8,7 +8,6 @@ export const DEFAULT_PERIOD_OPTIONS: ReadonlyArray<{ value: string; label: strin
   { value: 'today', label: 'Today' },
   { value: 'week', label: '7D' },
   { value: '30days', label: '30D' },
-  { value: 'month', label: 'Month' },
   { value: 'all', label: '6M' },
   { value: 'lifetime', label: 'Life' },
 ]
@@ -18,6 +17,6 @@ export const DEFAULT_PERIOD_VALUES: ReadonlyArray<string> = DEFAULT_PERIOD_OPTIO
 /** The long-form scope labels for the sidebar footer and TopBar caption (the
  * SegTabs use the short `DEFAULT_PERIOD_OPTIONS` labels). */
 export const PERIOD_LABELS: Record<string, string> = {
-  today: 'Today', week: 'Last 7 days', month: 'This month', '30days': 'Last 30 days',
+  today: 'Today', week: 'Last 7 days', '30days': 'Last 30 days',
   all: 'Last 6 months', lifetime: 'Lifetime',
 }
