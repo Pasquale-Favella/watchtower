@@ -2,13 +2,15 @@ import { create } from 'zustand'
 import {
   fetchAddModelAlias,
   fetchModelAliases,
+  fetchModels,
   fetchPriceOverrides,
   fetchRemoveModelAlias,
   fetchRemovePriceOverride,
   fetchSetModelPrice,
 } from '@/shared/lib/api'
+import { isUnpriced } from '@/shared/lib/models'
 import { subscribeToRefresh } from '../../app/stores/scan-store'
-import type { ModelAlias, PriceOverride } from '../../../../shared/schemas/models.js'
+import type { ModelAlias, ModelReportRow, PriceOverride } from '../../../../shared/schemas/models.js'
 
 /** Model aliases + price overrides, shared by Settings › Aliases/Pricing and
  * the Models quick-add. (ADR 0011) Writes go through the main process,
@@ -17,9 +19,20 @@ import type { ModelAlias, PriceOverride } from '../../../../shared/schemas/model
 export interface PricingState {
   aliases: ModelAlias[] | null
   overrides: PriceOverride[] | null
+  /** The models seen in usage (lifetime) — the "Recognized models" list the
+   * Models quick-add popup shows, fetched lazily for the Settings pickers. */
+  knownModels: ModelReportRow[] | null
+  /** Derived from knownModels at load time: the usage models with no price
+   * yet (ADR 0010 — zero cost AND zero savings) and the ones actually priced
+   * (cost > 0). Stored as stable references so pickers can subscribe to them
+   * directly — a computed selector would hand useSyncExternalStore a fresh
+   * array every snapshot and loop. */
+  unpriced: ModelReportRow[]
+  priced: ModelReportRow[]
   error: string | null
   loadAliases: () => Promise<void>
   loadOverrides: () => Promise<void>
+  loadKnownModels: () => Promise<void>
   addAlias: (model: string, aliasOf: string) => Promise<boolean>
   removeAlias: (model: string) => Promise<boolean>
   setOverride: (model: string, inputPricePerMillion: number, outputPricePerMillion: number) => Promise<boolean>
@@ -29,6 +42,9 @@ export interface PricingState {
 export const usePricingStore = create<PricingState>()((set, get) => ({
   aliases: null,
   overrides: null,
+  knownModels: null,
+  unpriced: [],
+  priced: [],
   error: null,
   loadAliases: async () => {
     const result = await fetchModelAliases()
@@ -39,6 +55,20 @@ export const usePricingStore = create<PricingState>()((set, get) => ({
     const result = await fetchPriceOverrides()
     if (result.ok) set({ overrides: result.data, error: null })
     else set({ error: result.error })
+  },
+  loadKnownModels: async () => {
+    const result = await fetchModels({ period: 'lifetime' })
+    if (result.ok) {
+      const byModel = result.data?.byModel ?? []
+      set({
+        knownModels: byModel,
+        unpriced: byModel.filter(isUnpriced),
+        priced: byModel.filter(model => model.costUSD > 0),
+        error: null,
+      })
+    } else {
+      set({ error: result.error })
+    }
   },
   addAlias: async (model, aliasOf) => {
     const result = await fetchAddModelAlias(model, aliasOf)
@@ -82,7 +112,8 @@ export const usePricingStore = create<PricingState>()((set, get) => ({
 // — but lazily: a list is only refetched once it has been loaded, so an
 // unopened Aliases/Pricing panel never fetches on a scan.
 subscribeToRefresh(() => {
-  const { aliases, overrides, loadAliases, loadOverrides } = usePricingStore.getState()
+  const { aliases, overrides, knownModels, loadAliases, loadOverrides, loadKnownModels } = usePricingStore.getState()
   if (aliases !== null) void loadAliases()
   if (overrides !== null) void loadOverrides()
+  if (knownModels !== null) void loadKnownModels()
 })
