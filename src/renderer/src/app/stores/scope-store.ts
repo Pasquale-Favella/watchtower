@@ -16,7 +16,7 @@ export interface ScopeState {
 }
 
 /** Derived selector: the `OverviewScope` every data fetch consumes. 'all' is
- * the "no provider filter" sentinel, matching today's AppShell mapping. */
+ * the "no provider filter" sentinel, matching today's AppRoot mapping. */
 export const selectScope = (s: ScopeState): OverviewScope => ({
   period: s.period,
   provider: s.provider === 'all' ? undefined : s.provider,

@@ -45,7 +45,7 @@ export const CADENCE_UI_OPTIONS: ReadonlyArray<{ value: string; label: string }>
  * system/light/dark): an explicit saved preference always wins; otherwise the
  * app follows the OS (via `themeIsDark`, which maps `'system'` onto
  * `prefers-color-scheme` at render time). Pure/injectable (no direct
- * localStorage/matchMedia reads) so it's testable without jsdom — AppShell
+ * localStorage/matchMedia reads) so it's testable without jsdom — AppRoot
  * supplies the real `savedTheme` from the browser APIs.
  */
 export function resolveThemeMode(savedTheme: string | null): Theme {

@@ -6,7 +6,7 @@ import { useSettingsStore } from '@/features/settings/store'
 import { subscribeToIpc } from '@/app/stores/subscribe'
 
 /** The initial hydration flow + subscription lifecycle, relocated out of
- * AppShell (ADR 0011): wires the six IPC subscriptions, then hydrates
+ * AppRoot (ADR 0011): wires the six IPC subscriptions, then hydrates
  * the shell from the scan status — an existing report applies the change path
  * (status + providers + unparsed total), otherwise the first scan fires — and
  * loads the server-fed settings. */

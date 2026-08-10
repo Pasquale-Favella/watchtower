@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 import { themeIsDark } from '@/shared/lib/shell'
 import { useSettingsStore } from '@/features/settings/store'
 
-/** The theme DOM side-effect, relocated out of AppShell (ADR 0011):
+/** The theme DOM side-effect, relocated out of AppRoot (ADR 0011):
  * toggles the `dark` class from the settings store's persisted `theme`, and
  * follows the OS while in 'system' mode. The persist middleware owns the
  * storage write — no hand-rolled localStorage here. */

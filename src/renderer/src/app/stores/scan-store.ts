@@ -84,7 +84,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
       fdaNeeded: needsFullDiskAccess(statusResult.data.metadata),
     })
     const analytics = await fetchAnalytics()
-    // Parity with AppShell: a bad analytics fetch clears the provider list
+    // Parity with AppRoot: a bad analytics fetch clears the provider list
     // rather than leaving last scan's stale list painted.
     if (analytics.ok && analytics.data) {
       set({ detectedProviders: analytics.data.providers.map(provider => provider.name) })
@@ -113,7 +113,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
     }
   },
   onProgress: (provider, processed, total, done) => {
-    // Parity with AppShell's handler: every progress event marks the shell as
+    // Parity with AppRoot's handler: every progress event marks the shell as
     // scanning, but only provider-carrying events paint a row — a bare
     // `{ stage: 'pricing' }` event must not draw an empty provider entry.
     if (!provider) {

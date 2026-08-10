@@ -105,65 +105,68 @@ export function SessionView(): React.JSX.Element {
     if (sessionId) void loadSession(sessionId)
   }, [sessionId, loadSession])
 
-  if (error) {
-    return <ErrorPanel message={error} />
-  }
-
-  if (!session) {
-    return <p className="text-sm text-muted-foreground">Loading session…</p>
-  }
-
+  // Owns its max-w-[1180px] column like every other section view (ADR 0014);
+  // the router no longer wraps session detail in a width container. The
+  // container always renders — error/loading/content all sit inside it.
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={() => navigateToSection('sessions')}>
-          <ArrowLeft className="h-4 w-4" /> Back
-        </Button>
-        <div>
-          <h2 className="text-lg font-semibold">{session.title || session.sessionId}</h2>
-          <p className="text-xs text-muted-foreground">
-            {session.project} · {session.provider} · {formatDate(session.firstTimestamp)}
-          </p>
-        </div>
-      </div>
+    <div className="w-full max-w-[1180px] space-y-4">
+      {error ? (
+        <ErrorPanel message={error} />
+      ) : !session ? (
+        <p className="text-sm text-muted-foreground">Loading session…</p>
+      ) : (
+        <>
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={() => navigateToSection('sessions')}>
+              <ArrowLeft className="h-4 w-4" /> Back
+            </Button>
+            <div>
+              <h2 className="text-lg font-semibold">{session.title || session.sessionId}</h2>
+              <p className="text-xs text-muted-foreground">
+                {session.project} · {session.provider} · {formatDate(session.firstTimestamp)}
+              </p>
+            </div>
+          </div>
 
-      {session.prLinks.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {session.prLinks.map((pr) => (
-            <a key={pr} href={pr} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-brand-text hover:bg-muted">
-              <Link2 className="h-3 w-3" />{pr.split('/').slice(-2).join('/')}
-            </a>
-          ))}
-        </div>
+          {session.prLinks.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {session.prLinks.map((pr) => (
+                <a key={pr} href={pr} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-brand-text hover:bg-muted">
+                  <Link2 className="h-3 w-3" />{pr.split('/').slice(-2).join('/')}
+                </a>
+              ))}
+            </div>
+          )}
+
+          <div className="grid grid-cols-4 gap-3">
+            <Stat label="Cost" value={formatUsd(session.totalCostUSD)} />
+            <Stat label="Estimated" value={formatUsd(session.totalEstimatedCostUSD)} />
+            <Stat label="Calls" value={String(session.apiCalls)} />
+            <Stat label="Turns" value={String(session.turns.length)} />
+            <Stat label="Input tokens" value={session.totalInputTokens.toLocaleString()} />
+            <Stat label="Output tokens" value={session.totalOutputTokens.toLocaleString()} />
+            <Stat label="Cache read" value={session.totalCacheReadTokens.toLocaleString()} />
+            <Stat label="Cache write" value={session.totalCacheWriteTokens.toLocaleString()} />
+          </div>
+
+          {session.workingDirectory && (
+            <Card>
+              <CardHeader><CardTitle className="text-base"><Tag className="mr-1 inline h-4 w-4" />Working directory</CardTitle></CardHeader>
+              <CardContent className="font-mono text-xs">{session.workingDirectory}</CardContent>
+            </Card>
+          )}
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Timeline</CardTitle>
+              <CardDescription>Tap a turn to expand its assistant calls</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {session.turns.map((turn, i) => <Turn key={i} turn={turn} />)}
+            </CardContent>
+          </Card>
+        </>
       )}
-
-      <div className="grid grid-cols-4 gap-3">
-        <Stat label="Cost" value={formatUsd(session.totalCostUSD)} />
-        <Stat label="Estimated" value={formatUsd(session.totalEstimatedCostUSD)} />
-        <Stat label="Calls" value={String(session.apiCalls)} />
-        <Stat label="Turns" value={String(session.turns.length)} />
-        <Stat label="Input tokens" value={session.totalInputTokens.toLocaleString()} />
-        <Stat label="Output tokens" value={session.totalOutputTokens.toLocaleString()} />
-        <Stat label="Cache read" value={session.totalCacheReadTokens.toLocaleString()} />
-        <Stat label="Cache write" value={session.totalCacheWriteTokens.toLocaleString()} />
-      </div>
-
-      {session.workingDirectory && (
-        <Card>
-          <CardHeader><CardTitle className="text-base"><Tag className="mr-1 inline h-4 w-4" />Working directory</CardTitle></CardHeader>
-          <CardContent className="font-mono text-xs">{session.workingDirectory}</CardContent>
-        </Card>
-      )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Timeline</CardTitle>
-          <CardDescription>Tap a turn to expand its assistant calls</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {session.turns.map((turn, i) => <Turn key={i} turn={turn} />)}
-        </CardContent>
-      </Card>
     </div>
   )
 }

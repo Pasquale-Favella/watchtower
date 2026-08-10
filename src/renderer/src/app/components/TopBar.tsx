@@ -72,7 +72,7 @@ export function TopBarShell({
 
 /** TopBar — the store-driven top bar (ADR 0011): reads the section,
  * filters, and detected providers from the shell/scan stores; no more
- * 7-prop package from AppShell. */
+ * 7-prop package from AppRoot. */
 export function TopBar() {
   const pathname = useRouterState({ select: s => s.location.pathname })
   const section = sectionForPath(pathname)

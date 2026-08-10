@@ -19,7 +19,7 @@ describe('useScopeStore (ADR 0011)', () => {
     expect(useScopeStore.getState().period).toBe(useSettingsStore.getState().defaultPeriod)
   })
 
-  it('setPeriod clears a custom range (parity with AppShell)', () => {
+  it('setPeriod clears a custom range (parity with AppRoot)', () => {
     useScopeStore.getState().setCustomRange({ since: '2026-01-01', until: '2026-01-07' })
     useScopeStore.getState().setPeriod('week')
     const s = useScopeStore.getState()

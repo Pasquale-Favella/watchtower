@@ -11,7 +11,7 @@ export const NAV_SECTIONS: readonly Section[] = [
 /**
  * The single source of truth for the app's shortcuts (ADR 0001): every app
  * shortcut is declared here once and drives both registration (`useHotkeys`
- * in AppShell) and every UI rendering of it (sidebar badges, footer). The
+ * in AppRoot) and every UI rendering of it (sidebar badges, footer). The
  * `Mod` modifier resolves to ⌘ on macOS and Ctrl on Windows/Linux.
  */
 export const SHORTCUTS: readonly ShortcutDef[] = [

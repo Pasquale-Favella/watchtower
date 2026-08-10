@@ -78,7 +78,7 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
     expect(useScanStore.getState().progress[0]!.done).toBe(true)
   })
 
-  it('onProgress with no provider only marks scanning (parity with AppShell)', () => {
+  it('onProgress with no provider only marks scanning (parity with AppRoot)', () => {
     useScanStore.getState().onProgress('', 0, 0, false)
     const s = useScanStore.getState()
     expect(s.scanning).toBe(true)
@@ -131,7 +131,7 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
     expect(s.refreshVersion).toBe(1)
   })
 
-  it('applyChange clears detected providers when analytics fails (parity with AppShell)', async () => {
+  it('applyChange clears detected providers when analytics fails (parity with AppRoot)', async () => {
     useScanStore.setState({ detectedProviders: ['openai'] })
     mockWindow({
       getScanStatus: () => Promise.resolve(statusScanned),
