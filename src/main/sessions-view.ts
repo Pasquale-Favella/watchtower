@@ -6,7 +6,7 @@ import { sessionRowSchema, type SessionRow } from '../shared/schemas/views.js'
 export type { SessionRow } from '../shared/schemas/views.js'
 
 /**
- * The Sessions section's scoped row list (ticket 23): the same period /
+ * The Sessions section's scoped row list (ADR 0008): the same period /
  * custom-range / provider scope as the Overview's `overview:query`, mapped
  * onto the aggregation seam whose range and provider filters apply at the SQL
  * read (sessions count by their in-range turns), then already-shaped

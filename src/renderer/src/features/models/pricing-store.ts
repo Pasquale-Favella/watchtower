@@ -11,7 +11,7 @@ import { subscribeToRefresh } from '../../app/stores/scan-store'
 import type { ModelAlias, PriceOverride } from '../../../../shared/schemas/models.js'
 
 /** Model aliases + price overrides, shared by Settings › Aliases/Pricing and
- * the Models quick-add. (map ticket 02) Writes go through the main process,
+ * the Models quick-add. (ADR 0011) Writes go through the main process,
  * which broadcasts `config:changed`; the scan store's `applyChange` then
  * refetches the mounted view with the fresh query-time config. */
 export interface PricingState {
@@ -78,7 +78,7 @@ export const usePricingStore = create<PricingState>()((set, get) => ({
   },
 }))
 
-// One of the data stores, so it joins the shared refresh tick (map ticket 02)
+// One of the data stores, so it joins the shared refresh tick (ADR 0011)
 // — but lazily: a list is only refetched once it has been loaded, so an
 // unopened Aliases/Pricing panel never fetches on a scan.
 subscribeToRefresh(() => {

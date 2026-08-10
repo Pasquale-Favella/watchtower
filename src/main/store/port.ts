@@ -26,7 +26,7 @@ export type {
 } from '../../shared/schemas/port.js'
 
 /**
- * Port-in mapping (decision 02 / ticket 01): a provider session file's cached
+ * Port-in mapping (ADR 0002): a provider session file's cached
  * turns become flat ledger rows. The classifier + pricing seam is exactly the
  * pipeline's `cachedTurnToClassified` (branch carry-forward included), so the
  * persisted classification and `base_cost_usd`/savings figures match what the

@@ -7,7 +7,7 @@ import { useScanStore } from '@/app/stores/scan-store'
  * read, with a per-provider scan-progress list fed by the main process's
  * `scan:progress` events. If the initial scan fails, shows an error message
  * and a manual retry button instead of leaving the user stuck indefinitely.
- * Store-driven (map ticket 04): progress, error, and retry come from the scan
+ * Store-driven (ADR 0011): progress, error, and retry come from the scan
  * store.
  */
 export function Splash() {

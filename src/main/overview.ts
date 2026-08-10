@@ -308,7 +308,7 @@ const RETRY_TAX_LIMIT = 5
 const ROUTING_WASTE_LIMIT = 5
 const TOP_RANK_LIMIT = 10
 
-/** The Overview section's scoped payload core (ticket 23): takes the sessions
+/** The Overview section's scoped payload core (ADR 0008): takes the sessions
  * already read by a caller and applies the scope's period/range/provider filter
  * (mirroring `inScope`), then builds the KPI/chart/breakdown payload. Shared by
  * the report path (now deleted) and the ledger-backed path — the `dataStart`

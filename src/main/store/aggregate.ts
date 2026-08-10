@@ -13,7 +13,7 @@ import type {
 import type { LedgerCallRow, LedgerSessionRow, LedgerStore, LedgerTurnRow } from './ledger.js'
 
 /**
- * Query-time aggregation (map ticket 03). The ledger stores only transcript
+ * Query-time aggregation (ADR 0002). The ledger stores only transcript
  * facts; every view payload is re-derived here at read time from flat rows.
  * Pricing (price_override) and identity (model_alias) are pure config applied
  * per-row on read — never written back into scan rows, so a config change needs

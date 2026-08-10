@@ -5,7 +5,7 @@ import type { Hotkey } from '@tanstack/react-hotkeys'
 import { modelReportRowSchema } from './models.js'
 import { sessionRowSchema } from './views.js'
 
-/** Renderer-local UI shapes (ticket 09): schemas for shapes that have no IPC
+/** Renderer-local UI shapes (ADR 0005): schemas for shapes that have no IPC
  * wire counterpart — date ranges, splash progress, shortcut definitions,
  * onboarding steps, sankey nodes/links, session groups, and the like. Their
  * inferred types are the only thing consumed (they have no parse site by

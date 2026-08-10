@@ -23,7 +23,7 @@ function fixText(fix: WasteAction): string {
 }
 
 /** Read-only finding row: severity dot, title, trend, and token/dollar savings,
- * expanding to the clipboard-copyable fix snippet (ticket 28). */
+ * expanding to the clipboard-copyable fix snippet (ADR 0008). */
 function FindingRows({ findings }: { findings: OptimizeFinding[] }) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
@@ -78,7 +78,7 @@ function FindingRows({ findings }: { findings: OptimizeFinding[] }) {
 }
 
 /** The clipboard-copyable fix snippet block, shared by the Waste expand and the
- * Fixes tab (ticket 28). */
+ * Fixes tab (ADR 0008). */
 function FixBlock({
   finding,
   copied,
@@ -148,7 +148,7 @@ function FixRows({ findings }: { findings: OptimizeFinding[] }) {
   )
 }
 
-/** Read-only yield rows for one category (ticket 29): the bucket summary line
+/** Read-only yield rows for one category (ADR 0008): the bucket summary line
  * plus each session's project, commit count, and cost.
  * Read-only: no editable or inline bits. */
 function YieldRows({ payload, category, empty }: {
@@ -197,7 +197,7 @@ function YieldRows({ payload, category, empty }: {
   )
 }
 
-/** Reverts / Abandoned tab body (ticket 29). Mounts only when its tab is
+/** Reverts / Abandoned tab body (ADR 0008). Mounts only when its tab is
  * active, so the yield payload is fetched lazily on demand — never at scan
  * time — and refetched whenever the scope changes. */
 function YieldTab({ scope, category }: {

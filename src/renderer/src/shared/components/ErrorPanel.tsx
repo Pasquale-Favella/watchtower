@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 
 import { cn } from '@/shared/lib/utils'
 
-/** Shared renderer error state (ticket 09): the single visible panel a view
+/** Shared renderer error state (ADR 0005): the single visible panel a view
  * renders when an IPC payload fails validation or the IPC call itself rejects.
  * No view paints garbage or crashes on a bad payload — it shows this. */
 export function ErrorPanel({ message, className }: { message: ReactNode; className?: string }) {

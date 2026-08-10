@@ -54,7 +54,7 @@ function ModelDot({ model }: { model: string }) {
   )
 }
 
-/** The unpriced-row dimming treatment (ticket 26): rows with
+/** The unpriced-row dimming treatment (ADR 0010): rows with
  * `costUSD === 0 && savingsUSD === 0` are dimmed and their token/cost cells
  * collapse to em dashes. */
 function cellClass(row: ModelReportRow): string | undefined {

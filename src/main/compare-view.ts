@@ -28,7 +28,7 @@ export type {
   WorkingStyleRow,
 } from '../shared/schemas/compare.js'
 
-/** The Compare section's scoped payload (ticket 27): a model-pair picker, a
+/** The Compare section's scoped payload (ADR 0008): a model-pair picker, a
  * metrics comparison card, per-category one-shot comparison bars, and a
  * working-style card. The section honors the selected custom date range
  * like every other section (the CLI's range restriction is lifted — no

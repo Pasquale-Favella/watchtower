@@ -1,5 +1,5 @@
 /**
- * Renderer-side display currency (ticket 32). Single source of truth for how
+ * Renderer-side display currency (ADR 0009). Single source of truth for how
  * every section formats money: AppShell loads the active currency from the
  * main process (which reads only the CACHED rate from the store's FX
  * side-table — the renderer never calls Frankfurter directly) and calls

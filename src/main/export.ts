@@ -9,7 +9,7 @@ import type { ExportResult } from '../shared/schemas/export.js'
 export type { ExportResult } from '../shared/schemas/export.js'
 
 /**
- * CSV/JSON export bridge (ticket 32 seam for ticket 33's Export pane). Costs
+ * CSV/JSON export bridge (ADR 0009 seam for ADR 0013's Export pane). Costs
  * are read from the USD-anchored store and converted to the SELECTED display
  * currency at export time — the store is never rewritten. Mirrors the
  * reference app's export (one-table-per-file CSV folder with the

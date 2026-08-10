@@ -7,7 +7,7 @@ import type { YieldPayload } from '../../../../shared/schemas/yield.js'
 
 /** The Optimize section's two payloads — waste findings plus the Reverts/
  * Abandoned `yieldData` for the Yield tab — as one store with two slices
- * (map ticket 02: "useOptimizeStore (waste + yieldData slice)"). The yield
+ * (ADR 0011: "useOptimizeStore (waste + yieldData slice)"). The yield
  * slice stays lazy: it is only fetched when the Yield tab mounts, and the
  * shared tick's reload() no-ops until then. */
 export interface OptimizeState {

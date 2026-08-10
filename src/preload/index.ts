@@ -62,12 +62,12 @@ const api = {
   },
   getCadence: (): Promise<string> => ipcRenderer.invoke('cadence:get'),
   setCadence: (value: string): Promise<string> => ipcRenderer.invoke('cadence:set', value),
-  /** Scan status (map ticket 05): latest completed scan's metadata or the
+  /** Scan status (ADR 0004): latest completed scan's metadata or the
    * "never scanned" sentinel; the replacement for the old `getReport()` boot
    * read. */
   getScanStatus: (): Promise<ScanStatus> => ipcRenderer.invoke('store:status'),
   /** Fired when a config write (price override / model alias) lands, so the
-   * mounted view refetches with the fresh query-time config (map ticket 05 Q3).
+   * mounted view refetches with the fresh query-time config (ADR 0004).
    * Distinct from `store:changed` — no rebuild, no rescan. */
   onConfigChanged: (callback: () => void): (() => void) => {
     const listener = (): void => callback()
@@ -108,12 +108,12 @@ const api = {
   refreshPricing: (): Promise<PricingRefreshResult> => ipcRenderer.invoke('pricing:refresh'),
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
-  /** The active display currency (ticket 32) — the renderer's only FX read
+  /** The active display currency (ADR 0009) — the renderer's only FX read
    * path; it never calls Frankfurter directly. */
   getCurrency: (): Promise<ActiveCurrency> => ipcRenderer.invoke('currency:get'),
   setCurrency: (code: string): Promise<ActiveCurrency> => ipcRenderer.invoke('currency:set', code),
   getCurrencies: (): Promise<CurrencyOption[]> => ipcRenderer.invoke('currency:list'),
-  /** Fired when the background FX fetch lands a fresh rate (ticket 32), so
+  /** Fired when the background FX fetch lands a fresh rate (ADR 0009), so
    * the renderer repaints with the new cached rate without polling. */
   onCurrencyChanged: (callback: (currency: ActiveCurrency) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, currency: ActiveCurrency): void => callback(currency)

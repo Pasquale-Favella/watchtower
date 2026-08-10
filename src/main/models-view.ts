@@ -19,7 +19,7 @@ export type {
 } from '../shared/schemas/models.js'
 
 /**
- * The Models section's scoped payload (ticket 26) — the by-model / by-task
+ * The Models section's scoped payload (ADR 0008) — the by-model / by-task
  * `aggregateModels` lens plus the `aggregateAudit` token-source breakdown.
  * Applies exactly the same
  * period / custom-range / provider scope as every other section's view

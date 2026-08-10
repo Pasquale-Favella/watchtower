@@ -3,7 +3,7 @@
 // release whose tag looks like a version, and semver-compares it to the
 // running version.
 //
-// Deliberately manual-only (ticket 31): there is NO background timer, no
+// Deliberately manual-only (ADR 0012): there is NO background timer, no
 // launch-time check, and no auto-download/install. The main process never
 // touches this module except when the user clicks "Check for updates" in
 // Settings' About area. Offline, a private/unpublished repo (the GitHub API

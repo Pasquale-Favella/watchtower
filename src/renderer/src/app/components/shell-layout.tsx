@@ -32,7 +32,7 @@ export function SidebarToggleShortcut() {
 }
 
 /** The 2px scanning bar — reads `scanning` straight from the scan store
- * (map ticket 04). */
+ * (ADR 0011). */
 export function ScanIndicator() {
   const scanning = useScanStore(s => s.scanning)
   return (
@@ -44,7 +44,7 @@ export function ScanIndicator() {
   )
 }
 
-/** The section switch (map ticket 04): each feature view reads its own store
+/** The section switch (ADR 0011): each feature view reads its own store
  * + the shared scope selector; no props threaded. Settings is full-bleed
  * (its own header and nav rail), so it is handled by ShellLayout, not here. */
 export function ContentRegion() {
@@ -78,7 +78,7 @@ export function ContentRegion() {
 }
 
 /** The footer — reads scanning/unparsed from the scan store and the shortcut
- * hints from the registry (map ticket 04). */
+ * hints from the registry (ADR 0011). */
 export function StatusBar() {
   const scanning = useScanStore(s => s.scanning)
   const unparsedTotal = useScanStore(s => s.unparsedTotal)
@@ -105,7 +105,7 @@ export function StatusBar() {
   )
 }
 
-/** The decomposed shell JSX (map ticket 04): composed components reading from
+/** The decomposed shell JSX (ADR 0011): composed components reading from
  * co-located stores. Settings is the one full-bleed exception — its own header
  * and nav rail replace the TopBar/StatusBar strip, exactly as before. */
 export function ShellLayout() {

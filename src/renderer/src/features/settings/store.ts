@@ -12,7 +12,7 @@ import type { Theme } from '../../../../shared/schemas/renderer.js'
 import { setActiveCurrency } from '@/shared/lib/currency'
 
 /** Persisted (theme/defaultPeriod/onboarded) + server-fed (cadence/currency)
- * settings. (map ticket 02) The hand-rolled localStorage libs (`watchtower:
+ * settings. (ADR 0011) The hand-rolled localStorage libs (`watchtower:
  * theme`, `watchtower:defaultPeriod`, `watchtower:onboarded`) are absorbed by
  * `persist` under a single `watchtower:settings` key. */
 export interface SettingsState {

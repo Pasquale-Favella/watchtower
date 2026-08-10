@@ -5,10 +5,10 @@ import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 export type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 
 /**
- * The Frankfurter-backed FX layer (ticket 32). The main process is the only
+ * The Frankfurter-backed FX layer (ADR 0009). The main process is the only
  * thing that ever talks to Frankfurter (ECB data, no key): a background job
  * fetches USD-anchored rates on the background-scan cadence and caches them
- * into the store's `currency_rate` side-table (ticket 19). The renderer only
+ * into the store's `currency_rate` side-table (ADR 0009). The renderer only
  * ever reads the cached rate via IPC — it never fetches directly.
  *
  * Stored cost figures stay USD-anchored; conversion happens only at the

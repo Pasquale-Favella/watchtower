@@ -17,7 +17,7 @@ function mockWindow(api: unknown): void {
   ;(globalThis as { window?: unknown }).window = { api }
 }
 
-describe('renderer parse seam (ticket 09)', () => {
+describe('renderer parse seam (ADR 0005)', () => {
   it('parsePayload passes a valid payload through untouched', () => {
     const result = parsePayload(scanStatusSchema, 'scan status', { scanned: true })
     expect(result).toEqual({ ok: true, data: { scanned: true } })

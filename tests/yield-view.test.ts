@@ -85,7 +85,7 @@ const broadWindow = {
   lastTimestamp: '2026-01-01T11:00:00.000Z',
 }
 
-describe('buildYieldPayload (ticket 29)', () => {
+describe('buildYieldPayload (ADR 0008)', () => {
   it('returns a zeroed summary for an empty report', async () => {
     const payload = await buildYieldPayload([], { period: 'lifetime' })
     expect(payload.summary.total).toEqual({ costUSD: 0, sessions: 0 })

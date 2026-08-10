@@ -26,7 +26,7 @@ export class ScanAbortedError extends Error {
 /**
  * Runs the full watchtower pipeline (discovery, parse, classify, price) and
  * returns the scan's METADATA — the ledger is written by the `onDelta`
- * callback, so no `ProjectSummary[]` ever leaves the scan (map tickets 03/05).
+ * callback, so no `ProjectSummary[]` ever leaves the scan (ADRs 0002/0004).
  *
  * When `onDelta` is supplied, each settled session file is streamed to the
  * handler as a delta (the ledger port-in seam) while the parse runs; port-in

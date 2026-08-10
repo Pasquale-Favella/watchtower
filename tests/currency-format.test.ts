@@ -8,7 +8,7 @@ const EUR = { code: 'EUR', symbol: '€', rate: 0.9 }
 
 afterEach(() => setActiveCurrency(USD))
 
-describe('renderer currency-aware formatting (ticket 32)', () => {
+describe('renderer currency-aware formatting (ADR 0009)', () => {
   it('formats raw USD with the default USD currency', () => {
     expect(formatUsd(12.34)).toBe('$12.34')
     expect(formatUsd(1_234.5)).toBe('$1,234.50')

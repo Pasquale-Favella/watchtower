@@ -95,8 +95,8 @@ function ConfirmRemove({ label, prompt, onConfirm }: { label: string; prompt: st
   )
 }
 
-/** Settings › General: theme, default period, refresh cadence (ticket 21),
- * currency dropdown (ticket 32), and the About/version area (ticket 31).
+/** Settings › General: theme, default period, refresh cadence (ADR 0004),
+ * currency dropdown (ADR 0009), and the About/version area (ADR 0012).
  * Deliberately no daily-budget row (lives in Plans) and no Scope row. */
 function GeneralPane() {
   const theme = useSettingsStore(s => s.theme)
@@ -670,7 +670,7 @@ function PrivacyPane() {
   )
 }
 
-/** The Settings section (ticket 33): a six-pane rail — General, Providers,
+/** The Settings section: a six-pane rail — General, Providers,
  * Model aliases, Pricing, Export, Privacy & data — with no Devices pane and
  * no Plans pane (plan/budget editing lives only in the Plans section). */
 export function SettingsView(): React.JSX.Element {

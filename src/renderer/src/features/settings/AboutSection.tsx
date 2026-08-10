@@ -5,7 +5,7 @@ import { REPO_URL, releasePageUrl, type UpdateStatus } from '@/features/settings
 import { fetchAppVersion, fetchCheckForUpdates } from '@/shared/lib/api'
 
 /**
- * Settings › General's About/version area (ticket 31): shows the running
+ * Settings › General's About/version area (ADR 0012): shows the running
  * version and a manual "Check for updates" button. Clicking it queries the
  * Watchtower repo's GitHub Releases feed once and only informs the user
  * whether a newer version exists — it never downloads or installs, and there

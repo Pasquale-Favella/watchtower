@@ -15,7 +15,7 @@ export type { PullRequestRow, PullRequestsPayload } from '../shared/schemas/pull
 /// PR has no per-category breakdown (no classified turn carried a category).
 
 /**
- * The Pull Requests section's scoped payload (ticket 24). Applies exactly the
+ * The Pull Requests section's scoped payload (ADR 0008). Applies exactly the
  * same period / custom-range / provider scope as the Overview's
  * `overview:query`, then runs the turn-by-turn PR attribution (with subagent
  * folding) over the scoped set. The ticket builds ONLY the turn-by-turn

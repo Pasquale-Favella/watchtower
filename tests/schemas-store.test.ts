@@ -38,7 +38,7 @@ function rawDb(store: LedgerStore): DatabaseSync {
   return new DatabaseSync(store.dbPath)
 }
 
-describe('store seam under zod (ticket 02: read-back parsing)', () => {
+describe('store seam under zod (ADR 0003: read-back parsing)', () => {
   it('a raw SQL row parses through the schema and transforms to the camelCase shape', () => {
     // The schema's input is the snake_case SQL row; its transform produces the
     // camelCase shape with JSON columns parsed. Asserted against a literal
@@ -127,7 +127,7 @@ describe('store seam under zod (ticket 02: read-back parsing)', () => {
   })
 })
 
-describe('port-in seam under zod (ticket 03: mapping validation)', () => {
+describe('port-in seam under zod (ADR 0002: mapping validation)', () => {
   it('a valid mapping validates against mappedFileSchema', async () => {
     const store = makeStore()
     const input = { ...baseInput, verdict: 'new' as const, cachedFile: buildFixtureCachedFile() }

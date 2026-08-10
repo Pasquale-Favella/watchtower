@@ -30,7 +30,7 @@ function fakeFetch(status: number, rates: Record<string, unknown> | null, calls:
 const EUR: ActiveCurrency = { code: 'EUR', symbol: '€', rate: 0.9 }
 const JPY: ActiveCurrency = { code: 'JPY', symbol: '¥', rate: 150 }
 
-describe('listCurrencies (ticket 32: the full ISO 4217 selector list)', () => {
+describe('listCurrencies (ADR 0009: the full ISO 4217 selector list)', () => {
   it('offers the full runtime currency set — around 162 codes, not a reduced list', () => {
     const list = listCurrencies()
     expect(list.length).toBeGreaterThanOrEqual(150)
@@ -220,7 +220,7 @@ describe('display-boundary conversion and formatting', () => {
   })
 })
 
-describe('display-currency config (ticket 32)', () => {
+describe('display-currency config (ADR 0009)', () => {
   it('defaults to USD and survives clear() (user setting, not scan data)', () => {
     const store = makeStore()
     expect(store.getDisplayCurrency()).toBe('USD')

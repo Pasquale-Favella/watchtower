@@ -108,7 +108,7 @@ function rollLinks(
 }
 
 /**
- * The Spend section's scoped payload (ticket 25). Applies exactly the same
+ * The Spend section's scoped payload (ADR 0008). Applies exactly the same
  * period / custom-range / provider scope as the Overview's `overview:query`,
  * mapped onto the aggregation seam (range + provider filters at the SQL read,
  * sessions count by their in-range turns), then:

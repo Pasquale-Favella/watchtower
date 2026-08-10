@@ -1,6 +1,6 @@
 import type { Impact, HealthGrade } from '../../../../shared/schemas/optimize.js'
 
-/** Accent-tinted dot color for each severity (ticket 28). */
+/** Accent-tinted dot color for each severity (ADR 0008). */
 export function impactDot(impact: Impact): string {
   switch (impact) {
     case 'high': return 'bg-destructive'
@@ -9,7 +9,7 @@ export function impactDot(impact: Impact): string {
   }
 }
 
-/** Health grade → text color token (ticket 28). */
+/** Health grade → text color token (ADR 0008). */
 export function healthClass(grade: HealthGrade): string {
   switch (grade) {
     case 'A': return 'text-success'

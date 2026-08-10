@@ -7,13 +7,13 @@ import { ONBOARDING_STEPS } from '@/app/components/onboarding-steps'
 import { useSettingsStore } from '@/features/settings/store'
 
 /**
- * First-launch onboarding (ticket 31): a welcome screen plus one step per app
+ * First-launch onboarding (ADR 0012): a welcome screen plus one step per app
  * section, rendered as a modal the first time the app hydrates. Built on the
- * shadcn `Dialog` primitive (ticket 20 theme tokens, no bespoke overlay/CSS) —
+ * shadcn `Dialog` primitive (ADR 0011 theme tokens, no bespoke overlay/CSS) —
  * a walkthrough of the app's sections: there
  * is no telemetry, so there is nothing to consent to. Esc, an overlay click,
  * or "Skip" dismisses it for good, all handled by Dialog's own behavior.
- * Store-driven (map ticket 04): finishing marks the settings store onboarded.
+ * Store-driven (ADR 0011): finishing marks the settings store onboarded.
  */
 export function Onboarding() {
   const markOnboarded = useSettingsStore(s => s.markOnboarded)

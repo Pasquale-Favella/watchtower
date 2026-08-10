@@ -29,7 +29,7 @@ export function categoryLabel(category: string | null | undefined): string {
   return CATEGORY_LABELS[category] ?? category
 }
 
-/** An unpriced row per ticket 26: zero cost AND zero savings — nothing was
+/** An unpriced row per ADR 0010: zero cost AND zero savings — nothing was
  * billed and nothing was avoided, so the row's tokens show as em dashes and
  * the row is dimmed. */
 export function isUnpriced(row: { costUSD: number; savingsUSD: number }): boolean {

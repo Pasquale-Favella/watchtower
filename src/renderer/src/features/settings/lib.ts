@@ -1,5 +1,5 @@
 /**
- * Pure helpers for the Settings section (ticket 33) — formatting, pricing-form
+ * Pure helpers for the Settings section — formatting, pricing-form
  * validation, and the persisted default-period read/write. Kept free of any
  * DOM/base-ui imports so they're unit-testable in plain node (the desktop
  * suite runs without jsdom).

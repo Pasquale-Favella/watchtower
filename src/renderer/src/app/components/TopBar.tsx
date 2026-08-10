@@ -68,7 +68,7 @@ export function TopBarShell({
   )
 }
 
-/** TopBar — the store-driven top bar (map ticket 04): reads the section,
+/** TopBar — the store-driven top bar (ADR 0011): reads the section,
  * filters, and detected providers from the shell/scan stores; no more
  * 7-prop package from AppShell. */
 export function TopBar() {

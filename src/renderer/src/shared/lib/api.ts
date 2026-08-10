@@ -1,5 +1,5 @@
 /**
- * Renderer fetch library (map ticket 09) — the renderer-side tripwire over
+ * Renderer fetch library (ADR 0005) — the renderer-side tripwire over
  * the preload's IPC surface. Every payload-bearing channel is `safeParse`d
  * against the same shared schema the main process validates against, so a
  * malformed payload becomes a `{ ok: false }` result the views render as an
@@ -93,7 +93,7 @@ export async function fetchPayload<T>(
   }
 }
 
-/** The subscription-event tripwire (ticket 09): broadcast channels carry
+/** The subscription-event tripwire (ADR 0005): broadcast channels carry
  * payloads too. A malformed broadcast is dropped and logged, never applied to
  * renderer state — a bad `scan:progress` or `currency:changed` can't paint
  * garbage, it just falls back to the last good value. */

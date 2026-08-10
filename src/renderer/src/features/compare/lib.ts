@@ -1,7 +1,7 @@
 import type { CompareFormatFn } from '../../../../shared/schemas/compare.js'
 import { formatCompact, formatUsd } from '@/shared/lib/models'
 
-/** Format a comparison value per the metric's format function (ticket 27),
+/** Format a comparison value per the metric's format function (ADR 0008),
  * using the `fmtMetric` rules: `—` for null, USD for cost, whole percents,
  * two-decimal ratios, compact tokens, and comma integers for counts. */
 export function compareValue(value: number | null, fn: CompareFormatFn): string {

@@ -28,7 +28,7 @@ beforeEach(() => {
   usePricingStore.setState(usePricingStore.getInitialState(), true)
 })
 
-describe('usePricingStore (map ticket 02/05)', () => {
+describe('usePricingStore (ADR 0011)', () => {
   it('starts with no aliases or overrides loaded', () => {
     const s = usePricingStore.getState()
     expect(s.aliases).toBeNull()

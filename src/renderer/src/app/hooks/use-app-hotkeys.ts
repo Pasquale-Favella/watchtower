@@ -4,7 +4,7 @@ import { SHORTCUTS } from '@/app/shortcuts'
 import { useShellStore } from '@/app/stores/shell-store'
 import { useScanStore } from '@/app/stores/scan-store'
 
-/** Shortcut registration, relocated out of AppShell (map ticket 04). Reads
+/** Shortcut registration, relocated out of AppShell (ADR 0011). Reads
  * navigation + refresh from stores instead of threading callbacks. Registered
  * at shell mount so ⌘R keeps working during the first-hydrate splash. */
 export function useAppHotkeys(): void {

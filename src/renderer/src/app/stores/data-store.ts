@@ -5,7 +5,7 @@ import { subscribeToRefresh } from './scan-store'
 
 export type DataStatus = 'idle' | 'loading' | 'ready'
 
-/** A scope-keyed data slice (map ticket 02): one fetch wrapper, a single
+/** A scope-keyed data slice (ADR 0011): one fetch wrapper, a single
  * current scope, and true stale-while-revalidate — refetching the SAME scope
  * keeps the last-known payload visible and replaces it on success (the
  * deliberate fix of today's Loading flash), while switching scope clears to a

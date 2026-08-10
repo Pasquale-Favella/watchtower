@@ -35,7 +35,7 @@ function winnerClass(winner: CompareWinner, side: 'a' | 'b'): string {
 }
 
 /** Shared Metric | A | B row grid used by the metrics and working-style cards
- * (ticket 27): the model names in the header, then one row per metric with
+ * (ADR 0008): the model names in the header, then one row per metric with
  * each side's formatted value, green when it wins (metrics card only). */
 function CompareRows({
   rows,

@@ -1,4 +1,4 @@
-/** The About area's manual update-check result (ticket 31). The shared
+/** The About area's manual update-check result (ADR 0012). The shared
  * `updateStatusSchema` is the wire contract over `updates:check` — the same
  * schema the main process validates against. */
 import type { UpdateStatus } from '../../../../shared/schemas/updates.js'

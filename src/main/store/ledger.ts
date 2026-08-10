@@ -42,7 +42,7 @@ export type {
 } from '../../shared/schemas/ledger.js'
 
 /**
- * The accumulating ledger (map tickets 01 + 06): four `ledger_*` tables that
+ * The accumulating ledger (ADRs 0002 + 0011): four `ledger_*` tables that
  * store only what the transcripts observed — per-call facts with raw tokens +
  * the pipeline's `base_cost_usd` (never a repriced cost), per-turn persisted
  * classification, per-session transcript facts, and per-source provenance.

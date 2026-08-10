@@ -222,7 +222,7 @@
   }
 }
 
-/* ---- motion (ticket 05) ---- */
+/* ---- motion ---- */
 .section-fade {
   animation: section-in 180ms ease-out;
 }

@@ -4,12 +4,12 @@ import type { OverviewPeriod, OverviewScope } from '../../../../shared/schemas/o
 import { useSettingsStore } from '../../features/settings/store'
 
 /** The canonical section order, shared by nav, shortcuts and the decomposed
- * ContentRegion switch (map ticket 04). */
+ * ContentRegion switch (ADR 0011). */
 export const SECTIONS: readonly Section[] = [
   'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'settings',
 ]
 
-/** Pure UI state — never fetched, never persisted. (map ticket 02) */
+/** Pure UI state — never fetched, never persisted. (ADR 0011) */
 export interface ShellState {
   section: Section
   openSession: string | null
@@ -34,7 +34,7 @@ export const selectScope = (s: ShellState): OverviewScope => ({
 })
 
 // The active period is initialized from the persisted default, then transient
-// (map ticket 02). The settings store's persist middleware rehydrates
+// (ADR 0011). The settings store's persist middleware rehydrates
 // synchronously at module load, so this read is correct before any render.
 const initialPeriod = useSettingsStore.getState().defaultPeriod as OverviewPeriod
 

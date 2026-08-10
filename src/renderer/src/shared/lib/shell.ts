@@ -27,7 +27,7 @@ export function buildScopeCaption(periodLabel: string, providerLabel: string, co
 }
 
 /** Cadence dropdown options for the Settings > General cadence control
- * (ticket 21). Mirrors desktop/src/main/cadence.ts's CADENCE_OPTIONS values
+ * (ADR 0004). Mirrors src/main/cadence.ts's CADENCE_OPTIONS values
  * exactly — renderer code can't import main-process modules directly, so
  * this list is kept in sync by hand; the ipc cadence:get/cadence:set calls
  * are the source of truth for the persisted value itself. */

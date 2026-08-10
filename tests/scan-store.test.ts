@@ -33,7 +33,7 @@ beforeEach(() => {
   useScanStore.setState(useScanStore.getInitialState(), true)
 })
 
-describe('useScanStore scan lifecycle (map ticket 02/05)', () => {
+describe('useScanStore scan lifecycle (ADR 0011)', () => {
   it('starts unhydrated and idle', () => {
     const s = useScanStore.getState()
     expect(s.hydrated).toBe(false)

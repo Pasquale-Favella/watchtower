@@ -262,7 +262,7 @@ export function getSessionDetailFromLedger(store: LedgerStore, sessionId: string
 
 /**
  * The full ledger reassembled into `ProjectSummary[]` — the export path's
- * input (map ticket 05 Q5). No date filter: exports cover full history. Grouped
+ * input (ADR 0013). No date filter: exports cover full history. Grouped
  * through the same helper the Optimize/Yield detector cores use, so project
  * shells stay consistent across every ledger consumer.
  */

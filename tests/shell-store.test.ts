@@ -7,7 +7,7 @@ beforeEach(() => {
   useShellStore.setState(useShellStore.getInitialState(), true)
 })
 
-describe('useShellStore (map ticket 02/05)', () => {
+describe('useShellStore (ADR 0011)', () => {
   it('starts on overview, today, all providers, no session', () => {
     const s = useShellStore.getState()
     expect(s.section).toBe('overview')
@@ -17,7 +17,7 @@ describe('useShellStore (map ticket 02/05)', () => {
     expect(s.openSession).toBeNull()
   })
 
-  it('seeds the active period from the persisted default (map ticket 02)', () => {
+  it('seeds the active period from the persisted default (ADR 0011)', () => {
     expect(useShellStore.getState().period).toBe(useSettingsStore.getState().defaultPeriod)
   })
 

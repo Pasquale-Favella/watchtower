@@ -18,7 +18,7 @@ export const scanResultSchema = z.object({
 export type ScanResult = z.infer<typeof scanResultSchema>
 
 /** `getScanStatus()` — the latest completed scan's metadata, or a "never
- * scanned" sentinel when the ledger has no rows at all (map ticket 05). */
+ * scanned" sentinel when the ledger has no rows at all (ADR 0004). */
 export const scanStatusSchema = z.object({
   scanned: z.boolean(),
   metadata: scanMetadataSchema.optional(),
@@ -43,7 +43,7 @@ export const pricingRefreshResultSchema = z.object({
 })
 export type PricingRefreshResult = z.infer<typeof pricingRefreshResultSchema>
 
-/** `store:changed` carries the completed scan's metadata (map ticket 05) —
+/** `store:changed` carries the completed scan's metadata (ADR 0004) —
  * the same object `runScan` returns. */
 export const storeChangedMessageSchema = scanMetadataSchema
 export type StoreChangedMessage = z.infer<typeof storeChangedMessageSchema>

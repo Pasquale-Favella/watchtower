@@ -3,7 +3,7 @@ import type { CadenceOption } from '../shared/schemas/cadence.js'
 export type { CadenceOption } from '../shared/schemas/cadence.js'
 
 /**
- * The background-scan cadence (ticket 21 / ticket 08's resolved decision):
+ * The background-scan cadence (ADR 0004):
  * A "Refresh every" control governs how often the main process triggers a
  * background scan, rather than a renderer polling interval. Same value
  * set/labels as the CLI's refresh-cadence reference, minus the renderer

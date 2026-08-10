@@ -34,7 +34,7 @@ export type {
   WasteAction,
 } from '../shared/schemas/optimize.js'
 
-/** The Optimize section's scoped payload (ticket 28) — a read-only setup-health
+/** The Optimize section's scoped payload (ADR 0008) — a read-only setup-health
  * grade, findings ranked by severity and trend, and clipboard-copyable fix
  * snippets. Exactly the same period / custom-range / provider scope as every
  * other section (shared `inScope`), then the 16 store-driven detectors run
@@ -42,7 +42,7 @@ export type {
  *
  * Deliberate design decisions, documented in code:
  * - 3 Claude-config detectors (unused-MCP-from-config, bloated CLAUDE.md,
- *   bash-limit) are ABSENT, not stubbed, per ticket 28 ÔÇö they depend on the
+ *   bash-limit) are ABSENT, not stubbed, per ADR 0008 ÔÇö they depend on the
  *   `~/.claude/` config-source store-side decision that is still open.
  * - tool input is not persisted per call, so the read/ratio/ghost detectors
  *   walk `toolSequence` (tool name + `file_path`) and the parser's
@@ -301,7 +301,7 @@ function anySessionHasMcpInventory(projects: ProjectSummary[]): boolean {
 // ~/.claude config discovery (deferral-gap + ghost detectors). These touch the
 // filesystem, with `homeDir` injectable for tests. The 3
 // config-source detectors that would ALSO need this (unused-mcp, bloated
-// CLAUDE.md, bash-limit) are absent per ticket 28.
+// CLAUDE.md, bash-limit) are absent per ADR 0008.
 // ----------------------------------------------------------------------------
 
 export function loadMcpConfigs(projectCwds: Iterable<string>, home = homedir()): Map<string, McpConfigEntry> {
@@ -1349,7 +1349,7 @@ export function detectCapabilityReliability(projects: ProjectSummary[]): WasteFi
 }
 
 // ============================================================================
-// MCP deferral-gap detectors (detection only, no apply plans ÔÇö ticket 28)
+// MCP deferral-gap detectors (detection only, no apply plans ÔÇö ADR 0008)
 // ============================================================================
 
 function observedMcpServers(steps: ScanStep[]): Set<string> {
@@ -2143,7 +2143,7 @@ export function computeInputCostRate(projects: ProjectSummary[]): number {
 
 type DateRange = { start: Date; end: Date }
 
-/** Shared by the Optimize and yield computations (ticket 29): the Optimize
+/** Shared by the Optimize and yield computations (ADR 0008): the Optimize
  * scope's DateRange, applied at the SQL read by the aggregation seam so both
  * the Waste findings and the Reverts/Abandoned yield share the same window. */
 export function scopeDateRange(scope: OverviewScope, now: Date): DateRange | null {

@@ -62,7 +62,7 @@ beforeEach(() => {
   useSettingsStore.setState(useSettingsStore.getInitialState(), true)
 })
 
-describe('subscribeToIpc (map ticket 02/04)', () => {
+describe('subscribeToIpc (ADR 0011)', () => {
   it('feeds scan progress into the scan store, dropping malformed broadcasts', () => {
     const listeners = captureApi()
     const teardown = subscribeToIpc()

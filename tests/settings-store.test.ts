@@ -32,7 +32,7 @@ beforeEach(() => {
   useSettingsStore.setState(useSettingsStore.getInitialState(), true)
 })
 
-describe('useSettingsStore (map ticket 02/05)', () => {
+describe('useSettingsStore (ADR 0011)', () => {
   it('starts with defaults', () => {
     const s = useSettingsStore.getState()
     expect(s.theme).toBe('system')

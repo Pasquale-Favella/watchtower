@@ -22,7 +22,7 @@ const execFileAsync = promisify(execFile)
 const GIT_TIMEOUT_MS = 5_000
 
 /**
- * The Optimize section's Reverts/Abandoned-work tabs (ticket 29). Yield is
+ * The Optimize section's Reverts/Abandoned-work tabs (ADR 0008). Yield is
  * computed ON DEMAND, query-time, via a live git spawn in the main process —
  * never persisted at scan time, because categorization is inherently
  * range-dependent. The same session slice as the Waste/Fixes payload
@@ -298,7 +298,7 @@ function emptyBucket(): YieldBucket {
   return { costUSD: 0, sessions: 0, costPercent: 0, sessionPercent: 0 }
 }
 
-/** The Optimize section's Reverts/Abandoned tabs payload (ticket 29), computed
+/** The Optimize section's Reverts/Abandoned tabs payload (ADR 0008), computed
  * on demand via live git spawns against each project's working directory.
  * Uses the same window attribution and revert detection as the Waste/Fixes
  * findings, scoped exactly like them. The ledger-backed path

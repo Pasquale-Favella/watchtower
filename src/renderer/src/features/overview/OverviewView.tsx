@@ -178,7 +178,7 @@ export function OverviewView() {
   const load = useOverviewStore(s => s.load)
   const navigateString = useShellStore(s => s.navigateString)
 
-  // Store-driven load (map ticket 06): the store owns fetching — same-scope
+  // Store-driven load (ADR 0011): the store owns fetching — same-scope
   // refetches (refresh tick) keep the last-known payload (true SWR), scope
   // changes clear to a fresh load.
   useEffect(() => {

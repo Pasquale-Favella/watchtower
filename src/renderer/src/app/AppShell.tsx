@@ -7,7 +7,7 @@ import { Onboarding } from './components/Onboarding'
 import { useScanStore } from './stores/scan-store'
 import { useSettingsStore } from '@/features/settings/store'
 
-/** The real app shell (ticket 20) as a composition root (map ticket 04): the
+/** The real app shell (ADR 0011) as a composition root (ADR 0011): the
  * bootstrap, theme, and hotkey concerns live in hooks; the JSX lives in the
  * composed `ShellLayout`. The shell only decides splash-vs-app and mounts the
  * onboarding tour — every piece of data reads from a store. */

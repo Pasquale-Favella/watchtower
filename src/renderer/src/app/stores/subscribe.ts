@@ -7,7 +7,7 @@ import {
 import { useScanStore } from './scan-store'
 import { useSettingsStore } from '../../features/settings/store'
 
-/** The central IPC wiring (map ticket 02/04): all six `window.api.on*`
+/** The central IPC wiring (ADR 0011): all six `window.api.on*`
  * subscriptions feed store actions, never component state. Call once from the
  * shell's mount; the returned teardown removes every listener. Stores stay
  * pure (no `window` at module load), so this is the only `window`-touching
@@ -16,7 +16,7 @@ export function subscribeToIpc(): () => void {
   const unsubs: Array<() => void> = []
 
   unsubs.push(window.api.onProgress(progress => {
-    // Tripwire (ticket 09): a malformed broadcast is dropped, never painted.
+    // Tripwire (ADR 0005): a malformed broadcast is dropped, never painted.
     const parsed = parseEvent(scanProgressMessageSchema, 'scan progress', progress)
     if (!parsed) return
     useScanStore.getState().onProgress(
@@ -37,7 +37,7 @@ export function subscribeToIpc(): () => void {
 
   unsubs.push(window.api.onIdle(() => useScanStore.getState().onIdle()))
 
-  // A background FX fetch landed a fresh rate (ticket 32) — repaint money
+  // A background FX fetch landed a fresh rate (ADR 0009) — repaint money
   // values with it, replacing the fallback rate the selection returned.
   unsubs.push(window.api.onCurrencyChanged(next => {
     const parsed = parseEvent(activeCurrencySchema, 'currency changed', next)

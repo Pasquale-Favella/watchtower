@@ -52,7 +52,7 @@ beforeEach(() => {
   for (const store of stores) store.setState(store.getInitialState(), true)
 })
 
-describe('createScopedDataStore — SWR semantics (map ticket 02)', () => {
+describe('createScopedDataStore — SWR semantics (ADR 0011)', () => {
   type Pending = { resolve: (r: { ok: true; data: { n: number } }) => void }
   const deferred = (resolvers: Pending[]) => (): Promise<{ ok: true; data: { n: number } }> =>
     new Promise(resolve => { resolvers.push({ resolve }) })
@@ -143,7 +143,7 @@ describe('createScopedDataStore — SWR semantics (map ticket 02)', () => {
   })
 })
 
-describe('feature data stores wire the frozen wire contract (map ticket 05)', () => {
+describe('feature data stores wire the frozen wire contract (ADR 0005)', () => {
   const overviewPayload = {
     kpis: {
       cost: 1, calls: 2, sessions: 3, inputTokens: 4, outputTokens: 5,
@@ -247,7 +247,7 @@ describe('feature data stores wire the frozen wire contract (map ticket 05)', ()
   })
 })
 
-describe('shared refresh tick (map ticket 02)', () => {
+describe('shared refresh tick (ADR 0011)', () => {
   it('reloads every loaded data store when a change completes', async () => {
     const getOverview = vi.fn(() => Promise.resolve(null))
     mockWindow({

@@ -8,7 +8,7 @@ export type { OnboardingStep }
 export const ONBOARDING_KEY = 'watchtower:onboarded'
 
 /**
- * First-launch walkthrough steps (ticket 31): a welcome screen, then one step
+ * First-launch walkthrough steps (ADR 0012): a welcome screen, then one step
  * per app section. Data-driven so the walkthrough tracks the real nav without
  * code changes — it covers the 8 sections that exist today (Plans was
  * removed). Deliberately has NO telemetry-consent step: there is no telemetry.

@@ -113,7 +113,7 @@ export function AppSidebarShell({
   )
 }
 
-/** AppSidebar — store-driven (map ticket 04): reads the active section, nav,
+/** AppSidebar — store-driven (ADR 0011): reads the active section, nav,
  * filters, and detected providers from the shell/scan stores. */
 export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
   const active = useShellStore(s => s.section)

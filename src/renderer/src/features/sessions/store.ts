@@ -6,7 +6,7 @@ import type { SessionDetail, SessionRow } from '../../../../shared/schemas/views
 
 /** The sessions list, scope-keyed like the other section payloads. */
 export interface SessionsState extends ScopedDataSlice<SessionRow[]> {
-  /** The open session's detail — keyed by id, not scope. (map ticket 02:
+  /** The open session's detail — keyed by id, not scope. (ADR 0011:
    * "sessions (+open-session detail)" live in the same section store.) */
   session: SessionDetail | null
   sessionError: string | null

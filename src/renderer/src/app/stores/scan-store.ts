@@ -8,7 +8,7 @@ import type { SplashProviderProgress } from '../../../../shared/schemas/renderer
 const unparsedCount = (metadata?: ScanMetadata): number =>
   metadata ? metadata.perProvider.reduce((n, p) => n + p.unparsed, 0) : 0
 
-/** Scan lifecycle + the shared refresh tick. (map ticket 02) */
+/** Scan lifecycle + the shared refresh tick. (ADR 0011) */
 export interface ScanState {
   hydrated: boolean
   scanning: boolean

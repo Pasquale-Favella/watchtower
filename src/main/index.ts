@@ -32,7 +32,7 @@ import type { PortInput } from './store/port.js'
 
 let ledger: LedgerStore | null = null
 /** The most recent completed scan's metadata — the `getScanStatus()` answer
- * and the `store:changed` payload (map ticket 05). In-memory only: the ledger
+ * and the `store:changed` payload (ADR 0004). In-memory only: the ledger
  * itself is the durable source of truth; boot reads it for the sentinel. */
 let lastScanMetadata: ScanMetadata | null = null
 let scanActive = false
@@ -106,8 +106,8 @@ async function refreshFxOnCadence(): Promise<void> {
 }
 
 /** Pushes a "the store changed" event to every open window, carrying the
- * completed scan's METADATA (map ticket 05 — `reportId` is gone). The
- * renderer's single refetch trigger (ticket 21): no renderer-side polling
+ * completed scan's METADATA (ADR 0004 — `reportId` is gone). The
+ * renderer's single refetch trigger (ADR 0004): no renderer-side polling
  * loop; the main process alone decides when data is fresh, whether from a
  * manual (⌘R) or background-cadence scan. */
 function broadcastChanged(metadata: ScanMetadata): void {
@@ -120,7 +120,7 @@ function broadcastChanged(metadata: ScanMetadata): void {
 /** Tells every window a config write happened (price override / model alias),
  * so the mounted view refetches with the fresh query-time config — distinct
  * from `store:changed` (ledger changed vs config changed), no rebuild, no
- * rescan (map ticket 05 Q3). */
+ * rescan (ADR 0004). */
 function broadcastConfigChanged(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send('config:changed')
@@ -158,7 +158,7 @@ async function performScan(
     { range, provider: options?.provider },
     emit,
     { isAborted: () => abortRequested },
-    // Ledger port-in seam (ticket 03): every settled session file is streamed
+    // Ledger port-in seam (ADR 0002): every settled session file is streamed
     // to the ledger while the parse runs. The scan's delta wrapper already
     // gates out failed parses; `unchanged` is a no-op inside portIn.
     portIn
@@ -176,7 +176,7 @@ function broadcastIdle(): void {
   }
 }
 
-/** Fires on the configured cadence (ticket 21). Silent on failure — the
+/** Fires on the configured cadence (ADR 0004). Silent on failure — the
  * user's last-known data stays visible (stale-while-revalidate) and they can
  * still trigger a manual scan via ⌘R; background scans don't surface errors
  * as intrusively as a user-initiated one would. Coalesces with any
@@ -196,7 +196,7 @@ async function triggerBackgroundScan(): Promise<void> {
   }
 }
 
-/** Background-scan progress goes to every window too (ticket 21's
+/** Background-scan progress goes to every window too (ADR 0004's
  * non-blocking progress indicator applies regardless of which window, if
  * any, is focused when the cadence timer fires). */
 function broadcastProgress(progress: ScanProgress): void {
@@ -216,7 +216,7 @@ function scheduleCadence(): void {
   const ms = resolveCadenceMs(ledger.getRefreshCadence())
   if (ms === null) return // Manual: no background timer
   // The FX background job rides the same repurposed cadence as the scan
-  // trigger (ticket 32): each tick also refreshes the selected currency's
+  // trigger (ADR 0009): each tick also refreshes the selected currency's
   // rate when it is missing or older than 24h. refreshFxRate never throws,
   // so a Frankfurter outage can never disturb the scan itself.
   cadenceTimer = setInterval(() => {
@@ -273,7 +273,7 @@ function registerIpc(): void {
     return ledger.getRefreshCadence()
   })
 
-  /** Scan status (map ticket 05): the most recent completed scan's metadata,
+  /** Scan status (ADR 0004): the most recent completed scan's metadata,
    * or a "never scanned" sentinel when the ledger has no rows at all — the
    * same shape the renderer's boot reads, then lives off `store:changed`. The
    * `reportId` world is gone. */
@@ -316,7 +316,7 @@ function registerIpc(): void {
     return buildSpendViewFromLedger(ledger, scope)
   })
 
-  /** The Models section's scoped payload (ticket 26): by-model / by-task /
+  /** The Models section's scoped payload (ADR 0008): by-model / by-task /
    * audit lenses. Built at read time from the ledger plus the CURRENT
    * alias/price-override config tables, so a quick-add write updates the
    * affected rows on the next query without a rescan. */
@@ -328,7 +328,7 @@ function registerIpc(): void {
     })
   })
 
-  /** The Compare section's scoped payload (ticket 27): a model-pair picker
+  /** The Compare section's scoped payload (ADR 0008): a model-pair picker
    * over every detected model, plus a query-time side-by-side metrics card,
    * per-category one-shot bars, and a working-style card. The section honors
    * the selected custom date range like every other section. */
@@ -337,7 +337,7 @@ function registerIpc(): void {
     return buildCompareViewFromLedger(ledger, scope, pair)
   })
 
-  /** The Optimize section's scoped payload (ticket 28): a read-only setup-health
+  /** The Optimize section's scoped payload (ADR 0008): a read-only setup-health
    * grade plus Waste/Fixes findings from the 16 ported detectors. Unlike the
    * other sections this is async (ghost detectors walk ~/.claude on disk). */
   ipcMain.handle('optimize:view', async (_event, scope: OverviewScope): Promise<OptimizePayload | null> => {
@@ -345,7 +345,7 @@ function registerIpc(): void {
     return await buildOptimizeViewFromLedger(ledger, scope)
   })
 
-  /** The Optimize section's Reverts/Abandoned payload (ticket 29): yield
+  /** The Optimize section's Reverts/Abandoned payload (ADR 0008): yield
    * computed query-time from live git calls on each project's repo, only
    * fetched when that tab is actually viewed — never persisted at scan time.
    * All git failures degrade to empty, so a missing/non-git repo simply shows
@@ -355,7 +355,7 @@ function registerIpc(): void {
     return await buildYieldViewFromLedger(ledger, scope)
   })
 
-  /** Quick-add alias (ticket 26): map an unpriced model to a priced one,
+  /** Quick-add alias (ADR 0010): map an unpriced model to a priced one,
    * writing directly to the ledger's `model_alias` config table and
    * broadcasting `config:changed` so the mounted view refetches (query-time
    * config — no rescan). */
@@ -407,7 +407,7 @@ function registerIpc(): void {
     return { ok: true }
   })
 
-  /** Quick-add price override (ticket 26): a manual price (USD per 1M tokens)
+  /** Quick-add price override (ADR 0010): a manual price (USD per 1M tokens)
    * for a model, a pure upsert on the ledger's `price_override` config table
    * (display cost recomputes on read) plus a `config:changed` broadcast. */
   ipcMain.handle('models:setPrice', (_event, model: string, inputPricePerMillion: number, outputPricePerMillion: number): { ok: true } => {
@@ -481,11 +481,11 @@ function registerIpc(): void {
     }
   })
 
-  /** The About area's version (ticket 31): `app.getVersion()` reads it from
+  /** The About area's version (ADR 0012): `app.getVersion()` reads it from
    * package.json, which electron-builder also stamps into the packaged app. */
   ipcMain.handle('app:version', () => app.getVersion())
 
-  /** Manual "Check for updates" (ticket 31): forces one fresh read of the
+  /** Manual "Check for updates" (ADR 0012): forces one fresh read of the
    * the Watchtower repo's GitHub Releases feed and reports whether a newer desktop
    * version exists. Never downloads or installs, and there is no background
    * schedule — this fires only when the user clicks the button. All failures
@@ -496,7 +496,7 @@ function registerIpc(): void {
     return updateChecker.check()
   })
 
-  /** The active display currency (ticket 32): the persisted code plus its
+  /** The active display currency (ADR 0009): the persisted code plus its
    * CACHED rate from the FX side-table. The renderer never calls Frankfurter
    * directly — this is its only read path, and it degrades to the last
    * cached rate (or USD) without ever touching the network. */
@@ -505,7 +505,7 @@ function registerIpc(): void {
     return getActiveCurrency(ledger)
   })
 
-  /** Select a display currency (ticket 32): persists the choice, kicks off a
+  /** Select a display currency (ADR 0009): persists the choice, kicks off a
    * non-blocking Frankfurter refresh in the background when the cached rate
    * is missing/stale, and returns the current state immediately — the app
    * keeps working on the last cached rate (or USD) while the fetch runs.
@@ -527,10 +527,10 @@ function registerIpc(): void {
     return listCurrencies()
   })
 
-  /** CSV/JSON export in the selected display currency (ticket 32 seam for
-   * ticket 33's Export pane). The main process shows a folder picker when no
+  /** CSV/JSON export in the selected display currency (ADR 0009 seam for
+   * ADR 0013's Export pane). The main process shows a folder picker when no
    * destination is supplied. Reads the FULL ledger history through the
-   * aggregation layer (map ticket 05 Q5): the gate is "ledger has any rows",
+   * aggregation layer (ADR 0013): the gate is "ledger has any rows",
    * and there is no date-range filter — exports cover full history. Cost
    * figures stay USD-anchored in the ledger; conversion is applied only to
    * the files produced here. */

@@ -22,7 +22,7 @@ const validCall = {
   sessionId: 'sess-0',
 }
 
-describe('extraction seam under zod (ticket 04: loose + skip-and-report)', () => {
+describe('extraction seam under zod (ADR 0003: loose + skip-and-report)', () => {
   it('accepts a valid provider call; unknown extra keys are stripped, never fatal', () => {
     const parsed = parsedProviderCallSchema.parse({
       ...validCall,

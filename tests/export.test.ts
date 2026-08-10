@@ -15,7 +15,7 @@ function tempPath(): string {
   return join(mkdtempSync(join(tmpdir(), 'tr-export-out-')), 'out')
 }
 
-describe('exportJson (ticket 32: carries the selected display currency at export time)', () => {
+describe('exportJson (ADR 0009: carries the selected display currency at export time)', () => {
   it('converts every cost column and records the active currency in the payload', async () => {
     const store = makeStore()
     store.setDisplayCurrency('EUR')
@@ -63,7 +63,7 @@ describe('exportJson (ticket 32: carries the selected display currency at export
   })
 })
 
-describe('exportCsv (ticket 32: folder of CSVs in the selected display currency)', () => {
+describe('exportCsv (ADR 0009: folder of CSVs in the selected display currency)', () => {
   it('writes one-table-per-file with currency-labeled headers and converted values', async () => {
     const store = makeStore()
     store.setDisplayCurrency('EUR')
