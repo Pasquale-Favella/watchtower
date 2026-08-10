@@ -1,0 +1,34 @@
+name: test
+
+# Typecheck + tests — the merge-readiness gate (ADR 0015). Runs standalone on
+# every pull request and push to main, and is also reusable: release.yml calls
+# it on version tags so a release only builds code that just passed tests.
+#
+# Builds never run here — installers are produced only on version tags, in
+# release.yml.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+# No top-level concurrency block here: when this workflow is called as a
+# reusable workflow, its concurrency would be applied to the caller's job and
+# collide with the caller's own concurrency group, killing the job before it
+# starts. The caller (release.yml) owns cancellation for release runs.
+
+jobs:
+  test:
+    name: Typecheck + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test -- --run

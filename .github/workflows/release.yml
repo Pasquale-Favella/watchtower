@@ -1,42 +1,28 @@
-name: build
+name: release
 
-# Cross-platform packaging and CI (ADR 0015):
-#   - pull requests: typecheck + tests only (fast feedback)
-#   - pushes to main: build all three packaging targets, upload installers as
-#     testable artifacts
-#   - version tags (v*): publish a GitHub Release with every installer attached
-# macOS can only be built on macOS, so the matrix is the source of truth.
+# Cross-platform release pipeline (ADR 0015). Runs only when a version tag
+# (v*) is pushed: re-tests the exact tagged code, builds all three packaging
+# targets — Windows NSIS, macOS universal DMG/zip, Linux AppImage/deb — and
+# publishes a GitHub Release with every installer attached.
+# macOS can only be built on macOS, so the build matrix is the source of truth.
 
 on:
-  pull_request:
   push:
-    branches: [main]
     tags: ['v*']
 
-# Cancel a superseded run (new push/PR update) instead of burning runner time.
+# Cancel a superseded run (new tag) instead of burning runner time.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: Typecheck + tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test -- --run
+  test:
+    name: Typecheck + tests (tagged commit)
+    uses: ./.github/workflows/test.yml
 
-  package:
+  build:
     name: Package ${{ matrix.target }}
-    needs: check
-    if: github.event_name != 'pull_request'
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -50,15 +36,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run package:${{ matrix.target }}
       - name: Upload installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: watchtower-${{ matrix.target }}
           path: |
@@ -71,18 +57,17 @@ jobs:
 
   release:
     name: Publish release
-    needs: package
-    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write # the only job that writes — attach installers to the tagged release
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
       - name: Attach installers to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: artifacts/**

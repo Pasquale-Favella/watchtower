@@ -3,6 +3,9 @@ productName: Watchtower
 directories:
   buildResources: build
   output: dist
+# Stable, version-less installer names (Watchtower-win-x64.exe, …) so the
+# README's releases/latest/download links always resolve to the newest build.
+artifactName: ${productName}-${os}-${arch}.${ext}
 files:
   - out/**
 win:

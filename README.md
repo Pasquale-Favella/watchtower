@@ -8,7 +8,7 @@
 
 A **local-first desktop dashboard** that turns the session files your AI coding tools already write to disk into a clear picture of your **token usage and spend** — broken down by **tool, model, project, and task**, with efficiency signals (one-shot rate, retry tax, routing waste) and read-only optimization advice.
 
-[![Version](https://img.shields.io/badge/version-0.1.0-1e3a8a?style=flat-square)](package.json)
+[![Version](https://img.shields.io/badge/version-0.1.1-1e3a8a?style=flat-square)](package.json)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Electron 43](https://img.shields.io/badge/Electron-43-47848f?style=flat-square&logo=electron&logoColor=white)](package.json)
 [![React 19](https://img.shields.io/badge/React-19-61dafb?style=flat-square&logo=react&logoColor=white)](package.json)
@@ -28,6 +28,21 @@ Claude Code, Codex, Cursor, Copilot, Gemini, and 30+ more tools are read **strai
 - **Accumulating ledger** — raw transcript facts in (SQLite), every view derived at query time
 - **Sandboxed renderer** — all data stays in the main process; the UI receives shaped, schema-validated payloads over IPC
 - **No telemetry** — the only network traffic is optional pricing and exchange-rate refreshes
+
+---
+
+## Download & install
+
+Download the installer for your platform from the [latest release](https://github.com/Pasquale-Favella/watchtower/releases/latest) — the direct links below always resolve to the newest build.
+
+| Platform | Installer | Install |
+|---|---|---|
+| **Windows** (x64) | [`Watchtower-win-x64.exe`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-win-x64.exe) | Run the installer (NSIS). Windows may show a SmartScreen "unknown publisher" warning — builds are unsigned for now ([Releases & platforms](#releases--platforms)). |
+| **macOS** (Apple Silicon + Intel) | [`Watchtower-mac-universal.dmg`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-mac-universal.dmg) | Open the DMG, drag Watchtower into Applications. First launch: right-click → Open (unsigned builds). |
+| **Linux** (x64) | [`Watchtower-linux-x64.AppImage`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x64.AppImage) | `chmod +x Watchtower-linux-x64.AppImage && ./Watchtower-linux-x64.AppImage` |
+| **Linux** (Debian/Ubuntu) | [`Watchtower-linux-x64.deb`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x64.deb) | `sudo apt install ./Watchtower-linux-x64.deb` |
+
+Every release ships all three platforms; pick the file that matches your OS. AppImage and `.deb` are the two Linux flavors; macOS ships one universal binary that runs on both Apple Silicon and Intel.
 
 ---
 
@@ -220,7 +235,7 @@ That's **38 providers** in total. Each lives in a single file under `src/main/pi
 
 ## Releases & platforms
 
-Installers for **Windows (NSIS), macOS (DMG/zip, one universal binary for Apple Silicon and Intel), and Linux (AppImage/deb)** are built in CI — typecheck + tests on every PR, installers as artifacts on `main`, and a GitHub Release with all three attached when a `v*` tag is pushed (ADR 0015).
+Installers for **Windows (NSIS), macOS (DMG/zip, one universal binary for Apple Silicon and Intel), and Linux (AppImage/deb)** are built in CI **only when a `v*` tag is pushed** (ADR 0015). Typecheck + tests run on every PR and every push to `main` as the merge-readiness gate; a tag then builds all three installers and publishes them as a GitHub Release.
 
 Artifacts are currently **unsigned** by design: Windows shows a SmartScreen "unknown publisher" warning and macOS users must right-click → Open the first time. Code signing is sign-ready — drop `CSC_LINK`/`CSC_KEY_PASSWORD` into CI secrets and builds sign themselves. macOS notarization needs a one-line config flip (`mac.notarize: true`) plus Apple secrets first (ADR 0015).
 
