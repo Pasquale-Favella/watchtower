@@ -31,7 +31,7 @@ The destination of the map [Adopt TanStack Router in the renderer](https://githu
     └── /settings                     → SettingsView (full-bleed)
 ```
 
-Layout routes with `path: '/'` (non-root) are TanStack layout routes — they render an `<Outlet/>` and consume no URL segment.
+Layout routes are **pathless** — created with an `id` (`createRoute({ id: 'shell', component })`), not `path: '/'`. Two nested `path: '/'` layouts collide on route id `/` (`createRouter` throws "Duplicate routes found with id: /" and the renderer fails at import → blank screen). Only the overview index keeps `path: '/'`.
 
 ## Files
 

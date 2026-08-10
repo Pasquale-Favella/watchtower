@@ -25,14 +25,16 @@ function SessionDetailRoute() {
 }
 
 // Code-based route tree on memory history (ADR 0014): created once at module
-// scope so StrictMode's double-render shares one router. Layout routes with
-// `path: '/'` consume no URL segment; the router is pure-navigation — no
-// loaders, the ADR 0011 stores keep driving every view.
+// scope so StrictMode's double-render shares one router. The shell and
+// dashboard are pathless layout routes (created by `id`, not `path`) — they
+// render an <Outlet/> and consume no URL segment; only the overview index
+// keeps `path: '/'`. The router is pure-navigation — no loaders, the ADR 0011
+// stores keep driving every view.
 const rootRoute = createRootRoute({ component: AppShell })
 
-const shellRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: ShellLayout })
+const shellRoute = createRoute({ getParentRoute: () => rootRoute, id: 'shell', component: ShellLayout })
 
-const dashboardRoute = createRoute({ getParentRoute: () => shellRoute, path: '/', component: DashboardLayout })
+const dashboardRoute = createRoute({ getParentRoute: () => shellRoute, id: 'dashboard', component: DashboardLayout })
 
 const overviewRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/', component: OverviewView })
 const sessionsRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/sessions', component: SessionsView })
