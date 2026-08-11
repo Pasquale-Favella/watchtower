@@ -11,7 +11,7 @@ import { SpendView } from '@/features/spend/SpendView'
 import { OptimizeView } from '@/features/optimize/OptimizeView'
 import { ModelsView } from '@/features/models/ModelsView'
 import { CompareView } from '@/features/compare/CompareView'
-import { SkillsView } from '@/features/skills/SkillsView'
+import { CoachSkillsView } from '@/features/coach-skills/CoachSkillsView'
 import { SettingsView } from '@/features/settings/SettingsView'
 
 // Code-based route tree on memory history (ADR 0014): created once at module
@@ -33,7 +33,7 @@ const spendRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/s
 const optimizeRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/optimize', component: OptimizeView })
 const modelsRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/models', component: ModelsView })
 const compareRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/compare', component: CompareView })
-const skillsRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/skills', component: SkillsView })
+const coachSkillsRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/coach-skills', component: CoachSkillsView })
 
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsView })
 
@@ -47,7 +47,7 @@ const routeTree = rootRoute.addChildren([
     optimizeRoute,
     modelsRoute,
     compareRoute,
-    skillsRoute,
+    coachSkillsRoute,
   ]),
   settingsRoute,
 ])

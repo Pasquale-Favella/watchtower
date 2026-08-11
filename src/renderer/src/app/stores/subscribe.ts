@@ -5,7 +5,7 @@ import {
   storeChangedMessageSchema,
 } from '../../../../shared/schemas/ipc.js'
 import { useScanStore } from './scan-store'
-import { useCoachStore } from './coach-store'
+import { useCoachSkillsStore } from '../../features/coach-skills/store'
 import { useSettingsStore } from '../../features/settings/store'
 import { coachEventEnvelopeSchema } from '../../../../shared/schemas/agents.js'
 
@@ -51,12 +51,12 @@ export function subscribeToIpc(): () => void {
   // store's change path — no rebuild, no rescan.
   unsubs.push(window.api.onConfigChanged(() => { void useScanStore.getState().applyChange() }))
 
-  // A coach run streamed an event (ticket 21): route it into the Coach store
-  // so the surface accumulates the run's text/tools/session live.
+  // A harness run streamed an event (ADR 0017): route it into the unified
+  // Coach & Skills store so the thread accumulates text/tools/session live.
   unsubs.push(window.api.onCoachEvent(message => {
     const parsed = parseEvent(coachEventEnvelopeSchema, 'coach event', message)
     if (!parsed) return
-    useCoachStore.getState().onEvent(parsed)
+    useCoachSkillsStore.getState().onEvent(parsed)
   }))
 
   return () => { for (const unsub of unsubs) unsub() }

@@ -34,7 +34,7 @@ const SECTION_ICONS: Record<Section, ReactNode> = {
   optimize: <Lightbulb />,
   models: <Layers />,
   compare: <ArrowLeftRight />,
-  skills: <Sparkles />,
+  coachSkills: <Sparkles />,
   settings: <Settings />,
 }
 

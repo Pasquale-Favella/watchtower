@@ -643,16 +643,12 @@ function registerIpc(): void {
   ipcMain.handle('export:json', (_event, destination?: string): Promise<ExportResult> => runExport('json', destination))
 
   // Coach + Skills agent chain (tickets 21–25): the HarnessRuntime seam's IPC
-  // surface — harness listing, run ack/stream/cancel, the consent gate, the
-  // not-a-skill dismissal store, and consent-gated draft prose. The runner is
-  // lazy: the AI SDK loads on the first harness-touching call, never at boot.
-  // Consent is the ledger's persisted setting (default off, ADR 0012
-  // addendum); dismissals are a ledger config table so they survive clear().
+  // surface — harness listing, run ack/stream/cancel, the not-a-skill
+  // dismissal store, and draft prose. The runner is lazy: the AI SDK loads on
+  // the first harness-touching call, never at boot. Runs are user-initiated
+  // from the unified Coach & Skills surface (ADR 0017); dismissals are a
+  // ledger config table so they survive clear().
   registerAgentsIpc({
-    consent: {
-      getConsent: () => ledger?.getAgentsConsent() ?? false,
-      setConsent: (granted) => ledger?.setAgentsConsent(granted),
-    },
     dismissals: {
       // The skills:view read goes straight to the ledger above; this source
       // carries only the write (ticket 25).

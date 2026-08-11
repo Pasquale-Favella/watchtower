@@ -13,8 +13,6 @@ import type {
   SkillsDismissalRequest,
   SkillsDismissalResult,
   SkillsPayload,
-  SkillsProseRequest,
-  SkillsProseResult,
   SkillsSaveRequest,
   SkillsSaveResult,
   SkillsThresholds,
@@ -31,11 +29,11 @@ import type {
   StoreChangedMessage,
 } from '../shared/schemas/ipc.js'
 import type {
-  AgentsConsentResult,
   CoachEventEnvelope,
   CoachHarnessesResult,
   CoachRunRequest,
   CoachRunResult,
+  CoachWorkspaceResult,
 } from '../shared/schemas/agents.js'
 
 export type {
@@ -47,11 +45,11 @@ export type {
   StoreChangedMessage,
 } from '../shared/schemas/ipc.js'
 export type {
-  AgentsConsentResult,
   CoachEventEnvelope,
   CoachHarnessesResult,
   CoachRunRequest,
   CoachRunResult,
+  CoachWorkspaceResult,
 } from '../shared/schemas/agents.js'
 
 const api = {
@@ -119,8 +117,6 @@ const api = {
     ipcRenderer.invoke('skills:view', scope, thresholds),
   dismissSkill: (request: SkillsDismissalRequest): Promise<SkillsDismissalResult> =>
     ipcRenderer.invoke('skills:dismiss', request),
-  getDraftProse: (request: SkillsProseRequest): Promise<SkillsProseResult> =>
-    ipcRenderer.invoke('skills:prose', request),
   saveSkill: (request: SkillsSaveRequest): Promise<SkillsSaveResult> =>
     ipcRenderer.invoke('skills:save', request),
   addModelAlias: (model: string, aliasOf: string): Promise<{ ok: true }> => ipcRenderer.invoke('models:addAlias', model, aliasOf),
@@ -158,19 +154,18 @@ const api = {
    * destination the main process shows a folder/file picker. */
   exportData: (format: 'csv' | 'json', destination?: string): Promise<ExportResult> =>
     ipcRenderer.invoke(`export:${format}`, destination),
-  /** Coach agent chain (ticket 21): detected harnesses for the picker. */
+  /** Coach & Skills agent chain (ADR 0017): detected harnesses for the picker. */
   getCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses'),
+  /** OS directory picker for the run workspace (ADR 0017). */
+  pickCoachWorkspace: (): Promise<CoachWorkspaceResult> => ipcRenderer.invoke('coach:pick-workspace'),
   /** Starts a harness run; resolves with the immediate ack. Events stream on
    * `onCoachEvent` keyed by the returned runId. */
   startCoachRun: (request: CoachRunRequest): Promise<CoachRunResult> =>
     ipcRenderer.invoke('coach:run', request),
   /** Interrupts the active run (fire-and-forget). */
   cancelCoachRun: (runId: string): void => ipcRenderer.send('coach:cancel', runId),
-  /** The consent gate (ticket 22, ADR 0012 addendum): read/revoke the
-   * one-time opt-in that lets ledger-derived data reach a harness provider. */
-  getAgentsConsent: (): Promise<AgentsConsentResult> => ipcRenderer.invoke('agents:consent:get'),
-  setAgentsConsent: (granted: boolean): Promise<AgentsConsentResult> =>
-    ipcRenderer.invoke('agents:consent:set', granted),
+  /** Streams one CoachEvent per broadcast, enveloped with the runId it belongs
+   * to, so the renderer routes concurrent runs without mixing deltas. */
   onCoachEvent: (callback: (message: CoachEventEnvelope) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, message: CoachEventEnvelope): void => callback(message)
     ipcRenderer.on('coach:event', listener)

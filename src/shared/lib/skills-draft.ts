@@ -4,8 +4,8 @@ import type { SkillCandidate } from '../schemas/skills.js'
  * Template draft assembly (ticket 25): builds a SKILL.md-skeleton draft from a
  * candidate's NORMALIZED evidence only — pattern key, source, frequency,
  * spread, cost/turns, and the normalized example. Never raw transcripts, never
- * session text. This is the consent-off path: deterministic, offline, no LLM.
- * When consent is granted, the harness may replace the prose body, but this
+ * session text. This is the template path: deterministic, offline, no LLM.
+ * When the user asks the harness to author the prose, the body is replaced, but this
  * template is always the safe default so the board never shows a broken state.
  *
  * Pure shared module (no node imports): the renderer previews drafts with it,
@@ -52,7 +52,7 @@ export function assembleDraftMarkdown(candidate: SkillCandidate): string {
   return [
     `# ${candidate.name}`,
     '',
-    `> Template draft — generated locally from normalized evidence (no LLM). Harness-authored prose replaces this body when consent is on.`,
+    `> Template draft — generated locally from normalized evidence (no LLM). Harness-authored prose can replace this body.`,
     '',
     '## Description',
     describeCandidate(candidate),

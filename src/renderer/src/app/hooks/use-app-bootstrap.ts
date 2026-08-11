@@ -26,7 +26,6 @@ export function useAppBootstrap(): void {
         useSettingsStore.getState().loadCadence(),
         useSettingsStore.getState().loadCurrency(),
         useSettingsStore.getState().loadCurrencyOptions(),
-        useSettingsStore.getState().loadAgentsConsent(),
       ])
     })()
     return unsubscribe

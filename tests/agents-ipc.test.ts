@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createCoachRunner, createSkillsDraftRunner, type CoachRunner } from '../src/main/agents/ipc.js'
+import { createCoachRunner, type CoachRunner } from '../src/main/agents/ipc.js'
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { HarnessRuntime } from '../src/main/agents/runtime.js'
 import type { CoachEvent } from '../src/shared/schemas/agents.js'
@@ -53,9 +53,8 @@ function streamingRuntime(): { runtime: HarnessRuntime; interrupted: () => boole
   return { runtime, interrupted: () => interrupted }
 }
 
-function makeRunner(runtime: HarnessRuntime, options: { consent?: boolean } = {}): CoachRunner {
-  const consent = options.consent ?? true
-  return createCoachRunner({ getRuntime: async () => runtime, detect, getConsent: () => consent })
+function makeRunner(runtime: HarnessRuntime): CoachRunner {
+  return createCoachRunner({ getRuntime: async () => runtime, detect })
 }
 
 /** Yields to the event loop so the fire-and-forget stream pump lands. */
@@ -165,18 +164,7 @@ describe('Coach IPC runner (ticket 21) — ack, stream, cancel over the seam', (
     expect(run).not.toHaveBeenCalled()
   })
 
-  it('refuses an unconsented run — the gate is main-authoritative (ADR 0012 addendum)', async () => {
-    const run = vi.fn(async function* () { /* no-op */ })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime, { consent: false })
-
-    const result = await runner.start(request, () => {})
-
-    expect(result).toEqual({ ok: false, error: 'consent required' })
-    // No SDK load, no spawn: the refusal happens before the runtime is touched.
-    expect(run).not.toHaveBeenCalled()
-  })
-
-  it('a consented run launches normally', async () => {
+  it('a coach run launches normally and streams its events', async () => {
     const runner = makeRunner(scriptedRuntime([{ kind: 'status', state: 'done' }]))
     const events: CoachEvent[] = []
 
@@ -211,8 +199,8 @@ describe('Coach IPC runner (ticket 21) — ack, stream, cancel over the seam', (
   })
 })
 
-describe('Skills draft prose runner (ticket 25) — consent-gated harness prose', () => {
-  const proseRequest = {
+describe('Mode-tagged runs (ADR 0017) — build-skill prose through coach:run', () => {
+  const evidence = {
     source: 'bash' as const,
     name: 'git commit',
     frequency: 6,
@@ -222,53 +210,58 @@ describe('Skills draft prose runner (ticket 25) — consent-gated harness prose'
     turns: 4,
   }
 
-  function makeDraftRunner(runtime: HarnessRuntime, options: { consent?: boolean; proseTimeoutMs?: number } = {}): ReturnType<typeof createSkillsDraftRunner> {
-    return createSkillsDraftRunner({
-      getRuntime: async () => runtime,
-      detect,
-      getConsent: () => options.consent ?? true,
-      defaultWorkspace: () => realWorkspace(),
-      ...(options.proseTimeoutMs !== undefined ? { proseTimeoutMs: options.proseTimeoutMs } : {}),
+  it('builds the authoring prompt main-side from the NORMALIZED evidence — never renderer text', async () => {
+    const run = vi.fn(async function* () {
+      yield { kind: 'status', state: 'done' }
     })
-  }
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
 
-  it('refuses without consent before any SDK load or spawn', async () => {
-    const runner = makeDraftRunner(scriptedRuntime([]), { consent: false })
-    expect(await runner.prose(proseRequest)).toEqual({ ok: false, error: 'consent required' })
+    const result = await runner.start({ ...request, mode: 'build-skill', evidence }, () => {})
+
+    expect(result).toEqual({ ok: true, runId: expect.any(String) })
+    const input = run.mock.calls[0]?.[0] as { prompt: string }
+    // The prompt mentions ONLY normalized facts — never a raw command or
+    // transcript, and never the renderer's request body.
+    expect(input.prompt).toContain('Pattern: git commit')
+    expect(input.prompt).toContain('Frequency: 6 occurrences')
+    expect(input.prompt).toContain('Source: bash')
+    expect(input.prompt).toContain('SKILL.md')
   })
 
-  it('rejects malformed requests', async () => {
-    const runner = makeDraftRunner(scriptedRuntime([]))
-    expect(await runner.prose({ source: 'bash' })).toEqual({ ok: false, error: 'invalid prose request' })
+  it('refuses a build-skill run without evidence — before any spawn', async () => {
+    const run = vi.fn(async function* () { /* no-op */ })
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+
+    const result = await runner.start({ ...request, mode: 'build-skill' }, () => {})
+
+    expect(result).toEqual({ ok: false, error: 'build-skill run requires evidence' })
+    expect(run).not.toHaveBeenCalled()
   })
 
-  it('joins text deltas into the harness-authored markdown', async () => {
-    const runtime = scriptedRuntime([
+  it('refuses a coach run without a prompt', async () => {
+    const run = vi.fn(async function* () { /* no-op */ })
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+
+    const result = await runner.start({ ...request, prompt: '   ' }, () => {})
+
+    expect(result).toEqual({ ok: false, error: 'coach run requires a prompt' })
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('streams the build-skill prose through the normal coach:run channel', async () => {
+    const runner = makeRunner(scriptedRuntime([
       { kind: 'status', state: 'starting' },
       { kind: 'text', delta: '# git commit' },
       { kind: 'text', delta: '\n\n## Description\nCommit changes.' },
       { kind: 'status', state: 'done' },
-    ])
-    const result = await makeDraftRunner(runtime).prose(proseRequest)
-    expect(result).toEqual({ ok: true, markdown: '# git commit\n\n## Description\nCommit changes.' })
-  })
+    ]))
+    const events: CoachEvent[] = []
 
-  it('maps a harness error event to an error result', async () => {
-    const runtime = scriptedRuntime([{ kind: 'error', message: 'harness crashed' }])
-    expect(await makeDraftRunner(runtime).prose(proseRequest)).toEqual({ ok: false, error: 'harness crashed' })
-  })
+    const result = await runner.start({ ...request, mode: 'build-skill', evidence }, (_runId, event) => { events.push(event) })
 
-  it('reports empty output as an error', async () => {
-    const runtime = scriptedRuntime([{ kind: 'status', state: 'done' }])
-    expect(await makeDraftRunner(runtime).prose(proseRequest)).toEqual({ ok: false, error: 'harness returned no prose' })
-  })
-
-  it('times out a hung harness and interrupts the same iterator', async () => {
-    const { runtime, interrupted } = streamingRuntime()
-    const result = await makeDraftRunner(runtime, { proseTimeoutMs: 30 }).prose(proseRequest)
-    expect(result).toEqual({ ok: false, error: 'harness prose timed out' })
-    // The timeout's return() reached the generator, so the harness's cleanup
-    // (the finally in the seam) ran — no leaked child process.
-    await vi.waitFor(() => expect(interrupted()).toBe(true))
+    expect(result).toEqual({ ok: true, runId: expect.any(String) })
+    await vi.waitFor(() => expect(events).toHaveLength(4))
+    const text = events.filter(e => e.kind === 'text').map(e => (e as { kind: 'text'; delta: string }).delta).join('')
+    expect(text).toBe('# git commit\n\n## Description\nCommit changes.')
   })
 })

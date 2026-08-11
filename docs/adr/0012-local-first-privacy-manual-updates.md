@@ -10,15 +10,12 @@ Watchtower reads only local files that the user's tools already wrote; the ledge
 
 ---
 
-## Addendum (2026-08-11): Consented exception — Coach and Skills agents
+## Addendum (2026-08-11): Harness runs — user-initiated, on the machine's own CLIs
 
-Coach and Skills (the agent Sections, tickets 19–26) need ONE network path that the section above otherwise forbids: sending **ledger-derived context** to the user's own coding-agent CLI (Claude Code, Codex, Gemini, …) so it can answer. That CLI, driven locally via the Agent Client Protocol (`createACPProvider` on the AI SDK v6), forwards the prompt to its own model provider. This addendum records the single, user-consented exception to the local-first guarantee.
+Coach & Skills (the agent Sections, tickets 19–26, unified in ADR 0017) drive the user's OWN installed coding-agent CLIs (Claude Code, Codex, Gemini, …) via the Agent Client Protocol (`createACPProvider` on the AI SDK v6). Each run is **user-initiated from an explicit click** in the unified Coach & Skills chat; the harness runs in a user-picked workspace (the OS directory picker IS the authorization).
 
 Conditions (all enforced in code):
 
-1. **One-time opt-in, default off.** No agent call is ever made until the user grants consent (a first-run dialog, "Enable agents" / "Not now"). Consent is persisted by the **main process** (a ledger config table, `agents_consent_config`) and is revocable in Settings › Privacy & data. The main process's runner **refuses every unconsented run**, so a stale or bypassed renderer can never leak data past the gate.
-2. **Aggregated / normalized context only — never raw transcripts.** The Coach sends aggregated figures through the ledger's aggregation seam; Skills sends normalized patterns (commands stripped of arguments and paths). Raw session transcripts never leave the machine.
-3. **No API keys.** Auth is always the host CLI's own stored login; the harness spawn scrubs provider API keys from the child env (`scrubEnv`). The app never asks for or stores keys.
-4. **All other network traffic unchanged.** Pricing (LiteLLM) and FX (Frankfurter) fetches keep their existing behavior; nothing else becomes reachable.
-
-While the opt-in is off, both agents keep working in offline/template mode (no harness call), so declining never degrades the rest of the app.
+1. **Aggregated / normalized context only — never raw transcripts.** Coach runs send only what the user typed; build-skill runs send normalized detection patterns (commands stripped of arguments and paths, never raw session transcripts).
+2. **No API keys.** Auth is always the host CLI's own stored login; the harness spawn scrubs provider API keys from the child env (`scrubEnv`). The app never asks for or stores keys.
+3. **The prompt leaves the machine only through the user's own harness CLI.** The app adds no network path of its own for agents; everything else keeps its existing behavior (pricing, FX, manual updates).

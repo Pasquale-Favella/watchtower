@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { SkillCandidate } from '../src/shared/schemas/skills.js'
 
 function mockWindow(api: unknown): void {
   ;(globalThis as { window?: unknown }).window = { api }
@@ -22,23 +21,37 @@ function createMemoryStorage(): Storage {
 const memory = createMemoryStorage()
 vi.stubGlobal('localStorage', memory)
 
-const { useSkillsStore } = await import('../src/renderer/src/features/skills/store.js')
+const { useCoachSkillsStore } = await import('../src/renderer/src/features/coach-skills/store.js')
 
-const candidate: SkillCandidate = {
-  name: 'data-fetch',
-  source: 'skill',
-  frequency: 6,
-  spreadSessions: 2,
-  spreadProjects: 1,
-  costUSD: 3.5,
-  turns: 4,
-  latest: '2026-07-13T12:00:00.000Z',
-  sample: 'data-fetch',
-  sourceSessions: [{ sessionId: 'sess-a', project: 'demo', date: '2026-07-13', turns: 3, costUSD: 2 }],
-}
+describe('Coach & Skills detection + dismissal (ADR 0017)', () => {
+  it('loads the detection pool (the build-skill candidate source) for a scope', async () => {
+    const payload = {
+      period: { start: '2026-07-01', end: '2026-07-31' },
+      summary: {
+        sessions: 4, calls: 40, skillEvents: 8, bashEvents: 10, toolEvents: 3,
+        drafts: 1, opportunities: 1, ghosts: 0,
+      },
+      drafts: [{
+        name: 'data-fetch',
+        source: 'skill',
+        frequency: 6,
+        spreadSessions: 2,
+        spreadProjects: 1,
+        costUSD: 3.5,
+        turns: 4,
+        latest: '2026-07-13T12:00:00.000Z',
+        sample: 'data-fetch',
+        sourceSessions: [{ sessionId: 'sess-a', project: 'demo', date: '2026-07-13', turns: 3, costUSD: 2 }],
+      }],
+      opportunities: [],
+      ghosts: [],
+    }
+    mockWindow({ getSkills: () => Promise.resolve(payload) })
+    await useCoachSkillsStore.getState().detection.load({ period: 'lifetime' })
+    expect(useCoachSkillsStore.getState().detection.data?.drafts[0]?.name).toBe('data-fetch')
+  })
 
-describe('Skills store (ticket 25)', () => {
-  it('dismisses a pattern through the main process and reloads the board', async () => {
+  it('dismisses a pattern through the main process and reloads the detection pool', async () => {
     const dismissed: Array<{ source: string; name: string; reason: string }> = []
     const loaded: string[] = []
     mockWindow({
@@ -51,39 +64,21 @@ describe('Skills store (ticket 25)', () => {
         return Promise.resolve(null)
       },
     })
-    // Load the board first so the post-dismiss reload has a scope to refetch.
-    await useSkillsStore.getState().view.load({ period: 'lifetime' })
-    await useSkillsStore.getState().dismiss('skill', 'data-fetch', 'too-specific')
+    // Load the pool first so the post-dismiss reload has a scope to refetch.
+    await useCoachSkillsStore.getState().detection.load({ period: 'lifetime' })
+    await useCoachSkillsStore.getState().dismiss('skill', 'data-fetch', 'too-specific')
     expect(dismissed).toEqual([{ source: 'skill', name: 'data-fetch', reason: 'too-specific' }])
-    // The dismissal landed, so the board refetches against the same scope.
+    // The dismissal landed, so the pool refetches against the same scope.
     expect(loaded.length).toBe(2)
   })
 
-  it('keeps the board untouched when a dismissal write fails', async () => {
+  it('keeps the detection pool untouched when a dismissal write fails', async () => {
     mockWindow({
       dismissSkill: () => Promise.resolve({ ok: false, error: 'invalid dismissal request' }),
       getSkills: () => Promise.resolve(null),
     })
-    const keyBefore = useSkillsStore.getState().view.dataKey
-    await useSkillsStore.getState().dismiss('skill', 'data-fetch', 'not-a-skill')
-    expect(useSkillsStore.getState().view.dataKey).toBe(keyBefore)
-  })
-
-  it('tracks harness prose per draft keyed by source + name', async () => {
-    mockWindow({
-      getDraftProse: () => Promise.resolve({ ok: true, markdown: '# data-fetch\n\n## Description\nFetch data.' }),
-    })
-    await useSkillsStore.getState().generateProse(candidate)
-    expect(useSkillsStore.getState().prose['skill\u0000data-fetch'])
-      .toEqual({ status: 'ready', markdown: '# data-fetch\n\n## Description\nFetch data.' })
-  })
-
-  it('records a prose error without breaking the board', async () => {
-    mockWindow({
-      getDraftProse: () => Promise.resolve({ ok: false, error: 'consent required' }),
-    })
-    await useSkillsStore.getState().generateProse(candidate)
-    expect(useSkillsStore.getState().prose['skill\u0000data-fetch'])
-      .toEqual({ status: 'error', error: 'consent required' })
+    const keyBefore = useCoachSkillsStore.getState().detection.dataKey
+    await useCoachSkillsStore.getState().dismiss('skill', 'data-fetch', 'not-a-skill')
+    expect(useCoachSkillsStore.getState().detection.dataKey).toBe(keyBefore)
   })
 })

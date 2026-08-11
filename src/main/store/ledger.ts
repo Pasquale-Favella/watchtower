@@ -191,11 +191,6 @@ export class LedgerStore {
         code TEXT NOT NULL DEFAULT 'USD'
       );
 
-      CREATE TABLE IF NOT EXISTS agents_consent_config (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        granted INTEGER NOT NULL DEFAULT 0
-      );
-
       CREATE TABLE IF NOT EXISTS skills_dismissal_config (
         source TEXT NOT NULL,
         name TEXT NOT NULL,
@@ -519,25 +514,6 @@ export class LedgerStore {
       INSERT INTO refresh_cadence_config (id, value) VALUES (1, ?)
       ON CONFLICT(id) DO UPDATE SET value = excluded.value
     `).run(cadence)
-  }
-
-  /** The Coach/Skills consent gate (ticket 22, ADR 0012 addendum): whether
-   * the user has granted the one-time exception that lets ledger-derived data
-   * reach a harness CLI's model provider. Default OFF — the app's local-first
-   * promise holds until the user opts in. A config table (not scan data), so
-   * it survives `clear()`. */
-  getAgentsConsent(): boolean {
-    const row = this.db.prepare('SELECT granted FROM agents_consent_config WHERE id = 1').get() as
-      | { granted: number }
-      | undefined
-    return row ? row.granted === 1 : false
-  }
-
-  setAgentsConsent(granted: boolean): void {
-    this.db.prepare(`
-      INSERT INTO agents_consent_config (id, granted) VALUES (1, ?)
-      ON CONFLICT(id) DO UPDATE SET granted = excluded.granted
-    `).run(granted ? 1 : 0)
   }
 
   /** Not-a-skill dismissals (ticket 25): candidate patterns the user rejected,

@@ -26,7 +26,7 @@ const skillCandidate: SkillCandidate = {
   sourceSessions: [],
 }
 
-describe('assembleDraftMarkdown (consent-off template mode)', () => {
+describe('assembleDraftMarkdown (template mode, no LLM)', () => {
   it('produces a labeled SKILL.md skeleton with the evidence appendix', () => {
     const md = assembleDraftMarkdown(bashCandidate)
     expect(md).toContain('# git commit')

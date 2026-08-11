@@ -17,7 +17,7 @@ describe('ONBOARDING_STEPS', () => {
       'optimize',
       'models',
       'compare',
-      'skills',
+      'coachSkills',
       'settings',
     ])
   })

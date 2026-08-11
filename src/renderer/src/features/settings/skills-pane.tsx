@@ -1,9 +1,10 @@
 import { useSettingsStore } from '@/features/settings/store'
 
-/** Settings › Skills (ticket 24): the frequency × spread gate the detection
- * core consumes. Tuning prefs, persisted locally like theme and passed with
- * every `skills:view` request — the values are app settings, not code
- * constants. */
+/** Settings › Skills detection (ticket 24, ADR 0017): the frequency × spread
+ * gate the detection core consumes — the build-skill candidate pool in the
+ * unified Coach & Skills section. Tuning prefs, persisted locally like theme
+ * and passed with every `skills:view` request — the values are app settings,
+ * not code constants. */
 export function SkillsPane() {
   const frequency = useSettingsStore(s => s.skillsFrequency)
   const spread = useSettingsStore(s => s.skillsSpread)

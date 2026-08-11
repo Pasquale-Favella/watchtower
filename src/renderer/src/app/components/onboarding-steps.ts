@@ -63,9 +63,9 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     icon: ArrowLeftRight,
   },
   {
-    id: 'skills',
-    title: 'Skills',
-    body: 'See the patterns your workflow actually produces — recurring skills, commands and tools — proposed as draft SKILL.md entries, with near-misses and ghost skills flagged. Fully local.',
+    id: 'coachSkills',
+    title: 'Coach & Skills',
+    body: 'Chat with the coding agents already on your machine. Tag each run as Coach to get guidance, or Build skill to turn your detected patterns — recurring commands, tools and skills — into draft SKILL.md entries.',
     icon: Sparkles,
   },
   {

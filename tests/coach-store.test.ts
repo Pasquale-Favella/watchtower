@@ -1,8 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { useCoachStore } from '../src/renderer/src/app/stores/coach-store.js'
-import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
 import type { CoachEventEnvelope } from '../src/shared/schemas/agents.js'
+
+function createMemoryStorage(): Storage {
+  const store = new Map<string, string>()
+  return {
+    get length() { return store.size },
+    clear: () => { store.clear() },
+    getItem: (key: string) => store.get(key) ?? null,
+    key: (index: number) => Array.from(store.keys())[index] ?? null,
+    removeItem: (key: string) => { store.delete(key) },
+    setItem: (key: string, value: string) => { store.set(key, value) },
+  }
+}
+
+// The settings store persists via `createJSONStorage(() => localStorage)` at
+// module load — install the memory storage BEFORE the dynamic import.
+const memory = createMemoryStorage()
+vi.stubGlobal('localStorage', memory)
+
+const { useCoachSkillsStore } = await import('../src/renderer/src/features/coach-skills/store.js')
 
 /** Stub the preload surface for the fetch wrappers' IPC-call sites. */
 function mockWindow(api: unknown): void {
@@ -17,246 +34,243 @@ const harnesses = [
 const envelope = (event: CoachEventEnvelope['event']): CoachEventEnvelope => ({ runId: 'run-1', event })
 
 beforeEach(() => {
-  useCoachStore.setState(useCoachStore.getInitialState(), true)
-  useSettingsStore.setState(useSettingsStore.getInitialState(), true)
+  useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
 })
 
-describe('useCoachStore — Coach surface state (ticket 21)', () => {
-  it('starts unhydrated and idle', () => {
-    const s = useCoachStore.getState()
+describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)', () => {
+  it('starts idle with no harness, no workspace, and an empty thread', () => {
+    const s = useCoachSkillsStore.getState()
     expect(s.hydrated).toBe(false)
     expect(s.harnesses).toEqual([])
+    expect(s.harnessKind).toBeNull()
+    expect(s.workspacePath).toBeNull()
+    expect(s.mode).toBe('coach')
+    expect(s.messages).toEqual([])
     expect(s.running).toBe(false)
     expect(s.activeRunId).toBeNull()
-    expect(s.text).toBe('')
-    expect(s.tools).toEqual([])
     expect(s.sessionId).toBeNull()
     expect(s.error).toBeNull()
   })
 
-  it('loadHarnesses hydrates the picker rows from the wire', async () => {
+  it('loadHarnesses hydrates the picker rows and auto-selects the first harness', async () => {
     mockWindow({ getCoachHarnesses: () => Promise.resolve(harnesses) })
-    await useCoachStore.getState().loadHarnesses()
-    const s = useCoachStore.getState()
+    await useCoachSkillsStore.getState().loadHarnesses()
+    const s = useCoachSkillsStore.getState()
     expect(s.hydrated).toBe(true)
     expect(s.harnesses).toEqual(harnesses)
+    expect(s.harnessKind).toBe('claude')
   })
 
   it('loadHarnesses drops a schema-invalid payload without hydrating', async () => {
     mockWindow({ getCoachHarnesses: () => Promise.resolve([{ kind: 123 }]) })
-    await useCoachStore.getState().loadHarnesses()
-    const s = useCoachStore.getState()
+    await useCoachSkillsStore.getState().loadHarnesses()
+    const s = useCoachSkillsStore.getState()
     expect(s.hydrated).toBe(false)
     expect(s.harnesses).toEqual([])
+    expect(s.harnessKind).toBeNull()
   })
 
-  it('run resets the stream, acks with a runId, and marks running', async () => {
+  it('sendCoach pushes user + assistant turns and acks the run', async () => {
     mockWindow({ startCoachRun: () => Promise.resolve({ ok: true, runId: 'run-9' }) })
-    useSettingsStore.setState({ agentsConsent: true })
-    useCoachStore.setState({ text: 'stale', tools: ['Stale'], error: 'boom' })
+    useCoachSkillsStore.setState({ harnessKind: 'claude', workspacePath: 'C:\\work' })
 
-    await useCoachStore.getState().run({
-      harnessKind: 'claude',
-      workspacePath: 'C:\\work\\project',
-      prompt: 'Summarise my spend',
-    })
+    await useCoachSkillsStore.getState().sendCoach('Summarise my spend')
 
-    const s = useCoachStore.getState()
+    const s = useCoachSkillsStore.getState()
     expect(s.running).toBe(true)
     expect(s.activeRunId).toBe('run-9')
-    expect(s.text).toBe('')
-    expect(s.tools).toEqual([])
-    expect(s.error).toBeNull()
+    expect(s.messages).toHaveLength(2)
+    expect(s.messages[0]).toMatchObject({ role: 'user', content: 'Summarise my spend', mode: 'coach' })
+    expect(s.messages[1]).toMatchObject({ role: 'assistant', content: '', mode: 'coach', streaming: true })
   })
 
-  it('run forwards the resume sessionId to the wire', async () => {
+  it('sendCoach forwards the resume sessionId only on coach turns', async () => {
     const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
     mockWindow({ startCoachRun })
-    useSettingsStore.setState({ agentsConsent: true })
-    useCoachStore.setState({ sessionId: 'sess_prev' })
+    useCoachSkillsStore.setState({ harnessKind: 'claude', workspacePath: 'C:\\work', sessionId: 'sess_prev' })
 
-    await useCoachStore.getState().run({ harnessKind: 'claude', workspacePath: 'C:\\work', prompt: 'p' })
+    await useCoachSkillsStore.getState().sendCoach('p')
 
     expect(startCoachRun).toHaveBeenCalledWith({
       harnessKind: 'claude',
       workspacePath: 'C:\\work',
+      mode: 'coach',
       prompt: 'p',
       sessionId: 'sess_prev',
     })
   })
 
-  it('run surfaces an ok:false ack as an error and stops running', async () => {
+  it('sendCoach without a harness or workspace fails without launching', async () => {
+    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
+    mockWindow({ startCoachRun })
+    useCoachSkillsStore.setState({ harnessKind: null, workspacePath: null })
+
+    await useCoachSkillsStore.getState().sendCoach('p')
+
+    expect(useCoachSkillsStore.getState().error).toBe('select a harness and a workspace first')
+    expect(startCoachRun).not.toHaveBeenCalled()
+  })
+
+  it('sendBuildSkill sends normalized evidence only and never resumes', async () => {
+    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
+    mockWindow({ startCoachRun })
+    useCoachSkillsStore.setState({ harnessKind: 'claude', workspacePath: 'C:\\work', sessionId: 'sess_prev' })
+
+    await useCoachSkillsStore.getState().sendBuildSkill({
+      name: 'data-fetch',
+      source: 'skill',
+      frequency: 6,
+      spreadSessions: 2,
+      spreadProjects: 1,
+      costUSD: 3.5,
+      turns: 4,
+      latest: '2026-07-13T12:00:00.000Z',
+      sample: 'data-fetch',
+      sourceSessions: [{ sessionId: 'sess-a', project: 'demo', date: '2026-07-13', turns: 3, costUSD: 2 }],
+    })
+
+    expect(startCoachRun).toHaveBeenCalledWith({
+      harnessKind: 'claude',
+      workspacePath: 'C:\\work',
+      mode: 'build-skill',
+      evidence: {
+        source: 'skill',
+        name: 'data-fetch',
+        frequency: 6,
+        spreadSessions: 2,
+        spreadProjects: 1,
+        costUSD: 3.5,
+        turns: 4,
+      },
+      // No sessionId: each build-skill run is a fresh one-shot.
+    })
+  })
+
+  it('sendBuildSkill seeds the draft card and the done event fills its markdown', async () => {
+    mockWindow({ startCoachRun: () => Promise.resolve({ ok: true, runId: 'run-9' }) })
+    useCoachSkillsStore.setState({ harnessKind: 'claude', workspacePath: 'C:\\work' })
+
+    await useCoachSkillsStore.getState().sendBuildSkill({
+      name: 'data-fetch',
+      source: 'skill',
+      frequency: 6,
+      spreadSessions: 2,
+      spreadProjects: 1,
+      costUSD: 3.5,
+      turns: 4,
+      latest: '2026-07-13T12:00:00.000Z',
+      sample: 'data-fetch',
+      sourceSessions: [{ sessionId: 'sess-a', project: 'demo', date: '2026-07-13', turns: 3, costUSD: 2 }],
+    })
+
+    // The assistant turn is born with its draft card's candidate attached.
+    let assistant = useCoachSkillsStore.getState().messages[1]
+    expect(assistant.draft?.candidate.name).toBe('data-fetch')
+    expect(assistant.draft?.markdown).toBe('')
+
+    // Stream a delta, then complete — both from the ACTIVE run (the strict
+    // guard drops anything else). The done event fills the card markdown.
+    const runId = useCoachSkillsStore.getState().activeRunId!
+    const run = (event: CoachEventEnvelope['event']): CoachEventEnvelope => ({ runId, event })
+    useCoachSkillsStore.getState().onEvent(run({ kind: 'text', delta: '# data-fetch' }))
+    useCoachSkillsStore.getState().onEvent(run({ kind: 'status', state: 'done' }))
+    assistant = useCoachSkillsStore.getState().messages[1]
+    expect(assistant.streaming).toBe(false)
+    expect(assistant.draft?.markdown).toBe('# data-fetch')
+  })
+
+  it('a failed ack marks the assistant turn errored and stops running', async () => {
     mockWindow({ startCoachRun: () => Promise.resolve({ ok: false, error: 'harness not detected: ghost' }) })
-    useSettingsStore.setState({ agentsConsent: true })
-    await useCoachStore.getState().run({ harnessKind: 'ghost', workspacePath: 'C:\\work', prompt: 'p' })
-    const s = useCoachStore.getState()
-    expect(s.error).toBe('harness not detected: ghost')
+    useCoachSkillsStore.setState({ harnessKind: 'claude', workspacePath: 'C:\\work' })
+
+    await useCoachSkillsStore.getState().sendCoach('p')
+
+    const s = useCoachSkillsStore.getState()
     expect(s.running).toBe(false)
+    expect(s.messages[1]).toMatchObject({ streaming: false, error: 'harness not detected: ghost' })
   })
 
-  it('run surfaces a malformed ack payload as an error', async () => {
-    mockWindow({ startCoachRun: () => Promise.resolve({ ok: 'maybe' }) })
-    useSettingsStore.setState({ agentsConsent: true })
-    await useCoachStore.getState().run({ harnessKind: 'claude', workspacePath: 'C:\\work', prompt: 'p' })
-    const s = useCoachStore.getState()
-    expect(s.error).toMatch(/Invalid coach run payload/)
+  it('onEvent accumulates text deltas and tool notices into the streaming turn', () => {
+    useCoachSkillsStore.setState({ activeRunId: 'run-1', running: true, messages: [
+      { id: 'm0', role: 'user', content: 'p', mode: 'coach', tools: [], streaming: false },
+      { id: 'm1', role: 'assistant', content: '', mode: 'coach', tools: [], streaming: true },
+    ] })
+    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'text', delta: 'Hel' }))
+    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Bash' }))
+    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'text', delta: 'lo' }))
+    const assistant = useCoachSkillsStore.getState().messages[1]
+    expect(assistant.content).toBe('Hello')
+    expect(assistant.tools).toEqual(['Bash'])
+  })
+
+  it('onEvent done finalizes the turn and attaches the draft card for a build-skill run', () => {
+    useCoachSkillsStore.setState({ activeRunId: 'run-1', running: true, messages: [
+      { id: 'm0', role: 'user', content: 'data-fetch', mode: 'build-skill', tools: [], streaming: false },
+      { id: 'm1', role: 'assistant', content: '# data-fetch', mode: 'build-skill', tools: [], streaming: true, draft: { candidate: { name: 'data-fetch' }, markdown: '' } },
+    ] })
+    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'status', state: 'done' }))
+    const s = useCoachSkillsStore.getState()
     expect(s.running).toBe(false)
-  })
-
-  it('onEvent accumulates text deltas and tool notices in order', () => {
-    useCoachStore.getState().onEvent(envelope({ kind: 'text', delta: 'Hel' }))
-    useCoachStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Bash' }))
-    useCoachStore.getState().onEvent(envelope({ kind: 'text', delta: 'lo' }))
-    useCoachStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Edit' }))
-    const s = useCoachStore.getState()
-    expect(s.text).toBe('Hello')
-    expect(s.tools).toEqual(['Bash', 'Edit'])
-  })
-
-  it('onEvent marks running on starting and clears it on done', () => {
-    useCoachStore.getState().onEvent(envelope({ kind: 'status', state: 'starting' }))
-    expect(useCoachStore.getState().running).toBe(true)
-    useCoachStore.getState().onEvent(envelope({ kind: 'status', state: 'done' }))
-    expect(useCoachStore.getState().running).toBe(false)
+    expect(s.activeRunId).toBeNull()
+    const assistant = s.messages[1]
+    expect(assistant.streaming).toBe(false)
+    expect(assistant.draft?.markdown).toBe('# data-fetch')
   })
 
   it('onEvent stores the session resume handle', () => {
-    useCoachStore.getState().onEvent(envelope({ kind: 'session', sessionId: 'sess_9' }))
-    expect(useCoachStore.getState().sessionId).toBe('sess_9')
+    useCoachSkillsStore.setState({ activeRunId: 'run-1' })
+    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'session', sessionId: 'sess_9' }))
+    expect(useCoachSkillsStore.getState().sessionId).toBe('sess_9')
   })
 
   it('onEvent surfaces an error and stops running', () => {
-    useCoachStore.getState().onEvent(envelope({ kind: 'status', state: 'starting' }))
-    useCoachStore.getState().onEvent(envelope({ kind: 'error', message: 'CLI not logged in' }))
-    const s = useCoachStore.getState()
-    expect(s.error).toBe('CLI not logged in')
+    useCoachSkillsStore.setState({ activeRunId: 'run-1', running: true, messages: [
+      { id: 'm0', role: 'user', content: 'p', mode: 'coach', tools: [], streaming: false },
+      { id: 'm1', role: 'assistant', content: '', mode: 'coach', tools: [], streaming: true },
+    ] })
+    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'error', message: 'CLI not logged in' }))
+    const s = useCoachSkillsStore.getState()
     expect(s.running).toBe(false)
+    expect(s.messages[1]).toMatchObject({ streaming: false, error: 'CLI not logged in' })
   })
 
   it('cancel sends the active runId and immediately clears the run state', () => {
     const cancelCoachRun = vi.fn()
     mockWindow({ cancelCoachRun })
-    useCoachStore.setState({ activeRunId: 'run-1', running: true })
-    useCoachStore.getState().cancel()
+    useCoachSkillsStore.setState({ activeRunId: 'run-1', running: true, messages: [
+      { id: 'm0', role: 'user', content: 'p', mode: 'coach', tools: [], streaming: false },
+      { id: 'm1', role: 'assistant', content: '', mode: 'coach', tools: [], streaming: true },
+    ] })
+    useCoachSkillsStore.getState().cancel()
     // No done event follows a cancel — the store must recover on its own.
     expect(cancelCoachRun).toHaveBeenCalledWith('run-1')
-    expect(useCoachStore.getState().running).toBe(false)
-    expect(useCoachStore.getState().activeRunId).toBeNull()
+    expect(useCoachSkillsStore.getState().running).toBe(false)
+    expect(useCoachSkillsStore.getState().activeRunId).toBeNull()
+    expect(useCoachSkillsStore.getState().messages[1]).toMatchObject({ streaming: false, error: 'cancelled' })
 
-    useCoachStore.getState().cancel()
+    useCoachSkillsStore.getState().cancel()
     expect(cancelCoachRun).toHaveBeenCalledTimes(1)
   })
 
   it('onEvent ignores events from a run other than the active one', () => {
-    useCoachStore.setState({ activeRunId: 'run-2' })
-    useCoachStore.getState().onEvent({ runId: 'run-1', event: { kind: 'text', delta: 'stale' } })
-    expect(useCoachStore.getState().text).toBe('')
-    useCoachStore.getState().onEvent({ runId: 'run-2', event: { kind: 'text', delta: 'fresh' } })
-    expect(useCoachStore.getState().text).toBe('fresh')
+    useCoachSkillsStore.setState({ activeRunId: 'run-2', messages: [
+      { id: 'm0', role: 'user', content: 'p', mode: 'coach', tools: [], streaming: false },
+      { id: 'm1', role: 'assistant', content: '', mode: 'coach', tools: [], streaming: true },
+    ] })
+    useCoachSkillsStore.getState().onEvent({ runId: 'run-1', event: { kind: 'text', delta: 'stale' } })
+    expect(useCoachSkillsStore.getState().messages[1].content).toBe('')
+    useCoachSkillsStore.getState().onEvent({ runId: 'run-2', event: { kind: 'text', delta: 'fresh' } })
+    expect(useCoachSkillsStore.getState().messages[1].content).toBe('fresh')
   })
 
-  it('resetSession clears the resume handle and stream buffers', () => {
-    useCoachStore.setState({ sessionId: 'sess_9', text: 'old', tools: ['Bash'], error: 'boom' })
-    useCoachStore.getState().resetSession()
-    const s = useCoachStore.getState()
+  it('resetSession clears the thread and the resume handle', () => {
+    useCoachSkillsStore.setState({ sessionId: 'sess_9', messages: [
+      { id: 'm0', role: 'user', content: 'p', mode: 'coach', tools: [], streaming: false },
+    ], error: 'boom' })
+    useCoachSkillsStore.getState().resetSession()
+    const s = useCoachSkillsStore.getState()
+    expect(s.messages).toEqual([])
     expect(s.sessionId).toBeNull()
-    expect(s.text).toBe('')
-    expect(s.tools).toEqual([])
     expect(s.error).toBeNull()
-  })
-
-  it('starts with the consent gate closed (offline/template mode)', () => {
-    const s = useCoachStore.getState()
-    expect(s.consentRequired).toBe(false)
-    expect(s.pendingRun).toBeNull()
-    expect(s.consentDeclined).toBe(false)
-  })
-
-  it('run holds an unconsented run behind the gate — no wire call', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useSettingsStore.setState({ agentsConsent: false })
-
-    await useCoachStore.getState().run({ harnessKind: 'claude', workspacePath: 'C:\\work', prompt: 'p' })
-
-    const s = useCoachStore.getState()
-    expect(s.consentRequired).toBe(true)
-    expect(s.pendingRun).toEqual({ harnessKind: 'claude', workspacePath: 'C:\\work', prompt: 'p' })
-    expect(startCoachRun).not.toHaveBeenCalled()
-    expect(s.running).toBe(false)
-  })
-
-  it('a consented run skips the gate and launches normally', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useSettingsStore.setState({ agentsConsent: true })
-
-    await useCoachStore.getState().run({ harnessKind: 'claude', workspacePath: 'C:\\work', prompt: 'p' })
-
-    expect(useCoachStore.getState().consentRequired).toBe(false)
-    expect(startCoachRun).toHaveBeenCalledOnce()
-  })
-
-  it('grantConsent persists the opt-in and replays the held run', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    const setAgentsConsent = vi.fn(() => Promise.resolve({ granted: true }))
-    mockWindow({ startCoachRun, setAgentsConsent })
-    useSettingsStore.setState({ agentsConsent: false })
-
-    await useCoachStore.getState().run({ harnessKind: 'claude', workspacePath: 'C:\\work', prompt: 'p' })
-    await useCoachStore.getState().grantConsent()
-
-    expect(setAgentsConsent).toHaveBeenCalledWith(true)
-    expect(useSettingsStore.getState().agentsConsent).toBe(true)
-    expect(useCoachStore.getState().consentRequired).toBe(false)
-    expect(useCoachStore.getState().pendingRun).toBeNull()
-    expect(startCoachRun).toHaveBeenCalledOnce()
-  })
-
-  it('grantConsent with a failed write keeps the dialog up and never replays the held run', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun, setAgentsConsent: () => Promise.resolve({ granted: 'bogus' }) })
-    useSettingsStore.setState({ agentsConsent: false })
-
-    await useCoachStore.getState().run({ harnessKind: 'claude', workspacePath: 'C:\\work', prompt: 'p' })
-    await useCoachStore.getState().grantConsent()
-
-    const s = useCoachStore.getState()
-    expect(useSettingsStore.getState().agentsConsent).toBe(false)
-    expect(s.consentRequired).toBe(true)
-    expect(s.pendingRun).toEqual({ harnessKind: 'claude', workspacePath: 'C:\\work', prompt: 'p' })
-    expect(startCoachRun).not.toHaveBeenCalled()
-  })
-
-  it('a fresh run attempt clears a previous decline so the gate can ask again', async () => {
-    mockWindow({ startCoachRun: () => Promise.resolve({ ok: true, runId: 'run-9' }) })
-    useSettingsStore.setState({ agentsConsent: false })
-    useCoachStore.setState({ consentDeclined: true })
-
-    await useCoachStore.getState().run({ harnessKind: 'claude', workspacePath: 'C:\\work', prompt: 'p' })
-
-    expect(useCoachStore.getState().consentRequired).toBe(true)
-    expect(useCoachStore.getState().consentDeclined).toBe(false)
-  })
-
-  it('declineConsent refuses the held run and marks the offline/template mode', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useSettingsStore.setState({ agentsConsent: false })
-
-    await useCoachStore.getState().run({ harnessKind: 'claude', workspacePath: 'C:\\work', prompt: 'p' })
-    useCoachStore.getState().declineConsent()
-
-    const s = useCoachStore.getState()
-    expect(s.consentRequired).toBe(false)
-    expect(s.pendingRun).toBeNull()
-    expect(s.consentDeclined).toBe(true)
-    expect(startCoachRun).not.toHaveBeenCalled()
-  })
-
-  it('resetSession clears a previous decline so the gate can ask again', () => {
-    useCoachStore.setState({ consentDeclined: true })
-    useCoachStore.getState().resetSession()
-    expect(useCoachStore.getState().consentDeclined).toBe(false)
   })
 })

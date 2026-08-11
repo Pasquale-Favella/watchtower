@@ -42,13 +42,10 @@ import { yieldPayloadSchema, type YieldPayload } from '../../../../shared/schema
 import {
   skillsDismissalResultSchema,
   skillsPayloadSchema,
-  skillsProseResultSchema,
   skillsSaveResultSchema,
   type SkillsDismissalRequest,
   type SkillsDismissalResult,
   type SkillsPayload,
-  type SkillsProseRequest,
-  type SkillsProseResult,
   type SkillsSaveRequest,
   type SkillsSaveResult,
   type SkillsThresholds,
@@ -77,13 +74,13 @@ import {
 import { cadenceValueSchema, type CadenceValue } from '../../../../shared/schemas/cadence.js'
 import { exportResultSchema, type ExportResult } from '../../../../shared/schemas/export.js'
 import {
-  agentsConsentResultSchema,
   coachHarnessesResultSchema,
   coachRunResultSchema,
-  type AgentsConsentResult,
+  coachWorkspaceResultSchema,
   type CoachHarnessesResult,
   type CoachRunRequest,
   type CoachRunResult,
+  type CoachWorkspaceResult,
 } from '../../../../shared/schemas/agents.js'
 
 /** The shared renderer error shape for an IPC payload: either validated data
@@ -200,12 +197,12 @@ export function fetchDismissSkill(request: SkillsDismissalRequest): Promise<ApiR
   return fetchPayload('skills dismissal', skillsDismissalResultSchema, () => window.api.dismissSkill(request))
 }
 
-export function fetchDraftProse(request: SkillsProseRequest): Promise<ApiResult<SkillsProseResult>> {
-  return fetchPayload('skills prose', skillsProseResultSchema, () => window.api.getDraftProse(request))
-}
-
 export function fetchSaveSkill(request: SkillsSaveRequest): Promise<ApiResult<SkillsSaveResult>> {
   return fetchPayload('skills save', skillsSaveResultSchema, () => window.api.saveSkill(request))
+}
+
+export function fetchPickCoachWorkspace(): Promise<ApiResult<CoachWorkspaceResult>> {
+  return fetchPayload('coach workspace', coachWorkspaceResultSchema, () => window.api.pickCoachWorkspace())
 }
 
 export function fetchModelAliases(): Promise<ApiResult<ModelAlias[]>> {
@@ -296,10 +293,3 @@ export function fetchCoachRun(request: CoachRunRequest): Promise<ApiResult<Coach
   return fetchPayload('coach run', coachRunResultSchema, () => window.api.startCoachRun(request))
 }
 
-export function fetchAgentsConsent(): Promise<ApiResult<AgentsConsentResult>> {
-  return fetchPayload('agents consent', agentsConsentResultSchema, () => window.api.getAgentsConsent())
-}
-
-export function fetchSetAgentsConsent(granted: boolean): Promise<ApiResult<AgentsConsentResult>> {
-  return fetchPayload('agents consent', agentsConsentResultSchema, () => window.api.setAgentsConsent(granted))
-}

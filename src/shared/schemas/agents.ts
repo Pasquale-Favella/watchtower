@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { skillsProseRequestSchema } from './skills.js'
+
 /**
  * The agent harness event stream — the wire contract between the main-process
  * HarnessRuntime seam and the renderer (ADR 0005). Stream parts from the AI SDK
@@ -49,6 +51,13 @@ export const coachEventEnvelopeSchema = z.object({
 })
 export type CoachEventEnvelope = z.infer<typeof coachEventEnvelopeSchema>
 
+/** The mode tag of a Coach & Skills run (ADR 0017): `coach` runs a
+ *  free-form prompt; `build-skill` turns a detected candidate into a SKILL.md
+ *  draft (the prompt is built main-side from the candidate's NORMALIZED
+ *  evidence — the renderer never sends raw transcripts). */
+export const coachModeSchema = z.enum(['coach', 'build-skill'])
+export type CoachMode = z.infer<typeof coachModeSchema>
+
 /** `coach:run` request — the renderer's ask to drive one harness run through
  *  the seam. The workspace must be a real on-disk directory (the seam
  *  re-validates); `sessionId` resumes a previous run's session (ACP
@@ -61,8 +70,15 @@ export const coachRunRequestSchema = z.object({
   model: z.string().optional(),
   /** The user's project repo — must be a real on-disk directory. */
   workspacePath: z.string(),
-  /** The prompt for this run. */
-  prompt: z.string(),
+  /** Mode tag (ADR 0017): `coach` (default) runs `prompt`; `build-skill`
+   *  requires `evidence` and the main process builds the authoring prompt. */
+  mode: coachModeSchema.default('coach'),
+  /** The free-form prompt for a `coach` run (ignored when mode is
+   *  build-skill — the prompt is derived from the evidence). */
+  prompt: z.string().optional(),
+  /** The detected candidate for a `build-skill` run (required then): NORMALIZED
+   *  evidence only — never raw transcripts or session text. */
+  evidence: skillsProseRequestSchema.optional(),
   /** Resume handle from a previous run's session event. */
   sessionId: z.string().optional(),
 })
@@ -75,6 +91,14 @@ export const coachRunResultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(false), error: z.string() }),
 ])
 export type CoachRunResult = z.infer<typeof coachRunResultSchema>
+
+/** `coach:pick-workspace` response — a user-chosen directory via the OS picker.
+ *  The dialog IS the authorization; the main process never guesses a path. */
+export const coachWorkspaceResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), path: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+])
+export type CoachWorkspaceResult = z.infer<typeof coachWorkspaceResultSchema>
 
 /** One detected harness, as the Coach harness picker sees it (ADR 0016). */
 export const coachHarnessRowSchema = z.object({
@@ -92,10 +116,3 @@ export type CoachHarnessRow = z.infer<typeof coachHarnessRowSchema>
 export const coachHarnessesResultSchema = z.array(coachHarnessRowSchema)
 export type CoachHarnessesResult = z.infer<typeof coachHarnessesResultSchema>
 
-/** `agents:consent:get` / `agents:consent:set` response — the persisted
- *  consent gate state (ticket 22, ADR 0012 addendum). Default off; the one
- *  and only thing that lets ledger-derived data reach a harness's provider. */
-export const agentsConsentResultSchema = z.object({
-  granted: z.boolean(),
-})
-export type AgentsConsentResult = z.infer<typeof agentsConsentResultSchema>

@@ -18,7 +18,7 @@ const RAIL_ITEMS: Array<{ id: SettingsPane; label: string }> = [
   { id: 'aliases', label: 'Model aliases' },
   { id: 'pricing', label: 'Pricing' },
   { id: 'export', label: 'Export' },
-  { id: 'skills', label: 'Skills' },
+  { id: 'skills', label: 'Skills detection' },
   { id: 'privacy', label: 'Privacy & data' },
 ]
 

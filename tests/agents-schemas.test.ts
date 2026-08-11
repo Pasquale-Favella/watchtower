@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  agentsConsentResultSchema,
   coachEventEnvelopeSchema,
   coachEventSchema,
   coachHarnessRowSchema,
+  coachModeSchema,
   coachRunRequestSchema,
   coachRunResultSchema,
+  coachWorkspaceResultSchema,
 } from '../src/shared/schemas/agents.js'
 
 describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', () => {
@@ -54,6 +55,57 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p' }).success).toBe(false)
   })
 
+  it('defaults mode to coach and accepts a build-skill evidence payload', () => {
+    const parsed = coachRunRequestSchema.safeParse({
+      harnessKind: 'claude',
+      workspacePath: 'C:\\work\\project',
+      prompt: 'p',
+    })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.mode).toBe('coach')
+    expect(coachRunRequestSchema.safeParse({
+      harnessKind: 'claude',
+      workspacePath: 'C:\\work\\project',
+      mode: 'build-skill',
+      evidence: {
+        source: 'bash',
+        name: 'git commit',
+        frequency: 6,
+        spreadSessions: 2,
+        spreadProjects: 1,
+        costUSD: 3.5,
+        turns: 4,
+      },
+    }).success).toBe(true)
+  })
+
+  it('keeps evidence optional at the schema (the runner enforces build-skill needs it) and rejects an unknown mode', () => {
+    // The wire keeps evidence optional so the channel stays uniform; the
+    // runner's semantic check refuses a build-skill run without evidence.
+    expect(coachRunRequestSchema.safeParse({
+      harnessKind: 'claude',
+      workspacePath: 'C:\\work\\project',
+      mode: 'build-skill',
+    }).success).toBe(true)
+    expect(coachRunRequestSchema.safeParse({
+      harnessKind: 'claude',
+      workspacePath: 'C:\\work\\project',
+      mode: 'roast',
+    }).success).toBe(false)
+  })
+
+  it('parses both arms of the workspace picker result', () => {
+    expect(coachWorkspaceResultSchema.safeParse({ ok: true, path: 'C:\\work\\project' }).success).toBe(true)
+    expect(coachWorkspaceResultSchema.safeParse({ ok: false, error: 'cancelled' }).success).toBe(true)
+    expect(coachWorkspaceResultSchema.safeParse({ ok: true }).success).toBe(false)
+  })
+
+  it('parses the mode enum', () => {
+    expect(coachModeSchema.safeParse('coach').success).toBe(true)
+    expect(coachModeSchema.safeParse('build-skill').success).toBe(true)
+    expect(coachModeSchema.safeParse('nope').success).toBe(false)
+  })
+
   it('parses both ack arms of the run result', () => {
     expect(coachRunResultSchema.safeParse({ ok: true, runId: 'run-1' }).success).toBe(true)
     expect(coachRunResultSchema.safeParse({ ok: false, error: 'harness not detected: ghost' }).success).toBe(true)
@@ -72,10 +124,4 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     expect(coachHarnessRowSchema.safeParse({ kind: 'claude', displayName: 'x', models: [], authStatus: 'nope' }).success).toBe(false)
   })
 
-  it('parses the consent gate result (ticket 22, ADR 0012 addendum)', () => {
-    expect(agentsConsentResultSchema.safeParse({ granted: true }).success).toBe(true)
-    expect(agentsConsentResultSchema.safeParse({ granted: false }).success).toBe(true)
-    expect(agentsConsentResultSchema.safeParse({ granted: 'yes' }).success).toBe(false)
-    expect(agentsConsentResultSchema.safeParse({}).success).toBe(false)
-  })
 })

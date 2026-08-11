@@ -17,7 +17,7 @@ beforeEach(() => {
 describe('navigation (ADR 0014)', () => {
   it('keeps SECTIONS in canonical sidebar order (overview first, settings last)', () => {
     expect(SECTIONS).toEqual([
-      'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'skills', 'settings',
+      'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'coachSkills', 'settings',
     ])
   })
 
@@ -29,7 +29,7 @@ describe('navigation (ADR 0014)', () => {
     expect(routeFor('optimize')).toBe('/optimize')
     expect(routeFor('models')).toBe('/models')
     expect(routeFor('compare')).toBe('/compare')
-    expect(routeFor('skills')).toBe('/skills')
+    expect(routeFor('coachSkills')).toBe('/coach-skills')
     expect(routeFor('settings')).toBe('/settings')
   })
 
