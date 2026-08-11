@@ -20,6 +20,13 @@ import type {
   SettingsInfo,
   StoreChangedMessage,
 } from '../shared/schemas/ipc.js'
+import type {
+  AgentsConsentResult,
+  CoachEventEnvelope,
+  CoachHarnessesResult,
+  CoachRunRequest,
+  CoachRunResult,
+} from '../shared/schemas/agents.js'
 
 export type {
   PricingRefreshResult,
@@ -29,6 +36,13 @@ export type {
   SettingsInfo,
   StoreChangedMessage,
 } from '../shared/schemas/ipc.js'
+export type {
+  AgentsConsentResult,
+  CoachEventEnvelope,
+  CoachHarnessesResult,
+  CoachRunRequest,
+  CoachRunResult,
+} from '../shared/schemas/agents.js'
 
 const api = {
   versions: {
@@ -125,7 +139,25 @@ const api = {
   /** CSV/JSON export in the currently selected display currency. With no
    * destination the main process shows a folder/file picker. */
   exportData: (format: 'csv' | 'json', destination?: string): Promise<ExportResult> =>
-    ipcRenderer.invoke(`export:${format}`, destination)
+    ipcRenderer.invoke(`export:${format}`, destination),
+  /** Coach agent chain (ticket 21): detected harnesses for the picker. */
+  getCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses'),
+  /** Starts a harness run; resolves with the immediate ack. Events stream on
+   * `onCoachEvent` keyed by the returned runId. */
+  startCoachRun: (request: CoachRunRequest): Promise<CoachRunResult> =>
+    ipcRenderer.invoke('coach:run', request),
+  /** Interrupts the active run (fire-and-forget). */
+  cancelCoachRun: (runId: string): void => ipcRenderer.send('coach:cancel', runId),
+  /** The consent gate (ticket 22, ADR 0012 addendum): read/revoke the
+   * one-time opt-in that lets ledger-derived data reach a harness provider. */
+  getAgentsConsent: (): Promise<AgentsConsentResult> => ipcRenderer.invoke('agents:consent:get'),
+  setAgentsConsent: (granted: boolean): Promise<AgentsConsentResult> =>
+    ipcRenderer.invoke('agents:consent:set', granted),
+  onCoachEvent: (callback: (message: CoachEventEnvelope) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, message: CoachEventEnvelope): void => callback(message)
+    ipcRenderer.on('coach:event', listener)
+    return () => ipcRenderer.removeListener('coach:event', listener)
+  },
 }
 
 contextBridge.exposeInMainWorld('api', api)

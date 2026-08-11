@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Database, KeyRound, ShieldCheck } from 'lucide-react'
+import { Bot, Database, KeyRound, ShieldCheck } from 'lucide-react'
 
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
+import { Button } from '@/shared/components/ui/button'
 import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
 import { formatBytes } from '@/features/settings/lib'
 import { fetchClearData, fetchSettings } from '@/shared/lib/api'
 import { useScanStore } from '@/app/stores/scan-store'
+import { useSettingsStore } from '@/features/settings/store'
 import type { SettingsInfo } from '@/features/settings/settings-types'
 
 /** Settings › Privacy & data: the local-only/no-API-keys claims, the SQLite
@@ -17,6 +19,8 @@ export function PrivacyPane() {
   const [clearing, setClearing] = useState(false)
   const [clearError, setClearError] = useState<string | null>(null)
   const refresh = useScanStore(s => s.refresh)
+  const agentsConsent = useSettingsStore(s => s.agentsConsent)
+  const setAgentsConsent = useSettingsStore(s => s.setAgentsConsent)
 
   const load = useCallback(async (): Promise<void> => {
     const result = await fetchSettings()
@@ -60,6 +64,33 @@ export function PrivacyPane() {
             <p className="text-[12.5px] font-medium text-foreground">No API keys</p>
             <p className="text-[11px] text-muted-foreground">Usage is detected from local files; no provider API keys are required.</p>
           </div>
+        </div>
+        {/* The Coach/Skills consent gate (ticket 22, ADR 0012 addendum): the
+         * ONE consented exception to local-first — sending aggregated (Coach)
+         * or normalized (Skills) ledger-derived context to your harness CLI's
+         * model provider. Default off; revocable here. The runner refuses
+         * every unconsented run, so the toggle is the single control. */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <Bot className="mt-0.5 size-4 shrink-0 text-brand-text" />
+            <div>
+              <p className="text-[12.5px] font-medium text-foreground">AI agents (Coach &amp; Skills)</p>
+              <p className="text-[11px] text-muted-foreground">
+                {agentsConsent
+                  ? 'Enabled — aggregated context may be sent to your agent CLI’s model provider. You can revoke this any time.'
+                  : 'Disabled — no ledger data ever leaves this machine. Coach and Skills run in offline/template mode.'}
+              </p>
+            </div>
+          </div>
+          <Button
+            type="button"
+            size="xs"
+            variant={agentsConsent ? 'outline' : 'default'}
+            className="shrink-0"
+            onClick={() => void setAgentsConsent(!agentsConsent)}
+          >
+            {agentsConsent ? 'Disable' : 'Enable'}
+          </Button>
         </div>
       </Card>
 

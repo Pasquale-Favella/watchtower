@@ -62,6 +62,15 @@ import {
 } from '../../../../shared/schemas/fx.js'
 import { cadenceValueSchema, type CadenceValue } from '../../../../shared/schemas/cadence.js'
 import { exportResultSchema, type ExportResult } from '../../../../shared/schemas/export.js'
+import {
+  agentsConsentResultSchema,
+  coachHarnessesResultSchema,
+  coachRunResultSchema,
+  type AgentsConsentResult,
+  type CoachHarnessesResult,
+  type CoachRunRequest,
+  type CoachRunResult,
+} from '../../../../shared/schemas/agents.js'
 
 /** The shared renderer error shape for an IPC payload: either validated data
  * or a human-readable message naming the channel and the failing field. */
@@ -244,4 +253,20 @@ export function fetchSetModelPrice(
 
 export function fetchRemovePriceOverride(model: string): Promise<ApiResult<OkEnvelope>> {
   return fetchPayload('price remove', okEnvelopeSchema, () => window.api.removePriceOverride(model))
+}
+
+export function fetchCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>> {
+  return fetchPayload('coach harnesses', coachHarnessesResultSchema, () => window.api.getCoachHarnesses())
+}
+
+export function fetchCoachRun(request: CoachRunRequest): Promise<ApiResult<CoachRunResult>> {
+  return fetchPayload('coach run', coachRunResultSchema, () => window.api.startCoachRun(request))
+}
+
+export function fetchAgentsConsent(): Promise<ApiResult<AgentsConsentResult>> {
+  return fetchPayload('agents consent', agentsConsentResultSchema, () => window.api.getAgentsConsent())
+}
+
+export function fetchSetAgentsConsent(granted: boolean): Promise<ApiResult<AgentsConsentResult>> {
+  return fetchPayload('agents consent', agentsConsentResultSchema, () => window.api.setAgentsConsent(granted))
 }

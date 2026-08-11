@@ -363,12 +363,14 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
     store.setDisplayCurrency('EUR')
     store.setRefreshCadence('5m')
+    store.setAgentsConsent(true)
 
     expect(store.getModelAliases()).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
     expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 3, outputPricePerMillion: 15 }])
     expect(store.getCurrencyRate('EUR')).toEqual({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
     expect(store.getDisplayCurrency()).toBe('EUR')
     expect(store.getRefreshCadence()).toBe('5m')
+    expect(store.getAgentsConsent()).toBe(true)
 
     // a second upsert overwrites, never appends
     store.setPriceOverride('demo-model', { inputPricePerMillion: 4, outputPricePerMillion: 16 })
@@ -383,6 +385,24 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     expect(store.getCurrencyRate('EUR')).not.toBeNull()
     expect(store.getDisplayCurrency()).toBe('EUR')
     expect(store.getRefreshCadence()).toBe('5m')
+    expect(store.getAgentsConsent()).toBe(true)
+
+    store.close()
+  })
+
+  it('the agents consent gate defaults to OFF and is a pure upsert', () => {
+    const store = makeStore()
+    // The local-first promise holds until the user opts in (ADR 0012 addendum).
+    expect(store.getAgentsConsent()).toBe(false)
+
+    store.setAgentsConsent(true)
+    expect(store.getAgentsConsent()).toBe(true)
+
+    // A second write overwrites, and revoking flips it back off.
+    store.setAgentsConsent(true)
+    expect(store.getAgentsConsent()).toBe(true)
+    store.setAgentsConsent(false)
+    expect(store.getAgentsConsent()).toBe(false)
 
     store.close()
   })

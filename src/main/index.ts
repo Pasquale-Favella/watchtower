@@ -29,6 +29,7 @@ import type { ExportResult } from './export.js'
 import type { DateRange } from './pipeline/types.js'
 import { LedgerStore } from './store/ledger.js'
 import type { PortInput } from './store/port.js'
+import { registerAgentsIpc } from './agents/ipc.js'
 
 let ledger: LedgerStore | null = null
 /** The most recent completed scan's metadata — the `getScanStatus()` answer
@@ -584,6 +585,16 @@ function registerIpc(): void {
 
   ipcMain.handle('export:csv', (_event, destination?: string): Promise<ExportResult> => runExport('csv', destination))
   ipcMain.handle('export:json', (_event, destination?: string): Promise<ExportResult> => runExport('json', destination))
+
+  // Coach agent chain (tickets 21–22): the HarnessRuntime seam's IPC surface —
+  // harness listing, run ack/stream/cancel, and the consent gate. The runner
+  // is lazy: the AI SDK loads on the first coach:run, never at boot. The
+  // consent source is the ledger's persisted setting (default off, ADR 0012
+  // addendum) — the runner refuses every unconsented run.
+  registerAgentsIpc({
+    getConsent: () => ledger?.getAgentsConsent() ?? false,
+    setConsent: (granted) => ledger?.setAgentsConsent(granted),
+  })
 }
 
 function createWindow(): void {

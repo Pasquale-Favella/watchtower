@@ -113,4 +113,31 @@ describe('useSettingsStore (ADR 0011)', () => {
     expect(useSettingsStore.getState().activeCurrency)
       .toEqual({ code: 'JPY', symbol: '¥', rate: 150, updatedAt: '2026-01-01T00:00:00Z' })
   })
+
+  it('the agents consent gate defaults OFF and is server-fed, not partialized (ticket 22)', async () => {
+    expect(useSettingsStore.getState().agentsConsent).toBe(false)
+    // The opt-in is main-persisted (ADR 0012 addendum) — it must NOT ride the
+    // localStorage partialize like theme/defaultPeriod.
+    useSettingsStore.setState({ agentsConsent: true })
+    const persisted = JSON.parse(memory.getItem(PERSIST_KEY)!)
+    expect(persisted.state.agentsConsent).toBeUndefined()
+  })
+
+  it('loadAgentsConsent hydrates the persisted gate state from main', async () => {
+    mockWindow({ getAgentsConsent: () => Promise.resolve({ granted: true }) })
+    await useSettingsStore.getState().loadAgentsConsent()
+    expect(useSettingsStore.getState().agentsConsent).toBe(true)
+  })
+
+  it('setAgentsConsent persists the opt-in through the main process', async () => {
+    mockWindow({ setAgentsConsent: () => Promise.resolve({ granted: true }) })
+    await useSettingsStore.getState().setAgentsConsent(true)
+    expect(useSettingsStore.getState().agentsConsent).toBe(true)
+  })
+
+  it('setAgentsConsent keeps the previous value when the main write fails', async () => {
+    mockWindow({ setAgentsConsent: () => Promise.resolve({ granted: 'bogus' }) })
+    await useSettingsStore.getState().setAgentsConsent(true)
+    expect(useSettingsStore.getState().agentsConsent).toBe(false)
+  })
 })
