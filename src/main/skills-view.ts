@@ -13,6 +13,7 @@ import {
   type GhostSkill,
   type SkillCandidate,
   type SkillsPayload,
+  type SkillsDismissal,
   type SkillsSource,
   type SkillsThresholds,
 } from '../shared/schemas/skills.js'
@@ -313,7 +314,7 @@ export async function buildSkillsViewFromLedger(
   store: LedgerStore,
   scope: OverviewScope,
   thresholds: SkillsThresholds = DEFAULT_SKILLS_THRESHOLDS,
-  opts: { now?: Date; homeDir?: string } = {},
+  opts: { now?: Date; homeDir?: string; dismissals?: SkillsDismissal[] } = {},
 ): Promise<SkillsPayload> {
   const now = opts.now ?? new Date()
   const dateRange = overviewDateRange(scope, now)
@@ -322,7 +323,10 @@ export async function buildSkillsViewFromLedger(
     provider: scope.provider,
   })
 
-  const candidates = collectSkillCandidates(summaries)
+  // Not-a-skill dismissals (ticket 25): rejected patterns are filtered before
+  // the gate, so a dismissal never resurfaces as a draft or an opportunity.
+  const dismissedKeys = new Set((opts.dismissals ?? []).map(d => `${d.source}\0${d.name}`))
+  const candidates = collectSkillCandidates(summaries).filter(c => !dismissedKeys.has(`${c.source}\0${c.name}`))
   const { drafts, opportunities } = partitionSkillCandidates(candidates, thresholds)
   const inventory = await collectSkillInventory(summaries, opts.homeDir)
   const invokedSkills = candidates.filter(c => c.source === 'skill').map(c => c.name)

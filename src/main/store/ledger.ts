@@ -29,6 +29,7 @@ import {
   type PortResult,
   type PriceOverride,
 } from '../../shared/schemas/ledger.js'
+import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 
 export type {
   CurrencyRate,
@@ -193,6 +194,14 @@ export class LedgerStore {
       CREATE TABLE IF NOT EXISTS agents_consent_config (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         granted INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS skills_dismissal_config (
+        source TEXT NOT NULL,
+        name TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created TEXT NOT NULL,
+        PRIMARY KEY (source, name)
       );
     `)
     // Greenfield: no migration path exists — the app is not yet distributed, so
@@ -529,6 +538,21 @@ export class LedgerStore {
       INSERT INTO agents_consent_config (id, granted) VALUES (1, ?)
       ON CONFLICT(id) DO UPDATE SET granted = excluded.granted
     `).run(granted ? 1 : 0)
+  }
+
+  /** Not-a-skill dismissals (ticket 25): candidate patterns the user rejected,
+   *  filtered out of the Skills payload on every fetch. A config table (user
+   *  setting), so dismissals survive `clear()`. */
+  getSkillDismissals(): SkillsDismissal[] {
+    return this.db.prepare('SELECT source, name, reason, created FROM skills_dismissal_config').all() as SkillsDismissal[]
+  }
+
+  dismissSkill(source: SkillsDismissal['source'], name: string, reason: string): void {
+    this.db.prepare(`
+      INSERT INTO skills_dismissal_config (source, name, reason, created)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(source, name) DO UPDATE SET reason = excluded.reason, created = excluded.created
+    `).run(source, name, reason, new Date().toISOString())
   }
 
   /** Clears all scan-derived ledger data. Config tables are user settings and

@@ -39,7 +39,20 @@ import {
 } from '../../../../shared/schemas/compare.js'
 import { optimizePayloadSchema, type OptimizePayload } from '../../../../shared/schemas/optimize.js'
 import { yieldPayloadSchema, type YieldPayload } from '../../../../shared/schemas/yield.js'
-import { skillsPayloadSchema, type SkillsPayload, type SkillsThresholds } from '../../../../shared/schemas/skills.js'
+import {
+  skillsDismissalResultSchema,
+  skillsPayloadSchema,
+  skillsProseResultSchema,
+  skillsSaveResultSchema,
+  type SkillsDismissalRequest,
+  type SkillsDismissalResult,
+  type SkillsPayload,
+  type SkillsProseRequest,
+  type SkillsProseResult,
+  type SkillsSaveRequest,
+  type SkillsSaveResult,
+  type SkillsThresholds,
+} from '../../../../shared/schemas/skills.js'
 import {
   pullRequestsPayloadSchema,
   type PullRequestsPayload,
@@ -181,6 +194,18 @@ export function fetchSkills(
   thresholds?: SkillsThresholds,
 ): Promise<ApiResult<SkillsPayload | null>> {
   return fetchPayload('skills', skillsPayloadSchema.nullable(), () => window.api.getSkills(scope, thresholds))
+}
+
+export function fetchDismissSkill(request: SkillsDismissalRequest): Promise<ApiResult<SkillsDismissalResult>> {
+  return fetchPayload('skills dismissal', skillsDismissalResultSchema, () => window.api.dismissSkill(request))
+}
+
+export function fetchDraftProse(request: SkillsProseRequest): Promise<ApiResult<SkillsProseResult>> {
+  return fetchPayload('skills prose', skillsProseResultSchema, () => window.api.getDraftProse(request))
+}
+
+export function fetchSaveSkill(request: SkillsSaveRequest): Promise<ApiResult<SkillsSaveResult>> {
+  return fetchPayload('skills save', skillsSaveResultSchema, () => window.api.saveSkill(request))
 }
 
 export function fetchModelAliases(): Promise<ApiResult<ModelAlias[]>> {

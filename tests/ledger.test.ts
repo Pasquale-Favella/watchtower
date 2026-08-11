@@ -364,6 +364,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.setDisplayCurrency('EUR')
     store.setRefreshCadence('5m')
     store.setAgentsConsent(true)
+    store.dismissSkill('bash', 'git commit', 'not-a-skill')
 
     expect(store.getModelAliases()).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
     expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 3, outputPricePerMillion: 15 }])
@@ -371,6 +372,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     expect(store.getDisplayCurrency()).toBe('EUR')
     expect(store.getRefreshCadence()).toBe('5m')
     expect(store.getAgentsConsent()).toBe(true)
+    expect(store.getSkillDismissals()).toHaveLength(1)
 
     // a second upsert overwrites, never appends
     store.setPriceOverride('demo-model', { inputPricePerMillion: 4, outputPricePerMillion: 16 })
@@ -386,6 +388,28 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     expect(store.getDisplayCurrency()).toBe('EUR')
     expect(store.getRefreshCadence()).toBe('5m')
     expect(store.getAgentsConsent()).toBe(true)
+    expect(store.getSkillDismissals()).toEqual([{ source: 'bash', name: 'git commit', reason: 'not-a-skill', created: expect.any(String) }])
+
+    store.close()
+  })
+
+  it('skill dismissals upsert per pattern and are a pure upsert', () => {
+    const store = makeStore()
+    expect(store.getSkillDismissals()).toEqual([])
+
+    store.dismissSkill('skill', 'data-fetch', 'too-specific')
+    store.dismissSkill('bash', 'git commit', 'one-off')
+    expect(store.getSkillDismissals().map(d => [d.source, d.name, d.reason])).toEqual([
+      ['skill', 'data-fetch', 'too-specific'],
+      ['bash', 'git commit', 'one-off'],
+    ])
+
+    // Re-dismissing the same pattern overwrites the reason, never appends.
+    store.dismissSkill('skill', 'data-fetch', 'not-a-skill')
+    expect(store.getSkillDismissals().map(d => [d.source, d.name, d.reason])).toEqual([
+      ['skill', 'data-fetch', 'not-a-skill'],
+      ['bash', 'git commit', 'one-off'],
+    ])
 
     store.close()
   })

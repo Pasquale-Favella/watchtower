@@ -7,10 +7,13 @@ import { SegTabs } from '@/shared/components/SegTabs'
 import { motionClass } from '@/shared/lib/motion'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { formatCompact, formatUsd } from '@/shared/lib/models'
+import { assembleDraftMarkdown, describeCandidate } from '../../../../shared/lib/skills-draft.js'
+import { fetchSaveSkill } from '@/shared/lib/api'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { useSkillsStore } from '@/features/skills/store'
+import { useSettingsStore } from '@/features/settings/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
 import type { SkillCandidate, SkillsSource } from '../../../../shared/schemas/skills.js'
@@ -27,64 +30,179 @@ const SOURCE_CLASS: Record<SkillsSource, string> = {
   tool: 'bg-amber-500/10 text-amber-400',
 }
 
-/** One draft card: the normalized pattern, its source badge, the frequency ×
- * spread evidence, and an expandable list of the source sessions behind it
- * (ticket 24 — read-only; the review flow lands with ticket 25). */
-function DraftRows({ candidates }: { candidates: SkillCandidate[] }) {
-  const [expandedName, setExpandedName] = useState<string | null>(null)
+const DISMISS_REASONS = ['not-a-skill', 'one-off', 'too-specific', 'other'] as const
 
-  if (candidates.length === 0) {
-    return <p className="py-6 text-center text-[12px] text-muted-foreground">No draft skills in this range yet.</p>
+/** One draft card (ticket 25): name + description, the evidence row, the
+ *  monospace SKILL.md preview labeled template-vs-harness-authored, and the
+ *  review action bar — Save (clipboard + OS save dialog), Revise (inline
+ *  editor, local until saved), Generate (harness prose, consent-on only), and
+ *  Dismiss (feeds the not-a-skill signal back into the detector). */
+function DraftCard({ candidate }: { candidate: SkillCandidate }) {
+  const dismiss = useSkillsStore(s => s.dismiss)
+  const generateProse = useSkillsStore(s => s.generateProse)
+  const prose = useSkillsStore(s => s.prose[`${candidate.source}\0${candidate.name}`])
+  const consent = useSettingsStore(s => s.agentsConsent)
+
+  const [expanded, setExpanded] = useState(false)
+  const [revising, setRevising] = useState(false)
+  const [dismissing, setDismissing] = useState(false)
+  const [reason, setReason] = useState<(typeof DISMISS_REASONS)[number]>('not-a-skill')
+  const [content, setContent] = useState(() => assembleDraftMarkdown(candidate))
+  const [copied, setCopied] = useState(false)
+  const [feedback, setFeedback] = useState<string | null>(null)
+
+  const authored = prose?.status === 'ready' && !!prose.markdown
+
+  // When the harness prose lands, it becomes the card's content (labeled
+  // harness-authored); the template remains the default until then.
+  useEffect(() => {
+    if (authored && prose?.markdown) setContent(prose.markdown)
+  }, [authored, prose?.markdown])
+
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(content)
+    } catch {
+      return
+    }
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1_500)
+  }
+
+  const save = async (): Promise<void> => {
+    setFeedback(null)
+    const result = await fetchSaveSkill({ name: candidate.name, content })
+    if (!result.ok) setFeedback(result.error)
+    else if (result.data.ok) setFeedback(`Saved to ${result.data.path}`)
+    else setFeedback(result.data.error)
+  }
+
+  const confirmDismiss = async (): Promise<void> => {
+    await dismiss(candidate.source, candidate.name, reason)
+    setDismissing(false)
   }
 
   return (
-    <div className="flex flex-col">
-      {candidates.map(candidate => {
-        const expanded = expandedName === `${candidate.source}\0${candidate.name}`
-        return (
-          <div key={`${candidate.source}\0${candidate.name}`} className="border-b border-border last:border-b-0">
-            <button
-              type="button"
-              aria-expanded={expanded}
-              onClick={() => setExpandedName(current => current === `${candidate.source}\0${candidate.name}` ? null : `${candidate.source}\0${candidate.name}`)}
-              className="flex w-full cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-left hover:bg-accent"
-            >
-              <span className={cn('shrink-0 rounded px-1.5 py-[2px] text-[9.5px] font-semibold uppercase tracking-wide', SOURCE_CLASS[candidate.source])}>
-                {SOURCE_LABEL[candidate.source]}
-              </span>
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate font-mono text-[12px] font-medium text-foreground">{candidate.name}</span>
-                <span className="text-[10.5px] text-muted-foreground">
-                  ×{candidate.frequency} · {candidate.spreadSessions} {candidate.spreadSessions === 1 ? 'session' : 'sessions'} / {candidate.spreadProjects} {candidate.spreadProjects === 1 ? 'project' : 'projects'} · {candidate.turns} {candidate.turns === 1 ? 'turn' : 'turns'}
+    <div className="border-b border-border last:border-b-0">
+      <div className="px-3.5 py-2.5">
+        <div className="flex items-start gap-2.5">
+          <span className={cn('mt-0.5 shrink-0 rounded px-1.5 py-[2px] text-[9.5px] font-semibold uppercase tracking-wide', SOURCE_CLASS[candidate.source])}>
+            {SOURCE_LABEL[candidate.source]}
+          </span>
+          <button
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setExpanded(current => !current)}
+            className="flex min-w-0 flex-1 cursor-pointer flex-col text-left"
+          >
+            <span className="truncate font-mono text-[12px] font-medium text-foreground">{candidate.name}</span>
+            <span className="truncate text-[10.5px] text-muted-foreground">{describeCandidate(candidate)}</span>
+          </button>
+          <span className="shrink-0 font-mono text-[11.5px] text-foreground">{formatUsd(candidate.costUSD)}</span>
+          <button
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setExpanded(current => !current)}
+            className={cn('shrink-0 text-muted-foreground transition-transform', expanded && 'rotate-90')}
+            aria-label="Evidence"
+          >
+            ›
+          </button>
+        </div>
+
+        <p className="mt-1.5 text-[10.5px] tabular-nums text-muted-foreground">
+          ×{candidate.frequency} · {candidate.spreadSessions} {candidate.spreadSessions === 1 ? 'session' : 'sessions'} / {candidate.spreadProjects} {candidate.spreadProjects === 1 ? 'project' : 'projects'} · {candidate.turns} {candidate.turns === 1 ? 'turn' : 'turns'}
+        </p>
+
+        {expanded && (
+          <div className="mt-2 rounded-md border border-border bg-background" role="region" aria-label={`${candidate.name} evidence`}>
+            {candidate.sourceSessions.map(session => (
+              <div key={session.sessionId} className="flex items-center gap-2 border-b border-border/60 px-2.5 py-1.5 last:border-b-0">
+                <span className="w-16 shrink-0 font-mono text-[10px] text-muted-foreground">{session.date}</span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-[11px] font-medium text-foreground">{session.project}</span>
+                  <span className="truncate font-mono text-[9.5px] text-muted-foreground">{session.sessionId}</span>
                 </span>
-              </span>
-              <span className="shrink-0 font-mono text-[11.5px] text-foreground">{formatUsd(candidate.costUSD)}</span>
-              <span className={cn('text-muted-foreground transition-transform', expanded && 'rotate-90')} aria-hidden="true">›</span>
-            </button>
-            {expanded && (
-              <div className="px-3.5 pb-3 pt-0.5" role="region" aria-label={`${candidate.name} evidence`}>
-                {candidate.sample && candidate.source === 'bash' && (
-                  <pre className="mb-2 max-h-[120px] overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-[10.5px] font-mono leading-relaxed text-muted-foreground">
-                    <code>{candidate.sample}</code>
-                  </pre>
-                )}
-                {candidate.sourceSessions.map(session => (
-                  <div key={session.sessionId} className="flex items-center gap-2 border-b border-border/60 py-1.5 last:border-b-0">
-                    <span className="w-16 shrink-0 font-mono text-[10px] text-muted-foreground">{session.date}</span>
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-[11px] font-medium text-foreground">{session.project}</span>
-                      <span className="truncate font-mono text-[9.5px] text-muted-foreground">{session.sessionId}</span>
-                    </span>
-                    <span className="shrink-0 text-[10.5px] text-muted-foreground">{session.turns} {session.turns === 1 ? 'turn' : 'turns'}</span>
-                    <span className="shrink-0 font-mono text-[11px] text-foreground">{formatUsd(session.costUSD)}</span>
-                  </div>
-                ))}
+                <span className="shrink-0 text-[10.5px] text-muted-foreground">{session.turns} {session.turns === 1 ? 'turn' : 'turns'}</span>
+                <span className="shrink-0 font-mono text-[11px] text-foreground">{formatUsd(session.costUSD)}</span>
               </div>
-            )}
+            ))}
           </div>
-        )
-      })}
+        )}
+
+        {revising ? (
+          <textarea
+            value={content}
+            onChange={e => setContent(e.target.value)}
+            rows={12}
+            spellCheck={false}
+            className="mt-2 w-full resize-y rounded-md border border-border bg-background p-2.5 font-mono text-[11px] leading-relaxed text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        ) : (
+          <div className="mt-2">
+            <div className="flex items-center justify-between">
+              <span className={cn('text-[9.5px] font-semibold uppercase tracking-wide', authored ? 'text-primary' : 'text-muted-foreground')}>
+                {authored ? 'Harness-authored draft' : 'Template draft'}
+              </span>
+              {prose?.status === 'loading' && <span className="text-[10px] text-muted-foreground">Generating…</span>}
+              {prose?.status === 'error' && <span className="text-[10px] text-destructive">{prose.error}</span>}
+            </div>
+            <pre className="mt-1 max-h-[240px] overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-2.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
+              <code>{content}</code>
+            </pre>
+          </div>
+        )}
+
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <CardAction onClick={() => void copy()}>{copied ? 'Copied' : 'Copy'}</CardAction>
+          <CardAction onClick={() => void save()}>Save…</CardAction>
+          <CardAction onClick={() => setRevising(current => !current)}>{revising ? 'Done editing' : 'Revise'}</CardAction>
+          {consent && !authored && (
+            <CardAction onClick={() => void generateProse(candidate)} disabled={prose?.status === 'loading'}>
+              {prose?.status === 'loading' ? 'Generating…' : 'Write with harness'}
+            </CardAction>
+          )}
+          <CardAction onClick={() => setDismissing(current => !current)}>{dismissing ? 'Cancel' : 'Dismiss'}</CardAction>
+          {feedback && <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">{feedback}</span>}
+        </div>
+
+        {!consent && (
+          <p className="mt-1.5 text-[10px] text-muted-foreground">
+            Template draft — allow AI agents in Settings › Privacy &amp; data to have the harness write the prose.
+          </p>
+        )}
+
+        {dismissing && (
+          <div className="mt-2 flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2">
+            <select
+              value={reason}
+              onChange={e => setReason(e.target.value as (typeof DISMISS_REASONS)[number])}
+              className="rounded-md border border-border bg-card px-2 py-1 text-[11px] text-foreground focus:outline-none"
+            >
+              {DISMISS_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+            <CardAction onClick={() => void confirmDismiss()}>Not a skill — hide</CardAction>
+          </div>
+        )}
+      </div>
     </div>
+  )
+}
+
+function CardAction({ onClick, disabled, children }: {
+  onClick: () => void
+  disabled?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="rounded-md border border-border bg-card px-2 py-[3px] text-[10.5px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+    >
+      {children}
+    </button>
   )
 }
 
@@ -160,10 +278,11 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: 'ac
   )
 }
 
-/** The Skills Section (ticket 24): the deterministic, offline detection board
- * — draft candidates with evidence, repeated-but-below-threshold opportunities,
- * and ghost skills cluttering the inventory. Read-only here; the review flow
- * (accept/revise/dismiss + harness prose) lands with ticket 25. */
+/** The Skills Section (tickets 24–25): the detection board plus the review
+ * half — draft cards with evidence and proposed SKILL.md content, a
+ * user-initiated save/copy, inline revise, and a dismiss flow that feeds the
+ * not-a-skill signal back into the detector. Harness prose is consent-gated;
+ * template drafts are the default and never break the board. */
 export function SkillsView(): React.JSX.Element {
   const scope = useScopeStore(useShallow(selectScope))
   const payload = useSkillsStore(s => s.view.data)
@@ -218,7 +337,13 @@ export function SkillsView(): React.JSX.Element {
               </div>
               <span className="font-mono text-[11px] text-muted-foreground">{payload.summary.calls.toLocaleString('en-US')} calls</span>
             </div>
-            <DraftRows candidates={payload.drafts} />
+            {payload.drafts.length === 0 ? (
+              <p className="py-6 text-center text-[12px] text-muted-foreground">No draft skills in this range yet.</p>
+            ) : (
+              <div className="flex flex-col">
+                {payload.drafts.map(candidate => <DraftCard key={`${candidate.source}\0${candidate.name}`} candidate={candidate} />)}
+              </div>
+            )}
           </Panel>
 
           <OpportunityList candidates={payload.opportunities} />

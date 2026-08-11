@@ -374,6 +374,30 @@ describe('buildSkillsViewFromLedger (aggregation seam scope)', () => {
     store.close()
   })
 
+  it('filters dismissed patterns out of drafts and opportunities (ticket 25)', async () => {
+    const store = makeLedger()
+    portSession(store, 'sess-a', [cachedCall(0, { sessionId: 'sess-a', bashCommands: ['git commit -m "wip"'] })])
+    portSession(store, 'sess-b', [cachedCall(1, { sessionId: 'sess-b', bashCommands: ['git commit -m "lint"'] })])
+    const payload = await buildSkillsViewFromLedger(
+      store,
+      { period: 'lifetime' },
+      undefined,
+      {
+        now: NOW,
+        homeDir: tempHome(),
+        dismissals: [{ source: 'bash', name: 'git commit', reason: 'not-a-skill', created: '2026-07-01T00:00:00.000Z' }],
+      },
+    )
+    // The dismissed candidate is filtered before the gate, so its events stop
+    // counting as skill signals (a dismissed pattern is "not a skill") and it
+    // never resurfaces as a draft or opportunity.
+    expect(payload.summary.bashEvents).toBe(0)
+    expect(payload.summary.sessions).toBe(2)
+    expect(payload.opportunities).toEqual([])
+    expect(payload.drafts).toEqual([])
+    store.close()
+  })
+
   it('honors a custom-range scope at the SQL read', async () => {
     const store = makeLedger()
     portSession(store, 'sess-a', [cachedCall(0, { sessionId: 'sess-a', date: '2026-07-13', skills: ['data-fetch'] })])

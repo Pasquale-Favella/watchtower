@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import { BrowserWindow, ipcMain } from 'electron'
 import { z } from 'zod'
-import { detectHarnesses, type HarnessInfo } from './detect.js'
+import { detectHarnesses, pickPreferredHarness, type HarnessInfo } from './detect.js'
 import { assertRealWorkspacePath, createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
 import {
   coachRunRequestSchema,
@@ -12,6 +13,14 @@ import {
   type CoachRunRequest,
   type CoachRunResult,
 } from '../../shared/schemas/agents.js'
+import {
+  skillsDismissalRequestSchema,
+  skillsProseRequestSchema,
+  type SkillsDismissal,
+  type SkillsDismissalResult,
+  type SkillsProseRequest,
+  type SkillsProseResult,
+} from '../../shared/schemas/skills.js'
 
 /**
  * Coach IPC (ticket 21): the wire between the HarnessRuntime seam and the
@@ -141,14 +150,132 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
 /** The main-side consent accessors the IPC surface wires to the ledger
  *  (ticket 22). Passed in so this module stays electron-agnostic and the
  *  ledger stays the single source of truth. */
+/** The draft-prose runner (ticket 25): a one-shot harness run that authors a
+ *  SKILL.md draft from a candidate's NORMALIZED evidence only. Consent-gated
+ *  exactly like a Coach run — the harness CLI is an ACP child process and the
+ *  evidence reaches its model provider only with the user's one-time opt-in. */
+export interface SkillsDraftRunnerDeps {
+  getRuntime: () => Promise<HarnessRuntime>
+  detect: () => Promise<HarnessInfo[]>
+  getConsent: () => boolean
+  /** Real on-disk fallback workspace for the harness run. */
+  defaultWorkspace?: () => string
+  /** Prose-run timeout in ms (injectable for tests). */
+  proseTimeoutMs?: number
+}
+
+export interface SkillsDraftRunner {
+  prose(request: unknown): Promise<SkillsProseResult>
+}
+
+/** How long a prose run may take before it is interrupted and reported as a
+ *  timeout — a harness that hangs must not leave the one-shot invoke pending
+ *  forever (the coach:run path has a cancel handle; this one races a timer). */
+const PROSE_TIMEOUT_MS = 60_000
+
+/** The harness prompt: normalized evidence only — pattern key, counts, spread.
+ *  Deliberately excludes `sample` (a raw command line) and all session text,
+ *  so the model never sees raw transcripts (ADR 0012 addendum). */
+function buildProsePrompt(evidence: SkillsProseRequest): string {
+  return [
+    'You are authoring a skill file for the user\'s coding-agent workflow.',
+    'Write a concise SKILL.md draft from ONLY the normalized evidence below — never invent raw transcripts or prompts.',
+    '',
+    `Pattern: ${evidence.name}`,
+    `Source: ${evidence.source}`,
+    `Frequency: ${evidence.frequency} occurrences`,
+    `Spread: ${evidence.spreadSessions} session(s) / ${evidence.spreadProjects} project(s)`,
+    `Cost: ${evidence.costUSD.toFixed(2)} USD across ${evidence.turns} turn(s)`,
+    '',
+    'Return only the markdown: a # name heading, a ## Description, a ## When to use, and a ## Example built from the evidence. Keep it under 40 lines.',
+  ].join('\n')
+}
+
+export function createSkillsDraftRunner(deps: SkillsDraftRunnerDeps): SkillsDraftRunner {
+  return {
+    async prose(request: unknown): Promise<SkillsProseResult> {
+      const parsed = skillsProseRequestSchema.safeParse(request)
+      if (!parsed.success) return { ok: false, error: 'invalid prose request' }
+
+      // The same privacy gate as coach:run (ticket 22) — refused before any
+      // SDK load or spawn.
+      if (!deps.getConsent()) return { ok: false, error: 'consent required' }
+
+      const found = await deps.detect()
+      const harness = pickPreferredHarness(found)
+      if (!harness) return { ok: false, error: 'no harness detected' }
+
+      const workspacePath = deps.defaultWorkspace?.() ?? homedir()
+      try {
+        assertRealWorkspacePath(workspacePath)
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+
+      try {
+        const runtime = await deps.getRuntime()
+        const gen = runtime.run({
+          harness,
+          model: '',
+          workspacePath,
+          prompt: buildProsePrompt(parsed.data),
+        })
+
+        const collect = async (): Promise<string> => {
+          let markdown = ''
+          for await (const event of gen) {
+            if (event.kind === 'text') markdown += event.delta
+            else if (event.kind === 'error') throw new Error(event.message)
+          }
+          return markdown
+        }
+
+        // Race the collection against a timeout; on timeout the SAME iterator
+        // gets return() so the harness's child process is torn down, and the
+        // timer is cleared so a late reject never becomes unhandled.
+        let timerHandle: NodeJS.Timeout | undefined
+        const timer = new Promise<never>((_, reject) => {
+          timerHandle = setTimeout(() => {
+            void gen.return(undefined).catch(() => { /* teardown already in flight */ })
+            reject(new Error('harness prose timed out'))
+          }, deps.proseTimeoutMs ?? PROSE_TIMEOUT_MS)
+        })
+        try {
+          const markdown = await Promise.race([collect(), timer])
+          if (!markdown.trim()) return { ok: false, error: 'harness returned no prose' }
+          return { ok: true, markdown: markdown.trim() }
+        } finally {
+          clearTimeout(timerHandle)
+        }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    },
+  }
+}
+
 export interface AgentsConsentSource {
   getConsent: () => boolean
   setConsent: (granted: boolean) => void
 }
 
-/** Wire the Coach IPC surface onto ipcMain. Call once from registerIpc().
- *  `consent` bridges the gate to the ledger's persisted setting. */
-export function registerAgentsIpc(consent: AgentsConsentSource): void {
+/** The main-side dismissal write (ticket 25), wired to the ledger so the
+ *  not-a-skill signal persists. The skills:view handler reads the ledger
+ *  directly (index.ts owns that read); this source only carries the write. */
+export interface SkillsDismissalSource {
+  dismiss: (source: SkillsDismissal['source'], name: string, reason: string) => void
+}
+
+export interface AgentsIpcSources {
+  consent: AgentsConsentSource
+  dismissals: SkillsDismissalSource
+}
+
+/** Wire the Coach + Skills IPC surface onto ipcMain. Call once from
+ *  registerIpc(). `consent` bridges the Coach/Skills gate to the ledger's
+ *  persisted setting; `dismissals` bridges the not-a-skill store. */
+export function registerAgentsIpc(sources: AgentsIpcSources): void {
+  const { consent, dismissals } = sources
   let runtimePromise: Promise<HarnessRuntime> | null = null
   const runner = createCoachRunner({
     // The SDK is ESM and heavy; boot stays independent of it (the seam's
@@ -188,5 +315,28 @@ export function registerAgentsIpc(consent: AgentsConsentSource): void {
 
   ipcMain.on('coach:cancel', (_event, runId: string) => {
     runner.cancel(runId)
+  })
+
+  // Skills draft board (ticket 25): the not-a-skill store + consent-gated
+  // harness prose. skills:view / skills:save stay in registerIpc (they need
+  // the ledger + dialog directly); this module owns the harness-touching wire.
+  ipcMain.handle('skills:dismiss', (_event, request: unknown): SkillsDismissalResult => {
+    const parsed = skillsDismissalRequestSchema.safeParse(request)
+    if (!parsed.success) return { ok: false, error: 'invalid dismissal request' }
+    dismissals.dismiss(parsed.data.source, parsed.data.name, parsed.data.reason)
+    return { ok: true }
+  })
+
+  const draftRunner = createSkillsDraftRunner({
+    getRuntime: () => {
+      runtimePromise ??= loadHarnessSdk().then(createHarnessRuntime)
+      return runtimePromise
+    },
+    detect: () => detectHarnesses(),
+    getConsent: consent.getConsent,
+  })
+
+  ipcMain.handle('skills:prose', async (_event, request: unknown): Promise<SkillsProseResult> => {
+    return draftRunner.prose(request)
   })
 }

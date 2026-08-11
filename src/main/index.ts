@@ -1,5 +1,7 @@
-import { join } from 'path'
-import { statSync, readdirSync, existsSync } from 'fs'
+import { dirname, join } from 'path'
+import { mkdirSync, statSync, readdirSync, existsSync } from 'fs'
+import { writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { refreshPricingNow } from './pipeline/models.js'
 import { resolveCadenceMs } from './cadence.js'
@@ -18,7 +20,14 @@ import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } fro
 import { buildOptimizeViewFromLedger, type OptimizePayload } from './optimize-view.js'
 import { buildYieldViewFromLedger, type YieldPayload } from './yield-view.js'
 import { buildSkillsViewFromLedger, type SkillsPayload } from './skills-view.js'
-import { DEFAULT_SKILLS_THRESHOLDS, skillsThresholdsSchema, type SkillsThresholds } from '../shared/schemas/skills.js'
+import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
+import {
+  DEFAULT_SKILLS_THRESHOLDS,
+  skillsSaveRequestSchema,
+  skillsThresholdsSchema,
+  type SkillsSaveResult,
+  type SkillsThresholds,
+} from '../shared/schemas/skills.js'
 import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
 import { exportCsv, exportJson } from './export.js'
 import { getClaudeConfigDirs } from './pipeline/providers/claude.js'
@@ -359,7 +368,38 @@ function registerIpc(): void {
     // defaults on garbage so a malformed renderer value can never flip every
     // pattern into a draft.
     const parsed = skillsThresholdsSchema.safeParse(thresholds)
-    return await buildSkillsViewFromLedger(ledger, scope, parsed.success ? parsed.data : DEFAULT_SKILLS_THRESHOLDS)
+    // Dismissals ride every fetch (ticket 25): the not-a-skill store filters
+    // rejected patterns out of drafts AND opportunities before the gate.
+    return await buildSkillsViewFromLedger(
+      ledger,
+      scope,
+      parsed.success ? parsed.data : DEFAULT_SKILLS_THRESHOLDS,
+      { dismissals: ledger.getSkillDismissals() },
+    )
+  })
+
+  /** Skills › Save (ticket 25): the ONLY write the draft board can do, and it
+   * is user-initiated — the OS save dialog IS the user's confirmation, and no
+   * path is ever written without it. Defaults to `.agents/skills/` in home. */
+  ipcMain.handle('skills:save', async (_event, request: unknown): Promise<SkillsSaveResult> => {
+    const parsed = skillsSaveRequestSchema.safeParse(request)
+    if (!parsed.success) return { ok: false, error: 'invalid save request' }
+    const defaultPath = join(homedir(), '.agents', 'skills', slugifyCandidateName(parsed.data.name), 'SKILL.md')
+    const picked = await dialog.showSaveDialog({
+      title: 'Save skill',
+      defaultPath,
+      filters: [{ name: 'SKILL.md', extensions: ['md'] }],
+    })
+    if (picked.canceled || !picked.filePath) return { ok: false, error: 'cancelled' }
+    try {
+      // The dialog confirmed the target — create its parent dir so the write
+      // succeeds even when the nested .agents/skills/<slug>/ is brand new.
+      mkdirSync(dirname(picked.filePath), { recursive: true })
+      await writeFile(picked.filePath, parsed.data.content, 'utf8')
+      return { ok: true, path: picked.filePath }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
   })
 
   /** The Optimize section's Reverts/Abandoned payload (ADR 0008): yield
@@ -602,14 +642,22 @@ function registerIpc(): void {
   ipcMain.handle('export:csv', (_event, destination?: string): Promise<ExportResult> => runExport('csv', destination))
   ipcMain.handle('export:json', (_event, destination?: string): Promise<ExportResult> => runExport('json', destination))
 
-  // Coach agent chain (tickets 21–22): the HarnessRuntime seam's IPC surface —
-  // harness listing, run ack/stream/cancel, and the consent gate. The runner
-  // is lazy: the AI SDK loads on the first coach:run, never at boot. The
-  // consent source is the ledger's persisted setting (default off, ADR 0012
-  // addendum) — the runner refuses every unconsented run.
+  // Coach + Skills agent chain (tickets 21–25): the HarnessRuntime seam's IPC
+  // surface — harness listing, run ack/stream/cancel, the consent gate, the
+  // not-a-skill dismissal store, and consent-gated draft prose. The runner is
+  // lazy: the AI SDK loads on the first harness-touching call, never at boot.
+  // Consent is the ledger's persisted setting (default off, ADR 0012
+  // addendum); dismissals are a ledger config table so they survive clear().
   registerAgentsIpc({
-    getConsent: () => ledger?.getAgentsConsent() ?? false,
-    setConsent: (granted) => ledger?.setAgentsConsent(granted),
+    consent: {
+      getConsent: () => ledger?.getAgentsConsent() ?? false,
+      setConsent: (granted) => ledger?.setAgentsConsent(granted),
+    },
+    dismissals: {
+      // The skills:view read goes straight to the ledger above; this source
+      // carries only the write (ticket 25).
+      dismiss: (source, name, reason) => ledger?.dismissSkill(source, name, reason),
+    },
   })
 }
 

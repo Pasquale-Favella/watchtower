@@ -64,6 +64,64 @@ export const ghostSkillSchema = z.object({
 })
 export type GhostSkill = z.infer<typeof ghostSkillSchema>
 
+/** A not-a-skill dismissal: a candidate pattern the user rejected, so the
+ *  detector never resurfaces it. Ledger-persisted (like consent) — the
+ *  dismissal survives `clear()` and the detector filters on every fetch. */
+export const skillsDismissalSchema = z.object({
+  source: skillsSourceSchema,
+  name: z.string(),
+  reason: z.string(),
+  created: z.string(),
+})
+export type SkillsDismissal = z.infer<typeof skillsDismissalSchema>
+
+export const skillsDismissalRequestSchema = z.object({
+  source: skillsSourceSchema,
+  name: z.string(),
+  reason: z.string(),
+})
+export type SkillsDismissalRequest = z.infer<typeof skillsDismissalRequestSchema>
+
+export const skillsDismissalResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+])
+export type SkillsDismissalResult = z.infer<typeof skillsDismissalResultSchema>
+
+/** The one-shot harness prose request: a candidate's NORMALIZED evidence only
+ *  (never raw transcripts — the harness authors from what the detector saw). */
+export const skillsProseRequestSchema = z.object({
+  source: skillsSourceSchema,
+  name: z.string(),
+  frequency: z.number(),
+  spreadSessions: z.number(),
+  spreadProjects: z.number(),
+  costUSD: z.number(),
+  turns: z.number(),
+})
+export type SkillsProseRequest = z.infer<typeof skillsProseRequestSchema>
+
+export const skillsProseResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), markdown: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+])
+export type SkillsProseResult = z.infer<typeof skillsProseResultSchema>
+
+/** User-initiated save: the renderer asks, main opens the OS save dialog
+ *  (defaulting to `.agents/skills/`), and only a dialog-confirmed path is
+ *  written — the app never writes on its own. */
+export const skillsSaveRequestSchema = z.object({
+  name: z.string(),
+  content: z.string(),
+})
+export type SkillsSaveRequest = z.infer<typeof skillsSaveRequestSchema>
+
+export const skillsSaveResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), path: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+])
+export type SkillsSaveResult = z.infer<typeof skillsSaveResultSchema>
+
 export const skillsPayloadSchema = z.object({
   period: z.object({ start: z.string().nullable(), end: z.string().nullable() }),
   summary: z.object({
