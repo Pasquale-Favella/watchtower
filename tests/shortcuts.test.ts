@@ -23,10 +23,10 @@ describe('shortcut registry', () => {
     expect(shortcutForAction('toggleSidebar')?.hotkey).toBe('Mod+B')
   })
 
-  it('registers nothing for digits beyond the numbered sections (Mod+8/Mod+9 no-op)', () => {
+  it('registers nothing for digits beyond the numbered sections (Mod+9/Mod+10 no-op)', () => {
     const hotkeys = new Set(SHORTCUTS.map(def => def.hotkey))
-    expect(hotkeys.has('Mod+8')).toBe(false)
     expect(hotkeys.has('Mod+9')).toBe(false)
+    expect(hotkeys.has('Mod+10')).toBe(false)
     expect(NUMBERED_SECTION_SHORTCUTS).toHaveLength(NAV_SECTIONS.length - 1)
   })
 
@@ -48,8 +48,8 @@ describe('shortcut registry', () => {
   })
 
   it('derives the footer range from the registry, per platform', () => {
-    expect(sectionsRangeLabel('mac')).toBe('⌘1–⌘7')
-    expect(sectionsRangeLabel('windows')).toBe('Ctrl+1–Ctrl+7')
-    expect(sectionsRangeLabel('linux')).toBe('Ctrl+1–Ctrl+7')
+    expect(sectionsRangeLabel('mac')).toBe('⌘1–⌘8')
+    expect(sectionsRangeLabel('windows')).toBe('Ctrl+1–Ctrl+8')
+    expect(sectionsRangeLabel('linux')).toBe('Ctrl+1–Ctrl+8')
   })
 })

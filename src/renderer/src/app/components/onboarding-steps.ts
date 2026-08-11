@@ -1,6 +1,6 @@
 import {
   ArrowLeftRight, BarChart3, Flame, GitPullRequestArrow, LayoutDashboard,
-  Layers, Lightbulb, PanelsTopLeft, Settings,
+  Layers, Lightbulb, PanelsTopLeft, Settings, Sparkles,
 } from 'lucide-react'
 import type { OnboardingStep } from '../../../../shared/schemas/renderer.js'
 export type { OnboardingStep }
@@ -61,6 +61,12 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     title: 'Compare',
     body: 'Pick two models and see one-shot rate, retry rate, cost per call and cache-hit rate side by side.',
     icon: ArrowLeftRight,
+  },
+  {
+    id: 'skills',
+    title: 'Skills',
+    body: 'See the patterns your workflow actually produces — recurring skills, commands and tools — proposed as draft SKILL.md entries, with near-misses and ghost skills flagged. Fully local.',
+    icon: Sparkles,
   },
   {
     id: 'settings',

@@ -47,7 +47,13 @@ describe('useSettingsStore (ADR 0011)', () => {
     useSettingsStore.getState().setTheme('dark')
     useSettingsStore.getState().markOnboarded()
     const persisted = JSON.parse(memory.getItem(PERSIST_KEY)!)
-    expect(persisted.state).toEqual({ theme: 'dark', defaultPeriod: 'today', onboarded: true })
+    expect(persisted.state).toEqual({
+      theme: 'dark',
+      defaultPeriod: 'today',
+      onboarded: true,
+      skillsFrequency: 5,
+      skillsSpread: 2,
+    })
   })
 
   it('setTheme and markOnboarded update state', () => {
@@ -139,5 +145,16 @@ describe('useSettingsStore (ADR 0011)', () => {
     mockWindow({ setAgentsConsent: () => Promise.resolve({ granted: 'bogus' }) })
     await useSettingsStore.getState().setAgentsConsent(true)
     expect(useSettingsStore.getState().agentsConsent).toBe(false)
+  })
+
+  it('the Skills detection thresholds default to 5 × 2 and persist locally (ticket 24)', () => {
+    expect(useSettingsStore.getState().skillsFrequency).toBe(5)
+    expect(useSettingsStore.getState().skillsSpread).toBe(2)
+    useSettingsStore.getState().setSkillsThresholds(3, 1)
+    expect(useSettingsStore.getState().skillsFrequency).toBe(3)
+    expect(useSettingsStore.getState().skillsSpread).toBe(1)
+    const persisted = JSON.parse(memory.getItem(PERSIST_KEY)!)
+    expect(persisted.state.skillsFrequency).toBe(3)
+    expect(persisted.state.skillsSpread).toBe(1)
   })
 })

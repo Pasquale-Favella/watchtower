@@ -5,7 +5,7 @@ export type { Section, ShortcutAction, ShortcutDef, Platform }
 
 /** Sections in sidebar/nav order. `Mod+1`–`Mod+7` map to the first seven. */
 export const NAV_SECTIONS: readonly Section[] = [
-  'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'settings',
+  'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'skills', 'settings',
 ]
 
 /**
@@ -22,6 +22,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { action: 'optimize', hotkey: 'Mod+5', label: 'Optimize' },
   { action: 'models', hotkey: 'Mod+6', label: 'Models' },
   { action: 'compare', hotkey: 'Mod+7', label: 'Compare' },
+  { action: 'skills', hotkey: 'Mod+8', label: 'Skills' },
   { action: 'settings', hotkey: 'Mod+,', label: 'Settings' },
   { action: 'refresh', hotkey: 'Mod+R', label: 'Refresh' },
   { action: 'toggleSidebar', hotkey: 'Mod+B', label: 'Toggle sidebar' },

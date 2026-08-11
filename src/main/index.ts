@@ -17,6 +17,8 @@ import { buildModelsViewFromLedger, type ModelsPayload } from './models-view.js'
 import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from './compare-view.js'
 import { buildOptimizeViewFromLedger, type OptimizePayload } from './optimize-view.js'
 import { buildYieldViewFromLedger, type YieldPayload } from './yield-view.js'
+import { buildSkillsViewFromLedger, type SkillsPayload } from './skills-view.js'
+import { DEFAULT_SKILLS_THRESHOLDS, skillsThresholdsSchema, type SkillsThresholds } from '../shared/schemas/skills.js'
 import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
 import { exportCsv, exportJson } from './export.js'
 import { getClaudeConfigDirs } from './pipeline/providers/claude.js'
@@ -344,6 +346,20 @@ function registerIpc(): void {
   ipcMain.handle('optimize:view', async (_event, scope: OverviewScope): Promise<OptimizePayload | null> => {
     if (!ledger) throw new Error('ledger not initialised')
     return await buildOptimizeViewFromLedger(ledger, scope)
+  })
+
+  /** The Skills section's detection payload (ticket 24): pure local mining
+   * of skill/bash/tool seams plus the on-disk inventory — no consent, no
+   * network. Thresholds (frequency × spread) are renderer settings passed
+   * per request; defaults (5 × 2) apply when absent. */
+  ipcMain.handle('skills:view', async (_event, scope: OverviewScope, thresholds?: SkillsThresholds): Promise<SkillsPayload | null> => {
+    if (!ledger) throw new Error('ledger not initialised')
+    // Tripwire (ADR 0005): IPC args are `unknown` — safeParse applies the
+    // schema's .int().min(1) guards and .default()s, falling back to the
+    // defaults on garbage so a malformed renderer value can never flip every
+    // pattern into a draft.
+    const parsed = skillsThresholdsSchema.safeParse(thresholds)
+    return await buildSkillsViewFromLedger(ledger, scope, parsed.success ? parsed.data : DEFAULT_SKILLS_THRESHOLDS)
   })
 
   /** The Optimize section's Reverts/Abandoned payload (ADR 0008): yield

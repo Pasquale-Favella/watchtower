@@ -11,6 +11,7 @@ import {
 } from '@/shared/lib/api'
 import type { ActiveCurrency, CurrencyOption } from '../../../../shared/schemas/fx.js'
 import type { Theme } from '../../../../shared/schemas/renderer.js'
+import { DEFAULT_SKILLS_THRESHOLDS } from '../../../../shared/schemas/skills.js'
 import { setActiveCurrency } from '@/shared/lib/currency'
 
 /** Persisted (theme/defaultPeriod/onboarded) + server-fed (cadence/currency)
@@ -29,6 +30,11 @@ export interface SettingsState {
    * localStorage `partialize`, so the main process stays the single authority
    * and the runner can refuse unconsented runs even from a stale renderer. */
   agentsConsent: boolean
+  /** The Skills detection gate (ticket 24): frequency × spread app settings
+   * passed with every skills:view request. Tuning prefs — persisted locally
+   * like theme, consumed by the main process per request. */
+  skillsFrequency: number
+  skillsSpread: number
   setTheme: (theme: Theme) => void
   setDefaultPeriod: (period: string) => void
   markOnboarded: () => void
@@ -39,6 +45,7 @@ export interface SettingsState {
   loadCurrencyOptions: () => Promise<void>
   loadAgentsConsent: () => Promise<void>
   setAgentsConsent: (granted: boolean) => Promise<void>
+  setSkillsThresholds: (frequency: number, spread: number) => void
   onCurrencyChanged: (currency: ActiveCurrency) => void
 }
 
@@ -52,6 +59,8 @@ export const useSettingsStore = create<SettingsState>()(
       activeCurrency: { code: 'USD', symbol: '$', rate: 1 },
       currencyOptions: [],
       agentsConsent: false,
+      skillsFrequency: DEFAULT_SKILLS_THRESHOLDS.frequency,
+      skillsSpread: DEFAULT_SKILLS_THRESHOLDS.spread,
       setTheme: (theme) => set({ theme }),
       setDefaultPeriod: (defaultPeriod) => set({ defaultPeriod }),
       markOnboarded: () => set({ onboarded: true }),
@@ -63,6 +72,7 @@ export const useSettingsStore = create<SettingsState>()(
         const result = await fetchSetAgentsConsent(granted)
         if (result.ok) set({ agentsConsent: result.data.granted })
       },
+      setSkillsThresholds: (frequency, spread) => set({ skillsFrequency: frequency, skillsSpread: spread }),
       setCadence: async (value) => {
         // Optimistic, matching today's Settings › General handler: paint the
         // choice immediately, confirm it with the main process's persisted value.
@@ -102,7 +112,13 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: 'watchtower:settings',
       storage: createJSONStorage(() => localStorage),
-      partialize: (s) => ({ theme: s.theme, defaultPeriod: s.defaultPeriod, onboarded: s.onboarded }),
+      partialize: (s) => ({
+        theme: s.theme,
+        defaultPeriod: s.defaultPeriod,
+        onboarded: s.onboarded,
+        skillsFrequency: s.skillsFrequency,
+        skillsSpread: s.skillsSpread,
+      }),
     },
   ),
 )

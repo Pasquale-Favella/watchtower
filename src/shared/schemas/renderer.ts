@@ -26,7 +26,7 @@ export const splashProviderProgressSchema = z.object({
 export type SplashProviderProgress = z.infer<typeof splashProviderProgressSchema>
 
 export const sectionSchema = z.enum([
-  'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'settings',
+  'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'skills', 'settings',
 ])
 export type Section = z.infer<typeof sectionSchema>
 

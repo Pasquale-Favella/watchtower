@@ -9,6 +9,7 @@ import type { ModelsPayload } from '../main/models-view.js'
 import type { ComparePair, ComparePayload } from '../main/compare-view.js'
 import type { OptimizePayload } from '../main/optimize-view.js'
 import type { YieldPayload } from '../main/yield-view.js'
+import type { SkillsPayload, SkillsThresholds } from '../shared/schemas/skills.js'
 import type { UpdateStatus } from '../main/updates.js'
 import type { ActiveCurrency, CurrencyOption } from '../main/fx.js'
 import type { ExportResult } from '../main/export.js'
@@ -105,6 +106,8 @@ const api = {
     ipcRenderer.invoke('optimize:view', scope),
   getYield: (scope: OverviewScope): Promise<YieldPayload | null> =>
     ipcRenderer.invoke('optimize:yield', scope),
+  getSkills: (scope: OverviewScope, thresholds?: SkillsThresholds): Promise<SkillsPayload | null> =>
+    ipcRenderer.invoke('skills:view', scope, thresholds),
   addModelAlias: (model: string, aliasOf: string): Promise<{ ok: true }> => ipcRenderer.invoke('models:addAlias', model, aliasOf),
   setModelPrice: (model: string, inputPricePerMillion: number, outputPricePerMillion: number): Promise<{ ok: true }> =>
     ipcRenderer.invoke('models:setPrice', model, inputPricePerMillion, outputPricePerMillion),

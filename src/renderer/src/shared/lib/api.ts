@@ -39,6 +39,7 @@ import {
 } from '../../../../shared/schemas/compare.js'
 import { optimizePayloadSchema, type OptimizePayload } from '../../../../shared/schemas/optimize.js'
 import { yieldPayloadSchema, type YieldPayload } from '../../../../shared/schemas/yield.js'
+import { skillsPayloadSchema, type SkillsPayload, type SkillsThresholds } from '../../../../shared/schemas/skills.js'
 import {
   pullRequestsPayloadSchema,
   type PullRequestsPayload,
@@ -173,6 +174,13 @@ export function fetchOptimize(scope: OverviewScope): Promise<ApiResult<OptimizeP
 
 export function fetchYield(scope: OverviewScope): Promise<ApiResult<YieldPayload | null>> {
   return fetchPayload('yield', yieldPayloadSchema.nullable(), () => window.api.getYield(scope))
+}
+
+export function fetchSkills(
+  scope: OverviewScope,
+  thresholds?: SkillsThresholds,
+): Promise<ApiResult<SkillsPayload | null>> {
+  return fetchPayload('skills', skillsPayloadSchema.nullable(), () => window.api.getSkills(scope, thresholds))
 }
 
 export function fetchModelAliases(): Promise<ApiResult<ModelAlias[]>> {
