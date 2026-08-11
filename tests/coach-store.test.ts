@@ -47,7 +47,6 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
     expect(s.hydrated).toBe(false)
     expect(s.harnesses).toEqual([])
     expect(s.harnessKind).toBeNull()
-    expect(s.mode).toBe('coach')
     expect(s.messages).toEqual([])
     expect(s.running).toBe(false)
     expect(s.activeRunId).toBeNull()
@@ -169,7 +168,7 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
     expect(startCoachRun).not.toHaveBeenCalled()
   })
 
-  it('sendBuildSkill sends normalized evidence only and never resumes', async () => {
+  it('sendBuildSkill sends normalized evidence only and resumes the conversation', async () => {
     const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
     mockWindow({ startCoachRun })
     useCoachSkillsStore.setState({ harnessKind: 'claude', sessionId: 'sess_prev' })
@@ -200,7 +199,9 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
         turns: 4,
       },
       scope: expectedScope(),
-      // No sessionId: each build-skill run is a fresh one-shot.
+      // Map 58: a build-skill run is part of the ONE conversation — it resumes
+      // the session so the user can iterate on the draft.
+      sessionId: 'sess_prev',
     })
   })
 
@@ -295,6 +296,41 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
     const assistant = s.messages[1]
     expect(assistant.streaming).toBe(false)
     expect(assistant.draft?.markdown).toBe('# data-fetch')
+  })
+
+  it('onEvent done attaches a draft card to a coach turn whose text is a completed SKILL.md', () => {
+    const markdown = [
+      '# data-fetch',
+      '',
+      '## Description',
+      'Fetch data.',
+      '',
+      '## When to use',
+      'When you need data.',
+      '',
+      '## Example',
+      '```sh\nfetch --limit 10\n```',
+    ].join('\n')
+    useCoachSkillsStore.setState({ activeRunId: 'run-1', running: true, messages: [
+      { id: 'm0', role: 'user', content: 'craft a skill for data-fetch', mode: 'coach', tools: [], streaming: false },
+      { id: 'm1', role: 'assistant', content: markdown, mode: 'coach', tools: [], streaming: true },
+    ] })
+    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'status', state: 'done' }))
+    const assistant = useCoachSkillsStore.getState().messages[1]
+    expect(assistant.streaming).toBe(false)
+    // Candidate-less: the draft card is harness-authored in the conversation.
+    expect(assistant.draft).toEqual({ markdown })
+  })
+
+  it('onEvent done does NOT attach a draft card to a coach turn that is not a SKILL.md', () => {
+    useCoachSkillsStore.setState({ activeRunId: 'run-1', running: true, messages: [
+      { id: 'm0', role: 'user', content: 'advice please', mode: 'coach', tools: [], streaming: false },
+      { id: 'm1', role: 'assistant', content: 'Here is some advice…', mode: 'coach', tools: [], streaming: true },
+    ] })
+    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'status', state: 'done' }))
+    const assistant = useCoachSkillsStore.getState().messages[1]
+    expect(assistant.streaming).toBe(false)
+    expect(assistant.draft).toBeUndefined()
   })
 
   it('onEvent stores the session resume handle', () => {

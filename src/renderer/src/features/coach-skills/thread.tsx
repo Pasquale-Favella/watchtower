@@ -3,7 +3,7 @@ import type { RefObject } from 'react'
 import { Badge } from '@/shared/components/ui/badge'
 
 import { DraftCard } from './draft-card'
-import { MODE_HINT, MODE_LABEL } from './lib'
+import { MODE_LABEL } from './lib'
 import { useCoachSkillsStore, type ChatMessage } from './store'
 
 /** Tool-call notices on a streaming assistant turn — an elements.ai-sdk.dev
@@ -82,8 +82,7 @@ export function MessageBubble({ message, onSave }: {
 }
 
 /** The scrollable conversation (elements.ai-sdk.dev Conversation-inspired):
- *  the message list, auto-scroll anchor, and the save-notice line. Renders
- *  the empty state before the first run. */
+ *  the message list, auto-scroll anchor, and the save-notice line. */
 export function Thread({ messages, saveNotice, onSave, threadEndRef }: {
   messages: ChatMessage[]
   saveNotice: string | null
@@ -100,21 +99,6 @@ export function Thread({ messages, saveNotice, onSave, threadEndRef }: {
       ))}
       {saveNotice && <div className="text-center text-[10px] text-muted-foreground">{saveNotice}</div>}
       <div ref={threadEndRef} />
-    </div>
-  )
-}
-
-/** Empty-state hint shown before the first run. */
-export function EmptyThread({ mode, hasHarness }: {
-  mode: ChatMessage['mode']
-  hasHarness: boolean
-}) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-      <span className="text-[12px] font-medium text-foreground">Coach &amp; Skills</span>
-      <p className="max-w-sm text-[11px] text-muted-foreground">{MODE_HINT[mode]}</p>
-      {!hasHarness && <p className="text-[10.5px] text-muted-foreground">No coding-agent harness detected on this machine — install Claude Code, OpenCode, Codex or another ACP harness to get started.</p>}
-      <p className="text-[10.5px] text-muted-foreground">Runs happen in a private temp workspace, and the harness reads your platform data live through the in-app ledger — no repo picker needed.</p>
     </div>
   )
 }

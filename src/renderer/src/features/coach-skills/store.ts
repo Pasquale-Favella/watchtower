@@ -10,6 +10,7 @@ import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { scopedDataSlice, type ScopedDataSlice } from '../../app/stores/data-store'
 import { subscribeToRefresh } from '../../app/stores/scan-store'
 import { useSettingsStore } from '@/features/settings/store'
+import { looksLikeSkillMarkdown } from '@/features/coach-skills/lib'
 import type {
   CoachEventEnvelope,
   CoachHarnessRow,
@@ -32,28 +33,32 @@ export interface ChatMessage {
   mode: CoachMode
   /** Assistant tool-call notices, in order. */
   tools: string[]
-  /** Build-skill completion: the detected candidate + the harness-authored
-   *  markdown. Set once the run's `done` event lands (never mid-stream). */
-  draft?: { candidate: SkillCandidate; markdown: string }
+  /** Completed-skill draft: the detected candidate (build-skill run) + the
+   *  harness markdown. Attached at the `done` event — for a build-skill run
+   *  the candidate was seeded at spawn (never mid-stream); for a coach run it
+   *  is attached on completion when the finished text looks like a SKILL.md. */
+  draft?: { candidate?: SkillCandidate; markdown: string }
   /** Assistant turn failed (ack error, stream error, or cancelled). */
   error?: string
   /** Whether the turn is still streaming. */
   streaming: boolean
 }
 
-/** The unified Coach & Skills state (ADR 0017): the message-model chat
- *  surface. Runs are mode-tagged — `coach` streams the user's prompt; a
- *  `build-skill` run carries a detected candidate and the MAIN process builds
- *  the authoring prompt from its normalized evidence. Session resume flows
- *  only on coach turns (each build-skill run is a fresh one-shot). */
+/** The unified Coach & Skills state (ADR 0017, conversation prototype map 58):
+ *  the message-model chat surface. Every run is part of ONE conversation that
+ *  resumes (sessionId). Runs are mode-tagged at spawn — `coach` streams the
+ *  user's prompt; a `build-skill` run (seeded by clicking a detected pattern)
+ *  carries a detected candidate and the MAIN process builds the authoring
+ *  prompt from its normalized evidence, surfacing the result as a mid-thread
+ *  draft card. A coach turn whose finished text is a completed SKILL.md gets
+ *  the same card. There is no separate next-run mode: `build-skill` is invoked
+ *  directly from the pattern chips. */
 export interface CoachSkillsState {
   /** Harnesses detected on the host, for the picker. */
   hydrated: boolean
   harnesses: CoachHarnessRow[]
   /** The selected harness registry key (null until the user picks one). */
   harnessKind: string | null
-  /** The mode tag for the NEXT run. */
-  mode: CoachMode
   /** Agent-declared selectable models, from the last session event (map 47
    *  ticket 50). Absent until a harness reports them — the progressive picker
    *  only renders when this exists. */
@@ -75,25 +80,23 @@ export interface CoachSkillsState {
    *  by runId and replayed when the ack sets the active id, so a fast error
    *  surfaces instead of silently leaving the turn hanging. */
   pendingEvents: Record<string, CoachEventEnvelope[]>
-  /** Resume handle from the last coach run's session event. */
+  /** Resume handle from the last run's session event. */
   sessionId: string | null
   error: string | null
-  /** The scoped detection payload — the build-skill candidate pool. */
+  /** The scoped detection payload — the pattern pool for the craft chips. */
   detection: ScopedDataSlice<SkillsPayload>
   /** Loads the detected harnesses for the picker (idempotent refresh). */
   loadHarnesses: () => Promise<void>
   /** Persists the picker choice. */
   setHarness: (kind: string) => void
-  /** Sets the mode tag for the next run. */
-  setMode: (mode: CoachMode) => void
   /** Sets the user's model choice for the next run (null = agent default). */
   setModelId: (modelId: string | null) => void
   /** Sets the user's mode choice for the next run (null = agent default). */
   setModeId: (modeId: string | null) => void
   /** Starts a coach run with a free-form prompt (session-resuming). */
   sendCoach: (prompt: string) => Promise<void>
-  /** Starts a build-skill run for a detected candidate (one-shot, evidence
-   *  only — the prompt is built main-side). */
+  /** Starts a build-skill run for a detected candidate (conversation-resuming,
+   *  evidence only — the prompt is built main-side). */
   sendBuildSkill: (candidate: SkillCandidate) => Promise<void>
   /** Interrupts the active run (fire-and-forget; cancel is terminal). */
   cancel: () => void
@@ -115,7 +118,8 @@ function nextMessageId(): string {
 
 /** A ready-to-spread empty assistant turn for the thread. A build-skill turn
  *  is born with its draft card's candidate already attached, so the `done`
- *  event can fill in the harness markdown (ADR 0017). */
+ *  event can fill in the harness markdown (ADR 0017); a coach turn starts
+ *  bare and may earn a draft card on completion if its text is a SKILL.md. */
 function emptyAssistant(mode: CoachMode, candidate?: SkillCandidate): ChatMessage {
   return {
     id: nextMessageId(),
@@ -132,7 +136,6 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   hydrated: false,
   harnesses: [],
   harnessKind: null,
-  mode: 'coach',
   sessionModels: null,
   sessionModes: null,
   modelId: null,
@@ -173,7 +176,6 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     modelId: null,
     modeId: null,
   }),
-  setMode: (mode) => set({ mode }),
   setModelId: (modelId) => set({ modelId }),
   setModeId: (modeId) => set({ modeId }),
   sendCoach: async (prompt) => {
@@ -204,8 +206,9 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
         costUSD: candidate.costUSD,
         turns: candidate.turns,
       },
-      // Each build-skill run is a fresh one-shot — never resumes.
-      resume: false,
+      // A build-skill run is part of the ONE conversation (map 58): it resumes
+      // the session like a coach turn, so the user can iterate on the draft.
+      resume: true,
     })
   },
   cancel: () => {
@@ -256,13 +259,18 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     switch (event.kind) {
       case 'status':
         if (event.state === 'done') {
-          // Finalize the active turn: attach the draft card for a build-skill
-          // run (the accumulated text IS the harness markdown).
+          // Finalize the active turn: attach the draft card — for a build-skill
+          // run it was seeded with its candidate at spawn (the accumulated text
+          // IS the harness markdown); for a coach run it is attached when the
+          // finished text looks like a completed SKILL.md.
           set(state => {
             const messages = state.messages.map(message => {
               if (!message.streaming) return message
               if (message.mode === 'build-skill' && message.draft) {
                 return { ...message, streaming: false, draft: { ...message.draft, markdown: message.content } }
+              }
+              if (message.mode === 'coach' && looksLikeSkillMarkdown(message.content)) {
+                return { ...message, streaming: false, draft: { markdown: message.content } }
               }
               return { ...message, streaming: false }
             })

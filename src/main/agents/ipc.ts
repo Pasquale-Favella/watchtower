@@ -153,12 +153,12 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         const runId = randomUUID()
 
         // Per-conversation temp workspace: created on the conversation's first
-        // run and REUSED for the whole conversation — including build-skill
-        // one-shots, which never resume (no sessionId) but must NOT destroy
-        // the coach conversation's cwd while a live ACP session still holds
-        // it. Only `coach:reset` (renderer resetSession — a brand-new
-        // conversation) and app quit delete it. `mkdtemp` guarantees a real
-        // on-disk path — the seam's own workspace validation still runs.
+        // run and REUSED for the whole conversation — a resumed run (sessionId
+        // present, whether a coach turn or a build-skill run seeded from a
+        // pattern chip) and a session-less one both share it, so a run must
+        // NEVER destroy it. Only `coach:reset` (renderer resetSession — a
+        // brand-new conversation) and app quit delete it. `mkdtemp` guarantees
+        // a real on-disk path — the seam's own workspace validation still runs.
         workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-'))
 
         const gen = runtime.run({
