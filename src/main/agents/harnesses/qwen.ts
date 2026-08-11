@@ -13,8 +13,6 @@ const qwen: HarnessSpec = {
   // drivable when the binary the runtime actually spawns is on PATH.
   commands: ['qwen-code'],
   scrubEnv: ['DASHSCOPE_API_KEY', 'QWEN_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['qwen3-coder-plus', 'qwen3-coder', 'qwen-max', 'qwen-plus'],
   preference: 7,
   adapter: {
     kind: 'acp',

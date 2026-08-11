@@ -7,7 +7,6 @@ import {
   coachModeSchema,
   coachRunRequestSchema,
   coachRunResultSchema,
-  coachWorkspaceResultSchema,
 } from '../src/shared/schemas/agents.js'
 
 describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', () => {
@@ -20,11 +19,36 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
       { kind: 'tool', tool: 'Bash' },
       { kind: 'tool', tool: 'Edit', title: 'Read package.json' },
       { kind: 'session', sessionId: 'sess_1' },
+      { kind: 'session', sessionId: 'sess_1', models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' } },
       { kind: 'error', message: 'CLI not logged in' },
     ]
     for (const event of ok) {
       expect(coachEventSchema.safeParse(event).success, JSON.stringify(event)).toBe(true)
     }
+  })
+
+  it('accepts agent-declared models/modes on the session event (progressive selection)', () => {
+    expect(coachEventSchema.safeParse({
+      kind: 'session',
+      sessionId: 'sess_1',
+      models: {
+        availableModels: [
+          { modelId: 'opus', name: 'Claude Opus' },
+          { modelId: 'sonnet', name: 'Claude Sonnet', description: 'Fast' },
+        ],
+        currentModelId: 'opus',
+      },
+      modes: {
+        availableModes: [{ id: 'plan', name: 'Plan' }],
+        currentModeId: 'plan',
+      },
+    }).success).toBe(true)
+    // A malformed models payload (missing currentModelId) is rejected.
+    expect(coachEventSchema.safeParse({
+      kind: 'session',
+      sessionId: 'sess_1',
+      models: { availableModels: [{ modelId: 'opus', name: 'x' }] },
+    }).success).toBe(false)
   })
 
   it('rejects a discriminant outside the union and a bad status state', () => {
@@ -40,32 +64,42 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     expect(coachEventEnvelopeSchema.safeParse({ event: { kind: 'text', delta: 'hi' } }).success).toBe(false)
   })
 
-  it('parses a valid run request and treats model as optional', () => {
+  it('parses a valid run request with no workspace path (map 53) and optional modelId/modeId/scope', () => {
     const full = {
       harnessKind: 'claude',
-      model: 'claude-opus-4-8',
-      workspacePath: 'C:\\work\\project',
+      modelId: 'claude-opus-4-8',
+      modeId: 'plan',
+      scope: { period: '30days', provider: 'claude' },
       prompt: 'Summarise my spend',
       sessionId: 'sess_1',
     }
     expect(coachRunRequestSchema.safeParse(full).success).toBe(true)
-    const { model, ...withoutModel } = full
-    expect(coachRunRequestSchema.safeParse(withoutModel).success).toBe(true)
-    void model
-    expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p' }).success).toBe(false)
+    // There is no workspacePath field anymore — a stray one is stripped, never
+    // part of the parsed wire shape (the runner cannot read what the schema
+    // does not carry).
+    const withStray = coachRunRequestSchema.safeParse({ ...full, workspacePath: 'C:\\work\\project' })
+    expect(withStray.success).toBe(true)
+    if (withStray.success) expect('workspacePath' in withStray.data).toBe(false)
+    const { modelId, modeId, scope, ...withoutSelection } = full
+    expect(coachRunRequestSchema.safeParse(withoutSelection).success).toBe(true)
+    void modelId
+    void modeId
+    void scope
+    expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p' }).success).toBe(true)
+    expect(coachRunRequestSchema.safeParse({ prompt: 'p' }).success).toBe(false)
+    // A malformed scope (bad period) is rejected.
+    expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', scope: { period: 'decade' } }).success).toBe(false)
   })
 
   it('defaults mode to coach and accepts a build-skill evidence payload', () => {
     const parsed = coachRunRequestSchema.safeParse({
       harnessKind: 'claude',
-      workspacePath: 'C:\\work\\project',
       prompt: 'p',
     })
     expect(parsed.success).toBe(true)
     if (parsed.success) expect(parsed.data.mode).toBe('coach')
     expect(coachRunRequestSchema.safeParse({
       harnessKind: 'claude',
-      workspacePath: 'C:\\work\\project',
       mode: 'build-skill',
       evidence: {
         source: 'bash',
@@ -84,20 +118,12 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     // runner's semantic check refuses a build-skill run without evidence.
     expect(coachRunRequestSchema.safeParse({
       harnessKind: 'claude',
-      workspacePath: 'C:\\work\\project',
       mode: 'build-skill',
     }).success).toBe(true)
     expect(coachRunRequestSchema.safeParse({
       harnessKind: 'claude',
-      workspacePath: 'C:\\work\\project',
       mode: 'roast',
     }).success).toBe(false)
-  })
-
-  it('parses both arms of the workspace picker result', () => {
-    expect(coachWorkspaceResultSchema.safeParse({ ok: true, path: 'C:\\work\\project' }).success).toBe(true)
-    expect(coachWorkspaceResultSchema.safeParse({ ok: false, error: 'cancelled' }).success).toBe(true)
-    expect(coachWorkspaceResultSchema.safeParse({ ok: true }).success).toBe(false)
   })
 
   it('parses the mode enum', () => {
@@ -113,15 +139,14 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     expect(coachRunResultSchema.safeParse({ ok: 'maybe' }).success).toBe(false)
   })
 
-  it('parses a harness picker row', () => {
+  it('parses a harness picker row (no static model list — map 47 ticket 49)', () => {
     expect(coachHarnessRowSchema.safeParse({
       kind: 'claude',
       displayName: 'Claude Code',
-      models: ['claude-opus-4-8'],
       authStatus: 'configured',
     }).success).toBe(true)
     expect(coachHarnessRowSchema.safeParse({ kind: 'claude' }).success).toBe(false)
-    expect(coachHarnessRowSchema.safeParse({ kind: 'claude', displayName: 'x', models: [], authStatus: 'nope' }).success).toBe(false)
+    expect(coachHarnessRowSchema.safeParse({ kind: 'claude', displayName: 'x', authStatus: 'nope' }).success).toBe(false)
   })
 
 })

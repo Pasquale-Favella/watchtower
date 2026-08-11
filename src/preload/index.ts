@@ -33,7 +33,6 @@ import type {
   CoachHarnessesResult,
   CoachRunRequest,
   CoachRunResult,
-  CoachWorkspaceResult,
 } from '../shared/schemas/agents.js'
 
 export type {
@@ -49,7 +48,6 @@ export type {
   CoachHarnessesResult,
   CoachRunRequest,
   CoachRunResult,
-  CoachWorkspaceResult,
 } from '../shared/schemas/agents.js'
 
 const api = {
@@ -154,16 +152,20 @@ const api = {
    * destination the main process shows a folder/file picker. */
   exportData: (format: 'csv' | 'json', destination?: string): Promise<ExportResult> =>
     ipcRenderer.invoke(`export:${format}`, destination),
-  /** Coach & Skills agent chain (ADR 0017): detected harnesses for the picker. */
+  /** Coach & Skills agent chain (ADR 0017, map 53): detected harnesses for the
+   * picker. There is no workspace picker — runs use a private temp workspace
+   * owned by the main process, and the harness reads platform data through the
+   * in-app ledger MCP server. */
   getCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses'),
-  /** OS directory picker for the run workspace (ADR 0017). */
-  pickCoachWorkspace: (): Promise<CoachWorkspaceResult> => ipcRenderer.invoke('coach:pick-workspace'),
   /** Starts a harness run; resolves with the immediate ack. Events stream on
    * `onCoachEvent` keyed by the returned runId. */
   startCoachRun: (request: CoachRunRequest): Promise<CoachRunResult> =>
     ipcRenderer.invoke('coach:run', request),
   /** Interrupts the active run (fire-and-forget). */
   cancelCoachRun: (runId: string): void => ipcRenderer.send('coach:cancel', runId),
+  /** Brand-new conversation: cancels active runs and cleans the temp workspace
+   * (fire-and-forget; the store calls it on resetSession). */
+  resetCoachWorkspace: (): void => ipcRenderer.send('coach:reset'),
   /** Streams one CoachEvent per broadcast, enveloped with the runId it belongs
    * to, so the renderer routes concurrent runs without mixing deltas. */
   onCoachEvent: (callback: (message: CoachEventEnvelope) => void): (() => void) => {

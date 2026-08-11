@@ -14,8 +14,6 @@ const kiloCode: HarnessSpec = {
   // the runtime actually spawns is on PATH.
   commands: ['kilocode'],
   scrubEnv: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['claude-sonnet-4-5', 'gpt-5.2', 'gemini-3-pro-preview'],
   preference: 11,
   adapter: {
     kind: 'acp',

@@ -15,8 +15,6 @@ const codex: HarnessSpec = {
   // an alias would offer runs that fail at spawn.
   commands: ['codex-acp'],
   scrubEnv: ['OPENAI_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.1'],
   preference: 2,
   adapter: {
     kind: 'acp',

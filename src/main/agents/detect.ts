@@ -26,8 +26,6 @@ export interface HarnessInfo {
   displayName: string
   /** Resolved executable path on this host (Windows adds .exe/.cmd/.bat). */
   bin: string
-  /** Canonical model ids the harness accepts (from dynamic discovery or fallback). */
-  models: readonly string[]
   /** Env vars scrubbed before spawn so the CLI falls back to its own login. */
   scrubEnv: readonly string[]
   authStatus: HarnessAuthStatus
@@ -74,7 +72,6 @@ export async function detectHarnesses(options: DetectOptions = {}): Promise<Harn
           kind: spec.kind,
           displayName: spec.displayName,
           bin,
-          models: spec.fallbackModels ?? [],
           scrubEnv: spec.scrubEnv,
           authStatus: authProbe ? await authProbe(spec.kind) : 'unknown',
         })

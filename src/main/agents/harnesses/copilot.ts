@@ -14,8 +14,6 @@ const copilot: HarnessSpec = {
   displayName: 'GitHub Copilot CLI',
   commands: ['copilot'],
   scrubEnv: ['GITHUB_TOKEN', 'GH_TOKEN', 'OPENAI_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['gpt-5.2', 'gpt-5.1', 'claude-sonnet-4-5'],
   preference: 9,
   adapter: {
     kind: 'acp',

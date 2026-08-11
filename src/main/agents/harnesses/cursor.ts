@@ -12,8 +12,6 @@ const cursor: HarnessSpec = {
   displayName: 'Cursor Agent',
   commands: ['cursor-agent'],
   scrubEnv: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['gpt-5.2', 'claude-sonnet-4-5'],
   preference: 12,
   adapter: {
     kind: 'acp',

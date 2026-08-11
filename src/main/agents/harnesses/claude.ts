@@ -15,8 +15,6 @@ const claude: HarnessSpec = {
   // PATH. Listing `claude` as an alias would offer runs that fail at spawn.
   commands: ['claude-agent-acp'],
   scrubEnv: ['ANTHROPIC_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'opus', 'sonnet', 'haiku'],
   preference: 1,
   adapter: {
     kind: 'acp',

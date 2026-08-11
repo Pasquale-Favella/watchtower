@@ -11,8 +11,6 @@ const goose: HarnessSpec = {
   displayName: 'Goose',
   commands: ['goose'],
   scrubEnv: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['anthropic/claude-sonnet-4-5', 'openai/gpt-5.2', 'google/gemini-3-pro-preview'],
   preference: 6,
   adapter: {
     kind: 'acp',

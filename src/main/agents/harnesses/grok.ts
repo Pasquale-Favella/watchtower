@@ -9,8 +9,6 @@ const grok: HarnessSpec = {
   displayName: 'Grok Build',
   commands: ['grok'],
   scrubEnv: ['XAI_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['grok-build'],
   preference: 4,
   adapter: {
     kind: 'acp',

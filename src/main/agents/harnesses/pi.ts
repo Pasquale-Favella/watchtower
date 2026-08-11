@@ -11,8 +11,6 @@ const pi: HarnessSpec = {
   displayName: 'Pi',
   commands: ['pi-acp'],
   scrubEnv: ['PI_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['pi-1.5', 'pi-1'],
   preference: 14,
   adapter: {
     kind: 'acp',

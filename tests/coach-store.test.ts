@@ -20,6 +20,10 @@ const memory = createMemoryStorage()
 vi.stubGlobal('localStorage', memory)
 
 const { useCoachSkillsStore } = await import('../src/renderer/src/features/coach-skills/store.js')
+const { selectScope, useScopeStore } = await import('../src/renderer/src/app/stores/scope-store.js')
+
+/** The UI-scope snapshot the store attaches to every run (map 53). */
+const expectedScope = (): ReturnType<typeof selectScope> => selectScope(useScopeStore.getState())
 
 /** Stub the preload surface for the fetch wrappers' IPC-call sites. */
 function mockWindow(api: unknown): void {
@@ -27,8 +31,8 @@ function mockWindow(api: unknown): void {
 }
 
 const harnesses = [
-  { kind: 'claude', displayName: 'Claude Code', models: ['claude-opus-4-8'], authStatus: 'configured' },
-  { kind: 'gemini', displayName: 'Gemini CLI', models: [], authStatus: 'unknown' },
+  { kind: 'claude', displayName: 'Claude Code', authStatus: 'configured' },
+  { kind: 'gemini', displayName: 'Gemini CLI', authStatus: 'unknown' },
 ]
 
 const envelope = (event: CoachEventEnvelope['event']): CoachEventEnvelope => ({ runId: 'run-1', event })
@@ -38,12 +42,11 @@ beforeEach(() => {
 })
 
 describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)', () => {
-  it('starts idle with no harness, no workspace, and an empty thread', () => {
+  it('starts idle with no harness and an empty thread', () => {
     const s = useCoachSkillsStore.getState()
     expect(s.hydrated).toBe(false)
     expect(s.harnesses).toEqual([])
     expect(s.harnessKind).toBeNull()
-    expect(s.workspacePath).toBeNull()
     expect(s.mode).toBe('coach')
     expect(s.messages).toEqual([])
     expect(s.running).toBe(false)
@@ -72,7 +75,7 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
 
   it('sendCoach pushes user + assistant turns and acks the run', async () => {
     mockWindow({ startCoachRun: () => Promise.resolve({ ok: true, runId: 'run-9' }) })
-    useCoachSkillsStore.setState({ harnessKind: 'claude', workspacePath: 'C:\\work' })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
 
     await useCoachSkillsStore.getState().sendCoach('Summarise my spend')
 
@@ -84,37 +87,92 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
     expect(s.messages[1]).toMatchObject({ role: 'assistant', content: '', mode: 'coach', streaming: true })
   })
 
-  it('sendCoach forwards the resume sessionId only on coach turns', async () => {
+  it('sendCoach forwards the resume sessionId and the UI-scope snapshot', async () => {
     const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
     mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: 'claude', workspacePath: 'C:\\work', sessionId: 'sess_prev' })
+    useCoachSkillsStore.setState({ harnessKind: 'claude', sessionId: 'sess_prev' })
 
     await useCoachSkillsStore.getState().sendCoach('p')
 
     expect(startCoachRun).toHaveBeenCalledWith({
       harnessKind: 'claude',
-      workspacePath: 'C:\\work',
       mode: 'coach',
       prompt: 'p',
       sessionId: 'sess_prev',
+      // Map 53: no workspace path — the harness data context rides the scope.
+      scope: expectedScope(),
     })
   })
 
-  it('sendCoach without a harness or workspace fails without launching', async () => {
+  it('onEvent stores the agent-declared models/modes and the user\'s pick is sent on the next run', async () => {
     const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
     mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: null, workspacePath: null })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
+
+    // A prior run's handshake declared selectable models/modes.
+    useCoachSkillsStore.setState({ activeRunId: 'run-1' })
+    useCoachSkillsStore.getState().onEvent({
+      runId: 'run-1',
+      event: {
+        kind: 'session',
+        sessionId: 'sess_9',
+        models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }, { modelId: 'sonnet', name: 'Claude Sonnet' }], currentModelId: 'opus' },
+        modes: { availableModes: [{ id: 'default', name: 'Default' }, { id: 'plan', name: 'Plan' }], currentModeId: 'default' },
+      },
+    })
+    useCoachSkillsStore.getState().setModelId('sonnet')
+    useCoachSkillsStore.getState().setModeId('plan')
 
     await useCoachSkillsStore.getState().sendCoach('p')
 
-    expect(useCoachSkillsStore.getState().error).toBe('select a harness and a workspace first')
+    const s = useCoachSkillsStore.getState()
+    expect(s.sessionModels?.availableModels).toHaveLength(2)
+    expect(s.sessionModes?.availableModes).toHaveLength(2)
+    expect(startCoachRun).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'sonnet', modeId: 'plan' }))
+  })
+
+  it('does not send modelId/modeId when the agent declared no selectable set', async () => {
+    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
+    mockWindow({ startCoachRun })
+    useCoachSkillsStore.setState({ harnessKind: 'claude', sessionId: 'sess_prev' })
+
+    await useCoachSkillsStore.getState().sendCoach('p')
+
+    expect(startCoachRun).toHaveBeenCalledWith(expect.not.objectContaining({ modelId: expect.anything(), modeId: expect.anything() }))
+  })
+
+  it('setHarness clears the declared set and the user\'s picks (a different agent)', async () => {
+    useCoachSkillsStore.setState({
+      harnessKind: 'claude',
+      sessionModels: { availableModels: [{ modelId: 'opus', name: 'x' }], currentModelId: 'opus' },
+      sessionModes: { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan' },
+      modelId: 'opus',
+      modeId: 'plan',
+    })
+    useCoachSkillsStore.getState().setHarness('gemini')
+    const s = useCoachSkillsStore.getState()
+    expect(s.harnessKind).toBe('gemini')
+    expect(s.sessionModels).toBeNull()
+    expect(s.sessionModes).toBeNull()
+    expect(s.modelId).toBeNull()
+    expect(s.modeId).toBeNull()
+  })
+
+  it('sendCoach without a harness fails without launching', async () => {
+    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
+    mockWindow({ startCoachRun })
+    useCoachSkillsStore.setState({ harnessKind: null })
+
+    await useCoachSkillsStore.getState().sendCoach('p')
+
+    expect(useCoachSkillsStore.getState().error).toBe('select a harness first')
     expect(startCoachRun).not.toHaveBeenCalled()
   })
 
   it('sendBuildSkill sends normalized evidence only and never resumes', async () => {
     const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
     mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: 'claude', workspacePath: 'C:\\work', sessionId: 'sess_prev' })
+    useCoachSkillsStore.setState({ harnessKind: 'claude', sessionId: 'sess_prev' })
 
     await useCoachSkillsStore.getState().sendBuildSkill({
       name: 'data-fetch',
@@ -131,7 +189,6 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
 
     expect(startCoachRun).toHaveBeenCalledWith({
       harnessKind: 'claude',
-      workspacePath: 'C:\\work',
       mode: 'build-skill',
       evidence: {
         source: 'skill',
@@ -142,13 +199,14 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
         costUSD: 3.5,
         turns: 4,
       },
+      scope: expectedScope(),
       // No sessionId: each build-skill run is a fresh one-shot.
     })
   })
 
   it('sendBuildSkill seeds the draft card and the done event fills its markdown', async () => {
     mockWindow({ startCoachRun: () => Promise.resolve({ ok: true, runId: 'run-9' }) })
-    useCoachSkillsStore.setState({ harnessKind: 'claude', workspacePath: 'C:\\work' })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
 
     await useCoachSkillsStore.getState().sendBuildSkill({
       name: 'data-fetch',
@@ -181,13 +239,35 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
 
   it('a failed ack marks the assistant turn errored and stops running', async () => {
     mockWindow({ startCoachRun: () => Promise.resolve({ ok: false, error: 'harness not detected: ghost' }) })
-    useCoachSkillsStore.setState({ harnessKind: 'claude', workspacePath: 'C:\\work' })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
 
     await useCoachSkillsStore.getState().sendCoach('p')
 
     const s = useCoachSkillsStore.getState()
     expect(s.running).toBe(false)
     expect(s.messages[1]).toMatchObject({ streaming: false, error: 'harness not detected: ghost' })
+  })
+
+  it('events arriving before the ack land are buffered and replayed once the run acks', async () => {
+    // The main acks, then pumps — a fast failure can emit BEFORE the ack's
+    // round-trip reaches the store. Those pre-ack events must not be lost.
+    let resolveAck!: (value: { ok: true; runId: string }) => void
+    mockWindow({ startCoachRun: () => new Promise(resolve => { resolveAck = resolve }) })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
+
+    const pending = useCoachSkillsStore.getState().sendCoach('p')
+    // The ack is still in flight — an error event arrives first.
+    useCoachSkillsStore.getState().onEvent({ runId: 'run-9', event: { kind: 'error', message: 'spawn opencode ENOENT' } })
+    expect(useCoachSkillsStore.getState().pendingEvents['run-9']).toHaveLength(1)
+
+    resolveAck({ ok: true, runId: 'run-9' })
+    await pending
+
+    const s = useCoachSkillsStore.getState()
+    expect(s.running).toBe(false)
+    expect(s.activeRunId).toBeNull()
+    expect(s.pendingEvents['run-9']).toBeUndefined()
+    expect(s.messages[1]).toMatchObject({ streaming: false, error: 'spawn opencode ENOENT' })
   })
 
   it('onEvent accumulates text deltas and tool notices into the streaming turn', () => {
@@ -263,14 +343,29 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
     expect(useCoachSkillsStore.getState().messages[1].content).toBe('fresh')
   })
 
-  it('resetSession clears the thread and the resume handle', () => {
-    useCoachSkillsStore.setState({ sessionId: 'sess_9', messages: [
-      { id: 'm0', role: 'user', content: 'p', mode: 'coach', tools: [], streaming: false },
-    ], error: 'boom' })
+  it('resetSession clears the thread, resume handle, and declared set, and resets the temp workspace', () => {
+    const resetCoachWorkspace = vi.fn()
+    mockWindow({ resetCoachWorkspace })
+    useCoachSkillsStore.setState({
+      sessionId: 'sess_9',
+      sessionModels: { availableModels: [{ modelId: 'opus', name: 'x' }], currentModelId: 'opus' },
+      sessionModes: { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan' },
+      modelId: 'opus',
+      modeId: 'plan',
+      messages: [
+        { id: 'm0', role: 'user', content: 'p', mode: 'coach', tools: [], streaming: false },
+      ],
+      error: 'boom',
+    })
     useCoachSkillsStore.getState().resetSession()
     const s = useCoachSkillsStore.getState()
+    expect(resetCoachWorkspace).toHaveBeenCalledTimes(1)
     expect(s.messages).toEqual([])
     expect(s.sessionId).toBeNull()
     expect(s.error).toBeNull()
+    expect(s.sessionModels).toBeNull()
+    expect(s.sessionModes).toBeNull()
+    expect(s.modelId).toBeNull()
+    expect(s.modeId).toBeNull()
   })
 })

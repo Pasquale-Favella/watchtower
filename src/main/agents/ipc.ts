@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { BrowserWindow, ipcMain } from 'electron'
 import { detectHarnesses, type HarnessInfo } from './detect.js'
-import { assertRealWorkspacePath, createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
+import { createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
+import { buildCoachPrompt, buildLedgerBriefing, buildProsePrompt } from './prompts.js'
+import type { AcpMcpServer } from './harnesses/types.js'
+import type { OverviewScope } from '../../shared/schemas/overview.js'
 import {
   coachRunRequestSchema,
   type CoachEvent,
@@ -9,33 +15,34 @@ import {
   type CoachHarnessRow,
   type CoachRunRequest,
   type CoachRunResult,
-  type CoachWorkspaceResult,
 } from '../../shared/schemas/agents.js'
 import {
   skillsDismissalRequestSchema,
   type SkillsDismissal,
   type SkillsDismissalResult,
-  type SkillsProseRequest,
 } from '../../shared/schemas/skills.js'
 
 /**
- * Coach & Skills IPC (ADR 0017): the wire between the HarnessRuntime seam and
- * the renderer's unified Coach & Skills surface. The runner is a pure,
- * injectable controller (ADR 0006) — it owns run ack/stream/cancel against an
+ * Coach & Skills IPC (ADR 0017, reshaped by map 53): the wire between the
+ * HarnessRuntime seam and the renderer's unified Coach & Skills surface. The
+ * runner is a pure, injectable controller (ADR 0006) — it owns run
+ * ack/stream/cancel and the per-conversation temp workspace against an
  * injected runtime + detection, so it is unit-testable without electron;
  * `registerAgentsIpc` is the thin glue that maps it onto ipcMain + webContents.
+ *
+ * No workspace picker anymore (map 53): the runner owns a private temp
+ * workspace per conversation — a resumed run (sessionId present) reuses the
+ * conversation's dir; a fresh run (no sessionId) clears the old one and
+ * starts a new one; `coach:reset` + app quit clean it up. The harness gets
+ * the platform's own data through the INJECTED in-app ledger MCP server
+ * (map 53), scoped to the current UI scope the renderer sends on `coach:run`.
  *
  * Wire contract (frozen, shared schemas): `coach:harnesses` (invoke → rows),
  * `coach:run` (invoke → immediate `{ ok: true, runId }` ack, events pushed on
  * `coach:event` as runId-enveloped CoachEvents), `coach:cancel` (send →
  * interrupts the active run's SDK iterator so the harness gets a native stop),
- * `coach:pick-workspace` (invoke → OS directory picker). The renderer
- * revalidates every payload against the same schemas (ADR 0005).
- *
- * Mode-tagged runs (ADR 0017): a `build-skill` run carries a candidate's
- * NORMALIZED evidence; the authoring prompt is built HERE, main-side, so the
- * renderer never ships raw transcripts to the harness. `coach` runs stream
- * the user's own prompt verbatim.
+ * `coach:reset` (send → cancels all runs + cleans the conversation workspace).
+ * The renderer revalidates every payload against the same schemas (ADR 0005).
  */
 
 export interface CoachRunnerDeps {
@@ -44,38 +51,39 @@ export interface CoachRunnerDeps {
   /** Detection for the picker AND the run's HarnessInfo (scrubEnv, bin). The
    *  runner never trusts the renderer's kind string beyond a registry key. */
   detect: () => Promise<HarnessInfo[]>
+  /** Builds the in-app ledger MCP server config for a conversation's scope
+   *  (map 53). App-specific (execPath, asar entry path, dbPath) — injected so
+   *  the runner stays electron-free; tests inject a fake. Null when there is
+   *  no ledger.db yet (fresh install, nothing scanned) — the run then has no
+   *  data tools, which is correct: there is no data to serve. */
+  ledgerMcpServer: (scope: OverviewScope) => AcpMcpServer | null
 }
 
 export interface CoachRunner {
   harnesses(): Promise<CoachHarnessRow[]>
   /** Validates, acks immediately with a runId, then streams events to `emit`
    *  as they arrive. A `{ ok: false }` ack means the request never launched
-   *  (bad workspace, unknown harness, malformed request). */
+   *  (unknown harness, malformed request). */
   start(request: unknown, emit: (runId: string, event: CoachEvent) => void): Promise<CoachRunResult>
   /** Interrupts the active run's generator so the harness's cleanup runs. */
   cancel(runId: string): void
-}
-
-/** The harness prompt for a build-skill run: normalized evidence only —
- *  pattern key, counts, spread. Deliberately excludes `sample` (a raw command
- *  line) and all session text, so the model never sees raw transcripts. */
-function buildProsePrompt(evidence: SkillsProseRequest): string {
-  return [
-    'You are authoring a skill file for the user\'s coding-agent workflow.',
-    'Write a concise SKILL.md draft from ONLY the normalized evidence below — never invent raw transcripts or prompts.',
-    '',
-    `Pattern: ${evidence.name}`,
-    `Source: ${evidence.source}`,
-    `Frequency: ${evidence.frequency} occurrences`,
-    `Spread: ${evidence.spreadSessions} session(s) / ${evidence.spreadProjects} project(s)`,
-    `Cost: ${evidence.costUSD.toFixed(2)} USD across ${evidence.turns} turn(s)`,
-    '',
-    'Return only the markdown: a # name heading, a ## Description, a ## When to use, and a ## Example built from the evidence. Keep it under 40 lines.',
-  ].join('\n')
+  /** Cancels all active runs and deletes the conversation's temp workspace
+   *  (renderer `resetSession` fires `coach:reset`; the app calls this on quit). */
+  reset(): void
 }
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   const activeRuns = new Map<string, AsyncGenerator<CoachEvent>>()
+  /** The conversation's private temp workspace (map 53 ticket 56): created on
+   *  the first run, reused while the session resumes, deleted on reset/quit. */
+  let workspace: string | null = null
+
+  function cleanupWorkspace(): void {
+    if (workspace) {
+      rmSync(workspace, { recursive: true, force: true })
+      workspace = null
+    }
+  }
 
   return {
     async harnesses() {
@@ -83,7 +91,6 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       return found.map(h => ({
         kind: h.kind,
         displayName: h.displayName,
-        models: [...h.models],
         authStatus: h.authStatus,
       }))
     },
@@ -95,24 +102,21 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       }
       const req: CoachRunRequest = parsed.data
 
-      // Mode-tagged prompt (ADR 0017): build-skill runs derive the authoring
-      // prompt from the candidate's NORMALIZED evidence, main-side — never
-      // from renderer text. A build-skill run without evidence is refused.
-      let prompt: string
-      if (req.mode === 'build-skill') {
-        if (!req.evidence) return { ok: false, error: 'build-skill run requires evidence' }
-        prompt = buildProsePrompt(req.evidence)
-      } else {
-        if (!req.prompt || !req.prompt.trim()) return { ok: false, error: 'coach run requires a prompt' }
-        prompt = req.prompt
-      }
+      // The conversation's UI scope snapshot (map 53): the ledger MCP server
+      // is baked to it at spawn. Absent scope degrades to the app's default
+      // period (the renderer always sends the current UI scope).
+      const scope: OverviewScope = req.scope ?? { period: 'all' }
 
-      // A bad workspace must fail loudly and cheaply at the ack, never as an
-      // inscrutable spawn error mid-stream (ticket 15 constraint).
-      try {
-        assertRealWorkspacePath(req.workspacePath)
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      // Mode-tagged presence check FIRST (ADR 0017): cheap, side-effect-free,
+      // and the canonical error precedence — a build-skill run without
+      // evidence (or a coach run without a prompt) is refused before anything
+      // is detected or spawned. The actual prompt STRING is built later, once
+      // the briefing is known.
+      if (req.mode === 'build-skill' && !req.evidence) {
+        return { ok: false, error: 'build-skill run requires evidence' }
+      }
+      if (req.mode !== 'build-skill' && (!req.prompt || !req.prompt.trim())) {
+        return { ok: false, error: 'coach run requires a prompt' }
       }
 
       const found = await deps.detect()
@@ -121,21 +125,61 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         return { ok: false, error: `harness not detected: ${req.harnessKind}` }
       }
 
+      // The in-app ledger MCP server (map 53): read-only platform data scoped
+      // to this conversation. Null on a fresh install (no ledger.db yet) —
+      // then there are no data tools and the prompts carry no briefing (the
+      // agent must not be told to call tools that do not exist). Built only
+      // AFTER the harness check: a run that never launches must not spawn
+      // anything.
+      const ledgerServer = deps.ledgerMcpServer(scope)
+      // The MCP briefing (ADR 0020): what the ledger tools are, what window
+      // they cover, and the ground-your-answer rule. Only on the FIRST run of
+      // a conversation (no sessionId yet) — the harness resumes its session
+      // with the briefing already in context, so restating it every turn
+      // would just burn tokens.
+      const briefing = ledgerServer && !req.sessionId ? buildLedgerBriefing(scope) : ''
+
+      // Mode-tagged prompt build (ADR 0017): build-skill runs derive the
+      // authoring prompt from the candidate's NORMALIZED evidence, main-side
+      // — never from renderer text. Both prompts are MCP-aware (ADR 0020):
+      // the briefing tells the agent it can query the user's real usage data
+      // through the ledger tools.
+      const prompt = req.mode === 'build-skill'
+        ? buildProsePrompt(req.evidence!, briefing)
+        : buildCoachPrompt(req.prompt!, briefing)
+
       try {
         const runtime = await deps.getRuntime()
         const runId = randomUUID()
+
+        // Per-conversation temp workspace: created on the conversation's first
+        // run and REUSED for the whole conversation — including build-skill
+        // one-shots, which never resume (no sessionId) but must NOT destroy
+        // the coach conversation's cwd while a live ACP session still holds
+        // it. Only `coach:reset` (renderer resetSession — a brand-new
+        // conversation) and app quit delete it. `mkdtemp` guarantees a real
+        // on-disk path — the seam's own workspace validation still runs.
+        workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-'))
+
         const gen = runtime.run({
           harness,
-          model: req.model ?? '',
-          workspacePath: req.workspacePath,
+          workspacePath: workspace,
           prompt,
+          // Progressive model/mode selection (map 47 ticket 50): the renderer
+          // can only send ids the agent's own handshake reported. Both are
+          // optional — absent means the agent's default model/mode.
+          ...(req.modelId ? { modelId: req.modelId } : {}),
+          ...(req.modeId ? { modeId: req.modeId } : {}),
           ...(req.sessionId ? { sessionId: req.sessionId } : {}),
+          // Merged after any spec-level servers. Null on a fresh install (no
+          // ledger.db yet) — then no data tools.
+          mcpServers: [...(ledgerServer ? [ledgerServer] : [])],
         })
         activeRuns.set(runId, gen)
 
         // Stream in the background — the ack returns immediately; events land
-        // on the push channel as they stream. A generator throw (post-ack
-        // workspace race, SDK failure) becomes an error event, never a crash.
+        // on the push channel as they stream. A generator throw (SDK failure)
+        // becomes an error event, never a crash.
         void (async () => {
           try {
             for await (const event of gen) {
@@ -165,6 +209,11 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         void gen.return(undefined).catch(() => { /* teardown already in flight */ })
       }
     },
+
+    reset() {
+      for (const runId of [...activeRuns.keys()]) this.cancel(runId)
+      cleanupWorkspace()
+    },
   }
 }
 
@@ -177,12 +226,17 @@ export interface SkillsDismissalSource {
 
 export interface AgentsIpcSources {
   dismissals: SkillsDismissalSource
+  /** Builds the in-app ledger MCP server for a scope (map 53) — the runner's
+   *  app-specific dep, supplied by the composition root (main/index.ts). Null
+   *  when there is no ledger.db yet (fresh install) — no data, no tools. */
+  ledgerMcpServer: (scope: OverviewScope) => AcpMcpServer | null
 }
 
 /** Wire the Coach & Skills IPC surface onto ipcMain. Call once from
- *  registerIpc(). `dismissals` bridges the not-a-skill store. */
-export function registerAgentsIpc(sources: AgentsIpcSources): void {
-  const { dismissals } = sources
+ *  registerIpc(); returns the runner cleanup handle (temp workspace teardown)
+ *  for the app's quit path. `dismissals` bridges the not-a-skill store. */
+export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => void } {
+  const { dismissals, ledgerMcpServer } = sources
   let runtimePromise: Promise<HarnessRuntime> | null = null
   const runner = createCoachRunner({
     // The SDK is ESM and heavy; boot stays independent of it (the seam's
@@ -192,6 +246,7 @@ export function registerAgentsIpc(sources: AgentsIpcSources): void {
       return runtimePromise
     },
     detect: () => detectHarnesses(),
+    ledgerMcpServer,
   })
 
   ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> => runner.harnesses())
@@ -214,16 +269,11 @@ export function registerAgentsIpc(sources: AgentsIpcSources): void {
     runner.cancel(runId)
   })
 
-  /** Workspace picker (ADR 0017): the OS directory dialog IS the user's
-   *  choice of where a harness run works. The main process never guesses. */
-  ipcMain.handle('coach:pick-workspace', async (): Promise<CoachWorkspaceResult> => {
-    const picked = await dialog.showOpenDialog({
-      title: 'Choose a workspace',
-      properties: ['openDirectory', 'createDirectory'],
-      buttonLabel: 'Select',
-    })
-    if (picked.canceled || picked.filePaths.length === 0) return { ok: false, error: 'cancelled' }
-    return { ok: true, path: picked.filePaths[0] }
+  /** Conversation reset (map 53 ticket 56): cancels active runs and deletes
+   *  the conversation's temp workspace — fired by the renderer's
+   *  `resetSession` (a brand-new conversation) and by the app quit path. */
+  ipcMain.on('coach:reset', () => {
+    runner.reset()
   })
 
   // Skills draft board (ticket 25): the not-a-skill store. skills:view /
@@ -237,4 +287,6 @@ export function registerAgentsIpc(sources: AgentsIpcSources): void {
     dismissals.dismiss(parsed.data.source, parsed.data.name, parsed.data.reason)
     return { ok: true }
   })
+
+  return { reset: () => runner.reset() }
 }

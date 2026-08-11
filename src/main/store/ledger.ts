@@ -53,14 +53,24 @@ export type {
  * display currency) are NOT scan data: they are user/app settings that survive
  * `clear()`.
  */
+export interface LedgerStoreOptions {
+  /** Open the ledger READ-ONLY (the in-app ledger MCP server's second
+   *  connection, map 53). Skips the DDL — a read-only connection cannot run
+   *  CREATE TABLE, and this instance must never write: only the owning
+   *  main process ports data in (ADR 0002). */
+  readOnly?: boolean
+}
+
 export class LedgerStore {
   readonly dbPath: string
   private db: DatabaseSync
 
-  constructor(dbPath: string) {
-    mkdirSync(dirname(dbPath), { recursive: true })
+  constructor(dbPath: string, options: LedgerStoreOptions = {}) {
+    const { readOnly = false } = options
+    if (!readOnly) mkdirSync(dirname(dbPath), { recursive: true })
     this.dbPath = dbPath
-    this.db = new DatabaseSync(dbPath)
+    this.db = readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath)
+    if (readOnly) return
     this.db.exec(`
       PRAGMA journal_mode = WAL;
 

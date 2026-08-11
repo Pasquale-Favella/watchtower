@@ -11,8 +11,6 @@ const kimi: HarnessSpec = {
   displayName: 'Kimi CLI',
   commands: ['kimi'],
   scrubEnv: ['MOONSHOT_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['kimi-k2', 'kimi-latest', 'kimi-k2-thinking'],
   preference: 8,
   adapter: {
     kind: 'acp',

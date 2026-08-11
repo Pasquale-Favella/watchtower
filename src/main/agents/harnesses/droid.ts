@@ -12,8 +12,6 @@ const droid: HarnessSpec = {
   displayName: 'Droid',
   commands: ['droid'],
   scrubEnv: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
-  modelListCommand: undefined,
-  fallbackModels: ['gpt-5.2', 'gpt-5.1'],
   preference: 13,
   adapter: {
     kind: 'acp',

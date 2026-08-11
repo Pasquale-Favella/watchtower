@@ -25,7 +25,6 @@ describe('detectHarnesses — registry detection (seam: pure logic)', () => {
       displayName: 'Claude Code',
       bin: 'C:\\bin\\claude-agent-acp.exe',
     })
-    expect(claude.models.length).toBeGreaterThan(0)
     expect(claude.scrubEnv).toContain('ANTHROPIC_API_KEY')
   })
 
@@ -45,7 +44,6 @@ describe('detectHarnesses — registry detection (seam: pure logic)', () => {
     expect(direct[0]?.name).toBe('opencode')
     expect(alias[0]?.name).toBe('opencode')
     expect(direct[0]?.kind).toBe('opencode')
-    expect(direct[0]?.models.length).toBeGreaterThan(0)
   })
 
   it('detects Gemini CLI via its own binary (`gemini`) — same binary speaks ACP', async () => {

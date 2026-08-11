@@ -3,14 +3,20 @@ import {
   fetchCoachHarnesses,
   fetchCoachRun,
   fetchDismissSkill,
-  fetchPickCoachWorkspace,
   fetchSaveSkill,
   fetchSkills,
 } from '@/shared/lib/api'
+import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { scopedDataSlice, type ScopedDataSlice } from '../../app/stores/data-store'
 import { subscribeToRefresh } from '../../app/stores/scan-store'
 import { useSettingsStore } from '@/features/settings/store'
-import type { CoachEventEnvelope, CoachHarnessRow, CoachMode } from '../../../../shared/schemas/agents.js'
+import type {
+  CoachEventEnvelope,
+  CoachHarnessRow,
+  CoachMode,
+  CoachSessionModels,
+  CoachSessionModes,
+} from '../../../../shared/schemas/agents.js'
 import type { SkillCandidate, SkillsPayload, SkillsSource } from '../../../../shared/schemas/skills.js'
 
 /** One message in the unified Coach & Skills thread (ADR 0017). User turns
@@ -46,16 +52,29 @@ export interface CoachSkillsState {
   harnesses: CoachHarnessRow[]
   /** The selected harness registry key (null until the user picks one). */
   harnessKind: string | null
-  /** The user-selected run workspace (OS directory picker). */
-  workspacePath: string | null
   /** The mode tag for the NEXT run. */
   mode: CoachMode
+  /** Agent-declared selectable models, from the last session event (map 47
+   *  ticket 50). Absent until a harness reports them — the progressive picker
+   *  only renders when this exists. */
+  sessionModels: CoachSessionModels | null
+  /** Agent-declared selectable modes, from the last session event. */
+  sessionModes: CoachSessionModes | null
+  /** The user's model choice for the next run (from the reported set). */
+  modelId: string | null
+  /** The user's mode choice for the next run (from the reported set). */
+  modeId: string | null
   /** The conversation thread. */
   messages: ChatMessage[]
   /** A run is in flight (acked, not yet done/errored). */
   running: boolean
   /** The active run's id — the cancel + event-routing key. */
   activeRunId: string | null
+  /** Events that arrived before their run's ack landed (the main pumps as
+   *  soon as it acks — a fast failure can beat the ack round-trip). Buffered
+   *  by runId and replayed when the ack sets the active id, so a fast error
+   *  surfaces instead of silently leaving the turn hanging. */
+  pendingEvents: Record<string, CoachEventEnvelope[]>
   /** Resume handle from the last coach run's session event. */
   sessionId: string | null
   error: string | null
@@ -65,10 +84,12 @@ export interface CoachSkillsState {
   loadHarnesses: () => Promise<void>
   /** Persists the picker choice. */
   setHarness: (kind: string) => void
-  /** Opens the OS directory picker for the run workspace. */
-  pickWorkspace: () => Promise<void>
   /** Sets the mode tag for the next run. */
   setMode: (mode: CoachMode) => void
+  /** Sets the user's model choice for the next run (null = agent default). */
+  setModelId: (modelId: string | null) => void
+  /** Sets the user's mode choice for the next run (null = agent default). */
+  setModeId: (modeId: string | null) => void
   /** Starts a coach run with a free-form prompt (session-resuming). */
   sendCoach: (prompt: string) => Promise<void>
   /** Starts a build-skill run for a detected candidate (one-shot, evidence
@@ -76,7 +97,9 @@ export interface CoachSkillsState {
   sendBuildSkill: (candidate: SkillCandidate) => Promise<void>
   /** Interrupts the active run (fire-and-forget; cancel is terminal). */
   cancel: () => void
-  /** Starts a brand-new conversation: clears messages + the resume handle. */
+  /** Starts a brand-new conversation: clears messages + the resume handle and
+   *  tells the main process to delete the old conversation's temp workspace
+   *  (map 53). */
   resetSession: () => void
   /** Applies one runId-enveloped CoachEvent to the active turn. */
   onEvent: (envelope: CoachEventEnvelope) => void
@@ -109,11 +132,15 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   hydrated: false,
   harnesses: [],
   harnessKind: null,
-  workspacePath: null,
   mode: 'coach',
+  sessionModels: null,
+  sessionModes: null,
+  modelId: null,
+  modeId: null,
   messages: [],
   running: false,
   activeRunId: null,
+  pendingEvents: {},
   sessionId: null,
   error: null,
   detection: scopedDataSlice<SkillsPayload>(
@@ -137,12 +164,18 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       set({ harnessKind: harnesses[0]?.kind ?? null })
     }
   },
-  setHarness: (harnessKind) => set({ harnessKind }),
-  pickWorkspace: async () => {
-    const result = await fetchPickCoachWorkspace()
-    if (result.ok && result.data.ok) set({ workspacePath: result.data.path })
-  },
+  setHarness: (harnessKind) => set({
+    harnessKind,
+    // A different harness is a different agent — its selectable set (and the
+    // user's choices against the previous agent) do not carry over.
+    sessionModels: null,
+    sessionModes: null,
+    modelId: null,
+    modeId: null,
+  }),
   setMode: (mode) => set({ mode }),
+  setModelId: (modelId) => set({ modelId }),
+  setModeId: (modeId) => set({ modeId }),
   sendCoach: async (prompt) => {
     const s = get()
     if (s.running) return
@@ -183,20 +216,42 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     set(state => ({
       running: false,
       activeRunId: null,
+      pendingEvents: {},
       messages: state.messages.map(message =>
         message.streaming ? { ...message, streaming: false, error: 'cancelled' } : message),
     }))
   },
-  resetSession: () => set({ messages: [], sessionId: null, error: null }),
+  resetSession: () => {
+    // A brand-new conversation: the main process cancels active runs and
+    // deletes the old conversation's temp workspace (map 53).
+    window.api.resetCoachWorkspace()
+    set({
+      messages: [],
+      sessionId: null,
+      error: null,
+      pendingEvents: {},
+      // The session is gone — so is the agent's selectable set and the
+      // user's choices against it.
+      sessionModels: null,
+      sessionModes: null,
+      modelId: null,
+      modeId: null,
+    })
+  },
   onEvent: (envelope) => {
-    // Stale-run guard: only the ACTIVE run's events may touch the thread.
-    // While a run is pending (ack in flight, activeRunId null) events are
-    // dropped entirely — a straggler from a cancelled run arriving in that
-    // window must not pollute the next turn, and the fresh run's own events
-    // cannot arrive before its ack sets the active id (the main pumps only
-    // after the ack).
     const activeRunId = get().activeRunId
-    if (activeRunId === null || envelope.runId !== activeRunId) return
+    // A run is pending (ack in flight): the main acks, THEN pumps — but a
+    // fast failure (spawn error, auth wall) can emit before the ack's
+    // round-trip lands here. Buffer by runId and replay on ack; a straggler
+    // from a cancelled run parks under its OWN runId and never matches the
+    // next ack, so it can't pollute the fresh turn.
+    if (activeRunId === null) {
+      const parked = get().pendingEvents[envelope.runId] ?? []
+      set({ pendingEvents: { ...get().pendingEvents, [envelope.runId]: [...parked, envelope] } })
+      return
+    }
+    // Stale-run guard: only the ACTIVE run's events may touch the thread.
+    if (envelope.runId !== activeRunId) return
     const event = envelope.event
     switch (event.kind) {
       case 'status':
@@ -231,7 +286,18 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
         }))
         break
       case 'session':
-        set({ sessionId: event.sessionId })
+        // The handshake may carry agent-declared models/modes — that is the
+        // ONLY source for the progressive picker (map 47 ticket 50). The
+        // session event lands on EVERY run, so an absent field just means the
+        // agent did not re-declare it this run — the previous declaration
+        // stays valid (a harness switch or reset clears it explicitly).
+        set(state => ({
+          sessionId: event.sessionId,
+          sessionModels: event.models ?? state.sessionModels,
+          sessionModes: event.modes ?? state.sessionModes,
+          modelId: state.modelId ?? (event.models?.currentModelId ?? null),
+          modeId: state.modeId ?? (event.modes?.currentModeId ?? null),
+        }))
         break
       case 'error':
         set(state => ({
@@ -263,8 +329,8 @@ async function startRun(input: {
   resume: boolean
 }): Promise<void> {
   const s = useCoachSkillsStore.getState()
-  if (!s.harnessKind || !s.workspacePath) {
-    setRunFailed('select a harness and a workspace first')
+  if (!s.harnessKind) {
+    setRunFailed('select a harness first')
     return
   }
   const userMessage: ChatMessage = { id: nextMessageId(), role: 'user', content: input.userContent, mode: input.mode, tools: [], streaming: false }
@@ -274,10 +340,16 @@ async function startRun(input: {
   const sessionId = input.resume ? s.sessionId : undefined
   const result = await fetchCoachRun({
     harnessKind: s.harnessKind,
-    workspacePath: s.workspacePath,
     mode: input.mode,
+    // The conversation's UI-scope snapshot (map 53): the in-app ledger MCP
+    // server is baked to this window's data on the main side.
+    scope: selectScope(useScopeStore.getState()),
     ...(input.prompt ? { prompt: input.prompt } : {}),
     ...(input.evidence ? { evidence: input.evidence } : {}),
+    // Progressive model/mode selection (map 47 ticket 50): forward the user's
+    // choices ONLY when the agent declared that set (null = agent default).
+    ...(s.sessionModels ? { modelId: s.modelId ?? undefined } : {}),
+    ...(s.sessionModes ? { modeId: s.modeId ?? undefined } : {}),
     ...(sessionId ? { sessionId } : {}),
   })
   if (!result.ok) {
@@ -288,7 +360,21 @@ async function startRun(input: {
     setRunFailed(result.data.error)
     return
   }
-  useCoachSkillsStore.setState({ activeRunId: result.data.runId })
+  const runId = result.data.runId
+  useCoachSkillsStore.setState({ activeRunId: runId })
+  // Replay any events that streamed before the ack round-trip landed (a fast
+  // failure must surface, not hang the turn). Only this run's parked events
+  // replay; stragglers under other runIds stay parked and are cleared on the
+  // next run.
+  const parked = useCoachSkillsStore.getState().pendingEvents[runId]
+  if (parked) {
+    useCoachSkillsStore.setState(state => ({
+      pendingEvents: Object.fromEntries(
+        Object.entries(state.pendingEvents).filter(([id]) => id !== runId),
+      ),
+    }))
+    for (const envelope of parked) useCoachSkillsStore.getState().onEvent(envelope)
+  }
 }
 
 function setRunPending(userMessage: ChatMessage, assistantMessage: ChatMessage): void {
@@ -296,6 +382,9 @@ function setRunPending(userMessage: ChatMessage, assistantMessage: ChatMessage):
     running: true,
     error: null,
     activeRunId: null,
+    // A new run's pending window starts clean: parked stragglers from a
+    // cancelled/previous run must not replay into the fresh turn.
+    pendingEvents: {},
     messages: [...state.messages, userMessage, assistantMessage],
   }))
 }
@@ -304,6 +393,7 @@ function setRunFailed(error: string): void {
   useCoachSkillsStore.setState(state => ({
     running: false,
     error,
+    pendingEvents: {},
     messages: state.messages.map(message =>
       message.streaming ? { ...message, streaming: false, error } : message),
   }))

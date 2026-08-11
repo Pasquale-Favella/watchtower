@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { overviewScopeSchema } from './overview.js'
 import { skillsProseRequestSchema } from './skills.js'
 
 /**
@@ -11,7 +12,44 @@ import { skillsProseRequestSchema } from './skills.js'
  * shape settled in the pathfinder prototype (tickets 14/15) and the
  * architecture decision (ticket 18): text deltas, tool-call notices, session
  * ids (the ACP session resume handle), lifecycle status, and errors.
+ *
+ * Model/mode session-meta (map 47 ticket 50): the ACP handshake
+ * (`initSession()`) can report the agent's selectable models and modes. Those
+ * ride the `session` event as optional `models`/`modes` — the renderer shows a
+ * picker ONLY when they are present (progressive: the agent itself declares
+ * what is selectable).
  */
+
+/** One selectable ACP model (ACP `ModelInfo` subset — description optional). */
+export const coachModelInfoSchema = z.object({
+  modelId: z.string(),
+  name: z.string(),
+  description: z.string().nullable().optional(),
+})
+export type CoachModelInfo = z.infer<typeof coachModelInfoSchema>
+
+/** One selectable ACP session mode (e.g. ask / plan / acceptEdits). */
+export const coachSessionModeSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().nullable().optional(),
+})
+export type CoachSessionMode = z.infer<typeof coachSessionModeSchema>
+
+/** The agent's selectable models + the one currently active. */
+export const coachSessionModelsSchema = z.object({
+  availableModels: z.array(coachModelInfoSchema),
+  currentModelId: z.string(),
+})
+export type CoachSessionModels = z.infer<typeof coachSessionModelsSchema>
+
+/** The agent's selectable modes + the one currently active. */
+export const coachSessionModesSchema = z.object({
+  availableModes: z.array(coachSessionModeSchema),
+  currentModeId: z.string(),
+})
+export type CoachSessionModes = z.infer<typeof coachSessionModesSchema>
+
 export const coachEventSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('status'),
@@ -34,6 +72,10 @@ export const coachEventSchema = z.discriminatedUnion('kind', [
     /** Harness session id (claude-code.session-id / opencode.session-id /
      *  codex.session-id) — the resume handle for follow-up turns. */
     sessionId: z.string(),
+    /** Progressive model/mode selection (map 47 ticket 50): present ONLY when
+     *  the agent's handshake reported selectable options. */
+    models: coachSessionModelsSchema.optional(),
+    modes: coachSessionModesSchema.optional(),
   }),
   z.object({
     kind: z.literal('error'),
@@ -59,17 +101,28 @@ export const coachModeSchema = z.enum(['coach', 'build-skill'])
 export type CoachMode = z.infer<typeof coachModeSchema>
 
 /** `coach:run` request — the renderer's ask to drive one harness run through
- *  the seam. The workspace must be a real on-disk directory (the seam
- *  re-validates); `sessionId` resumes a previous run's session (ACP
- *  `existingSessionId`, per-app-session only). */
+ *  the seam. There is NO workspace picker (map 53): the main process runs
+ *  each conversation in a private temp directory it owns and cleans up;
+ *  `sessionId` resumes a previous run's session (ACP `existingSessionId`, and
+ *  with it the conversation's temp workspace).
+ *
+ * The harness reads the platform's own data through the in-app ledger MCP
+ * server, scoped to `scope` — the conversation's snapshot of the current UI
+ * scope (period/provider/range), baked at spawn.
+ *
+ * Model/mode selection is PROGRESSIVE (map 47 ticket 50): the renderer may
+ * only send `modelId`/`modeId` that the agent's own handshake reported via the
+ * `session` event's models/modes — there is no arbitrary model picker. */
 export const coachRunRequestSchema = z.object({
   /** Registry key of the harness to drive (claude, codex, gemini, …). */
   harnessKind: z.string(),
-  /** Model id for the run — informational only until ACP model selection
-   *  lands (upstream PR #182); the agent runs with its own configured model. */
-  model: z.string().optional(),
-  /** The user's project repo — must be a real on-disk directory. */
-  workspacePath: z.string(),
+  /** Agent-declared model id (from the session event's models), optional. */
+  modelId: z.string().optional(),
+  /** Agent-declared session mode id (from the session event's modes). */
+  modeId: z.string().optional(),
+  /** The conversation's UI-scope snapshot — the data window the in-app ledger
+   *  MCP server exposes (map 53). Absent = the widest scope ('all'). */
+  scope: overviewScopeSchema.optional(),
   /** Mode tag (ADR 0017): `coach` (default) runs `prompt`; `build-skill`
    *  requires `evidence` and the main process builds the authoring prompt. */
   mode: coachModeSchema.default('coach'),
@@ -92,22 +145,15 @@ export const coachRunResultSchema = z.discriminatedUnion('ok', [
 ])
 export type CoachRunResult = z.infer<typeof coachRunResultSchema>
 
-/** `coach:pick-workspace` response — a user-chosen directory via the OS picker.
- *  The dialog IS the authorization; the main process never guesses a path. */
-export const coachWorkspaceResultSchema = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), path: z.string() }),
-  z.object({ ok: z.literal(false), error: z.string() }),
-])
-export type CoachWorkspaceResult = z.infer<typeof coachWorkspaceResultSchema>
-
-/** One detected harness, as the Coach harness picker sees it (ADR 0016). */
+/** One detected harness, as the Coach harness picker sees it (ADR 0016,
+ *  reshaped by map 47 ticket 49). A harness is ONE agent = ONE language model:
+ *  no static model list rides the row — selectable models/modes arrive only
+ *  via the live handshake (`session` event models/modes, ticket 50). */
 export const coachHarnessRowSchema = z.object({
   /** Canonical tool name — the registry key (claude, gemini, …). */
   kind: z.string(),
   /** Human-readable label shown in the picker. */
   displayName: z.string(),
-  /** Informational model list (metadata only — no selection until PR #182). */
-  models: z.array(z.string()),
   authStatus: z.enum(['configured', 'unknown']),
 })
 export type CoachHarnessRow = z.infer<typeof coachHarnessRowSchema>

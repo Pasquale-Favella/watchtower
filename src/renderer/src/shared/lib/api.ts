@@ -76,11 +76,9 @@ import { exportResultSchema, type ExportResult } from '../../../../shared/schema
 import {
   coachHarnessesResultSchema,
   coachRunResultSchema,
-  coachWorkspaceResultSchema,
   type CoachHarnessesResult,
   type CoachRunRequest,
   type CoachRunResult,
-  type CoachWorkspaceResult,
 } from '../../../../shared/schemas/agents.js'
 
 /** The shared renderer error shape for an IPC payload: either validated data
@@ -199,10 +197,6 @@ export function fetchDismissSkill(request: SkillsDismissalRequest): Promise<ApiR
 
 export function fetchSaveSkill(request: SkillsSaveRequest): Promise<ApiResult<SkillsSaveResult>> {
   return fetchPayload('skills save', skillsSaveResultSchema, () => window.api.saveSkill(request))
-}
-
-export function fetchPickCoachWorkspace(): Promise<ApiResult<CoachWorkspaceResult>> {
-  return fetchPayload('coach workspace', coachWorkspaceResultSchema, () => window.api.pickCoachWorkspace())
 }
 
 export function fetchModelAliases(): Promise<ApiResult<ModelAlias[]>> {

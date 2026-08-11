@@ -41,6 +41,7 @@ import type { DateRange } from './pipeline/types.js'
 import { LedgerStore } from './store/ledger.js'
 import type { PortInput } from './store/port.js'
 import { registerAgentsIpc } from './agents/ipc.js'
+import { buildLedgerMcpServer } from './agents/ledger-mcp/config.js'
 
 let ledger: LedgerStore | null = null
 /** The most recent completed scan's metadata — the `getScanStatus()` answer
@@ -51,6 +52,8 @@ let scanActive = false
 let abortRequested = false
 let cadenceTimer: ReturnType<typeof setInterval> | null = null
 let updateChecker: UpdateChecker | null = null
+/** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
+let agentsCleanup: { reset: () => void } | null = null
 
 function dirSize(path: string): number {
   let total = 0
@@ -648,11 +651,27 @@ function registerIpc(): void {
   // the first harness-touching call, never at boot. Runs are user-initiated
   // from the unified Coach & Skills surface (ADR 0017); dismissals are a
   // ledger config table so they survive clear().
-  registerAgentsIpc({
+  agentsCleanup = registerAgentsIpc({
     dismissals: {
       // The skills:view read goes straight to the ledger above; this source
       // carries only the write (ticket 25).
       dismiss: (source, name, reason) => ledger?.dismissSkill(source, name, reason),
+    },
+    // The in-app ledger MCP server (map 53): the harness agent spawns the app
+    // itself as plain node (ELECTRON_RUN_AS_NODE=1) and reads the current UI
+    // scope's data read-only. Paths: `process.execPath` (dev + packaged), the
+    // bundled entry under appPath, and the ledger DB beside the cache.
+    ledgerMcpServer: scope => {
+      // Fresh install: no ledger.db yet → no data to serve, so no MCP server
+      // (its read-only open would throw on a missing file). Once the first
+      // scan lands, the next run injects it.
+      const dbPath = join(app.getPath('userData'), 'ledger.db')
+      if (!existsSync(dbPath)) return null
+      return buildLedgerMcpServer({
+        execPath: process.execPath,
+        entryPath: join(app.getAppPath(), 'out/main/ledger-mcp.js'),
+        dbPath,
+      }, scope)
     },
   })
 }
@@ -704,4 +723,10 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// Tear down the coach conversation's temp workspace (map 53) so a reset or a
+// quit never leaks a scratch directory under the OS temp root.
+app.on('before-quit', () => {
+  agentsCleanup?.reset()
 })
