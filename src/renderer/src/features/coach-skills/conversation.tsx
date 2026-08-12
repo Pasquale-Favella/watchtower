@@ -12,25 +12,29 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip'
 import { formatUsd } from '@/shared/lib/models'
 import { useCoachSkillsStore } from '@/features/coach-skills/store'
-import { candidateKey } from '@/features/coach-skills/lib'
+import { candidateKey, craftSkillPrompt } from '@/features/coach-skills/lib'
 import type { SkillCandidate } from '../../../../shared/schemas/skills.js'
 import { ModelSelector } from './model-selector'
 import { Thread } from './thread'
 
 /** Sample coach prompts shown on the courtesy screen — each starts a normal
- *  coach run, so they work exactly like typing the prompt. */
+ *  coach run, so they work exactly like typing the prompt. The skill-crafting
+ *  examples are ordinary sentences: skills are authored conversationally by
+ *  asking the harness directly, not via a separate detected-pattern flow. */
 const SAMPLE_PROMPTS = [
   'Where am I wasting tokens?',
   'Summarise my last 30 days of work',
+  'Craft a SKILL.md for my most common git workflow',
   'What patterns should I turn into skills?',
 ]
 
-/** Clickable chips for the detected patterns in scope — the conversational
- *  skill side's "living reference": the user clicks one to START a build-skill
- *  run ("craft a SKILL.md for <name>"). The run is part of the conversation
- *  (resumes the session) and lands a mid-thread draft card from the candidate's
- *  NORMALIZED evidence; the MCP briefing lets the harness pull more grounding
- *  from ledger_skills / ledger_calls. A hover tooltip shows the evidence. */
+/** Clickable chips for the detected patterns in scope — the suggested-skill
+ *  surface on the courtesy screen. Each chip is a CHAT-STARTER: clicking it
+ *  sends a normal coach prompt (craftSkillPrompt) that asks the harness to
+ *  author a SKILL.md for that pattern — no build-skill mode, no mid-thread
+ *  draft card. The run is part of the conversation, and the ledger briefing
+ *  lets the harness ground the draft in real usage (ledger_skills /
+ *  ledger_calls). A hover tooltip shows the evidence. */
 export function PatternChips({ onCraft, disabled = false }: {
   onCraft: (draft: SkillCandidate) => void
   disabled?: boolean
@@ -76,7 +80,7 @@ export function PatternChips({ onCraft, disabled = false }: {
               <span className="text-[10px] leading-relaxed opacity-80">
                 Source: {draft.source} — {draft.sample}
               </span>
-              <span className="mt-0.5 text-[10px] font-medium text-primary">Click to draft a SKILL.md for this pattern</span>
+              <span className="mt-0.5 text-[10px] font-medium text-primary">Click to craft a SKILL.md for this pattern</span>
             </div>
           </TooltipContent>
         </Tooltip>
@@ -86,8 +90,9 @@ export function PatternChips({ onCraft, disabled = false }: {
 }
 
 /** The courtesy empty state — fills the whole chat surface before the first
- *  message: a centered welcome (title, hint, sample prompts), the craft-a-skill
- *  chips, and the no-harness note. No card of its own: the page IS the surface. */
+ *  message: a centered welcome (title, hint, sample prompts), the
+ *  suggested-skill chips, and the no-harness note. No card of its own: the
+ *  page IS the surface. */
 export function ConversationWelcome({ onCraft, onSend, canSend }: {
   onCraft: (draft: SkillCandidate) => void
   onSend: (text: string) => void
@@ -99,8 +104,9 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
       <div className="flex flex-col items-center gap-2 text-center">
         <span className="text-[16px] font-semibold tracking-tight text-foreground">Coach</span>
         <p className="max-w-md text-[11.5px] leading-relaxed text-muted-foreground">
-          Ask the harness for guidance on your workflow — or craft a skill together, step by step. Every run reads
-          your platform data live through the in-app ledger, so answers are grounded in your real usage.
+          Ask the harness for guidance on your workflow — or craft a skill together, just by talking: describe
+          what you do and ask it to write a SKILL.md. Every run reads your platform data live through the in-app
+          ledger, so answers are grounded in your real usage.
         </p>
       </div>
 
@@ -118,7 +124,7 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
         ))}
       </div>
 
-      <div className="w-full max-w-xl border-t border-border pt-4">
+      <div className="w-full max-w-xl pt-4">
         <p className="mb-2 text-center text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
           Craft a skill from a detected pattern
         </p>
@@ -139,19 +145,12 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
  *  (ConversationComposer) so the same input stays pinned below both the empty
  *  state and an active conversation, ChatGPT-style. The thread is a shadcn
  *  MessageScroller (height-constrained; the scroller fills the flex-1 slot). */
-export function ConversationThread({ saveNotice, onSave }: {
-  saveNotice: string | null
-  onSave: (path: string | null) => void
-}) {
+export function ConversationThread() {
   const messages = useCoachSkillsStore(s => s.messages)
 
   return (
     <div className="min-h-0 flex-1">
-      <Thread
-        messages={messages}
-        saveNotice={saveNotice}
-        onSave={onSave}
-      />
+      <Thread messages={messages} />
     </div>
   )
 }
@@ -160,9 +159,7 @@ export function ConversationThread({ saveNotice, onSave }: {
  *  stays pinned at the bottom of the chat surface: an auto-growing textarea up
  *  top, a footer with the provider (harness) picker, the agent-declared
  *  model/mode pickers, and Send/Stop. The coach reads the full lifetime
- *  ledger (no data-window chip — the agent filters per question). The
- *  craft-a-skill chips live on the courtesy screen only — once a conversation
- *  starts, the input is the surface. */
+ *  ledger (no data-window chip — the agent filters per question). */
 export function ConversationComposer({ running, canSend, onSend, onStop }: {
   running: boolean
   canSend: boolean
@@ -248,7 +245,9 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
               probe existed). A run's session event refreshes the set after
               the first message. `loading` is scoped to THIS harness — a
               stale probe for a switched-away harness must not show a spinner
-              for the current one. */}
+              for the current one. The probe result is cached per harness, so
+              switching back to a probed provider restores the set instantly
+              (no reload, no agent spawn). */}
           {harnessKind && (
             <ModelSelector
               models={sessionModels?.availableModels ?? []}
@@ -289,8 +288,8 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
 
 /** The Coach conversation view (ADR 0017 + the picked conversation prototype,
  *  map 58). One surface, no Coach/Skills room switch and no separated cards:
- *  the empty state is a centered welcome filling the chat (with the
- *  craft-a-skill chips and sample prompts), an active conversation is a slim
+ *  the empty state is a centered welcome filling the chat (with sample
+ *  prompts and the suggested-skill chips), an active conversation is a slim
  *  header over a MessageScroller transcript, and the prompt bar stays PINNED
  *  at the bottom in both states. Runs read the FULL lifetime ledger through
  *  the in-app MCP server; the current UI scope rides the briefing as the
@@ -301,23 +300,18 @@ export function ConversationView() {
   const running = useCoachSkillsStore(s => s.running)
   const error = useCoachSkillsStore(s => s.error)
   const sendCoach = useCoachSkillsStore(s => s.sendCoach)
-  const sendBuildSkill = useCoachSkillsStore(s => s.sendBuildSkill)
   const cancel = useCoachSkillsStore(s => s.cancel)
   const resetSession = useCoachSkillsStore(s => s.resetSession)
 
-  const [saveNotice, setSaveNotice] = useState<string | null>(null)
-
   const start = (seed: string): void => {
     if (!harnessKind || running) return
-    setSaveNotice(null)
     void sendCoach(seed)
   }
 
-  const craft = (draft: SkillCandidate): void => {
-    if (!harnessKind || running) return
-    setSaveNotice(null)
-    void sendBuildSkill(draft)
-  }
+  // A suggested-skill chip is a CHAT-STARTER: it sends a normal coach run
+  // with a natural-language craft prompt — no build-skill mode, no draft
+  // card. The answer streams into the thread like any other.
+  const craft = (draft: SkillCandidate): void => start(craftSkillPrompt(draft))
 
   const isEmpty = messages.length === 0
 
@@ -338,7 +332,7 @@ export function ConversationView() {
               New conversation
             </Button>
           </div>
-          <ConversationThread saveNotice={saveNotice} onSave={setSaveNotice} />
+          <ConversationThread />
         </>
       )}
 

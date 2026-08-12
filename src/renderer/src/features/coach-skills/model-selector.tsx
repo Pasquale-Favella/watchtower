@@ -102,9 +102,13 @@ export function ModelSelector({
             title="Agent-declared model"
             className="h-7 gap-1.5 border-border pr-1.5 text-[11.5px] font-normal"
           >
-            <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
+            {loading && models.length === 0 ? (
+              <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+            ) : (
+              <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
+            )}
             <span className="min-w-0 flex-1 truncate text-left">
-              <ComboboxValue />
+              {loading && models.length === 0 ? 'Loading models…' : <ComboboxValue />}
             </span>
           </Button>
         }

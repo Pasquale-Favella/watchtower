@@ -90,7 +90,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
       { kind: 'status', state: 'starting' },
       { kind: 'session', sessionId: 'sess_9' },
       { kind: 'text', delta: 'Hello' },
-      { kind: 'tool', tool: 'Bash' },
+      { kind: 'tool', tool: 'Bash', state: 'started' },
       { kind: 'status', state: 'done' },
     ])
     expect(createACPProvider).toHaveBeenCalledOnce()

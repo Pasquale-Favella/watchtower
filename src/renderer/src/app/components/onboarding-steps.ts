@@ -65,7 +65,7 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
   {
     id: 'coachSkills',
     title: 'Coach & Skills',
-    body: 'Chat with the coding agents already on your machine. Tag each run as Coach to get guidance, or Build skill to turn your detected patterns — recurring commands, tools and skills — into draft SKILL.md entries.',
+    body: 'Chat with the coding agents already on your machine. Ask for guidance on your workflow, or have one author a SKILL.md for you conversationally — grounded in your real usage through the in-app ledger.',
     icon: Sparkles,
   },
   {

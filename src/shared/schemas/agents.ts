@@ -10,7 +10,8 @@ import { skillsProseRequestSchema } from './skills.js'
  * …) are derived into this typed union before they cross the IPC boundary; the
  * renderer never sees the raw stream shape. The discriminated union matches the
  * shape settled in the pathfinder prototype (tickets 14/15) and the
- * architecture decision (ticket 18): text deltas, tool-call notices, session
+ * architecture decision (ticket 18): text deltas, thinking/reasoning deltas,
+ * tool-call notices with their lifecycle state and payload previews, session
  * ids (the ACP session resume handle), lifecycle status, and errors.
  *
  * Model/mode session-meta (map 47 ticket 50): the ACP handshake
@@ -61,11 +62,26 @@ export const coachEventSchema = z.discriminatedUnion('kind', [
     delta: z.string(),
   }),
   z.object({
+    kind: z.literal('reasoning'),
+    /** Thinking/reasoning text delta — appended to the running thinking block. */
+    delta: z.string(),
+  }),
+  z.object({
     kind: z.literal('tool'),
     /** Tool-call notice: the tool name (e.g. Bash, Read, Edit). */
     tool: z.string(),
     /** Optional human-readable title the harness attached to the call. */
     title: z.string().optional(),
+    /** The tool call id — pairs the started notice with its completion. */
+    id: z.string().optional(),
+    /** Lifecycle state: started while executing, completed/error once it ends. */
+    state: z.enum(['started', 'completed', 'error']).optional(),
+    /** Truncated JSON preview of the tool's input arguments. */
+    input: z.string().optional(),
+    /** Truncated JSON preview of the tool's result output. */
+    output: z.string().optional(),
+    /** Truncated error message when the call failed (`state: 'error'`). */
+    error: z.string().optional(),
   }),
   z.object({
     kind: z.literal('session'),
