@@ -1,3 +1,6 @@
+import { useRef } from 'react'
+
+import { useChatRowIn } from '@/shared/lib/motion'
 import { Markdown } from '@/shared/components/Markdown'
 import { Badge } from '@/shared/components/ui/badge'
 import {
@@ -30,23 +33,24 @@ function ToolNotices({ tools }: { tools: string[] }) {
 
 /** One thread message (ADR 0017): a user bubble, a streaming assistant turn
  *  with tool notices, or — when a build-skill run completes — a draft card
- *  with the harness markdown and the review actions. */
+ *  with the harness markdown and the review actions. Rows rise gently into
+ *  place via GSAP (transform + opacity only, so the scroller's positioning is
+ *  never fought — see the MessageScroller docs on animating rows). */
 export function MessageBubble({ message, onSave }: {
   message: ChatMessage
   onSave: (path: string | null) => void
 }) {
   const dismiss = useCoachSkillsStore(s => s.dismiss)
+  // The row root differs per role; the same ref lands on either branch so the
+  // entrance animation targets whichever root actually renders.
+  const rowRef = useRef<HTMLDivElement>(null)
+  useChatRowIn(rowRef)
 
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end">
+      <div ref={rowRef} className="flex justify-end">
         <div className="max-w-[80%] rounded-lg rounded-br-sm border border-border bg-primary/10 px-3 py-2">
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="bg-primary/15 px-1 py-[1px] text-[9px] font-semibold uppercase tracking-wide text-primary">
-              {MODE_LABEL[message.mode]}
-            </Badge>
-            <span className="text-[11.5px] text-foreground">{message.content}</span>
-          </div>
+          <span className="text-[11.5px] text-foreground">{message.content}</span>
         </div>
       </div>
     )
@@ -58,7 +62,7 @@ export function MessageBubble({ message, onSave }: {
   const hasDraft = !!message.draft && !message.streaming
 
   return (
-    <div className="flex justify-start">
+    <div ref={rowRef} className="flex justify-start">
       <div className="max-w-[85%] rounded-lg rounded-bl-sm border border-border bg-card">
         {hasDraft && message.draft ? (
           <DraftCard message={message} onSave={onSave} dismiss={dismiss} />
@@ -92,10 +96,11 @@ export function MessageBubble({ message, onSave }: {
 
 /** The scrollable conversation (shadcn MessageScroller): a chat scroll
  *  container that anchors turns, follows streamed responses, and keeps the
- *  reader's place — without stealing their position. The transcript rows are
- *  wrapped in MessageScrollerItem (anchored on user turns), the viewport
- *  preserves the visible row when history is prepended, and the Button is the
- *  "jump to latest" control. */
+ *  reader's place — without stealing their position. The transcript is a
+ *  centered readable column (the page IS the surface; there is no card
+ *  chrome), rows are wrapped in MessageScrollerItem (anchored on user turns),
+ *  the viewport preserves the visible row when history is prepended, and the
+ *  Button is the "jump to latest" control. */
 export function Thread({ messages, saveNotice, onSave }: {
   messages: ChatMessage[]
   saveNotice: string | null
@@ -104,11 +109,12 @@ export function Thread({ messages, saveNotice, onSave }: {
   if (messages.length === 0) {
     return null
   }
+  const streaming = messages.some(message => message.streaming)
   return (
     <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor" scrollPreviousItemPeek={64}>
       <MessageScroller className="min-h-0 flex-1">
         <MessageScrollerViewport>
-          <MessageScrollerContent className="gap-2.5 p-3.5">
+          <MessageScrollerContent aria-busy={streaming} className="mx-auto w-full max-w-[760px] gap-2.5 p-3.5">
             {messages.map(message => (
               <MessageScrollerItem
                 key={message.id}
@@ -130,4 +136,3 @@ export function Thread({ messages, saveNotice, onSave }: {
     </MessageScrollerProvider>
   )
 }
-
