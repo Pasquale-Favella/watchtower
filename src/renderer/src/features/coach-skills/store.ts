@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import {
   fetchCoachHarnesses,
+  fetchCoachInspect,
   fetchCoachRun,
   fetchDismissSkill,
   fetchSaveSkill,
@@ -59,12 +60,24 @@ export interface CoachSkillsState {
   harnesses: CoachHarnessRow[]
   /** The selected harness registry key (null until the user picks one). */
   harnessKind: string | null
-  /** Agent-declared selectable models, from the last session event (map 47
-   *  ticket 50). Absent until a harness reports them — the progressive picker
-   *  only renders when this exists. */
+  /** Agent-declared selectable models, from the last session event or the
+   *  pre-flight probe (map 47 ticket 50). Absent until a harness reports them
+   *  — the progressive picker only renders when this exists. */
   sessionModels: CoachSessionModels | null
-  /** Agent-declared selectable modes, from the last session event. */
+  /** Agent-declared selectable modes, from the last session event or the
+   *  pre-flight probe. */
   sessionModes: CoachSessionModes | null
+  /** The harness kind whose pre-flight probe is in flight (null when none) —
+   *  drives the composer's loading pill and the probe's stale-result guard.
+   *  Latest-wins: a newer probe supersedes any in-flight one. */
+  inspectingKind: string | null
+  /** Harness kinds whose probe SUCCEEDED but declared no selectable models —
+   *  opening the model picker for them must not re-spawn the agent (nothing
+   *  would come back). Loaded sets (sessionModels) are guarded separately; a
+   *  FAILED probe is never cached, so the next open retries an unavailable
+   *  agent. Persists across harness switches and resets — capabilities are
+   *  stable for the session. */
+  probedEmptyKinds: string[]
   /** The user's model choice for the next run (from the reported set). */
   modelId: string | null
   /** The user's mode choice for the next run (from the reported set). */
@@ -89,6 +102,12 @@ export interface CoachSkillsState {
   loadHarnesses: () => Promise<void>
   /** Persists the picker choice. */
   setHarness: (kind: string) => void
+  /** Pre-flight probe (map 47 ticket 50): asks the harness's handshake for
+   *  its declared models/modes WITHOUT a run, so the pickers render before
+   *  the first message. Latest-wins + stale-guarded on the current harness;
+   *  a failed probe (unavailable agent, auth wall) just leaves the pickers
+   *  absent — the first run surfaces the real error. */
+  inspectHarness: (kind: string) => Promise<void>
   /** Sets the user's model choice for the next run (null = agent default). */
   setModelId: (modelId: string | null) => void
   /** Sets the user's mode choice for the next run (null = agent default). */
@@ -138,6 +157,8 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   harnessKind: null,
   sessionModels: null,
   sessionModes: null,
+  inspectingKind: null,
+  probedEmptyKinds: [],
   modelId: null,
   modeId: null,
   messages: [],
@@ -163,19 +184,65 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     // user change it, but the first run should never sit behind a "pick a
     // harness" wall.
     const current = get().harnessKind
-    if (!current || !harnesses.some(h => h.kind === current)) {
-      set({ harnessKind: harnesses[0]?.kind ?? null })
-    }
+    const next = current && harnesses.some(h => h.kind === current) ? current : harnesses[0]?.kind ?? null
+    set({ harnessKind: next })
+    // Hybrid warm start: ONLY the auto-selected harness is probed eagerly —
+    // it warms a session the first run resumes and pre-populates the model
+    // picker without an open. Manual harness switches stay lazy (probe on
+    // picker open), and an idempotent refresh that keeps the same selection
+    // skips it entirely (re-probing would spawn the agent needlessly).
+    if (next && next !== current) void get().inspectHarness(next)
   },
-  setHarness: (harnessKind) => set({
-    harnessKind,
-    // A different harness is a different agent — its selectable set (and the
-    // user's choices against the previous agent) do not carry over.
-    sessionModels: null,
-    sessionModes: null,
-    modelId: null,
-    modeId: null,
-  }),
+  setHarness: (harnessKind) => {
+    set({
+      harnessKind,
+      // A different harness is a different agent — its selectable set (and the
+      // user's choices against the previous agent) do not carry over. The
+      // next picker open re-probes the new agent lazily.
+      sessionModels: null,
+      sessionModes: null,
+      modelId: null,
+      modeId: null,
+    })
+  },
+  inspectHarness: async (kind) => {
+    // Lazy probe (map 47 ticket 50): called when the model picker opens —
+    // and, for the auto-selected harness only, eagerly on load (hybrid warm
+    // start). The probe ALSO warms a session the conversation's first run
+    // can resume (no double cold-start).
+    // Latest-wins: record the probed kind so the composer can show a loading
+    // state and a superseded probe (a harness switched mid-flight) is
+    // dropped. A probe for this exact kind is already in flight — its result
+    // applies when it lands, so skip the redundant round-trip (the main
+    // process also coalesces concurrent probes into one spawn slot).
+    if (get().inspectingKind === kind) return
+    // A previous SUCCESSFUL probe declared no selectable models for this
+    // agent — re-opening must not re-spawn it (nothing would come back).
+    if (get().probedEmptyKinds.includes(kind)) return
+    // Already loaded for the current harness (a prior open, or a run's
+    // session event) — opening the picker is just browsing the existing set.
+    if (get().harnessKind === kind && get().sessionModels) return
+    set({ inspectingKind: kind })
+    const result = await fetchCoachInspect(kind)
+    set(state => (state.inspectingKind === kind ? { inspectingKind: null } : state))
+    if (!result.ok || !result.data.ok) return
+    // The probe answers for the agent that was selected when it STARTED — if
+    // the user has since switched harness, its declared set does not apply.
+    if (get().harnessKind !== kind) return
+    const { models, modes } = result.data
+    set(state => ({
+      sessionModels: models ?? state.sessionModels,
+      sessionModes: modes ?? state.sessionModes,
+      modelId: state.modelId ?? (models?.currentModelId ?? null),
+      modeId: state.modeId ?? (modes?.currentModeId ?? null),
+      // A SUCCESSFUL probe that declared no models is cached — the loaded
+      // guard above covers the models case, so this only ever fires for the
+      // empty set (the guard also makes a duplicate impossible). A FAILED
+      // probe never lands here, so an unavailable agent is still retried on
+      // the next open. A later run's session event invalidates the marker.
+      ...(models ? {} : { probedEmptyKinds: [...state.probedEmptyKinds, kind] }),
+    }))
+  },
   setModelId: (modelId) => set({ modelId }),
   setModeId: (modeId) => set({ modeId }),
   sendCoach: async (prompt) => {
@@ -234,7 +301,8 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       error: null,
       pendingEvents: {},
       // The session is gone — so is the agent's selectable set and the
-      // user's choices against it.
+      // user's choices against it. The picker re-probes lazily on its next
+      // open.
       sessionModels: null,
       sessionModes: null,
       modelId: null,
@@ -305,6 +373,14 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
           sessionModes: event.modes ?? state.sessionModes,
           modelId: state.modelId ?? (event.models?.currentModelId ?? null),
           modeId: state.modeId ?? (event.modes?.currentModeId ?? null),
+          // A run's LIVE declaration overrides a stale empty-probe cache: a
+          // probe handshake may report no models where the run's handshake
+          // does (the probe runs without the ledger MCP server), so once a
+          // run proves the agent has models, the "no models" marker for the
+          // current harness is invalid.
+          ...(event.models
+            ? { probedEmptyKinds: state.probedEmptyKinds.filter(k => k !== state.harnessKind) }
+            : {}),
         }))
         break
       case 'error':

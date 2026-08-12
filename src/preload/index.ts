@@ -31,6 +31,7 @@ import type {
 import type {
   CoachEventEnvelope,
   CoachHarnessesResult,
+  CoachInspectResult,
   CoachRunRequest,
   CoachRunResult,
 } from '../shared/schemas/agents.js'
@@ -46,6 +47,7 @@ export type {
 export type {
   CoachEventEnvelope,
   CoachHarnessesResult,
+  CoachInspectResult,
   CoachRunRequest,
   CoachRunResult,
 } from '../shared/schemas/agents.js'
@@ -157,6 +159,12 @@ const api = {
    * owned by the main process, and the harness reads platform data through the
    * in-app ledger MCP server. */
   getCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses'),
+  /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
+   * models/modes without a run, so the model/mode pickers render before the
+   * first message. A failed probe is `{ ok: false }` — the pickers stay
+   * absent and the first run surfaces the real error. */
+  inspectCoachHarness: (kind: string): Promise<CoachInspectResult> =>
+    ipcRenderer.invoke('coach:inspect', kind),
   /** Starts a harness run; resolves with the immediate ack. Events stream on
    * `onCoachEvent` keyed by the returned runId. */
   startCoachRun: (request: CoachRunRequest): Promise<CoachRunResult> =>

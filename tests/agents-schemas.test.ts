@@ -4,6 +4,7 @@ import {
   coachEventEnvelopeSchema,
   coachEventSchema,
   coachHarnessRowSchema,
+  coachInspectResultSchema,
   coachModeSchema,
   coachRunRequestSchema,
   coachRunResultSchema,
@@ -147,6 +148,17 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     }).success).toBe(true)
     expect(coachHarnessRowSchema.safeParse({ kind: 'claude' }).success).toBe(false)
     expect(coachHarnessRowSchema.safeParse({ kind: 'claude', displayName: 'x', authStatus: 'nope' }).success).toBe(false)
+  })
+
+  it('parses the pre-flight inspect result — models/modes optional, probe failure as ok:false (map 47 ticket 50)', () => {
+    const models = { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' }
+    expect(coachInspectResultSchema.safeParse({ ok: true, models }).success).toBe(true)
+    expect(coachInspectResultSchema.safeParse({ ok: true, models, modes: { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan' } }).success).toBe(true)
+    // No declared set — the pickers simply stay absent.
+    expect(coachInspectResultSchema.safeParse({ ok: true }).success).toBe(true)
+    expect(coachInspectResultSchema.safeParse({ ok: false, error: 'agent binary not found' }).success).toBe(true)
+    expect(coachInspectResultSchema.safeParse({ ok: true, models: { availableModels: [] } }).success).toBe(false)
+    expect(coachInspectResultSchema.safeParse({ ok: 'maybe' }).success).toBe(false)
   })
 
 })

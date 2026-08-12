@@ -192,8 +192,10 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   const harnesses = useCoachSkillsStore(s => s.harnesses)
   const harnessKind = useCoachSkillsStore(s => s.harnessKind)
   const setHarness = useCoachSkillsStore(s => s.setHarness)
+  const inspectHarness = useCoachSkillsStore(s => s.inspectHarness)
   const sessionModels = useCoachSkillsStore(s => s.sessionModels)
   const sessionModes = useCoachSkillsStore(s => s.sessionModes)
+  const inspectingKind = useCoachSkillsStore(s => s.inspectingKind)
   const modelId = useCoachSkillsStore(s => s.modelId)
   const modeId = useCoachSkillsStore(s => s.modeId)
   const setModelId = useCoachSkillsStore(s => s.setModelId)
@@ -257,11 +259,24 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
               </SelectItem>
             ))}
           </SelectContent>
-        </Select>          {sessionModels && sessionModels.availableModels.length > 0 && (
+        </Select>
+          {/* The agent-declared model picker (map 47 ticket 50) — LAZY: the
+              trigger always renders once a harness is selected, and opening
+              it probes the agent's handshake. Tradeoff: the probe ALSO warms
+              a session the first run resumes, so that optimization only
+              materializes for users who actually open the picker (a user who
+              never does cold-starts the first run, exactly as before the
+              probe existed). A run's session event refreshes the set after
+              the first message. `loading` is scoped to THIS harness — a
+              stale probe for a switched-away harness must not show a spinner
+              for the current one. */}
+          {harnessKind && (
             <ModelSelector
-              models={sessionModels.availableModels}
+              models={sessionModels?.availableModels ?? []}
+              loading={inspectingKind === harnessKind && !sessionModels}
               value={modelId}
               onSelect={setModelId}
+              onOpen={() => { void inspectHarness(harnessKind) }}
             />
           )}
         {sessionModes && sessionModes.availableModes.length > 0 && (

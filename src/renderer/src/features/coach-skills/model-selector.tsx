@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 
-import { Cpu } from 'lucide-react'
+import { Cpu, Loader2 } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/components/ui/button'
 import {
@@ -33,15 +33,24 @@ type ModelOption = {
  *  app's Base UI Combobox, which is this project's equivalent of the
  *  reference's cmdk/Popover pair. Selection stays PROGRESSIVE (map 47 ticket
  *  50): only the agent's own handshake-declared models are offered, and the
- *  first row returns to the agent default (modelId null). */
+ *  first row returns to the agent default (modelId null). The picker is
+ *  LAZY: the trigger always renders, but the models load on first open —
+ *  `onOpen` fires the store's probe (which also warms a session for the
+ *  first run), and `loading` swaps the list for a loading row. */
 export function ModelSelector({
   models,
   value,
   onSelect,
+  loading = false,
+  onOpen,
 }: {
   models: CoachModelInfo[]
   value: string | null
   onSelect: (modelId: string | null) => void
+  /** The agent's set is being probed right now (first open). */
+  loading?: boolean
+  /** Fired when the popup opens — the lazy probe trigger. */
+  onOpen?: () => void
 }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
@@ -60,7 +69,14 @@ export function ModelSelector({
     ],
     [models],
   )
-  const groups = useMemo(() => [{ label: 'Models', items: options }], [options])
+  // While the first probe is in flight there is nothing to list yet — an
+  // empty item set surfaces the ComboboxEmpty loading row. The SELECTED
+  // value keeps mapping against the full options so the trigger label stays
+  // stable ("Model: default") throughout.
+  const groups = useMemo(
+    () => (loading && models.length === 0 ? [] : [{ label: 'Models', items: options }]),
+    [loading, models.length, options],
+  )
   const selected = useMemo(
     () => options.find(option => option.value === value) ?? options[0],
     [options, value],
@@ -74,7 +90,7 @@ export function ModelSelector({
       onValueChange={next => { if (next) onSelect(next.value) }}
       autoHighlight
       open={open}
-      onOpenChange={next => { setOpen(next); if (next) setQuery('') }}
+      onOpenChange={next => { setOpen(next); if (next) { setQuery(''); onOpen?.() } }}
     >
       <ComboboxTrigger
         render={
@@ -102,7 +118,14 @@ export function ModelSelector({
           autoFocus
         />
         <ComboboxEmpty>
-          {query.trim() ? 'No matching models' : 'No models available'}
+          {loading ? (
+            <span className="flex items-center justify-center gap-1.5">
+              <Loader2 className="size-3.5 animate-spin" />
+              Loading models…
+            </span>
+          ) : (
+            (query.trim() ? 'No matching models' : 'No models available')
+          )}
         </ComboboxEmpty>
         <ComboboxList>
           {group => (

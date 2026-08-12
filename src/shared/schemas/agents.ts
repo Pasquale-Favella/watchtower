@@ -162,3 +162,25 @@ export type CoachHarnessRow = z.infer<typeof coachHarnessRowSchema>
 export const coachHarnessesResultSchema = z.array(coachHarnessRowSchema)
 export type CoachHarnessesResult = z.infer<typeof coachHarnessesResultSchema>
 
+/** `coach:inspect` response — a pre-flight probe of a harness's handshake
+ *  declared models/modes, WITHOUT running a prompt (map 47 ticket 50,
+ *  progressive selection before the first message). The main process spawns
+ *  the ACP provider, calls `initSession()`, reads the session response, and
+ *  tears the provider down — the same handshake a run performs, just with no
+ *  streaming. `models`/`modes` are present ONLY when the agent declared
+ *  selectable options; a failed probe (unavailable agent, auth wall) is a
+ *  `{ ok: false }` arm the renderer treats as "no pickers" — the run itself
+ *  surfaces the real error when the user chats. */
+export const coachInspectResultSchema = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    models: coachSessionModelsSchema.optional(),
+    modes: coachSessionModesSchema.optional(),
+  }),
+  z.object({
+    ok: z.literal(false),
+    error: z.string(),
+  }),
+])
+export type CoachInspectResult = z.infer<typeof coachInspectResultSchema>
+

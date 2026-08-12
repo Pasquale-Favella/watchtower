@@ -14,6 +14,7 @@ import {
   type CoachEvent,
   type CoachEventEnvelope,
   type CoachHarnessRow,
+  type CoachInspectResult,
   type CoachRunRequest,
   type CoachRunResult,
 } from '../../shared/schemas/agents.js'
@@ -62,6 +63,13 @@ export interface CoachRunnerDeps {
 
 export interface CoachRunner {
   harnesses(): Promise<CoachHarnessRow[]>
+  /** Pre-flight probe (map 47 ticket 50): asks the agent's handshake for its
+   *  declared models/modes WITHOUT running a prompt, so the pickers render
+   *  before the first message. Reuses the conversation workspace as the
+   *  probe's cwd. A `{ ok: false }` result means the probe failed (unknown
+   *  harness, unavailable agent) — the renderer just leaves the pickers
+   *  absent and the first run surfaces the real error. */
+  inspect(kind: string): Promise<CoachInspectResult>
   /** Validates, acks immediately with a runId, then streams events to `emit`
    *  as they arrive. A `{ ok: false }` ack means the request never launched
    *  (unknown harness, malformed request). */
@@ -78,12 +86,106 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   /** The conversation's private temp workspace (map 53 ticket 56): created on
    *  the first run, reused while the session resumes, deleted on reset/quit. */
   let workspace: string | null = null
+  /** The probe-warmed ACP session (optimization): `inspect` runs the agent's
+   *  handshake to read its declared models/modes; the conversation's FIRST
+   *  run resumes that same session (`existingSessionId`) instead of creating
+   *  one, so the agent does not cold-start twice. Keyed to the workspace the
+   *  probe ran in, so a probe that outlives a `reset` (workspace deleted + a
+   *  new one created) can never leak its session into the next conversation.
+   *  Cleared once the first run consumes it. The probed session carries NO
+   *  prompt — `start` still includes the ledger briefing on that first run
+   *  (it keys on the absent renderer sessionId, which holds exactly here). */
+  let probedSession: { kind: string; sessionId: string; workspace: string } | null = null
+  /** The single in-flight probe (coalescing, optimization): rapid harness
+   *  switching must not spawn one ACP process per switch. One probe runs at a
+   *  time; `probedQueued` holds the NEWEST request while an older probe is in
+   *  flight and runs right after it settles — intermediate kinds are skipped
+   *  entirely. Every caller's promise resolves with its own kind's result (or
+   *  a 'superseded' arm when a newer request replaced it before its spawn);
+   *  the renderer's stale-guard drops anything it has moved past. */
+  let probedChain: Promise<CoachInspectResult> | null = null
+  let probedQueued: { kind: string; resolve: (result: CoachInspectResult | Promise<CoachInspectResult>) => void } | null = null
+  /** Bumped by every `reset`: a probe that started before a reset must not
+   *  remember its session afterwards (it was warmed in a conversation the
+   *  reset just discarded — the workspace-keyed guard alone cannot catch the
+   *  case where the probe CREATES its workspace only after the reset). */
+  let conversationGeneration = 0
 
   function cleanupWorkspace(): void {
     if (workspace) {
       rmSync(workspace, { recursive: true, force: true })
       workspace = null
     }
+  }
+
+  /** ONE ACP probe spawn: detect, warm the session in the conversation
+   *  workspace, remember the session for the first-run resume, and return the
+   *  renderer-facing result (the session id stays main-side — the renderer's
+   *  resume handle comes from the run's session event as usual). */
+  async function runProbe(kind: string): Promise<CoachInspectResult> {
+    const generation = conversationGeneration
+    try {
+      const found = await deps.detect()
+      const harness = found.find(h => h.kind === kind)
+      if (!harness) {
+        return { ok: false, error: `harness not detected: ${kind}` }
+      }
+      const runtime = await deps.getRuntime()
+      // The conversation workspace as the probe's cwd — created lazily, the
+      // same way the first run would; a session-less probe must still spawn
+      // the agent somewhere real (reset/quit cleans it up). Snapshot the path
+      // locally: a reset mid-probe must not re-key the remembered session to
+      // the NEW workspace it would otherwise point the closure at.
+      const probeWorkspace = workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-'))
+      const result = await runtime.inspect({ harness, workspacePath: probeWorkspace })
+      // Only remember the session if no reset happened while probing — a
+      // stale probe belongs to a discarded conversation and must never be
+      // resumed by the next one (generation, not workspace, is the truth).
+      if (result.sessionId && conversationGeneration === generation) {
+        probedSession = { kind, sessionId: result.sessionId, workspace: probeWorkspace }
+      }
+      return {
+        ok: true,
+        ...(result.models ? { models: result.models } : {}),
+        ...(result.modes ? { modes: result.modes } : {}),
+      }
+    } catch (err) {
+      // Everything (detect included) becomes an ok:false arm — a rejection
+      // must NEVER propagate: the chain's slot-release depends on runProbe
+      // settling, and a wedged slot would hang every later probe.
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** Frees the single probe slot after the active probe settles — starting
+   *  the queued newer kind if one arrived. */
+  function releaseProbeSlot(): void {
+    probedChain = null
+    const queued = probedQueued
+    if (queued) {
+      probedQueued = null
+      queued.resolve(startProbe(queued.kind))
+    }
+  }
+
+  /** Starts the probe chain (or continues it after the active probe settles):
+   *  the chain is the single spawn slot — when it frees up, a queued newer
+   *  kind is probed next and its caller resolves with its own result. */
+  function startProbe(kind: string): Promise<CoachInspectResult> {
+    probedChain = runProbe(kind).then(
+      result => {
+        releaseProbeSlot()
+        return result
+      },
+      // Belt-and-braces: runProbe catches everything, so this should never
+      // fire — but if it ever did, the slot must still free or every later
+      // probe would queue onto a dead chain forever.
+      error => {
+        releaseProbeSlot()
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      },
+    )
+    return probedChain
   }
 
   return {
@@ -94,6 +196,20 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         displayName: h.displayName,
         authStatus: h.authStatus,
       }))
+    },
+
+    async inspect(kind): Promise<CoachInspectResult> {
+      // Coalesce (optimization): never run two probes at once. A free slot
+      // spawns immediately; otherwise the newest requested kind queues (a
+      // previously queued one is superseded and resolved now — it never gets
+      // its spawn, and the renderer would have dropped its result anyway).
+      if (probedChain === null) {
+        return startProbe(kind)
+      }
+      if (probedQueued) probedQueued.resolve({ ok: false, error: 'superseded' })
+      return new Promise(resolve => {
+        probedQueued = { kind, resolve }
+      })
     },
 
     async start(request: unknown, emit): Promise<CoachRunResult> {
@@ -137,8 +253,27 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // they cover, and the ground-your-answer rule. Only on the FIRST run of
       // a conversation (no sessionId yet) — the harness resumes its session
       // with the briefing already in context, so restating it every turn
-      // would just burn tokens.
+      // would just burn tokens. A probe-warmed first run still counts as
+      // first: the probe carried no prompt, so the agent has never seen the
+      // briefing — and this condition holds for it exactly (resumeProbed
+      // below requires !req.sessionId).
       const briefing = ledgerServer && !req.sessionId ? buildLedgerBriefing(scope) : ''
+
+      // Resume the probe-warmed session on the conversation's first run
+      // (optimization, no double cold-start): the agent skips creating a new
+      // ACP session and picks up where the probe's handshake left it. Only
+      // when the probed harness matches AND the session still lives in THIS
+      // workspace — a stale probe (superseded, or one that outlived a reset)
+      // must never be resumed. The resumed run still attaches the ledger MCP
+      // server (it is in the run config below) and carries the briefing in
+      // its prompt, so it behaves like a fresh first run.
+      const resumeProbed = !req.sessionId
+        && probedSession !== null
+        && probedSession.kind === req.harnessKind
+        && probedSession.workspace === workspace
+      // (the re-check narrows probedSession for TS — resumeProbed alone cannot
+      // prove it is non-null)
+      const resumeSessionId = resumeProbed && probedSession ? probedSession.sessionId : req.sessionId
 
       // Mode-tagged prompt build (ADR 0017): build-skill runs derive the
       // authoring prompt from the candidate's NORMALIZED evidence, main-side
@@ -171,11 +306,19 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
           // optional — absent means the agent's default model/mode.
           ...(req.modelId ? { modelId: req.modelId } : {}),
           ...(req.modeId ? { modeId: req.modeId } : {}),
-          ...(req.sessionId ? { sessionId: req.sessionId } : {}),
+          ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
+          // A probe-warmed session is expendable: if its resume fails on this
+          // first run, the seam restarts fresh instead of erroring — nothing
+          // was ever sent to it. Genuine conversation resumes (req.sessionId)
+          // stay strict: restarting would silently drop their context.
+          resumeIsExpendable: resumeProbed,
           // Merged after any spec-level servers. Null on a fresh install (no
           // ledger.db yet) — then no data tools.
           mcpServers: [...(ledgerServer ? [ledgerServer] : [])],
         })
+        // The probe's warm session has been handed to this run — the memory is
+        // consumed (a second session-less run must not resume it again).
+        if (resumeProbed) probedSession = null
         activeRuns.set(runId, gen)
 
         // Stream in the background — the ack returns immediately; events land
@@ -213,6 +356,13 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
 
     reset() {
       for (const runId of [...activeRuns.keys()]) this.cancel(runId)
+      // The probe-warmed session lives in the workspace being deleted — it is
+      // meaningless to the next conversation. Clear it AND bump the generation
+      // so any probe still in flight (which may not even have created its
+      // workspace yet) knows not to remember its session for the new
+      // conversation.
+      probedSession = null
+      conversationGeneration++
       cleanupWorkspace()
     },
   }
@@ -255,6 +405,18 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => voi
   })
 
   ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> => runner.harnesses())
+
+  /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
+   *  models/modes without a run, so the pickers render before the first
+   *  message. The request is a bare registry key — the runner re-detects and
+   *  never trusts it beyond that key, and a probe failure is `{ ok: false }`
+   *  (pickers absent, chat unaffected). */
+  ipcMain.handle('coach:inspect', async (_event, kind: unknown): Promise<CoachInspectResult> => {
+    if (typeof kind !== 'string' || kind.trim() === '') {
+      return { ok: false, error: 'invalid coach inspect request' }
+    }
+    return runner.inspect(kind)
+  })
 
   ipcMain.handle('coach:run', async (event, request: unknown): Promise<CoachRunResult> => {
     const win = BrowserWindow.fromWebContents(event.sender)

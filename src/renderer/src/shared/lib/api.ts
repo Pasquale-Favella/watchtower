@@ -75,8 +75,10 @@ import { cadenceValueSchema, type CadenceValue } from '../../../../shared/schema
 import { exportResultSchema, type ExportResult } from '../../../../shared/schemas/export.js'
 import {
   coachHarnessesResultSchema,
+  coachInspectResultSchema,
   coachRunResultSchema,
   type CoachHarnessesResult,
+  type CoachInspectResult,
   type CoachRunRequest,
   type CoachRunResult,
 } from '../../../../shared/schemas/agents.js'
@@ -281,6 +283,13 @@ export function fetchRemovePriceOverride(model: string): Promise<ApiResult<OkEnv
 
 export function fetchCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>> {
   return fetchPayload('coach harnesses', coachHarnessesResultSchema, () => window.api.getCoachHarnesses())
+}
+
+/** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
+ *  models/modes without a run, so the pickers render before the first
+ *  message. A failed probe is `{ ok: false }` — the pickers stay absent. */
+export function fetchCoachInspect(kind: string): Promise<ApiResult<CoachInspectResult>> {
+  return fetchPayload('coach inspect', coachInspectResultSchema, () => window.api.inspectCoachHarness(kind))
 }
 
 export function fetchCoachRun(request: CoachRunRequest): Promise<ApiResult<CoachRunResult>> {

@@ -293,6 +293,174 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
   })
 })
 
+describe('createHarnessRuntime — inspect (the pre-flight handshake probe, map 47 ticket 50)', () => {
+  it('returns the agent-declared models/modes from initSession without streaming a prompt', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    sessionResponse.models = {
+      availableModels: [
+        { modelId: 'opus', name: 'Claude Opus' },
+        { modelId: 'sonnet', name: 'Claude Sonnet' },
+      ],
+      currentModelId: 'opus',
+    }
+    sessionResponse.modes = {
+      availableModes: [{ id: 'plan', name: 'Plan' }],
+      currentModeId: 'plan',
+    }
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const result = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() })
+
+    // The probed session id rides the result so the runner can resume this
+    // warm session on the conversation's first run (no double cold-start).
+    expect(result).toEqual({
+      sessionId: 'sess_9',
+      models: {
+        availableModels: [
+          { modelId: 'opus', name: 'Claude Opus' },
+          { modelId: 'sonnet', name: 'Claude Sonnet' },
+        ],
+        currentModelId: 'opus',
+      },
+      modes: {
+        availableModes: [{ id: 'plan', name: 'Plan' }],
+        currentModeId: 'plan',
+      },
+    })
+    expect(provider.initSession).toHaveBeenCalledOnce()
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+    expect(streamText).not.toHaveBeenCalled()
+  })
+
+  it('returns the session id but no selectable set when the agent declares none', async () => {
+    const { sdk } = fakeSdk([])
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const result = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() })
+
+    // The session is still warmed and resumable — only the pickers stay
+    // absent (progressive: nothing declared).
+    expect(result).toEqual({ sessionId: 'sess_9' })
+  })
+
+  it('builds the provider from the harness spec — the same spawn path as a run', async () => {
+    const { sdk, createACPProvider } = fakeSdk([])
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const workspace = realWorkspace()
+
+    await runtime.inspect({ harness: claudeHarness, workspacePath: workspace })
+
+    const config = createACPProvider.mock.calls[0]![0]
+    expect(config.command).toBe('claude-agent-acp')
+    expect(config.session.cwd).toBe(workspace)
+  })
+
+  it('rejects when initSession fails (unavailable agent) and still cleans up the provider', async () => {
+    const { sdk, provider } = fakeSdk([])
+    provider.initSession.mockRejectedValue(new Error('agent binary not found'))
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    await expect(runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() }))
+      .rejects.toThrow('agent binary not found')
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a workspace path that is not a real on-disk directory', async () => {
+    const { sdk, createACPProvider } = fakeSdk([])
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    await expect(runtime.inspect({ harness: claudeHarness, workspacePath: 'C:\\nonexistent\\path' }))
+      .rejects.toThrow(/real on-disk/i)
+    expect(createACPProvider).not.toHaveBeenCalled()
+  })
+})
+
+describe('createHarnessRuntime — expendable-resume fallback (probe-warmed first run)', () => {
+  it('falls back to a FRESH session when an expendable resume fails — nothing is lost', async () => {
+    const { sdk, provider, createACPProvider } = fakeSdk([])
+    provider.initSession.mockRejectedValueOnce(new Error('loadSession failed'))
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const mcpServers = [{ name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js'] }]
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+      sessionId: 'sess_probe',
+      resumeIsExpendable: true,
+      mcpServers,
+    })) {
+      events.push(event)
+    }
+
+    // The failed resume restarts the provider WITHOUT the resume handle and
+    // the run proceeds on a fresh session.
+    expect(events).toEqual([
+      { kind: 'status', state: 'starting' },
+      { kind: 'session', sessionId: 'sess_9' },
+    ])
+    expect(createACPProvider).toHaveBeenCalledTimes(2)
+    expect(provider.cleanup).toHaveBeenCalledTimes(2)
+    const retryConfig = createACPProvider.mock.calls[1]![0]
+    expect(retryConfig.existingSessionId).toBeUndefined()
+    // The fresh session must still expose the ledger tools — the retry keeps
+    // the run's MCP servers (the data-grounding feature depends on it).
+    expect(retryConfig.session.mcpServers).toEqual(mcpServers)
+  })
+
+  it('surfaces an error when BOTH the expendable resume and its fresh retry fail', async () => {
+    const { sdk, provider, createACPProvider, streamText } = fakeSdk([])
+    provider.initSession.mockRejectedValue(new Error('agent down'))
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+      sessionId: 'sess_probe',
+      resumeIsExpendable: true,
+    })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      { kind: 'status', state: 'starting' },
+      { kind: 'error', message: 'agent down' },
+    ])
+    expect(streamText).not.toHaveBeenCalled()
+    expect(createACPProvider).toHaveBeenCalledTimes(2)
+    // Both providers are torn down.
+    expect(provider.cleanup).toHaveBeenCalledTimes(2)
+  })
+
+  it('does NOT fall back for a genuine (non-expendable) resume — its context must not silently vanish', async () => {
+    const { sdk, provider, streamText } = fakeSdk([])
+    provider.initSession.mockRejectedValueOnce(new Error('loadSession failed'))
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+      sessionId: 'sess_prev',
+    })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      { kind: 'status', state: 'starting' },
+      { kind: 'error', message: 'loadSession failed' },
+    ])
+    expect(streamText).not.toHaveBeenCalled()
+  })
+})
+
 describe('registry → seam integration — every ACP spec maps to a provider config (ADR 0016)', () => {
   // NOTE: this verifies config mapping + event plumbing per spec with a fake
   // SDK — live runnability of the launch commands is ticket #42's job (real

@@ -405,3 +405,211 @@ describe('useCoachSkillsStore — unified Coach & Skills chat state (ADR 0017)',
     expect(s.modeId).toBeNull()
   })
 })
+
+// NOTE: these tests live AFTER the ones above because the shared global
+// `window.api` mock is last-write-wins — a probe mock here must not leak into
+// the earlier tests' expectations.
+describe('useCoachSkillsStore — lazy probe on picker open (map 47 ticket 50)', () => {
+  const models = { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' }
+  const modes = { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan' }
+
+  it('probes the AUTO-SELECTED harness eagerly (hybrid warm start) — first-run sessions stay warm without an open', async () => {
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models, modes }))
+    mockWindow({ getCoachHarnesses: () => Promise.resolve(harnesses), inspectCoachHarness })
+
+    await useCoachSkillsStore.getState().loadHarnesses()
+    await vi.waitFor(() => expect(useCoachSkillsStore.getState().sessionModels).not.toBeNull())
+
+    const s = useCoachSkillsStore.getState()
+    expect(inspectCoachHarness).toHaveBeenCalledWith('claude')
+    expect(s.harnessKind).toBe('claude')
+    expect(s.sessionModels?.availableModels).toEqual(models.availableModels)
+    expect(s.sessionModes?.availableModes).toEqual(modes.availableModes)
+    expect(s.modelId).toBe('opus')
+  })
+
+  it('setHarness clears the declared set WITHOUT probing — the next open re-probes lazily', async () => {
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models }))
+    mockWindow({ inspectCoachHarness })
+    useCoachSkillsStore.setState({
+      harnessKind: 'claude',
+      sessionModels: models,
+      sessionModes: modes,
+      modelId: 'opus',
+      modeId: 'plan',
+    })
+
+    useCoachSkillsStore.getState().setHarness('gemini')
+
+    const s = useCoachSkillsStore.getState()
+    expect(s.harnessKind).toBe('gemini')
+    expect(s.sessionModels).toBeNull()
+    expect(s.sessionModes).toBeNull()
+    expect(s.modelId).toBeNull()
+    expect(s.modeId).toBeNull()
+    expect(inspectCoachHarness).not.toHaveBeenCalled()
+  })
+
+  it('opening the picker probes the harness and loads its declared set (agent default pre-selected)', async () => {
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models, modes }))
+    mockWindow({ inspectCoachHarness })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
+
+    await useCoachSkillsStore.getState().inspectHarness('claude')
+
+    const s = useCoachSkillsStore.getState()
+    expect(inspectCoachHarness).toHaveBeenCalledWith('claude')
+    expect(s.sessionModels?.availableModels).toEqual(models.availableModels)
+    expect(s.sessionModes?.availableModes).toEqual(modes.availableModes)
+    expect(s.modelId).toBe('opus')
+    expect(s.modeId).toBe('plan')
+    // A declared set is NOT cached as empty — only the loaded-guard covers it.
+    expect(s.probedEmptyKinds).toEqual([])
+  })
+
+  it('a run\'s session event invalidates a stale empty-probe cache for the current harness', async () => {
+    mockWindow({ startCoachRun: () => Promise.resolve({ ok: true, runId: 'run-9' }) })
+    useCoachSkillsStore.setState({
+      harnessKind: 'claude',
+      sessionModels: null,
+      probedEmptyKinds: ['claude'],
+      activeRunId: 'run-1',
+    })
+
+    // The run's LIVE handshake declares models the probe never did (e.g. the
+    // probe ran without the ledger MCP server) — the empty marker must go.
+    useCoachSkillsStore.getState().onEvent({
+      runId: 'run-1',
+      event: { kind: 'session', sessionId: 'sess_9', models },
+    })
+
+    expect(useCoachSkillsStore.getState().probedEmptyKinds).toEqual([])
+    expect(useCoachSkillsStore.getState().sessionModels).toEqual(models)
+  })
+
+  it('does not re-probe when the current harness set is already loaded', async () => {
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models }))
+    mockWindow({ inspectCoachHarness })
+    useCoachSkillsStore.setState({ harnessKind: 'claude', sessionModels: models, sessionModes: modes, modelId: 'opus' })
+
+    await useCoachSkillsStore.getState().inspectHarness('claude')
+
+    expect(inspectCoachHarness).not.toHaveBeenCalled()
+    expect(useCoachSkillsStore.getState().sessionModels).toEqual(models)
+  })
+
+  it('a stale probe (harness switched while in flight) is dropped', async () => {
+    let resolveClaude!: (value: { ok: true; models: typeof models }) => void
+    const inspectCoachHarness = vi.fn()
+    inspectCoachHarness.mockImplementationOnce(() => new Promise(resolve => { resolveClaude = resolve }))
+    inspectCoachHarness.mockImplementation(() => Promise.resolve({
+      ok: true,
+      models: { availableModels: [{ modelId: 'codex-1', name: 'Codex' }], currentModelId: 'codex-1' },
+    }))
+    mockWindow({ inspectCoachHarness })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
+
+    useCoachSkillsStore.getState().inspectHarness('claude')
+    useCoachSkillsStore.getState().setHarness('codex')
+    useCoachSkillsStore.getState().inspectHarness('codex')
+    // The claude probe answers AFTER the switch — its set must not clobber
+    // the codex one that already landed.
+    resolveClaude({ ok: true, models })
+
+    await vi.waitFor(() => expect(useCoachSkillsStore.getState().sessionModels?.availableModels[0]?.modelId).toBe('codex-1'))
+    expect(useCoachSkillsStore.getState().sessionModels?.availableModels).toEqual([{ modelId: 'codex-1', name: 'Codex' }])
+  })
+
+  it('a failed probe leaves the pickers absent, the probe flag cleared, and NOTHING cached — the next open retries', async () => {
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: false, error: 'agent binary not found' }))
+    mockWindow({ inspectCoachHarness })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
+
+    await useCoachSkillsStore.getState().inspectHarness('claude')
+    await useCoachSkillsStore.getState().inspectHarness('claude')
+
+    const s = useCoachSkillsStore.getState()
+    expect(s.sessionModels).toBeNull()
+    expect(s.sessionModes).toBeNull()
+    expect(s.modelId).toBeNull()
+    expect(s.modeId).toBeNull()
+    expect(s.inspectingKind).toBeNull()
+    // An unavailable agent is retried on the next open — no empty cache.
+    expect(s.probedEmptyKinds).toEqual([])
+    expect(inspectCoachHarness).toHaveBeenCalledTimes(2)
+  })
+
+  it('caches a SUCCESSFUL empty-declared probe — re-opening never re-spawns the agent', async () => {
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true })) // agent declares no models
+    mockWindow({ inspectCoachHarness })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
+
+    await useCoachSkillsStore.getState().inspectHarness('claude')
+    expect(useCoachSkillsStore.getState().probedEmptyKinds).toEqual(['claude'])
+    expect(useCoachSkillsStore.getState().sessionModels).toBeNull()
+
+    await useCoachSkillsStore.getState().inspectHarness('claude')
+    expect(inspectCoachHarness).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the empty-probe cache across harness switches', async () => {
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true }))
+    mockWindow({ inspectCoachHarness })
+    useCoachSkillsStore.setState({ harnessKind: 'claude', probedEmptyKinds: ['claude'] })
+
+    useCoachSkillsStore.getState().setHarness('gemini')
+    await useCoachSkillsStore.getState().inspectHarness('gemini') // not cached — probes, also empty
+    expect(inspectCoachHarness).toHaveBeenCalledTimes(1)
+
+    useCoachSkillsStore.getState().setHarness('claude')
+    await useCoachSkillsStore.getState().inspectHarness('claude') // cached — no spawn
+    expect(inspectCoachHarness).toHaveBeenCalledTimes(1)
+    expect(useCoachSkillsStore.getState().probedEmptyKinds).toEqual(['claude', 'gemini'])
+  })
+
+  it('resetSession clears the thread and declared set WITHOUT re-probing (lazy on next open)', async () => {
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models, modes }))
+    mockWindow({ resetCoachWorkspace: vi.fn(), inspectCoachHarness })
+    useCoachSkillsStore.setState({
+      harnessKind: 'claude',
+      sessionModels: models,
+      sessionModes: modes,
+      modelId: 'opus',
+      modeId: 'plan',
+      probedEmptyKinds: ['gemini'],
+      messages: [
+        { id: 'm0', role: 'user', content: 'p', mode: 'coach', tools: [], streaming: false },
+      ],
+    })
+
+    useCoachSkillsStore.getState().resetSession()
+
+    const s = useCoachSkillsStore.getState()
+    expect(s.messages).toEqual([])
+    expect(s.sessionModels).toBeNull()
+    expect(s.sessionModes).toBeNull()
+    expect(s.modelId).toBeNull()
+    expect(s.modeId).toBeNull()
+    expect(inspectCoachHarness).not.toHaveBeenCalled()
+    // The empty-probe cache persists — agent capabilities survive a reset.
+    expect(s.probedEmptyKinds).toEqual(['gemini'])
+  })
+
+  it('skips a redundant probe while one for the same harness is already in flight', async () => {
+    let resolveProbe!: (value: { ok: true; models: typeof models }) => void
+    const inspectCoachHarness = vi.fn(() => new Promise(resolve => { resolveProbe = resolve }))
+    mockWindow({ inspectCoachHarness })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
+
+    const first = useCoachSkillsStore.getState().inspectHarness('claude')
+    // Same harness requested again mid-flight — the in-flight probe's result
+    // will apply when it lands, so no second IPC round-trip.
+    await useCoachSkillsStore.getState().inspectHarness('claude')
+    expect(inspectCoachHarness).toHaveBeenCalledTimes(1)
+
+    resolveProbe({ ok: true, models })
+    await first
+    expect(useCoachSkillsStore.getState().sessionModels?.availableModels).toEqual(models.availableModels)
+    expect(useCoachSkillsStore.getState().inspectingKind).toBeNull()
+  })
+})

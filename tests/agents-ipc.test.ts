@@ -39,6 +39,9 @@ function scriptedRuntime(events: CoachEvent[]): HarnessRuntime {
     async *run() {
       for (const event of events) yield event
     },
+    async inspect() {
+      return {}
+    },
   }
 }
 
@@ -58,6 +61,9 @@ function streamingRuntime(): { runtime: HarnessRuntime; interrupted: () => boole
       } finally {
         interrupted = true
       }
+    },
+    async inspect() {
+      return {}
     },
   }
   return { runtime, interrupted: () => interrupted }
@@ -343,6 +349,241 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   it('cancel on an unknown runId is a silent no-op', async () => {
     const runner = makeRunner(scriptedRuntime([]))
     expect(() => runner.cancel('does-not-exist')).not.toThrow()
+  })
+})
+
+describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe for the pickers', () => {
+  it('returns the agent-declared models/modes from the runtime probe', async () => {
+    const inspect = vi.fn(async () => ({
+      models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' },
+    }))
+    const runner = makeRunner({ run: vi.fn(async function* () { /* no-op */ }), inspect } as unknown as HarnessRuntime)
+
+    const result = await runner.inspect('claude')
+
+    expect(result).toEqual({
+      ok: true,
+      models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' },
+    })
+    expect(inspect).toHaveBeenCalledWith(expect.objectContaining({ harness: harnesses[0] }))
+    expect(inspect.mock.calls[0]?.[0]).toHaveProperty('workspacePath')
+  })
+
+  it('probes in the conversation workspace (a real dir under the OS temp dir)', async () => {
+    const inspect = vi.fn(async () => ({ models: { availableModels: [], currentModelId: '' } }))
+    const runner = makeRunner({ run: vi.fn(async function* () { /* no-op */ }), inspect } as unknown as HarnessRuntime)
+
+    const result = await runner.inspect('claude')
+
+    expect(result.ok).toBe(true)
+    const input = inspect.mock.calls[0]?.[0] as { workspacePath: string }
+    expect(input.workspacePath).toMatch(/[\\/]watchtower-coach-[^\\/]+$/)
+    expect(existsSync(input.workspacePath)).toBe(true)
+  })
+
+  it('returns an ok:false arm for a harness the detector did not find', async () => {
+    const inspect = vi.fn()
+    const runner = makeRunner({ run: vi.fn(async function* () { /* no-op */ }), inspect } as unknown as HarnessRuntime)
+
+    const result = await runner.inspect('ghost')
+
+    expect(result).toEqual({ ok: false, error: 'harness not detected: ghost' })
+    expect(inspect).not.toHaveBeenCalled()
+  })
+
+  it('wraps a runtime probe failure into the ok:false arm (pickers stay absent, chat unaffected)', async () => {
+    const inspect = vi.fn(async () => { throw new Error('agent binary not found') })
+    const runner = makeRunner({ run: vi.fn(async function* () { /* no-op */ }), inspect } as unknown as HarnessRuntime)
+
+    const result = await runner.inspect('claude')
+
+    expect(result).toEqual({ ok: false, error: 'agent binary not found' })
+  })
+})
+
+describe('Coach IPC inspect — probe-warmed session resume (no double cold-start)', () => {
+  const runProbe = (inspect: ReturnType<typeof vi.fn>): { run: ReturnType<typeof vi.fn>; runner: CoachRunner } => {
+    const run = vi.fn(async function* () { yield { kind: 'status', state: 'done' } })
+    return { run, runner: makeRunner({ run, inspect } as unknown as HarnessRuntime) }
+  }
+  const lastRunInput = (run: ReturnType<typeof vi.fn>, index = 0): { sessionId?: string; prompt: string } => run.mock.calls[index]![0]
+
+  it('the conversation FIRST run resumes the probe-warmed session (existingSessionId)', async () => {
+    const { run, runner } = runProbe(vi.fn(async () => ({
+      sessionId: 'sess_probe',
+      models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' },
+    })))
+
+    await runner.inspect('claude')
+    await runner.start(request, () => {})
+
+    expect(lastRunInput(run).sessionId).toBe('sess_probe')
+  })
+
+  it('the resumed probe session still gets the ledger briefing (the probe carried no prompt)', async () => {
+    const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
+
+    await runner.inspect('claude')
+    await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, () => {})
+
+    const input = lastRunInput(run)
+    expect(input.sessionId).toBe('sess_probe')
+    // A resumed session is normally never re-briefed — but this one never saw
+    // the ledger briefing (probes send no prompt), so it must be included.
+    expect(input.prompt).toContain('watchtower-ledger')
+  })
+
+  it('the probe-warmed session is consumed once', async () => {
+    const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
+
+    await runner.inspect('claude')
+    await runner.start(request, () => {})
+    await runner.start(request, () => {})
+
+    expect(lastRunInput(run, 0).sessionId).toBe('sess_probe')
+    expect(lastRunInput(run, 1).sessionId).toBeUndefined()
+  })
+
+  it('does not resume a probe-warmed session for a DIFFERENT harness', async () => {
+    const codexHarness: HarnessInfo = {
+      name: 'codex', kind: 'codex', displayName: 'Codex',
+      bin: 'C:\\bin\\codex.exe', scrubEnv: [], authStatus: 'configured',
+    }
+    detect.mockImplementation(async () => [harnesses[0]!, codexHarness])
+    const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_claude' })))
+
+    await runner.inspect('claude')
+    await runner.start({ ...request, harnessKind: 'codex' }, () => {})
+
+    expect(lastRunInput(run).sessionId).toBeUndefined()
+    detect.mockImplementation(async () => harnesses)
+  })
+
+  it('reset clears the probe-warmed session', async () => {
+    const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
+
+    await runner.inspect('claude')
+    runner.reset()
+    await runner.start(request, () => {})
+
+    expect(lastRunInput(run).sessionId).toBeUndefined()
+  })
+
+  it('a probe that outlives a reset does not leak into the next conversation', async () => {
+    let resolveProbe!: (value: { sessionId: string }) => void
+    const inspect = vi.fn(() => new Promise(resolve => { resolveProbe = resolve }))
+    const { run, runner } = runProbe(inspect)
+
+    const pending = runner.inspect('claude')
+    runner.reset() // workspace deleted while the probe is in flight
+    await flush() // let the probe reach runtime.inspect before resolving it
+    resolveProbe({ sessionId: 'sess_old' })
+    await pending
+
+    await runner.start(request, () => {})
+    // The stale session belongs to the deleted workspace — never resumed.
+    expect(lastRunInput(run).sessionId).toBeUndefined()
+  })
+
+  it('flags the probe-warmed resume as EXPENDABLE so the seam can restart fresh on failure', async () => {
+    const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
+
+    await runner.inspect('claude')
+    await runner.start(request, () => {})
+
+    const input = lastRunInput(run) as { sessionId?: string; resumeIsExpendable?: boolean }
+    expect(input.sessionId).toBe('sess_probe')
+    expect(input.resumeIsExpendable).toBe(true)
+  })
+
+  it('does NOT flag genuine conversation resumes as expendable', async () => {
+    const run = vi.fn(async function* () { yield { kind: 'status', state: 'done' } })
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+
+    await runner.start({ ...request, sessionId: 'sess_prev' }, () => {})
+
+    const input = run.mock.calls[0]![0] as { resumeIsExpendable?: boolean }
+    expect(input.resumeIsExpendable).toBe(false)
+  })
+})
+
+describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () => {
+  const manyHarnesses: HarnessInfo[] = ['claude', 'codex', 'gemini'].map(kind => ({
+    name: kind, kind, displayName: kind,
+    bin: `C:\\bin\\${kind}.exe`, scrubEnv: [], authStatus: 'configured',
+  }))
+
+  const trackedRuntime = (): {
+    run: ReturnType<typeof vi.fn>
+    inspect: ReturnType<typeof vi.fn>
+    order: string[]
+    maxConcurrent: () => number
+  } => {
+    let concurrent = 0
+    let max = 0
+    const order: string[] = []
+    const inspect = vi.fn(async ({ harness }: { harness: HarnessInfo }) => {
+      concurrent++
+      max = Math.max(max, concurrent)
+      order.push(harness.kind)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      concurrent--
+      return { sessionId: `sess_${harness.kind}` }
+    })
+    const run = vi.fn(async function* () { yield { kind: 'status', state: 'done' } })
+    return { run, inspect, order, maxConcurrent: () => max }
+  }
+
+  beforeEach(() => {
+    detect.mockImplementation(async () => manyHarnesses)
+  })
+  afterEach(() => {
+    detect.mockImplementation(async () => harnesses)
+  })
+
+  it('rapid inspect calls run SEQUENTIALLY — never two ACP spawns at once', async () => {
+    const { inspect, order, maxConcurrent } = trackedRuntime()
+    const runner = makeRunner({ run: vi.fn(async function* () { /* no-op */ }), inspect } as unknown as HarnessRuntime)
+
+    const [claude, codex] = await Promise.all([runner.inspect('claude'), runner.inspect('codex')])
+
+    expect(maxConcurrent()).toBe(1)
+    expect(order).toEqual(['claude', 'codex'])
+    // Every caller gets a result for ITS requested kind.
+    expect(claude.ok).toBe(true)
+    expect(codex.ok).toBe(true)
+  })
+
+  it('skips an intermediate harness superseded before its spawn', async () => {
+    const { inspect, order, maxConcurrent } = trackedRuntime()
+    const runner = makeRunner({ run: vi.fn(async function* () { /* no-op */ }), inspect } as unknown as HarnessRuntime)
+
+    const [claude, codex, gemini] = await Promise.all([
+      runner.inspect('claude'),
+      runner.inspect('codex'),
+      runner.inspect('gemini'),
+    ])
+
+    expect(maxConcurrent()).toBe(1)
+    // codex was queued, then superseded by gemini before its spawn — skipped.
+    expect(order).toEqual(['claude', 'gemini'])
+    expect(claude.ok).toBe(true)
+    expect(codex).toEqual({ ok: false, error: 'superseded' })
+    expect(gemini.ok).toBe(true)
+  })
+
+  it('a detect failure settles as ok:false and FREES the probe slot (the chain cannot wedge)', async () => {
+    detect.mockRejectedValueOnce(new Error('fs boom'))
+    const { inspect, order } = trackedRuntime()
+    const runner = makeRunner({ run: vi.fn(async function* () { /* no-op */ }), inspect } as unknown as HarnessRuntime)
+
+    const [failed, next] = await Promise.all([runner.inspect('claude'), runner.inspect('codex')])
+
+    // The failed probe resolves (never rejects) and the queued one still runs
+    // — had the rejection wedged the slot, `next` would hang forever.
+    expect(failed).toEqual({ ok: false, error: 'fs boom' })
+    expect(next.ok).toBe(true)
+    expect(order).toEqual(['codex'])
   })
 })
 
