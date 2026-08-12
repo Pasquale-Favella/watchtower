@@ -73,6 +73,17 @@ export interface HarnessSpec {
   displayName: string
   /** CLI names probed on PATH, in order (aliases last) */
   commands: string[]
+  /** The ACP server binary ships INSIDE this app's own install — an npm
+   *  package with a `bin` entry under `<appRoot>/node_modules` — so detection
+   *  resolves it from the app's node_modules (no global install needed) and
+   *  the runtime spawns it with Node (ELECTRON_RUN_AS_NODE). Probed only
+   *  after PATH; the PATH probe still wins when a global copy exists. */
+  bundled?: {
+    /** npm package under the app's node_modules that ships the ACP server. */
+    package: string
+    /** bin name to resolve from that package's package.json `bin` map. */
+    bin: string
+  }
   /** Env vars dropped before spawn (host CLI login, no API keys — ADR 0012) */
   scrubEnv: string[]
   /** Lower = higher priority in the default selection (ticket 33) */

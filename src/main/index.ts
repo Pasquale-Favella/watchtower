@@ -657,6 +657,8 @@ function registerIpc(): void {
       // carries only the write (ticket 25).
       dismiss: (source, name, reason) => ledger?.dismissSkill(source, name, reason),
     },
+    // The app root: bundled ACP servers (codex) resolve from its node_modules.
+    appPath: app.getAppPath(),
     // The in-app ledger MCP server (map 53): the harness agent spawns the app
     // itself as plain node (ELECTRON_RUN_AS_NODE=1) and reads the current UI
     // scope's data read-only. Paths: `process.execPath` (dev + packaged), the

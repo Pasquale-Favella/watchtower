@@ -140,13 +140,25 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
       const acp = spec.adapter.acpConfig
 
       // The ACP provider has no `shell` option — it spawns the command
-      // verbatim. On Windows, npm-shim CLIs must go through cmd.exe /c.
-      const spawn = acpSpawnCommand(acp.command, acp.args ?? [], platform)
+      // verbatim. A BUNDLED ACP server (resolved from the app's own
+      // node_modules, no global install) is run through the app's own Node
+      // (`process.execPath` + ELECTRON_RUN_AS_NODE, the ledger-mcp pattern) —
+      // no cmd.exe shim, no PATH lookup. PATH-resolved harnesses keep the
+      // win32 shim handling below.
+      const spawn = input.harness.bundledEntry
+        ? { command: process.execPath, args: [input.harness.bundledEntry, ...(acp.args ?? [])] }
+        : acpSpawnCommand(acp.command, acp.args ?? [], platform)
+
+      const env = scrubbedEnv(input.harness.scrubEnv)
+      // Bundled JS entries run as plain Node inside the app's binary (dev:
+      // electron.exe; packaged: the app exe) — the flag is inert under real
+      // Node, so tests are unaffected.
+      if (input.harness.bundledEntry) env.ELECTRON_RUN_AS_NODE = '1'
 
       const provider = sdk.createACPProvider({
         command: spawn.command,
         args: spawn.args,
-        env: scrubbedEnv(input.harness.scrubEnv),
+        env,
         session: {
           cwd: input.workspacePath,
           mcpServers: [...(acp.mcpServers ?? []), ...(input.mcpServers ?? [])],

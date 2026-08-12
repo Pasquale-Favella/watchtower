@@ -371,4 +371,48 @@ describe('createHarnessRuntime — win32 spawn wrapping end-to-end', () => {
     expect(config.args).toEqual(['/c', 'claude-agent-acp'])
     expect(config.session.cwd).toBeDefined()
   })
+
+  it('spawns a BUNDLED harness via the app\'s own Node (ELECTRON_RUN_AS_NODE), no cmd shim', async () => {
+    const { sdk, createACPProvider } = fakeSdk([])
+    const runtime = createHarnessRuntime(sdk, { platform: 'win32' })
+    const bundledHarness: HarnessInfo = {
+      ...claudeHarness,
+      name: 'codex',
+      kind: 'codex',
+      displayName: 'Codex',
+      bin: 'C:\\app\\node_modules\\@agentclientprotocol\\codex-acp\\dist\\index.js',
+      bundledEntry: 'C:\\app\\node_modules\\@agentclientprotocol\\codex-acp\\dist\\index.js',
+    }
+
+    for await (const _event of runtime.run({ harness: bundledHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+      // no-op
+    }
+
+    const config = createACPProvider.mock.calls[0]![0]
+    expect(config.command).toBe(process.execPath)
+    expect(config.args).toEqual([bundledHarness.bundledEntry])
+    expect(config.env.ELECTRON_RUN_AS_NODE).toBe('1')
+  })
+
+  it('still passes spec args after the bundled entry (e.g. gemini --acp)', async () => {
+    const { sdk, createACPProvider } = fakeSdk([])
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const bundledHarness: HarnessInfo = {
+      ...claudeHarness,
+      name: 'gemini',
+      kind: 'gemini',
+      displayName: 'Gemini CLI',
+      bin: '/app/node_modules/acp/bin/gemini.js',
+      bundledEntry: '/app/node_modules/acp/bin/gemini.js',
+    }
+    const spec = harnessSpecs.find(s => s.kind === 'gemini')!
+
+    for await (const _event of runtime.run({ harness: bundledHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+      // no-op
+    }
+
+    const config = createACPProvider.mock.calls[0]![0]
+    expect(config.command).toBe(process.execPath)
+    expect(config.args).toEqual([bundledHarness.bundledEntry, ...(spec.adapter.acpConfig.args ?? [])])
+  })
 })

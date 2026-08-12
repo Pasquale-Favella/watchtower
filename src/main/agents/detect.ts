@@ -26,6 +26,10 @@ export interface HarnessInfo {
   displayName: string
   /** Resolved executable path on this host (Windows adds .exe/.cmd/.bat). */
   bin: string
+  /** Absolute JS entry of a BUNDLED ACP server (resolved from the app's own
+   *  node_modules, no global install) — present only when detection fell back
+   *  to the spec's `bundled` package. The runtime spawns it with Node. */
+  bundledEntry?: string
   /** Env vars scrubbed before spawn so the CLI falls back to its own login. */
   scrubEnv: readonly string[]
   authStatus: HarnessAuthStatus
@@ -54,6 +58,10 @@ export interface DetectOptions {
   commandExists?: (cmd: string) => string | null
   /** Optional auth probe per harness; default reports 'unknown'. */
   authProbe?: (kind: string) => Promise<HarnessAuthStatus>
+  /** Bundled-harness resolver — app-specific (`app.getAppPath()`), so the
+   *  wiring layer injects it (ipc.ts); default is none, keeping detection
+   *  PATH-pure and the core module electron-free. */
+  resolveBundled?: (spec: HarnessSpec) => string | null
   /** Override spec list for tests (defaults to harnessSpecs). */
   specs?: readonly HarnessSpec[]
 }
@@ -61,22 +69,39 @@ export interface DetectOptions {
 export async function detectHarnesses(options: DetectOptions = {}): Promise<HarnessInfo[]> {
   const commandExists = options.commandExists ?? which
   const authProbe = options.authProbe
+  const resolveBundled = options.resolveBundled ?? (() => null)
   const specs = options.specs ?? harnessSpecs
   const found: HarnessInfo[] = []
   for (const spec of specs) {
+    let bin: string | null = null
+    let bundledEntry: string | undefined
     for (const cmd of spec.commands) {
-      const bin = commandExists(cmd)
-      if (bin) {
-        found.push({
-          name: spec.kind,
-          kind: spec.kind,
-          displayName: spec.displayName,
-          bin,
-          scrubEnv: spec.scrubEnv,
-          authStatus: authProbe ? await authProbe(spec.kind) : 'unknown',
-        })
+      const foundBin = commandExists(cmd)
+      if (foundBin) {
+        bin = foundBin
         break
       }
+    }
+    // PATH wins; the spec's bundled package is the fallback so a harness
+    // whose ACP server ships inside the app is drivable without a global
+    // install (codex: @agentclientprotocol/codex-acp).
+    if (!bin) {
+      const entry = resolveBundled(spec)
+      if (entry) {
+        bin = entry
+        bundledEntry = entry
+      }
+    }
+    if (bin) {
+      found.push({
+        name: spec.kind,
+        kind: spec.kind,
+        displayName: spec.displayName,
+        bin,
+        ...(bundledEntry ? { bundledEntry } : {}),
+        scrubEnv: spec.scrubEnv,
+        authStatus: authProbe ? await authProbe(spec.kind) : 'unknown',
+      })
     }
   }
   return found

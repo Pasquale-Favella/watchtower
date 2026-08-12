@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { BrowserWindow, ipcMain } from 'electron'
 import { detectHarnesses, type HarnessInfo } from './detect.js'
 import { createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
+import { resolveBundledEntry } from './harnesses/bundled.js'
 import { buildCoachPrompt, buildLedgerBriefing, buildProsePrompt } from './prompts.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import type { OverviewScope } from '../../shared/schemas/overview.js'
@@ -226,6 +227,10 @@ export interface SkillsDismissalSource {
 
 export interface AgentsIpcSources {
   dismissals: SkillsDismissalSource
+  /** The app root (`app.getAppPath()`): bundled ACP servers (e.g. codex)
+   *  are resolved from `<appPath>/node_modules`, so no global install is
+   *  needed (ADR 0016 map 47 ticket 49). */
+  appPath: string
   /** Builds the in-app ledger MCP server for a scope (map 53) — the runner's
    *  app-specific dep, supplied by the composition root (main/index.ts). Null
    *  when there is no ledger.db yet (fresh install) — no data, no tools. */
@@ -236,7 +241,7 @@ export interface AgentsIpcSources {
  *  registerIpc(); returns the runner cleanup handle (temp workspace teardown)
  *  for the app's quit path. `dismissals` bridges the not-a-skill store. */
 export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => void } {
-  const { dismissals, ledgerMcpServer } = sources
+  const { dismissals, appPath, ledgerMcpServer } = sources
   let runtimePromise: Promise<HarnessRuntime> | null = null
   const runner = createCoachRunner({
     // The SDK is ESM and heavy; boot stays independent of it (the seam's
@@ -245,7 +250,7 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => voi
       runtimePromise ??= loadHarnessSdk().then(createHarnessRuntime)
       return runtimePromise
     },
-    detect: () => detectHarnesses(),
+    detect: () => detectHarnesses({ resolveBundled: spec => resolveBundledEntry(spec, appPath) }),
     ledgerMcpServer,
   })
 
