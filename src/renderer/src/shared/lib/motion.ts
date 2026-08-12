@@ -51,3 +51,23 @@ export function useBarGrowIn(scope: RefObject<HTMLElement | null>, selector: str
     })
   }, { scope, dependencies: deps })
 }
+
+/**
+ * A chat row rises gently into place (opacity 0 → 1, y 6px → 0) when it
+ * mounts. Transform + opacity only, so the MessageScroller's positioning work
+ * is never fought (see the MessageScroller docs on animating rows). Runs once
+ * per mounted row, not on data re-renders — a streamed bubble mounts once and
+ * keeps its entrance even as its text grows.
+ */
+export function useChatRowIn(scope: RefObject<HTMLElement | null>): void {
+  useGSAP(() => {
+    if (!motionEnabled()) return
+    if (!scope.current) return
+    gsap.from(scope.current, {
+      opacity: 0,
+      y: 6,
+      duration: 0.2,
+      ease: 'power1.out',
+    })
+  }, { scope })
+}

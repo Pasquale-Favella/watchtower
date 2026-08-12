@@ -15,6 +15,7 @@ function captureApi(extra?: Record<string, unknown>): Record<string, (payload?: 
     onIdle: (cb: () => void) => { listeners.onIdle = cb; return () => {} },
     onCurrencyChanged: (cb: (p: unknown) => void) => { listeners.onCurrencyChanged = cb; return () => {} },
     onConfigChanged: (cb: () => void) => { listeners.onConfigChanged = cb; return () => {} },
+    onCoachEvent: (cb: (p: unknown) => void) => { listeners.onCoachEvent = cb; return () => {} },
     ...extra,
   })
   return listeners
@@ -155,9 +156,10 @@ describe('subscribeToIpc (ADR 0011)', () => {
       onIdle: (cb: () => void) => { listeners.onIdle = cb; return unsub },
       onCurrencyChanged: (cb: (p: unknown) => void) => { listeners.onCurrencyChanged = cb; return unsub },
       onConfigChanged: (cb: () => void) => { listeners.onConfigChanged = cb; return unsub },
+      onCoachEvent: (cb: (p: unknown) => void) => { listeners.onCoachEvent = cb; return unsub },
     })
     const teardown = subscribeToIpc()
     teardown()
-    expect(unsub).toHaveBeenCalledTimes(6)
+    expect(unsub).toHaveBeenCalledTimes(7)
   })
 })

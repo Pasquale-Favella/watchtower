@@ -1,5 +1,7 @@
-import { join } from 'path'
-import { statSync, readdirSync, existsSync } from 'fs'
+import { dirname, join } from 'path'
+import { mkdirSync, statSync, readdirSync, existsSync } from 'fs'
+import { writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { refreshPricingNow } from './pipeline/models.js'
 import { resolveCadenceMs } from './cadence.js'
@@ -17,6 +19,15 @@ import { buildModelsViewFromLedger, type ModelsPayload } from './models-view.js'
 import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from './compare-view.js'
 import { buildOptimizeViewFromLedger, type OptimizePayload } from './optimize-view.js'
 import { buildYieldViewFromLedger, type YieldPayload } from './yield-view.js'
+import { buildSkillsViewFromLedger, type SkillsPayload } from './skills-view.js'
+import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
+import {
+  DEFAULT_SKILLS_THRESHOLDS,
+  skillsSaveRequestSchema,
+  skillsThresholdsSchema,
+  type SkillsSaveResult,
+  type SkillsThresholds,
+} from '../shared/schemas/skills.js'
 import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
 import { exportCsv, exportJson } from './export.js'
 import { getClaudeConfigDirs } from './pipeline/providers/claude.js'
@@ -29,6 +40,8 @@ import type { ExportResult } from './export.js'
 import type { DateRange } from './pipeline/types.js'
 import { LedgerStore } from './store/ledger.js'
 import type { PortInput } from './store/port.js'
+import { registerAgentsIpc } from './agents/ipc.js'
+import { buildLedgerMcpServer } from './agents/ledger-mcp/config.js'
 
 let ledger: LedgerStore | null = null
 /** The most recent completed scan's metadata — the `getScanStatus()` answer
@@ -39,6 +52,8 @@ let scanActive = false
 let abortRequested = false
 let cadenceTimer: ReturnType<typeof setInterval> | null = null
 let updateChecker: UpdateChecker | null = null
+/** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
+let agentsCleanup: { reset: () => void } | null = null
 
 function dirSize(path: string): number {
   let total = 0
@@ -345,6 +360,51 @@ function registerIpc(): void {
     return await buildOptimizeViewFromLedger(ledger, scope)
   })
 
+  /** The Skills section's detection payload (ticket 24): pure local mining
+   * of skill/bash/tool seams plus the on-disk inventory — no consent, no
+   * network. Thresholds (frequency × spread) are renderer settings passed
+   * per request; defaults (5 × 2) apply when absent. */
+  ipcMain.handle('skills:view', async (_event, scope: OverviewScope, thresholds?: SkillsThresholds): Promise<SkillsPayload | null> => {
+    if (!ledger) throw new Error('ledger not initialised')
+    // Tripwire (ADR 0005): IPC args are `unknown` — safeParse applies the
+    // schema's .int().min(1) guards and .default()s, falling back to the
+    // defaults on garbage so a malformed renderer value can never flip every
+    // pattern into a draft.
+    const parsed = skillsThresholdsSchema.safeParse(thresholds)
+    // Dismissals ride every fetch (ticket 25): the not-a-skill store filters
+    // rejected patterns out of drafts AND opportunities before the gate.
+    return await buildSkillsViewFromLedger(
+      ledger,
+      scope,
+      parsed.success ? parsed.data : DEFAULT_SKILLS_THRESHOLDS,
+      { dismissals: ledger.getSkillDismissals() },
+    )
+  })
+
+  /** Skills › Save (ticket 25): the ONLY write the draft board can do, and it
+   * is user-initiated — the OS save dialog IS the user's confirmation, and no
+   * path is ever written without it. Defaults to `.agents/skills/` in home. */
+  ipcMain.handle('skills:save', async (_event, request: unknown): Promise<SkillsSaveResult> => {
+    const parsed = skillsSaveRequestSchema.safeParse(request)
+    if (!parsed.success) return { ok: false, error: 'invalid save request' }
+    const defaultPath = join(homedir(), '.agents', 'skills', slugifyCandidateName(parsed.data.name), 'SKILL.md')
+    const picked = await dialog.showSaveDialog({
+      title: 'Save skill',
+      defaultPath,
+      filters: [{ name: 'SKILL.md', extensions: ['md'] }],
+    })
+    if (picked.canceled || !picked.filePath) return { ok: false, error: 'cancelled' }
+    try {
+      // The dialog confirmed the target — create its parent dir so the write
+      // succeeds even when the nested .agents/skills/<slug>/ is brand new.
+      mkdirSync(dirname(picked.filePath), { recursive: true })
+      await writeFile(picked.filePath, parsed.data.content, 'utf8')
+      return { ok: true, path: picked.filePath }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
   /** The Optimize section's Reverts/Abandoned payload (ADR 0008): yield
    * computed query-time from live git calls on each project's repo, only
    * fetched when that tab is actually viewed — never persisted at scan time.
@@ -584,6 +644,40 @@ function registerIpc(): void {
 
   ipcMain.handle('export:csv', (_event, destination?: string): Promise<ExportResult> => runExport('csv', destination))
   ipcMain.handle('export:json', (_event, destination?: string): Promise<ExportResult> => runExport('json', destination))
+
+  // Coach + Skills agent chain (tickets 21–25): the HarnessRuntime seam's IPC
+  // surface — harness listing, run ack/stream/cancel, the not-a-skill
+  // dismissal store, and draft prose. The runner is lazy: the AI SDK loads on
+  // the first harness-touching call, never at boot. Runs are user-initiated
+  // from the unified Coach & Skills surface (ADR 0017); dismissals are a
+  // ledger config table so they survive clear().
+  agentsCleanup = registerAgentsIpc({
+    dismissals: {
+      // The skills:view read goes straight to the ledger above; this source
+      // carries only the write (ticket 25).
+      dismiss: (source, name, reason) => ledger?.dismissSkill(source, name, reason),
+    },
+    // The app root: bundled ACP servers (codex) resolve from its node_modules.
+    appPath: app.getAppPath(),
+    // The in-app ledger MCP server (map 53): the harness agent spawns the app
+    // itself as plain node (ELECTRON_RUN_AS_NODE=1) and reads the FULL
+    // lifetime ledger read-only — no scope is baked at spawn (the harness
+    // filters through each tool's optional `scope` argument). Paths:
+    // `process.execPath` (dev + packaged), the bundled entry under appPath,
+    // and the ledger DB beside the cache.
+    ledgerMcpServer: () => {
+      // Fresh install: no ledger.db yet → no data to serve, so no MCP server
+      // (its read-only open would throw on a missing file). Once the first
+      // scan lands, the next run injects it.
+      const dbPath = join(app.getPath('userData'), 'ledger.db')
+      if (!existsSync(dbPath)) return null
+      return buildLedgerMcpServer({
+        execPath: process.execPath,
+        entryPath: join(app.getAppPath(), 'out/main/ledger-mcp.js'),
+        dbPath,
+      })
+    },
+  })
 }
 
 function createWindow(): void {
@@ -633,4 +727,10 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// Tear down the coach conversation's temp workspace (map 53) so a reset or a
+// quit never leaks a scratch directory under the OS temp root.
+app.on('before-quit', () => {
+  agentsCleanup?.reset()
 })

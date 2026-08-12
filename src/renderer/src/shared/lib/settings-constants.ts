@@ -15,8 +15,7 @@ export const DEFAULT_PERIOD_OPTIONS: ReadonlyArray<{ value: string; label: strin
 export const DEFAULT_PERIOD_VALUES: ReadonlyArray<string> = DEFAULT_PERIOD_OPTIONS.map(option => option.value)
 
 /** The long-form scope labels for the sidebar footer and TopBar caption (the
- * SegTabs use the short `DEFAULT_PERIOD_OPTIONS` labels). */
-export const PERIOD_LABELS: Record<string, string> = {
-  today: 'Today', week: 'Last 7 days', '30days': 'Last 30 days',
-  all: 'Last 6 months', lifetime: 'Lifetime',
-}
+ * SegTabs use the short `DEFAULT_PERIOD_OPTIONS` labels). Re-exported from the
+ * shared lib (src/shared/lib/period-labels.ts) so the UI captions and the MCP
+ * briefing the harness agents receive can never drift (ADR 0020). */
+export { PERIOD_LABELS } from '../../../../shared/lib/period-labels.js'

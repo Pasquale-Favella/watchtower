@@ -29,6 +29,7 @@ import {
   type PortResult,
   type PriceOverride,
 } from '../../shared/schemas/ledger.js'
+import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 
 export type {
   CurrencyRate,
@@ -52,14 +53,24 @@ export type {
  * display currency) are NOT scan data: they are user/app settings that survive
  * `clear()`.
  */
+export interface LedgerStoreOptions {
+  /** Open the ledger READ-ONLY (the in-app ledger MCP server's second
+   *  connection, map 53). Skips the DDL — a read-only connection cannot run
+   *  CREATE TABLE, and this instance must never write: only the owning
+   *  main process ports data in (ADR 0002). */
+  readOnly?: boolean
+}
+
 export class LedgerStore {
   readonly dbPath: string
   private db: DatabaseSync
 
-  constructor(dbPath: string) {
-    mkdirSync(dirname(dbPath), { recursive: true })
+  constructor(dbPath: string, options: LedgerStoreOptions = {}) {
+    const { readOnly = false } = options
+    if (!readOnly) mkdirSync(dirname(dbPath), { recursive: true })
     this.dbPath = dbPath
-    this.db = new DatabaseSync(dbPath)
+    this.db = readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath)
+    if (readOnly) return
     this.db.exec(`
       PRAGMA journal_mode = WAL;
 
@@ -188,6 +199,14 @@ export class LedgerStore {
       CREATE TABLE IF NOT EXISTS display_currency_config (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         code TEXT NOT NULL DEFAULT 'USD'
+      );
+
+      CREATE TABLE IF NOT EXISTS skills_dismissal_config (
+        source TEXT NOT NULL,
+        name TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created TEXT NOT NULL,
+        PRIMARY KEY (source, name)
       );
     `)
     // Greenfield: no migration path exists — the app is not yet distributed, so
@@ -505,6 +524,21 @@ export class LedgerStore {
       INSERT INTO refresh_cadence_config (id, value) VALUES (1, ?)
       ON CONFLICT(id) DO UPDATE SET value = excluded.value
     `).run(cadence)
+  }
+
+  /** Not-a-skill dismissals (ticket 25): candidate patterns the user rejected,
+   *  filtered out of the Skills payload on every fetch. A config table (user
+   *  setting), so dismissals survive `clear()`. */
+  getSkillDismissals(): SkillsDismissal[] {
+    return this.db.prepare('SELECT source, name, reason, created FROM skills_dismissal_config').all() as SkillsDismissal[]
+  }
+
+  dismissSkill(source: SkillsDismissal['source'], name: string, reason: string): void {
+    this.db.prepare(`
+      INSERT INTO skills_dismissal_config (source, name, reason, created)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(source, name) DO UPDATE SET reason = excluded.reason, created = excluded.created
+    `).run(source, name, reason, new Date().toISOString())
   }
 
   /** Clears all scan-derived ledger data. Config tables are user settings and

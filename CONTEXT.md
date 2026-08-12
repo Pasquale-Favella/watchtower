@@ -42,9 +42,23 @@ _Avoid_: filter settings, date range
 
 **Section**:
 The app's top-level screens — overview, sessions, pull requests, spend, optimize,
-models, compare, settings. The sidebar and the numbered shortcuts navigate
-between them.
+models, compare, coach & skills, settings. The sidebar and the numbered shortcuts
+navigate between them.
 _Avoid_: page, tab
+
+**Coach & Skills**:
+The unified chat section (ADR 0017): one surface where a single harness agent
+serves two scopes — coaching analysis and skill authoring — grounded in the
+ledger through the in-app `watchtower-ledger` MCP server (ADR 0020). Skill
+crafting is conversational; the detected-pattern chips on the welcome screen
+are plain chat-starters (ADR 0021).
+_Avoid_: coach section, skills section
+
+**Harness**:
+A user-installed coding-agent CLI the app drives over the Agent Client Protocol
+(ADR 0016) — e.g. Claude Code, Codex, OpenCode. One harness = one agent = one
+language model; the harness picker selects which one the Coach chat drives.
+_Avoid_: provider (a provider is a telemetry source in the pipeline)
 
 ## Rules
 

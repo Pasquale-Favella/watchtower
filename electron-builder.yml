@@ -8,6 +8,13 @@ directories:
 artifactName: ${productName}-${os}-${arch}.${ext}
 files:
   - out/**
+# Bundled ACP servers (ADR 0016 map 47 ticket 49): codex ships the Codex
+# engine as native binaries inside node_modules. Child processes spawned with
+# ELECTRON_RUN_AS_NODE cannot execute native binaries out of the virtual asar
+# filesystem — unpack these packages to real disk so bundled harnesses run.
+asarUnpack:
+  - node_modules/@agentclientprotocol/codex-acp/**
+  - node_modules/@openai/**
 win:
   target:
     - nsis

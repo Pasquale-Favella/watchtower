@@ -68,6 +68,23 @@ and a manual scan never overlap), a failing background scan leaves your
 last-known data visible (stale-while-revalidate), and every scan is abortable
 and reports progress per provider.
 
+## The coach surface
+
+The **Coach & Skills** section (ADR 0017) is a chat with the user's own
+coding-agent CLIs. The main process drives one harness per conversation over
+the Agent Client Protocol through a single `HarnessRuntime` seam (ADR 0016): a
+data-driven registry of one spec file per drivable CLI (`agents/harnesses/`),
+the AI SDK + `@mcpc-tech/acp-ai-provider` wired lazily, and a typed
+`CoachEvent` stream the renderer derives into bubbles (text, thinking, tool
+notices). Model/mode selection is progressive — the agent's handshake declares
+what it supports (ADR 0018). Every run attaches the in-app `watchtower-ledger`
+MCP server (ADRs 0019/0020): read-only access to the full lifetime ledger,
+filtered by the agent itself through each tool's optional `scope` argument.
+There is ONE agent with TWO scopes (ADR 0021) — a coaching question and a
+skill request are the same mode-less coach run; the suggested-skill chips on
+the welcome screen are plain chat-starters that ask the agent to author a
+SKILL.md grounded in the ledger.
+
 ## Architecture decisions
 
 Key decisions are recorded as ADRs in [`docs/adr`](./adr) and referenced
@@ -80,3 +97,9 @@ inline in the code. The most relevant ones:
 - [ADR 0009: USD-anchored store; currency conversion only at the display/export boundary](./adr/0009-usd-anchored-fx-boundary.md)
 - [ADR 0012: local-first privacy, no telemetry, manual informational updates](./adr/0012-local-first-privacy-manual-updates.md)
 - [ADR 0015: cross-platform packaging and CI](./adr/0015-cross-platform-packaging-and-ci.md)
+- [ADR 0016: data-driven harness registry and the ACP runtime seam](./adr/0016-data-driven-harness-registry.md)
+- [ADR 0017: unified Coach & Skills section](./adr/0017-unified-coach-skills-section.md)
+- [ADR 0018: ACP-real harness spec and progressive model/mode selection](./adr/0018-acp-real-harness-spec-and-progressive-selection.md)
+- [ADR 0019: in-app ledger MCP server and per-conversation temp workspace](./adr/0019-in-app-ledger-mcp-and-temp-workspace.md)
+- [ADR 0020: ledger MCP on the official SDK and shared seam](./adr/0020-ledger-mcp-on-official-sdk-and-shared-seam.md)
+- [ADR 0021: one coach agent, two scopes — build-skill deleted, skills crafted conversationally](./adr/0021-single-coach-agent-two-scopes.md)

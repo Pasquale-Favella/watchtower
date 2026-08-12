@@ -7,7 +7,7 @@ import {
 } from '../src/renderer/src/app/components/onboarding-steps.js'
 
 describe('ONBOARDING_STEPS', () => {
-  it('covers the welcome screen plus the 8 sections that exist in the app today', () => {
+  it('covers the welcome screen plus the 9 sections that exist in the app today', () => {
     expect(ONBOARDING_STEPS.map(step => step.id)).toEqual([
       'welcome',
       'overview',
@@ -17,6 +17,7 @@ describe('ONBOARDING_STEPS', () => {
       'optimize',
       'models',
       'compare',
+      'coachSkills',
       'settings',
     ])
   })

@@ -4,7 +4,9 @@ import type { Section } from '../../../shared/schemas/renderer.js'
  * Mirrors NAV_SECTIONS in app/shortcuts.ts, which stays the registry's own
  * copy (ADR 0001). */
 export const SECTIONS: readonly Section[] = [
-  'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'settings',
+  // Coach & Skills (ADR 0017): one unified surface where every harness run is
+  // a free-form coach prompt (coaching or skill authoring, same agent).
+  'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'coachSkills', 'settings',
 ]
 
 /** Route paths (ADR 0014). The router owns identity; every nav entry point
@@ -18,6 +20,7 @@ export const ROUTES = {
   optimize: '/optimize',
   models: '/models',
   compare: '/compare',
+  coachSkills: '/coach-skills',
   settings: '/settings',
 } as const
 

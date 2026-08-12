@@ -8,8 +8,9 @@ import { AliasesPane } from '@/features/settings/aliases-pane'
 import { PricingPane } from '@/features/settings/pricing-pane'
 import { ExportPane } from '@/features/settings/export-pane'
 import { PrivacyPane } from '@/features/settings/privacy-pane'
+import { SkillsPane } from '@/features/settings/skills-pane'
 
-type SettingsPane = 'general' | 'providers' | 'aliases' | 'pricing' | 'export' | 'privacy'
+type SettingsPane = 'general' | 'providers' | 'aliases' | 'pricing' | 'export' | 'privacy' | 'skills'
 
 const RAIL_ITEMS: Array<{ id: SettingsPane; label: string }> = [
   { id: 'general', label: 'General' },
@@ -17,13 +18,13 @@ const RAIL_ITEMS: Array<{ id: SettingsPane; label: string }> = [
   { id: 'aliases', label: 'Model aliases' },
   { id: 'pricing', label: 'Pricing' },
   { id: 'export', label: 'Export' },
+  { id: 'skills', label: 'Skills detection' },
   { id: 'privacy', label: 'Privacy & data' },
 ]
 
-/** The Settings section: a six-pane rail — General, Providers,
- * Model aliases, Pricing, Export, Privacy & data — with no Devices pane and
- * no Plans pane (plan/budget editing lives only in the Plans section). Each
- * pane is colocated in its own file under features/settings/. */
+/** The Settings section: a seven-pane rail — General, Providers, Model
+ * aliases, Pricing, Export, Skills detection, Privacy & data. Each pane is
+ * colocated in its own file under features/settings/. */
 export function SettingsView(): React.JSX.Element {
   const [pane, setPane] = useState<SettingsPane>('general')
 
@@ -53,9 +54,9 @@ export function SettingsView(): React.JSX.Element {
           {pane === 'general' && <GeneralPane />}
           {pane === 'providers' && <ProvidersPane />}
           {pane === 'aliases' && <AliasesPane />}
-          {pane === 'pricing' && <PricingPane />}
-          {pane === 'export' && <ExportPane />}
-          {pane === 'privacy' && <PrivacyPane />}
+          {pane === 'pricing' && <PricingPane />}          { pane === 'export' && <ExportPane /> }
+          { pane === 'skills' && <SkillsPane /> }
+          { pane === 'privacy' && <PrivacyPane /> }
         </div>
       </div>
     </div>

@@ -1,0 +1,347 @@
+import { existsSync, statSync } from 'node:fs'
+import type { ACPProvider, ACPProviderSettings } from '@mcpc-tech/acp-ai-provider'
+import type { CoachEvent, CoachSessionModels, CoachSessionModes } from '../../shared/schemas/agents.js'
+import type { HarnessInfo } from './detect.js'
+import type { AcpMcpServer } from './harnesses/types.js'
+import { deriveCoachEvents, type CoachStreamPart } from './events.js'
+import { harnessSpecs } from './harnesses/index.js'
+
+/**
+ * The HarnessRuntime seam (ticket 18/20): the single main-process module that
+ * owns the AI SDK + ACP provider — spawning ACP agents (Claude Code, Codex,
+ * OpenCode, Gemini, …) as child processes and streaming their output — and
+ * derives the typed CoachEvent stream the renderer consumes. The renderer
+ * never touches the SDK. The SDK surface is injected (ADR 0006 isolation), so
+ * the seam is testable with a fake SDK; `loadHarnessSdk()` wires the real
+ * packages lazily.
+ *
+ * SDK stack (ADR 0016, revised): the AI SDK (`ai` v6) drives agents over the
+ * Agent Client Protocol via `@mcpc-tech/acp-ai-provider`. Each harness spec's
+ * `adapter.acpConfig` is the STATIC slice of the real `ACPProviderSettings`;
+ * the seam adds the per-run `session.cwd` (the real workspace), the scrubbed
+ * env (ADR 0012 — the agent falls back to its own stored login), and the
+ * resume handle (`existingSessionId`). There is no sandbox middleware: ACP
+ * agents run locally against the workspace.
+ *
+ * One harness = ONE agent = ONE language model (map 47 tickets 49/51): the
+ * seam types against the REAL `ACPProviderSettings`/`ACPProvider` exports —
+ * no hand-rolled narrow slices, no `as unknown as` at the provider boundary.
+ * Model/mode selection is PROGRESSIVE (ticket 50): `initSession()` may report
+ * `models`/`modes` (experimental ACP handshake fields); the seam rides them
+ * on the `session` CoachEvent, and passes the renderer's choices (only ever
+ * picked from that reported set) to `languageModel(modelId, modeId)`.
+ *
+ * Packaging constraint (ticket 15): the workspace source must be a REAL
+ * on-disk path, never a virtual asar path (child processes cannot read asar).
+ * `run` validates this before the SDK is touched.
+ */
+
+/** The `createACPProvider` settings — the REAL type, not a local slice. */
+export type AcpProviderConfig = ACPProviderSettings
+
+/** The provider surface the seam uses — a structural Pick of the real class. */
+export type AcpProvider = Pick<ACPProvider, 'languageModel' | 'tools' | 'initSession' | 'cleanup'>
+
+/** The SDK surface the seam depends on — a narrow slice of `ai` +
+ *  `@mcpc-tech/acp-ai-provider`. Injected so tests use a fake. */
+export interface HarnessSdk {
+  createACPProvider(config: AcpProviderConfig): AcpProvider
+  streamText(options: {
+    model: unknown
+    prompt: string
+    tools?: unknown
+  }): AsyncIterable<CoachStreamPart>
+}
+
+/** The slice of a run input needed to SPAWN a provider — shared by `run` and
+ *  the `inspect` probe (map 47 ticket 50) so both build the agent exactly the
+ *  same way. */
+export interface HarnessProviderInput {
+  harness: HarnessInfo
+  /** The user's project repo — must be a real on-disk directory. */
+  workspacePath: string
+  /** Resume handle from a previous run's session event. */
+  sessionId?: string
+  /** Extra MCP servers to attach to the agent session (the injected in-app
+   *  ledger server — map 53). Merged AFTER the spec's own servers. */
+  mcpServers?: AcpMcpServer[]
+}
+
+export interface HarnessRunInput extends HarnessProviderInput {
+  /** Agent-declared model id (from a previous session event's models).
+   *  Optional — the agent runs with its own configured model when absent. */
+  modelId?: string
+  /** Agent-declared session mode id (from a previous session event's modes). */
+  modeId?: string
+  prompt: string
+  /** The offered `sessionId` resume is EXPENDABLE — if loading it fails, the
+   *  seam silently restarts the provider without the resume handle instead of
+   *  erroring the turn. Set by the runner ONLY for a probe-warmed session
+   *  (nothing was ever sent to it, so nothing is lost by restarting fresh);
+   *  genuine conversation resumes stay strict — silently restarting would
+   *  drop the conversation context the user expects to continue. */
+  resumeIsExpendable?: boolean
+}
+
+/** The handshake probe result — from a pre-flight `initSession` with no
+ *  prompt streamed. `sessionId` is the warmed session (the runner resumes it
+ *  on the conversation's first run so the agent does not cold-start twice);
+ *  absent `models`/`modes` mean the agent declared no such set (progressive:
+ *  the pickers render only when present). */
+export interface HarnessInspectResult {
+  sessionId?: string
+  models?: CoachSessionModels
+  modes?: CoachSessionModes
+}
+
+export interface HarnessRuntime {
+  run(input: HarnessRunInput): AsyncGenerator<CoachEvent>
+  /** Probes a harness's handshake-declared models/modes WITHOUT running a
+   *  prompt (map 47 ticket 50): spawns the ACP provider, initSessions, reads
+   *  the session response, and tears the provider down. Throws on failure
+   *  (unavailable agent, auth wall) — the runner converts that to the
+   *  `{ ok: false }` inspect arm, so a failed probe just leaves the pickers
+   *  absent instead of blocking the chat. */
+  inspect(input: HarnessProviderInput): Promise<HarnessInspectResult>
+}
+
+/** A workspace is drivable only when it is a real directory on disk — a
+ *  non-existent path or a virtual asar path is refused before any spawn. */
+export function assertRealWorkspacePath(workspacePath: string): void {
+  if (!existsSync(workspacePath) || !statSync(workspacePath).isDirectory()) {
+    throw new Error(`workspace must be a real on-disk directory: ${workspacePath}`)
+  }
+  const segments = workspacePath.split(/[/\\]/)
+  if (segments.some(segment => segment.endsWith('.asar'))) {
+    throw new Error(`workspace must be a real on-disk path, never an asar path: ${workspacePath}`)
+  }
+}
+
+/** Runs one initSession on a provider and derives the session CoachEvent
+ *  payload it implies (the resume handle + any handshake-declared
+ *  models/modes). Shared by the main warm-up and the expendable-resume
+ *  fallback so both emit the session event identically. */
+async function warmSession(provider: AcpProvider): Promise<{ sessionId?: string; event?: CoachEvent }> {
+  const session = await provider.initSession()
+  if (!session.sessionId) return {}
+  const event: CoachEvent = { kind: 'session', sessionId: session.sessionId }
+  if (session.models) event.models = session.models
+  if (session.modes) event.modes = session.modes
+  return { sessionId: session.sessionId, event }
+}
+
+/** The env handed to the agent process: the host env MINUS the spec's
+ *  scrubEnv keys (ADR 0012) — API keys are never passed, so the CLI uses its
+ *  own stored login. The ACP provider's `env` is explicit, so an omitted key
+ *  is genuinely absent rather than inherited. */
+function scrubbedEnv(scrubEnv: readonly string[]): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && !scrubEnv.includes(key)) env[key] = value
+  }
+  return env
+}
+
+export interface HarnessRuntimeOptions {
+  /** Platform used for spawn-command wrapping (defaults to process.platform).
+   *  Injectable so the win32 shim handling is unit-testable on any host. */
+  platform?: NodeJS.Platform
+}
+
+/** npm-global CLIs on Windows are `.cmd` shims (with a POSIX-script alias)
+ *  that Node's shell-less `spawn` cannot execute — spawning the bare name
+ *  fails with ENOENT and an unhandled child-process error. Routing the
+ *  command through `cmd.exe /c` lets the shim resolve (verified end-to-end
+ *  against `opencode acp`); native `.exe` binaries spawn directly. Other
+ *  platforms pass through unchanged.
+ *
+ *  NOTE: `cmd.exe /c` interprets the rest of the line, so args containing
+ *  spaces or cmd metacharacters (`& | ^ % <>`) would be mis-parsed. All
+ *  current spec args are single tokens — keep future spec args token-only. */
+export function acpSpawnCommand(
+  command: string,
+  args: readonly string[],
+  platform: NodeJS.Platform,
+): { command: string; args: string[] } {
+  if (platform !== 'win32' || command.toLowerCase().endsWith('.exe')) {
+    return { command, args: [...args] }
+  }
+  return { command: 'cmd.exe', args: ['/c', command, ...args] }
+}
+
+export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOptions = {}): HarnessRuntime {
+  const platform = options.platform ?? process.platform
+
+  /** Builds the ACP provider for a harness run — the ONE place the seam maps
+   *  a HarnessInfo + workspace + resume handle onto `createACPProvider`
+   *  (ADR 0016), shared by `run` and the `inspect` probe so both spawn the
+   *  agent exactly the same way. Validates the workspace first: a bad path
+   *  must fail loudly and cheaply, never as an inscrutable spawn error
+   *  (ticket 15 constraint). */
+  function createProvider(input: HarnessProviderInput): AcpProvider {
+    assertRealWorkspacePath(input.workspacePath)
+
+    const spec = harnessSpecs.find(s => s.kind === input.harness.kind)
+    if (!spec || spec.adapter.kind !== 'acp') {
+      throw new Error(`harness ${input.harness.kind} has no ACP adapter`)
+    }
+    const acp = spec.adapter.acpConfig
+
+    // The ACP provider has no `shell` option — it spawns the command
+    // verbatim. A BUNDLED ACP server (resolved from the app's own
+    // node_modules, no global install) is run through the app's own Node
+    // (`process.execPath` + ELECTRON_RUN_AS_NODE, the ledger-mcp pattern) —
+    // no cmd.exe shim, no PATH lookup. PATH-resolved harnesses keep the
+    // win32 shim handling below.
+    const spawn = input.harness.bundledEntry
+      ? { command: process.execPath, args: [input.harness.bundledEntry, ...(acp.args ?? [])] }
+      : acpSpawnCommand(acp.command, acp.args ?? [], platform)
+
+    const env = scrubbedEnv(input.harness.scrubEnv)
+    // Bundled JS entries run as plain Node inside the app's binary (dev:
+    // electron.exe; packaged: the app exe) — the flag is inert under real
+    // Node, so tests are unaffected.
+    if (input.harness.bundledEntry) env.ELECTRON_RUN_AS_NODE = '1'
+
+    return sdk.createACPProvider({
+      command: spawn.command,
+      args: spawn.args,
+      env,
+      session: {
+        cwd: input.workspacePath,
+        mcpServers: [...(acp.mcpServers ?? []), ...(input.mcpServers ?? [])],
+      },
+      ...(acp.authMethodId ? { authMethodId: acp.authMethodId } : {}),
+      ...(acp.sessionDelayMs ? { sessionDelayMs: acp.sessionDelayMs } : {}),
+      ...(input.sessionId ? { existingSessionId: input.sessionId } : {}),
+    })
+  }
+
+  return {
+    async *run(input: HarnessRunInput): AsyncGenerator<CoachEvent> {
+      let provider = createProvider(input)
+
+      yield { kind: 'status', state: 'starting' }
+
+      try {
+        // Warm the ACP session up front (cuts time-to-first-token) and grab
+        // the resume handle. An unavailable agent (binary missing, auth wall)
+        // surfaces here as a cheap error event — never an inscrutable spawn
+        // crash mid-stream. The handshake may ALSO report selectable
+        // models/modes (experimental ACP fields) — those ride the session
+        // event so the renderer can show a progressive picker (ticket 50).
+        let sessionId: string | undefined = input.sessionId
+        try {
+          const warm = await warmSession(provider)
+          sessionId = warm.sessionId ?? sessionId
+          if (warm.event) yield warm.event
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          // A failed RESUME of an EXPENDABLE session (a probe-warmed session
+          // that never received any prompt) falls back to a fresh session
+          // instead of failing the turn — nothing is lost, the agent just
+          // cold-starts once. Genuine resumed turns stay strict: silently
+          // restarting would drop the conversation context the user expects
+          // to continue, so their failure remains an error event.
+          if (!input.sessionId || !input.resumeIsExpendable) {
+            yield { kind: 'error', message }
+            return
+          }
+          // Tear the failed resume provider down, then rebuild the provider
+          // WITHOUT the resume handle and warm a fresh session (the retry
+          // config keeps everything else — model/mode picks, the ledger MCP
+          // server — so the fresh session behaves like a normal first run).
+          // The provider creation sits INSIDE the try: a throw there becomes
+          // a graceful error event, never an uncaught generator rejection.
+          provider.cleanup()
+          try {
+            provider = createProvider({ ...input, sessionId: undefined })
+            const warm = await warmSession(provider)
+            sessionId = warm.sessionId
+            if (warm.event) yield warm.event
+          } catch (err2) {
+            yield { kind: 'error', message: err2 instanceof Error ? err2.message : String(err2) }
+            return
+          }
+        }
+
+        const stream = sdk.streamText({
+          model: provider.languageModel(input.modelId, input.modeId),
+          prompt: input.prompt,
+          tools: provider.tools,
+        })
+
+        // ONE iterator, used for both the loop and cancellation. Holding a
+        // single handle means the finally's return() interrupts the SAME
+        // in-flight run (a second stream[Symbol.asyncIterator]() would mint a
+        // fresh iterator and cancel nothing). The AI SDK's AsyncIterableStream
+        // yields a plain AsyncIterator that is NOT itself async-iterable, so
+        // the loop must drive it with explicit next() calls — a `for await`
+        // over the held iterator throws 'not async iterable' (the fake SDK's
+        // async-generator mask hides this; the real stream does not).
+        const iterator = stream[Symbol.asyncIterator]()
+        try {
+          for (;;) {
+            const { done, value } = await iterator.next()
+            if (done) break
+            yield* deriveCoachEvents(value as CoachStreamPart)
+          }
+        } finally {
+          if (typeof iterator.return === 'function') {
+            await iterator.return()
+          }
+        }
+      } finally {
+        // ACP providers spawn a child process per provider; we never persist
+        // sessions, so every run tears its agent process down (normal end,
+        // error, or consumer-side cancellation).
+        provider.cleanup()
+      }
+    },
+
+    async inspect(input): Promise<HarnessInspectResult> {
+      const provider = createProvider(input)
+      try {
+        // The same handshake a run performs — spawn + initSession — but with
+        // no prompt streamed after it: read the declared selectable set and
+        // the warmed session id, then tear the process down immediately (the
+        // ACP session itself persists, exactly like a finished turn's). The
+        // models/modes ride the same session response `run` rides on the
+        // `session` CoachEvent (map 47 ticket 50), so what the pickers show
+        // pre-chat is exactly what the first run would have declared anyway;
+        // the session id lets the runner RESUME this warm session on that
+        // first run (no double cold-start).
+        const session = await provider.initSession()
+        return {
+          ...(session.sessionId ? { sessionId: session.sessionId } : {}),
+          ...(session.models ? { models: session.models } : {}),
+          ...(session.modes ? { modes: session.modes } : {}),
+        }
+      } finally {
+        provider.cleanup()
+      }
+    },
+  }
+}
+
+/** Wire the REAL AI SDK + ACP provider lazily (ESM packages, dynamic import
+ *  so the seam's import surface stays light and the app boots without them).
+ *  The seam has zero per-harness adapter-wiring code (ADR 0016): every spec
+ *  carries its own ACP descriptor, and `createHarnessRuntime` reads it. */
+export async function loadHarnessSdk(): Promise<HarnessSdk> {
+  const [{ streamText }, { createACPProvider }] = await Promise.all([
+    import('ai'),
+    import('@mcpc-tech/acp-ai-provider'),
+  ])
+  return {
+    // The real factory's signature IS `(config: ACPProviderSettings) =>
+    // ACPProvider` — the seam's `AcpProviderConfig`/`AcpProvider` are that
+    // real type (map 47 ticket 51), so no cast is needed at this boundary.
+    createACPProvider,
+    streamText: (options: {
+      model: unknown
+      prompt: string
+      tools?: unknown
+    }) => streamText(options as unknown as Parameters<typeof streamText>[0]).fullStream as unknown as AsyncIterable<CoachStreamPart>,
+  }
+}

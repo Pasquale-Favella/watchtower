@@ -47,7 +47,13 @@ describe('useSettingsStore (ADR 0011)', () => {
     useSettingsStore.getState().setTheme('dark')
     useSettingsStore.getState().markOnboarded()
     const persisted = JSON.parse(memory.getItem(PERSIST_KEY)!)
-    expect(persisted.state).toEqual({ theme: 'dark', defaultPeriod: 'today', onboarded: true })
+    expect(persisted.state).toEqual({
+      theme: 'dark',
+      defaultPeriod: 'today',
+      onboarded: true,
+      skillsFrequency: 5,
+      skillsSpread: 2,
+    })
   })
 
   it('setTheme and markOnboarded update state', () => {
@@ -112,5 +118,16 @@ describe('useSettingsStore (ADR 0011)', () => {
     useSettingsStore.getState().onCurrencyChanged({ code: 'JPY', symbol: '¥', rate: 150, updatedAt: '2026-01-01T00:00:00Z' })
     expect(useSettingsStore.getState().activeCurrency)
       .toEqual({ code: 'JPY', symbol: '¥', rate: 150, updatedAt: '2026-01-01T00:00:00Z' })
+  })
+
+  it('the Skills detection thresholds default to 5 × 2 and persist locally (ticket 24)', () => {
+    expect(useSettingsStore.getState().skillsFrequency).toBe(5)
+    expect(useSettingsStore.getState().skillsSpread).toBe(2)
+    useSettingsStore.getState().setSkillsThresholds(3, 1)
+    expect(useSettingsStore.getState().skillsFrequency).toBe(3)
+    expect(useSettingsStore.getState().skillsSpread).toBe(1)
+    const persisted = JSON.parse(memory.getItem(PERSIST_KEY)!)
+    expect(persisted.state.skillsFrequency).toBe(3)
+    expect(persisted.state.skillsSpread).toBe(1)
   })
 })

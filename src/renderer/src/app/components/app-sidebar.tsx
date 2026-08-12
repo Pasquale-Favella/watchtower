@@ -2,7 +2,7 @@ import type { ComponentProps, ReactNode } from 'react'
 
 import {
   LayoutDashboard, PanelsTopLeft, GitPullRequestArrow, BarChart3, Lightbulb,
-  Layers, ArrowLeftRight, Settings,
+  Layers, ArrowLeftRight, Sparkles, Settings,
 } from 'lucide-react'
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
 import { shortcutForAction, displayShortcutForAction, type Section } from '@/app/shortcuts'
@@ -34,6 +34,7 @@ const SECTION_ICONS: Record<Section, ReactNode> = {
   optimize: <Lightbulb />,
   models: <Layers />,
   compare: <ArrowLeftRight />,
+  coachSkills: <Sparkles />,
   settings: <Settings />,
 }
 

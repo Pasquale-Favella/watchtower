@@ -5,7 +5,9 @@ import {
   storeChangedMessageSchema,
 } from '../../../../shared/schemas/ipc.js'
 import { useScanStore } from './scan-store'
+import { useCoachSkillsStore } from '../../features/coach-skills/store'
 import { useSettingsStore } from '../../features/settings/store'
+import { coachEventEnvelopeSchema } from '../../../../shared/schemas/agents.js'
 
 /** The central IPC wiring (ADR 0011): all six `window.api.on*`
  * subscriptions feed store actions, never component state. Call once from the
@@ -48,6 +50,14 @@ export function subscribeToIpc(): () => void {
   // A config write (price override / model alias) lands: refetch via the scan
   // store's change path — no rebuild, no rescan.
   unsubs.push(window.api.onConfigChanged(() => { void useScanStore.getState().applyChange() }))
+
+  // A harness run streamed an event (ADR 0017): route it into the unified
+  // Coach & Skills store so the thread accumulates text/tools/session live.
+  unsubs.push(window.api.onCoachEvent(message => {
+    const parsed = parseEvent(coachEventEnvelopeSchema, 'coach event', message)
+    if (!parsed) return
+    useCoachSkillsStore.getState().onEvent(parsed)
+  }))
 
   return () => { for (const unsub of unsubs) unsub() }
 }

@@ -48,6 +48,14 @@ src/
 │  ├─ fx.ts                 # Frankfurter exchange-rate cache
 │  ├─ export.ts             # CSV/JSON export
 │  ├─ updates.ts            # manual update check (GitHub releases)
+│  ├─ agents/               # the Coach & Skills harness surface (ADRs 0016–0021)
+│  │  ├─ detect.ts          # harness discovery over the spec registry
+│  │  ├─ runtime.ts         # the HarnessRuntime seam (AI SDK + ACP provider)
+│  │  ├─ harnesses/         # one spec file per drivable CLI (claude, codex, …)
+│  │  ├─ ledger-mcp/        # the in-app watchtower-ledger MCP server (tools/resources/prompts)
+│  │  ├─ prompts.ts         # the one briefing: coaching + skill authoring scopes
+│  │  ├─ events.ts          # ACP stream → CoachEvent derivation
+│  │  └─ ipc.ts             # coach:harnesses/run/inspect/cancel/reset wire
 │  ├─ pipeline/             # discovery -> extraction -> parse -> classify -> price
 │  │  ├─ scan.ts            # runScan: one scan pass, metadata out
 │  │  ├─ parser.ts          # the parse pipeline and delta seam
@@ -62,7 +70,7 @@ src/
 ├─ shared/schemas/          # zod schemas, the single source of truth
 └─ renderer/                # React 19 + Tailwind + shadcn/ui (sandboxed)
    ├─ app/                  # AppShell, sidebar/topbar, onboarding, stores, shortcuts
-   ├─ features/             # one folder per section (overview, sessions, spend, ...)
+   ├─ features/             # one folder per section (overview, sessions, spend, coach-skills, ...)
    └─ shared/               # UI kit, libs, and hooks
 ```
 

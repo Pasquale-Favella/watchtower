@@ -9,6 +9,14 @@ import type { ModelsPayload } from '../main/models-view.js'
 import type { ComparePair, ComparePayload } from '../main/compare-view.js'
 import type { OptimizePayload } from '../main/optimize-view.js'
 import type { YieldPayload } from '../main/yield-view.js'
+import type {
+  SkillsDismissalRequest,
+  SkillsDismissalResult,
+  SkillsPayload,
+  SkillsSaveRequest,
+  SkillsSaveResult,
+  SkillsThresholds,
+} from '../shared/schemas/skills.js'
 import type { UpdateStatus } from '../main/updates.js'
 import type { ActiveCurrency, CurrencyOption } from '../main/fx.js'
 import type { ExportResult } from '../main/export.js'
@@ -20,6 +28,13 @@ import type {
   SettingsInfo,
   StoreChangedMessage,
 } from '../shared/schemas/ipc.js'
+import type {
+  CoachEventEnvelope,
+  CoachHarnessesResult,
+  CoachInspectResult,
+  CoachRunRequest,
+  CoachRunResult,
+} from '../shared/schemas/agents.js'
 
 export type {
   PricingRefreshResult,
@@ -29,6 +44,13 @@ export type {
   SettingsInfo,
   StoreChangedMessage,
 } from '../shared/schemas/ipc.js'
+export type {
+  CoachEventEnvelope,
+  CoachHarnessesResult,
+  CoachInspectResult,
+  CoachRunRequest,
+  CoachRunResult,
+} from '../shared/schemas/agents.js'
 
 const api = {
   versions: {
@@ -91,6 +113,12 @@ const api = {
     ipcRenderer.invoke('optimize:view', scope),
   getYield: (scope: OverviewScope): Promise<YieldPayload | null> =>
     ipcRenderer.invoke('optimize:yield', scope),
+  getSkills: (scope: OverviewScope, thresholds?: SkillsThresholds): Promise<SkillsPayload | null> =>
+    ipcRenderer.invoke('skills:view', scope, thresholds),
+  dismissSkill: (request: SkillsDismissalRequest): Promise<SkillsDismissalResult> =>
+    ipcRenderer.invoke('skills:dismiss', request),
+  saveSkill: (request: SkillsSaveRequest): Promise<SkillsSaveResult> =>
+    ipcRenderer.invoke('skills:save', request),
   addModelAlias: (model: string, aliasOf: string): Promise<{ ok: true }> => ipcRenderer.invoke('models:addAlias', model, aliasOf),
   setModelPrice: (model: string, inputPricePerMillion: number, outputPricePerMillion: number): Promise<{ ok: true }> =>
     ipcRenderer.invoke('models:setPrice', model, inputPricePerMillion, outputPricePerMillion),
@@ -125,7 +153,34 @@ const api = {
   /** CSV/JSON export in the currently selected display currency. With no
    * destination the main process shows a folder/file picker. */
   exportData: (format: 'csv' | 'json', destination?: string): Promise<ExportResult> =>
-    ipcRenderer.invoke(`export:${format}`, destination)
+    ipcRenderer.invoke(`export:${format}`, destination),
+  /** Coach & Skills agent chain (ADR 0017, map 53): detected harnesses for the
+   * picker. There is no workspace picker — runs use a private temp workspace
+   * owned by the main process, and the harness reads platform data through the
+   * in-app ledger MCP server. */
+  getCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses'),
+  /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
+   * models/modes without a run, so the model/mode pickers render before the
+   * first message. A failed probe is `{ ok: false }` — the pickers stay
+   * absent and the first run surfaces the real error. */
+  inspectCoachHarness: (kind: string): Promise<CoachInspectResult> =>
+    ipcRenderer.invoke('coach:inspect', kind),
+  /** Starts a harness run; resolves with the immediate ack. Events stream on
+   * `onCoachEvent` keyed by the returned runId. */
+  startCoachRun: (request: CoachRunRequest): Promise<CoachRunResult> =>
+    ipcRenderer.invoke('coach:run', request),
+  /** Interrupts the active run (fire-and-forget). */
+  cancelCoachRun: (runId: string): void => ipcRenderer.send('coach:cancel', runId),
+  /** Brand-new conversation: cancels active runs and cleans the temp workspace
+   * (fire-and-forget; the store calls it on resetSession). */
+  resetCoachWorkspace: (): void => ipcRenderer.send('coach:reset'),
+  /** Streams one CoachEvent per broadcast, enveloped with the runId it belongs
+   * to, so the renderer routes concurrent runs without mixing deltas. */
+  onCoachEvent: (callback: (message: CoachEventEnvelope) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, message: CoachEventEnvelope): void => callback(message)
+    ipcRenderer.on('coach:event', listener)
+    return () => ipcRenderer.removeListener('coach:event', listener)
+  },
 }
 
 contextBridge.exposeInMainWorld('api', api)

@@ -40,6 +40,17 @@ import {
 import { optimizePayloadSchema, type OptimizePayload } from '../../../../shared/schemas/optimize.js'
 import { yieldPayloadSchema, type YieldPayload } from '../../../../shared/schemas/yield.js'
 import {
+  skillsDismissalResultSchema,
+  skillsPayloadSchema,
+  skillsSaveResultSchema,
+  type SkillsDismissalRequest,
+  type SkillsDismissalResult,
+  type SkillsPayload,
+  type SkillsSaveRequest,
+  type SkillsSaveResult,
+  type SkillsThresholds,
+} from '../../../../shared/schemas/skills.js'
+import {
   pullRequestsPayloadSchema,
   type PullRequestsPayload,
 } from '../../../../shared/schemas/pull-requests.js'
@@ -62,6 +73,15 @@ import {
 } from '../../../../shared/schemas/fx.js'
 import { cadenceValueSchema, type CadenceValue } from '../../../../shared/schemas/cadence.js'
 import { exportResultSchema, type ExportResult } from '../../../../shared/schemas/export.js'
+import {
+  coachHarnessesResultSchema,
+  coachInspectResultSchema,
+  coachRunResultSchema,
+  type CoachHarnessesResult,
+  type CoachInspectResult,
+  type CoachRunRequest,
+  type CoachRunResult,
+} from '../../../../shared/schemas/agents.js'
 
 /** The shared renderer error shape for an IPC payload: either validated data
  * or a human-readable message naming the channel and the failing field. */
@@ -166,6 +186,21 @@ export function fetchYield(scope: OverviewScope): Promise<ApiResult<YieldPayload
   return fetchPayload('yield', yieldPayloadSchema.nullable(), () => window.api.getYield(scope))
 }
 
+export function fetchSkills(
+  scope: OverviewScope,
+  thresholds?: SkillsThresholds,
+): Promise<ApiResult<SkillsPayload | null>> {
+  return fetchPayload('skills', skillsPayloadSchema.nullable(), () => window.api.getSkills(scope, thresholds))
+}
+
+export function fetchDismissSkill(request: SkillsDismissalRequest): Promise<ApiResult<SkillsDismissalResult>> {
+  return fetchPayload('skills dismissal', skillsDismissalResultSchema, () => window.api.dismissSkill(request))
+}
+
+export function fetchSaveSkill(request: SkillsSaveRequest): Promise<ApiResult<SkillsSaveResult>> {
+  return fetchPayload('skills save', skillsSaveResultSchema, () => window.api.saveSkill(request))
+}
+
 export function fetchModelAliases(): Promise<ApiResult<ModelAlias[]>> {
   return fetchPayload('model aliases', z.array(modelAliasSchema), () => window.api.getModelAliases())
 }
@@ -245,3 +280,19 @@ export function fetchSetModelPrice(
 export function fetchRemovePriceOverride(model: string): Promise<ApiResult<OkEnvelope>> {
   return fetchPayload('price remove', okEnvelopeSchema, () => window.api.removePriceOverride(model))
 }
+
+export function fetchCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>> {
+  return fetchPayload('coach harnesses', coachHarnessesResultSchema, () => window.api.getCoachHarnesses())
+}
+
+/** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
+ *  models/modes without a run, so the pickers render before the first
+ *  message. A failed probe is `{ ok: false }` — the pickers stay absent. */
+export function fetchCoachInspect(kind: string): Promise<ApiResult<CoachInspectResult>> {
+  return fetchPayload('coach inspect', coachInspectResultSchema, () => window.api.inspectCoachHarness(kind))
+}
+
+export function fetchCoachRun(request: CoachRunRequest): Promise<ApiResult<CoachRunResult>> {
+  return fetchPayload('coach run', coachRunResultSchema, () => window.api.startCoachRun(request))
+}
+

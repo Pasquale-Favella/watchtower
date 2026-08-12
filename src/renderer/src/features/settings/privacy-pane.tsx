@@ -3,10 +3,12 @@ import { Database, KeyRound, ShieldCheck } from 'lucide-react'
 
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
+import { Button } from '@/shared/components/ui/button'
 import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
 import { formatBytes } from '@/features/settings/lib'
 import { fetchClearData, fetchSettings } from '@/shared/lib/api'
 import { useScanStore } from '@/app/stores/scan-store'
+import { useSettingsStore } from '@/features/settings/store'
 import type { SettingsInfo } from '@/features/settings/settings-types'
 
 /** Settings › Privacy & data: the local-only/no-API-keys claims, the SQLite
