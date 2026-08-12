@@ -29,6 +29,14 @@ mac:
     - target: zip
       arch:
         - universal
+  # Universal-merge rule (electron-builder v26, release v0.2.0 failure): the
+  # bundled Codex engine's platform-specific package (@openai/codex-darwin-*)
+  # is installed by npm only for the build runner's arch, so it lands
+  # byte-identical in both the x64 and arm64 halves of the universal build —
+  # and the merge hard-fails unless those files are declared arch-neutral.
+  # NOTE: the schema wants ONE minimatch string (not a list) — a list fails
+  # config validation for every target.
+  x64ArchFiles: "**/node_modules/@openai/codex-darwin-*/**"
   category: public.app-category.developer-tools
   # Sign-ready (ADR 0015): electron-builder signs with CSC_LINK/
   # CSC_KEY_PASSWORD when present and skips signing when absent.
