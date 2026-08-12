@@ -102,7 +102,7 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 overflow-y-auto px-6 py-8">
       <div className="flex flex-col items-center gap-2 text-center">
-        <span className="text-[16px] font-semibold tracking-tight text-foreground">Coach</span>
+        <span className="text-[16px] font-semibold tracking-tight text-foreground">Coach & Skills</span>
         <p className="max-w-md text-[11.5px] leading-relaxed text-muted-foreground">
           Ask the harness for guidance on your workflow — or craft a skill together, just by talking: describe
           what you do and ask it to write a SKILL.md. Every run reads your platform data live through the in-app
