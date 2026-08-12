@@ -36,6 +36,12 @@ The renderer renders model/mode pickers ONLY when the last session event reporte
 
 `CoachSkillsView.tsx` is now a thin composition root over colocated components in `features/coach-skills/`: `control-strip.tsx` (harness/workspace/mode + progressive model/mode + candidate pickers), `thread.tsx` (Conversation + MessageBubble + ToolNotices + EmptyThread), `draft-card.tsx` (the build-skill result card), `composer.tsx` (PromptInput-inspired), and `lib.ts` (shared labels/helpers). All interaction primitives are the shared shadcn set (`Button`, `Select`, `Badge`, `Separator`, `Skeleton`, `Panel`) — the raw `<select>`/`<button>` markup is gone. Wide pattern inspiration came from elements.ai-sdk.dev (Conversation/Message, PromptInput, Tool cards, ModelSelector) without adding its dependency.
 
+> **Updated (ADR 0021):** the colocated set has since been folded further — the
+> surface now lives in `conversation.tsx` (welcome, composer, chips),
+> `thread.tsx` (bubbles + notices), `blocks.tsx` (thinking/tool cards), and
+> `model-selector.tsx`. `control-strip.tsx`, `composer.tsx`, and
+> `draft-card.tsx` are gone.
+
 ## Consequences
 
 - The registry no longer lies about models: a harness is one agent; selection is what the agent itself declares, surfaced only then.

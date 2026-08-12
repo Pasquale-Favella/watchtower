@@ -52,7 +52,7 @@ parses over IPC:
 | `ledger_overview` | `OverviewPayload` (`buildOverviewFromLedger`) |
 | `ledger_sessions` | `SessionRow[]` (`buildSessionsViewFromLedger`) |
 | `ledger_models` | `ModelsPayload` (`buildModelsViewFromLedger` + live alias/override config) |
-| `ledger_skills` | `SkillsPayload` (`buildSkillsViewFromLedger` — the build-skill candidate pool) |
+| `ledger_skills` | `SkillsPayload` (`buildSkillsViewFromLedger` — the suggested-skill pool the chat's craft chips surface) |
 | `ledger_calls` | raw drill-down (the one custom shape the views don't offer), fed by the same `queryScope` seam with the UI's query-time display pricing |
 
 ### Lifetime-serving: the harness filters autonomously (2026-08-12)
@@ -88,13 +88,15 @@ user's FULL usage history through the ledger tools, explains that each tool
 accepts an optional `scope` argument to filter to a window (default lifetime),
 names the user's current window as a suggested default (the same
 period/provider caption the UI shows), and grounds answers in the ledger
-rather than guesses. The briefing is composed main-side into both the coach
-prompt and the build-skill authoring prompt, and only when the server is
-actually injected (fresh installs get no briefing) and only on a conversation's
-first run (resumed turns already carry it in session context — restating it
-would burn tokens). Build-skill keeps its evidence guardrails: the prompt
-itself stays normalized-evidence-only, and the ledger is offered as a real
-grounding source, never a license to fabricate.
+rather than guesses. The briefing is the ONE role definition for the single
+agent — coaching AND skill authoring (ADR 0021) — composed main-side into the
+coach prompt, and only when the server is actually injected (fresh installs
+get no briefing) and only on a conversation's first run (resumed turns already
+carry it in session context — restating it would burn tokens). The
+skill-authoring scope of the same briefing tells the agent to return ONLY
+markdown in the canonical `# ` / `## Description` / `## When to use` /
+`## Example` shape, grounded via `ledger_skills`/`ledger_calls` — the ledger
+is a real grounding source, never a license to fabricate.
 
 ## Consequences
 
@@ -117,9 +119,8 @@ grounding source, never a license to fabricate.
   (`ledger://scope` — the same `describeLedgerScope` the `ledger_scope` tool
   runs, `ledger://overview` — the UI Overview payload as JSON, `ledger://schema`
   — a self-documenting table/tool/primitive index) and prompts
-  (`coach-orient` — the briefing + first-step nudge, `build-skill` — the
-  authoring prompt whose args validate against the shared evidence schema,
-  string-coerced on the MCP wire). All three surfaces reuse the same seam and
-  the same main-side prompt builders, so no MCP surface can drift from the UI
-  or from a `coach:run`. Resources and prompts ride the SDK natively — no
-  hand-rolled protocol extension.
+  (`coach-orient` — the briefing + first-step nudge; the separate `build-skill`
+  prompt template was deleted with the mode — ADR 0021). All three surfaces
+  reuse the same seam and the same main-side prompt builders, so no MCP surface
+  can drift from the UI or from a `coach:run`. Resources and prompts ride the
+  SDK natively — no hand-rolled protocol extension.

@@ -16,6 +16,6 @@ Coach & Skills (the agent Sections, tickets 19–26, unified in ADR 0017) drive 
 
 Conditions (all enforced in code):
 
-1. **Aggregated / normalized context only — never raw transcripts.** Coach runs send only what the user typed; build-skill runs send normalized detection patterns (commands stripped of arguments and paths, never raw session transcripts).
+1. **Aggregated / normalized context only — never raw transcripts.** Coach runs send only what the user typed; the harness never receives raw session transcripts. (The former build-skill evidence flow — normalized detection patterns over `coach:run` — was deleted in ADR 0021: the agent grounds itself through the read-only ledger MCP tools instead.)
 2. **No API keys.** Auth is always the host CLI's own stored login; the harness spawn scrubs provider API keys from the child env (`scrubEnv`). The app never asks for or stores keys.
 3. **The prompt leaves the machine only through the user's own harness CLI.** The app adds no network path of its own for agents; everything else keeps its existing behavior (pricing, FX, manual updates).

@@ -24,6 +24,7 @@ Claude Code, Codex, Cursor, Copilot, Gemini, and 30+ more tools are read straigh
 - **38 providers, no API keys.** Tools are detected from the session stores they already write to disk (SQLite, JSONL, JSON).
 - **Incremental scans.** A background cadence ports only what changed since the last pass, so a full history builds once and stays fresh cheaply.
 - **An accumulating ledger.** Raw transcript facts land in a local SQLite store; every view is derived at query time, so changing a price or an alias repaints the dashboard instantly.
+- **A local coach.** Chat with your own coding-agent harness (Claude Code, Codex, OpenCode, …) about your usage. It reads the same local ledger the dashboard shows, so every answer — and every SKILL.md it crafts — is grounded in your real history, not guesses.
 - **Sandboxed renderer.** All data stays in the main process. The UI receives schema-validated payloads over IPC and validates them again on arrival.
 - **No telemetry.** The only network traffic is the optional pricing (LiteLLM) and exchange-rate (Frankfurter) refreshes.
 
@@ -54,9 +55,10 @@ Every release ships all three platforms. AppImage and `.deb` are the two Linux f
 | **Optimize** | `5` | Sixteen waste detectors with copy-paste fixes, an A+ to F setup-health grade, and a Yield tab for productive vs. reverted/abandoned spend |
 | **Models** | `6` | Per-model cost, tokens, and calls, broken down by task and audited down to the token, with inline quick-add pricing for unpriced models |
 | **Compare** | `7` | Pick two models and see one-shot rate, retry rate, cost per call, and cache-hit rate side by side |
+| **Coach & Skills** | `8` | A chat with your own coding-agent CLI about your usage — ask anything and the harness answers from the same ledger the dashboard shows, or craft a SKILL.md together by talking (suggested-skill chips start the conversation) |
 | **Settings** | `,` | Theme, refresh cadence, default period, provider info, model aliases, pricing overrides, export, and privacy controls |
 
-*\* Every section also shares a period switcher (Today, 7D, 30D, Month, 6M, Life, or a custom date range) and a provider filter. The full shortcut list and per-section details are in the [usage guide](docs/usage.md).*
+*\* Every section also shares a period switcher (Today, 7D, 30D, Month, 6M, Life, or a custom date range) and a provider filter. The Coach reads the current window as the suggested default for its answers. The full shortcut list and per-section details are in the [usage guide](docs/usage.md).*
 
 ## Tech stack
 
@@ -109,7 +111,7 @@ Artifacts are currently **unsigned** by design: Windows shows a SmartScreen "unk
 
 ## Documentation
 
-- [**Usage guide**](docs/usage.md): keyboard shortcuts, the period and provider scope, and what each of the eight sections shows in detail
+- [**Usage guide**](docs/usage.md): keyboard shortcuts, the period and provider scope, and what each of the nine sections shows in detail
 - [**Development guide**](docs/development.md): prerequisites, npm scripts, project layout, environment variables
 - [**Architecture**](docs/architecture.md): the data pipeline, ledger, extraction seam, scan loop, and ADRs
 

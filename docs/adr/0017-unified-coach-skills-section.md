@@ -1,5 +1,13 @@
 # Unified Coach & Skills section: one mode-tagged harness chat, no consent gate
 
+> **Superseded in part (ADR 0021):** the mode-tagged run design — `CoachMode =
+> 'coach' | 'build-skill'`, the renderer-driven `SkillsProseRequest` evidence, and the
+> mid-thread draft card with its dismiss flow — was deleted in favour of ONE
+> mode-less coach run. The single harness agent serves both coaching and skill
+> authoring off the same ledger briefing, and the suggested-skill chips are plain
+> chat-starters into the normal thread. The unified section, the no-consent decision,
+> and the detection pool survive unchanged.
+
 Status: accepted
 
 ## Context

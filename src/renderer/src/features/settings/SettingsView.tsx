@@ -22,10 +22,9 @@ const RAIL_ITEMS: Array<{ id: SettingsPane; label: string }> = [
   { id: 'privacy', label: 'Privacy & data' },
 ]
 
-/** The Settings section: a six-pane rail — General, Providers,
- * Model aliases, Pricing, Export, Privacy & data — with no Devices pane and
- * no Plans pane (plan/budget editing lives only in the Plans section). Each
- * pane is colocated in its own file under features/settings/. */
+/** The Settings section: a seven-pane rail — General, Providers, Model
+ * aliases, Pricing, Export, Skills detection, Privacy & data. Each pane is
+ * colocated in its own file under features/settings/. */
 export function SettingsView(): React.JSX.Element {
   const [pane, setPane] = useState<SettingsPane>('general')
 

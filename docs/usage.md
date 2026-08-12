@@ -1,7 +1,7 @@
 # Using Watchtower
 
 This guide covers day-to-day use: keyboard shortcuts, the period and provider
-scope that every view shares, and what each of the eight sections shows in
+scope that every view shares, and what each of the nine sections shows in
 detail.
 
 ## Keyboard shortcuts
@@ -20,6 +20,7 @@ macOS and `Ctrl` on Windows and Linux.
 | `Mod+5` | Optimize |
 | `Mod+6` | Models |
 | `Mod+7` | Compare |
+| `Mod+8` | Coach & Skills |
 | `Mod+,` | Settings |
 | `Mod+R` | Refresh |
 | `Mod+B` | Toggle sidebar |
@@ -27,10 +28,12 @@ macOS and `Ctrl` on Windows and Linux.
 ## Scope: period and provider
 
 Every section shares the same **period switcher** (Today, 7D, 30D, Month, 6M,
-Life, or a custom date range) and **provider filter**. Every data fetch
-consumes the active scope.
+Life, or a custom date range) and **provider filter**, and every data fetch
+consumes the active scope. The Coach is the one exception: it has no filter of
+its own — it reads the current scope as the *suggested default* for its
+answers, never a boundary.
 
-## The eight sections
+## The nine sections
 
 ### Overview
 
@@ -112,10 +115,33 @@ side-by-side card of performance and efficiency metrics: one-shot rate, retry
 rate, cost per call, cost per edit, output tokens per call, and cache-hit
 rate, plus per-category one-shot bars and a working-style summary.
 
+### Coach & Skills
+
+One chat surface with a single harness agent — the picker shows which
+coding-agent CLIs are detected on your machine (Claude Code, Codex, OpenCode,
+Gemini, …) and whether they are logged in. Ask anything about your usage: the
+agent answers from the same ledger the dashboard shows, queried live through
+the in-app `watchtower-ledger` MCP server, and it says which window its
+numbers cover (the current scope is its suggested default, never a boundary).
+
+- **Skills are crafted conversationally.** Describe what you do and ask for a
+  SKILL.md — or start from the **suggested-skill chips** on the welcome
+  screen, which surface the patterns detected in your current window
+  (frequency, spread, cost). A chip click is just a chat-starter: the agent
+  authors the complete skill file, grounded in your real usage through its
+  ledger tools, ready to copy and save.
+- **Model and mode pickers** appear only when the selected harness declares
+  them (progressive). Once probed, a harness's models and your picks are
+  remembered, so switching back restores them instantly.
+- A run streams live — thinking, tool calls with input/output previews, then
+  the answer. **Copy** sits on assistant answers; **Regenerate** on the last
+  one. **Stop** interrupts the running turn; **New conversation** (header)
+  starts a fresh thread. Follow-up messages resume the same harness session.
+
 ### Settings
 
-A six-pane rail (**General, Providers, Model aliases, Pricing, Export,
-Privacy & data**):
+A seven-pane rail (**General, Providers, Model aliases, Pricing, Export,
+Skills detection, Privacy & data**):
 
 - **General** sets the light/dark/system theme, background scan cadence
   (Manual, 30s, 1m, 3m, 5m, 10m), default period, and the Claude config
@@ -127,6 +153,9 @@ Privacy & data**):
   ledger stores raw tokens, so display cost recomputes on read
 - **Export** writes full-history CSV or JSON in the currently selected display
   currency through a native folder/file picker
+- **Skills detection** tunes the frequency × spread gate that decides when a
+  repeated pattern in a window becomes a suggested-skill chip in the Coach
+  section
 - **Privacy & data** shows database and cache sizes, offers a full data wipe
   (config survives), and a manual "Check for updates" (never automatic, never
   auto-installs)
