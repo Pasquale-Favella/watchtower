@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { Badge } from '@/shared/components/ui/badge'
@@ -120,21 +120,20 @@ export function ConversationWelcome() {
 
 /** The scrollable conversation — thread only. The prompt bar lives separately
  *  (ConversationComposer) so the same input stays pinned below both the empty
- *  state and an active conversation, ChatGPT-style. */
-export function ConversationThread({ saveNotice, onSave, threadEndRef }: {
+ *  state and an active conversation, ChatGPT-style. The thread is a shadcn
+ *  MessageScroller (height-constrained card; the scroller fills it). */
+export function ConversationThread({ saveNotice, onSave }: {
   saveNotice: string | null
   onSave: (path: string | null) => void
-  threadEndRef: React.RefObject<HTMLDivElement | null>
 }) {
   const messages = useCoachSkillsStore(s => s.messages)
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-card shadow-[var(--card-shadow)]">
+    <div className="flex max-h-[50vh] flex-col overflow-hidden rounded-lg border border-border bg-card shadow-[var(--card-shadow)]">
       <Thread
         messages={messages}
         saveNotice={saveNotice}
         onSave={onSave}
-        threadEndRef={threadEndRef}
       />
     </div>
   )
@@ -284,12 +283,6 @@ export function ConversationView() {
   const resetSession = useCoachSkillsStore(s => s.resetSession)
 
   const [saveNotice, setSaveNotice] = useState<string | null>(null)
-  const threadEndRef = useRef<HTMLDivElement>(null)
-
-  // Keep the thread scrolled to the newest message while streaming.
-  useEffect(() => {
-    threadEndRef.current?.scrollIntoView({ block: 'end' })
-  }, [messages, running])
 
   const start = (seed: string): void => {
     if (!harnessKind || running) return
@@ -308,7 +301,7 @@ export function ConversationView() {
       {messages.length === 0 ? (
         <ConversationWelcome />
       ) : (
-        <ConversationThread saveNotice={saveNotice} onSave={setSaveNotice} threadEndRef={threadEndRef} />
+        <ConversationThread saveNotice={saveNotice} onSave={setSaveNotice} />
       )}
 
       {/* Pinned prompt bar — provider/model pickers + chips under the card. */}

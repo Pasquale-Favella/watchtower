@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { Markdown } from '@/shared/components/Markdown'
 import { Badge } from '@/shared/components/ui/badge'
 import { Button } from '@/shared/components/ui/button'
 import {
@@ -74,9 +75,9 @@ export function DraftCard({ message, onSave, dismiss }: {
           </p>
         )}
       </div>
-      <pre className="max-h-[280px] overflow-auto whitespace-pre-wrap border-b border-border p-3 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
-        <code>{markdown}</code>
-      </pre>
+      <div className="typeset typeset-chat max-h-[280px] max-w-[37em] overflow-y-auto border-b border-border p-3">
+        <Markdown>{markdown}</Markdown>
+      </div>
       <div className="flex flex-wrap items-center gap-1.5 px-3 py-2">
         <Button type="button" variant="outline" size="xs" onClick={() => void copy()}>
           {copied ? 'Copied' : 'Copy'}

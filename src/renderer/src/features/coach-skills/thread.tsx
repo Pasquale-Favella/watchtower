@@ -1,6 +1,13 @@
-import type { RefObject } from 'react'
-
+import { Markdown } from '@/shared/components/Markdown'
 import { Badge } from '@/shared/components/ui/badge'
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from '@/shared/components/ui/message-scroller'
 
 import { DraftCard } from './draft-card'
 import { MODE_LABEL } from './lib'
@@ -66,7 +73,9 @@ export function MessageBubble({ message, onSave }: {
             </div>
             <ToolNotices tools={message.tools} />
             {message.content ? (
-              <p className="mt-1.5 text-[11.5px] leading-relaxed whitespace-pre-wrap text-foreground">{message.content}</p>
+              <div className="typeset typeset-chat mt-1.5 max-w-[37em]">
+                <Markdown>{message.content}</Markdown>
+              </div>
             ) : (
               !message.error && (
                 <p className="mt-1.5 text-[11px] text-muted-foreground">
@@ -81,25 +90,44 @@ export function MessageBubble({ message, onSave }: {
   )
 }
 
-/** The scrollable conversation (elements.ai-sdk.dev Conversation-inspired):
- *  the message list, auto-scroll anchor, and the save-notice line. */
-export function Thread({ messages, saveNotice, onSave, threadEndRef }: {
+/** The scrollable conversation (shadcn MessageScroller): a chat scroll
+ *  container that anchors turns, follows streamed responses, and keeps the
+ *  reader's place — without stealing their position. The transcript rows are
+ *  wrapped in MessageScrollerItem (anchored on user turns), the viewport
+ *  preserves the visible row when history is prepended, and the Button is the
+ *  "jump to latest" control. */
+export function Thread({ messages, saveNotice, onSave }: {
   messages: ChatMessage[]
   saveNotice: string | null
   onSave: (path: string | null) => void
-  threadEndRef: RefObject<HTMLDivElement | null>
 }) {
   if (messages.length === 0) {
     return null
   }
   return (
-    <div className="flex max-h-[50vh] flex-col gap-2.5 overflow-y-auto p-3.5">
-      {messages.map(message => (
-        <MessageBubble key={message.id} message={message} onSave={onSave} />
-      ))}
-      {saveNotice && <div className="text-center text-[10px] text-muted-foreground">{saveNotice}</div>}
-      <div ref={threadEndRef} />
-    </div>
+    <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor" scrollPreviousItemPeek={64}>
+      <MessageScroller className="min-h-0 flex-1">
+        <MessageScrollerViewport>
+          <MessageScrollerContent className="gap-2.5 p-3.5">
+            {messages.map(message => (
+              <MessageScrollerItem
+                key={message.id}
+                messageId={message.id}
+                scrollAnchor={message.role === 'user'}
+              >
+                <MessageBubble message={message} onSave={onSave} />
+              </MessageScrollerItem>
+            ))}
+            {saveNotice && (
+              <MessageScrollerItem messageId="save-notice">
+                <div className="text-center text-[10px] text-muted-foreground">{saveNotice}</div>
+              </MessageScrollerItem>
+            )}
+          </MessageScrollerContent>
+        </MessageScrollerViewport>
+        <MessageScrollerButton />
+      </MessageScroller>
+    </MessageScrollerProvider>
   )
 }
 

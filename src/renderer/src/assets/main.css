@@ -1,8 +1,21 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
+@import './typeset.css';
 
 @custom-variant dark (&:is(.dark *));
+
+/* shadcn/typeset — chat preset, wired to the app's own fonts and compact
+ * desktop scale (13px body) so prose sits next to the 11.5–12.5px UI text.
+ * Unlayered so it beats the layered .typeset defaults. */
+.typeset-chat {
+  --typeset-font-body: var(--font-sans);
+  --typeset-font-heading: var(--font-sans);
+  --typeset-font-mono: var(--font-mono);
+  --typeset-size: 13px;
+  --typeset-leading: 1.75;
+  --typeset-flow: 1.25em;
+}
 
 @theme inline {
   --font-heading: var(--font-sans);
