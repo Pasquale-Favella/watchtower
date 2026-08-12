@@ -35,14 +35,37 @@ describe('scopeWindowLabel — the agent-facing data-window caption (matches the
   })
 })
 
-describe('buildLedgerBriefing — the MCP tool briefing', () => {
-  it('names every ledger tool and the data window', () => {
-    const briefing = buildLedgerBriefing(scope30)
+describe('buildLedgerBriefing — the MCP tool briefing (lifetime-serving)', () => {
+  it('names every ledger tool and the scope-argument filtering mechanism', () => {
+    const briefing = buildLedgerBriefing()
     for (const tool of ['ledger_scope', 'ledger_overview', 'ledger_sessions', 'ledger_models', 'ledger_skills', 'ledger_calls']) {
       expect(briefing).toContain(tool)
     }
-    expect(briefing).toContain('Last 30 days · claude')
+    // The server serves the FULL lifetime ledger, filtered per-tool by the
+    // agent itself through the optional `scope` argument.
+    expect(briefing).toContain('FULL usage history')
+    expect(briefing).toContain('scope')
     expect(briefing).toContain('READ-ONLY')
+  })
+
+  it('tells the harness to state which window it queried, so scoped answers are transparent', () => {
+    const briefing = buildLedgerBriefing()
+    expect(briefing).toContain('say which window you queried')
+    expect(briefing).toContain('so the user always knows what your numbers cover')
+  })
+
+  it('names the user\'s current window ONLY as a suggested default when one is provided', () => {
+    const briefing = buildLedgerBriefing(scope30)
+    expect(briefing).toContain('Last 30 days · claude')
+    expect(briefing).toContain('a good default window')
+    // A hint, never a boundary: the lifetime access is still stated.
+    expect(briefing).toContain('FULL usage history')
+  })
+
+  it('carries no window hint when no scope is provided', () => {
+    const briefing = buildLedgerBriefing()
+    expect(briefing).not.toContain('good default window')
+    expect(briefing).not.toContain('Last 30 days')
   })
 
   it('grounds the answer rule: never invent numbers', () => {

@@ -660,10 +660,12 @@ function registerIpc(): void {
     // The app root: bundled ACP servers (codex) resolve from its node_modules.
     appPath: app.getAppPath(),
     // The in-app ledger MCP server (map 53): the harness agent spawns the app
-    // itself as plain node (ELECTRON_RUN_AS_NODE=1) and reads the current UI
-    // scope's data read-only. Paths: `process.execPath` (dev + packaged), the
-    // bundled entry under appPath, and the ledger DB beside the cache.
-    ledgerMcpServer: scope => {
+    // itself as plain node (ELECTRON_RUN_AS_NODE=1) and reads the FULL
+    // lifetime ledger read-only — no scope is baked at spawn (the harness
+    // filters through each tool's optional `scope` argument). Paths:
+    // `process.execPath` (dev + packaged), the bundled entry under appPath,
+    // and the ledger DB beside the cache.
+    ledgerMcpServer: () => {
       // Fresh install: no ledger.db yet → no data to serve, so no MCP server
       // (its read-only open would throw on a missing file). Once the first
       // scan lands, the next run injects it.
@@ -673,7 +675,7 @@ function registerIpc(): void {
         execPath: process.execPath,
         entryPath: join(app.getAppPath(), 'out/main/ledger-mcp.js'),
         dbPath,
-      }, scope)
+      })
     },
   })
 }

@@ -1,13 +1,19 @@
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
 import type { AcpMcpServer } from '../harnesses/types.js'
 
 /**
- * Main-side builder for the injected `watchtower-ledger` MCP server (map 53):
- * turns the app's own runtime facts — its binary path, the ledger-mcp bundle
- * path, the ledger DB path, and the current UI scope — into an ACP
- * `McpServerStdio` config the harness agent spawns. The server is the app
- * itself running as plain node (`ELECTRON_RUN_AS_NODE=1`), so no external
- * binary or network service is needed in dev or packaged builds.
+ * Main-side builder for the injected `watchtower-ledger` MCP server: turns
+ * the app's own runtime facts — its binary path, the ledger-mcp bundle path,
+ * and the ledger DB path — into an ACP `McpServerStdio` config the harness
+ * agent spawns. The server is the app itself running as plain node
+ * (`ELECTRON_RUN_AS_NODE=1`), so no external binary or network service is
+ * needed in dev or packaged builds.
+ *
+ * The server serves the FULL lifetime ledger — no scope is baked at spawn.
+ * Filtering is the harness's job: every tool accepts an optional `scope`
+ * argument (shared `overviewScopeSchema`) and the briefing tells the agent
+ * about it, so a single server instance answers any window the agent asks
+ * about. This is why the spawn context carries only `dbPath`: there is
+ * nothing per-conversation left to bake.
  */
 
 export interface LedgerMcpSpawnContext {
@@ -19,10 +25,12 @@ export interface LedgerMcpSpawnContext {
   dbPath: string
 }
 
-export function buildLedgerMcpServer(ctx: LedgerMcpSpawnContext, scope: OverviewScope): AcpMcpServer {
-  // The conversation's UI scope rides the spawn env verbatim (ADR 0020); the
-  // entry validates it and computes the range itself via overviewDateRange.
-  const context = { dbPath: ctx.dbPath, scope }
+export function buildLedgerMcpServer(ctx: LedgerMcpSpawnContext): AcpMcpServer {
+  // The spawn env carries only the DB path: the server always reads the full
+  // lifetime history, and per-window filtering rides the tools' `scope`
+  // argument (ADR 0020). The entry validates the context and opens the
+  // ledger read-only.
+  const context = { dbPath: ctx.dbPath }
   return {
     name: 'watchtower-ledger',
     command: ctx.execPath,

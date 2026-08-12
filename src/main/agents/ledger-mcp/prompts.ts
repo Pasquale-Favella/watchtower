@@ -1,7 +1,6 @@
 import { z, type ZodRawShape, type ZodTypeAny } from 'zod'
 
 import { skillsProseRequestSchema, type SkillsProseRequest } from '../../../shared/schemas/skills.js'
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
 import { buildLedgerBriefing, buildProsePrompt } from '../prompts.js'
 
 /** MCP prompt arguments arrive STRING-coerced on the wire (protocol
@@ -44,8 +43,14 @@ export interface LedgerPromptDef {
   render: (args: Record<string, unknown>) => string
 }
 
-export function buildLedgerPrompts(scope: OverviewScope): LedgerPromptDef[] {
-  const briefing = buildLedgerBriefing(scope)
+export function buildLedgerPrompts(): LedgerPromptDef[] {
+  // The server serves the full lifetime ledger (no spawn-time scope), so the
+  // briefing describes the lifetime window and the tools' optional `scope`
+  // argument. Note this briefing deliberately carries NO user-window hint
+  // (unlike the `coach:run` briefing, which renders the current UI scope):
+  // the MCP server is session-independent and cannot know the window — this
+  // asymmetry is what keeps the server free of per-conversation state.
+  const briefing = buildLedgerBriefing()
   return [
     {
       name: 'coach-orient',

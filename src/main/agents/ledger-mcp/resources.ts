@@ -1,8 +1,7 @@
 import { buildOverviewFromLedger } from '../../overview.js'
 import type { LedgerStore } from '../../store/ledger.js'
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
 import { scopeWindowLabel } from '../prompts.js'
-import { describeLedgerScope } from './tools.js'
+import { describeLedgerScope, LIFETIME_SCOPE } from './tools.js'
 
 /**
  * MCP resources for the `watchtower-ledger` server (ADR 0020): read-only
@@ -12,10 +11,13 @@ import { describeLedgerScope } from './tools.js'
  * Overview JSON as a document. Unlike tools they carry no arguments and no
  * execution semantics — just data behind a stable URI.
  *
- * Like the tools, everything here is built on the shared aggregation seam:
- * `ledger://scope` reuses the SAME `describeLedgerScope` the `ledger_scope`
- * tool runs, and `ledger://overview` IS the UI Overview payload. A resource
- * can therefore never drift from what a tool returns or what the UI shows.
+ * The server serves the FULL lifetime ledger, so the resources describe the
+ * lifetime window (the same `describeLedgerScope` the `ledger_scope` tool
+ * runs, and the same `buildOverviewFromLedger` the `ledger_overview` tool
+ * returns with no `scope` argument). Per-window queries go through the tools'
+ * optional `scope` argument, which the briefing explains. Like the tools,
+ * everything here is built on the shared aggregation seam: a resource can
+ * therefore never drift from what a tool returns or what the UI shows.
  */
 
 /** One resource the SDK registers: a stable URI, metadata, and a read that
@@ -29,30 +31,30 @@ export interface LedgerResourceDef {
   read: () => string
 }
 
-export function buildLedgerResources(store: LedgerStore, scope: OverviewScope): LedgerResourceDef[] {
+export function buildLedgerResources(store: LedgerStore): LedgerResourceDef[] {
   return [
     {
       name: 'scope',
       uri: 'ledger://scope',
       title: 'Data window',
-      description: `The window this server is baked to: ${scopeWindowLabel(scope)}, its epoch range, and the counts inside it. Read this first to orient.`,
+      description: `The full lifetime data window the server serves: ${scopeWindowLabel(LIFETIME_SCOPE)}, its epoch range, and the counts inside it. Read this first to orient; per-window queries go through each tool's optional scope argument.`,
       mimeType: 'text/markdown',
       // Computed INSIDE read(), not at build time — the resource must stay as
       // live as the ledger_scope tool it mirrors (a long-lived server could
       // otherwise serve frozen counts).
       read: () => {
-        const scopeFacts = describeLedgerScope(store, scope)
+        const scopeFacts = describeLedgerScope(store, LIFETIME_SCOPE)
         return [
           '# Watchtower data window',
           '',
-          `- Window: **${scopeWindowLabel(scope)}**`,
-          `- Period: ${scope.period}${scope.range ? ` (custom ${scope.range.since} → ${scope.range.until})` : ''}`,
+          `- Window: **${scopeWindowLabel(LIFETIME_SCOPE)}**`,
+          `- Period: ${LIFETIME_SCOPE.period}`,
           `- Epoch range: ${scopeFacts.range.startMs} → ${scopeFacts.range.endMs}`,
-          `- Sessions in scope: ${scopeFacts.sessions}`,
-          `- Calls in scope: ${scopeFacts.calls}`,
+          `- Sessions: ${scopeFacts.sessions}`,
+          `- Calls: ${scopeFacts.calls}`,
           `- Providers: ${scopeFacts.providers.length ? scopeFacts.providers.join(', ') : '(none)'}`,
           '',
-          'Query `ledger_overview` for the full dashboard payload, or `ledger_sessions` / `ledger_models` / `ledger_skills` / `ledger_calls` for drill-downs.',
+          'The tools accept an optional `scope` argument ({ period, provider?, range? }) to query a specific window; omit it for this full lifetime view. Query `ledger_overview` for the dashboard payload, or `ledger_sessions` / `ledger_models` / `ledger_skills` / `ledger_calls` for drill-downs.',
         ].join('\n')
       },
     },
@@ -60,9 +62,9 @@ export function buildLedgerResources(store: LedgerStore, scope: OverviewScope): 
       name: 'overview',
       uri: 'ledger://overview',
       title: 'Overview payload',
-      description: 'The full Overview dashboard payload for the scope, as JSON — the same document the UI Overview view renders.',
+      description: 'The full lifetime Overview dashboard payload, as JSON — the same document the UI Overview view renders for the Lifetime period.',
       mimeType: 'application/json',
-      read: () => JSON.stringify(buildOverviewFromLedger(store, scope), null, 2),
+      read: () => JSON.stringify(buildOverviewFromLedger(store, LIFETIME_SCOPE), null, 2),
     },
     {
       name: 'schema',
@@ -75,6 +77,8 @@ export function buildLedgerResources(store: LedgerStore, scope: OverviewScope): 
       read: () => [
         '# Watchtower ledger schema',
         '',
+        'The server serves the FULL lifetime ledger; every tool takes an optional `scope` argument ({ period: today|week|30days|month|all|lifetime, provider?, range? }) and defaults to lifetime when it is omitted.',
+        '',
         '## Tables',
         '- `ledger_source` — one row per discovered provider log file (provider, env fingerprint, path).',
         '- `ledger_session` — one row per coding-agent session (project, working directory, agent type, title).',
@@ -82,16 +86,16 @@ export function buildLedgerResources(store: LedgerStore, scope: OverviewScope): 
         '- `ledger_call` — one row per model call (model, timestamps, tokens, cost, tools, skills, bash commands, subagents).',
         '',
         '## Tools',
-        '- `ledger_scope` — the baked data window + counts (call first to orient).',
+        '- `ledger_scope` — the window of a query (optional scope; default lifetime) + counts (call first to orient).',
         '- `ledger_overview` — the full Overview payload: KPIs, daily spend, per-model / activity / tool / MCP / skill / subagent breakdowns, efficiency.',
-        '- `ledger_sessions` — session rows in scope, newest first.',
+        '- `ledger_sessions` — session rows for a window, newest first.',
         '- `ledger_models` — per-model / per-task report with current pricing config.',
         '- `ledger_skills` — skill-candidate drafts, opportunities, ghost skills.',
-        '- `ledger_calls` — raw per-call rows (filters: limit, model, project, category, tool).',
+        '- `ledger_calls` — raw per-call rows (filters: limit, scope, model, project, category, tool).',
         '',
         '## Resources',
-        '- `ledger://scope` — the data window (this scope).',
-        '- `ledger://overview` — the Overview payload as JSON.',
+        '- `ledger://scope` — the full lifetime data window.',
+        '- `ledger://overview` — the lifetime Overview payload as JSON.',
         '- `ledger://schema` — this document.',
         '',
         '## Prompts',

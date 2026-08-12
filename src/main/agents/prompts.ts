@@ -5,12 +5,14 @@ import type { SkillsProseRequest } from '../../shared/schemas/skills.js'
 /**
  * Main-side prompt builders for the Coach & Skills harness runs (ADR 0017,
  * MCP-aware since map 53/ADR 0020). Every run injects the in-app
- * `watchtower-ledger` MCP server into the harness session — a read-only,
- * scope-baked window over the user's REAL usage data. These builders give the
- * agent the briefing that turns bare tool names into usable capability: what
- * the data window is (the same period/provider caption the UI shows), which
- * tools exist and what each returns, and the standing rule to ground answers
- * in the ledger rather than guessing.
+ * `watchtower-ledger` MCP server into the harness session — a read-only
+ * server over the user's REAL usage data that serves the FULL LIFETIME
+ * ledger (nothing is baked at spawn). These builders give the agent the
+ * briefing that turns bare tool names into usable capability: what the server
+ * covers (lifetime data), how to filter it (each tool's optional `scope`
+ * argument), what the user is currently looking at (the same period/provider
+ * caption the UI shows, as a suggested default), and the standing rule to
+ * ground answers in the ledger rather than guessing.
  *
  * The briefing is ONLY included when the server is actually injected (the
  * composition root returns null on a fresh install — no ledger.db, no data,
@@ -31,26 +33,40 @@ export function scopeWindowLabel(scope: OverviewScope): string {
   return `${period} · ${scope.provider ?? 'all providers'}`
 }
 
-/** The shared MCP briefing: read-only access, the data window, the six tools,
- *  and the ground-your-answer rule. Omitted entirely when there is no server
- *  (fresh install) — claiming tools that do not exist would make the agent
- *  hallucinate tool calls. */
-export function buildLedgerBriefing(scope: OverviewScope): string {
-  return [
+/** The shared MCP briefing: read-only lifetime access, how to filter it (the
+ *  tools' optional `scope` argument), the six tools, and the
+ *  ground-your-answer rule. `scope` is an optional HINT — the window the user
+ *  is currently viewing — never a boundary: the server serves the whole
+ *  ledger, and the agent is free to query any period/provider. Omitted
+ *  entirely when there is no server (fresh install) — claiming tools that do
+ *  not exist would make the agent hallucinate tool calls. */
+export function buildLedgerBriefing(scope?: OverviewScope): string {
+  const lines = [
     'You are running inside Watchtower, the user\'s AI coding-agent usage tracker.',
     '',
-    `Through the in-app \`watchtower-ledger\` MCP server you have READ-ONLY access to the user's real usage data, scoped to the current window: ${scopeWindowLabel(scope)}.`,
+    'Through the in-app `watchtower-ledger` MCP server you have READ-ONLY access to the user\'s FULL usage history — every provider, every period, nothing pre-filtered.',
     '',
-    'The server exposes six tools:',
-    '- `ledger_scope` — the baked data window and its counts. Call this FIRST to orient.',
+    'Each tool accepts an optional `scope` argument ({ period: \'today\' | \'week\' | \'30days\' | \'month\' | \'all\' | \'lifetime\', provider?, range? }) and returns data for exactly that window; omit it for the full lifetime view. The server exposes six tools:',
+    '- `ledger_scope` — the window of a query and its counts. Call this FIRST to orient.',
     '- `ledger_overview` — the Overview dashboard payload: KPIs (cost, calls, sessions, tokens, savings), daily spend, per-model / per-activity / per-tool / per-MCP / per-skill / per-subagent breakdowns, efficiency grade.',
     '- `ledger_sessions` — session rows (id, title, project, provider, models, cost, tokens), newest first.',
     '- `ledger_models` — per-model / per-task report with the current alias + price-override pricing applied.',
     '- `ledger_skills` — detected skill candidates (frequency, spread, cost, sample, evidence sessions), opportunities, ghost skills.',
-    '- `ledger_calls` — raw per-call drill-down with optional filters (limit, model, project, category, tool).',
+    '- `ledger_calls` — raw per-call drill-down with optional filters (limit, scope, model, project, category, tool).',
+  ]
+  if (scope) {
+    lines.push(
+      '',
+      `The user is currently viewing ${scopeWindowLabel(scope)} — a good default window for their question, but you are free to query any period or provider.`,
+    )
+  }
+  lines.push(
+    '',
+    'When you answer, say which window you queried (for example "over the last 30 days", "since January", "for Claude only") so the user always knows what your numbers cover.',
     '',
     'Ground your answer in this data: when asked about spend, sessions, models, skills, or trends, query the ledger instead of guessing. Never invent numbers or claim facts the data does not show.',
-  ].join('\n')
+  )
+  return lines.join('\n')
 }
 
 /** The coach prompt: the MCP briefing, then the user's own question. Without a

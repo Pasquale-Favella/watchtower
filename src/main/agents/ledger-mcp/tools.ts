@@ -6,16 +6,21 @@ import { buildSessionsViewFromLedger } from '../../sessions-view.js'
 import { buildSkillsViewFromLedger } from '../../skills-view.js'
 import { queryScope } from '../../store/aggregate.js'
 import type { LedgerStore } from '../../store/ledger.js'
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
+import { overviewScopeSchema, type OverviewScope } from '../../../shared/schemas/overview.js'
 
 /**
  * The read-only ledger tools the `watchtower-ledger` MCP server exposes — now
  * built on the SAME aggregation seam and shared zod schemas the UI views
  * consume (ADR 0020, superseding map 53 ticket 55's hand-rolled SQL). The
  * harness agent — Claude Code, OpenCode, Codex, … — calls them exactly like
- * any MCP tool; every one is filtered to the SCOPE baked at spawn (the
- * conversation's snapshot of the current UI scope), and the payloads ARE the
- * renderer's own payload types (`OverviewPayload`, `SessionRow[]`,
+ * any MCP tool.
+ *
+ * The server serves the FULL LIFETIME ledger: nothing is baked at spawn, and
+ * every tool accepts an optional `scope` argument (the shared
+ * `overviewScopeSchema` — period / provider / custom range) so the harness
+ * filters autonomously. Omit it and the tool returns the lifetime window;
+ * pass it and the payload is computed for exactly that window. The payloads
+ * ARE the renderer's own payload types (`OverviewPayload`, `SessionRow[]`,
  * `ModelsPayload`, `SkillsPayload`) — byte-identical shapes, so the agent
  * sees exactly what the UI shows and the renderer's zod schemas double as the
  * MCP contract. Only `ledger_calls` keeps a custom row shape (a drill-down
@@ -30,6 +35,21 @@ export interface LedgerToolDef {
   description: string
   inputSchema: ZodRawShape
   run: (args: Record<string, unknown>) => unknown | Promise<unknown>
+}
+
+/** The lifetime default: when a tool is called without a `scope` argument it
+ *  reports the whole ledger history, exactly like the UI's Lifetime period. */
+export const LIFETIME_SCOPE: OverviewScope = { period: 'lifetime' }
+
+/** Resolve a tool call's optional `scope` argument (shared schema, validated)
+ *  — absent degrades to the lifetime window. A malformed value degrades the
+ *  same way: belt-and-suspenders, because the SDK's zod input schema already
+ *  rejects bad args at the protocol boundary (an isError result), so this
+ *  only ever fires for direct callers/tests — and dumping lifetime beats
+ *  crashing the tool. */
+function resolveToolScope(args: Record<string, unknown>): OverviewScope {
+  const parsed = overviewScopeSchema.safeParse(args.scope)
+  return parsed.success ? parsed.data : LIFETIME_SCOPE
 }
 
 /** The scope's concrete epoch range + a per-call-timestamp predicate. The seam
@@ -51,8 +71,8 @@ function scopeRange(scope: OverviewScope): {
   }
 }
 
-/** The scope's concrete facts: the baked UI scope, its epoch range, and the
- *  in-scope counts (sessions/calls/providers). Shared by the `ledger_scope`
+/** A scope's concrete facts: the window itself, its epoch range, and the
+ *  in-window counts (sessions/calls/providers). Shared by the `ledger_scope`
  *  tool AND the `ledger://scope` resource (ADR 0020) — one computation, two
  *  MCP surfaces, so the resource can never drift from the tool. */
 export function describeLedgerScope(store: LedgerStore, scope: OverviewScope): {
@@ -75,46 +95,47 @@ export function describeLedgerScope(store: LedgerStore, scope: OverviewScope): {
   }
 }
 
-export function buildLedgerTools(store: LedgerStore, scope: OverviewScope): LedgerToolDef[] {
+export function buildLedgerTools(store: LedgerStore): LedgerToolDef[] {
   return [
     {
       name: 'ledger_scope',
-      description: 'The window this server is baked to: the current UI scope (period / provider / custom range), its epoch range, and the counts inside it. Call this first to orient.',
-      inputSchema: {},
-      run: () => describeLedgerScope(store, scope),
+      description: 'The window a query is scoped to (from the optional `scope` argument; default: the full lifetime ledger), its epoch range, and the counts inside it. Call this first to orient.',
+      inputSchema: { scope: overviewScopeSchema.optional() },
+      run: (args) => describeLedgerScope(store, resolveToolScope(args)),
     },
     {
       name: 'ledger_overview',
-      description: 'The full Overview payload for the scope — the same payload the UI dashboard shows: KPIs (cost, calls, sessions, tokens, savings), daily spend, per-model / per-activity / per-tool / per-MCP / per-skill / per-subagent breakdowns, efficiency grade, workflow and unpriced-model facts.',
-      inputSchema: {},
-      run: () => buildOverviewFromLedger(store, scope),
+      description: 'The full Overview payload for a window — the same payload the UI dashboard shows: KPIs (cost, calls, sessions, tokens, savings), daily spend, per-model / per-activity / per-tool / per-MCP / per-skill / per-subagent breakdowns, efficiency grade, workflow and unpriced-model facts. Accepts an optional `scope`; default: lifetime.',
+      inputSchema: { scope: overviewScopeSchema.optional() },
+      run: (args) => buildOverviewFromLedger(store, resolveToolScope(args)),
     },
     {
       name: 'ledger_sessions',
-      description: 'Session rows inside the scope, newest first — the same SessionRow[] the UI Sessions view shows: session id, title, project, provider, models, cost, savings, calls, turns, token buckets, started/ended timestamps.',
-      inputSchema: {},
-      run: () => buildSessionsViewFromLedger(store, scope),
+      description: 'Session rows for a window, newest first — the same SessionRow[] the UI Sessions view shows: session id, title, project, provider, models, cost, savings, calls, turns, token buckets, started/ended timestamps. Accepts an optional `scope`; default: lifetime.',
+      inputSchema: { scope: overviewScopeSchema.optional() },
+      run: (args) => buildSessionsViewFromLedger(store, resolveToolScope(args)),
     },
     {
       name: 'ledger_models',
-      description: 'The by-model / by-task / audit report for the scope — the same ModelsPayload the UI Models view shows, with the current alias + price-override config applied (query-time pricing).',
-      inputSchema: {},
-      run: () => buildModelsViewFromLedger(store, scope, {
+      description: 'The by-model / by-task / audit report for a window — the same ModelsPayload the UI Models view shows, with the current alias + price-override config applied (query-time pricing). Accepts an optional `scope`; default: lifetime.',
+      inputSchema: { scope: overviewScopeSchema.optional() },
+      run: (args) => buildModelsViewFromLedger(store, resolveToolScope(args), {
         aliases: store.getModelAliases(),
         overrides: store.getPriceOverrides(),
       }),
     },
     {
       name: 'ledger_skills',
-      description: 'The Skills payload for the scope — the same SkillsPayload the UI Skills view shows: detected skill-candidate drafts (with frequency, spread, cost, sample, evidence sessions), below-gate opportunities, and ghost skills (inventory entries never invoked). This is the build-skill flow\'s candidate pool.',
-      inputSchema: {},
-      run: () => buildSkillsViewFromLedger(store, scope),
+      description: 'The Skills payload for a window — the same SkillsPayload the UI Skills view shows: detected skill-candidate drafts (with frequency, spread, cost, sample, evidence sessions), below-gate opportunities, and ghost skills (inventory entries never invoked). This is the build-skill flow\'s candidate pool. Accepts an optional `scope`; default: lifetime.',
+      inputSchema: { scope: overviewScopeSchema.optional() },
+      run: (args) => buildSkillsViewFromLedger(store, resolveToolScope(args)),
     },
     {
       name: 'ledger_calls',
-      description: 'Raw per-call rows inside the scope, most recent first — a drill-down the UI views do not offer. Optional filters: limit (1-200), model, project, category, tool (exact tool name). Costs are the UI\'s query-time display cost.',
+      description: 'Raw per-call rows for a window, most recent first — a drill-down the UI views do not offer. Optional filters: limit (1-200), scope (period/provider/range — default lifetime), model, project, category, tool (exact tool name). Costs are the UI\'s query-time display cost.',
       inputSchema: {
         limit: z.number().int().min(1).max(200).optional(),
+        scope: overviewScopeSchema.optional(),
         model: z.string().optional(),
         project: z.string().optional(),
         category: z.string().optional(),
@@ -122,6 +143,7 @@ export function buildLedgerTools(store: LedgerStore, scope: OverviewScope): Ledg
       },
       run: (args) => {
         const limit = typeof args.limit === 'number' ? Math.min(Math.max(Math.floor(args.limit), 1), 200) : 20
+        const scope = resolveToolScope(args)
         const model = typeof args.model === 'string' && args.model.length > 0 ? args.model : undefined
         const project = typeof args.project === 'string' && args.project.length > 0 ? args.project : undefined
         const category = typeof args.category === 'string' && args.category.length > 0 ? args.category : undefined

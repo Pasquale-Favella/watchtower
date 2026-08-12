@@ -1,7 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import type { LedgerStore } from '../../store/ledger.js'
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
 import { buildLedgerPrompts } from './prompts.js'
 import { buildLedgerResources } from './resources.js'
 import { buildLedgerTools } from './tools.js'
@@ -16,6 +15,10 @@ import { buildLedgerTools } from './tools.js'
  * tools/call, resources/read, prompts/get, ping, error codes) — no
  * hand-rolled JSON-RPC (map 53's protocol.ts is gone).
  *
+ * The server serves the FULL lifetime ledger — nothing is baked at spawn.
+ * Each tool takes an optional `scope` argument (shared `overviewScopeSchema`)
+ * so the harness filters autonomously; absent means the lifetime window.
+ *
  * Tool outputs are JSON-text payloads that ARE the renderer's own shared
  * schema shapes; the SDK's zod input typing doubles as the wire contract.
  * Resources are passive documents behind stable URIs (`ledger://scope`,
@@ -24,12 +27,12 @@ import { buildLedgerTools } from './tools.js'
  * the same main-side prompt builders, so no MCP surface can drift from the UI
  * or from what a `coach:run` would send.
  */
-export function createLedgerMcpServer(store: LedgerStore, scope: OverviewScope): McpServer {
+export function createLedgerMcpServer(store: LedgerStore): McpServer {
   const server = new McpServer(
     { name: 'watchtower-ledger', version: '0.1.0' },
     { capabilities: { tools: {}, resources: {}, prompts: {} } },
   )
-  for (const tool of buildLedgerTools(store, scope)) {
+  for (const tool of buildLedgerTools(store)) {
     server.registerTool(
       tool.name,
       { description: tool.description, inputSchema: tool.inputSchema },
@@ -41,7 +44,7 @@ export function createLedgerMcpServer(store: LedgerStore, scope: OverviewScope):
       }),
     )
   }
-  for (const resource of buildLedgerResources(store, scope)) {
+  for (const resource of buildLedgerResources(store)) {
     server.registerResource(
       resource.name,
       resource.uri,
@@ -49,7 +52,7 @@ export function createLedgerMcpServer(store: LedgerStore, scope: OverviewScope):
       async () => ({ contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: resource.read() }] }),
     )
   }
-  for (const prompt of buildLedgerPrompts(scope)) {
+  for (const prompt of buildLedgerPrompts()) {
     server.registerPrompt(
       prompt.name,
       { title: prompt.title, description: prompt.description, argsSchema: prompt.argsSchema },

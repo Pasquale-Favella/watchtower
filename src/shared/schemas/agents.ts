@@ -120,8 +120,10 @@ export const coachRunRequestSchema = z.object({
   modelId: z.string().optional(),
   /** Agent-declared session mode id (from the session event's modes). */
   modeId: z.string().optional(),
-  /** The conversation's UI-scope snapshot — the data window the in-app ledger
-   *  MCP server exposes (map 53). Absent = the widest scope ('all'). */
+  /** The conversation's UI-scope snapshot — since the in-app ledger MCP
+   *  server serves the FULL lifetime ledger (map 53), this rides the first-run
+   *  briefing as a SUGGESTED default window for the agent's queries, never a
+   *  boundary. Absent = lifetime (the tools' own no-arg default). */
   scope: overviewScopeSchema.optional(),
   /** Mode tag (ADR 0017): `coach` (default) runs `prompt`; `build-skill`
    *  requires `evidence` and the main process builds the authoring prompt. */

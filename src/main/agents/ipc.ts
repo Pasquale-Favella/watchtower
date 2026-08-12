@@ -53,12 +53,14 @@ export interface CoachRunnerDeps {
   /** Detection for the picker AND the run's HarnessInfo (scrubEnv, bin). The
    *  runner never trusts the renderer's kind string beyond a registry key. */
   detect: () => Promise<HarnessInfo[]>
-  /** Builds the in-app ledger MCP server config for a conversation's scope
-   *  (map 53). App-specific (execPath, asar entry path, dbPath) — injected so
-   *  the runner stays electron-free; tests inject a fake. Null when there is
-   *  no ledger.db yet (fresh install, nothing scanned) — the run then has no
-   *  data tools, which is correct: there is no data to serve. */
-  ledgerMcpServer: (scope: OverviewScope) => AcpMcpServer | null
+  /** Builds the in-app ledger MCP server config (map 53). App-specific
+   *  (execPath, asar entry path, dbPath) — injected so the runner stays
+   *  electron-free; tests inject a fake. Takes NO scope: the server serves the
+   *  full lifetime ledger and the harness filters through the tools' optional
+   *  `scope` argument. Null when there is no ledger.db yet (fresh install,
+   *  nothing scanned) — the run then has no data tools, which is correct:
+   *  there is no data to serve. */
+  ledgerMcpServer: () => AcpMcpServer | null
 }
 
 export interface CoachRunner {
@@ -219,10 +221,12 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       }
       const req: CoachRunRequest = parsed.data
 
-      // The conversation's UI scope snapshot (map 53): the ledger MCP server
-      // is baked to it at spawn. Absent scope degrades to the app's default
-      // period (the renderer always sends the current UI scope).
-      const scope: OverviewScope = req.scope ?? { period: 'all' }
+      // The conversation's UI scope snapshot (map 53): no longer baked into
+      // the MCP server (it serves the full lifetime ledger) — it now rides the
+      // briefing as a suggested default window for the agent's queries. Absent
+      // scope degrades to the lifetime label so the hint matches the tools'
+      // own no-arg default (the renderer always sends the current UI scope).
+      const scope: OverviewScope = req.scope ?? { period: 'lifetime' }
 
       // Mode-tagged presence check FIRST (ADR 0017): cheap, side-effect-free,
       // and the canonical error precedence — a build-skill run without
@@ -248,10 +252,12 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // agent must not be told to call tools that do not exist). Built only
       // AFTER the harness check: a run that never launches must not spawn
       // anything.
-      const ledgerServer = deps.ledgerMcpServer(scope)
-      // The MCP briefing (ADR 0020): what the ledger tools are, what window
-      // they cover, and the ground-your-answer rule. Only on the FIRST run of
-      // a conversation (no sessionId yet) — the harness resumes its session
+      const ledgerServer = deps.ledgerMcpServer()
+      // The MCP briefing (ADR 0020): what the ledger tools are, that they
+      // serve the full lifetime ledger filtered through an optional `scope`
+      // argument, and the ground-your-answer rule — plus the user's current
+      // window as a suggested default. Only on the FIRST run of a
+      // conversation (no sessionId yet) — the harness resumes its session
       // with the briefing already in context, so restating it every turn
       // would just burn tokens. A probe-warmed first run still counts as
       // first: the probe carried no prompt, so the agent has never seen the
@@ -381,10 +387,12 @@ export interface AgentsIpcSources {
    *  are resolved from `<appPath>/node_modules`, so no global install is
    *  needed (ADR 0016 map 47 ticket 49). */
   appPath: string
-  /** Builds the in-app ledger MCP server for a scope (map 53) — the runner's
-   *  app-specific dep, supplied by the composition root (main/index.ts). Null
-   *  when there is no ledger.db yet (fresh install) — no data, no tools. */
-  ledgerMcpServer: (scope: OverviewScope) => AcpMcpServer | null
+  /** Builds the in-app ledger MCP server (map 53) — the runner's app-specific
+   *  dep, supplied by the composition root (main/index.ts). Takes no scope:
+   *  the server serves the full lifetime ledger, and the harness filters via
+   *  the tools' optional `scope` argument. Null when there is no ledger.db yet
+   *  (fresh install) — no data, no tools. */
+  ledgerMcpServer: () => AcpMcpServer | null
 }
 
 /** Wire the Coach & Skills IPC surface onto ipcMain. Call once from

@@ -425,8 +425,9 @@ async function startRun(input: {
   const result = await fetchCoachRun({
     harnessKind: s.harnessKind,
     mode: input.mode,
-    // The conversation's UI-scope snapshot (map 53): the in-app ledger MCP
-    // server is baked to this window's data on the main side.
+    // The conversation's UI-scope snapshot (map 53): no longer baked into the
+    // MCP server (it serves the full lifetime ledger) — it rides the first-run
+    // briefing as the suggested default window for the agent's queries.
     scope: selectScope(useScopeStore.getState()),
     ...(input.prompt ? { prompt: input.prompt } : {}),
     ...(input.evidence ? { evidence: input.evidence } : {}),

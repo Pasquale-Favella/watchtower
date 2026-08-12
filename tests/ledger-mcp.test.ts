@@ -18,7 +18,9 @@ import { skillsPayloadSchema } from '../src/shared/schemas/skills.js'
 import { sessionRowSchema } from '../src/shared/schemas/views.js'
 
 /** Builds a real ledger DB (LedgerStore creates the schema) and seeds fixture
- *  rows across two providers/sessions plus one call OUTSIDE the scope. */
+ *  rows across two providers/sessions plus one call OUTSIDE any windowed
+ *  scope (January) — so a scope-filtered query sees 2 sessions / 3 calls and
+ *  the lifetime view sees all 3 sessions / 4 calls. */
 function seedLedger(): { dbPath: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-'))
   const dbPath = join(dir, 'ledger.db')
@@ -65,8 +67,9 @@ function seedLedger(): { dbPath: string; cleanup: () => void } {
   db.prepare(
     "INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd, input_tokens, output_tokens, tools_json) VALUES (?, 'sess-b', 0, 0, 'opencode', 'opencode-default', '2026-07-02T10:00:00.000Z', 0.7, 2000, 1000, '[\"Edit\"]')",
   ).run(sourceOpencode)
-  // sess-c is ENTIRELY OUT OF SCOPE (January): its own session, so the scope
-  // boundary is clean across all the UI views' semantics.
+  // sess-c is OUTSIDE any windowed scope (January): its own session, so the
+  // scope boundary is clean across all the UI views' semantics — and the
+  // LIFETIME view proves the server really serves everything.
   db.prepare(
     "INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd, input_tokens, output_tokens, tools_json) VALUES (?, 'sess-c', 0, 0, 'opencode', 'opencode-default', '2026-01-01T10:00:00.000Z', 9.0, 1, 1, '[]')",
   ).run(sourceOpencode)
@@ -77,7 +80,8 @@ function seedLedger(): { dbPath: string; cleanup: () => void } {
 }
 
 const cleanups: Array<() => void> = []
-/** The July scope — 3 in-scope calls (0.5 + 0.3 + 0.7), 2 sessions. */
+/** A windowed scope — passed to the tools as their optional `scope` argument.
+ *  3 in-scope calls (0.5 + 0.3 + 0.7), 2 sessions. */
 const scope: OverviewScope = { period: '30days', range: { since: '2026-07-01', until: '2026-07-31' } }
 
 function openStore(): LedgerStore {
@@ -94,24 +98,43 @@ afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup()
 })
 
-describe('Ledger MCP tools (ADR 0020) — the UI payloads over the shared seam', () => {
-  it('ledger_scope reports the baked UI scope, its range, and the counts inside it', () => {
+describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam', () => {
+  it('serves the FULL lifetime ledger by default — nothing is baked at spawn', () => {
     const store = openStore()
-    const tool = buildLedgerTools(store, scope).find(t => t.name === 'ledger_scope')!
-    const out = tool.run({}) as { scope: OverviewScope; sessions: number; calls: number; providers: string[]; range: { startMs: number } }
+    const scopeTool = buildLedgerTools(store).find(t => t.name === 'ledger_scope')!
+    const out = scopeTool.run({}) as { scope: OverviewScope; sessions: number; calls: number }
+    expect(out.scope).toEqual({ period: 'lifetime' })
+    expect(out.sessions).toBe(3) // the January session is in scope now
+    expect(out.calls).toBe(4)
+  })
+
+  it('ledger_scope reports the window a query is scoped to (optional scope arg)', () => {
+    const store = openStore()
+    const tool = buildLedgerTools(store).find(t => t.name === 'ledger_scope')!
+    const out = tool.run({ scope }) as { scope: OverviewScope; sessions: number; calls: number; providers: string[]; range: { startMs: number } }
     expect(out.scope).toEqual(scope)
     expect(out.sessions).toBe(2)
-    expect(out.calls).toBe(3) // the January call is out of scope
+    expect(out.calls).toBe(3) // the January call is out of the window
     expect(out.providers).toEqual(['claude', 'opencode'])
     expect(out.range.startMs).toBeGreaterThan(0)
   })
 
+  it('degrades a malformed scope argument to the lifetime window (never a crash)', () => {
+    const store = openStore()
+    const tool = buildLedgerTools(store).find(t => t.name === 'ledger_scope')!
+    // Belt-and-suspenders: the SDK rejects bad args over the wire, but a
+    // direct caller passing garbage still gets a sane lifetime answer.
+    const out = tool.run({ scope: { period: 'nope' } }) as { scope: OverviewScope; calls: number }
+    expect(out.scope).toEqual({ period: 'lifetime' })
+    expect(out.calls).toBe(4)
+  })
+
   it('ledger_overview returns a payload that IS the UI OverviewPayload', async () => {
     const store = openStore()
-    const tool = buildLedgerTools(store, scope).find(t => t.name === 'ledger_overview')!
-    const out = await tool.run({})
+    const tool = buildLedgerTools(store).find(t => t.name === 'ledger_overview')!
+    const out = await tool.run({ scope })
     // The renderer's own schema validates the MCP output byte-for-byte — the
-    // agent sees exactly what the Overview view shows.
+    // agent sees exactly what the Overview view shows for that window.
     expect(overviewPayloadSchema.safeParse(out).success).toBe(true)
     const payload = overviewPayloadSchema.parse(out)
     expect(payload.kpis.calls).toBe(3)
@@ -119,10 +142,19 @@ describe('Ledger MCP tools (ADR 0020) — the UI payloads over the shared seam',
     expect(payload.models.map(m => m.name).sort()).toEqual(['claude-sonnet', 'opencode-default'])
   })
 
-  it('ledger_sessions returns the UI SessionRow[] shape', async () => {
+  it('ledger_overview with no scope argument spans the whole ledger', async () => {
     const store = openStore()
-    const tool = buildLedgerTools(store, scope).find(t => t.name === 'ledger_sessions')!
-    const out = await tool.run({})
+    const tool = buildLedgerTools(store).find(t => t.name === 'ledger_overview')!
+    const payload = overviewPayloadSchema.parse(await tool.run({}))
+    expect(payload.kpis.calls).toBe(4)
+    expect(payload.kpis.sessions).toBe(3)
+    expect(payload.kpis.cost).toBeCloseTo(10.5)
+  })
+
+  it('ledger_sessions returns the UI SessionRow[] shape for the requested scope', async () => {
+    const store = openStore()
+    const tool = buildLedgerTools(store).find(t => t.name === 'ledger_sessions')!
+    const out = await tool.run({ scope })
     expect(sessionRowSchema.array().safeParse(out).success).toBe(true)
     const rows = sessionRowSchema.array().parse(out)
     expect(rows).toHaveLength(2)
@@ -131,8 +163,8 @@ describe('Ledger MCP tools (ADR 0020) — the UI payloads over the shared seam',
 
   it('ledger_models returns the UI ModelsPayload with the live config applied', async () => {
     const store = openStore()
-    const tool = buildLedgerTools(store, scope).find(t => t.name === 'ledger_models')!
-    const out = await tool.run({})
+    const tool = buildLedgerTools(store).find(t => t.name === 'ledger_models')!
+    const out = await tool.run({ scope })
     expect(modelsPayloadSchema.safeParse(out).success).toBe(true)
     const payload = modelsPayloadSchema.parse(out)
     expect(payload.byModel.length).toBeGreaterThan(0)
@@ -140,15 +172,15 @@ describe('Ledger MCP tools (ADR 0020) — the UI payloads over the shared seam',
 
   it('ledger_skills returns the UI SkillsPayload (the build-skill candidate pool)', async () => {
     const store = openStore()
-    const tool = buildLedgerTools(store, scope).find(t => t.name === 'ledger_skills')!
-    const out = await tool.run({})
+    const tool = buildLedgerTools(store).find(t => t.name === 'ledger_skills')!
+    const out = await tool.run({ scope })
     expect(skillsPayloadSchema.safeParse(out).success).toBe(true)
   })
 
   it('ledger_calls is the raw drill-down — filtered, newest first, display-priced', async () => {
     const store = openStore()
-    const tool = buildLedgerTools(store, scope).find(t => t.name === 'ledger_calls')!
-    const rows = tool.run({}) as Array<{
+    const tool = buildLedgerTools(store).find(t => t.name === 'ledger_calls')!
+    const rows = tool.run({ scope }) as Array<{
       timestamp: string
       model: string
       display_cost_usd: number
@@ -159,16 +191,20 @@ describe('Ledger MCP tools (ADR 0020) — the UI payloads over the shared seam',
     expect(rows).toHaveLength(3)
     expect(rows[0]!.timestamp).toBe('2026-07-02T10:00:00.000Z') // newest first
 
-    const bashRows = tool.run({ tool: 'Bash' }) as Array<{ model: string }>
+    const bashRows = tool.run({ scope, tool: 'Bash' }) as Array<{ model: string }>
     expect(bashRows).toHaveLength(1)
     expect(bashRows[0]!.model).toBe('claude-sonnet')
 
-    const modelRows = tool.run({ model: 'claude-sonnet' }) as Array<{ display_cost_usd: number }>
+    const modelRows = tool.run({ scope, model: 'claude-sonnet' }) as Array<{ display_cost_usd: number }>
     expect(modelRows).toHaveLength(2)
     expect(modelRows.reduce((sum, r) => sum + r.display_cost_usd, 0)).toBeCloseTo(0.8)
 
-    const limited = tool.run({ limit: 1 }) as unknown[]
+    const limited = tool.run({ scope, limit: 1 }) as unknown[]
     expect(limited).toHaveLength(1)
+
+    // No scope arg → lifetime: the January call joins the drill-down.
+    const lifetimeRows = tool.run({}) as unknown[]
+    expect(lifetimeRows).toHaveLength(4)
 
     // The Bash call carries its parsed tool/skill/bash evidence.
     const bashCall = rows.find(r => r.bash_commands.includes('git commit'))!
@@ -191,7 +227,7 @@ describe('Ledger MCP tools (ADR 0020) — the UI payloads over the shared seam',
 describe('Ledger MCP server (ADR 0020) — official SDK over an in-memory transport', () => {
   it('registers the six tools and answers a tools/call with a UI-valid payload', async () => {
     const store = openStore()
-    const server = createLedgerMcpServer(store, scope)
+    const server = createLedgerMcpServer(store)
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     const client = new Client({ name: 'ledger-mcp-test', version: '1.0.0' }, { capabilities: {} })
     // The in-memory transport delivers only once both peers read — the server
@@ -214,7 +250,8 @@ describe('Ledger MCP server (ADR 0020) — official SDK over an in-memory transp
     const payload = JSON.parse(text) as unknown
     expect(overviewPayloadSchema.safeParse(payload).success).toBe(true)
 
-    const scopeResult = await client.callTool({ name: 'ledger_scope', arguments: {} })
+    // Scoped over the wire: the harness filters autonomously via `scope`.
+    const scopeResult = await client.callTool({ name: 'ledger_scope', arguments: { scope } })
     const scopeText = scopeResult.content.find(c => c.type === 'text')?.text ?? ''
     expect(JSON.parse(scopeText)).toMatchObject({ calls: 3, sessions: 2 })
 
@@ -224,7 +261,7 @@ describe('Ledger MCP server (ADR 0020) — official SDK over an in-memory transp
 
   it('surfaces an unknown tool as a protocol error, not a crash', async () => {
     const store = openStore()
-    const server = createLedgerMcpServer(store, scope)
+    const server = createLedgerMcpServer(store)
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     const client = new Client({ name: 'ledger-mcp-test', version: '1.0.0' }, { capabilities: {} })
     await server.connect(serverTransport)
@@ -240,22 +277,25 @@ describe('Ledger MCP server (ADR 0020) — official SDK over an in-memory transp
 })
 
 describe('Ledger MCP prompts (ADR 0020) — reusable preambles over the SDK', () => {
-  it('coach-orient renders the MCP briefing plus a first-step nudge', () => {
+  it('coach-orient renders the lifetime MCP briefing plus a first-step nudge', () => {
     const store = openStore()
-    const prompt = buildLedgerPrompts(scope).find(p => p.name === 'coach-orient')!
+    const prompt = buildLedgerPrompts().find(p => p.name === 'coach-orient')!
     const text = prompt.render({})
     expect(text).toContain('watchtower-ledger')
     expect(text).toContain('ledger_scope')
-    expect(text).toContain('custom range 2026-07-01 → 2026-07-31')
+    expect(text).toContain('FULL usage history')
+    expect(text).toContain('scope')
     expect(text).toContain('ledger_overview')
     expect(text).toContain('Never invent numbers')
     expect(text).toContain('Call this FIRST')
+    // The served prompt also carries the state-the-window transparency rule.
+    expect(text).toContain('say which window you queried')
     void store
   })
 
   it('build-skill renders the authoring prompt and validates its args against the SHARED evidence schema', () => {
     const store = openStore()
-    const prompt = buildLedgerPrompts(scope).find(p => p.name === 'build-skill')!
+    const prompt = buildLedgerPrompts().find(p => p.name === 'build-skill')!
     // Direct render() bypasses the SDK wire (which string-coerces); the shared
     // schema's native number contract applies here.
     const text = prompt.render({
@@ -276,33 +316,34 @@ describe('Ledger MCP prompts (ADR 0020) — reusable preambles over the SDK', ()
 
   it('refuses malformed build-skill args (the shared zod schema is the prompt contract)', () => {
     const store = openStore()
-    const prompt = buildLedgerPrompts(scope).find(p => p.name === 'build-skill')!
+    const prompt = buildLedgerPrompts().find(p => p.name === 'build-skill')!
     expect(() => prompt.render({ name: 'git commit' })).toThrow() // missing frequency, spread, cost, turns, source
     void store
   })
 })
 
 describe('Ledger MCP resources (ADR 0020) — read-only documents behind stable URIs', () => {
-  it('ledger://scope reuses the ledger_scope computation and names the window', () => {
+  it('ledger://scope names the lifetime window and reuses the ledger_scope computation', () => {
     const store = openStore()
-    const resource = buildLedgerResources(store, scope).find(r => r.uri === 'ledger://scope')!
+    const resource = buildLedgerResources(store).find(r => r.uri === 'ledger://scope')!
     const text = resource.read()
-    expect(text).toContain('custom range 2026-07-01 → 2026-07-31')
-    expect(text).toContain('Calls in scope: 3')
-    expect(text).toContain('Sessions in scope: 2')
+    expect(text).toContain('Lifetime · all providers')
+    expect(text).toContain('Calls: 4')
+    expect(text).toContain('Sessions: 3')
     expect(text).toContain('claude, opencode')
   })
 
-  it('ledger://overview IS the UI Overview payload, as JSON text', () => {
+  it('ledger://overview IS the lifetime UI Overview payload, as JSON text', () => {
     const store = openStore()
-    const resource = buildLedgerResources(store, scope).find(r => r.uri === 'ledger://overview')!
+    const resource = buildLedgerResources(store).find(r => r.uri === 'ledger://overview')!
     const payload = JSON.parse(resource.read()) as unknown
     expect(overviewPayloadSchema.safeParse(payload).success).toBe(true)
+    expect(overviewPayloadSchema.parse(payload).kpis.calls).toBe(4)
   })
 
   it('ledger://schema documents the tables, tools, resources, and prompts', () => {
     const store = openStore()
-    const resource = buildLedgerResources(store, scope).find(r => r.uri === 'ledger://schema')!
+    const resource = buildLedgerResources(store).find(r => r.uri === 'ledger://schema')!
     const text = resource.read()
     expect(text).toContain('ledger_call')
     expect(text).toContain('ledger_scope')
@@ -314,7 +355,7 @@ describe('Ledger MCP resources (ADR 0020) — read-only documents behind stable 
 describe('Ledger MCP server (ADR 0020) — prompts + resources over the in-memory client', () => {
   it('lists and gets the prompt templates', async () => {
     const store = openStore()
-    const server = createLedgerMcpServer(store, scope)
+    const server = createLedgerMcpServer(store)
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     const client = new Client({ name: 'ledger-mcp-test', version: '1.0.0' }, { capabilities: {} })
     await server.connect(serverTransport)
@@ -351,7 +392,7 @@ describe('Ledger MCP server (ADR 0020) — prompts + resources over the in-memor
 
   it('lists and reads the resources', async () => {
     const store = openStore()
-    const server = createLedgerMcpServer(store, scope)
+    const server = createLedgerMcpServer(store)
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     const client = new Client({ name: 'ledger-mcp-test', version: '1.0.0' }, { capabilities: {} })
     await server.connect(serverTransport)
@@ -362,7 +403,7 @@ describe('Ledger MCP server (ADR 0020) — prompts + resources over the in-memor
 
     const scopeRead = await client.readResource({ uri: 'ledger://scope' })
     const scopeText = scopeRead.contents[0] && 'text' in scopeRead.contents[0] ? scopeRead.contents[0].text : ''
-    expect(scopeText).toContain('Calls in scope: 3')
+    expect(scopeText).toContain('Calls: 4')
 
     const overviewRead = await client.readResource({ uri: 'ledger://overview' })
     const overviewText = overviewRead.contents[0] && 'text' in overviewRead.contents[0] ? overviewRead.contents[0].text : ''

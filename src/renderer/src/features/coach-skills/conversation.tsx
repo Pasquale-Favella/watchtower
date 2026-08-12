@@ -1,7 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
-import { useShallow } from 'zustand/react/shallow'
+import { useRef, useState } from 'react'
 
-import { Badge } from '@/shared/components/ui/badge'
 import { Button } from '@/shared/components/ui/button'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import {
@@ -13,11 +11,7 @@ import {
 } from '@/shared/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip'
 import { formatUsd } from '@/shared/lib/models'
-import { PERIOD_LABELS } from '@/shared/lib/settings-constants'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { useCoachSkillsStore } from '@/features/coach-skills/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
-import { useScanStore } from '@/app/stores/scan-store'
 import { candidateKey } from '@/features/coach-skills/lib'
 import type { SkillCandidate } from '../../../../shared/schemas/skills.js'
 import { ModelSelector } from './model-selector'
@@ -30,21 +24,6 @@ const SAMPLE_PROMPTS = [
   'Summarise my last 30 days of work',
   'What patterns should I turn into skills?',
 ]
-
-/** The data-window caption the harness reads (map 53): the current UI scope,
- *  phrased as it reads on the control strip ("Last 30 days · claude"). */
-export function useScopeCaption(): string {
-  const scope = useScopeStore(useShallow(selectScope))
-  const detectedProviders = useScanStore(s => s.detectedProviders)
-  return useMemo(() => {
-    const providerOptions = providerOptionsFromDetected(detectedProviders)
-    const periodLabel = PERIOD_LABELS[scope.period] ?? scope.period
-    const providerLabel = scope.provider
-      ? (providerOptions.find(p => p.value === scope.provider)?.label ?? scope.provider)
-      : 'all providers'
-    return `${periodLabel} · ${providerLabel}`
-  }, [scope, detectedProviders])
-}
 
 /** Clickable chips for the detected patterns in scope — the conversational
  *  skill side's "living reference": the user clicks one to START a build-skill
@@ -180,9 +159,10 @@ export function ConversationThread({ saveNotice, onSave }: {
 /** The prompt bar — an elements.ai-sdk.dev PromptInput-inspired input that
  *  stays pinned at the bottom of the chat surface: an auto-growing textarea up
  *  top, a footer with the provider (harness) picker, the agent-declared
- *  model/mode pickers, the data caption, and Send/Stop. The craft-a-skill
- *  chips live on the courtesy screen only — once a conversation starts, the
- *  input is the surface. */
+ *  model/mode pickers, and Send/Stop. The coach reads the full lifetime
+ *  ledger (no data-window chip — the agent filters per question). The
+ *  craft-a-skill chips live on the courtesy screen only — once a conversation
+ *  starts, the input is the surface. */
 export function ConversationComposer({ running, canSend, onSend, onStop }: {
   running: boolean
   canSend: boolean
@@ -200,7 +180,6 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   const modeId = useCoachSkillsStore(s => s.modeId)
   const setModelId = useCoachSkillsStore(s => s.setModelId)
   const setModeId = useCoachSkillsStore(s => s.setModeId)
-  const scopeCaption = useScopeCaption()
 
   const [prompt, setPrompt] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -292,15 +271,6 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
           </Select>
         )}
 
-        <Badge
-          variant="outline"
-          className="h-7 max-w-[260px] gap-1.5 border-border text-[10.5px] font-normal text-muted-foreground"
-          title="The harness reads this data window from your platform ledger through the in-app MCP server; runs happen in a private temp workspace."
-        >
-          <span className="shrink-0 font-medium text-foreground">Data</span>
-          <span className="truncate">{scopeCaption}</span>
-        </Badge>
-
         <div className="ml-auto flex items-center gap-2">
           {running ? (
             <Button type="button" variant="outline" onClick={onStop} className="h-8 shrink-0 text-[12px]">
@@ -322,8 +292,9 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
  *  the empty state is a centered welcome filling the chat (with the
  *  craft-a-skill chips and sample prompts), an active conversation is a slim
  *  header over a MessageScroller transcript, and the prompt bar stays PINNED
- *  at the bottom in both states. Runs read the current UI scope live through
- *  the in-app ledger MCP server. */
+ *  at the bottom in both states. Runs read the FULL lifetime ledger through
+ *  the in-app MCP server; the current UI scope rides the briefing as the
+ *  suggested default window for the agent's queries. */
 export function ConversationView() {
   const harnessKind = useCoachSkillsStore(s => s.harnessKind)
   const messages = useCoachSkillsStore(s => s.messages)

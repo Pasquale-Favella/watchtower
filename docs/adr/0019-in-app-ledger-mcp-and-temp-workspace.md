@@ -38,6 +38,11 @@ the ledger MCP server. The workspace-picker IPC (`coach:pick-workspace`), its
 schema, and the control-strip chooser are removed; the strip shows a
 data-context caption instead ("Last 30 days · all providers").
 
+> **Updated 2026-08-12 (ADR 0020):** the server is no longer scoped at
+> spawn — it serves the full lifetime ledger and the harness filters through
+> each tool's optional `scope` argument (see ADR 0020's "Lifetime-serving"
+> section). The rest of this section describes the original design.
+
 ### 2. In-app, read-only ledger MCP server, scoped at spawn
 
 Each run attaches a single `watchtower-ledger` MCP server to the agent's

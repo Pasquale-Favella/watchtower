@@ -8,7 +8,6 @@ import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
 import type { HarnessRuntime } from '../src/main/agents/runtime.js'
 import type { CoachEvent } from '../src/shared/schemas/agents.js'
-import type { OverviewScope } from '../src/shared/schemas/overview.js'
 
 /** A fake detect result: one configured claude harness (ADR 0016 shape). */
 const harnesses: HarnessInfo[] = [
@@ -24,13 +23,14 @@ const harnesses: HarnessInfo[] = [
 
 const detect = vi.fn(async () => harnesses)
 
-/** A fake ledger MCP config builder: echoes the scope so the test can assert
- *  what the runner baked in (map 53). */
-const ledgerMcpServer = vi.fn((scope: OverviewScope): AcpMcpServer => ({
+/** A fake ledger MCP config builder: takes NO scope — the server serves the
+ *  full lifetime ledger and the harness filters via the tools' `scope`
+ *  argument (map 53). */
+const ledgerMcpServer = vi.fn((): AcpMcpServer => ({
   name: 'watchtower-ledger',
   command: 'node',
   args: ['ledger-mcp.js', '--ledger-mcp'],
-  env: [{ name: 'WATCHTOWER_LEDGER_MCP', value: JSON.stringify({ scope }) }],
+  env: [{ name: 'WATCHTOWER_LEDGER_MCP', value: JSON.stringify({}) }],
 }))
 
 /** A runtime that streams scripted events to completion. */
@@ -139,19 +139,19 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect(existsSync(input.workspacePath)).toBe(true)
   })
 
-  it('injects the in-app ledger MCP server into the run, scoped to the request scope', async () => {
+  it('injects the in-app ledger MCP server into the run — scope-free, serving the full lifetime ledger', async () => {
     const run = vi.fn(async function* () { /* no-op */ })
     const runner = makeRunner({ run } as unknown as HarnessRuntime)
 
     await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, () => {})
 
-    expect(ledgerMcpServer).toHaveBeenCalledWith({ period: '30days', provider: 'claude' })
+    expect(ledgerMcpServer).toHaveBeenCalledWith()
     const input = run.mock.calls[0]?.[0] as { mcpServers: AcpMcpServer[] }
     expect(input.mcpServers).toHaveLength(1)
     expect(input.mcpServers[0]!.name).toBe('watchtower-ledger')
   })
 
-  it('prepends the MCP briefing to the FIRST coach run — naming the tools and the data window', async () => {
+  it('prepends the MCP briefing to the FIRST coach run — naming the tools and the suggested window', async () => {
     const run = vi.fn(async function* () { /* no-op */ })
     const runner = makeRunner({ run } as unknown as HarnessRuntime)
 
@@ -194,13 +194,13 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect(input.prompt).toBe('Summarise my spend')
   })
 
-  it('defaults the ledger scope to the widest view when the request carries none', async () => {
+  it('injects the ledger MCP server with NO scope when the request carries none (lifetime serving)', async () => {
     const run = vi.fn(async function* () { /* no-op */ })
     const runner = makeRunner({ run } as unknown as HarnessRuntime)
 
     await runner.start(request, () => {})
 
-    expect(ledgerMcpServer).toHaveBeenCalledWith({ period: 'all' })
+    expect(ledgerMcpServer).toHaveBeenCalledWith()
   })
 
   it('forwards the resume sessionId AND reuses the same temp workspace for the conversation', async () => {
