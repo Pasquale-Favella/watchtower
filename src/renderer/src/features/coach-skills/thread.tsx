@@ -12,7 +12,6 @@ import {
   MessageScrollerViewport,
 } from '@/shared/components/ui/message-scroller'
 
-import { MODE_LABEL } from './lib'
 import { CopyButton, RetryButton, StreamingDots, ThinkingBlock, ToolCard } from './blocks'
 import { useCoachSkillsStore, type ChatMessage } from './store'
 
@@ -56,7 +55,7 @@ export function MessageBubble({ message, canRetry, onRetry }: {
               hover-reveal copy action. */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <Badge variant="secondary" className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {MODE_LABEL[message.mode]}
+              Coach
             </Badge>
             {message.meta?.harness && (
               <span className="text-[9.5px] text-muted-foreground">{message.meta.harness}</span>

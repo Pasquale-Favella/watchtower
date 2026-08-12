@@ -88,25 +88,6 @@ export const skillsDismissalResultSchema = z.discriminatedUnion('ok', [
 ])
 export type SkillsDismissalResult = z.infer<typeof skillsDismissalResultSchema>
 
-/** The one-shot harness prose request: a candidate's NORMALIZED evidence only
- *  (never raw transcripts — the harness authors from what the detector saw). */
-export const skillsProseRequestSchema = z.object({
-  source: skillsSourceSchema,
-  name: z.string(),
-  frequency: z.number(),
-  spreadSessions: z.number(),
-  spreadProjects: z.number(),
-  costUSD: z.number(),
-  turns: z.number(),
-})
-export type SkillsProseRequest = z.infer<typeof skillsProseRequestSchema>
-
-export const skillsProseResultSchema = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), markdown: z.string() }),
-  z.object({ ok: z.literal(false), error: z.string() }),
-])
-export type SkillsProseResult = z.infer<typeof skillsProseResultSchema>
-
 /** User-initiated save: the renderer asks, main opens the OS save dialog
  *  (defaulting to `.agents/skills/`), and only a dialog-confirmed path is
  *  written — the app never writes on its own. */

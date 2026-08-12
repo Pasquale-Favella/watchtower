@@ -216,7 +216,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect((run.mock.calls[0]![0] as { sessionId: string }).sessionId).toBe('sess_prev')
   })
 
-  it('a session-less run (build-skill one-shot) REUSES the conversation workspace instead of deleting it', async () => {
+  it('a session-less run REUSES the conversation workspace instead of deleting it', async () => {
     const run = vi.fn(async function* () { /* no-op */ })
     const runner = makeRunner({ run } as unknown as HarnessRuntime)
 
@@ -224,17 +224,9 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     const firstPath = (run.mock.calls[0]![0] as { workspacePath: string }).workspacePath
     expect(existsSync(firstPath)).toBe(true)
 
-    // A build-skill run never resumes (no sessionId) — yet it must NOT delete
-    // the coach conversation's cwd while a live ACP session may still hold it.
-    await runner.start({ ...request, mode: 'build-skill', evidence: {
-      source: 'bash',
-      name: 'git commit',
-      frequency: 6,
-      spreadSessions: 2,
-      spreadProjects: 1,
-      costUSD: 3.5,
-      turns: 4,
-    } }, () => {})
+    // A second session-less run must NOT delete the conversation's cwd while
+    // a live ACP session may still hold it.
+    await runner.start(request, () => {})
     const secondPath = (run.mock.calls[1]![0] as { workspacePath: string }).workspacePath
 
     expect(secondPath).toBe(firstPath)
@@ -314,6 +306,16 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     const result = await runner.start({ prompt: 'p' }, () => {})
 
     expect(result).toEqual({ ok: false, error: 'invalid coach run request' })
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('refuses a run without a prompt — before any spawn', async () => {
+    const run = vi.fn(async function* () { /* no-op */ })
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+
+    const result = await runner.start({ ...request, prompt: '   ' }, () => {})
+
+    expect(result).toEqual({ ok: false, error: 'coach run requires a prompt' })
     expect(run).not.toHaveBeenCalled()
   })
 
@@ -584,78 +586,6 @@ describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () 
     expect(failed).toEqual({ ok: false, error: 'fs boom' })
     expect(next.ok).toBe(true)
     expect(order).toEqual(['codex'])
-  })
-})
-
-describe('Mode-tagged runs (ADR 0017) — build-skill prose through coach:run', () => {
-  const evidence = {
-    source: 'bash' as const,
-    name: 'git commit',
-    frequency: 6,
-    spreadSessions: 2,
-    spreadProjects: 1,
-    costUSD: 3.5,
-    turns: 4,
-  }
-
-  it('builds the authoring prompt main-side from the NORMALIZED evidence — never renderer text', async () => {
-    const run = vi.fn(async function* () {
-      yield { kind: 'status', state: 'done' }
-    })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
-
-    const result = await runner.start({ ...request, mode: 'build-skill', evidence }, () => {})
-
-    expect(result).toEqual({ ok: true, runId: expect.any(String) })
-    const input = run.mock.calls[0]?.[0] as { prompt: string }
-    // The prompt mentions ONLY normalized facts — never a raw command or
-    // transcript, and never the renderer's request body.
-    expect(input.prompt).toContain('Pattern: git commit')
-    expect(input.prompt).toContain('Frequency: 6 occurrences')
-    expect(input.prompt).toContain('Source: bash')
-    expect(input.prompt).toContain('SKILL.md')
-    // MCP-aware (ADR 0020): the authoring agent is told it can ground the
-    // draft in the user's real usage data through the ledger tools.
-    expect(input.prompt).toContain('watchtower-ledger')
-    expect(input.prompt).toContain('ledger_skills')
-    expect(input.prompt).toContain('ledger_calls')
-  })
-
-  it('refuses a build-skill run without evidence — before any spawn', async () => {
-    const run = vi.fn(async function* () { /* no-op */ })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
-
-    const result = await runner.start({ ...request, mode: 'build-skill' }, () => {})
-
-    expect(result).toEqual({ ok: false, error: 'build-skill run requires evidence' })
-    expect(run).not.toHaveBeenCalled()
-  })
-
-  it('refuses a coach run without a prompt', async () => {
-    const run = vi.fn(async function* () { /* no-op */ })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
-
-    const result = await runner.start({ ...request, prompt: '   ' }, () => {})
-
-    expect(result).toEqual({ ok: false, error: 'coach run requires a prompt' })
-    expect(run).not.toHaveBeenCalled()
-  })
-
-  it('streams the build-skill prose through the normal coach:run channel', async () => {
-    const runner = makeRunner(scriptedRuntime([
-      { kind: 'status', state: 'starting' },
-      { kind: 'text', delta: '# git commit' },
-      { kind: 'text', delta: '\n\n## Description\nCommit changes.' },
-      { kind: 'status', state: 'done' },
-    ]))
-    const events: CoachEvent[] = []
-
-    const result = await runner.start({ ...request, mode: 'build-skill', evidence }, (_runId, event) => { events.push(event) })
-
-    expect(result).toEqual({ ok: true, runId: expect.any(String) })
-    await vi.waitFor(() => expect(events).toHaveLength(4))
-    const text = events.filter(e => e.kind === 'text').map(e => (e as { kind: 'text'; delta: string }).delta).join('')
-    expect(text).toBe('# git commit\n\n## Description\nCommit changes.')
   })
 })
 

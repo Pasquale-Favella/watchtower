@@ -6,7 +6,7 @@ import { BrowserWindow, ipcMain } from 'electron'
 import { detectHarnesses, type HarnessInfo } from './detect.js'
 import { createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
 import { resolveBundledEntry } from './harnesses/bundled.js'
-import { buildCoachPrompt, buildLedgerBriefing, buildProsePrompt } from './prompts.js'
+import { buildCoachPrompt, buildLedgerBriefing } from './prompts.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import type { OverviewScope } from '../../shared/schemas/overview.js'
 import {
@@ -228,15 +228,10 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // own no-arg default (the renderer always sends the current UI scope).
       const scope: OverviewScope = req.scope ?? { period: 'lifetime' }
 
-      // Mode-tagged presence check FIRST (ADR 0017): cheap, side-effect-free,
-      // and the canonical error precedence — a build-skill run without
-      // evidence (or a coach run without a prompt) is refused before anything
-      // is detected or spawned. The actual prompt STRING is built later, once
-      // the briefing is known.
-      if (req.mode === 'build-skill' && !req.evidence) {
-        return { ok: false, error: 'build-skill run requires evidence' }
-      }
-      if (req.mode !== 'build-skill' && (!req.prompt || !req.prompt.trim())) {
+      // Presence check FIRST: cheap, side-effect-free — a run without a
+      // prompt is refused before anything is detected or spawned. The actual
+      // prompt STRING is built later, once the briefing is known.
+      if (!req.prompt || !req.prompt.trim()) {
         return { ok: false, error: 'coach run requires a prompt' }
       }
 
@@ -281,14 +276,12 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // prove it is non-null)
       const resumeSessionId = resumeProbed && probedSession ? probedSession.sessionId : req.sessionId
 
-      // Mode-tagged prompt build (ADR 0017): build-skill runs derive the
-      // authoring prompt from the candidate's NORMALIZED evidence, main-side
-      // — never from renderer text. Both prompts are MCP-aware (ADR 0020):
-      // the briefing tells the agent it can query the user's real usage data
-      // through the ledger tools.
-      const prompt = req.mode === 'build-skill'
-        ? buildProsePrompt(req.evidence!, briefing)
-        : buildCoachPrompt(req.prompt!, briefing)
+      // The one prompt path (ADR 0017 reshaped): the coach prompt carries the
+      // briefing's TWO-scope role (coaching + skill authoring), so a skill
+      // request needs no separate builder. MCP-aware (ADR 0020): the briefing
+      // tells the agent it can query the user's real usage data through the
+      // ledger tools.
+      const prompt = buildCoachPrompt(req.prompt!, briefing)
 
       try {
         const runtime = await deps.getRuntime()
@@ -296,11 +289,10 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
 
         // Per-conversation temp workspace: created on the conversation's first
         // run and REUSED for the whole conversation — a resumed run (sessionId
-        // present, whether a coach turn or a build-skill run seeded from a
-        // pattern chip) and a session-less one both share it, so a run must
-        // NEVER destroy it. Only `coach:reset` (renderer resetSession — a
-        // brand-new conversation) and app quit delete it. `mkdtemp` guarantees
-        // a real on-disk path — the seam's own workspace validation still runs.
+        // present) and a session-less one both share it, so a run must NEVER
+        // destroy it. Only `coach:reset` (renderer resetSession — a brand-new
+        // conversation) and app quit delete it. `mkdtemp` guarantees a real
+        // on-disk path — the seam's own workspace validation still runs.
         workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-'))
 
         const gen = runtime.run({
@@ -453,9 +445,9 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => voi
 
   // Skills draft board (ticket 25): the not-a-skill store. skills:view /
   // skills:save stay in registerIpc (they need the ledger + dialog directly);
-  // this module owns the harness-touching wire — and build-skill prose now
-  // runs through coach:run's mode tag (ADR 0017), so no separate prose
-  // channel exists here anymore.
+  // this module owns the harness-touching wire — skill prose runs through
+  // coach:run's single coach mode (ADR 0017 reshaped), so no separate prose
+  // channel exists here.
   ipcMain.handle('skills:dismiss', (_event, request: unknown): SkillsDismissalResult => {
     const parsed = skillsDismissalRequestSchema.safeParse(request)
     if (!parsed.success) return { ok: false, error: 'invalid dismissal request' }

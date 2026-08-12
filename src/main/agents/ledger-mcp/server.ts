@@ -22,10 +22,10 @@ import { buildLedgerTools } from './tools.js'
  * Tool outputs are JSON-text payloads that ARE the renderer's own shared
  * schema shapes; the SDK's zod input typing doubles as the wire contract.
  * Resources are passive documents behind stable URIs (`ledger://scope`,
- * `ledger://overview`, `ledger://schema`), and prompts are reusable
- * preambles (`coach-orient`, `build-skill`) — all reusing the same seam and
- * the same main-side prompt builders, so no MCP surface can drift from the UI
- * or from what a `coach:run` would send.
+ * `ledger://overview`, `ledger://schema`), and the `coach-orient` prompt is
+ * the dual-scope briefing (coaching + skill authoring) — all reusing the same
+ * seam and the same main-side prompt builders, so no MCP surface can drift
+ * from the UI or from what a `coach:run` would send.
  */
 export function createLedgerMcpServer(store: LedgerStore): McpServer {
   const server = new McpServer(

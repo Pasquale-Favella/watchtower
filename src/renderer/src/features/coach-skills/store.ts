@@ -12,7 +12,6 @@ import { useSettingsStore } from '@/features/settings/store'
 import type {
   CoachEventEnvelope,
   CoachHarnessRow,
-  CoachMode,
   CoachSessionModels,
   CoachSessionModes,
 } from '../../../../shared/schemas/agents.js'
@@ -51,8 +50,6 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   /** The user prompt. */
   content: string
-  /** Mode tag the turn ran under (ADR 0017) — always `coach` today. */
-  mode: CoachMode
   /** Accumulated thinking/reasoning text, streamed before the answer. */
   thinking: string
   /** Assistant tool-call notices, in order, with their lifecycle state. */
@@ -85,9 +82,9 @@ export interface CoachKindCache {
 
 /** The unified Coach state (ADR 0017, conversation prototype map 58): the
  *  message-model chat surface. Every run is part of ONE conversation that
- *  resumes (sessionId). Runs are `coach` mode — a free-form prompt. There is
- *  no separate build-skill mode anymore: skills are crafted conversationally
- *  by asking the harness directly. */
+ *  resumes (sessionId). There is ONE kind of run — a free-form prompt the
+ *  harness answers in either of its two scopes (coaching analysis or skill
+ *  authoring); the separate build-skill mode was deleted. */
 export interface CoachSkillsState {
   /** Harnesses detected on the host, for the picker. */
   hydrated: boolean
@@ -206,7 +203,6 @@ function emptyAssistant(): ChatMessage {
     id: nextMessageId(),
     role: 'assistant',
     content: '',
-    mode: 'coach',
     thinking: '',
     tools: [],
     meta: Object.keys(meta).length > 0 ? meta : undefined,
@@ -558,14 +554,13 @@ async function startRun(input: {
     setRunFailed('select a harness first')
     return
   }
-  const userMessage: ChatMessage = { id: nextMessageId(), role: 'user', content: input.userContent, mode: 'coach', thinking: '', tools: [], streaming: false }
+  const userMessage: ChatMessage = { id: nextMessageId(), role: 'user', content: input.userContent, thinking: '', tools: [], streaming: false }
   const assistantMessage = emptyAssistant()
   setRunPending(userMessage, assistantMessage, options.replaceAssistantId)
 
   const sessionId = input.resume ? s.sessionId : undefined
   const result = await fetchCoachRun({
     harnessKind: s.harnessKind,
-    mode: 'coach',
     // The conversation's UI-scope snapshot (map 53): no longer baked into the
     // MCP server (it serves the full lifetime ledger) — it rides the first-run
     // briefing as the suggested default window for the agent's queries.

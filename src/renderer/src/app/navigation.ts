@@ -5,7 +5,7 @@ import type { Section } from '../../../shared/schemas/renderer.js'
  * copy (ADR 0001). */
 export const SECTIONS: readonly Section[] = [
   // Coach & Skills (ADR 0017): one unified surface where every harness run is
-  // tagged coach | build-skill.
+  // a free-form coach prompt (coaching or skill authoring, same agent).
   'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'coachSkills', 'settings',
 ]
 

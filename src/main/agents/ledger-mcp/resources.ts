@@ -99,8 +99,7 @@ export function buildLedgerResources(store: LedgerStore): LedgerResourceDef[] {
         '- `ledger://schema` — this document.',
         '',
         '## Prompts',
-        '- `coach-orient` — the briefing for a data-grounded coaching turn.',
-        '- `build-skill` — the authoring prompt for a detected skill candidate.',
+        '- `coach-orient` — the dual-scope briefing for a data-grounded coaching turn (analysis + skill authoring).',
       ].join('\n'),
     },
   ]

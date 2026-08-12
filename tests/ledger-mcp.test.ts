@@ -170,7 +170,7 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
     expect(payload.byModel.length).toBeGreaterThan(0)
   })
 
-  it('ledger_skills returns the UI SkillsPayload (the build-skill candidate pool)', async () => {
+  it('ledger_skills returns the UI SkillsPayload (the suggested-skill pool the craft chips surface)', async () => {
     const store = openStore()
     const tool = buildLedgerTools(store).find(t => t.name === 'ledger_skills')!
     const out = await tool.run({ scope })
@@ -289,35 +289,18 @@ describe('Ledger MCP prompts (ADR 0020) — reusable preambles over the SDK', ()
     expect(text).toContain('Never invent numbers')
     expect(text).toContain('Call this FIRST')
     // The served prompt also carries the state-the-window transparency rule.
-    expect(text).toContain('say which window you queried')
+    expect(text).toContain('Say which window you queried')
     void store
   })
 
-  it('build-skill renders the authoring prompt and validates its args against the SHARED evidence schema', () => {
+  it('coach-orient carries the TWO-scope role — skill authoring needs no separate prompt (the build-skill mode is gone)', () => {
     const store = openStore()
-    const prompt = buildLedgerPrompts().find(p => p.name === 'build-skill')!
-    // Direct render() bypasses the SDK wire (which string-coerces); the shared
-    // schema's native number contract applies here.
-    const text = prompt.render({
-      source: 'bash',
-      name: 'git commit',
-      frequency: 6,
-      spreadSessions: 2,
-      spreadProjects: 1,
-      costUSD: 3.5,
-      turns: 4,
-    })
-    expect(text).toContain('Pattern: git commit')
-    expect(text).toContain('Frequency: 6 occurrences')
-    expect(text).toContain('ledger_skills')
-    expect(text).toContain('never invent raw transcripts')
-    void store
-  })
-
-  it('refuses malformed build-skill args (the shared zod schema is the prompt contract)', () => {
-    const store = openStore()
-    const prompt = buildLedgerPrompts().find(p => p.name === 'build-skill')!
-    expect(() => prompt.render({ name: 'git commit' })).toThrow() // missing frequency, spread, cost, turns, source
+    const prompt = buildLedgerPrompts().find(p => p.name === 'coach-orient')!
+    const text = prompt.render({})
+    expect(text).toContain('TWO scopes')
+    expect(text).toContain('Skill authoring')
+    expect(text).toContain('## Description')
+    expect(text).toContain('ledger_calls')
     void store
   })
 })
@@ -348,7 +331,8 @@ describe('Ledger MCP resources (ADR 0020) — read-only documents behind stable 
     expect(text).toContain('ledger_call')
     expect(text).toContain('ledger_scope')
     expect(text).toContain('coach-orient')
-    expect(text).toContain('build-skill')
+    // The build-skill prompt is gone — the schema resource no longer lists it.
+    expect(text).not.toContain('build-skill')
   })
 })
 
@@ -362,29 +346,14 @@ describe('Ledger MCP server (ADR 0020) — prompts + resources over the in-memor
     await client.connect(clientTransport)
 
     const { prompts } = await client.listPrompts()
-    expect(prompts.map(p => p.name)).toEqual(['coach-orient', 'build-skill'])
+    // The build-skill prompt was deleted — the one coach briefing serves both
+    // scopes, so only coach-orient remains.
+    expect(prompts.map(p => p.name)).toEqual(['coach-orient'])
 
     const orient = await client.getPrompt({ name: 'coach-orient', arguments: {} })
     const orientText = orient.messages[0]?.content
     expect(orientText).toBeDefined()
     expect(JSON.stringify(orientText)).toContain('ledger_scope')
-
-    // MCP prompt arguments are STRINGS on the wire (protocol constraint) —
-    // the server's coercion-tolerant args schema turns them back into numbers
-    // before the shared skillsProseRequestSchema validates the evidence.
-    const build = await client.getPrompt({
-      name: 'build-skill',
-      arguments: {
-        source: 'bash',
-        name: 'git commit',
-        frequency: '6',
-        spreadSessions: '2',
-        spreadProjects: '1',
-        costUSD: '3.5',
-        turns: '4',
-      },
-    })
-    expect(JSON.stringify(build.messages[0]?.content)).toContain('Pattern: git commit')
 
     await client.close()
     await server.close()

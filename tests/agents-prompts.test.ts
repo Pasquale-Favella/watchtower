@@ -3,23 +3,12 @@ import { describe, expect, it } from 'vitest'
 import {
   buildCoachPrompt,
   buildLedgerBriefing,
-  buildProsePrompt,
   scopeWindowLabel,
 } from '../src/main/agents/prompts.js'
 
 const scope30 = { period: '30days' as const, provider: 'claude' }
 const scopeAll = { period: 'lifetime' as const }
 const scopeRange = { period: '30days' as const, range: { since: '2026-07-01', until: '2026-07-31' } }
-
-const evidence = {
-  source: 'bash' as const,
-  name: 'git commit',
-  frequency: 6,
-  spreadSessions: 2,
-  spreadProjects: 1,
-  costUSD: 3.5,
-  turns: 4,
-}
 
 describe('scopeWindowLabel — the agent-facing data-window caption (matches the UI)', () => {
   it('labels a period + provider window', () => {
@@ -46,11 +35,15 @@ describe('buildLedgerBriefing — the MCP tool briefing (lifetime-serving)', () 
     expect(briefing).toContain('FULL usage history')
     expect(briefing).toContain('scope')
     expect(briefing).toContain('READ-ONLY')
+    // The tool list doubles as SELECTION guidance — when to pick each tool,
+    // not just that it exists — and ledger_scope is the mandatory first call.
+    expect(briefing).toContain('Choose the tool by question')
+    expect(briefing).toContain('Call this FIRST')
   })
 
   it('tells the harness to state which window it queried, so scoped answers are transparent', () => {
     const briefing = buildLedgerBriefing()
-    expect(briefing).toContain('say which window you queried')
+    expect(briefing).toContain('Say which window you queried')
     expect(briefing).toContain('so the user always knows what your numbers cover')
   })
 
@@ -70,6 +63,24 @@ describe('buildLedgerBriefing — the MCP tool briefing (lifetime-serving)', () 
 
   it('grounds the answer rule: never invent numbers', () => {
     expect(buildLedgerBriefing(scopeAll)).toContain('Never invent numbers')
+    // The briefing closes on an explicit non-negotiables section.
+    expect(buildLedgerBriefing(scopeAll)).toContain('## Non-negotiables')
+  })
+
+  it('defines the ONE agent across TWO scopes — coaching AND skill authoring (the build-skill mode is gone)', () => {
+    const briefing = buildLedgerBriefing(scopeAll)
+    expect(briefing).toContain('TWO scopes')
+    expect(briefing).toContain('1. Coaching')
+    expect(briefing).toContain('2. Skill authoring')
+    // The skill-authoring scope carries the canonical draft shape.
+    expect(briefing).toContain('## Description')
+    expect(briefing).toContain('## When to use')
+    expect(briefing).toContain('## Example')
+    expect(briefing).toContain('under 40 lines')
+    // ...and the ledger tools that make the Example factual.
+    expect(briefing).toContain('ledger_skills')
+    expect(briefing).toContain('ledger_calls')
+    expect(briefing).toContain('never inventing')
   })
 })
 
@@ -77,33 +88,13 @@ describe('buildCoachPrompt — briefing prepended only when present', () => {
   it('prepends the briefing then the user question', () => {
     const prompt = buildCoachPrompt('Summarise my spend', buildLedgerBriefing(scope30))
     expect(prompt).toContain("The user's question:\nSummarise my spend")
-    expect(prompt.indexOf('ledger_scope')).toBeLessThan(prompt.indexOf('The user'))
+    // The whole briefing (the ledger tools included) sits BEFORE the question
+    // block — compare against the question LABEL, since the briefing itself
+    // can legitimately mention "The user" in its role definition.
+    expect(prompt.indexOf('ledger_scope')).toBeLessThan(prompt.indexOf("The user's question:"))
   })
 
   it('passes the user text through untouched without a briefing', () => {
     expect(buildCoachPrompt('Summarise my spend', '')).toBe('Summarise my spend')
-  })
-})
-
-describe('buildProsePrompt — MCP-aware skill authoring with evidence guardrails', () => {
-  it('keeps ONLY normalized evidence plus the MCP grounding note', () => {
-    const prompt = buildProsePrompt(evidence, buildLedgerBriefing(scopeAll))
-    expect(prompt).toContain('Pattern: git commit')
-    expect(prompt).toContain('Frequency: 6 occurrences')
-    expect(prompt).toContain('Cost: 3.50 USD across 4 turn(s)')
-    // Never a raw command line or transcript in the prompt itself.
-    expect(prompt).not.toContain('git commit -m')
-    expect(prompt).not.toContain('--amend')
-    // The ledger is offered as a real grounding source, never as a way to
-    // fabricate specifics.
-    expect(prompt).toContain('ledger_skills')
-    expect(prompt).toContain('ledger_calls')
-    expect(prompt).toContain('never invent')
-  })
-
-  it('stays evidence-only when there is no briefing (fresh install)', () => {
-    const prompt = buildProsePrompt(evidence, '')
-    expect(prompt).toContain('Pattern: git commit')
-    expect(prompt).not.toContain('ledger_')
   })
 })

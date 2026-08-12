@@ -5,7 +5,6 @@ import {
   coachEventSchema,
   coachHarnessRowSchema,
   coachInspectResultSchema,
-  coachModeSchema,
   coachRunRequestSchema,
   coachRunResultSchema,
 } from '../src/shared/schemas/agents.js'
@@ -96,16 +95,17 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', scope: { period: 'decade' } }).success).toBe(false)
   })
 
-  it('defaults mode to coach and accepts a build-skill evidence payload', () => {
-    const parsed = coachRunRequestSchema.safeParse({
+  it('strips a stray mode or evidence field (the single-coach wire carries neither)', () => {
+    // Zod strips unknown keys (non-strict) — a build-skill request smuggling
+    // mode/evidence is accepted, but those fields never reach the runner: the
+    // channel is one coach prompt (same pattern as the stray workspacePath
+    // above).
+    const withMode = coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', mode: 'build-skill' })
+    expect(withMode.success).toBe(true)
+    if (withMode.success) expect('mode' in withMode.data).toBe(false)
+    const withEvidence = coachRunRequestSchema.safeParse({
       harnessKind: 'claude',
       prompt: 'p',
-    })
-    expect(parsed.success).toBe(true)
-    if (parsed.success) expect(parsed.data.mode).toBe('coach')
-    expect(coachRunRequestSchema.safeParse({
-      harnessKind: 'claude',
-      mode: 'build-skill',
       evidence: {
         source: 'bash',
         name: 'git commit',
@@ -115,26 +115,9 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
         costUSD: 3.5,
         turns: 4,
       },
-    }).success).toBe(true)
-  })
-
-  it('keeps evidence optional at the schema (the runner enforces build-skill needs it) and rejects an unknown mode', () => {
-    // The wire keeps evidence optional so the channel stays uniform; the
-    // runner's semantic check refuses a build-skill run without evidence.
-    expect(coachRunRequestSchema.safeParse({
-      harnessKind: 'claude',
-      mode: 'build-skill',
-    }).success).toBe(true)
-    expect(coachRunRequestSchema.safeParse({
-      harnessKind: 'claude',
-      mode: 'roast',
-    }).success).toBe(false)
-  })
-
-  it('parses the mode enum', () => {
-    expect(coachModeSchema.safeParse('coach').success).toBe(true)
-    expect(coachModeSchema.safeParse('build-skill').success).toBe(true)
-    expect(coachModeSchema.safeParse('nope').success).toBe(false)
+    })
+    expect(withEvidence.success).toBe(true)
+    if (withEvidence.success) expect('evidence' in withEvidence.data).toBe(false)
   })
 
   it('parses both ack arms of the run result', () => {

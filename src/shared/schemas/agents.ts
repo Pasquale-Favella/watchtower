@@ -1,7 +1,6 @@
 import { z } from 'zod'
 
 import { overviewScopeSchema } from './overview.js'
-import { skillsProseRequestSchema } from './skills.js'
 
 /**
  * The agent harness event stream — the wire contract between the main-process
@@ -109,13 +108,6 @@ export const coachEventEnvelopeSchema = z.object({
 })
 export type CoachEventEnvelope = z.infer<typeof coachEventEnvelopeSchema>
 
-/** The mode tag of a Coach & Skills run (ADR 0017): `coach` runs a
- *  free-form prompt; `build-skill` turns a detected candidate into a SKILL.md
- *  draft (the prompt is built main-side from the candidate's NORMALIZED
- *  evidence — the renderer never sends raw transcripts). */
-export const coachModeSchema = z.enum(['coach', 'build-skill'])
-export type CoachMode = z.infer<typeof coachModeSchema>
-
 /** `coach:run` request — the renderer's ask to drive one harness run through
  *  the seam. There is NO workspace picker (map 53): the main process runs
  *  each conversation in a private temp directory it owns and cleans up;
@@ -123,12 +115,16 @@ export type CoachMode = z.infer<typeof coachModeSchema>
  *  with it the conversation's temp workspace).
  *
  * The harness reads the platform's own data through the in-app ledger MCP
- * server, scoped to `scope` — the conversation's snapshot of the current UI
- * scope (period/provider/range), baked at spawn.
+ *  server, scoped to `scope` — the conversation's snapshot of the current UI
+ *  scope (period/provider/range), baked at spawn.
  *
  * Model/mode selection is PROGRESSIVE (map 47 ticket 50): the renderer may
- * only send `modelId`/`modeId` that the agent's own handshake reported via the
- * `session` event's models/modes — there is no arbitrary model picker. */
+ *  only send `modelId`/`modeId` that the agent's own handshake reported via the
+ *  `session` event's models/modes — there is no arbitrary model picker.
+ *
+ * There is ONE run mode — a free-form coach prompt. Skill crafting is a
+ *  coaching question (the suggested-skill chips send a natural-language
+ *  authoring prompt); the separate `build-skill` mode was deleted. */
 export const coachRunRequestSchema = z.object({
   /** Registry key of the harness to drive (claude, codex, gemini, …). */
   harnessKind: z.string(),
@@ -141,15 +137,11 @@ export const coachRunRequestSchema = z.object({
    *  briefing as a SUGGESTED default window for the agent's queries, never a
    *  boundary. Absent = lifetime (the tools' own no-arg default). */
   scope: overviewScopeSchema.optional(),
-  /** Mode tag (ADR 0017): `coach` (default) runs `prompt`; `build-skill`
-   *  requires `evidence` and the main process builds the authoring prompt. */
-  mode: coachModeSchema.default('coach'),
-  /** The free-form prompt for a `coach` run (ignored when mode is
-   *  build-skill — the prompt is derived from the evidence). */
+  /** The user's prompt — the whole run. The main process prepends the MCP
+   *  briefing on the conversation's first run. The runner enforces that a
+   *  prompt is present (the schema keeps it optional so the channel stays
+   *  uniform). */
   prompt: z.string().optional(),
-  /** The detected candidate for a `build-skill` run (required then): NORMALIZED
-   *  evidence only — never raw transcripts or session text. */
-  evidence: skillsProseRequestSchema.optional(),
   /** Resume handle from a previous run's session event. */
   sessionId: z.string().optional(),
 })

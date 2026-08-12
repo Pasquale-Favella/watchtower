@@ -93,14 +93,40 @@ describe('the suggested-skill chip chat-starter', () => {
     expect(candidateKey(candidate)).toBe('skill\u0000data-fetch')
   })
 
-  it('craftSkillPrompt is a normal coach prompt that names the pattern and asks for the canonical sections', () => {
+  it('craftSkillPrompt is a sharp coach prompt: pattern evidence, ledger grounding, and the canonical sections', () => {
     const prompt = craftSkillPrompt(candidate)
+    // Names the pattern with its normalized evidence.
     expect(prompt).toContain('Craft a SKILL.md for the skill `data-fetch`')
     expect(prompt).toContain('6 occurrences across 2 sessions / 1 project')
+    expect(prompt).toContain('3.50 USD across 4 turns')
+    // Points the harness at the ledger tools that make the Example factual,
+    // and rides the pattern's RAW sample so the agent starts from a real
+    // occurrence instead of a guess.
+    expect(prompt).toContain('`ledger_skills`')
+    expect(prompt).toContain('`ledger_calls`')
+    expect(prompt).toContain('Never invent')
+    expect(prompt).toContain('- Sample: `data-fetch`')
+    expect(prompt).toContain('quote the real invocations')
+    // The canonical draft shape, ready to save as a skill file.
     expect(prompt).toContain('## Description')
     expect(prompt).toContain('## When to use')
     expect(prompt).toContain('## Example')
-    // A plain coach run — no build-skill evidence, no draft-card plumbing.
-    expect(prompt).not.toContain('evidence')
+    expect(prompt).toContain('under 40 lines')
+    // A plain coach run — no build-skill mode, no draft-card plumbing.
+    expect(prompt).not.toContain('build-skill')
+  })
+
+  it('craftSkillPrompt keeps a messy raw sample to a single clean line', () => {
+    // A bash sample with command substitution + a trailing line must not
+    // break the markdown bullet — backticks stripped, newline dropped.
+    const messy = { ...candidate, source: 'bash' as const, sample: 'git log --format="%h `git branch --show-current`"\nmore' }
+    const prompt = craftSkillPrompt(messy)
+    const lines = prompt.split('\n').filter(l => l.startsWith('- Sample:'))
+    // Exactly ONE Sample line, wrapped in a single pair of code backticks with
+    // no backticks inside the sample itself — the raw command's substitution
+    // backticks are stripped, and the trailing newline is dropped.
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^- Sample: `[^`]+`$/)
+    expect(lines[0]).toContain('git log --format="%h git branch --show-current"')
   })
 })

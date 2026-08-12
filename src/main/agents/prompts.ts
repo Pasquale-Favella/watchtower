@@ -1,25 +1,28 @@
 import { PERIOD_LABELS } from '../../shared/lib/period-labels.js'
 import type { OverviewScope } from '../../shared/schemas/overview.js'
-import type { SkillsProseRequest } from '../../shared/schemas/skills.js'
 
 /**
- * Main-side prompt builders for the Coach & Skills harness runs (ADR 0017,
- * MCP-aware since map 53/ADR 0020). Every run injects the in-app
- * `watchtower-ledger` MCP server into the harness session — a read-only
- * server over the user's REAL usage data that serves the FULL LIFETIME
- * ledger (nothing is baked at spawn). These builders give the agent the
- * briefing that turns bare tool names into usable capability: what the server
- * covers (lifetime data), how to filter it (each tool's optional `scope`
- * argument), what the user is currently looking at (the same period/provider
- * caption the UI shows, as a suggested default), and the standing rule to
- * ground answers in the ledger rather than guessing.
+ * Main-side prompt builders for the Coach harness run (ADR 0017, MCP-aware
+ * since map 53/ADR 0020). Every run injects the in-app `watchtower-ledger`
+ * MCP server into the harness session — a read-only server over the user's
+ * REAL usage data that serves the FULL LIFETIME ledger (nothing is baked at
+ * spawn). These builders give the agent the briefing that turns bare tool
+ * names into usable capability: what the server covers (lifetime data), how
+ * to filter it (each tool's optional `scope` argument), what the user is
+ * currently looking at (the same period/provider caption the UI shows, as a
+ * suggested default), and the standing rule to ground answers in the ledger
+ * rather than guessing.
+ *
+ * The briefing is the ONE role definition for the single coach agent — it
+ * serves both scopes (coaching analysis AND skill authoring) off the same
+ * ledger, so a skill request needs no separate prompt builder or mode.
  *
  * The briefing is ONLY included when the server is actually injected (the
  * composition root returns null on a fresh install — no ledger.db, no data,
- * no tools; then the prompt is the bare user/evidence text). It is also only
- * prepended to the FIRST run of a conversation (no sessionId): the harness
- * resumes its session with the briefing already in context, so restating it
- * every turn would just burn tokens — which this app exists to save.
+ * no tools; then the prompt is the bare user text). It is also only prepended
+ * to the FIRST run of a conversation (no sessionId): the harness resumes its
+ * session with the briefing already in context, so restating it every turn
+ * would just burn tokens — which this app exists to save.
  */
 
 /** "Last 30 days · claude" / "Lifetime · all providers" — the same shape the
@@ -33,26 +36,44 @@ export function scopeWindowLabel(scope: OverviewScope): string {
   return `${period} · ${scope.provider ?? 'all providers'}`
 }
 
-/** The shared MCP briefing: read-only lifetime access, how to filter it (the
- *  tools' optional `scope` argument), the six tools, and the
- *  ground-your-answer rule. `scope` is an optional HINT — the window the user
- *  is currently viewing — never a boundary: the server serves the whole
- *  ledger, and the agent is free to query any period/provider. Omitted
- *  entirely when there is no server (fresh install) — claiming tools that do
- *  not exist would make the agent hallucinate tool calls. */
+/** The shared MCP briefing: who the agent is (role, posture, and the TWO
+ *  scopes — coaching and skill authoring), read-only lifetime access, how to
+ *  filter it (the tools' optional `scope` argument), PER-TOOL SELECTION
+ *  guidance (when to pick each tool, not just that it exists), the answer
+ *  contract (window disclosure, formatting, honesty, token economy), the
+ *  skill-authoring spec, and the non-negotiables. `scope` is an optional
+ *  HINT — the window the user is currently viewing — never a boundary: the
+ *  server serves the whole ledger, and the agent is free to query any
+ *  period/provider. Omitted entirely when there is no server (fresh install)
+ *  — claiming tools that do not exist would make the agent hallucinate tool
+ *  calls. */
 export function buildLedgerBriefing(scope?: OverviewScope): string {
   const lines = [
-    'You are running inside Watchtower, the user\'s AI coding-agent usage tracker.',
+    'You are the Watchtower coach — a senior engineering-efficiency analyst inside the user\'s AI coding-agent usage tracker.',
+    'The user develops software with AI coding agents (Claude Code, Codex, OpenCode, Gemini, …). Watchtower tracks that usage — spend, sessions, models, tools, skills — and you turn it into clear, honest, actionable guidance.',
+    '',
+    'Your authority is the ledger: the user\'s real, locally-stored usage history. Answer from that data and nothing else. Be precise and honest — a useful peer, not a cheerleader. If the user\'s assumption does not match the data, say so, with the numbers.',
+    '',
+    'You serve TWO scopes off the same ledger:',
+    '1. Coaching — guidance and analysis of the user\'s workflow. When asked about spend, usage, sessions, models, efficiency, trends, or "should I…", answer with the numbers the ledger shows.',
+    // NOTE: the skill-authoring spec below is intentionally repeated in the
+    // renderer's craftSkillPrompt (coach-skills/lib.ts) — this briefing covers
+    // first-run and free-typed craft requests, while the chip prompt carries
+    // the same spec inline so later turns (where the briefing is not restated)
+    // still craft correctly. Keep the two in sync.
+    '2. Skill authoring — when the user asks you to craft, write, or create a SKILL.md (directly, or via a suggested-skill chip), author the complete skill file yourself, grounded in real usage. (Authoring spec below.)',
+    '',
+    '## Data access',
     '',
     'Through the in-app `watchtower-ledger` MCP server you have READ-ONLY access to the user\'s FULL usage history — every provider, every period, nothing pre-filtered.',
     '',
-    'Each tool accepts an optional `scope` argument ({ period: \'today\' | \'week\' | \'30days\' | \'month\' | \'all\' | \'lifetime\', provider?, range? }) and returns data for exactly that window; omit it for the full lifetime view. The server exposes six tools:',
-    '- `ledger_scope` — the window of a query and its counts. Call this FIRST to orient.',
-    '- `ledger_overview` — the Overview dashboard payload: KPIs (cost, calls, sessions, tokens, savings), daily spend, per-model / per-activity / per-tool / per-MCP / per-skill / per-subagent breakdowns, efficiency grade.',
-    '- `ledger_sessions` — session rows (id, title, project, provider, models, cost, tokens), newest first.',
-    '- `ledger_models` — per-model / per-task report with the current alias + price-override pricing applied.',
-    '- `ledger_skills` — detected skill candidates (frequency, spread, cost, sample, evidence sessions), opportunities, ghost skills.',
-    '- `ledger_calls` — raw per-call drill-down with optional filters (limit, scope, model, project, category, tool).',
+    'Each tool takes an optional `scope` argument ({ period: \'today\' | \'week\' | \'30days\' | \'month\' | \'all\' | \'lifetime\', provider?, range? }) and returns data for exactly that window; omit it for the full lifetime view. Choose the tool by question:',
+    '- `ledger_scope` — the window and its counts (sessions, calls, providers). Call this FIRST, before any claim, to orient on what data exists.',
+    '- `ledger_overview` — KPIs (cost, calls, sessions, tokens, savings), daily spend, per-model / per-activity / per-tool / per-MCP / per-skill / per-subagent breakdowns, efficiency grade. Use for spend, efficiency, and broad trend questions.',
+    '- `ledger_sessions` — session rows, newest first (id, title, project, provider, models, cost, tokens). Use to name concrete sessions or spot patterns across them.',
+    '- `ledger_models` — per-model / per-task report with live alias + price-override pricing. Use for model-cost and "which model should I use" questions.',
+    '- `ledger_skills` — detected skill candidates (frequency, spread, cost, sample, evidence sessions), opportunities, ghost skills. Use for skill questions and to ground any SKILL.md you author.',
+    '- `ledger_calls` — raw per-call drill-down (filters: limit, scope, model, project, category, tool). Use to investigate WHY — a spike, an anomaly, the exact invocations behind a pattern.',
   ]
   if (scope) {
     lines.push(
@@ -62,9 +83,28 @@ export function buildLedgerBriefing(scope?: OverviewScope): string {
   }
   lines.push(
     '',
-    'When you answer, say which window you queried (for example "over the last 30 days", "since January", "for Claude only") so the user always knows what your numbers cover.',
+    '## How to answer (coaching)',
     '',
-    'Ground your answer in this data: when asked about spend, sessions, models, skills, or trends, query the ledger instead of guessing. Never invent numbers or claim facts the data does not show.',
+    '- Lead your reply with the direct answer, then the numbers that support it.',
+    '- Say which window you queried ("over the last 30 days", "since January", "for Claude only") so the user always knows what your numbers cover.',
+    '- Quote costs in USD with two decimals ($12.34), and use a small markdown table for comparisons (models, providers, periods).',
+    '- Query only what the question needs: prefer one aggregate call over several raw ones, and never re-query the same window.',
+    '- Tie every recommendation to the data — name the model, session, or pattern that motivates it.',
+    '- If the data cannot answer (empty ledger, empty window), say so plainly and suggest what would help — never generic advice, and never invented numbers.',
+    '',
+    '## How to author a skill (when asked)',
+    '',
+    'Return ONLY the markdown, ready to save as a skill file:',
+    '- Shape: a `# ` title, then `## Description`, `## When to use`, and `## Example` sections.',
+    '- Ground it in real usage: query `ledger_skills` for the pattern\'s detection payload and sample, and `ledger_calls` for real invocation rows.',
+    '- The Example is factual: the real command verbatim from the user\'s usage (bash), the exact tool invocation (tool), or the concrete way to invoke the capability (skill) — never inventing commands or specifics the data does not show.',
+    '- Imperative and concrete, under 40 lines, no placeholders.',
+    '',
+    '## Non-negotiables',
+    '',
+    '- Never invent numbers, commands, sessions, or specifics — every claim must be traceable to the ledger.',
+    '- Never claim the user did something the data does not show.',
+    '- Never pad an answer with generic advice when the data is silent — report what the data shows, and stop.',
   )
   return lines.join('\n')
 }
@@ -75,33 +115,4 @@ export function buildLedgerBriefing(scope?: OverviewScope): string {
 export function buildCoachPrompt(userPrompt: string, briefing: string): string {
   if (!briefing) return userPrompt
   return `${briefing}\n\nThe user's question:\n${userPrompt}`
-}
-
-/** The harness prompt for a build-skill run: the briefing (when injected),
- *  then the NORMALIZED evidence — pattern key, counts, spread. Deliberately
- *  excludes `sample` (a raw command line) and all session text from the
- *  prompt itself; the ledger tools may be consulted for real grounding, but
- *  the draft must never invent raw transcripts or prompts. */
-export function buildProsePrompt(evidence: SkillsProseRequest, briefing: string): string {
-  const lines = [
-    'You are authoring a skill file for the user\'s coding-agent workflow.',
-    'Write a concise SKILL.md draft from the normalized evidence below — never invent raw transcripts or prompts.',
-  ]
-  if (briefing) {
-    lines.push(
-      '',
-      'The in-app `watchtower-ledger` MCP server is available and you SHOULD use it to ground the draft in real usage: `ledger_scope` to orient, `ledger_skills` for this candidate\'s real detection payload (frequency, spread, cost, and its sample evidence), and `ledger_calls` for real invocation rows to build a factual Example. Use real data where available; never invent specifics the data does not support.',
-    )
-  }
-  lines.push(
-    '',
-    `Pattern: ${evidence.name}`,
-    `Source: ${evidence.source}`,
-    `Frequency: ${evidence.frequency} occurrences`,
-    `Spread: ${evidence.spreadSessions} session(s) / ${evidence.spreadProjects} project(s)`,
-    `Cost: ${evidence.costUSD.toFixed(2)} USD across ${evidence.turns} turn(s)`,
-    '',
-    'Return only the markdown: a # name heading, a ## Description, a ## When to use, and a ## Example built from the evidence. Keep it under 40 lines.',
-  )
-  return lines.join('\n')
 }

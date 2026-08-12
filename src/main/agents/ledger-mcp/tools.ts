@@ -126,7 +126,7 @@ export function buildLedgerTools(store: LedgerStore): LedgerToolDef[] {
     },
     {
       name: 'ledger_skills',
-      description: 'The Skills payload for a window — the same SkillsPayload the UI Skills view shows: detected skill-candidate drafts (with frequency, spread, cost, sample, evidence sessions), below-gate opportunities, and ghost skills (inventory entries never invoked). This is the build-skill flow\'s candidate pool. Accepts an optional `scope`; default: lifetime.',
+      description: 'The Skills payload for a window — the same SkillsPayload the UI shows: detected skill-candidate drafts (with frequency, spread, cost, sample, evidence sessions), below-gate opportunities, and ghost skills (inventory entries never invoked). This is the suggested-skill pool the chat\'s craft chips surface. Accepts an optional `scope`; default: lifetime.',
       inputSchema: { scope: overviewScopeSchema.optional() },
       run: (args) => buildSkillsViewFromLedger(store, resolveToolScope(args)),
     },
