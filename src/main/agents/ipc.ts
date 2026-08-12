@@ -76,11 +76,16 @@ export interface CoachRunner {
    *  as they arrive. A `{ ok: false }` ack means the request never launched
    *  (unknown harness, malformed request). */
   start(request: unknown, emit: (runId: string, event: CoachEvent) => void): Promise<CoachRunResult>
-  /** Interrupts the active run's generator so the harness's cleanup runs. */
-  cancel(runId: string): void
-  /** Cancels all active runs and deletes the conversation's temp workspace
-   *  (renderer `resetSession` fires `coach:reset`; the app calls this on quit). */
-  reset(): void
+  /** Interrupts the active run's generator so the harness's cleanup runs.
+   *  Resolves once the generator's finally (the ACP child-process teardown)
+   *  has completed — callers that delete the workspace must await it, or
+   *  Windows can still hold the dir via the child's CWD (EPERM). */
+  cancel(runId: string): Promise<void>
+  /** Cancels all active runs, AWAITS their teardown, and deletes the
+   *  conversation's temp workspace (renderer `resetSession` fires
+   *  `coach:reset`; the app calls this on quit). The delete retries briefly
+   *  and never throws — a leftover scratch dir must never crash the app. */
+  reset(): Promise<void>
 }
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
@@ -113,10 +118,19 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
    *  case where the probe CREATES its workspace only after the reset). */
   let conversationGeneration = 0
 
-  function cleanupWorkspace(): void {
-    if (workspace) {
-      rmSync(workspace, { recursive: true, force: true })
-      workspace = null
+  /** Deletes a conversation workspace with Windows-aware retries, swallowing a
+   *  final failure. The ACP child process's CWD holds the dir until it has
+   *  actually EXITED — teardown is awaited before this runs, but exit can lag
+   *  the kill by a moment. rmSync's maxRetries/retryDelay retry
+   *  EPERM/EBUSY/ENOTEMPTY with a linear backoff instead of throwing an
+   *  uncaught exception into the IPC handler (the crash dialog the user hit).
+   *  A leftover scratch dir under the OS temp root is harmless and cleaned on
+   *  reboot — it must never take the app down. */
+  function deleteWorkspace(target: string): void {
+    try {
+      rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    } catch {
+      // The retries gave up (a probe may still be holding it) — best effort.
     }
   }
 
@@ -344,16 +358,24 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       const gen = activeRuns.get(runId)
       if (gen && typeof gen.return === 'function') {
         // Same-iterator interruption: the finally in the seam's run() then
-        // tears the ACP provider's child process down (ADR 0016).
+        // tears the ACP provider's child process down (ADR 0016). The promise
+        // resolves when that teardown completes — reset() awaits it so the
+        // workspace is never deleted under a live child (Windows EPERM).
         // return() can reject if the generator's finally (provider cleanup)
         // throws — that must not become an unhandled rejection; the stream is
         // already being torn down by the caller's intent.
-        void gen.return(undefined).catch(() => { /* teardown already in flight */ })
+        return gen.return(undefined).catch(() => { /* teardown already in flight */ }) as Promise<void>
       }
+      return Promise.resolve()
     },
 
-    reset() {
-      for (const runId of [...activeRuns.keys()]) this.cancel(runId)
+    async reset() {
+      // Snapshot and release the workspace BEFORE awaiting teardown: a new run
+      // or probe racing in during the wait would otherwise hit
+      // `workspace ??= mkdtempSync(...)` and REUSE the old (about-to-be
+      // deleted) path. Releasing first hands it a fresh dir immediately.
+      const target = workspace
+      workspace = null
       // The probe-warmed session lives in the workspace being deleted — it is
       // meaningless to the next conversation. Clear it AND bump the generation
       // so any probe still in flight (which may not even have created its
@@ -361,7 +383,18 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // conversation.
       probedSession = null
       conversationGeneration++
-      cleanupWorkspace()
+      // Stop every active run and AWAIT the teardown before deleting: the ACP
+      // child process's CWD is the workspace, and deleting it while the child
+      // is still alive fails on Windows with EPERM — as an uncaught exception
+      // in the IPC handler it pops the main-process error dialog. AllSettled:
+      // one wedged teardown must not block the others; the timeout is cheap
+      // insurance so a wedged generator can never hold the delete hostage (a
+      // leftover scratch dir beats a hung reset).
+      await Promise.race([
+        Promise.allSettled([...activeRuns.keys()].map(runId => this.cancel(runId))),
+        new Promise(resolve => setTimeout(resolve, 3_000)),
+      ])
+      if (target) deleteWorkspace(target)
     },
   }
 }
@@ -390,7 +423,7 @@ export interface AgentsIpcSources {
 /** Wire the Coach & Skills IPC surface onto ipcMain. Call once from
  *  registerIpc(); returns the runner cleanup handle (temp workspace teardown)
  *  for the app's quit path. `dismissals` bridges the not-a-skill store. */
-export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => void } {
+export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Promise<void> } {
   const { dismissals, appPath, ledgerMcpServer } = sources
   let runtimePromise: Promise<HarnessRuntime> | null = null
   const runner = createCoachRunner({
@@ -433,14 +466,19 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => voi
   })
 
   ipcMain.on('coach:cancel', (_event, runId: string) => {
-    runner.cancel(runId)
+    // Fire-and-forget from the user's Stop button — the renderer recovers on
+    // its own; the teardown promise is just the wait-for-cleanup handle.
+    void runner.cancel(runId)
   })
 
   /** Conversation reset (map 53 ticket 56): cancels active runs and deletes
    *  the conversation's temp workspace — fired by the renderer's
-   *  `resetSession` (a brand-new conversation) and by the app quit path. */
+   *  `resetSession` (a brand-new conversation) and by the app quit path. The
+   *  runner awaits the run teardowns before deleting, so a child process
+   *  still holding the workspace (Windows) can never produce an uncaught
+   *  EPERM here. */
   ipcMain.on('coach:reset', () => {
-    runner.reset()
+    void runner.reset()
   })
 
   // Skills draft board (ticket 25): the not-a-skill store. skills:view /

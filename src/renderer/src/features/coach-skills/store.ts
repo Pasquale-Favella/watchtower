@@ -244,15 +244,23 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     // harness" wall.
     const current = get().harnessKind
     const next = current && harnesses.some(h => h.kind === current) ? current : harnesses[0]?.kind ?? null
-    set({ harnessKind: next })
-    // Hybrid warm start: ONLY the auto-selected harness is probed eagerly —
-    // it warms a session the first run resumes and pre-populates the model
-    // picker without an open. A cached harness is restored from memory
-    // instead (inspectHarness guards it). Manual harness switches stay lazy
-    // (probe on picker open), and an idempotent refresh that keeps the same
-    // selection skips it entirely (re-probing would spawn the agent
-    // needlessly).
-    if (next && next !== current) void get().inspectHarness(next)
+    if (next && next !== current) {
+      // A re-selection away from the current harness (it vanished from
+      // detection) is a SWITCH — route it through setHarness so the new
+      // harness's cached set restores properly (never leave the old harness's
+      // live set on the picker) and the hybrid warm start still probes an
+      // uncached harness. `setHarness` runs FIRST so it snapshots the outgoing
+      // harness's LIVE picks before any reset clobbers them (same contract as
+      // the picker's confirmed switch). When a conversation exists, reset it —
+      // `resetSession` stops any in-flight run main-side (coach:reset cancels
+      // all active runs and awaits their teardown, then deletes the old
+      // workspace — the Windows EPERM fix), so no explicit cancel() is needed.
+      // A fresh mount (current null) has nothing to clear, so no reset fires.
+      get().setHarness(next)
+      if (current && get().messages.length > 0) get().resetSession()
+    } else {
+      set({ harnessKind: next })
+    }
   },
   setHarness: (harnessKind) => {
     const s = get()
@@ -380,7 +388,10 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   },
   resetSession: () => {
     // A brand-new conversation: the main process cancels active runs and
-    // deletes the old conversation's temp workspace (map 53).
+    // deletes the old conversation's temp workspace (map 53). The LOCAL run
+    // state is cleared too — the conversation is gone, and a cancelled run's
+    // late events park under their own runId, never touching the fresh thread
+    // (pendingEvents is cleared, so a straggler cannot pollute it).
     window.api.resetCoachWorkspace()
     set(state => {
       // The thread is conversation state — cleared. Agent capabilities are
@@ -391,6 +402,8 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
         messages: [],
         sessionId: null,
         error: null,
+        running: false,
+        activeRunId: null,
         pendingEvents: {},
         sessionModels: cached?.models ?? null,
         sessionModes: cached?.modes ?? null,

@@ -1,6 +1,16 @@
 import { useRef, useState } from 'react'
 
 import { Button } from '@/shared/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/shared/components/ui/alert-dialog'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import {
   Select,
@@ -169,6 +179,8 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   const harnesses = useCoachSkillsStore(s => s.harnesses)
   const harnessKind = useCoachSkillsStore(s => s.harnessKind)
   const setHarness = useCoachSkillsStore(s => s.setHarness)
+  const resetSession = useCoachSkillsStore(s => s.resetSession)
+  const hasConversation = useCoachSkillsStore(s => s.messages.length > 0)
   const inspectHarness = useCoachSkillsStore(s => s.inspectHarness)
   const sessionModels = useCoachSkillsStore(s => s.sessionModels)
   const sessionModes = useCoachSkillsStore(s => s.sessionModes)
@@ -179,8 +191,42 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   const setModeId = useCoachSkillsStore(s => s.setModeId)
 
   const [prompt, setPrompt] = useState('')
+  const [pendingHarness, setPendingHarness] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const selectedMode = sessionModes?.availableModes.find(m => m.id === modeId) ?? null
+
+  /** A harness switch in the middle of a conversation would strand the thread
+   *  (the resume handle belongs to the OLD harness's session) — gate it behind
+   *  a confirmation that starts a NEW conversation on confirm. On the welcome
+   *  screen (no messages yet) a switch is harmless and goes straight through. */
+  const onHarnessChange = (next: string | null): void => {
+    if (!next || next === harnessKind) return
+    if (hasConversation) {
+      setPendingHarness(next)
+      return
+    }
+    setHarness(next)
+  }
+
+  /** The confirm path of the switch dialog: pick the new harness first —
+   *  `setHarness` snapshots the OUTGOING harness's live model/mode picks
+   *  against its cached set (a reset would clobber them back to cached values
+   *  first), so switching back later restores what the user actually chose —
+   *  then reset the conversation. No explicit cancel() is needed: `resetSession`
+   *  stops any in-flight run main-side (coach:reset cancels all active runs,
+   *  awaits their teardown, then deletes the old workspace — the Windows EPERM
+   *  fix) and clears the thread + resume handle; the new harness's cached
+   *  models/mode picks restore so the pickers never go blank. */
+  const confirmHarnessSwitch = (): void => {
+    if (!pendingHarness) return
+    setHarness(pendingHarness)
+    resetSession()
+    setPendingHarness(null)
+  }
+
+  const pendingName = pendingHarness
+    ? harnesses.find(h => h.kind === pendingHarness)?.displayName ?? pendingHarness
+    : null
 
   /** Auto-grow the textarea with its content, capped so the input never
    *  swallows the transcript above it. */
@@ -222,7 +268,7 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
         className="max-h-[168px] w-full resize-none overflow-y-auto bg-transparent p-3.5 text-[12px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
       />
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
-        <Select value={harnessKind ?? ''} onValueChange={next => { if (next) setHarness(next) }}>
+        <Select value={harnessKind ?? ''} onValueChange={onHarnessChange}>
           <SelectTrigger size="sm" aria-label="Harness" className="h-7 border-border text-[11.5px]">
             <SelectValue>{harnesses.length === 0 ? 'No harness detected' : harnesses.find(h => h.kind === harnessKind)?.displayName ?? 'Pick a harness'}</SelectValue>
           </SelectTrigger>
@@ -282,6 +328,33 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
           )}
         </div>
       </div>
+
+      {/* AlertDialog confirmation before a mid-conversation harness switch: the
+          switch STARTS A NEW CONVERSATION, so the current thread and its
+          session would be cleared. Cancel (a Close primitive) keeps the
+          current harness untouched; the AlertDialog is not dismissible by
+          backdrop/Escape — the user must answer. */}
+      <AlertDialog
+        open={pendingHarness !== null}
+        onOpenChange={open => { if (!open) setPendingHarness(null) }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Switch harness?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Chatting with <span className="font-medium text-foreground">{pendingName}</span> starts a new
+              conversation — the current thread and its session will be cleared.
+              {running && ' Any run in progress will be stopped.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmHarnessSwitch}>
+              Switch & start new conversation
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

@@ -245,9 +245,11 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     const workspaceBefore = readdirSync(tmpdir()).filter(d => d.startsWith('watchtower-coach-'))
     expect(workspaceBefore.length).toBeGreaterThan(0)
 
-    runner.reset()
+    // reset AWAITS the run's teardown (the generator's finally) before
+    // deleting the workspace — the delete must never race a live child.
+    await runner.reset()
 
-    await vi.waitFor(() => expect(interrupted()).toBe(true))
+    expect(interrupted()).toBe(true)
     const after = readdirSync(tmpdir()).filter(d => d.startsWith('watchtower-coach-'))
     expect(after).toEqual([])
     void runId
@@ -260,7 +262,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     await runner.start(request, () => {})
     const firstPath = (run.mock.calls[0]![0] as { workspacePath: string }).workspacePath
 
-    runner.reset()
+    await runner.reset()
 
     await runner.start(request, () => {})
     const secondPath = (run.mock.calls[1]![0] as { workspacePath: string }).workspacePath
@@ -339,10 +341,10 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     // Wait until the stream is definitely live and streaming chunks.
     await vi.waitFor(() => expect(events.some(e => e.kind === 'text')).toBe(true))
 
-    runner.cancel(runId)
-    // Cancel's return() reaches the generator: its finally runs, so the pump
+    await runner.cancel(runId)
+    // Cancel's return() reached the generator: its finally ran, so the pump
     // stops pulling. Once interrupted, the count must be frozen.
-    await vi.waitFor(() => expect(interrupted()).toBe(true))
+    expect(interrupted()).toBe(true)
     const frozen = events.length
     await flush()
     expect(events).toHaveLength(frozen)
@@ -350,7 +352,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
 
   it('cancel on an unknown runId is a silent no-op', async () => {
     const runner = makeRunner(scriptedRuntime([]))
-    expect(() => runner.cancel('does-not-exist')).not.toThrow()
+    await expect(runner.cancel('does-not-exist')).resolves.toBeUndefined()
   })
 })
 
@@ -465,7 +467,7 @@ describe('Coach IPC inspect — probe-warmed session resume (no double cold-star
     const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
 
     await runner.inspect('claude')
-    runner.reset()
+    await runner.reset()
     await runner.start(request, () => {})
 
     expect(lastRunInput(run).sessionId).toBeUndefined()
@@ -477,7 +479,7 @@ describe('Coach IPC inspect — probe-warmed session resume (no double cold-star
     const { run, runner } = runProbe(inspect)
 
     const pending = runner.inspect('claude')
-    runner.reset() // workspace deleted while the probe is in flight
+    void runner.reset() // workspace deleted while the probe is in flight
     await flush() // let the probe reach runtime.inspect before resolving it
     resolveProbe({ sessionId: 'sess_old' })
     await pending

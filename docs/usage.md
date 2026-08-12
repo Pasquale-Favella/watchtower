@@ -137,6 +137,13 @@ numbers cover (the current scope is its suggested default, never a boundary).
   the answer. **Copy** sits on assistant answers; **Regenerate** on the last
   one. **Stop** interrupts the running turn; **New conversation** (header)
   starts a fresh thread. Follow-up messages resume the same harness session.
+- **Switching the harness mid-conversation asks first**: a switch starts a
+  new conversation, so a confirmation dialog appears before the thread is
+  cleared. Confirming stops any run in progress (the runner cancels all
+  active runs, waits for their teardown, then deletes the old temp
+  workspace), clears the thread and session, and restores the new harness's
+  models/picks. On the welcome screen a switch is immediate — there is
+  nothing to lose.
 
 ### Settings
 

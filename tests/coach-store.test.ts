@@ -472,6 +472,58 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     expect(s.modelId).toBe('opus')
     expect(s.modeId).toBe('plan')
   })
+
+  it('a harness switch after a conversation is the confirm path: new harness + cleared thread, even mid-run', () => {
+    // The switch dialog's confirm handler runs setHarness(next) FIRST (it
+    // snapshots the outgoing harness's LIVE picks against its cached set — a
+    // reset would clobber them back to cached values first), then
+    // resetSession() — the conversation is conversation state, the new
+    // harness's cached set is not. No explicit cancel() is needed: the reset
+    // stops the run main-side (coach:reset cancels all active runs and awaits
+    // their teardown) and clears any residual local run state.
+    const cancelCoachRun = vi.fn()
+    const resetCoachWorkspace = vi.fn()
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true }))
+    mockWindow({ cancelCoachRun, resetCoachWorkspace, inspectCoachHarness })
+    useCoachSkillsStore.setState({
+      harnessKind: 'claude',
+      sessionId: 'sess_9',
+      running: true,
+      activeRunId: 'run-1',
+      sessionModels: models,
+      sessionModes: modes,
+      modelId: 'opus',
+      modeId: 'plan',
+      modelsByKind: {
+        claude: { models, modes, modelId: 'opus', modeId: 'plan' },
+        gemini: { models: null, modes: null, modelId: null, modeId: null },
+      },
+      messages: [
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
+      ],
+    })
+
+    // The composer's confirmHarnessSwitch sequence, exactly: switch + reset.
+    useCoachSkillsStore.getState().setHarness('gemini')
+    useCoachSkillsStore.getState().resetSession()
+
+    const s = useCoachSkillsStore.getState()
+    expect(s.harnessKind).toBe('gemini')
+    expect(s.messages).toEqual([])
+    expect(s.sessionId).toBeNull()
+    // The mid-run switch is terminal WITHOUT a renderer-side cancel(): the
+    // reset stops the run main-side (coach:reset) and no stale run state
+    // survives locally.
+    expect(cancelCoachRun).not.toHaveBeenCalled()
+    expect(s.running).toBe(false)
+    expect(s.activeRunId).toBeNull()
+    expect(resetCoachWorkspace).toHaveBeenCalledTimes(1)
+    // The new harness's cached (empty) declaration is restored — no blanks.
+    expect(s.sessionModels).toBeNull()
+    expect(s.sessionModes).toBeNull()
+    expect(s.modelId).toBeNull()
+    expect(s.modeId).toBeNull()
+  })
 })
 
 // NOTE: these tests live AFTER the ones above because the shared global
@@ -491,6 +543,61 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
     expect(s.sessionModels?.availableModels).toEqual(models.availableModels)
     expect(s.sessionModes?.availableModes).toEqual(modes.availableModes)
     expect(s.modelId).toBe('opus')
+  })
+
+  it('loadHarnesses re-selects a VANISHED harness through the switch contract: cached set restored, conversation reset', async () => {
+    // The user is mid-conversation on 'codex' — but codex is NOT in the fresh
+    // detection payload, so loadHarnesses auto-switches to the first detected
+    // harness. That is a SWITCH: it must go through setHarness (restore the
+    // target's cached set, never leave the old live set on the picker) and,
+    // because a conversation exists, reset it — exactly like the picker's
+    // confirmed switch, but without a dialog (the harness vanished).
+    const cancelCoachRun = vi.fn()
+    const resetCoachWorkspace = vi.fn()
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true }))
+    mockWindow({
+      getCoachHarnesses: () => Promise.resolve(harnesses),
+      cancelCoachRun,
+      resetCoachWorkspace,
+      inspectCoachHarness,
+    })
+    useCoachSkillsStore.setState({
+      harnessKind: 'codex',
+      sessionId: 'sess_old',
+      running: true,
+      activeRunId: 'run-1',
+      sessionModels: models,
+      sessionModes: modes,
+      modelId: 'opus',
+      modeId: 'plan',
+      // claude (the switch target) was probed before — its set must restore.
+      modelsByKind: {
+        claude: { models, modes, modelId: 'opus', modeId: 'plan' },
+      },
+      messages: [
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
+      ],
+    })
+
+    await useCoachSkillsStore.getState().loadHarnesses()
+
+    const s = useCoachSkillsStore.getState()
+    expect(s.harnessKind).toBe('claude')
+    // The vanished harness's conversation is conversation state — cleared,
+    // with the local run state reset and the temp workspace dropped. No
+    // renderer-side cancel(): the reset stops the run main-side (coach:reset
+    // cancels all active runs and awaits their teardown).
+    expect(s.messages).toEqual([])
+    expect(s.sessionId).toBeNull()
+    expect(s.running).toBe(false)
+    expect(s.activeRunId).toBeNull()
+    expect(cancelCoachRun).not.toHaveBeenCalled()
+    expect(resetCoachWorkspace).toHaveBeenCalledTimes(1)
+    // The target's CACHED set restores — no probe, no blank picker.
+    expect(s.sessionModels).toEqual(models)
+    expect(s.sessionModes).toEqual(modes)
+    expect(s.modelId).toBe('opus')
+    expect(inspectCoachHarness).not.toHaveBeenCalled()
   })
 
   it('setHarness clears the live set AND eagerly probes an UNCACHED harness (models load without an open)', async () => {

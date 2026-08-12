@@ -53,7 +53,7 @@ let abortRequested = false
 let cadenceTimer: ReturnType<typeof setInterval> | null = null
 let updateChecker: UpdateChecker | null = null
 /** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
-let agentsCleanup: { reset: () => void } | null = null
+let agentsCleanup: { reset: () => Promise<void> } | null = null
 
 function dirSize(path: string): number {
   let total = 0
@@ -730,7 +730,9 @@ app.on('window-all-closed', () => {
 })
 
 // Tear down the coach conversation's temp workspace (map 53) so a reset or a
-// quit never leaks a scratch directory under the OS temp root.
+// quit never leaks a scratch directory under the OS temp root. Best-effort:
+// the runner awaits run teardowns and retries the delete, and a leftover
+// scratch dir is cleaned by the OS — quitting must never block on it.
 app.on('before-quit', () => {
-  agentsCleanup?.reset()
+  void agentsCleanup?.reset()
 })
