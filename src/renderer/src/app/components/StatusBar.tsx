@@ -1,4 +1,3 @@
-import { DEFAULT_PERIOD_OPTIONS } from '@/shared/lib/settings-constants'
 import { displayShortcutForAction, sectionsRangeLabel } from '@/app/shortcuts'
 import { useScanStore } from '@/app/stores/scan-store'
 
@@ -25,7 +24,6 @@ export function StatusBar() {
           {unparsedTotal} unparsed {unparsedTotal === 1 ? 'row' : 'rows'} skipped
         </span>
       )}
-      <span className="ml-auto">{DEFAULT_PERIOD_OPTIONS.length} periods · desktop-transpose</span>
     </div>
   )
 }
