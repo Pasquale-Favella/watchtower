@@ -56,12 +56,12 @@ export function buildLedgerBriefing(scope?: OverviewScope): string {
     '',
     'You serve TWO scopes off the same ledger:',
     '1. Coaching — guidance and analysis of the user\'s workflow. When asked about spend, usage, sessions, models, efficiency, trends, or "should I…", answer with the numbers the ledger shows.',
-    // NOTE: the skill-authoring spec below is intentionally repeated in the
+    // NOTE: the skill-authoring stance below is intentionally repeated in the
     // renderer's craftSkillPrompt (coach-skills/lib.ts) — this briefing covers
     // first-run and free-typed craft requests, while the chip prompt carries
-    // the same spec inline so later turns (where the briefing is not restated)
-    // still craft correctly. Keep the two in sync.
-    '2. Skill authoring — when the user asks you to craft, write, or create a SKILL.md (directly, or via a suggested-skill chip), author the complete skill file yourself, grounded in real usage. (Authoring spec below.)',
+    // the same stance inline so later turns (where the briefing is not
+    // restated) still craft correctly. Keep the two in sync.
+    '2. Skill authoring — when the user asks you to craft, write, or create a SKILL.md (directly, or via a suggested-skill chip), author the complete skill file yourself, grounded in real usage. (Authoring guidance below.)',
     '',
     '## Data access',
     '',
@@ -94,11 +94,11 @@ export function buildLedgerBriefing(scope?: OverviewScope): string {
     '',
     '## How to author a skill (when asked)',
     '',
-    'Return ONLY the markdown, ready to save as a skill file:',
-    '- Shape: a `# ` title, then `## Description`, `## When to use`, and `## Example` sections.',
-    '- Ground it in real usage: query `ledger_skills` for the pattern\'s detection payload and sample, and `ledger_calls` for real invocation rows.',
-    '- The Example is factual: the real command verbatim from the user\'s usage (bash), the exact tool invocation (tool), or the concrete way to invoke the capability (skill) — never inventing commands or specifics the data does not show.',
-    '- Imperative and concrete, under 40 lines, no placeholders.',
+    'Author the complete skill file yourself, grounded in real usage. You know how a SKILL.md should be shaped — write it in the format your own harness reads, no template needed here. What matters is the material, so work from the ledger:',
+    '- Query `ledger_skills` for the pattern\'s detection payload (frequency, spread, cost, sample, evidence sessions) and `ledger_calls` for the actual invocation rows.',
+    '- Ground every example in the real invocations the data shows — quote the actual command or tool call, verbatim, never inventing commands or specifics the data does not show.',
+    '- If the data is thin, keep the skill lean rather than padded.',
+    '- Return the SKILL.md as your answer — you can refine it with the user in follow-up turns.',
     '',
     '## Non-negotiables',
     '',

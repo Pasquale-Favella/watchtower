@@ -72,15 +72,17 @@ describe('buildLedgerBriefing — the MCP tool briefing (lifetime-serving)', () 
     expect(briefing).toContain('TWO scopes')
     expect(briefing).toContain('1. Coaching')
     expect(briefing).toContain('2. Skill authoring')
-    // The skill-authoring scope carries the canonical draft shape.
-    expect(briefing).toContain('## Description')
-    expect(briefing).toContain('## When to use')
-    expect(briefing).toContain('## Example')
-    expect(briefing).toContain('under 40 lines')
-    // ...and the ledger tools that make the Example factual.
+    // The authoring scope is EVIDENCE-FIRST: it hands the agent the ledger
+    // tools + the real-invocation rule, and leaves the SKILL.md shape to the
+    // harness's own conventions — no section template is prescribed.
     expect(briefing).toContain('ledger_skills')
     expect(briefing).toContain('ledger_calls')
     expect(briefing).toContain('never inventing')
+    expect(briefing).toContain('no template needed here')
+    expect(briefing).not.toContain('## Description')
+    expect(briefing).not.toContain('## When to use')
+    expect(briefing).not.toContain('## Example')
+    expect(briefing).not.toContain('under 40 lines')
   })
 })
 

@@ -8,17 +8,16 @@ export function candidateKey(d: SkillCandidate): string {
 
 /** The natural-language prompt a suggested-skill chip sends: a NORMAL coach
  *  run (no build-skill mode, no draft card) that asks the harness to author
- *  a SKILL.md for the detected pattern. The candidate's NORMALIZED evidence
- *  rides the prompt — frequency, spread, cost, and the RAW SAMPLE (the first
- *  real occurrence, cleaned to a single backtick-free line) — and the message
- *  names the two ledger tools
- *  that make the Example factual (`ledger_skills` for the pattern's real
+ *  a SKILL.md for the detected pattern. The prompt is EVIDENCE-FIRST: it
+ *  hands the harness the pattern's real material — frequency, spread, cost,
+ *  the RAW SAMPLE (the first real occurrence, cleaned to a single
+ *  backtick-free line), and the concrete evidence sessions — and points it at
+ *  the ledger tools for the verbatim invocations (`ledger_skills` for the
  *  detection payload and sample, `ledger_calls` for real invocation rows).
- *  The Example must QUOTE the user's real invocations, never invented ones;
- *  when the data is thin the skill stays lean rather than padded. The output
- *  spec mirrors the canonical draft shape (`# title` + `## Description` /
- *  `## When to use` / `## Example`) so the answer is ready to save as a
- *  skill file. The same spec rides the main-side ledger briefing
+ *  It deliberately does NOT prescribe how a skill is shaped: the harness
+ *  knows its own SKILL.md conventions better than a template here would, so
+ *  the deliverable is the finished file in the format the harness itself
+ *  reads. The same evidence-first stance rides the main-side ledger briefing
  *  (buildLedgerBriefing) — keep the two in sync: this inline prompt is what
  *  covers craft requests on later turns, where the first-run briefing is not
  *  restated. */
@@ -27,23 +26,26 @@ export function craftSkillPrompt(candidate: SkillCandidate): string {
   const sessions = `${candidate.spreadSessions} ${candidate.spreadSessions === 1 ? 'session' : 'sessions'}`
   const projects = `${candidate.spreadProjects} ${candidate.spreadProjects === 1 ? 'project' : 'projects'}`
   const tick = '`'
-  const invoke = candidate.source === 'bash'
-    ? 'the Example is the real command, verbatim from my usage'
-    : candidate.source === 'tool'
-      ? 'the Example shows how to drive the tool'
-      : 'the Example shows how to invoke the capability'
-  // The raw sample is informational only (the agent re-queries ledger_calls
-  // for verbatim rows) — clean it to a single backtick-free line so the
-  // markdown bullet can never break on a weird command.
-  const sample = candidate.sample.split('\n')[0]!.replace(/`/g, '').trim()
+  // Informational text (sample, project names) is embedded inside code
+  // backticks — clean each to a single backtick-free line so the markdown
+  // bullet can never break on a weird command or empty value.
+  const clean = (text: string): string => text.split('\n')[0]!.replace(/`/g, '').trim()
+  const sample = clean(candidate.sample)
+  // The concrete evidence sessions behind the pattern — real context the
+  // harness can write against without guessing (newest first, capped).
+  const evidence = candidate.sourceSessions.slice(0, 3)
+    .map(s => ({ ...s, project: clean(s.project) }))
+    .filter(s => s.project.length > 0)
+    .map(s => `${tick}${s.project}${tick} · ${s.date} · ${s.turns} turn${s.turns === 1 ? '' : 's'} · ${s.costUSD.toFixed(2)} USD`)
   return [
     `Craft a SKILL.md for the ${kind} ${tick}${candidate.name}${tick} — a recurring pattern in my workflow:`,
     `- Frequency: ${candidate.frequency} occurrences across ${sessions} / ${projects}`,
     `- Cost: ${candidate.costUSD.toFixed(2)} USD across ${candidate.turns} turn${candidate.turns === 1 ? '' : 's'}`,
     ...(sample ? [`- Sample: ${tick}${sample}${tick}`] : []),
+    ...(evidence.length > 0 ? [`- Evidence: ${evidence.join('; ')}`] : []),
     '',
-    `Ground it in my real usage: query ${tick}ledger_skills${tick} for this pattern's detection payload and sample, and ${tick}ledger_calls${tick} for real invocation rows. The Example must quote the real invocations — a command or tool call I actually made, verbatim. Never invent commands or specifics the data does not show; if the data is thin, keep the skill lean rather than padded.`,
+    `Ground it in my real usage: query ${tick}ledger_skills${tick} for this pattern's detection payload and sample, and ${tick}ledger_calls${tick} for the actual invocation rows. The examples must quote the real invocations — the command or tool call I actually made, verbatim. Never invent commands or specifics the data does not show; if the data is thin, keep the skill lean rather than padded.`,
     '',
-    `Return ONLY the markdown: a ${tick}# ${tick} title, then ${tick}## Description${tick}, ${tick}## When to use${tick}, and ${tick}## Example${tick} sections — for this ${kind}, ${invoke}. Imperative and concrete, under 40 lines, no placeholders.`,
+    'Write it in the SKILL.md format your own harness reads — you know your conventions better than a template here would. Return the SKILL.md as your answer; we can refine it together in follow-up turns.',
   ].join('\n')
 }

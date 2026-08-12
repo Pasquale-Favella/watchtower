@@ -93,10 +93,11 @@ agent — coaching AND skill authoring (ADR 0021) — composed main-side into th
 coach prompt, and only when the server is actually injected (fresh installs
 get no briefing) and only on a conversation's first run (resumed turns already
 carry it in session context — restating it would burn tokens). The
-skill-authoring scope of the same briefing tells the agent to return ONLY
-markdown in the canonical `# ` / `## Description` / `## When to use` /
-`## Example` shape, grounded via `ledger_skills`/`ledger_calls` — the ledger
-is a real grounding source, never a license to fabricate.
+skill-authoring scope of the same briefing is evidence-first: it hands the
+agent the ledger tools and the real-invocation rule (`ledger_skills` /
+`ledger_calls`, quote verbatim, keep lean) and deliberately leaves the
+SKILL.md shape to the harness's own conventions — the ledger is a real
+grounding source, never a license to fabricate.
 
 ## Consequences
 

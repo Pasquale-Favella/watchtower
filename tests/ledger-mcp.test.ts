@@ -299,8 +299,11 @@ describe('Ledger MCP prompts (ADR 0020) — reusable preambles over the SDK', ()
     const text = prompt.render({})
     expect(text).toContain('TWO scopes')
     expect(text).toContain('Skill authoring')
-    expect(text).toContain('## Description')
+    // Evidence-first authoring: the ledger tools ride the prompt, the shape
+    // is the harness's own conventions (no section template).
     expect(text).toContain('ledger_calls')
+    expect(text).toContain('no template needed here')
+    expect(text).not.toContain('## Description')
     void store
   })
 })

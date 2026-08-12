@@ -44,10 +44,10 @@ stripped by zod, never reaching the runner.
 `buildLedgerBriefing` is the single role definition for the one agent: it names the TWO
 scopes (coaching analysis and skill authoring), the ledger tools and their per-tool
 selection guidance, the answer contract (state the window, USD + tables, query only what
-the question needs, never invent), the skill-authoring spec (return ONLY markdown:
-`# ` title + `## Description` / `## When to use` / `## Example`, grounded via
-`ledger_skills`/`ledger_calls`, under 40 lines, no placeholders), and the
-non-negotiables. The briefing still rides only a conversation's first run and only when
+the question needs, never invent), the skill-authoring scope (evidence-first: work from
+`ledger_skills`/`ledger_calls`, quote the real invocations verbatim, keep the skill
+lean; the SKILL.md SHAPE is deliberately left to the harness's own conventions — the
+prompt hands over the material, never a template), and the non-negotiables. The briefing still rides only a conversation's first run and only when
 the ledger MCP server is actually injected. The MCP prompt surface keeps just
 `coach-orient` (the `build-skill` prompt template is deleted).
 
@@ -56,8 +56,9 @@ the ledger MCP server is actually injected. The MCP prompt surface keeps just
 The welcome screen keeps the detection-driven chips (the frequency × spread gate in
 Settings › Skills detection, ADR 0017), but clicking one sends a NORMAL coach run whose
 prompt (`craftSkillPrompt`, renderer) names the pattern's evidence — frequency, spread,
-cost, the raw sample — and asks the harness to author the SKILL.md, pointing it at
-`ledger_skills`/`ledger_calls` so the Example is factual. The answer streams into the
+cost, the raw sample, the concrete evidence sessions — and asks the harness to author
+the SKILL.md in its own format, pointing it at `ledger_skills`/`ledger_calls` for the
+verbatim invocations. The answer streams into the
 thread as plain markdown: no build-skill mode, no draft card. `dismiss`, `sendBuildSkill`,
 and the draft-card plumbing are deleted.
 
@@ -84,8 +85,9 @@ current harness's cached set, so the pickers never go blank on a new conversatio
   the user does not have to guess what is worth turning into a skill — but the flow is
   conversation, not picker.
 - The agent prompt is the product's voice: the briefing and `craftSkillPrompt` carry the
-  same authoring spec and are kept in sync (a NOTE in both files cross-references them),
-  so later turns — where the first-run briefing is not restated — still craft correctly.
+  same authoring stance (evidence-first, shape left to the harness) and are kept in sync
+  (a NOTE in both files cross-references them), so later turns — where the first-run
+  briefing is not restated — still craft correctly.
 - The per-harness model cache removes a class of UX jank (picker blanks + re-probing on
   provider switch) without changing the wire: what the pickers show pre-chat is exactly
   what the first run's session event would declare anyway.

@@ -93,25 +93,27 @@ describe('the suggested-skill chip chat-starter', () => {
     expect(candidateKey(candidate)).toBe('skill\u0000data-fetch')
   })
 
-  it('craftSkillPrompt is a sharp coach prompt: pattern evidence, ledger grounding, and the canonical sections', () => {
+  it('craftSkillPrompt is evidence-first: real pattern material + ledger grounding, no shape template', () => {
     const prompt = craftSkillPrompt(candidate)
     // Names the pattern with its normalized evidence.
     expect(prompt).toContain('Craft a SKILL.md for the skill `data-fetch`')
     expect(prompt).toContain('6 occurrences across 2 sessions / 1 project')
     expect(prompt).toContain('3.50 USD across 4 turns')
-    // Points the harness at the ledger tools that make the Example factual,
-    // and rides the pattern's RAW sample so the agent starts from a real
-    // occurrence instead of a guess.
+    // Rides the RAW sample AND the concrete evidence sessions so the agent
+    // starts from real occurrences, not guesses.
+    expect(prompt).toContain('- Sample: `data-fetch`')
+    expect(prompt).toContain('`demo` · 2026-07-13 · 3 turns · 2.00 USD')
+    // Points the harness at the ledger tools for the verbatim invocations.
     expect(prompt).toContain('`ledger_skills`')
     expect(prompt).toContain('`ledger_calls`')
-    expect(prompt).toContain('Never invent')
-    expect(prompt).toContain('- Sample: `data-fetch`')
     expect(prompt).toContain('quote the real invocations')
-    // The canonical draft shape, ready to save as a skill file.
-    expect(prompt).toContain('## Description')
-    expect(prompt).toContain('## When to use')
-    expect(prompt).toContain('## Example')
-    expect(prompt).toContain('under 40 lines')
+    expect(prompt).toContain('Never invent')
+    // The SHAPE is the harness's call — no section template in the prompt.
+    expect(prompt).toContain('format your own harness reads')
+    expect(prompt).not.toContain('## Description')
+    expect(prompt).not.toContain('## When to use')
+    expect(prompt).not.toContain('## Example')
+    expect(prompt).not.toContain('under 40 lines')
     // A plain coach run — no build-skill mode, no draft-card plumbing.
     expect(prompt).not.toContain('build-skill')
   })
