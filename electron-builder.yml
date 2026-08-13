@@ -8,18 +8,19 @@ directories:
 artifactName: ${productName}-${os}-${arch}.${ext}
 files:
   - out/**
-# Bundled ACP servers (ADR 0016 map 47 ticket 49): codex ships the Codex
-# engine as native binaries inside node_modules, and claude-agent-acp ships
-# the Claude Agent SDK's native platform engines (@anthropic-ai/...). Child
-# processes spawned with ELECTRON_RUN_AS_NODE cannot execute native binaries
-# out of the virtual asar filesystem — unpack these packages to real disk so
-# bundled harnesses run.
+# Bundled ACP engines (ADR 0016 map 47 ticket 49): codex ships the Codex
+# engine and claude-agent-acp ships the Claude Agent SDK as native binaries
+# inside per-platform npm packages (@openai/codex-*, @anthropic-ai/
+# claude-agent-sdk-*). Child processes spawned with ELECTRON_RUN_AS_NODE
+# cannot execute native binaries out of the virtual asar filesystem — unpack
+# ONLY those engine packages to real disk. The JS wrappers (codex-acp,
+# claude-agent-acp, pi-acp, the SDKs) run from inside the asar, so unpacking
+# them is not just wasteful but breaks the mac universal build: @electron/
+# universal joins EVERY unpacked file into one glob, and minimatch rejects
+# globs over 64KB ("pattern is too long").
 asarUnpack:
-  - node_modules/@agentclientprotocol/codex-acp/**
-  - node_modules/@agentclientprotocol/claude-agent-acp/**
-  - node_modules/@openai/**
-  - node_modules/@anthropic-ai/**
-  - node_modules/pi-acp/**
+  - node_modules/@openai/codex-*/**
+  - node_modules/@anthropic-ai/claude-agent-sdk-*/**
 win:
   target:
     - nsis
