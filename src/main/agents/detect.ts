@@ -84,7 +84,8 @@ export async function detectHarnesses(options: DetectOptions = {}): Promise<Harn
     }
     // PATH wins; the spec's bundled package is the fallback so a harness
     // whose ACP server ships inside the app is drivable without a global
-    // install (codex: @agentclientprotocol/codex-acp).
+    // install (codex: @agentclientprotocol/codex-acp; claude: the Claude
+    // Agent SDK; pi: the pi-acp adapter).
     if (!bin) {
       const entry = resolveBundled(spec)
       if (entry) {
@@ -92,6 +93,11 @@ export async function detectHarnesses(options: DetectOptions = {}): Promise<Harn
         bundledEntry = entry
       }
     }
+    // Companion gate: an ACP server that shells out to another CLI (pi-acp
+    // spawns the base `pi` binary) is only drivable when that companion is
+    // ALSO on PATH — otherwise the first run would fail at spawn. Applies to
+    // both the PATH probe and the bundled fallback.
+    if (bin && spec.requires?.some(cmd => !commandExists(cmd))) continue
     if (bin) {
       found.push({
         name: spec.kind,

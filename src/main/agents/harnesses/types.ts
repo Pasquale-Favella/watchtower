@@ -84,6 +84,12 @@ export interface HarnessSpec {
     /** bin name to resolve from that package's package.json `bin` map. */
     bin: string
   }
+  /** Companion binaries that must ALSO be on PATH for the harness to be
+   *  drivable. A bundled or PATH ACP server may shell out to another CLI at
+   *  runtime (e.g. the `pi-acp` adapter spawns the base `pi` binary via
+   *  `pi --mode rpc`) — the harness is only reported when every companion is
+   *  present, or the first run would fail at spawn. */
+  requires?: string[]
   /** Env vars dropped before spawn (host CLI login, no API keys — ADR 0012) */
   scrubEnv: string[]
   /** Lower = higher priority in the default selection (ticket 33) */

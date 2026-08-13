@@ -9,12 +9,17 @@ artifactName: ${productName}-${os}-${arch}.${ext}
 files:
   - out/**
 # Bundled ACP servers (ADR 0016 map 47 ticket 49): codex ships the Codex
-# engine as native binaries inside node_modules. Child processes spawned with
-# ELECTRON_RUN_AS_NODE cannot execute native binaries out of the virtual asar
-# filesystem — unpack these packages to real disk so bundled harnesses run.
+# engine as native binaries inside node_modules, and claude-agent-acp ships
+# the Claude Agent SDK's native platform engines (@anthropic-ai/...). Child
+# processes spawned with ELECTRON_RUN_AS_NODE cannot execute native binaries
+# out of the virtual asar filesystem — unpack these packages to real disk so
+# bundled harnesses run.
 asarUnpack:
   - node_modules/@agentclientprotocol/codex-acp/**
+  - node_modules/@agentclientprotocol/claude-agent-acp/**
   - node_modules/@openai/**
+  - node_modules/@anthropic-ai/**
+  - node_modules/pi-acp/**
 win:
   target:
     - nsis
@@ -30,13 +35,14 @@ mac:
       arch:
         - universal
   # Universal-merge rule (electron-builder v26, release v0.2.0 failure): the
-  # bundled Codex engine's platform-specific package (@openai/codex-darwin-*)
-  # is installed by npm only for the build runner's arch, so it lands
+  # bundled engines' platform-specific packages (@openai/codex-darwin-* and
+  # the Claude Agent SDK's @anthropic-ai/claude-agent-sdk-darwin-*) are
+  # installed by npm only for the build runner's arch, so they land
   # byte-identical in both the x64 and arm64 halves of the universal build —
   # and the merge hard-fails unless those files are declared arch-neutral.
   # NOTE: the schema wants ONE minimatch string (not a list) — a list fails
   # config validation for every target.
-  x64ArchFiles: "**/node_modules/@openai/codex-darwin-*/**"
+  x64ArchFiles: "**/node_modules/{@openai/codex-darwin-*,@anthropic-ai/claude-agent-sdk-darwin-*}/**"
   category: public.app-category.developer-tools
   # Sign-ready (ADR 0015): electron-builder signs with CSC_LINK/
   # CSC_KEY_PASSWORD when present and skips signing when absent.

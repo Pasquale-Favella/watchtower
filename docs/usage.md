@@ -119,7 +119,11 @@ rate, plus per-category one-shot bars and a working-style summary.
 
 One chat surface with a single harness agent — the picker shows which
 coding-agent CLIs are detected on your machine (Claude Code, Codex, OpenCode,
-Gemini, …) and whether they are logged in. Ask anything about your usage: the
+Gemini, …) and whether they are logged in. Detection is per ACP server: for
+most agents the app drives the agent's own ACP-capable binary; for Codex,
+Claude Code, and Pi the ACP server ships **bundled inside the app** (no extra
+install — Claude Code and Codex only need their CLI login, Pi needs the base
+`pi` CLI on PATH). Ask anything about your usage: the
 agent answers from the same ledger the dashboard shows, queried live through
 the in-app `watchtower-ledger` MCP server, and it says which window its
 numbers cover (the current scope is its suggested default, never a boundary).

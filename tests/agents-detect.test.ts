@@ -42,7 +42,7 @@ describe('detectHarnesses — registry detection (seam: pure logic)', () => {
     const entry = 'C:\\app\\node_modules\\@agentclientprotocol\\codex-acp\\dist\\index.js'
     const harnesses = await detectHarnesses({
       commandExists: lookup([]),
-      resolveBundled: spec => (spec.bundled ? entry : null),
+      resolveBundled: spec => (spec.kind === 'codex' ? entry : null),
     })
     expect(harnesses).toHaveLength(1)
     expect(harnesses[0]).toMatchObject({
@@ -54,6 +54,45 @@ describe('detectHarnesses — registry detection (seam: pure logic)', () => {
     })
   })
 
+  it('detects a BUNDLED Claude Code (claude-agent-acp from the app\'s own node_modules)', async () => {
+    const entry = 'C:\\app\\node_modules\\@agentclientprotocol\\claude-agent-acp\\dist\\index.js'
+    const harnesses = await detectHarnesses({
+      commandExists: lookup([]),
+      resolveBundled: spec => (spec.kind === 'claude' ? entry : null),
+    })
+    expect(harnesses).toHaveLength(1)
+    expect(harnesses[0]).toMatchObject({
+      name: 'claude',
+      kind: 'claude',
+      displayName: 'Claude Code',
+      bin: entry,
+      bundledEntry: entry,
+    })
+  })
+
+  it('detects a BUNDLED Pi only when the base `pi` CLI is ALSO on PATH (pi-acp shells out to it)', async () => {
+    const entry = 'C:\\app\\node_modules\\pi-acp\\dist\\index.js'
+    const without = await detectHarnesses({
+      commandExists: lookup([]),
+      resolveBundled: spec => (spec.kind === 'pi' ? entry : null),
+    })
+    expect(without).toEqual([])
+    const withPi = await detectHarnesses({
+      commandExists: lookup(['pi']),
+      resolveBundled: spec => (spec.kind === 'pi' ? entry : null),
+    })
+    expect(withPi).toHaveLength(1)
+    expect(withPi[0]).toMatchObject({ name: 'pi', kind: 'pi', displayName: 'Pi', bin: entry, bundledEntry: entry })
+  })
+
+  it('does not report Pi when only the `pi-acp` adapter is on PATH without the base `pi` CLI', async () => {
+    const harnesses = await detectHarnesses({ commandExists: lookup(['pi-acp']) })
+    expect(harnesses).toEqual([])
+    const withPi = await detectHarnesses({ commandExists: lookup(['pi-acp', 'pi']) })
+    expect(withPi).toHaveLength(1)
+    expect(withPi[0]).toMatchObject({ name: 'pi', kind: 'pi', bin: 'C:\\bin\\pi-acp.exe' })
+  })
+
   it('does not resolve bundled harnesses by default (detection stays PATH-pure)', async () => {
     const harnesses = await detectHarnesses({ commandExists: lookup([]) })
     expect(harnesses).toEqual([])
@@ -63,7 +102,7 @@ describe('detectHarnesses — registry detection (seam: pure logic)', () => {
     const entry = 'C:\\app\\node_modules\\@agentclientprotocol\\codex-acp\\dist\\index.js'
     const harnesses = await detectHarnesses({
       commandExists: lookup(['codex-acp']),
-      resolveBundled: spec => (spec.bundled ? entry : null),
+      resolveBundled: spec => (spec.kind === 'codex' ? entry : null),
     })
     expect(harnesses[0]).toMatchObject({ name: 'codex', bin: 'C:\\bin\\codex-acp.exe' })
     expect(harnesses[0]?.bundledEntry).toBeUndefined()
