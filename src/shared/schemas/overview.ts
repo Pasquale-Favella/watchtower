@@ -25,7 +25,7 @@ export const overviewKpisSchema = z.object({
 })
 export type OverviewKpis = z.infer<typeof overviewKpisSchema>
 
-export const overviewDailyEntrySchema = z.object({ date: z.string(), costUSD: z.number(), calls: z.number() })
+export const overviewDailyEntrySchema = z.object({ date: z.string(), costUSD: z.number(), calls: z.number(), sessions: z.number() })
 export type OverviewDailyEntry = z.infer<typeof overviewDailyEntrySchema>
 
 export const overviewModelRowSchema = z.object({
