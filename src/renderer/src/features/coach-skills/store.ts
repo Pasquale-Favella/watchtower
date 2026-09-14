@@ -341,8 +341,26 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       }
     })
   },
-  setModelId: (modelId) => set({ modelId }),
-  setModeId: (modeId) => set({ modeId }),
+  setModelId: (modelId) => set(state => {
+    // Write-through to the per-harness cache (when the kind has an entry):
+    // the cache ALSO holds the user's picks, and `resetSession` restores
+    // from it — without this a pick made after the probe would be lost on a
+    // new conversation. No entry is created for a never-probed kind: that
+    // would mark it cached and block its lazy probe (`inspectHarness`
+    // returns early on cached kinds) — the live pick still survives the
+    // probe via its live-pick-wins rule.
+    const kind = state.harnessKind
+    const entry = kind ? state.modelsByKind[kind] : undefined
+    if (!kind || !entry) return { modelId }
+    return { modelId, modelsByKind: { ...state.modelsByKind, [kind]: { ...entry, modelId } } }
+  }),
+  setModeId: (modeId) => set(state => {
+    // Same write-through contract as setModelId (see above).
+    const kind = state.harnessKind
+    const entry = kind ? state.modelsByKind[kind] : undefined
+    if (!kind || !entry) return { modeId }
+    return { modeId, modelsByKind: { ...state.modelsByKind, [kind]: { ...entry, modeId } } }
+  }),
   sendCoach: async (prompt) => {
     const s = get()
     if (s.running) return
@@ -525,8 +543,12 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
             modelsByKind[state.harnessKind] = {
               models,
               modes,
-              modelId: existing?.modelId ?? state.modelId ?? models?.currentModelId ?? null,
-              modeId: existing?.modeId ?? state.modeId ?? modes?.currentModeId ?? null,
+              // Live-pick-wins (same rule as inspectHarness): the user's
+              // current choice beats a stale cached one — with the
+              // setModelId/setModeId write-through the two are in step
+              // anyway, and a run must never resurrect a superseded pick.
+              modelId: state.modelId ?? existing?.modelId ?? models?.currentModelId ?? null,
+              modeId: state.modeId ?? existing?.modeId ?? modes?.currentModeId ?? null,
             }
           }
           return {
