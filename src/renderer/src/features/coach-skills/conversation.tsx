@@ -24,7 +24,7 @@ import { formatUsd } from '@/shared/lib/models'
 import { useCoachSkillsStore } from '@/features/coach-skills/store'
 import { candidateKey, craftSkillPrompt } from '@/features/coach-skills/lib'
 import type { SkillCandidate } from '../../../../shared/schemas/skills.js'
-import { ModelSelector } from './model-selector'
+import { HarnessModelPicker } from './harness-model-picker'
 import { Thread } from './thread'
 
 /** Sample coach prompts shown on the courtesy screen — each starts a normal
@@ -167,9 +167,11 @@ export function ConversationThread() {
 
 /** The prompt bar — an elements.ai-sdk.dev PromptInput-inspired input that
  *  stays pinned at the bottom of the chat surface: an auto-growing textarea up
- *  top, a footer with the provider (harness) picker, the agent-declared
- *  model/mode pickers, and Send/Stop. The coach reads the full lifetime
- *  ledger (no data-window chip — the agent filters per question). */
+ *  top, a footer with the unified harness + model picker (t3code
+ *  ProviderModelPicker shape: one trigger, harness rail + searchable
+ *  agent-declared model list), the agent-declared mode picker, and Send/Stop.
+ *  The coach reads the full lifetime ledger (no data-window chip — the agent
+ *  filters per question). */
 export function ConversationComposer({ running, canSend, onSend, onStop }: {
   running: boolean
   canSend: boolean
@@ -184,6 +186,7 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   const inspectHarness = useCoachSkillsStore(s => s.inspectHarness)
   const sessionModels = useCoachSkillsStore(s => s.sessionModels)
   const sessionModes = useCoachSkillsStore(s => s.sessionModes)
+  const modelsByKind = useCoachSkillsStore(s => s.modelsByKind)
   const inspectingKind = useCoachSkillsStore(s => s.inspectingKind)
   const modelId = useCoachSkillsStore(s => s.modelId)
   const modeId = useCoachSkillsStore(s => s.modeId)
@@ -191,41 +194,53 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   const setModeId = useCoachSkillsStore(s => s.setModeId)
 
   const [prompt, setPrompt] = useState('')
-  const [pendingHarness, setPendingHarness] = useState<string | null>(null)
+  const [pendingSwitch, setPendingSwitch] = useState<{ kind: string; modelId: string | null } | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const selectedMode = sessionModes?.availableModes.find(m => m.id === modeId) ?? null
 
   /** A harness switch in the middle of a conversation would strand the thread
    *  (the resume handle belongs to the OLD harness's session) — gate it behind
-   *  a confirmation that starts a NEW conversation on confirm. On the welcome
-   *  screen (no messages yet) a switch is harmless and goes straight through. */
-  const onHarnessChange = (next: string | null): void => {
-    if (!next || next === harnessKind) return
-    if (hasConversation) {
-      setPendingHarness(next)
+   *  a confirmation that starts a NEW conversation on confirm. A model-only
+   *  pick on the CURRENT harness goes straight through. On the welcome screen
+   *  (no messages yet) any switch is harmless and goes straight through. */
+  const onInstanceModelChange = (nextKind: string, nextModelId: string | null): void => {
+    if (nextKind === harnessKind) {
+      setModelId(nextModelId)
       return
     }
-    setHarness(next)
+    if (hasConversation) {
+      setPendingSwitch({ kind: nextKind, modelId: nextModelId })
+      return
+    }
+    // `setHarness` restores the target harness's cached set + picks (or
+    // clears and probes eagerly when uncached); the explicit model row pick
+    // then wins over the restored value — including null (agent default).
+    // For an uncached harness only the default row is clickable yet, and the
+    // pick survives the probe via the store's live-pick-wins rule.
+    setHarness(nextKind)
+    setModelId(nextModelId)
   }
 
   /** The confirm path of the switch dialog: pick the new harness first —
    *  `setHarness` snapshots the OUTGOING harness's live model/mode picks
    *  against its cached set (a reset would clobber them back to cached values
    *  first), so switching back later restores what the user actually chose —
-   *  then reset the conversation. No explicit cancel() is needed: `resetSession`
-   *  stops any in-flight run main-side (coach:reset cancels all active runs,
-   *  awaits their teardown, then deletes the old workspace — the Windows EPERM
-   *  fix) and clears the thread + resume handle; the new harness's cached
-   *  models/mode picks restore so the pickers never go blank. */
+   *  then apply the picked model row and reset the conversation. No explicit
+   *  cancel() is needed: `resetSession` stops any in-flight run main-side
+   *  (coach:reset cancels all active runs, awaits their teardown, then deletes
+   *  the old workspace — the Windows EPERM fix) and clears the thread +
+   *  resume handle; the new harness's cached models/mode picks restore so the
+   *  pickers never go blank. */
   const confirmHarnessSwitch = (): void => {
-    if (!pendingHarness) return
-    setHarness(pendingHarness)
+    if (!pendingSwitch) return
+    setHarness(pendingSwitch.kind)
+    setModelId(pendingSwitch.modelId)
     resetSession()
-    setPendingHarness(null)
+    setPendingSwitch(null)
   }
 
-  const pendingName = pendingHarness
-    ? harnesses.find(h => h.kind === pendingHarness)?.displayName ?? pendingHarness
+  const pendingName = pendingSwitch
+    ? harnesses.find(h => h.kind === pendingSwitch.kind)?.displayName ?? pendingSwitch.kind
     : null
 
   /** Auto-grow the textarea with its content, capped so the input never
@@ -268,41 +283,25 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
         className="max-h-[168px] w-full resize-none overflow-y-auto bg-transparent p-3.5 text-[12px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
       />
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
-        <Select value={harnessKind ?? ''} onValueChange={onHarnessChange}>
-          <SelectTrigger size="sm" aria-label="Harness" className="h-7 border-border text-[11.5px]">
-            <SelectValue>{harnesses.length === 0 ? 'No harness detected' : harnesses.find(h => h.kind === harnessKind)?.displayName ?? 'Pick a harness'}</SelectValue>
-          </SelectTrigger>
-          <SelectContent align="start">
-            {harnesses.length === 0 && <SelectItem value="none" disabled>No harness detected</SelectItem>}
-            {harnesses.map(h => (
-              <SelectItem key={h.kind} value={h.kind}>
-                {h.displayName}
-                {h.authStatus === 'configured' ? ' · configured' : ''}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-          {/* The agent-declared model picker (map 47 ticket 50) — LAZY: the
-              trigger always renders once a harness is selected, and opening
-              it probes the agent's handshake. Tradeoff: the probe ALSO warms
-              a session the first run resumes, so that optimization only
-              materializes for users who actually open the picker (a user who
-              never does cold-starts the first run, exactly as before the
-              probe existed). A run's session event refreshes the set after
-              the first message. `loading` is scoped to THIS harness — a
-              stale probe for a switched-away harness must not show a spinner
-              for the current one. The probe result is cached per harness, so
-              switching back to a probed provider restores the set instantly
-              (no reload, no agent spawn). */}
-          {harnessKind && (
-            <ModelSelector
-              models={sessionModels?.availableModels ?? []}
-              loading={inspectingKind === harnessKind && !sessionModels}
-              value={modelId}
-              onSelect={setModelId}
-              onOpen={() => { void inspectHarness(harnessKind) }}
-            />
-          )}
+          {/* The unified harness + model picker (t3code ProviderModelPicker
+              shape): one trigger opens the harness rail + searchable
+              agent-declared model list. LAZY: opening probes the active
+              harness's handshake (which also warms a session the first run
+              resumes); browsing the rail probes each previewed harness.
+              Results are cached per harness kind, so switching back restores
+              the set instantly (no reload, no agent spawn). Committing a
+              model row on ANOTHER harness routes through the switch
+              confirmation below when a conversation exists. */}
+          <HarnessModelPicker
+            harnesses={harnesses}
+            harnessKind={harnessKind}
+            modelId={modelId}
+            sessionModels={sessionModels?.availableModels ?? []}
+            modelsByKind={modelsByKind}
+            inspectingKind={inspectingKind}
+            onInspect={kind => { void inspectHarness(kind) }}
+            onInstanceModelChange={onInstanceModelChange}
+          />
         {sessionModes && sessionModes.availableModes.length > 0 && (
           <Select value={modeId ?? ''} onValueChange={next => { if (next) setModeId(next) }}>
             <SelectTrigger size="sm" aria-label="Mode" className="h-7 border-border text-[11.5px]" title="Agent-declared mode">
@@ -335,8 +334,8 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
           current harness untouched; the AlertDialog is not dismissible by
           backdrop/Escape — the user must answer. */}
       <AlertDialog
-        open={pendingHarness !== null}
-        onOpenChange={open => { if (!open) setPendingHarness(null) }}
+        open={pendingSwitch !== null}
+        onOpenChange={open => { if (!open) setPendingSwitch(null) }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
