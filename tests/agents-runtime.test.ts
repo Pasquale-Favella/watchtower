@@ -375,6 +375,205 @@ describe('createHarnessRuntime — inspect (the pre-flight handshake probe, map 
   })
 })
 
+describe('createHarnessRuntime — configOptions selects (opencode / claude-agent-acp live shape)', () => {
+  function configOptionsSession() {
+    return {
+      sessionId: 'sess_9',
+      // opencode shape: no legacy models/modes — models AND modes live here.
+      // claude-agent-acp shape: same model select (subset) + legacy modes.
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          description: 'AI model to use',
+          category: 'model',
+          type: 'select',
+          currentValue: 'sonnet',
+          options: [
+            { value: 'default', name: 'Default (recommended)', description: 'Opus 5' },
+            { value: 'sonnet', name: 'Sonnet', description: 'Sonnet 5' },
+            { value: 'haiku', name: 'Haiku', description: 'Haiku 4.5' },
+          ],
+        },
+        {
+          id: 'mode',
+          name: 'Session Mode',
+          category: 'mode',
+          type: 'select',
+          currentValue: 'build',
+          options: [
+            { value: 'build', name: 'build' },
+            { value: 'plan', name: 'plan' },
+          ],
+        },
+      ],
+    }
+  }
+
+  it('maps configOptions model/mode selects to models/modes on inspect', async () => {
+    const { sdk, provider, sessionResponse } = fakeSdk([])
+    Object.assign(sessionResponse, configOptionsSession())
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const result = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() })
+
+    expect(result).toEqual({
+      sessionId: 'sess_9',
+      models: {
+        availableModels: [
+          { modelId: 'default', name: 'Default (recommended)', description: 'Opus 5' },
+          { modelId: 'sonnet', name: 'Sonnet', description: 'Sonnet 5' },
+          { modelId: 'haiku', name: 'Haiku', description: 'Haiku 4.5' },
+        ],
+        currentModelId: 'sonnet',
+      },
+      modes: {
+        availableModes: [
+          { id: 'build', name: 'build' },
+          { id: 'plan', name: 'plan' },
+        ],
+        currentModeId: 'build',
+      },
+    })
+    expect(provider.initSession).toHaveBeenCalledOnce()
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+  })
+
+  it('prefers legacy models/modes when both shapes are present', async () => {
+    const { sdk, sessionResponse } = fakeSdk([])
+    Object.assign(sessionResponse, {
+      ...configOptionsSession(),
+      models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' },
+    })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const result = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() })
+
+    expect(result.models).toEqual({
+      availableModels: [{ modelId: 'opus', name: 'Claude Opus' }],
+      currentModelId: 'opus',
+    })
+    // Modes still come from configOptions (no legacy modes in this payload).
+    expect(result.modes?.currentModeId).toBe('build')
+  })
+
+  it('rides configOptions-derived models/modes on the run session event', async () => {
+    const { sdk, sessionResponse } = fakeSdk([])
+    Object.assign(sessionResponse, configOptionsSession())
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })) {
+      events.push(event)
+    }
+
+    expect(events[1]).toMatchObject({
+      kind: 'session',
+      sessionId: 'sess_9',
+      models: { currentModelId: 'sonnet' },
+      modes: { currentModeId: 'build' },
+    })
+    const models = (events[1] as { models?: { availableModels: { modelId: string }[] } }).models
+    expect(models?.availableModels.map(m => m.modelId)).toEqual(['default', 'sonnet', 'haiku'])
+  })
+
+  it('flattens grouped configOptions values', async () => {
+    const { sdk, sessionResponse } = fakeSdk([])
+    Object.assign(sessionResponse, {
+      sessionId: 'sess_9',
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'a-1',
+          options: [{ group: 'g-a', name: 'Group A', options: [{ value: 'a-1', name: 'One' }] }],
+        },
+      ],
+    })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const result = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() })
+
+    expect(result.models).toEqual({
+      availableModels: [{ modelId: 'a-1', name: 'Group A / One' }],
+      currentModelId: 'a-1',
+    })
+  })
+
+  it('applies model/mode picks via setConfigOption before streaming', async () => {
+    const { sdk, provider, sessionResponse } = fakeSdk([])
+    Object.assign(sessionResponse, configOptionsSession())
+    const setConfigOption = vi.fn(async () => ({}))
+    ;(provider as unknown as Record<string, unknown>).setConfigOption = setConfigOption
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'haiku',
+      modeId: 'plan',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
+      events.push(event)
+    }
+
+    expect(setConfigOption).toHaveBeenCalledTimes(2)
+    expect(setConfigOption).toHaveBeenNthCalledWith(1, { sessionId: 'sess_9', configId: 'model', value: 'haiku' })
+    expect(setConfigOption).toHaveBeenNthCalledWith(2, { sessionId: 'sess_9', configId: 'mode', value: 'plan' })
+    // The legacy languageModel path is kept for legacy-only agents.
+    expect(provider.languageModel).toHaveBeenCalledWith('haiku', 'plan')
+    expect(events[0]).toEqual({ kind: 'status', state: 'starting' })
+  })
+
+  it('surfaces a setConfigOption failure as an error event instead of running with the wrong model', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([{ type: 'text-delta', text: 'hi' }])
+    Object.assign(sessionResponse, configOptionsSession())
+    ;(provider as unknown as Record<string, unknown>).setConfigOption = vi.fn(async () => {
+      throw new Error('Invalid params')
+    })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'nope',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      { kind: 'status', state: 'starting' },
+      { kind: 'session', sessionId: 'sess_9', models: expect.anything(), modes: expect.anything() },
+      { kind: 'error', message: 'Invalid params' },
+    ])
+    expect(streamText).not.toHaveBeenCalled()
+  })
+
+  it('skips setConfigOption when the provider does not expose it (fake/legacy SDK)', async () => {
+    const { sdk, provider, sessionResponse } = fakeSdk([])
+    Object.assign(sessionResponse, configOptionsSession())
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'haiku',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
+      events.push(event)
+    }
+
+    expect(provider.languageModel).toHaveBeenCalledWith('haiku', undefined)
+    expect(events[0]).toEqual({ kind: 'status', state: 'starting' })
+  })
+})
+
 describe('createHarnessRuntime — expendable-resume fallback (probe-warmed first run)', () => {
   it('falls back to a FRESH session when an expendable resume fails — nothing is lost', async () => {
     const { sdk, provider, createACPProvider } = fakeSdk([])

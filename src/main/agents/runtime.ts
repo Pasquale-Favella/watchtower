@@ -39,8 +39,14 @@ import { harnessSpecs } from './harnesses/index.js'
 /** The `createACPProvider` settings — the REAL type, not a local slice. */
 export type AcpProviderConfig = ACPProviderSettings
 
-/** The provider surface the seam uses — a structural Pick of the real class. */
-export type AcpProvider = Pick<ACPProvider, 'languageModel' | 'tools' | 'initSession' | 'cleanup'>
+/** The provider surface the seam uses — a structural Pick of the real class,
+ *  plus the optional session-config setter the seam adds in loadHarnessSdk
+ *  (the real ACPProvider has setModel/setMode for the legacy handshake
+ *  fields; configOptions-based agents like claude-agent-acp and opencode need
+ *  `session/set_config_option` instead — see applyConfigSelection). */
+export type AcpProvider = Pick<ACPProvider, 'languageModel' | 'tools' | 'initSession' | 'cleanup'> & {
+  setConfigOption?: (args: { sessionId: string; configId: string; value: string }) => Promise<unknown>
+}
 
 /** The SDK surface the seam depends on — a narrow slice of `ai` +
  *  `@mcpc-tech/acp-ai-provider`. Injected so tests use a fake. */
@@ -117,17 +123,195 @@ export function assertRealWorkspacePath(workspacePath: string): void {
   }
 }
 
+/** A single flat value of a session `configOptions` select (ACP spec
+ *  `SessionConfigSelectOption`). `options` may also arrive grouped
+ *  (`SessionConfigSelectGroup` with nested `options`) — flattenConfigOptions
+ *  handles both. */
+interface ConfigSelectValue {
+  value: string
+  name: string
+  description?: string | null
+}
+
+/** The structural slice of an ACP `NewSessionResponse` the seam reads —
+ *  legacy `models`/`modes` plus the canonical `configOptions` both agents
+ *  under test actually use (opencode: model+mode only via configOptions;
+ *  claude-agent-acp: modes legacy + model/mode/effort via configOptions).
+ *  `initSession()` is typed loosely upstream, so every field is optional and
+ *  validated defensively below — a malformed agent response must never throw. */
+interface AcpSessionResponse {
+  sessionId?: unknown
+  models?: unknown
+  modes?: unknown
+  configOptions?: unknown
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+/** Flattens a `SessionConfigSelectOptions` payload (flat values or grouped
+ *  values) into plain { value, name, description } rows. Non-conforming
+ *  entries are skipped — one bad option must not drop the whole list. */
+function flattenConfigOptions(options: unknown): ConfigSelectValue[] {
+  if (!Array.isArray(options)) return []
+  const out: ConfigSelectValue[] = []
+  for (const entry of options) {
+    if (!isRecord(entry)) continue
+    // Grouped form: { group, name, options: [...] } — flatten with a
+    // "Group / Option" label so grouped values stay distinguishable.
+    if (Array.isArray(entry.options)) {
+      const groupName = asString(entry.name) ?? asString(entry.group) ?? ''
+      for (const nested of entry.options as unknown[]) {
+        if (!isRecord(nested)) continue
+        const value = asString(nested.value)
+        const name = asString(nested.name)
+        if (!value || !name) continue
+        out.push({
+          value,
+          name: groupName ? `${groupName} / ${name}` : name,
+          ...(typeof nested.description === 'string' ? { description: nested.description } : {}),
+        })
+      }
+      continue
+    }
+    const value = asString(entry.value)
+    const name = asString(entry.name)
+    if (!value || !name) continue
+    out.push({
+      value,
+      name,
+      ...(typeof entry.description === 'string' ? { description: entry.description } : {}),
+    })
+  }
+  return out
+}
+
+/** Finds the select option for a semantic category (`model` | `mode`).
+ *  Category is UX-only per the ACP spec and may be missing — fall back to the
+ *  conventional `id` so agents that omit it still resolve. */
+function findConfigOption(session: AcpSessionResponse, category: 'model' | 'mode'): (Record<string, unknown> & { id: string }) | undefined {
+  if (!Array.isArray(session.configOptions)) return undefined
+  let byId: (Record<string, unknown> & { id: string }) | undefined
+  for (const entry of session.configOptions as unknown[]) {
+    if (!isRecord(entry)) continue
+    const id = asString(entry.id)
+    if (!id) continue
+    const candidate = entry as Record<string, unknown> & { id: string }
+    if (entry.category === category) return candidate
+    if (id === category && !byId) byId = candidate
+  }
+  return byId
+}
+
+/** The configId to address for a category — the option's own id when the
+ *  handshake advertised it, else the conventional id (resumed sessions return
+ *  only `{ sessionId }`, so the id must be guessed — both live agents use the
+ *  conventional `model`/`mode` ids). */
+function configIdForCategory(session: AcpSessionResponse | undefined, category: 'model' | 'mode'): string | undefined {
+  if (!session) return category
+  return findConfigOption(session, category)?.id ?? category
+}
+
+/** Derives CoachSessionModels from a handshake response: legacy `models`
+ *  first, else the `configOptions` model select. Returns undefined when the
+ *  agent declared nothing usable (progressive: pickers stay absent). */
+function modelsFromSession(session: AcpSessionResponse): CoachSessionModels | undefined {
+  if (isRecord(session.models)) {
+    const available = (session.models as { availableModels?: unknown }).availableModels
+    const current = (session.models as { currentModelId?: unknown }).currentModelId
+    if (Array.isArray(available) && typeof current === 'string' && current.length > 0) {
+      const rows = available.filter(isRecord).flatMap(entry => {
+        const modelId = asString(entry.modelId)
+        const name = asString(entry.name)
+        return modelId && name
+          ? [{ modelId, name, ...(typeof entry.description === 'string' ? { description: entry.description } : {}) }]
+          : []
+      })
+      if (rows.length > 0) return { availableModels: rows, currentModelId: current }
+    }
+  }
+  const option = findConfigOption(session, 'model')
+  if (!option || typeof option.currentValue !== 'string' || option.currentValue.length === 0) return undefined
+  const rows = flattenConfigOptions(option.options).map(o => ({
+    modelId: o.value,
+    name: o.name,
+    ...(o.description ? { description: o.description } : {}),
+  }))
+  if (rows.length === 0) return undefined
+  return { availableModels: rows, currentModelId: option.currentValue as string }
+}
+
+/** Derives CoachSessionModes the same way (legacy `modes`, else the
+ *  `configOptions` mode select — opencode only advertises the latter). */
+function modesFromSession(session: AcpSessionResponse): CoachSessionModes | undefined {
+  if (isRecord(session.modes)) {
+    const available = (session.modes as { availableModes?: unknown }).availableModes
+    const current = (session.modes as { currentModeId?: unknown }).currentModeId
+    if (Array.isArray(available) && typeof current === 'string' && current.length > 0) {
+      const rows = available.filter(isRecord).flatMap(entry => {
+        const id = asString(entry.id)
+        const name = asString(entry.name)
+        return id && name
+          ? [{ id, name, ...(typeof entry.description === 'string' ? { description: entry.description } : {}) }]
+          : []
+      })
+      if (rows.length > 0) return { availableModes: rows, currentModeId: current }
+    }
+  }
+  const option = findConfigOption(session, 'mode')
+  if (!option || typeof option.currentValue !== 'string' || option.currentValue.length === 0) return undefined
+  const rows = flattenConfigOptions(option.options).map(o => ({
+    id: o.value,
+    name: o.name,
+    ...(o.description ? { description: o.description } : {}),
+  }))
+  if (rows.length === 0) return undefined
+  return { availableModes: rows, currentModeId: option.currentValue as string }
+}
+
+/** Applies a user's model/mode picks to a live session for configOptions-based
+ *  agents (`session/set_config_option`). Legacy-only agents keep the existing
+ *  `languageModel(modelId, modeId)` path — this only fires when the handshake
+ *  advertised (or conventionally implies) a config select AND the provider
+ *  exposes setConfigOption (the real SDK wrapper; fakes skip it harmlessly).
+ *  Throws with the agent's message on failure so the run surfaces an error
+ *  event instead of silently running with the wrong model. */
+async function applyConfigSelection(
+  provider: AcpProvider,
+  session: AcpSessionResponse | undefined,
+  sessionId: string | undefined,
+  input: { modelId?: string; modeId?: string },
+): Promise<void> {
+  if (!sessionId || !provider.setConfigOption) return
+  if (input.modelId) {
+    const configId = configIdForCategory(session, 'model')
+    if (configId) await provider.setConfigOption({ sessionId, configId, value: input.modelId })
+  }
+  if (input.modeId) {
+    const configId = configIdForCategory(session, 'mode')
+    if (configId) await provider.setConfigOption({ sessionId, configId, value: input.modeId })
+  }
+}
+
 /** Runs one initSession on a provider and derives the session CoachEvent
  *  payload it implies (the resume handle + any handshake-declared
  *  models/modes). Shared by the main warm-up and the expendable-resume
  *  fallback so both emit the session event identically. */
-async function warmSession(provider: AcpProvider): Promise<{ sessionId?: string; event?: CoachEvent }> {
-  const session = await provider.initSession()
-  if (!session.sessionId) return {}
-  const event: CoachEvent = { kind: 'session', sessionId: session.sessionId }
-  if (session.models) event.models = session.models
-  if (session.modes) event.modes = session.modes
-  return { sessionId: session.sessionId, event }
+async function warmSession(provider: AcpProvider): Promise<{ sessionId?: string; event?: CoachEvent; session?: AcpSessionResponse }> {
+  const session = (await provider.initSession()) as unknown as AcpSessionResponse
+  const sessionId = asString(session.sessionId)
+  if (!sessionId) return { session }
+  const event: CoachEvent = { kind: 'session', sessionId }
+  const models = modelsFromSession(session)
+  const modes = modesFromSession(session)
+  if (models) event.models = models
+  if (modes) event.modes = modes
+  return { sessionId, event, session }
 }
 
 /** The env handed to the agent process: the host env MINUS the spec's
@@ -228,12 +412,16 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         // the resume handle. An unavailable agent (binary missing, auth wall)
         // surfaces here as a cheap error event — never an inscrutable spawn
         // crash mid-stream. The handshake may ALSO report selectable
-        // models/modes (experimental ACP fields) — those ride the session
-        // event so the renderer can show a progressive picker (ticket 50).
+        // models/modes — legacy `models`/`modes` or the canonical
+        // `configOptions` selects (opencode and claude-agent-acp advertise
+        // models only there) — those ride the session event so the renderer
+        // can show a progressive picker (ticket 50).
         let sessionId: string | undefined = input.sessionId
+        let warmSessionData: AcpSessionResponse | undefined
         try {
           const warm = await warmSession(provider)
           sessionId = warm.sessionId ?? sessionId
+          warmSessionData = warm.session
           if (warm.event) yield warm.event
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
@@ -258,9 +446,26 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
             provider = createProvider({ ...input, sessionId: undefined })
             const warm = await warmSession(provider)
             sessionId = warm.sessionId
+            warmSessionData = warm.session
             if (warm.event) yield warm.event
           } catch (err2) {
             yield { kind: 'error', message: err2 instanceof Error ? err2.message : String(err2) }
+            return
+          }
+        }
+
+        // Progressive selection for configOptions-based agents: the renderer's
+        // model/mode ids come from the handshake's own selects, but the AI SDK
+        // provider only knows the legacy `unstable_setSessionModel` /
+        // `setSessionMode` calls (claude-agent-acp rejects the former with
+        // "Method not found"). Apply the picks explicitly via
+        // `session/set_config_option` before streaming — a failure is a real
+        // error event, never a silent run with the wrong model.
+        if ((input.modelId || input.modeId) && sessionId) {
+          try {
+            await applyConfigSelection(provider, warmSessionData, sessionId, input)
+          } catch (err) {
+            yield { kind: 'error', message: err instanceof Error ? err.message : String(err) }
             return
           }
         }
@@ -310,12 +515,16 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         // `session` CoachEvent (map 47 ticket 50), so what the pickers show
         // pre-chat is exactly what the first run would have declared anyway;
         // the session id lets the runner RESUME this warm session on that
-        // first run (no double cold-start).
-        const session = await provider.initSession()
+        // first run (no double cold-start). Legacy `models`/`modes` win when
+        // present; otherwise the canonical `configOptions` selects are mapped
+        // (opencode and claude-agent-acp advertise models only there).
+        const session = (await provider.initSession()) as unknown as AcpSessionResponse
+        const models = modelsFromSession(session)
+        const modes = modesFromSession(session)
         return {
-          ...(session.sessionId ? { sessionId: session.sessionId } : {}),
-          ...(session.models ? { models: session.models } : {}),
-          ...(session.modes ? { modes: session.modes } : {}),
+          ...(asString(session.sessionId) ? { sessionId: session.sessionId as string } : {}),
+          ...(models ? { models } : {}),
+          ...(modes ? { modes } : {}),
         }
       } finally {
         provider.cleanup()
@@ -327,7 +536,11 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
 /** Wire the REAL AI SDK + ACP provider lazily (ESM packages, dynamic import
  *  so the seam's import surface stays light and the app boots without them).
  *  The seam has zero per-harness adapter-wiring code (ADR 0016): every spec
- *  carries its own ACP descriptor, and `createHarnessRuntime` reads it. */
+ *  carries its own ACP descriptor, and `createHarnessRuntime` reads it. The
+ *  created provider is augmented with `setConfigOption` (a thin delegate to
+ *  the underlying ACP connection's `setSessionConfigOption`) so runs can apply
+ *  model/mode picks for configOptions-based agents — the upstream provider
+ *  class only exposes the legacy setModel/setMode pair. */
 export async function loadHarnessSdk(): Promise<HarnessSdk> {
   const [{ streamText }, { createACPProvider }] = await Promise.all([
     import('ai'),
@@ -336,8 +549,21 @@ export async function loadHarnessSdk(): Promise<HarnessSdk> {
   return {
     // The real factory's signature IS `(config: ACPProviderSettings) =>
     // ACPProvider` — the seam's `AcpProviderConfig`/`AcpProvider` are that
-    // real type (map 47 ticket 51), so no cast is needed at this boundary.
-    createACPProvider,
+    // real type (map 47 ticket 51), so no cast is needed at this boundary
+    // except for the additive setConfigOption augmentation below.
+    createACPProvider: ((config: AcpProviderConfig): AcpProvider => {
+      const provider = createACPProvider(config) as unknown as AcpProvider & {
+        model?: { connection?: { setSessionConfigOption?: (args: { sessionId: string; configId: string; value: string }) => Promise<unknown> } }
+      }
+      provider.setConfigOption = async (args: { sessionId: string; configId: string; value: string }) => {
+        const connection = provider.model?.connection
+        if (!connection?.setSessionConfigOption) {
+          throw new Error('agent does not support session config options')
+        }
+        return connection.setSessionConfigOption(args)
+      }
+      return provider
+    }) as HarnessSdk['createACPProvider'],
     streamText: (options: {
       model: unknown
       prompt: string
