@@ -125,7 +125,7 @@ function HeroMini({ label, children }: { label: string; children: React.ReactNod
   return (
     <div className="min-w-0">
       <div className="truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="mt-0.5 truncate text-[12.5px]">{children}</div>
+      <div className="mt-0.5 min-w-0 text-[12.5px]">{children}</div>
     </div>
   )
 }
@@ -147,18 +147,30 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
               {formatUsd(attributedCost)}
             </div>
           </div>
-          {coveragePct !== null && (
+          {coveragePct !== null ? (
             <HeroMini label="Coverage">
-              <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
-                {coveragePct.toLocaleString('en-US')}%
-              </span>{' '}
-              <span className="text-muted-foreground">of linked spend</span>
+              <span className="block truncate">
+                <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
+                  {coveragePct.toLocaleString('en-US')}%
+                </span>{' '}
+                <span className="text-muted-foreground">of linked spend</span>
+              </span>
               <span className="mt-1.5 block h-1.5 overflow-hidden rounded-full bg-background" aria-hidden="true">
                 <span className="block h-full rounded-full" style={{ width: `${coveragePct}%`, background: 'var(--primary)' }} />
               </span>
             </HeroMini>
+          ) : (
+            <HeroMini label="Coverage">
+              <span className="block truncate">
+                <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">—</span>{' '}
+                <span className="text-muted-foreground">of linked spend</span>
+              </span>
+              <span className="mt-1.5 block h-1.5 overflow-hidden rounded-full bg-background" aria-hidden="true">
+                <span className="block h-full rounded-full" style={{ width: '0%', background: 'var(--primary)' }} />
+              </span>
+            </HeroMini>
           )}
-          {top && (
+          {top ? (
             <HeroMini label="Top PR by spend">
               <span className="flex min-w-0 items-center gap-1.5">
                 <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -173,12 +185,14 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
                 <strong className="shrink-0 font-mono tabular-nums text-foreground">{formatUsd(top.cost)}</strong>
               </span>
             </HeroMini>
-          )}
-          {payload.unattributedCost > 0 && (
-            <HeroMini label="Unattributed">
-              <strong className="font-mono tabular-nums text-foreground">{formatUsd(payload.unattributedCost)}</strong>
+          ) : (
+            <HeroMini label="Top PR by spend">
+              <span className="block truncate text-muted-foreground">—</span>
             </HeroMini>
           )}
+          <HeroMini label="Unattributed">
+            <strong className="block truncate font-mono tabular-nums text-foreground">{formatUsd(payload.unattributedCost)}</strong>
+          </HeroMini>
         </div>
       </Card>
       <div className="grid grid-cols-2 gap-3 sm:col-span-1 sm:grid-cols-1">
