@@ -217,10 +217,24 @@ function configIdForCategory(session: AcpSessionResponse | undefined, category: 
   return findConfigOption(session, category)?.id ?? category
 }
 
-/** Derives CoachSessionModels from a handshake response: legacy `models`
- *  first, else the `configOptions` model select. Returns undefined when the
- *  agent declared nothing usable (progressive: pickers stay absent). */
+/** Derives CoachSessionModels from a handshake response. When an agent sends
+ *  both shapes, the canonical `configOptions` model select wins: Codex also
+ *  sends legacy ids such as `gpt-5.6-terra[low]`, while its
+ *  `session/set_config_option` endpoint accepts only `gpt-5.6-terra`. Using
+ *  the legacy ids in the picker makes the next Coach turn fail with an
+ *  opaque internal error. Returns undefined when the agent declared nothing
+ *  usable (progressive: pickers stay absent). */
 function modelsFromSession(session: AcpSessionResponse): CoachSessionModels | undefined {
+  const option = findConfigOption(session, 'model')
+  if (option && typeof option.currentValue === 'string' && option.currentValue.length > 0) {
+    const rows = flattenConfigOptions(option.options).map(o => ({
+      modelId: o.value,
+      name: o.name,
+      ...(o.description ? { description: o.description } : {}),
+    }))
+    if (rows.length > 0) return { availableModels: rows, currentModelId: option.currentValue }
+  }
+
   if (isRecord(session.models)) {
     const available = (session.models as { availableModels?: unknown }).availableModels
     const current = (session.models as { currentModelId?: unknown }).currentModelId
@@ -235,15 +249,7 @@ function modelsFromSession(session: AcpSessionResponse): CoachSessionModels | un
       if (rows.length > 0) return { availableModels: rows, currentModelId: current }
     }
   }
-  const option = findConfigOption(session, 'model')
-  if (!option || typeof option.currentValue !== 'string' || option.currentValue.length === 0) return undefined
-  const rows = flattenConfigOptions(option.options).map(o => ({
-    modelId: o.value,
-    name: o.name,
-    ...(o.description ? { description: o.description } : {}),
-  }))
-  if (rows.length === 0) return undefined
-  return { availableModels: rows, currentModelId: option.currentValue as string }
+  return undefined
 }
 
 /** Derives CoachSessionModes the same way (legacy `modes`, else the

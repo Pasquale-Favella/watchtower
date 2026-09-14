@@ -459,6 +459,9 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
       ],
       error: 'boom',
     })
+    // A model change made after the probe must update the per-harness cache;
+    // resetSession restores from that cache rather than the live field.
+    useCoachSkillsStore.getState().setModelId('selected-model')
     useCoachSkillsStore.getState().resetSession()
     const s = useCoachSkillsStore.getState()
     expect(resetCoachWorkspace).toHaveBeenCalledTimes(1)
@@ -469,7 +472,7 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     // restored from the per-kind cache so the pickers never go blank.
     expect(s.sessionModels).toEqual(models)
     expect(s.sessionModes).toEqual(modes)
-    expect(s.modelId).toBe('opus')
+    expect(s.modelId).toBe('selected-model')
     expect(s.modeId).toBe('plan')
   })
 

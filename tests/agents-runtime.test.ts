@@ -439,7 +439,7 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
     expect(provider.cleanup).toHaveBeenCalledOnce()
   })
 
-  it('prefers legacy models/modes when both shapes are present', async () => {
+  it('prefers canonical configOptions models when both shapes are present', async () => {
     const { sdk, sessionResponse } = fakeSdk([])
     Object.assign(sessionResponse, {
       ...configOptionsSession(),
@@ -450,8 +450,12 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
     const result = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() })
 
     expect(result.models).toEqual({
-      availableModels: [{ modelId: 'opus', name: 'Claude Opus' }],
-      currentModelId: 'opus',
+      availableModels: [
+        { modelId: 'default', name: 'Default (recommended)', description: 'Opus 5' },
+        { modelId: 'sonnet', name: 'Sonnet', description: 'Sonnet 5' },
+        { modelId: 'haiku', name: 'Haiku', description: 'Haiku 4.5' },
+      ],
+      currentModelId: 'sonnet',
     })
     // Modes still come from configOptions (no legacy modes in this payload).
     expect(result.modes?.currentModeId).toBe('build')

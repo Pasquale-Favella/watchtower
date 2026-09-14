@@ -341,8 +341,28 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       }
     })
   },
-  setModelId: (modelId) => set({ modelId }),
-  setModeId: (modeId) => set({ modeId }),
+  setModelId: (modelId) => set(state => ({
+    modelId,
+    ...(state.harnessKind && state.modelsByKind[state.harnessKind]
+      ? {
+          modelsByKind: {
+            ...state.modelsByKind,
+            [state.harnessKind]: { ...state.modelsByKind[state.harnessKind]!, modelId },
+          },
+        }
+      : {}),
+  })),
+  setModeId: (modeId) => set(state => ({
+    modeId,
+    ...(state.harnessKind && state.modelsByKind[state.harnessKind]
+      ? {
+          modelsByKind: {
+            ...state.modelsByKind,
+            [state.harnessKind]: { ...state.modelsByKind[state.harnessKind]!, modeId },
+          },
+        }
+      : {}),
+  })),
   sendCoach: async (prompt) => {
     const s = get()
     if (s.running) return

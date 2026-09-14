@@ -29,6 +29,7 @@ const codex: HarnessSpec = {
       name: 'codex',
       command: 'codex-acp',
       args: [],
+      authMethodId: 'chat-gpt',
     },
   },
 }

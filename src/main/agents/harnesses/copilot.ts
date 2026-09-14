@@ -21,6 +21,10 @@ const copilot: HarnessSpec = {
       name: 'github-copilot-cli',
       command: 'copilot',
       args: ['--acp'],
+      // Copilot exposes a terminal-backed login auth method. Select it
+      // explicitly so ACP does not leave the first prompt waiting while the
+      // provider guesses an auth flow.
+      authMethodId: 'copilot-login',
     },
   },
 }
