@@ -28,3 +28,14 @@ export function summarizePullRequests(rows: PullRequestRow[]): { attributedCost:
     count: rows.length,
   }
 }
+
+/** The payload's overall active window: earliest start to latest end across
+ * every row, collapsed to one day when they match. Unparseable timestamps are
+ * ignored; no valid timestamp renders as an em dash. */
+export function payloadSpan(rows: PullRequestRow[]): string {
+  const times = rows
+    .flatMap(row => [Date.parse(row.firstStarted), Date.parse(row.lastEnded)])
+    .filter(ms => !Number.isNaN(ms))
+  if (times.length === 0) return '—'
+  return spanLabel(new Date(Math.min(...times)).toISOString(), new Date(Math.max(...times)).toISOString())
+}

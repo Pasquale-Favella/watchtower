@@ -399,6 +399,9 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       let pendingTools: string[] = []
       let pendingToolSequence: ToolCall[][] = []
       let pendingUserMessage = ''
+      // Bounded assistant output text for the central PR scan (the agent
+      // printing the URL of the PR it just created). Transient evidence only.
+      let pendingAssistantText = ''
       let pendingOutputChars = 0
       // Rich-session-capture: edit LOC deltas and failed-patch count accumulated
       // across a turn's patch_apply_end events, flushed onto the turn's call.
@@ -518,6 +521,9 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             .filter(c => c.type === 'output_text' || c.type === 'text')
             .map(c => c.text ?? '')
           pendingOutputChars += texts.join('').length
+          if (pendingAssistantText.length < 2000) {
+            pendingAssistantText = (pendingAssistantText + texts.join(' ')).slice(0, 2000)
+          }
           continue
         }
 
@@ -537,7 +543,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             const timestamp = entry.timestamp ?? ''
             const dedupKey = `codex:${sessionId}:${timestamp}:est${estCounter++}`
 
-            if (seenKeys.has(dedupKey)) { pendingTools = []; pendingToolSequence = []; pendingUserMessage = ''; pendingOutputChars = 0; pendingLocAdded = 0; pendingLocRemoved = 0; pendingEditFailed = 0; continue }
+            if (seenKeys.has(dedupKey)) { pendingTools = []; pendingToolSequence = []; pendingUserMessage = ''; pendingAssistantText = ''; pendingOutputChars = 0; pendingLocAdded = 0; pendingLocRemoved = 0; pendingEditFailed = 0; continue }
             seenKeys.add(dedupKey)
 
             const costUSD = calculateCost(model, estInput, estOutput, 0, 0, 0)
@@ -562,6 +568,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
               turnId: currentTurnId,
               toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
               userMessage: pendingUserMessage,
+              ...(pendingAssistantText ? { assistantText: pendingAssistantText } : {}),
               sessionId,
               ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
               ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
@@ -572,6 +579,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             pendingTools = []
             pendingToolSequence = []
             pendingUserMessage = ''
+            pendingAssistantText = ''
             pendingOutputChars = 0
             pendingLocAdded = 0
             pendingLocRemoved = 0
@@ -679,6 +687,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             turnId: currentTurnId,
             toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
             userMessage: pendingUserMessage,
+            ...(pendingAssistantText ? { assistantText: pendingAssistantText } : {}),
             sessionId,
             ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
             ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
@@ -689,6 +698,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           pendingTools = []
           pendingToolSequence = []
           pendingUserMessage = ''
+          pendingAssistantText = ''
           pendingOutputChars = 0
           pendingLocAdded = 0
           pendingLocRemoved = 0

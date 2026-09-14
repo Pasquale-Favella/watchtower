@@ -143,6 +143,38 @@ export function buildAssistantCall(opts: {
     costUSD = data.cost
   }
 
+  // Bounded assistant/tool-output evidence for the central PR scan (e.g. the
+  // agent printing the URL of the PR it just created, or a `gh` invocation in
+  // a tool input). Transient: parsed into per-turn prRefs downstream, never
+  // persisted per-call.
+  const evidenceParts: string[] = []
+  const pushEvidence = (s: string): void => {
+    if (s.trim()) evidenceParts.push(s)
+  }
+  for (const p of parts) {
+    if (p.type === 'text' && typeof p.text === 'string') {
+      pushEvidence(p.text)
+    } else if ((p.type === 'tool-result' || p.type === 'tool_result') && typeof p.text === 'string') {
+      pushEvidence(p.text)
+    } else if ((p.type === 'tool' || p.type === 'tool-call' || p.type === 'tool_call') && p.state?.input) {
+      // Tool inputs (commands, prompts, URLs) as evidence; walk string values
+      // two levels deep instead of dumping raw JSON so empty inputs (`{}`)
+      // contribute nothing.
+      const input = p.state.input as Record<string, unknown>
+      const scanValue = (v: unknown): void => {
+        if (typeof v === 'string') pushEvidence(v)
+      }
+      for (const v of Object.values(input)) {
+        if (typeof v === 'string') pushEvidence(v)
+        else if (v && typeof v === 'object' && !Array.isArray(v)) {
+          for (const w of Object.values(v as Record<string, unknown>)) scanValue(w)
+        }
+      }
+    }
+    if (evidenceParts.join('\n').length >= 2000) break
+  }
+  const assistantText = evidenceParts.join('\n').slice(0, 2000)
+
   return {
     provider: opts.providerName,
     model,
@@ -162,6 +194,7 @@ export function buildAssistantCall(opts: {
     speed: 'standard',
     deduplicationKey: opts.dedupKey,
     userMessage: opts.userMessage,
+    ...(assistantText ? { assistantText } : {}),
     sessionId: opts.sessionId,
   }
 }

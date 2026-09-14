@@ -4,19 +4,21 @@ import { useShallow } from 'zustand/react/shallow'
 
 import { GitPullRequest, ChevronRight } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
-import { Panel, Stat } from '@/shared/components/Panel'
+import { Panel } from '@/shared/components/Panel'
+import { MetricCard } from '@/features/overview/MetricCard'
+import { Card } from '@/shared/components/ui/card'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { motionClass } from '@/shared/lib/motion'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { spanLabel, sessionWord, summarizePullRequests } from '@/features/pull-requests/lib'
+import { spanLabel, sessionWord, summarizePullRequests, payloadSpan } from '@/features/pull-requests/lib'
 import { formatUsd } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { LoadingRegion, SkeletonCard, SkeletonRows } from '@/shared/components/skeletons'
+import { LoadingRegion, SkeletonCard, SkeletonMetricCard, SkeletonRows } from '@/shared/components/skeletons'
 import { usePullRequestsStore } from '@/features/pull-requests/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
-import type { PullRequestRow } from '../../../../shared/schemas/pull-requests.js'
+import type { PullRequestsPayload, PullRequestRow } from '../../../../shared/schemas/pull-requests.js'
 
 function openPr(event: MouseEvent<HTMLAnchorElement>, url: string): void {
   event.preventDefault()
@@ -116,6 +118,87 @@ function PrRowView({ pr, expanded, onToggle }: { pr: PullRequestRow; expanded: b
   )
 }
 
+/** Bento summary: the hero card carries the salient number (attributed spend)
+ * with its supporting details, flanked by two compact MetricCards for the
+ * pull-request and session counts. */
+function HeroMini({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <div className="truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-0.5 truncate text-[12.5px]">{children}</div>
+    </div>
+  )
+}
+
+function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
+  const { attributedCost } = useMemo(() => summarizePullRequests(payload.rows), [payload])
+  const top = payload.rows[0]
+  const coveragePct = payload.distinctCost > 0
+    ? Math.min(100, Math.max(0, Math.round((attributedCost / payload.distinctCost) * 100)))
+    : null
+
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <Card className="flex flex-col gap-0 rounded-lg border border-border bg-card px-4 py-3 shadow-[var(--card-shadow)] ring-0 [--card-spacing:0px] sm:col-span-2">
+        <div className="grid flex-1 grid-cols-2 content-between gap-x-4 gap-y-3">
+          <div className="min-w-0">
+            <div className="truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Attributed spend</div>
+            <div className="mt-2 truncate font-mono text-3xl font-semibold tracking-tight tabular-nums text-primary">
+              {formatUsd(attributedCost)}
+            </div>
+          </div>
+          {coveragePct !== null && (
+            <HeroMini label="Coverage">
+              <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
+                {coveragePct.toLocaleString('en-US')}%
+              </span>{' '}
+              <span className="text-muted-foreground">of linked spend</span>
+              <span className="mt-1.5 block h-1.5 overflow-hidden rounded-full bg-background" aria-hidden="true">
+                <span className="block h-full rounded-full" style={{ width: `${coveragePct}%`, background: 'var(--primary)' }} />
+              </span>
+            </HeroMini>
+          )}
+          {top && (
+            <HeroMini label="Top PR by spend">
+              <span className="flex min-w-0 items-center gap-1.5">
+                <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <a
+                  className="truncate font-medium text-foreground hover:text-primary hover:underline"
+                  href={top.url}
+                  title={top.url}
+                  onClick={event => openPr(event, top.url)}
+                >
+                  {top.label}
+                </a>
+                <strong className="shrink-0 font-mono tabular-nums text-foreground">{formatUsd(top.cost)}</strong>
+              </span>
+            </HeroMini>
+          )}
+          {payload.unattributedCost > 0 && (
+            <HeroMini label="Unattributed">
+              <strong className="font-mono tabular-nums text-foreground">{formatUsd(payload.unattributedCost)}</strong>
+            </HeroMini>
+          )}
+        </div>
+      </Card>
+      <div className="grid grid-cols-2 gap-3 sm:col-span-1 sm:grid-cols-1">
+        <MetricCard
+          label="Pull requests"
+          value={payload.rows.length.toLocaleString('en-US')}
+          sub={payloadSpan(payload.rows)}
+          subInline
+        />
+        <MetricCard
+          label="Linked sessions"
+          value={payload.distinctSessions.toLocaleString('en-US')}
+          sub={payload.rows.length > 0 ? `Avg ${(payload.distinctSessions / payload.rows.length).toFixed(1)} per PR` : undefined}
+          subInline
+        />
+      </div>
+    </div>
+  )
+}
+
 export function PullRequestsView(): React.JSX.Element {
   const scope = useScopeStore(useShallow(selectScope))
   const payload = usePullRequestsStore(s => s.data)
@@ -143,16 +226,35 @@ export function PullRequestsView(): React.JSX.Element {
       {payload === null ? (
         error ? <ErrorPanel message={error} /> : (
           <LoadingRegion label="Loading pull requests…" className="flex flex-col gap-3">
-            <SkeletonCard title>
-              <div className="grid grid-cols-4">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <div key={i} className="p-3">
-                    <Skeleton className="h-3 w-20" />
-                    <Skeleton className="mt-1.5 h-5 w-16" />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-border bg-card p-4 sm:col-span-2">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-4">
+                  <div>
+                    <Skeleton className="h-3 w-28" />
+                    <Skeleton className="mt-2 h-8 w-32" />
                   </div>
-                ))}
+                  <div>
+                    <Skeleton className="h-3 w-20" />
+                    <Skeleton className="mt-2 h-6 w-24" />
+                    <Skeleton className="mt-1.5 h-1.5 w-full rounded-full" />
+                  </div>
+                  <div>
+                    <Skeleton className="h-3 w-24" />
+                    <Skeleton className="mt-2 h-6 w-20" />
+                  </div>
+                  <div>
+                    <Skeleton className="h-3 w-24" />
+                    <Skeleton className="mt-1 h-3.5 w-full" />
+                  </div>
+                </div>
               </div>
-              <div className="mt-1 border-t border-border pt-2">
+              <div className="grid grid-cols-2 gap-3 sm:col-span-1 sm:grid-cols-1">
+                <SkeletonMetricCard />
+                <SkeletonMetricCard />
+              </div>
+            </div>
+            <SkeletonCard title>
+              <div className="mt-1 pt-2">
                 <Skeleton className="h-3.5 w-48" />
               </div>
               <SkeletonRows rows={5} className="mt-1 px-3.5" />
@@ -166,21 +268,16 @@ export function PullRequestsView(): React.JSX.Element {
           </p>
         </Panel>
       ) : (
-        <Panel title="Pull request spend">
-          <div className="grid grid-cols-4 gap-0">
-            <Stat label="Attributed spend" value={formatUsd(summarizePullRequests(payload.rows).attributedCost)} accent />
-            <Stat label="Pull requests" value={payload.rows.length.toLocaleString('en-US')} />
-            <Stat label="Linked sessions" value={payload.distinctSessions.toLocaleString('en-US')} />
-            <Stat label="Folded agent runs" value={payload.subagentSessions.toLocaleString('en-US')} />
-          </div>
-
-          <div className="mt-2.5 flex items-center justify-between border-t border-border pt-2">
-            <div className="text-[11.5px]">
-              <strong className="text-foreground">Attributed pull requests</strong>
-              <span className="ml-1.5 text-muted-foreground">Sorted by spend, highest first</span>
+        <>
+          <SummaryBento payload={payload} />
+          <Panel title="Pull request spend">
+            <div className="flex items-center justify-between">
+              <div className="text-[11.5px]">
+                <strong className="text-foreground">Attributed pull requests</strong>
+                <span className="ml-1.5 text-muted-foreground">Sorted by spend, highest first</span>
+              </div>
+              <span className="font-mono text-[11px] text-muted-foreground">{payload.rows.length.toLocaleString('en-US')} total</span>
             </div>
-            <span className="font-mono text-[11px] text-muted-foreground">{payload.rows.length.toLocaleString('en-US')} total</span>
-          </div>
 
           <div className="mt-1" aria-label="Spend by pull request">
             {payload.rows.map(pr => (
@@ -193,14 +290,15 @@ export function PullRequestsView(): React.JSX.Element {
             ))}
           </div>
 
-          <p className="mt-2.5 border-t border-border pt-2 text-[10.5px] leading-relaxed text-muted-foreground">
-            Costs are attributed turn by turn, so every row adds up without double counting.
-            {payload.subagentSessions > 0 && ` ${payload.subagentSessions.toLocaleString('en-US')} subagent ${payload.subagentSessions === 1 ? 'run is' : 'runs are'} included in the PR where the work happened.`}
-          </p>
-          {payload.unattributedCost > 0 && (
-            <p className="mt-1 text-[10.5px] text-muted-foreground">Not tied to a specific PR: {formatUsd(payload.unattributedCost)}</p>
-          )}
-        </Panel>
+            <p className="mt-2.5 border-t border-border pt-2 text-[10.5px] leading-relaxed text-muted-foreground">
+              Costs are attributed turn by turn, so every row adds up without double counting.
+              {payload.subagentSessions > 0 && ` ${payload.subagentSessions.toLocaleString('en-US')} subagent ${payload.subagentSessions === 1 ? 'run is' : 'runs are'} included in the PR where the work happened.`}
+            </p>
+            {payload.unattributedCost > 0 && (
+              <p className="mt-1 text-[10.5px] text-muted-foreground">Not tied to a specific PR: {formatUsd(payload.unattributedCost)}</p>
+            )}
+          </Panel>
+        </>
       )}
     </div>
   )

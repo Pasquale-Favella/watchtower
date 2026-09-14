@@ -25,6 +25,7 @@ import {
   loadCache,
   reconcileFile,
   saveCache,
+  sectionNeedsPrEvidenceReparse,
 } from './session-cache.js'
 import { acquireCacheRefreshLock, type RefreshLockHandle } from './cache-refresh-lock.js'
 import type { ParsedProviderCall, SessionSource } from './providers/types.js'
@@ -964,6 +965,14 @@ export function compactEntry(raw: JournalEntry): JournalEntry {
     const prUrl = (raw as Record<string, unknown>)['prUrl']
     if (typeof prUrl === 'string' && prUrl) (entry as Record<string, unknown>)['prUrl'] = prUrl
   }
+  // Stash PR URLs found in assistant text / tool results / tool inputs on the
+  // compacted entry (compaction drops those bodies). groupIntoTurns unions
+  // them into the turn's refs; the assistant's own `gh pr create` output is
+  // the most common way a session earns its PR link.
+  if (raw.type === 'user' || raw.type === 'assistant') {
+    const prUrls = collectPrUrlsFromEntry(raw)
+    if (prUrls.length > 0) (entry as Record<string, unknown>)['prUrls'] = prUrls
+  }
 
   const att = (raw as Record<string, unknown>)['attachment']
   if (att && typeof att === 'object') {
@@ -1146,6 +1155,86 @@ function getUserMessageText(entry: JournalEntry): string {
   return ''
 }
 
+// Max characters scanned per entry surface for PR URLs. Tool results can carry
+// large command output; PR links live in the first screenful.
+const PR_SCAN_CAP = 20_000
+
+function toolResultTextOf(block: Record<string, unknown>): string {
+  const content = block['content']
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    for (const b of content) {
+      if (!b || typeof b !== 'object') continue
+      const text = (b as Record<string, unknown>)['text']
+      if (typeof text === 'string') parts.push(text)
+    }
+    return parts.join('\n')
+  }
+  return ''
+}
+
+/**
+ * PR URLs visible anywhere in a raw Claude journal entry: user text,
+ * assistant text, `tool_result` bodies, `tool_use` inputs, and the
+ * `toolUseResult` blob (e.g. `gh pr create` printing its new URL). Each
+ * surface is length-capped. Feeds both the per-turn refs (via the compacted
+ * entry's stashed `prUrls`) and the session-level union in
+ * `collectSessionMeta`, so the common "agent created the PR itself" flow is
+ * attributed without the user ever pasting a link.
+ */
+export function collectPrUrlsFromEntry(entry: JournalEntry): string[] {
+  const parts: string[] = []
+  const push = (s: string | undefined): void => {
+    if (typeof s === 'string' && s) parts.push(s.length > PR_SCAN_CAP ? s.slice(0, PR_SCAN_CAP) : s)
+  }
+  push(getUserMessageText(entry))
+  const msg = entry.message
+  if (msg && typeof msg === 'object' && Array.isArray((msg as { content?: unknown }).content)) {
+    const content = (msg as { content?: unknown }).content as unknown[]
+    const isUser = (msg as { role?: unknown }).role === 'user'
+    for (const b of content) {
+      if (!b || typeof b !== 'object') continue
+      const bb = b as Record<string, unknown>
+      if (bb['type'] === 'text' && typeof bb['text'] === 'string') push(bb['text'] as string)
+      else if (isUser && bb['type'] === 'tool_result') push(toolResultTextOf(bb))
+      else if (!isUser && bb['type'] === 'tool_use') {
+        const input = bb['input']
+        if (input && typeof input === 'object') {
+          try {
+            push(JSON.stringify(input).slice(0, 4000))
+          } catch { /* unstringifiable input: skip */ }
+        }
+      }
+    }
+  }
+  const tur = (entry as Record<string, unknown>)['toolUseResult']
+  if (typeof tur === 'string') push(tur)
+  else if (tur && typeof tur === 'object') {
+    try {
+      push(JSON.stringify(tur).slice(0, PR_SCAN_CAP))
+    } catch { /* unstringifiable result: skip */ }
+  }
+  if (parts.length === 0) return []
+  return extractPrUrlsFromText(parts.join('\n'))
+}
+
+/** Union a compacted entry's stashed `prUrls` (see `compactEntry`) into the
+ * turn's accumulating PR set. Sorted for determinism. */
+function unionStashedPrUrls(entry: JournalEntry, current: string[]): string[] {
+  const stashed = (entry as Record<string, unknown>)['prUrls']
+  if (!Array.isArray(stashed)) return current
+  let changed = false
+  for (const u of stashed) {
+    if (typeof u === 'string' && u && !current.includes(u)) {
+      current.push(u)
+      changed = true
+    }
+  }
+  if (changed) current.sort()
+  return current
+}
+
 function getMessageId(entry: JournalEntry): string | null {
   if (entry.type !== 'assistant') return null
   const msg = entry.message as AssistantMessageContent | undefined
@@ -1296,8 +1385,9 @@ export function collectToolResultMeta(entry: JournalEntry, map: Map<string, Tool
 }
 
 // Accumulate session-level metadata from a raw entry. `ai-title` is last-wins
-// (Claude refines the title over the session); `pr-link` URLs union; any
-// sidechain entry marks the session.
+// (Claude refines the title over the session); `pr-link` URLs union, plus any
+// PR URL visible in user/assistant/tool-result text (see
+// `collectPrUrlsFromEntry`); any sidechain entry marks the session.
 export function collectSessionMeta(entry: JournalEntry, meta: SessionMeta): void {
   if (entry.type === 'ai-title') {
     const t = (entry as Record<string, unknown>)['aiTitle']
@@ -1305,6 +1395,10 @@ export function collectSessionMeta(entry: JournalEntry, meta: SessionMeta): void
   } else if (entry.type === 'pr-link') {
     const url = (entry as Record<string, unknown>)['prUrl']
     if (typeof url === 'string' && url && !meta.prLinks.includes(url)) meta.prLinks.push(url)
+  } else if (entry.type === 'user' || entry.type === 'assistant') {
+    for (const url of collectPrUrlsFromEntry(entry)) {
+      if (!meta.prLinks.includes(url)) meta.prLinks.push(url)
+    }
   }
   if (entry.isSidechain === true) {
     meta.isSidechain = true
@@ -1554,9 +1648,11 @@ export function groupIntoTurns(entries: JournalEntry[], seenMsgIds: Set<string>,
   // from the user entry (gitBranch is on every user/assistant entry); a
   // continuation turn with no leading user text falls back to its first call.
   let currentBranch: string | undefined
-  // GitHub PR URLs referenced within the turn currently being accumulated. A
-  // `pr-link` entry is emitted after the assistant creates/references a PR, so it
-  // lands inside the same turn (before the next user message) and attaches here.
+  // PR URLs referenced within the turn currently being accumulated: user
+  // text, assistant text, tool results/inputs (stashed as `prUrls` by
+  // compactEntry), and native `pr-link` entries. A `pr-link` entry is emitted
+  // after the assistant creates/references a PR, so it lands inside the same
+  // turn (before the next user message) and attaches here.
   let currentPrRefs: string[] = []
   // Subagent-spawn `tool_use` ids emitted within the current turn (deduped),
   // carried from each call's `spawnToolUseIds`.
@@ -1583,11 +1679,17 @@ export function groupIntoTurns(entries: JournalEntry[], seenMsgIds: Set<string>,
         currentTimestamp = entry.timestamp ?? ''
         currentSessionId = entry.sessionId ?? ''
         currentBranch = entryBranch
-        currentPrRefs = extractPrUrlsFromText(text)
+        currentPrRefs = unionStashedPrUrls(entry, extractPrUrlsFromText(text))
         currentSpawnIds = []
+      } else {
+        // A tool-result-only user entry carries no new prompt but may carry
+        // the session's PR evidence (`gh pr create` output). Attribute it to
+        // the turn under construction instead of dropping it.
+        unionStashedPrUrls(entry, currentPrRefs)
       }
     } else if (entry.type === 'assistant') {
       if (entryBranch && !currentBranch) currentBranch = entryBranch
+      unionStashedPrUrls(entry, currentPrRefs)
       const msgId = getMessageId(entry)
       if (msgId && seenMsgIds.has(msgId)) continue
       if (msgId) seenMsgIds.add(msgId)
@@ -1981,10 +2083,18 @@ async function scanProjectDirs(
 
       const cached = section.files[filePath]
       const action = reconcileFile(fp, cached)
-      if (cached && (readOnly || action.action === 'unchanged')) {
+      // One-shot PR-evidence re-parse: caches written before the
+      // provider-neutral PR detection re-parse every present source once so
+      // already-collected sessions gain PR refs (assistant/tool text is not
+      // recoverable any other way). Full re-parse, never the append shortcut,
+      // with a `modified` verdict so the ledger clean-replaces under the
+      // UNCHANGED env fingerprint instead of duplicating rows. Failed files
+      // stay skipped.
+      const forceEvidenceReparse = !readOnly && sectionNeedsPrEvidenceReparse(section) && !cached?.failed
+      if (cached && !forceEvidenceReparse && (readOnly || action.action === 'unchanged')) {
         unchangedFiles.push({ filePath, dirName, source, cached: section.files[filePath]! })
       } else if (!readOnly) {
-        if (action.action === 'appended') {
+        if (action.action === 'appended' && !forceEvidenceReparse) {
           changedFiles.push({
             filePath,
             info: { dirName, fp, source },
@@ -2222,6 +2332,10 @@ async function scanProjectDirs(
   // rebuild the full corpus from cache on every warm cadence tick — the exact
   // "from latest scan to now" cost the ledger design removes. Tests and the CLI
   // call without `onDelta` and still get the assembled report.
+  if (!readOnly && sectionNeedsPrEvidenceReparse(section)) {
+    section.prEvidenceV1 = true
+    ;(diskCache as { _dirty?: boolean })._dirty = true
+  }
   if (!onDelta) {
     return buildClaudeProjectSummaries(unchangedFiles, changedFiles, section, dateRange)
   }
@@ -2398,9 +2512,56 @@ function summarizeProject(project: string, projectPath: string, sessions: Sessio
 // Provider-neutral explicit-reference capture. Every saved provider session
 // passes through this boundary. Full URLs only: a bare "#123" is repository-
 // ambiguous and must never silently move spend between repositories.
-const PR_URL_IN_TEXT_RE = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g
+//
+// Covered shapes (all providers, user text AND assistant/tool text):
+// - GitHub / GitHub Enterprise: https?://<host>/<owner>/<repo>/(pull|pulls)/<n>
+// - GitLab (incl. nested groups): https?://<host>/<group>/.../<repo>/-/merge_requests/<n>
+// - Bitbucket Cloud: https?://<host>/<owner>/<repo>/pull-requests/<n>
+// Trailing prose punctuation (")].,;:...") is stripped so a URL at the end of
+// a sentence still matches.
+const PR_URL_RES = [
+  /https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g,
+  /https?:\/\/[^/\s]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/\d+/g,
+  /https?:\/\/[^/\s]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g,
+  /https?:\/\/[^/\s]+\/\S+?\/-\/merge_requests\/\d+/g,
+  /https?:\/\/[^/\s]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:merge_requests|merge-requests|pull-requests)\/\d+/g,
+]
+const PR_URL_TRAILING_PUNCT_RE = /[.,;:!?)\]}'"]+$/
 export function extractPrUrlsFromText(text: string): string[] {
-  return [...new Set(text.match(PR_URL_IN_TEXT_RE) ?? [])].sort()
+  const out = new Set<string>()
+  if (!text) return []
+  for (const re of PR_URL_RES) {
+    re.lastIndex = 0
+    for (const m of text.matchAll(re)) {
+      const cleaned = m[0].replace(PR_URL_TRAILING_PUNCT_RE, '')
+      if (cleaned) out.add(cleaned)
+    }
+  }
+  return [...out].sort()
+}
+
+// Union of PR URLs across every text surface a generic provider call carries:
+// the saved user message, the assistant/tool-output text when the provider
+// persists it (`assistantText`), plus the executed bash/tool commands (a `gh
+// pr create` / `gh pr view <url>` invocation names its PR without the user
+// ever pasting a link). Providers that persist richer surfaces (Claude
+// assistant / tool-result text) add those before compaction; see
+// collectPrUrlsFromEntry.
+export function extractPrUrlsFromProviderCall(call: {
+  userMessage: string
+  assistantText?: string
+  bashCommands?: readonly string[]
+  toolSequence?: ReadonlyArray<ReadonlyArray<{ command?: string }>>
+}): string[] {
+  const parts: string[] = [call.userMessage]
+  if (call.assistantText) parts.push(call.assistantText)
+  for (const cmd of call.bashCommands ?? []) parts.push(cmd)
+  for (const group of call.toolSequence ?? []) {
+    for (const tool of group) {
+      if (tool.command) parts.push(tool.command)
+    }
+  }
+  return extractPrUrlsFromText(parts.join('\n'))
 }
 
 function providerCallToTurn(call: ParsedProviderCall): ParsedTurn {
@@ -2433,7 +2594,7 @@ function providerCallToTurn(call: ParsedProviderCall): ParsedTurn {
     isEstimated: call.costIsEstimated,
   })
 
-  const prRefs = extractPrUrlsFromText(call.userMessage)
+  const prRefs = extractPrUrlsFromProviderCall(call)
   return {
     userMessage: call.userMessage,
     assistantCalls: [apiCall],
@@ -2545,7 +2706,7 @@ export function parsedTurnsToCachedTurns(turns: ParsedTurn[]): CachedTurn[] {
 }
 
 function providerCallToCachedTurn(call: ParsedProviderCall): CachedTurn {
-  const prRefs = extractPrUrlsFromText(call.userMessage)
+  const prRefs = extractPrUrlsFromProviderCall(call)
   return {
     timestamp: call.timestamp,
     sessionId: call.sessionId,
@@ -2568,7 +2729,7 @@ function providerCallsToCachedTurns(calls: ParsedProviderCall[]): CachedTurn[] {
     const key = `${call.sessionId}\0${call.turnId}`
     let turn = grouped.get(key)
     if (!turn) {
-      const prRefs = extractPrUrlsFromText(call.userMessage)
+      const prRefs = extractPrUrlsFromProviderCall(call)
       turn = {
         timestamp: call.timestamp,
         sessionId: call.sessionId,
@@ -2580,7 +2741,7 @@ function providerCallsToCachedTurns(calls: ParsedProviderCall[]): CachedTurn[] {
       turns.push(turn)
     }
     turn.calls.push(providerCallToCachedCall(call))
-    const refs = extractPrUrlsFromText(call.userMessage)
+    const refs = extractPrUrlsFromProviderCall(call)
     if (refs.length) turn.prRefs = [...new Set([...(turn.prRefs ?? []), ...refs])].sort()
   }
 
@@ -2633,7 +2794,14 @@ function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
 // and downstream date/day filtering can slice turns without losing the anchor.
 export function cachedTurnToClassified(turn: CachedTurn, resolvedBranch?: string): ClassifiedTurn {
   const branch = turn.gitBranch ?? resolvedBranch
-  const prRefs = turn.prRefs?.length ? turn.prRefs : extractPrUrlsFromText(turn.userMessage)
+  // Re-extract when the cached turn predates PR capture (or a narrower URL
+  // shape): the user message plus every call's executed commands, so already
+  // cached sessions gain the broader detection without a re-parse.
+  const prRefs = turn.prRefs?.length ? turn.prRefs : extractPrUrlsFromProviderCall({
+    userMessage: turn.userMessage,
+    bashCommands: turn.calls.flatMap(c => c.bashCommands ?? []),
+    toolSequence: turn.calls.flatMap(c => c.toolSequence ?? []),
+  })
   const parsed: ParsedTurn = {
     userMessage: turn.userMessage,
     assistantCalls: turn.calls.map(cachedCallToApiCall),
@@ -2927,10 +3095,16 @@ async function parseProviderSources(
 
     const cached = section.files[source.path]
     const action = reconcileFile(fp, cached)
+    // One-shot PR-evidence re-parse (same contract as the Claude path above):
+    // caches written before the provider-neutral PR detection re-parse every
+    // present source once so already-collected sessions gain PR refs, with a
+    // `modified` verdict so the ledger clean-replaces under the UNCHANGED env
+    // fingerprint instead of duplicating rows. Failed files stay skipped.
+    const forceEvidenceReparse = !readOnly && sectionNeedsPrEvidenceReparse(section) && !cached?.failed
     // A cached parse failure at this same fingerprint stays skipped — don't
     // re-read a file that already threw and hasn't changed. It re-parses only
     // when the file changes (then `reconcileFile` reports non-'unchanged').
-    if (cached && (readOnly || (action.action === 'unchanged' && (cached.failed || !cachedFileNeedsProviderReparse(providerName, source.path, cached))))) {
+    if (cached && !forceEvidenceReparse && (readOnly || (action.action === 'unchanged' && (cached.failed || !cachedFileNeedsProviderReparse(providerName, source.path, cached))))) {
       unchangedSources.push({ source, cached })
     } else if (!readOnly) {
       changedSources.push({ source, fp, verdict: action.action === 'new' ? 'new' : 'modified' })
@@ -3105,6 +3279,13 @@ async function parseProviderSources(
       if (allDiscoveredFiles.has(path)) continue
       await emitProviderDelta(path, 'appended', cachedFile)
     }
+  }
+
+  // Stamp the one-shot PR-evidence marker once this pass settles the section
+  // (write mode only): the next scan resumes normal incremental behavior.
+  if (!readOnly && sectionNeedsPrEvidenceReparse(section)) {
+    section.prEvidenceV1 = true
+    ;(diskCache as { _dirty?: boolean })._dirty = true
   }
 
   // Ledger seam: the scan's ONLY consumer is `onDelta` — `runScan` discards the

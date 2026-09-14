@@ -269,10 +269,23 @@ export type PrRow = {
 }
 
 const GITHUB_PR_RE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/
+// Generic forge label: strip the host and the trailing
+// (pull|pulls|merge_requests|merge-requests|pull-requests)/<n> (GitLab keeps a
+// `/-` segment before merge_requests), then keep the last two path segments:
+// `acme/repo/pull/12` -> `acme/repo#12`, `group/sub/repo/-/merge_requests/42`
+// -> `sub/repo#42`. Falls back to the raw URL when nothing matches.
+const GENERIC_PR_RE = /^https?:\/\/[^/]+\/(.+?)\/(?:-\/)?(?:pull|pulls|merge_requests|merge-requests|pull-requests)\/(\d+)(?:[/?#].*)?$/
 
 export function shortenPrUrl(url: string): string {
   const m = GITHUB_PR_RE.exec(url)
-  return m ? `${m[1]}/${m[2]}#${m[3]}` : url
+  if (m) return `${m[1]}/${m[2]}#${m[3]}`
+  const g = GENERIC_PR_RE.exec(url)
+  if (g) {
+    const segments = g[1]!.split('/').filter(s => s.length > 0)
+    const repo = segments.slice(-2).join('/')
+    if (repo) return `${repo}#${g[2]}`
+  }
+  return url
 }
 
 /// One PR's slice of a session's spend. `models`/`categories` map a key (raw

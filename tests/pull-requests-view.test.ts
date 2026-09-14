@@ -7,7 +7,7 @@ import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { buildPullRequestsViewFromLedger } from '../src/main/pull-requests-view.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
 import {
-  spanLabel, sessionWord, summarizePullRequests,
+  spanLabel, sessionWord, summarizePullRequests, payloadSpan,
 } from '../src/renderer/src/features/pull-requests/lib.js'
 
 const PR_A = 'https://github.com/acme/repo/pull/12'
@@ -65,25 +65,30 @@ const PR_SPECS: PrSessionSpec[] = [
   { provider: 'claude', localDate: '2026-07-10', prLinks: [PR_A], turnCosts: [{ cost: 10, prRefs: [PR_A] }] },
   { provider: 'opencode', localDate: '2026-07-20', prLinks: [PR_A], turnCosts: [{ cost: 5, prRefs: [PR_A] }] },
   { provider: 'claude', localDate: '2026-08-01', prLinks: [PR_B], turnCosts: [{ cost: 8, prRefs: [PR_B] }] },
-  // Legacy session: prLinks but no per-turn refs -> approx row, must be dropped.
+  // Legacy session: prLinks but no per-turn refs -> approx row, kept as an estimate.
   { provider: 'claude', localDate: '2026-07-15', prLinks: [PR_C], turnCosts: [{ cost: 3 }] },
   // Unattributed lead-in turn plus an attributed turn.
   { provider: 'claude', localDate: '2026-07-25', prLinks: [PR_D], turnCosts: [{ cost: 2 }, { cost: 3, prRefs: [PR_D] }] },
 ]
 
 describe('buildPullRequestsViewFromLedger (aggregation seam scope)', () => {
-  it('aggregates turn-by-turn spend per PR and drops legacy approximations', () => {
+  it('aggregates turn-by-turn spend per PR and keeps legacy estimates', () => {
     const store = prMakeLedger()
     prPort(store, PR_SPECS)
     const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
 
-    expect(payload.rows.map(r => r.label)).toEqual(['acme/repo#12', 'acme/repo#34', 'acme/repo#78'])
+    expect(payload.rows.map(r => r.label)).toEqual(['acme/repo#12', 'acme/repo#34', 'acme/repo#56', 'acme/repo#78'])
     const prA = payload.rows.find(r => r.url === PR_A)!
     expect(prA.cost).toBe(15)
     expect(prA.sessions).toBe(2)
     expect(prA.calls).toBe(2)
+    // Legacy session (prLinks but no per-turn refs) is kept as an honest
+    // estimate with no category breakdown instead of being dropped.
+    const prC = payload.rows.find(r => r.url === PR_C)!
+    expect(prC.cost).toBe(3)
+    expect(prC.categories).toBeUndefined()
     expect(payload.attributedCost).toBe(payload.rows.reduce((sum, r) => sum + r.cost, 0))
-    expect(payload.attributedCost).toBe(15 + 8 + 3)
+    expect(payload.attributedCost).toBe(15 + 8 + 3 + 3)
     expect(payload.unattributedCost).toBe(2)
     expect(payload.distinctCost).toBe(payload.attributedCost + payload.unattributedCost)
     store.close()
@@ -93,7 +98,7 @@ describe('buildPullRequestsViewFromLedger (aggregation seam scope)', () => {
     const store = prMakeLedger()
     prPort(store, PR_SPECS)
     const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime', provider: 'claude' }, new Date(2026, 7, 6))
-    expect(payload.rows.map(r => r.url)).toEqual([PR_A, PR_B, PR_D])
+    expect(payload.rows.map(r => r.url)).toEqual([PR_A, PR_B, PR_C, PR_D])
     const prA = payload.rows.find(r => r.url === PR_A)!
     expect(prA.cost).toBe(10)
     store.close()
@@ -106,7 +111,7 @@ describe('buildPullRequestsViewFromLedger (aggregation seam scope)', () => {
       period: 'lifetime',
       range: { since: '2026-07-15', until: '2026-07-31' },
     }, new Date(2026, 6, 20))
-    expect(payload.rows.map(r => r.url)).toEqual([PR_A, PR_D])
+    expect(payload.rows.map(r => r.url)).toEqual([PR_A, PR_C, PR_D])
     const prA = payload.rows.find(r => r.url === PR_A)!
     expect(prA.cost).toBe(5)
     store.close()
@@ -158,5 +163,15 @@ describe('pullRequests lib helpers', () => {
     expect(summarizePullRequests(rows).count).toBe(2)
     expect(summarizePullRequests(rows).attributedCost).toBeCloseTo(23.01, 2)
     expect(summarizePullRequests([])).toEqual({ attributedCost: 0, count: 0 })
+  })
+
+  it('spans the payload from the earliest start to the latest end', () => {
+    const rows = [
+      { url: PR_A, label: 'acme/repo#12', cost: 15, sessions: 2, calls: 2, firstStarted: '2026-07-10T12:00:00.000Z', lastEnded: '2026-07-11T12:00:00.000Z', models: [] },
+      { url: PR_B, label: 'acme/repo#34', cost: 8, sessions: 1, calls: 1, firstStarted: '2026-07-20T12:00:00.000Z', lastEnded: '2026-07-20T18:00:00.000Z', models: [] },
+    ]
+    expect(payloadSpan(rows)).toBe('Jul 10 - Jul 20')
+    expect(payloadSpan([rows[1]!])).toBe('Jul 20')
+    expect(payloadSpan([])).toBe('—')
   })
 })
