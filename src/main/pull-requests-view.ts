@@ -18,18 +18,19 @@ export type { PullRequestRow, PullRequestsPayload } from '../shared/schemas/pull
  * The Pull Requests section's scoped payload (ADR 0008). Applies exactly the
  * same period / custom-range / provider scope as the Overview's
  * `overview:query`, then runs the turn-by-turn PR attribution (with subagent
- * folding) over the scoped set. The ticket builds ONLY the turn-by-turn
- * model: legacy whole-session-split rows (`approx`) are dropped, so every
- * returned row carries honest turn-level attribution and `attributedCost` is
- * summable across the rows. Kept in the main process so the sandboxed
- * renderer only receives serializable rows over IPC.
+ * folding) over the scoped set. Sessions whose transcript already expired keep
+ * only session-level links and no per-turn refs: those attribute as legacy
+ * whole-session splits (`approx`) and are INCLUDED with no category
+ * breakdown, so the section degrades to an honest estimate instead of an
+ * empty page. `attributedCost` stays summable across the rows: every session's
+ * spend is distributed across its PRs exactly once. Kept in the main process
+ * so the sandboxed renderer only receives serializable rows over IPC.
  */
 function payloadFrom(sessions: SessionSummary[], anchors: SessionSummary[]): PullRequestsPayload {
   const { rows, totals } = buildPrAttribution(sessions, anchors)
-  const visible = rows.filter(r => !r.approx)
-  const attributedCost = visible.reduce((sum, r) => sum + r.cost, 0)
+  const attributedCost = rows.reduce((sum, r) => sum + r.cost, 0)
   return {
-    rows: visible.map(({ url, label, cost, sessions, calls, firstStarted, lastEnded, models, categories }) => ({
+    rows: rows.map(({ url, label, cost, sessions, calls, firstStarted, lastEnded, models, categories }) => ({
       url,
       label,
       cost,

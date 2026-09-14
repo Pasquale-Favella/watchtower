@@ -1,5 +1,5 @@
 import { getShortModelName } from '../pipeline/models.js'
-import { buildSpawnPrSets } from '../pipeline/parser.js'
+import { buildSpawnPrSets, extractPrUrlsFromProviderCall } from '../pipeline/parser.js'
 import { sessionRowFromSummary, type SessionRow } from '../pipeline/sessions-report.js'
 import type {
   ClassifiedTurn,
@@ -163,7 +163,16 @@ function reconstructTurn(row: LedgerTurnRow, calls: ParsedApiCall[]): Classified
     hasEdits: row.hasEdits === 1,
   }
   if (row.gitBranch) turn.gitBranch = row.gitBranch
-  if (row.prRefs.length > 0) turn.prRefs = row.prRefs
+  // Query-time fallback for ledger rows ported before PR capture (or under a
+  // narrower URL shape): re-extract from the stored user message plus the
+  // turn's executed commands, mirroring the parser's provider-call scan, so
+  // already-ported sessions gain detection without a re-parse.
+  const prRefs = row.prRefs.length > 0 ? row.prRefs : extractPrUrlsFromProviderCall({
+    userMessage: row.userMessage,
+    bashCommands: calls.flatMap(c => c.bashCommands ?? []),
+    toolSequence: calls.flatMap(c => c.toolSequence ?? []),
+  })
+  if (prRefs.length > 0) turn.prRefs = prRefs
   if (row.spawnToolUseIds.length > 0) turn.spawnToolUseIds = row.spawnToolUseIds
   if (row.subCategory) turn.subCategory = row.subCategory
   return turn
@@ -358,6 +367,15 @@ export function assembleSession(
   if (session.agentType) summary.agentType = session.agentType
   if (session.parentSessionId) summary.parentSessionId = session.parentSessionId
   if (session.prLinks.length > 0) summary.prLinks = session.prLinks
+  // Union in-range turn refs (including the query-time fallbacks above) into
+  // the session links, mirroring the parser's observed-links union: a session
+  // whose stored session links are empty but whose turns reference PRs still
+  // counts as PR-linked instead of vanishing from the PR section.
+  if (inRange.some(turn => turn.prRefs?.length)) {
+    const observed = new Set(summary.prLinks ?? [])
+    for (const turn of inRange) for (const ref of turn.prRefs ?? []) observed.add(ref)
+    if (observed.size > 0) summary.prLinks = [...observed].sort()
+  }
   if (Object.keys(session.agentSpawnLinks).length > 0) summary.agentSpawnLinks = session.agentSpawnLinks
   if (session.ambiguousSpawnAgentIds.length > 0) summary.ambiguousSpawnAgentIds = session.ambiguousSpawnAgentIds
   if (session.everHadBranch === 1) summary.everHadBranch = true

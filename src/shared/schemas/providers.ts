@@ -32,6 +32,13 @@ export const parsedProviderCallSchema = z.object({
   turnId: z.string().optional(),
   toolSequence: z.array(z.array(toolCallSchema)).optional(),
   userMessage: z.string(),
+  // Bounded assistant/tool-output text for this call (providers that persist
+  // it: Claude path via the journal, OpenCode/Kilo via message parts, Codex
+  // via response messages). Transient PR-evidence surface only: the central
+  // PR scan reads it at parse time into per-turn `prRefs` (which ARE
+  // persisted); the text itself is never cached per-call or ported to the
+  // ledger. Optional since most providers don't expose it.
+  assistantText: z.string().optional(),
   sessionId: z.string(),
   project: z.string().optional(),
   projectPath: z.string().optional(),

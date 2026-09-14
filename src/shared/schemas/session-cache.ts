@@ -90,6 +90,12 @@ export const providerSectionSchema = z.object({
   envFingerprint: z.string(),
   files: z.record(z.string(), cachedFileSchema),
   durable: z.boolean().optional(),
+  // One-shot PR-evidence re-parse marker: absent on caches written before the
+  // provider-neutral PR detection (broad URL shapes + assistant/tool text).
+  // While absent, the next write-mode scan fully re-parses every present
+  // source once (verdict `modified`, so the ledger clean-replaces instead of
+  // duplicating) and then stamps the marker. Optional so old caches validate.
+  prEvidenceV1: z.boolean().optional(),
 })
 export type ProviderSection = z.infer<typeof providerSectionSchema>
 

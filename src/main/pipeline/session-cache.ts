@@ -157,6 +157,18 @@ export function isCacheComplete(cache: SessionCache): boolean {
   return cache.complete === true
 }
 
+/**
+ * Whether a provider section predates the provider-neutral PR-evidence
+ * capture and must fully re-parse its present sources once. The scan stamps
+ * `prEvidenceV1` when the pass settles, so this fires exactly once per
+ * provider on installs whose cache was written by an older build. The
+ * re-parse reuses the UNCHANGED env fingerprint with a `modified` verdict,
+ * so the ledger clean-replaces each source instead of duplicating rows.
+ */
+export function sectionNeedsPrEvidenceReparse(section: { prEvidenceV1?: boolean }): boolean {
+  return section.prEvidenceV1 !== true
+}
+
 function isNum(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v)
 }

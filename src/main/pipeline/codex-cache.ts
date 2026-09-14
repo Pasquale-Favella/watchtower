@@ -13,7 +13,10 @@ import type { ParsedProviderCall } from './providers/types.js'
 // so sessions cached under v4 pick up the CLI-MCP attribution.
 // v6: rich-session-capture — per-call locAdded/locRemoved/editFailed from
 // patch_apply_end. Sessions cached under v5 lack these fields; re-parse to add.
-const CODEX_CACHE_VERSION = 7
+// v8: PR evidence — bounded `assistantText` on calls whose assistant message
+// referenced a PR (e.g. the agent printing the URL it just created). Sessions
+// cached under v7 lack the field; re-parse to add.
+const CODEX_CACHE_VERSION = 8
 const CACHE_FILE = 'codex-results.json'
 
 type FileFingerprint = { mtimeMs: number; sizeBytes: number }
