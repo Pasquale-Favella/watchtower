@@ -31,14 +31,15 @@ export function ModelDot({ model }: { model: string }) {
 }
 
 /** The unpriced-row dimming treatment (ADR 0010): rows with
- * `costUSD === 0 && savingsUSD === 0` are dimmed and their token/cost cells
- * collapse to em dashes. */
+ * `costUSD === 0 && savingsUSD === 0` are dimmed and only their cost/saved
+ * cells collapse to em dashes — token counts stay visible so alias work
+ * can be prioritized by volume. */
 export function cellClass(row: ModelReportRow): string | undefined {
   return isUnpriced(row) ? 'opacity-50' : undefined
 }
 
-export function tokenValue(row: ModelReportRow, value: number): string {
-  return isUnpriced(row) ? '—' : formatCompact(value)
+export function tokenValue(_row: ModelReportRow, value: number): string {
+  return formatCompact(value)
 }
 
 export function savedCell(row: ModelReportRow): string {
@@ -62,8 +63,9 @@ export function MetricHeaders({ firstLabel }: { firstLabel: string }) {
   )
 }
 
-/** The six metric cells a model/category row renders, carrying the same
- * unpriced dimming treatment as the model cell that precedes them. */
+/** The six metric cells a model/category row renders: token counts are
+ * always shown (even when unpriced), only cost/saved collapse to dashes
+ * with the dimming treatment from `cellClass`. */
 export function MetricCells({ row }: { row: ModelReportRow }) {
   const dim = isUnpriced(row)
   return (
