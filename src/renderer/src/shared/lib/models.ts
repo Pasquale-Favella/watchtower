@@ -30,8 +30,8 @@ export function categoryLabel(category: string | null | undefined): string {
 }
 
 /** An unpriced row per ADR 0010: zero cost AND zero savings — nothing was
- * billed and nothing was avoided, so the row's tokens show as em dashes and
- * the row is dimmed. */
+ * billed and nothing was avoided, so the row is dimmed and its cost/saved
+ * cells show as em dashes (token counts stay visible). */
 export function isUnpriced(row: { costUSD: number; savingsUSD: number }): boolean {
   return row.costUSD === 0 && row.savingsUSD === 0
 }
