@@ -3,13 +3,13 @@ import { useShallow } from 'zustand/react/shallow'
 
 import { cn } from '@/shared/lib/utils'
 import { Panel } from '@/shared/components/Panel'
-import { MetricCard } from '@/features/overview/MetricCard'
 import { BarList, type BarItem } from '@/features/overview/BarList'
 import { DailySpendChart } from '@/features/overview/DailySpendChart'
+import { KpiBento, KpiBentoSkeleton } from '@/features/overview/KpiBento'
 import { motionClass } from '@/shared/lib/motion'
 import { formatUsd, formatConverted } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { LoadingRegion, SkeletonCard, SkeletonLines, SkeletonBars, SkeletonMetricCard } from '@/shared/components/skeletons'
+import { LoadingRegion, SkeletonCard, SkeletonLines, SkeletonBars } from '@/shared/components/skeletons'
 import { useOverviewStore } from '@/features/overview/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { navigateToSection } from '@/app/navigation'
@@ -194,9 +194,7 @@ export function OverviewView() {
       {payload === null ? (
         error ? <ErrorPanel message={error} /> : (
           <LoadingRegion label="Loading overview…" className="flex flex-col gap-4">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-              {Array.from({ length: 6 }).map((_, i) => <SkeletonMetricCard key={i} />)}
-            </div>
+            <KpiBentoSkeleton />
             <SkeletonCard title>
               <SkeletonBars className="h-40" />
             </SkeletonCard>
@@ -212,14 +210,7 @@ export function OverviewView() {
         )
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-            <MetricCard label="Total spend" value={formatUsd(payload.kpis.cost)} accent />
-            <MetricCard label="Estimated" value={formatUsd(payload.kpis.estimatedCostUSD)} sub="portion priced from estimates" />
-            <MetricCard label="Saved" value={formatUsd(payload.kpis.savingsUSD)} sub="via local models" />
-            <MetricCard label="Sessions" value={payload.kpis.sessions.toLocaleString('en-US')} />
-            <MetricCard label="Calls" value={payload.kpis.calls.toLocaleString('en-US')} />
-            <MetricCard label="One-shot" value={formatRate(payload.kpis.oneShotRate)} sub="edits landed first try" />
-          </div>
+          <KpiBento payload={payload} />
 
           <Panel title="Spend over time" right={topModel ? `Biggest driver: ${topModel.name}` : 'No model driver yet'}>
             {chartData.length === 0 ? emptyNote('No spend yet.')

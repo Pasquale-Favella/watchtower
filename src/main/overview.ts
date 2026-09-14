@@ -338,7 +338,7 @@ export function buildOverviewPayload(
   const mcpTotals = new Map<string, number>()
   const skillTotals = new Map<string, { turns: number; cost: number }>()
   const subagentTotals = new Map<string, { calls: number; cost: number }>()
-  const dayBuckets = new Map<string, { cost: number; calls: number }>()
+  const dayBuckets = new Map<string, { cost: number; calls: number; sessions: number }>()
 
   const savingsByModel = new Map<string, {
     calls: number; actualUSD: number; savingsUSD: number; baselineModel: string;
@@ -360,9 +360,10 @@ export function buildOverviewPayload(
 
     const dayKey = sessionFirstKey(sess)
     if (dayKey) {
-      const day = dayBuckets.get(dayKey) ?? { cost: 0, calls: 0 }
+      const day = dayBuckets.get(dayKey) ?? { cost: 0, calls: 0, sessions: 0 }
       day.cost += sess.totalCostUSD
       day.calls += sess.apiCalls
+      day.sessions += 1
       dayBuckets.set(dayKey, day)
     }
 
@@ -614,7 +615,7 @@ export function buildOverviewPayload(
 }
 
 function contiguousDaily(
-  dayBuckets: Map<string, { cost: number; calls: number }>,
+  dayBuckets: Map<string, { cost: number; calls: number; sessions: number }>,
   fromKey: string,
   toKey: string,
 ): OverviewDailyEntry[] {
@@ -627,7 +628,7 @@ function contiguousDaily(
   while (cursor <= end) {
     const key = localDateKey(cursor)
     const bucket = dayBuckets.get(key)
-    out.push({ date: key, costUSD: bucket?.cost ?? 0, calls: bucket?.calls ?? 0 })
+    out.push({ date: key, costUSD: bucket?.cost ?? 0, calls: bucket?.calls ?? 0, sessions: bucket?.sessions ?? 0 })
     cursor.setDate(cursor.getDate() + 1)
   }
   return out

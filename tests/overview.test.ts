@@ -257,12 +257,13 @@ describe('buildOverview daily chart', () => {
     const payload = payloadFor(buildOverviewFixture(), { period: 'all' }, NOW)
 
     expect(payload.daily).toHaveLength(30)
-    expect(payload.daily[0]).toEqual({ date: '2026-06-06', costUSD: 0, calls: 0 })
+    expect(payload.daily[0]).toEqual({ date: '2026-06-06', costUSD: 0, calls: 0, sessions: 0 })
     expect(payload.daily.at(-1)!.date).toBe('2026-07-05')
     const first = payload.daily.find(d => d.date === '2026-07-01')!
-    expect(first).toEqual({ date: '2026-07-01', costUSD: 0.5, calls: 1 })
+    expect(first).toEqual({ date: '2026-07-01', costUSD: 0.5, calls: 1, sessions: 1 })
     expect(payload.daily.find(d => d.date === '2026-07-03')!.costUSD).toBeCloseTo(0, 6)
     expect(payload.daily.find(d => d.date === '2026-07-03')!.calls).toBe(1)
+    expect(payload.daily.find(d => d.date === '2026-07-03')!.sessions).toBe(1)
   })
 
   it('honours an explicit custom range window', () => {
@@ -272,8 +273,8 @@ describe('buildOverview daily chart', () => {
     )
 
     expect(payload.daily).toHaveLength(2)
-    expect(payload.daily[0]).toEqual({ date: '2026-07-02', costUSD: 1.5, calls: 2 })
-    expect(payload.daily[1]).toEqual({ date: '2026-07-03', costUSD: 0, calls: 1 })
+    expect(payload.daily[0]).toEqual({ date: '2026-07-02', costUSD: 1.5, calls: 2, sessions: 1 })
+    expect(payload.daily[1]).toEqual({ date: '2026-07-03', costUSD: 0, calls: 1, sessions: 1 })
     expect(payload.kpis.cost).toBeCloseTo(1.5, 6)
     expect(payload.kpis.sessions).toBe(2)
   })
@@ -291,7 +292,7 @@ describe('buildOverview daily chart', () => {
 
     // 2026-05-01 predates the trailing-30-day default start (2026-06-06), so the
     // window must reach back to it rather than stay a flat 30 days.
-    expect(payload.daily[0]).toEqual({ date: '2026-05-01', costUSD: 0.5, calls: 1 })
+    expect(payload.daily[0]).toEqual({ date: '2026-05-01', costUSD: 0.5, calls: 1, sessions: 1 })
     expect(payload.daily.at(-1)!.date).toBe('2026-07-05')
   })
 
