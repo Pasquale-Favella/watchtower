@@ -420,6 +420,11 @@ export function buildSessionSummaries(store: LedgerStore, scope: AggregateScope)
   const sessionsByKey = new Map<string, LedgerSessionRow>()
   for (const session of data.sessions) sessionsByKey.set(sessionKey(session.sourceId, session.sessionId), session)
 
+  const repoUrlBySource = new Map<number, string>()
+  for (const source of store.getSources()) {
+    if (source.repoUrl) repoUrlBySource.set(source.id, source.repoUrl)
+  }
+
   const out: SessionSummary[] = []
   for (const [key, turns] of turnsBySession) {
     const session = sessionsByKey.get(key)
@@ -430,7 +435,10 @@ export function buildSessionSummaries(store: LedgerStore, scope: AggregateScope)
       return ta - tb || a.timestamp.localeCompare(b.timestamp)
     })
     const assembled = assembleSession(session, turnsSorted, scope.range)
-    if (assembled) out.push(assembled)
+    if (!assembled) continue
+    const repoUrl = repoUrlBySource.get(session.sourceId)
+    if (repoUrl) assembled.repoUrl = repoUrl
+    out.push(assembled)
   }
   return out.sort((a, b) => a.sessionId.localeCompare(b.sessionId))
 }
@@ -469,5 +477,6 @@ export function groupSummariesIntoProjects(sessions: SessionSummary[]): ProjectS
     totalApiCalls: list.reduce((sum, s) => sum + s.apiCalls, 0),
     totalProxiedCostUSD: 0,
     sessions: list,
+    repoUrl: list.find(s => s.repoUrl)?.repoUrl,
   }))
 }

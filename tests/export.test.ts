@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { LedgerStore } from '../src/main/store/ledger.js'
+import { buildProjectsFromLedger } from '../src/main/views.js'
 import { buildFixtureReport } from './fixtures/report.js'
+import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import { exportCsv, exportJson } from '../src/main/export.js'
 
 function makeStore(): LedgerStore {
@@ -104,6 +106,78 @@ describe('exportCsv (ADR 0009: folder of CSVs in the selected display currency)'
     mkdirSync(join(dir, 'occupied'), { recursive: true })
     await expect(exportCsv(buildFixtureReport(), join(dir, 'occupied'), store))
       .rejects.toThrow('no .watchtower-export marker')
+    store.close()
+  })
+})
+
+describe('export git info (repoUrl in projects/sessions/records)', () => {
+  const REPO = 'git@github.com:acme/demo.git'
+
+  it('carries the raw repoUrl through projects/sessions/records in JSON', async () => {
+    const store = makeStore()
+    const report = buildFixtureReport()
+    report[0]!.repoUrl = REPO
+    report[0]!.sessions[0]!.repoUrl = REPO
+
+    const target = await exportJson(report, tempPath(), store)
+    const data = JSON.parse(readFileSync(target, 'utf-8')) as {
+      projects: Array<{ repoUrl?: string }>
+      sessions: Array<{ repoUrl?: string }>
+      records: Array<{ repoUrl?: string }>
+    }
+
+    expect(data.projects[0]!.repoUrl).toBe(REPO)
+    expect(data.sessions[0]!.repoUrl).toBe(REPO)
+    expect(data.records[0]!.repoUrl).toBe(REPO)
+    store.close()
+  })
+
+  it('omits repoUrl in JSON and leaves the CSV cell empty when the project is not a git checkout', async () => {
+    const store = makeStore()
+    const target = await exportJson(buildFixtureReport(), tempPath(), store)
+    const data = JSON.parse(readFileSync(target, 'utf-8')) as {
+      projects: Array<Record<string, unknown>>
+      sessions: Array<Record<string, unknown>>
+      records: Array<Record<string, unknown>>
+    }
+    expect('repoUrl' in data.projects[0]!).toBe(false)
+    expect('repoUrl' in data.sessions[0]!).toBe(false)
+    expect('repoUrl' in data.records[0]!).toBe(false)
+
+    const folder = await exportCsv(buildFixtureReport(), tempPath(), store)
+    const header = readFileSync(join(folder, 'projects.csv'), 'utf-8').split('\n')[0]!
+    expect(header).toContain('repoUrl')
+    expect(readFileSync(join(folder, 'projects.csv'), 'utf-8')).not.toContain('github.com')
+    store.close()
+  })
+
+  it('populates repoUrl from ledger_source on the real export path', async () => {
+    const store = makeStore()
+    store.portIn({
+      provider: 'opencode',
+      envFingerprint: 'env-demo',
+      filePath: FIXTURE_SOURCE_PATH,
+      verdict: 'new',
+      cachedFile: buildFixtureCachedFile(),
+      repoUrl: 'https://github.com/acme/demo-project',
+    })
+
+    const projects = buildProjectsFromLedger(store)
+    expect(projects[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
+    expect(projects[0]!.sessions[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
+
+    const target = await exportJson(projects, tempPath(), store)
+    const data = JSON.parse(readFileSync(target, 'utf-8')) as {
+      projects: Array<{ repoUrl?: string }>
+      records: Array<{ repoUrl?: string }>
+    }
+    expect(data.projects[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
+    expect(data.records[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
+
+    const folder = await exportCsv(projects, tempPath(), store)
+    expect(readFileSync(join(folder, 'projects.csv'), 'utf-8')).toContain('https://github.com/acme/demo-project')
+    expect(readFileSync(join(folder, 'sessions.csv'), 'utf-8')).toContain('https://github.com/acme/demo-project')
+    expect(readFileSync(join(folder, 'records.csv'), 'utf-8')).toContain('https://github.com/acme/demo-project')
     store.close()
   })
 })

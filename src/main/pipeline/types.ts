@@ -261,6 +261,9 @@ export type SessionSummary = {
   /// Human session title captured from the transcript (last ai-title entry).
   /// Absent when the transcript never produced one.
   title?: string
+  /// watchtower: URL del remote git `origin` della source che ha prodotto la
+  /// sessione (ledger_source.repo_url). Assente se non-git / senza remote.
+  repoUrl?: string
   /// True when the session observed a git branch on ANY turn of its FULL
   /// (pre-date-filter) transcript. Set before turns are sliced to a range so the
   /// by-branch report can still tell a branch-bearing Claude session (whose
