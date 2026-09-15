@@ -167,4 +167,79 @@ describe('usePricingStore (ADR 0011)', () => {
     expect(getPriceOverrides).toHaveBeenCalledTimes(2)
     expect(getModels).toHaveBeenCalledTimes(2)
   })
+
+  it('an alias write refreshes aliases and derived usage lists together (no stale picker)', async () => {
+    const getModelAliases = vi.fn(() => Promise.resolve([]))
+    const getModels = vi.fn(() => Promise.resolve({ byModel: [], byTask: [], audit: [] }))
+    const addModelAlias = vi.fn(() => Promise.resolve({ ok: true }))
+    mockWindow({ addModelAlias, getModelAliases, getModels })
+
+    await usePricingStore.getState().loadAliases()
+    await usePricingStore.getState().loadKnownModels()
+    expect(getModelAliases).toHaveBeenCalledTimes(1)
+    expect(getModels).toHaveBeenCalledTimes(1)
+
+    await usePricingStore.getState().addAlias('foo', 'bar')
+    expect(addModelAlias).toHaveBeenCalledWith('foo', 'bar')
+    // The write reloads the alias list AND the usage-derived pickers, so a
+    // quick-add opened right after never proposes pre-write state.
+    expect(getModelAliases).toHaveBeenCalledTimes(2)
+    expect(getModels).toHaveBeenCalledTimes(2)
+  })
+
+  it('an alias removal refreshes aliases and derived usage lists together', async () => {
+    const getModelAliases = vi.fn(() => Promise.resolve([]))
+    const getModels = vi.fn(() => Promise.resolve({ byModel: [], byTask: [], audit: [] }))
+    const removeModelAlias = vi.fn(() => Promise.resolve({ ok: true }))
+    mockWindow({ removeModelAlias, getModelAliases, getModels })
+
+    await usePricingStore.getState().loadAliases()
+    await usePricingStore.getState().loadKnownModels()
+
+    await usePricingStore.getState().removeAlias('foo')
+    expect(removeModelAlias).toHaveBeenCalledWith('foo')
+    expect(getModelAliases).toHaveBeenCalledTimes(2)
+    expect(getModels).toHaveBeenCalledTimes(2)
+  })
+
+  it('an override write refreshes overrides and derived usage lists together', async () => {
+    const getPriceOverrides = vi.fn(() => Promise.resolve([]))
+    const getModels = vi.fn(() => Promise.resolve({ byModel: [], byTask: [], audit: [] }))
+    const setModelPrice = vi.fn(() => Promise.resolve({ ok: true }))
+    mockWindow({ setModelPrice, getPriceOverrides, getModels })
+
+    await usePricingStore.getState().loadOverrides()
+    await usePricingStore.getState().loadKnownModels()
+
+    await usePricingStore.getState().setOverride('baz', 1, 2)
+    expect(setModelPrice).toHaveBeenCalledWith('baz', 1, 2)
+    expect(getPriceOverrides).toHaveBeenCalledTimes(2)
+    expect(getModels).toHaveBeenCalledTimes(2)
+  })
+
+  it('an override removal refreshes overrides and derived usage lists together', async () => {
+    const getPriceOverrides = vi.fn(() => Promise.resolve([]))
+    const getModels = vi.fn(() => Promise.resolve({ byModel: [], byTask: [], audit: [] }))
+    const removePriceOverride = vi.fn(() => Promise.resolve({ ok: true }))
+    mockWindow({ removePriceOverride, getPriceOverrides, getModels })
+
+    await usePricingStore.getState().loadOverrides()
+    await usePricingStore.getState().loadKnownModels()
+
+    await usePricingStore.getState().removeOverride('baz')
+    expect(removePriceOverride).toHaveBeenCalledWith('baz')
+    expect(getPriceOverrides).toHaveBeenCalledTimes(2)
+    expect(getModels).toHaveBeenCalledTimes(2)
+  })
+
+  it('writes keep unopened usage lists lazy (no fetch when never loaded)', async () => {
+    const getModelAliases = vi.fn(() => Promise.resolve([]))
+    const getModels = vi.fn(() => Promise.resolve({ byModel: [], byTask: [], audit: [] }))
+    const addModelAlias = vi.fn(() => Promise.resolve({ ok: true }))
+    mockWindow({ addModelAlias, getModelAliases, getModels })
+
+    await usePricingStore.getState().addAlias('foo', 'bar')
+    expect(getModelAliases).toHaveBeenCalledTimes(1)
+    expect(getModels).not.toHaveBeenCalled()
+  })
 })

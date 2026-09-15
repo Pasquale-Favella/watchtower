@@ -78,11 +78,13 @@ function DailyStackedChart({
   dataStart,
   colorFor,
   emptyText,
+  provenance,
 }: {
   days: SpendDayEntry[]
   dataStart: string | null
   colorFor: (name: string) => string
   emptyText: string
+  provenance?: Map<string, string[]>
 }) {
   const { rows, series } = useMemo(() => stackedRows(days), [days])
   const hasSpend = rows.some(row => series.some(name => Number(row[name] ?? 0) > 0))
@@ -126,12 +128,16 @@ function DailyStackedChart({
       </div>
       {series.length > 1 && (
         <div className="flex flex-wrap gap-x-3 gap-y-1" aria-label="Legend">
-          {series.map(name => (
-            <span key={name} className="inline-flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
-              <span className="size-2 rounded-[2px]" style={{ background: colorFor(name) }} aria-hidden="true" />
-              {name}
-            </span>
-          ))}
+          {series.map(name => {
+            const raws = provenance?.get(name)
+            return (
+              <span key={name} className="inline-flex items-center gap-1.5 text-[10.5px] text-muted-foreground" title={raws?.length ? `includes ${raws.join(', ')}` : undefined}>
+                <span className="size-2 rounded-[2px]" style={{ background: colorFor(name) }} aria-hidden="true" />
+                {name}
+                {raws?.length ? <span className="text-muted-foreground/80">· includes {raws.join(', ')}</span> : null}
+              </span>
+            )
+          })}
         </div>
       )}
       {leadingNoData && (
@@ -143,29 +149,37 @@ function DailyStackedChart({
 
 function SankeyFlow({ flow }: { flow: SpendFlow }) {
   const data = useMemo(() => sankeyData(flow), [flow])
+  const merged = useMemo(() => flow.models.filter(node => node.sourceModels?.length), [flow])
 
   if (flow.links.length === 0) {
     return <p className="py-3 text-center text-[11.5px] text-muted-foreground">No model-project flow in this range yet.</p>
   }
 
   return (
-    <div className="h-56">
-      <ResponsiveContainer width="100%" height="100%">
-        <Sankey
-          data={data}
-          node={renderSankeyNode}
-          link={renderSankeyLink}
-          nodePadding={18}
-          nodeWidth={10}
-          linkCurvature={0.5}
-          margin={{ top: 4, right: 12, bottom: 4, left: 12 }}
-        >
-          <Tooltip
-            formatter={(value) => formatUsd(Number(value))}
-            contentStyle={tooltipStyle}
-          />
-        </Sankey>
-      </ResponsiveContainer>
+    <div className="flex flex-col gap-2">
+      <div className="h-56">
+        <ResponsiveContainer width="100%" height="100%">
+          <Sankey
+            data={data}
+            node={renderSankeyNode}
+            link={renderSankeyLink}
+            nodePadding={18}
+            nodeWidth={10}
+            linkCurvature={0.5}
+            margin={{ top: 4, right: 12, bottom: 4, left: 12 }}
+          >
+            <Tooltip
+              formatter={(value) => formatUsd(Number(value))}
+              contentStyle={tooltipStyle}
+            />
+          </Sankey>
+        </ResponsiveContainer>
+      </div>
+      {merged.length > 0 && (
+        <p className="text-[10.5px] text-muted-foreground">
+          {merged.map(node => `${node.label} includes ${node.sourceModels!.join(', ')}`).join(' · ')}
+        </p>
+      )}
     </div>
   )
 }
@@ -184,6 +198,19 @@ export function SpendView(): React.JSX.Element {
   }, [load, scope])
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
+  const modelProvenance = useMemo(() => {
+    const map = new Map<string, string[]>()
+    if (!payload) return map
+    for (const day of payload.byModel) {
+      for (const seg of day.segments) {
+        if (seg.sourceModels?.length && !map.has(seg.name)) map.set(seg.name, seg.sourceModels)
+      }
+    }
+    for (const node of payload.flow.models) {
+      if (node.sourceModels?.length && !map.has(node.id)) map.set(node.id, node.sourceModels)
+    }
+    return map
+  }, [payload])
 
   return (
     <div className={cn('w-full max-w-[1180px]', motionClass('flex flex-col gap-3', 'section-fade'))}>
@@ -212,6 +239,7 @@ export function SpendView(): React.JSX.Element {
                 dataStart={payload.dataStart}
                 colorFor={seriesColorForModel}
                 emptyText="No model spend in this range yet."
+                provenance={modelProvenance}
               />
             </Panel>
             <Panel title="Daily spend by project">

@@ -7,10 +7,48 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/components/ui/table'
 import type { ModelReportRow } from '../../../../shared/schemas/models.js'
 import {
-  AddAliasButton, cellClass, MetricCells, MetricHeaders, ModelDot, MUT_CELL, NUM_CELL,
+  AddAliasButton, AliasLines, cellClass, MetricCells, MetricHeaders, ModelDot, MUT_CELL, NUM_CELL, OverrideLine,
 } from './table-parts'
 
-export function ModelsTable({ rows, onAddAlias }: { rows: ModelReportRow[]; onAddAlias: (row: ModelReportRow) => void }) {
+/** Row-level pricing management: retarget/remove an alias per raw source,
+ * edit/remove the Price override on the effective model. */
+export interface PricingRowActions {
+  onEditAlias: (source: { provider: string; model: string }, currentTarget: string) => void
+  onRemoveAlias: (sourceModel: string) => void
+  onEditOverride: (target: { provider: string; model: string; modelDisplayName: string; inputPricePerMillion: number; outputPricePerMillion: number }) => void
+  onRemoveOverride: (model: string) => void
+}
+
+function PricingLines({ row, actions }: { row: ModelReportRow; actions: PricingRowActions }) {
+  return (
+    <>
+      {row.sourceModels?.length ? (
+        <AliasLines
+          target={row.model}
+          sources={row.sourceModels}
+          onEdit={source => actions.onEditAlias({ provider: row.provider, model: source }, row.model)}
+          onRemove={actions.onRemoveAlias}
+        />
+      ) : null}
+      {row.override ? (
+        <OverrideLine
+          inputPricePerMillion={row.override.inputPricePerMillion}
+          outputPricePerMillion={row.override.outputPricePerMillion}
+          onEdit={() => actions.onEditOverride({
+            provider: row.provider,
+            model: row.model,
+            modelDisplayName: row.modelDisplayName,
+            inputPricePerMillion: row.override!.inputPricePerMillion,
+            outputPricePerMillion: row.override!.outputPricePerMillion,
+          })}
+          onRemove={() => actions.onRemoveOverride(row.model)}
+        />
+      ) : null}
+    </>
+  )
+}
+
+export function ModelsTable({ rows, onAddAlias, actions }: { rows: ModelReportRow[]; onAddAlias: (row: ModelReportRow) => void; actions: PricingRowActions }) {
   return (
     <Table>
       <TableHeader>
@@ -27,6 +65,7 @@ export function ModelsTable({ rows, onAddAlias }: { rows: ModelReportRow[]; onAd
                   <span className="flex min-w-0 flex-col">
                     <span className="truncate" title={row.model}>{row.modelDisplayName}</span>
                     <span className="truncate text-[9.5px] font-normal text-muted-foreground">{providerTitle(row.provider)}</span>
+                    <PricingLines row={row} actions={actions} />
                   </span>
                   {unpriced && <AddAliasButton onClick={() => onAddAlias(row)} />}
                 </span>
@@ -40,7 +79,7 @@ export function ModelsTable({ rows, onAddAlias }: { rows: ModelReportRow[]; onAd
   )
 }
 
-export function ModelsByTaskTable({ rows, onAddAlias }: { rows: ModelReportRow[]; onAddAlias: (row: ModelReportRow) => void }) {
+export function ModelsByTaskTable({ rows, onAddAlias, actions }: { rows: ModelReportRow[]; onAddAlias: (row: ModelReportRow) => void; actions: PricingRowActions }) {
   const groups = useMemo(() => groupTaskRows(rows), [rows])
 
   return (
@@ -49,13 +88,13 @@ export function ModelsByTaskTable({ rows, onAddAlias }: { rows: ModelReportRow[]
         <MetricHeaders firstLabel="Task" />
       </TableHeader>
       {groups.map(group => (
-        <ModelsByTaskGroup key={`${group.provider}-${group.model}`} group={group} onAddAlias={onAddAlias} />
+        <ModelsByTaskGroup key={`${group.provider}-${group.model}`} group={group} onAddAlias={onAddAlias} actions={actions} />
       ))}
     </Table>
   )
 }
 
-function ModelsByTaskGroup({ group, onAddAlias }: { group: ModelTaskGroup; onAddAlias: (row: ModelReportRow) => void }) {
+function ModelsByTaskGroup({ group, onAddAlias, actions }: { group: ModelTaskGroup; onAddAlias: (row: ModelReportRow) => void; actions: PricingRowActions }) {
   const lead = group.rows[0]!
   const total = sumGroup(group)
   const unpriced = isUnpriced(total)
@@ -69,6 +108,7 @@ function ModelsByTaskGroup({ group, onAddAlias }: { group: ModelTaskGroup; onAdd
             <span className="flex min-w-0 flex-col">
               <span className="truncate">{lead.modelDisplayName}</span>
               <span className="truncate text-[9.5px] font-normal text-muted-foreground">{providerTitle(lead.provider)}</span>
+              <PricingLines row={lead} actions={actions} />
             </span>
             {unpriced && <AddAliasButton onClick={() => onAddAlias(lead)} />}
           </span>

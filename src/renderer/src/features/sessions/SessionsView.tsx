@@ -59,6 +59,8 @@ function ColumnHeaders(): React.JSX.Element {
 }
 
 function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: string) => void }): React.JSX.Element {
+  const provenance = row.modelProvenance ?? {}
+  const merged = row.models.filter(model => provenance[model]?.length)
   return (
     <button
       type="button"
@@ -73,7 +75,14 @@ function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: 
         <span className="block truncate font-mono text-[10px] text-muted-foreground">{row.project} · {row.sessionId}</span>
       </span>
       <span className="truncate text-[11px] text-muted-foreground">{row.provider}</span>
-      <span className="truncate text-[11px] text-muted-foreground">{row.models.join(', ') || '—'}</span>
+      <span className="min-w-0">
+        <span className="block truncate text-[11px] text-muted-foreground">{row.models.join(', ') || '—'}</span>
+        {merged.length > 0 && (
+          <span className="block truncate text-[10px] text-muted-foreground" title={merged.map(model => `${model}: ${provenance[model]!.join(', ')}`).join(' · ')}>
+            includes {merged.map(model => provenance[model]!.join(', ')).join(', ')}
+          </span>
+        )}
+      </span>
       <span className="truncate text-[11px] text-muted-foreground">{formatDate(row.endedAt)}</span>
       <span className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">{row.turns.toLocaleString('en-US')}</span>
       <span className="text-right font-mono text-[11.5px] tabular-nums text-foreground">{formatUsd(row.cost)}</span>

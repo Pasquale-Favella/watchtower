@@ -334,6 +334,7 @@ export function buildOverviewPayload(
     calls: number; cost: number; savingsUSD: number; estimatedCostUSD: number;
     inputTokens: number; outputTokens: number; allTokens: number
   }>()
+  const modelProvenance = new Map<string, Set<string>>()
   const toolTotals = new Map<string, number>()
   const mcpTotals = new Map<string, number>()
   const skillTotals = new Map<string, { turns: number; cost: number }>()
@@ -389,6 +390,14 @@ export function buildOverviewPayload(
       acc.outputTokens += d.tokens.outputTokens
       acc.allTokens += d.tokens.inputTokens + d.tokens.outputTokens + d.tokens.cacheReadInputTokens + d.tokens.cacheCreationInputTokens
       modelTotals.set(name, acc)
+      if (d.sourceModels?.length) {
+        let set = modelProvenance.get(name)
+        if (!set) {
+          set = new Set<string>()
+          modelProvenance.set(name, set)
+        }
+        for (const raw of d.sourceModels) set.add(raw)
+      }
     }
 
     for (const [tool, d] of Object.entries(sess.toolBreakdown)) {
@@ -468,14 +477,18 @@ export function buildOverviewPayload(
 
   const models: OverviewModelRow[] = [...modelTotals.entries()]
     .sort(([, a], [, b]) => b.cost - a.cost)
-    .map(([name, d]) => ({
-      name,
-      cost: d.cost,
-      calls: d.calls,
-      inputTokens: d.inputTokens,
-      outputTokens: d.outputTokens,
-      savingsUSD: d.savingsUSD,
-    }))
+    .map(([name, d]) => {
+      const raws = modelProvenance.get(name)
+      return {
+        name,
+        cost: d.cost,
+        calls: d.calls,
+        inputTokens: d.inputTokens,
+        outputTokens: d.outputTokens,
+        savingsUSD: d.savingsUSD,
+        ...(raws && raws.size > 0 ? { sourceModels: [...raws].sort() } : {}),
+      }
+    })
     .slice(0, TOP_RANK_LIMIT)
 
   const activities: OverviewActivityRow[] = [...categoryTotals.entries()]

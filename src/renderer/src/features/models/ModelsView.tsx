@@ -11,9 +11,10 @@ import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { useModelsStore } from '@/features/models/store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
+import { usePricingStore } from '@/features/models/pricing-store'
 import type { ModelReportRow } from '../../../../shared/schemas/models.js'
 import { AuditTable } from './audit-table'
-import { ModelsByTaskTable, ModelsTable } from './models-table'
+import { ModelsByTaskTable, ModelsTable, type PricingRowActions } from './models-table'
 import { QuickAddModal, type QuickAddTarget } from './quick-add-modal'
 
 type ModelsLens = 'model' | 'task' | 'audit'
@@ -57,6 +58,42 @@ export function ModelsView(): React.JSX.Element {
     void reload()
   }
 
+  // Inline pricing management for aliased/repriced rows: the original name
+  // stays visible with its alias target or rates, and each can be retargeted
+  // (prefilled dialog — writes upsert) or removed (the row reverts to its
+  // honest original treatment on the next query, no rescan).
+  const removeAlias = usePricingStore(s => s.removeAlias)
+  const removeOverride = usePricingStore(s => s.removeOverride)
+  const pricingActions: PricingRowActions = {
+    onEditAlias: (source, currentTarget) => setQuickAdd({
+      provider: source.provider,
+      model: source.model,
+      modelDisplayName: source.model,
+      initialMode: 'alias',
+      initialAliasTarget: currentTarget,
+    }),
+    onRemoveAlias: sourceModel => {
+      void (async () => {
+        await removeAlias(sourceModel)
+        void reload()
+      })()
+    },
+    onEditOverride: target => setQuickAdd({
+      provider: target.provider,
+      model: target.model,
+      modelDisplayName: target.modelDisplayName,
+      initialMode: 'price',
+      initialInputPrice: String(target.inputPricePerMillion),
+      initialOutputPrice: String(target.outputPricePerMillion),
+    }),
+    onRemoveOverride: model => {
+      void (async () => {
+        await removeOverride(model)
+        void reload()
+      })()
+    },
+  }
+
   const emptyText = lens === 'audit'
     ? 'No model usage to audit in this range yet.'
     : 'No model usage in this range yet.'
@@ -87,20 +124,21 @@ export function ModelsView(): React.JSX.Element {
         )
       ) : lens === 'audit' ? (
         <div className="overflow-hidden rounded-lg border border-border bg-card">
-          {audit.length ? <AuditTable rows={audit} /> : <p className="px-3.5 py-6 text-center text-[11.5px] text-muted-foreground">{emptyText}</p>}
+          {audit.length ? <AuditTable rows={audit} actions={pricingActions} /> : <p className="px-3.5 py-6 text-center text-[11.5px] text-muted-foreground">{emptyText}</p>}
         </div>
       ) : lens === 'task' ? (
         <div className="overflow-hidden rounded-lg border border-border bg-card">
-          {byTask.length ? <ModelsByTaskTable rows={byTask} onAddAlias={openQuickAdd} /> : <p className="px-3.5 py-6 text-center text-[11.5px] text-muted-foreground">{emptyText}</p>}
+          {byTask.length ? <ModelsByTaskTable rows={byTask} onAddAlias={openQuickAdd} actions={pricingActions} /> : <p className="px-3.5 py-6 text-center text-[11.5px] text-muted-foreground">{emptyText}</p>}
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-border bg-card">
-          {byModel.length ? <ModelsTable rows={byModel} onAddAlias={openQuickAdd} /> : <p className="px-3.5 py-6 text-center text-[11.5px] text-muted-foreground">{emptyText}</p>}
+          {byModel.length ? <ModelsTable rows={byModel} onAddAlias={openQuickAdd} actions={pricingActions} /> : <p className="px-3.5 py-6 text-center text-[11.5px] text-muted-foreground">{emptyText}</p>}
         </div>
       )}
 
       {quickAdd && (
         <QuickAddModal
+          key={`${quickAdd.provider}:${quickAdd.model}:${quickAdd.initialMode ?? 'price'}:${quickAdd.initialAliasTarget ?? ''}`}
           target={quickAdd}
           models={byModel}
           onClose={() => setQuickAdd(null)}

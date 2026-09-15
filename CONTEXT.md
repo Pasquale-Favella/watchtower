@@ -60,6 +60,16 @@ A user-installed coding-agent CLI the app drives over the Agent Client Protocol
 language model; the harness picker selects which one the Coach chat drives.
 _Avoid_: provider (a provider is a telemetry source in the pipeline)
 
+**Alias**:
+A custom price that copies another model's prices: calls of an unrecognized
+model are priced as if they ran on the mapped model.
+_Avoid_: map to model, add alias
+
+**Price override**:
+A custom price entered manually as input/output rates for a model; it wins
+over any other price source.
+_Avoid_: manual price, manual
+
 ## Rules
 
 - The README's platform claim (Windows | macOS | Linux) is the product

@@ -193,14 +193,15 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
 
     store.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
 
+    // Session summaries carry the display (repriced) cost, mirroring the
+    // Models lens (override on the effective model; input+output only).
     const scope = buildSessionSummaries(store, { range: FULL_RANGE })
-    expect(scope[0]!.totalCostUSD).toBeCloseTo(0.42, 6)
+    expect(scope[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
 
     const calls = queryScope(store, { range: FULL_RANGE }).calls
     expect(calls).toHaveLength(1)
-    // Non-Claude providers fold reasoning tokens into the output bucket:
-    // input 100 @ $3/M + output (50+5) @ $15/M = 0.0003 + 0.000825
-    expect(calls[0]!.displayCostUSD).toBeCloseTo(0.001125, 9)
+    // Models-lens override: input 100 @ $3/M + output 50 @ $15/M = 0.0003 + 0.00075
+    expect(calls[0]!.displayCostUSD).toBeCloseTo(0.00105, 9)
     expect(calls[0]!.baseCostUSD).toBeCloseTo(0.42, 6)
 
     store.close()
@@ -214,6 +215,91 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     const calls = queryScope(store, { range: FULL_RANGE }).calls
     expect(calls[0]!.resolvedModel).toBe('claude-sonnet-4.5')
     expect(calls[0]!.model).toBe('demo-model')
+
+    store.close()
+  })
+
+  it('an Alias merges identity and reprices the session summary (no rescan)', () => {
+    const store = makeStore()
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
+
+    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    expect(summaries).toHaveLength(1)
+    const summary = summaries[0]!
+    // Identity merges into the target everywhere except Compare/audit.
+    expect(summary.turns[0]!.assistantCalls[0]!.model).toBe('claude-sonnet-4-6')
+    expect(summary.turns[0]!.assistantCalls[0]!.rawModel).toBe('demo-model')
+    // Cost reprices through the target's rate card (the scan priced the raw
+    // name at its stored base); the stored row is untouched.
+    expect(summary.totalCostUSD).not.toBeCloseTo(0.42, 6)
+    expect(summary.totalCostUSD).toBeGreaterThan(0)
+    expect(summary.totalCostUSD).toBeCloseTo(queryScope(store, { range: FULL_RANGE }).calls[0]!.displayCostUSD, 9)
+    // Provenance survives on the merged breakdown row.
+    const keys = Object.keys(summary.modelBreakdown)
+    expect(keys).toHaveLength(1)
+    expect(summary.modelBreakdown[keys[0]!]!.sourceModels).toEqual(['demo-model'])
+
+    const rows = buildSessionRows(store, { range: FULL_RANGE })
+    expect(rows[0]!.cost).toBeCloseTo(summary.totalCostUSD, 9)
+    expect(rows[0]!.models).toEqual(keys)
+
+    store.close()
+  })
+
+  it('a Price override on the effective model wins over the Alias', () => {
+    const store = makeStore()
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
+    store.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+
+    // Fixture usage: input 100, output 50 → 0.0003 + 0.00075.
+    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
+    expect(queryScope(store, { range: FULL_RANGE }).calls[0]!.displayCostUSD).toBeCloseTo(0.00105, 9)
+
+    store.close()
+  })
+
+  it('removing custom pricing reverts honestly to the unpriced treatment', () => {
+    const store = makeStore()
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
+    store.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+
+    expect(buildSessionSummaries(store, { range: FULL_RANGE })[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
+
+    store.removePriceOverride('claude-sonnet-4-6')
+    store.removeModelAlias('demo-model')
+
+    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.42, 6)
+    expect(summaries[0]!.turns[0]!.assistantCalls[0]!.model).toBe('demo-model')
+    expect(summaries[0]!.turns[0]!.assistantCalls[0]!.rawModel).toBeUndefined()
+    expect(Object.keys(summaries[0]!.modelBreakdown)).toEqual(['demo-model'])
+
+    store.close()
+  })
+
+  it('Scope filtering still applies under custom pricing', () => {
+    const store = makeStore()
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    store.portIn({
+      ...baseInput,
+      provider: 'codex',
+      envFingerprint: 'env-demo',
+      filePath: '/Users/demo/.codex/other/sess-0.jsonl',
+      verdict: 'new',
+      cachedFile: buildFixtureCachedFile(),
+    })
+    store.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+
+    const opencode = buildSessionSummaries(store, { range: FULL_RANGE, provider: 'opencode' })
+    const codex = buildSessionSummaries(store, { range: FULL_RANGE, provider: 'codex' })
+    expect(opencode).toHaveLength(1)
+    expect(codex).toHaveLength(1)
+    expect(opencode[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
+    expect(codex[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
 
     store.close()
   })

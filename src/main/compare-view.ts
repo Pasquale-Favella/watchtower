@@ -41,8 +41,10 @@ export type {
  *   (`editTurns / totalTurns`, the same ratio the Overview/Plans report) since
  *   the ledger retains no assistant-message text to scan for apology
  *   patterns query-time;
- *  - models are keyed by raw canonical name, so a store
- *  alias/price-override from the Models section is NOT reflected here.
+ * - rows stay keyed by RAW model identity (so model-vs-model quality/style
+ *   comparison stays possible after an Alias) while the cost metric uses the
+ *   seam's display (repriced) cost, so money reconciles with every other
+ *   Section. The raw-identity deviation is grouping-only, never money.
  */
 type ModelAcc = Omit<CompareModelStat, 'model' | 'displayName'>
 
@@ -51,6 +53,13 @@ function emptyAcc(): ModelAcc {
     calls: 0, costUSD: 0, outputTokens: 0, inputTokens: 0, cacheReadTokens: 0,
     totalTurns: 0, editTurns: 0, oneShotTurns: 0, retries: 0,
   }
+}
+
+/** Raw identity for Compare grouping: the provider-recorded model before any
+ * Alias merge (`rawModel` when the seam merged, else the display model).
+ * Quality/style metrics group by this; money still uses `costUSD` (display). */
+function rawIdentity(call: { model: string; rawModel?: string }): string {
+  return call.rawModel ?? call.model
 }
 
 function accumulateModelStats(sessions: SessionSummary[]): CompareModelStat[] {
@@ -72,8 +81,9 @@ function accumulateModelStats(sessions: SessionSummary[]): CompareModelStat[] {
       // other models in the turn (subagents) still accrue their own call-level
       // stats.
       const primary = turn.assistantCalls[0]!
-      if (primary.model === '<synthetic>') continue
-      const primaryAcc = ensure(primary.model)
+      const primaryRaw = rawIdentity(primary)
+      if (primaryRaw === '<synthetic>') continue
+      const primaryAcc = ensure(primaryRaw)
       primaryAcc.totalTurns++
       if (turn.hasEdits) {
         primaryAcc.editTurns++
@@ -82,8 +92,9 @@ function accumulateModelStats(sessions: SessionSummary[]): CompareModelStat[] {
       primaryAcc.retries += turn.retries
 
       for (const call of turn.assistantCalls) {
-        if (call.model === '<synthetic>') continue
-        const acc = call.model === primary.model ? primaryAcc : ensure(call.model)
+        const raw = rawIdentity(call)
+        if (raw === '<synthetic>') continue
+        const acc = raw === primaryRaw ? primaryAcc : ensure(raw)
         acc.calls++
         acc.costUSD += call.costUSD
         acc.outputTokens += call.usage.outputTokens
@@ -182,7 +193,7 @@ function computeCategoryComparison(
   for (const session of sessions) {
     for (const turn of session.turns) {
       if (turn.assistantCalls.length === 0) continue
-      const primary = turn.assistantCalls[0]!.model
+      const primary = rawIdentity(turn.assistantCalls[0]!)
       if (primary === '<synthetic>') continue
       if (primary !== modelA && primary !== modelB) continue
 
@@ -231,7 +242,7 @@ function computeWorkingStyle(sessions: SessionSummary[], modelA: string, modelB:
   for (const session of sessions) {
     for (const turn of session.turns) {
       if (turn.assistantCalls.length === 0) continue
-      const primary = turn.assistantCalls[0]!.model
+      const primary = rawIdentity(turn.assistantCalls[0]!)
       if (primary === '<synthetic>') continue
       if (primary !== modelA && primary !== modelB) continue
 
@@ -274,8 +285,8 @@ function resolvePair(models: CompareModelStat[], pair: ComparePair | undefined):
 /**
  * Ledger-backed Compare payload (map 05): the aggregation seam applies the
  * scope's range/provider at the SQL read and feeds the same pair-comparison
- * core (models keyed by raw canonical name, per the section's documented
- * deviation).
+ * core (rows keyed by raw identity for quality/style comparison, cost
+ * repriced through the seam's display cost).
  */
 export function buildCompareViewFromLedger(
   store: LedgerStore,

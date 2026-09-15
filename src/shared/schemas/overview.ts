@@ -35,6 +35,10 @@ export const overviewModelRowSchema = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
   savingsUSD: z.number(),
+  /** Raw model ids merged into this row via an Alias. Present only when a
+   * merge happened — the lightweight provenance affordance so a merge never
+   * hides where spend came from (the Models audit lens is the full trace). */
+  sourceModels: z.array(z.string()).optional(),
 })
 export type OverviewModelRow = z.infer<typeof overviewModelRowSchema>
 

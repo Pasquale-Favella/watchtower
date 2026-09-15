@@ -109,6 +109,11 @@ export type ParsedTurn = {
 export type ParsedApiCall = {
   provider: string
   model: string
+  /** Raw model id as recorded by the provider, before any `model_alias`
+   * rewrite. Present only when an alias merged this call into `model`
+   * (query-time aggregation seam); absent otherwise. Lets the Models audit
+   * lens and provenance affordances recover raw identity after the merge. */
+  rawModel?: string
   usage: TokenUsage
   costUSD: number
   tools: string[]
@@ -271,7 +276,7 @@ export type SessionSummary = {
   /// from a provider that never captures branches (→ contributes nothing).
   /// Claude only; absent otherwise.
   everHadBranch?: boolean
-  modelBreakdown: Record<string, { calls: number; costUSD: number; tokens: TokenUsage; savingsUSD: number; estimatedCostUSD?: number }>
+  modelBreakdown: Record<string, { calls: number; costUSD: number; tokens: TokenUsage; savingsUSD: number; estimatedCostUSD?: number; sourceModels?: string[] }>
   toolBreakdown: Record<string, { calls: number }>
   mcpBreakdown: Record<string, { calls: number }>
   bashBreakdown: Record<string, { calls: number }>
