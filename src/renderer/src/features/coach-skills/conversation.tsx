@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 
+import { ArrowUp, Square } from 'lucide-react'
 import { Button } from '@/shared/components/ui/button'
 import {
   AlertDialog,
@@ -117,13 +118,13 @@ export function PatternChips({ onCraft, disabled = false }: {
   }
   if (drafts.length === 0) {
     return (
-      <p className="text-[10.5px] text-muted-foreground">
+      <p className="text-[12px] text-muted-foreground">
         No patterns detected in this window yet — ask the coach and it can discover them through its ledger tools.
       </p>
     )
   }
   return (
-    <div className="flex flex-wrap justify-center gap-1.5">
+    <div className="flex flex-wrap justify-center gap-2">
       {drafts.slice(0, 8).map(draft => (
         <Tooltip key={candidateKey(draft)}>
           <TooltipTrigger
@@ -132,11 +133,11 @@ export function PatternChips({ onCraft, disabled = false }: {
                 type="button"
                 disabled={disabled}
                 onClick={() => onCraft(draft)}
-                className="group flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] text-muted-foreground transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-foreground hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
+                className="group flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-[12px] text-muted-foreground transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-foreground hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
               >
                 <span className="font-medium text-foreground">{draft.name}</span>
                 <span className="tabular-nums">×{draft.frequency}</span>
-                <span className="hidden text-[9.5px] sm:inline">{formatUsd(draft.costUSD)}</span>
+                <span className="hidden text-[10.5px] sm:inline">{formatUsd(draft.costUSD)}</span>
               </button>
             }
           />
@@ -170,39 +171,39 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
 }) {
   const harnessKind = useCoachSkillsStore(s => s.harnessKind)
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 overflow-y-auto px-6 py-8">
-      <div className="flex flex-col items-center gap-2 text-center">
-        <span className="text-[16px] font-semibold tracking-tight text-foreground">Coach & Skills</span>
-        <p className="max-w-md text-[11.5px] leading-relaxed text-muted-foreground">
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 overflow-y-auto px-6 py-12">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <span className="text-[20px] font-semibold tracking-tight text-foreground">Coach & Skills</span>
+        <p className="max-w-lg text-[13px] leading-[1.7] text-muted-foreground">
           Ask the harness for guidance on your workflow — or craft a skill together, just by talking: describe
           what you do and ask it to write a SKILL.md. Every run reads your platform data live through the in-app
           ledger, so answers are grounded in your real usage.
         </p>
       </div>
 
-      <div className="flex max-w-xl flex-wrap items-center justify-center gap-1.5">
+      <div className="flex max-w-2xl flex-wrap items-center justify-center gap-2">
         {SAMPLE_PROMPTS.map(prompt => (
           <button
             key={prompt}
             type="button"
             disabled={!canSend}
             onClick={() => onSend(prompt)}
-            className="rounded-full border border-border bg-card px-3 py-1.5 text-[11px] text-muted-foreground transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-foreground hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
+            className="rounded-full border border-border bg-card px-4 py-2 text-[12px] text-muted-foreground transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-foreground hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
           >
             {prompt}
           </button>
         ))}
       </div>
 
-      <div className="w-full max-w-xl pt-4">
-        <p className="mb-2 text-center text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="w-full max-w-2xl pt-2">
+        <p className="mb-3 text-center text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           Craft a skill from a detected pattern
         </p>
         <PatternChips onCraft={onCraft} disabled={!canSend} />
       </div>
 
       {!harnessKind && (
-        <p className="text-[10.5px] text-muted-foreground">
+        <p className="text-[12px] text-muted-foreground">
           No coding-agent harness detected — install Claude Code, OpenCode or Codex to get started.
         </p>
       )}
@@ -213,7 +214,7 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
 /** The scrollable conversation — thread only, no card chrome: the page is the
  *  surface, and the bubbles float on it. The prompt bar lives separately
  *  (ConversationComposer) so the same input stays pinned below both the empty
- *  state and an active conversation, ChatGPT-style. The thread is a shadcn
+ *  state and an active conversation. The thread is a shadcn
  *  MessageScroller (height-constrained; the scroller fills the flex-1 slot). */
 export function ConversationThread() {
   const messages = useCoachSkillsStore(s => s.messages)
@@ -229,7 +230,8 @@ export function ConversationThread() {
  *  stays pinned at the bottom of the chat surface: an auto-growing textarea up
  *  top, a footer with the unified harness + model picker (t3code
  *  ProviderModelPicker shape: one trigger, harness rail + searchable
- *  agent-declared model list), the agent-declared mode picker, and Send/Stop.
+ *  agent-declared model list), the agent-declared mode picker, and a round
+ *  send/stop action pinned to the end of the footer.
  *  The coach reads the full lifetime ledger (no data-window chip — the agent
  *  filters per question). */
 export function ConversationComposer({ running, canSend, onSend, onStop }: {
@@ -375,14 +377,33 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
           </Select>
         )}
 
-        <div className="ml-auto flex items-center gap-2">
+        {/* Round send/stop action at the end of the footer: a solid circle
+            with an up-arrow sends (muted while the prompt is empty), and the
+            same circle swaps to a filled-square stop affordance while a run
+            streams. Icon-only, so the state reads from shape + label. */}
+        <div className="ml-auto flex items-center">
           {running ? (
-            <Button type="button" variant="outline" onClick={onStop} className="h-8 shrink-0 text-[12px]">
-              Stop
+            <Button
+              type="button"
+              size="icon"
+              onClick={onStop}
+              aria-label="Stop generating"
+              title="Stop generating"
+              className="size-8 rounded-full"
+            >
+              <Square className="size-3.5 fill-current" />
             </Button>
           ) : (
-            <Button type="button" onClick={submit} disabled={!canSend || !prompt.trim()} className="h-8 shrink-0 text-[12px] font-medium">
-              Send
+            <Button
+              type="button"
+              size="icon"
+              onClick={submit}
+              disabled={!canSend || !prompt.trim()}
+              aria-label="Send message"
+              title="Send message"
+              className="size-8 rounded-full"
+            >
+              <ArrowUp className="size-4" />
             </Button>
           )}
         </div>
@@ -457,10 +478,18 @@ export function ConversationView() {
         />
       ) : (
         <>
-          {/* Slim conversation header: just the reset action — the page keeps
-              the section title in the TopBar above, so no in-chat label. */}
-          <div className="flex justify-end px-0.5 pb-1.5">
-            <Button type="button" variant="ghost" size="xs" onClick={resetSession} className="text-[10.5px] text-muted-foreground">
+          {/* Conversation header: same language as the composer controls
+              (HarnessModelPicker + Mode: outline, h-7, 11.5px) — a quiet
+              bordered action, not a new pill style. The page keeps the
+              section title in the TopBar above, so no in-chat label. */}
+          <div className="flex justify-end px-0 pb-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={resetSession}
+              className="h-7 gap-1.5 text-[11.5px] font-medium text-foreground"
+            >
               New conversation
             </Button>
           </div>

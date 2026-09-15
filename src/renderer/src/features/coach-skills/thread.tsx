@@ -19,7 +19,7 @@ import { useCoachSkillsStore, type ChatMessage } from './store'
  *  with its run-context header, a live Thinking panel (when the harness
  *  reasons), Tool cards (per tool call, with lifecycle + payload previews),
  *  and the streamed markdown — a harness-authored SKILL.md renders right in
- *  the bubble, copyable like any answer. Rows rise gently into place via GSAP
+ *  the prose, copyable like any answer. Rows rise gently into place via GSAP
  *  (transform + opacity only, so the scroller's positioning is never fought —
  *  see the MessageScroller docs on animating rows). */
 export function MessageBubble({ message, canRetry, onRetry }: {
@@ -38,8 +38,8 @@ export function MessageBubble({ message, canRetry, onRetry }: {
   if (message.role === 'user') {
     return (
       <div ref={rowRef} className="flex justify-end">
-        <div className="max-w-[80%] rounded-lg rounded-br-sm border border-border bg-primary/10 px-3 py-2">
-          <span className="text-[11.5px] leading-relaxed text-foreground">{message.content}</span>
+        <div className="max-w-[75%] rounded-2xl rounded-br-md border border-border bg-primary/10 px-4 py-2.5">
+          <span className="text-[13.5px] leading-[1.65] text-foreground">{message.content}</span>
         </div>
       </div>
     )
@@ -47,13 +47,16 @@ export function MessageBubble({ message, canRetry, onRetry }: {
 
   return (
     <div ref={rowRef} className="flex justify-start">
-      {/* group so the row's actions can hover-reveal on the bubble. */}
-      <div className="group max-w-[85%] rounded-lg rounded-bl-sm border border-border bg-card">
-        <div className="px-3 py-2">
+      {/* group so the row's actions can hover-reveal on the turn. The
+          assistant turn is plain full-width prose, not a card — the air
+          comes from the lack of chrome plus generous vertical rhythm. */}
+      <div className="group w-full min-w-0 px-1 py-1">
+        <div className="px-1 py-1">
           {/* Turn header: mode tag, the run's harness/model/mode context
               (captured at spawn), the live streaming / error state, and the
-              hover-reveal copy action. */}
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              hover-reveal copy action. Airy: breathing room below before the
+              prose starts. */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pb-1.5">
             <Badge variant="secondary" className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
               Coach
             </Badge>
@@ -89,7 +92,7 @@ export function MessageBubble({ message, canRetry, onRetry }: {
           {/* Tool-call activity — one collapsible card per call, starts
               collapsed (the status badge in each header shows the state). */}
           {message.tools.length > 0 && (
-            <div className="mt-2 flex flex-col gap-1.5">
+            <div className="mt-3 flex flex-col gap-2">
               {message.tools.map((notice, index) => (
                 <ToolCard key={notice.id ?? `${notice.tool}-${index}`} notice={notice} streaming={message.streaming} />
               ))}
@@ -97,12 +100,12 @@ export function MessageBubble({ message, canRetry, onRetry }: {
           )}
 
           {message.content ? (
-            <div className="typeset typeset-chat mt-1.5 max-w-[37em]">
+            <div className="typeset typeset-chat mt-3 w-full max-w-none">
               <Markdown>{message.content}</Markdown>
             </div>
           ) : (
             !message.error && !message.streaming && (
-              <p className="mt-1.5 text-[11px] text-muted-foreground">Waiting for the harness…</p>
+              <p className="mt-3 text-[13px] text-muted-foreground">Waiting for the harness…</p>
             )
           )}
         </div>
@@ -113,11 +116,12 @@ export function MessageBubble({ message, canRetry, onRetry }: {
 
 /** The scrollable conversation (shadcn MessageScroller): a chat scroll
  *  container that anchors turns, follows streamed responses, and keeps the
- *  reader's place — without stealing their position. The transcript is a
- *  centered readable column (the page IS the surface; there is no card
- *  chrome), rows are wrapped in MessageScrollerItem (anchored on user turns),
- *  the viewport preserves the visible row when history is prepended, and the
- *  Button is the "jump to latest" control. */
+ *  reader's place — without stealing their position. The transcript is
+ *  full-width like the composer below (the page IS the surface; there is no
+ *  card chrome and no centered readable column), rows are wrapped in
+ *  MessageScrollerItem (anchored on user turns), the viewport preserves the
+ *  visible row when history is prepended, and the Button is the "jump to
+ *  latest" control. */
 export function Thread({ messages }: {
   messages: ChatMessage[]
 }) {
@@ -132,7 +136,7 @@ export function Thread({ messages }: {
     <MessageScrollerProvider autoScroll defaultScrollPosition="last-anchor" scrollPreviousItemPeek={64}>
       <MessageScroller className="min-h-0 flex-1">
         <MessageScrollerViewport>
-          <MessageScrollerContent aria-busy={streaming} className="mx-auto w-full max-w-[760px] gap-2.5 p-3.5">
+          <MessageScrollerContent aria-busy={streaming} className="w-full gap-8 px-1 py-3.5">
             {messages.map(message => (
               <MessageScrollerItem
                 key={message.id}

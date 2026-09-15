@@ -9,7 +9,7 @@ import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { ConversationView } from './conversation'
 
 /** The Coach section (ADR 0017, conversation prototype picked on map 58): a
- *  ChatGPT-style chat surface where EVERY harness run is a conversation —
+ *  roomy chat surface where EVERY harness run is a conversation —
  *  free-form guidance, or a skill crafted together by asking the harness
  *  directly (its ledger tools let it discover real patterns itself). One
  *  surface, no Coach/Skills room switch and no separated cards: the chat owns

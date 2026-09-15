@@ -10,18 +10,21 @@ import {
 import { Markdown } from '@/shared/components/Markdown'
 import type { ToolNotice } from './store'
 
-/** The live streaming indicator: three staggered dots + an optional label
- *  ("Thinking…", "Working…"), an elements.ai-sdk.dev touch for the running
- *  state of a turn. Pure CSS animation — no GSAP, so it also runs in tests. */
+/** Phase offsets for the streaming-dot wave: each dot starts its bounce a
+ *  beat later, so the three read as a left-to-right ripple. Kept as static
+ *  strings so Tailwind emits the delay utilities. */
+const STREAMING_DOT_DELAYS = ['delay-0', 'delay-150', 'delay-300'] as const
+
+/** Live running indicator for a turn: three dots rippling in sequence next
+ *  to a "Thinking"/"Working" label. */
 export function StreamingDots({ label = 'Working', className }: { label?: string; className?: string }) {
   return (
     <span className={cn('inline-flex items-center gap-1 text-[10px] text-muted-foreground', className)}>
-      <span className="flex items-center gap-0.5" aria-hidden>
+      <span className="flex items-center gap-1" aria-hidden>
         {[0, 1, 2].map(i => (
           <span
             key={i}
-            className="size-1 rounded-full bg-current opacity-60 animate-pulse"
-            style={{ animationDelay: `${i * 180}ms` }}
+            className={cn('size-1 animate-bounce rounded-full bg-current', STREAMING_DOT_DELAYS[i])}
           />
         ))}
       </span>
@@ -138,8 +141,8 @@ export function ThinkingBlock({ thinking, streaming, defaultOpen = false }: {
   const [open, setOpen] = useState(defaultOpen)
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="mt-2 overflow-hidden rounded-lg border border-border/80 bg-muted/40">
-      <CollapsibleTrigger className="group flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-muted/60">
+    <Collapsible open={open} onOpenChange={setOpen} className="mt-3 overflow-hidden rounded-xl border border-border/80 bg-muted/40">
+      <CollapsibleTrigger className="group flex w-full items-center gap-1.5 px-3 py-2 text-left transition-colors hover:bg-muted/60">
         <ChevronRight
           className={cn(
             'size-3 shrink-0 text-muted-foreground transition-transform duration-200 group-data-open:rotate-90',
@@ -163,7 +166,7 @@ export function ThinkingBlock({ thinking, streaming, defaultOpen = false }: {
         <ElapsedLabel streaming={streaming} dim={!streaming} />
       </CollapsibleTrigger>
       <CollapsibleContent className="overflow-hidden">
-        <div className="typeset typeset-chat max-h-[220px] overflow-y-auto px-3 pb-2.5 text-[11px] leading-relaxed text-muted-foreground [&_li]:whitespace-pre-wrap [&_p]:whitespace-pre-wrap">
+        <div className="typeset typeset-chat max-h-[220px] overflow-y-auto px-4 pb-3 text-[13px] leading-relaxed text-muted-foreground [&_li]:whitespace-pre-wrap [&_p]:whitespace-pre-wrap">
           <Markdown>{thinking}</Markdown>
           {streaming && <span className="animate-pulse text-primary">▍</span>}
         </div>
@@ -225,8 +228,8 @@ export function ToolCard({ notice, streaming, defaultOpen = false }: {
   const [open, setOpen] = useState(defaultOpen)
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="overflow-hidden rounded-lg border border-border/80 bg-card/60">
-      <CollapsibleTrigger className="group flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-muted/40">
+    <Collapsible open={open} onOpenChange={setOpen} className="overflow-hidden rounded-xl border border-border/80 bg-card/60">
+      <CollapsibleTrigger className="group flex w-full items-center gap-1.5 px-3 py-2 text-left transition-colors hover:bg-muted/40">
         <ChevronRight
           className={cn(
             'size-3 shrink-0 text-muted-foreground transition-transform duration-200',
