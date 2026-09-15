@@ -99,6 +99,7 @@ function buildRecordRows(projects: ProjectSummary[], store: LedgerStore): Row[] 
         for (const call of turn.assistantCalls) {
           rows.push({
             project: project.projectPath,
+            repoUrl: session.repoUrl ?? project.repoUrl ?? undefined,
             sessionId: session.sessionId,
             timestamp: call.timestamp || turn.timestamp || undefined,
             category: turn.category,
@@ -234,6 +235,7 @@ function buildProjectRows(projects: ProjectSummary[], store: LedgerStore): Row[]
     .sort((a, b) => (b.totalCostUSD + b.totalSavingsUSD) - (a.totalCostUSD + a.totalSavingsUSD))
     .map(p => ({
       Project: p.projectPath,
+      repoUrl: p.repoUrl ?? undefined,
       [`Cost (${code})`]: roundForActiveCurrency(convertCost(p.totalCostUSD, currency), currency),
       [`Saved (${code})`]: roundForActiveCurrency(convertCost(p.totalSavingsUSD, currency), currency),
       [`Avg/Session (${code})`]: p.sessions.length > 0 ? roundForActiveCurrency(convertCost(p.totalCostUSD / p.sessions.length, currency), currency) : '',
@@ -254,6 +256,7 @@ function buildSessionRows(projects: ProjectSummary[], store: LedgerStore): Row[]
       )
       rows.push({
         Project: p.projectPath,
+        repoUrl: s.repoUrl ?? p.repoUrl ?? undefined,
         'Session ID': s.sessionId,
         'Started At': s.firstTimestamp ?? '',
         [`Cost (${code})`]: roundForActiveCurrency(convertCost(s.totalCostUSD, currency), currency),
@@ -292,6 +295,8 @@ function buildReadme(store: LedgerStore): string {
     '-----',
     `  Every cost column is already converted to the active currency (${code}). Tokens are raw`,
     '  integer counts from provider telemetry. Share (%) is relative to the table total.',
+    '  repoUrl is the git origin URL when the project path is a git checkout with a',
+    '  configured origin, otherwise empty (CSV) / absent (JSON).',
     '',
   ].join('\n')
 }
