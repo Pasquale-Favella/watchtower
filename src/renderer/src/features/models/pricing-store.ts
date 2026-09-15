@@ -76,7 +76,7 @@ export const usePricingStore = create<PricingState>()((set, get) => ({
       set({ error: result.error })
       return false
     }
-    await get().loadAliases()
+    await afterWrite(get, 'aliases')
     return true
   },
   removeAlias: async (model) => {
@@ -85,7 +85,7 @@ export const usePricingStore = create<PricingState>()((set, get) => ({
       set({ error: result.error })
       return false
     }
-    await get().loadAliases()
+    await afterWrite(get, 'aliases')
     return true
   },
   setOverride: async (model, inputPricePerMillion, outputPricePerMillion) => {
@@ -94,7 +94,7 @@ export const usePricingStore = create<PricingState>()((set, get) => ({
       set({ error: result.error })
       return false
     }
-    await get().loadOverrides()
+    await afterWrite(get, 'overrides')
     return true
   },
   removeOverride: async (model) => {
@@ -103,10 +103,29 @@ export const usePricingStore = create<PricingState>()((set, get) => ({
       set({ error: result.error })
       return false
     }
-    await get().loadOverrides()
+    await afterWrite(get, 'overrides')
     return true
   },
 }))
+
+/** Reload the written list plus the usage-derived picker lists after a
+ * pricing write — but the usage lists only when already loaded, so a write
+ * from an unopened panel never triggers a models fetch on its own. Without
+ * this, pickers ("Already mapped", "Recognized models", Settings groups)
+ * keep proposing pre-write state until the next refresh tick. */
+async function afterWrite(get: () => PricingState, list: 'aliases' | 'overrides'): Promise<void> {
+  await get()[list === 'aliases' ? 'loadAliases' : 'loadOverrides']()
+  await refreshKnownModelsIfLoaded(get)
+}
+
+/** Re-read the usage-derived picker lists after a pricing write — but only
+ * when already loaded, so a write from an unopened panel never triggers a
+ * models fetch on its own. Without this, pickers ("Already mapped",
+ * "Recognized models", Settings groups) keep proposing pre-write state
+ * until the next refresh tick. */
+async function refreshKnownModelsIfLoaded(get: () => PricingState): Promise<void> {
+  if (get().knownModels !== null) await get().loadKnownModels()
+}
 
 // One of the data stores, so it joins the shared refresh tick (ADR 0011)
 // — but lazily: a list is only refetched once it has been loaded, so an

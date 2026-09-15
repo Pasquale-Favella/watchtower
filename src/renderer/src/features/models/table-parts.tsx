@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import { cn } from '@/shared/lib/utils'
 import { seriesColorForModel } from '@/shared/lib/modelSeries'
 import { formatCompact, formatUsd, isUnpriced } from '@/shared/lib/models'
@@ -17,6 +19,92 @@ export function AddAliasButton({ onClick }: { onClick: () => void }) {
     >
       add alias ›
     </button>
+  )
+}
+
+/** Compact two-click remove for dense table rows: first click arms ("sure?"),
+ * second confirms; Escape or Cancel disarms. Smaller than the Settings
+ * ConfirmRemove so merged-row lines stay one line tall. */
+export function RemoveButton({ label, onRemove }: { label: string; onRemove: () => void }) {
+  const [armed, setArmed] = useState(false)
+  if (!armed) {
+    return (
+      <button
+        type="button"
+        className="font-medium text-muted-foreground hover:text-destructive hover:underline"
+        onClick={() => setArmed(true)}
+      >
+        {label}
+      </button>
+    )
+  }
+  return (
+    <span
+      className="inline-flex items-center gap-1"
+      onKeyDown={event => { if (event.key === 'Escape') setArmed(false) }}
+    >
+      <button
+        type="button"
+        autoFocus
+        className="font-medium text-destructive hover:underline"
+        onClick={() => { setArmed(false); onRemove() }}
+      >
+        confirm
+      </button>
+      <button
+        type="button"
+        className="text-muted-foreground hover:underline"
+        onClick={() => setArmed(false)}
+      >
+        cancel
+      </button>
+    </span>
+  )
+}
+
+/** One "original → target" line per raw model folded into a merged row, each
+ * with retarget/remove so an alias is managed where it is seen. */
+export function AliasLines({ target, sources, onEdit, onRemove }: {
+  target: string
+  sources: string[]
+  onEdit: (source: string) => void
+  onRemove: (source: string) => void
+}) {
+  return (
+    <>
+      {sources.map(source => (
+        <span key={source} className="flex items-center gap-1 truncate text-[9.5px] font-normal text-muted-foreground">
+          <span className="truncate" title={`${source} → ${target}`}>
+            alias · <span className="font-mono">{source}</span> → <span className="font-mono">{target}</span>
+          </span>
+          <button type="button" className="shrink-0 font-medium text-primary hover:underline" onClick={() => onEdit(source)}>
+            edit
+          </button>
+          <RemoveButton label="remove" onRemove={() => onRemove(source)} />
+        </span>
+      ))}
+    </>
+  )
+}
+
+/** "Repriced" line for a row priced by a Price override, with edit/remove so
+ * override rates are managed where they apply. */
+export function OverrideLine({ inputPricePerMillion, outputPricePerMillion, onEdit, onRemove }: {
+  inputPricePerMillion: number
+  outputPricePerMillion: number
+  onEdit: () => void
+  onRemove: () => void
+}) {
+  return (
+    <span className="flex items-center gap-1 truncate text-[9.5px] font-normal text-muted-foreground">
+      <span className="truncate" title={`in ${inputPricePerMillion} · out ${outputPricePerMillion} USD per 1M tokens`}>
+        repriced · in {inputPricePerMillion} · out {outputPricePerMillion} /1M
+      </span>
+      <button type="button" className="shrink-0 font-medium text-primary hover:underline" onClick={onEdit}>
+        edit
+      </button>
+      <RemoveButton label="remove" onRemove={onRemove} />
+    </span>
   )
 }
 

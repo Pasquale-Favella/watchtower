@@ -5,12 +5,22 @@ import { formatUsd, providerTitle } from '@/shared/lib/models'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
-import { fetchAddModelAlias, fetchSetModelPrice } from '@/shared/lib/api'
 import type { ModelReportRow } from '../../../../shared/schemas/models.js'
 import { ModelPickerCombobox, type ModelPickerGroup } from './model-picker'
 import { usePricingStore } from './pricing-store'
 
-export type QuickAddTarget = { provider: string; model: string; modelDisplayName: string }
+export type QuickAddTarget = {
+  provider: string
+  model: string
+  modelDisplayName: string
+  /** Prefill for managing existing pricing from a Models row: alias retarget
+   * opens in alias mode with the current target, override edit opens in price
+   * mode with the current rates. Absent = fresh quick-add. */
+  initialMode?: 'alias' | 'price'
+  initialAliasTarget?: string
+  initialInputPrice?: string
+  initialOutputPrice?: string
+}
 
 export function QuickAddModal({
   target,
@@ -24,22 +34,28 @@ export function QuickAddModal({
   onSaved: () => void
 }) {
   // Pricing is the point of this dialog (it customizes rates, it doesn't
-  // rename models) — open on Manual price; the model search only appears
-  // once the user opts into Map to model.
-  const [mode, setMode] = useState<'alias' | 'price'>('price')
-  const [aliasTarget, setAliasTarget] = useState('')
-  const [inputPrice, setInputPrice] = useState('')
-  const [outputPrice, setOutputPrice] = useState('')
+  // rename models) — open on the Price override tab unless the caller
+  // prefills an Alias retarget; the model search only appears once the user
+  // opts into the alias tab.
+  const [mode, setMode] = useState<'alias' | 'price'>(target.initialMode ?? 'price')
+  const [aliasTarget, setAliasTarget] = useState(target.initialAliasTarget ?? '')
+  const [inputPrice, setInputPrice] = useState(target.initialInputPrice ?? '')
+  const [outputPrice, setOutputPrice] = useState(target.initialOutputPrice ?? '')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const aliases = usePricingStore(s => s.aliases)
   const loadAliases = usePricingStore(s => s.loadAliases)
+  const loadOverrides = usePricingStore(s => s.loadOverrides)
+  const addAlias = usePricingStore(s => s.addAlias)
+  const setOverride = usePricingStore(s => s.setOverride)
 
-  // Existing aliases ("already mapped") come from the shared pricing store;
-  // always refetch on open so the picker reflects the latest config.
+  // Existing aliases ("already mapped") and overrides come from the shared
+  // pricing store; always refetch on open so the picker never proposes
+  // pre-open state (e.g. a mapping deleted in Settings just before).
   useEffect(() => {
     void loadAliases()
-  }, [loadAliases])
+    void loadOverrides()
+  }, [loadAliases, loadOverrides])
 
   // Recognized models the unrecognized one can be mapped to — the quick-add
   // row itself excluded, so a model is never aliased to itself. Memoized so
@@ -92,9 +108,12 @@ export function QuickAddModal({
       }
       setSaving(true)
       try {
-        const result = await fetchAddModelAlias(target.model, targetModel)
-        if (!result.ok) {
-          setError(result.error)
+        // Writes go through the pricing store (upsert) so its alias,
+        // override, and usage-derived picker lists refresh together — a
+        // dialog opened right after never proposes pre-save state.
+        const ok = await addAlias(target.model, targetModel)
+        if (!ok) {
+          setError(usePricingStore.getState().error ?? 'Save failed.')
           return
         }
         onSaved()
@@ -113,9 +132,9 @@ export function QuickAddModal({
     }
     setSaving(true)
     try {
-      const result = await fetchSetModelPrice(target.model, input, output)
-      if (!result.ok) {
-        setError(result.error)
+      const ok = await setOverride(target.model, input, output)
+      if (!ok) {
+        setError(usePricingStore.getState().error ?? 'Save failed.')
         return
       }
       onSaved()

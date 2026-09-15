@@ -9,6 +9,7 @@ import {
   type ModelReportRow,
   type ModelsConfig,
   type ModelsPayload,
+  type RowOverride,
 } from '../shared/schemas/models.js'
 
 export type {
@@ -16,6 +17,7 @@ export type {
   ModelReportRow,
   ModelsConfig,
   ModelsPayload,
+  RowOverride,
 } from '../shared/schemas/models.js'
 
 /**
@@ -56,6 +58,9 @@ interface ModelBucket {
   savingsUSD: number
   savingsBaselineModel: string
   calls: number
+  /** Raw model ids folded into this bucket via an Alias (empty when no
+   * merge) — the per-row provenance the Models section manages. */
+  sources: Set<string>
 }
 
 interface AuditBucket {
@@ -89,6 +94,7 @@ function modelBucketFor(
       provider, model, category,
       inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0,
       costUSD: 0, savingsUSD: 0, savingsBaselineModel: '', calls: 0,
+      sources: new Set<string>(),
     }
     map.set(key, bucket)
   }
@@ -179,6 +185,19 @@ function auditRatesFor(
   return getModelCosts(aliasOf ?? model)
 }
 
+/** The Price override attached to a by-model/by-task row's effective model,
+ * shaped for the row schema — present only when an override prices the row,
+ * so plain rows stay byte-identical to the pre-state payload. */
+function overrideFor(
+  effectiveModel: string,
+  overrides: Map<string, { inputPricePerMillion: number; outputPricePerMillion: number }>,
+): { override: RowOverride } | {} {
+  const found = overrides.get(effectiveModel)
+  return found
+    ? { override: { inputPricePerMillion: found.inputPricePerMillion, outputPricePerMillion: found.outputPricePerMillion } }
+    : {}
+}
+
 /**
  * Ledger-backed Models payload (map 04): the aggregation seam applies the
  * scope's range/provider at the SQL read and buckets each in-scope call
@@ -236,12 +255,14 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
         // --- by-model bucket (effective/aliased model) ---
         const mb = modelBucketFor(modelBuckets, bucketKey(provider, model, null), provider, model, null)
         accumulate(mb, input, output + reasoning, cacheWrite, cacheRead, cost, savings, baseline)
+        if (rawModel !== model) mb.sources.add(rawModel)
 
         perModelTotalCost.set(modelKey(provider, model), (perModelTotalCost.get(modelKey(provider, model)) ?? 0) + cost)
 
         // --- by-task bucket (effective/aliased model + category) ---
         const tb = modelBucketFor(taskBuckets, bucketKey(provider, model, category), provider, model, category)
         accumulate(tb, input, output + reasoning, cacheWrite, cacheRead, cost, savings, baseline)
+        if (rawModel !== model) tb.sources.add(rawModel)
 
         // --- audit bucket (RAW model identity, token-source breakdown) ---
         const ak = bucketKey(provider, rawModel, null)
@@ -284,6 +305,8 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
     savingsUSD: b.savingsUSD,
     savingsBaselineModel: b.savingsBaselineModel,
     calls: b.calls,
+    ...(b.sources.size > 0 ? { sourceModels: [...b.sources].sort() } : {}),
+    ...overrideFor(b.model, overrideMap),
   })
 
   const byModel: ModelReportRow[] = []
@@ -326,6 +349,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
       recomputedTotalUSD: 0,
     }
     cost.recomputedTotalUSD = cost.input + cost.output + cost.cacheWrite + cost.cacheRead + cost.webSearch
+    const effectiveModel = aliasMap.get(bucket.model) ?? bucket.model
     audit.push({
       provider: bucket.provider,
       model: bucket.model,
@@ -336,6 +360,8 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
       rates,
       cost,
       attributedCostUSD: bucket.attributedCostUSD,
+      ...(effectiveModel !== bucket.model ? { aliasOf: effectiveModel } : {}),
+      ...overrideFor(effectiveModel, overrideMap),
     })
   }
   audit.sort((a, b) => b.attributedCostUSD - a.attributedCostUSD)

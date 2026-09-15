@@ -2,9 +2,10 @@ import { cn } from '@/shared/lib/utils'
 import { formatCompact, formatUsd, isAuditEstimated } from '@/shared/lib/models'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/components/ui/table'
 import type { AuditRow } from '../../../../shared/schemas/models.js'
-import { ModelDot, MUT_CELL, NUM_CELL, TH } from './table-parts'
+import { AliasLines, ModelDot, MUT_CELL, NUM_CELL, OverrideLine, TH } from './table-parts'
+import type { PricingRowActions } from './models-table'
 
-export function AuditTable({ rows }: { rows: AuditRow[] }) {
+export function AuditTable({ rows, actions }: { rows: AuditRow[]; actions: PricingRowActions }) {
   return (
     <Table>
       <TableHeader>
@@ -28,7 +29,31 @@ export function AuditTable({ rows }: { rows: AuditRow[] }) {
               <TableCell className="text-[12px] font-medium text-foreground">
                 <span className="flex items-center gap-2">
                   <ModelDot model={row.modelDisplayName || row.model} />
-                  <span className="min-w-0 truncate" title={row.model}>{row.modelDisplayName}</span>
+                  <span className="flex min-w-0 flex-col">
+                    <span className="min-w-0 truncate" title={row.model}>{row.modelDisplayName}</span>
+                    {row.aliasOf ? (
+                      <AliasLines
+                        target={row.aliasOf}
+                        sources={[row.model]}
+                        onEdit={source => actions.onEditAlias({ provider: row.provider, model: source }, row.aliasOf!)}
+                        onRemove={actions.onRemoveAlias}
+                      />
+                    ) : null}
+                    {row.override ? (
+                      <OverrideLine
+                        inputPricePerMillion={row.override.inputPricePerMillion}
+                        outputPricePerMillion={row.override.outputPricePerMillion}
+                        onEdit={() => actions.onEditOverride({
+                          provider: row.provider,
+                          model: row.aliasOf ?? row.model,
+                          modelDisplayName: row.aliasOf ?? row.modelDisplayName,
+                          inputPricePerMillion: row.override!.inputPricePerMillion,
+                          outputPricePerMillion: row.override!.outputPricePerMillion,
+                        })}
+                        onRemove={() => actions.onRemoveOverride(row.aliasOf ?? row.model)}
+                      />
+                    ) : null}
+                  </span>
                 </span>
               </TableCell>
               <TableCell className={cn(MUT_CELL, 'text-[11px]')}>{row.calls.toLocaleString('en-US')}</TableCell>

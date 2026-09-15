@@ -146,6 +146,74 @@ describe('buildModelsViewFromLedger (aggregation seam scope)', () => {
   })
 })
 
+describe('models rows expose their pricing state (alias/override management)', () => {
+  const PRICED_USAGE = { inputTokens: 1000, outputTokens: 500, reasoningTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, cachedInputTokens: 0, webSearchRequests: 0 }
+
+  it('an aliased by-model row names its raw feeders; the audit row keeps the raw name with its alias target', () => {
+    const store = modelsMakeLedger()
+    modelsPort(store, [{
+      sessionId: 'sess-mx', project: 'demo-project', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10', usage: PRICED_USAGE,
+    }])
+    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
+      aliases: [{ model: 'weird-model', aliasOf: 'claude-sonnet-4-6' }],
+      overrides: [],
+    }, NOW)
+
+    const row = payload.byModel[0]!
+    expect(row.model).toBe('claude-sonnet-4-6')
+    expect(row.sourceModels).toEqual(['weird-model'])
+    expect(row.override).toBeUndefined()
+    const taskRow = payload.byTask.find(r => r.model === 'claude-sonnet-4-6')!
+    expect(taskRow.sourceModels).toEqual(['weird-model'])
+    const auditRow = payload.audit[0]!
+    expect(auditRow.model).toBe('weird-model')
+    expect(auditRow.aliasOf).toBe('claude-sonnet-4-6')
+    store.close()
+  })
+
+  it('a Price override on the effective model is exposed on by-model and audit rows', () => {
+    const store = modelsMakeLedger()
+    modelsPort(store, [{
+      sessionId: 'sess-mx', project: 'demo-project', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10', usage: PRICED_USAGE,
+    }])
+    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
+      aliases: [{ model: 'weird-model', aliasOf: 'claude-sonnet-4-6' }],
+      overrides: [{ model: 'claude-sonnet-4-6', inputPricePerMillion: 6, outputPricePerMillion: 30 }],
+    }, NOW)
+
+    // 1000 in @ $6/M + 500 out @ $30/M.
+    const row = payload.byModel[0]!
+    expect(row.costUSD).toBeCloseTo(0.021, 9)
+    expect(row.sourceModels).toEqual(['weird-model'])
+    expect(row.override).toEqual({ inputPricePerMillion: 6, outputPricePerMillion: 30 })
+    const auditRow = payload.audit[0]!
+    expect(auditRow.aliasOf).toBe('claude-sonnet-4-6')
+    expect(auditRow.override).toEqual({ inputPricePerMillion: 6, outputPricePerMillion: 30 })
+    store.close()
+  })
+
+  it('removing the alias and override reverts rows to plain unpriced identity', () => {
+    const store = modelsMakeLedger()
+    modelsPort(store, [{
+      sessionId: 'sess-mx', project: 'demo-project', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10', usage: PRICED_USAGE,
+    }])
+    const config: ModelsConfig = {
+      aliases: [{ model: 'weird-model', aliasOf: 'claude-sonnet-4-6' }],
+      overrides: [{ model: 'claude-sonnet-4-6', inputPricePerMillion: 6, outputPricePerMillion: 30 }],
+    }
+    expect(buildModelsViewFromLedger(store, { period: 'lifetime' }, config, NOW).byModel[0]!.model).toBe('claude-sonnet-4-6')
+
+    const reverted = buildModelsViewFromLedger(store, { period: 'lifetime' }, EMPTY_CONFIG, NOW)
+    const row = reverted.byModel[0]!
+    expect(row.model).toBe('weird-model')
+    expect(row.sourceModels).toBeUndefined()
+    expect(row.override).toBeUndefined()
+    expect(reverted.audit[0]!.aliasOf).toBeUndefined()
+    expect(reverted.audit[0]!.override).toBeUndefined()
+    store.close()
+  })
+})
+
 describe('models lib helpers', () => {
   it('formats compact token counts', () => {
     expect(formatCompact(0)).toBe('0')

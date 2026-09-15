@@ -29,6 +29,15 @@ export const modelsConfigSchema = z.object({
 })
 export type ModelsConfig = z.infer<typeof modelsConfigSchema>
 
+/** The Price override rates applied to a Models row's effective model.
+/// Present only when an override prices the row — the affordance the Models
+/// section uses to show "repriced" state with edit/remove actions. */
+export const rowOverrideSchema = z.object({
+  inputPricePerMillion: z.number(),
+  outputPricePerMillion: z.number(),
+})
+export type RowOverride = z.infer<typeof rowOverrideSchema>
+
 export const modelReportRowSchema = z.object({
   provider: z.string(),
   model: z.string(),
@@ -43,6 +52,13 @@ export const modelReportRowSchema = z.object({
   savingsUSD: z.number(),
   savingsBaselineModel: z.string(),
   calls: z.number(),
+  /** Raw model ids folded into this row via an Alias. Present only when a
+   * merge happened — lets the Models section show the original names with
+   * their alias target and offer retarget/remove per source. */
+  sourceModels: z.array(z.string()).optional(),
+  /** The Price override rates pricing this row's effective model. Present
+   * only when an override applies — the "repriced" state with edit/remove. */
+  override: rowOverrideSchema.optional(),
 })
 export type ModelReportRow = z.infer<typeof modelReportRowSchema>
 
@@ -76,6 +92,12 @@ export const auditRowSchema = z.object({
     recomputedTotalUSD: z.number(),
   }),
   attributedCostUSD: z.number(),
+  /** Alias target for this raw model, when an Alias merges it elsewhere.
+   * The audit lens keeps the original name; this names where it folds to. */
+  aliasOf: z.string().optional(),
+  /** The Price override rates pricing this row (on the effective model).
+   * Present only when an override applies. */
+  override: rowOverrideSchema.optional(),
 })
 export type AuditRow = z.infer<typeof auditRowSchema>
 
