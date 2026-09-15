@@ -113,7 +113,7 @@ export function normalizeProjectPathKey(projectPath: string): string {
   // Foreign-format guard (mirrors resolveCanonicalProjectPath): a path that
   // is not absolute on the current platform passes through untouched — the
   // key derivation must never reinterpret another platform's spelling.
-  if (!isAbsoluteProjectPath(trimmed)) return projectPath
+  if (!isAbsoluteProjectPath(trimmed)) return trimmed
   const normalized = trimmed.replace(/\\/g, '/')
   const stripped = normalized.replace(/\/+$/, '')
   // A stripped remainder of '' means the input was all slashes (a root):

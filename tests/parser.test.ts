@@ -50,6 +50,11 @@ describe('normalizeProjectPathKey', () => {
     expect(normalizeProjectPathKey(foreign)).toBe(foreign)
   })
 
+  it('trims surrounding whitespace even on foreign-format passthrough', () => {
+    const foreign = process.platform === 'win32' ? '/Users/tester/proj' : 'C:/Users/tester/proj'
+    expect(normalizeProjectPathKey(`  ${foreign}  `)).toBe(foreign)
+  })
+
   it('keeps the filesystem root as the root instead of collapsing to empty', () => {
     expect(normalizeProjectPathKey('/')).toBe('/')
     if (process.platform !== 'win32') expect(normalizeProjectPathKey('///')).toBe('/')
