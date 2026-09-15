@@ -1,385 +1,132 @@
 import { dirname, join } from 'path'
-import { mkdirSync, statSync, readdirSync, existsSync } from 'fs'
+import { mkdirSync, existsSync } from 'fs'
 import { writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
-import { refreshPricingNow } from './pipeline/models.js'
-import { resolveCadenceMs } from './cadence.js'
-import {
-  buildDashboardViewsFromLedger, buildProjectRowsFromLedger, querySessionRowsFromLedger, getSessionDetailFromLedger,
-  buildAnalyticalViewsFromLedger, searchSessionsFromLedger, buildProjectsFromLedger,
-  type DashboardViews, type SessionRow
-} from './views.js'
-import { runScan, ScanAbortedError, type ScanMetadata, type ScanProgress } from './pipeline/scan.js'
-import { buildOverviewFromLedger, type OverviewPayload, type OverviewScope } from './overview.js'
-import { buildSessionsViewFromLedger } from './sessions-view.js'
-import { buildPullRequestsViewFromLedger, type PullRequestsPayload } from './pull-requests-view.js'
-import { buildSpendViewFromLedger, type SpendPayload } from './spend-view.js'
-import { buildModelsViewFromLedger, type ModelsPayload } from './models-view.js'
-import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from './compare-view.js'
-import { buildOptimizeViewFromLedger, type OptimizePayload } from './optimize-view.js'
-import { buildYieldViewFromLedger, type YieldPayload } from './yield-view.js'
-import { buildSkillsViewFromLedger, type SkillsPayload } from './skills-view.js'
+import { app, BrowserWindow, ipcMain, shell, dialog, type WebContents } from 'electron'
 import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
 import {
-  DEFAULT_SKILLS_THRESHOLDS,
   skillsSaveRequestSchema,
-  skillsThresholdsSchema,
   type SkillsSaveResult,
   type SkillsThresholds,
 } from '../shared/schemas/skills.js'
 import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
-import { exportCsv, exportJson } from './export.js'
-import { getClaudeConfigDirs } from './pipeline/providers/claude.js'
-import { getRepoUrl } from './pipeline/git-remote.js'
-import {
-  getActiveCurrency, isValidCurrencyCode, listCurrencies, refreshFxRate,
-  type ActiveCurrency, type CurrencyOption
-} from './fx.js'
 import type { ExportResult } from './export.js'
-import type { DateRange } from './pipeline/types.js'
-import { LedgerStore } from './store/ledger.js'
-import type { PortInput } from './store/port.js'
+import type { OverviewScope } from './overview.js'
+import type { ComparePair } from './compare-view.js'
 import { registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer } from './agents/ledger-mcp/config.js'
+import { DbWorkerClient } from './db-worker/client.js'
 
-let ledger: LedgerStore | null = null
-/** The most recent completed scan's metadata — the `getScanStatus()` answer
- * and the `store:changed` payload (ADR 0004). In-memory only: the ledger
- * itself is the durable source of truth; boot reads it for the sentinel. */
-let lastScanMetadata: ScanMetadata | null = null
-let scanActive = false
-let abortRequested = false
-let cadenceTimer: ReturnType<typeof setInterval> | null = null
+/**
+ * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the
+ * harness-agent surface. All data work — the ledger, the scan pipeline, and
+ * every query-time view builder — lives on the db-worker thread behind
+ * `DbWorkerClient`, so a scan or a heavy aggregation can never freeze the
+ * main event loop (and with it every window). The renderer wire contract is
+ * unchanged: same channels, same payloads.
+ */
+
 let updateChecker: UpdateChecker | null = null
 /** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
 let agentsCleanup: { reset: () => Promise<void> } | null = null
+/** The data-plane handle, set once the worker is spawned (quit path). */
+let dbClient: DbWorkerClient | null = null
+/** The requesting window of the in-flight manual scan (progress/error routing). */
+let scanRequester: WebContents | null = null
 
-function dirSize(path: string): number {
-  let total = 0
-  try {
-    for (const entry of readdirSync(path, { withFileTypes: true })) {
-      const full = join(path, entry.name)
-      if (entry.isDirectory()) total += dirSize(full)
-      else if (entry.isFile()) total += statSync(full).size
+function broadcast(channel: string, data?: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, data)
+  }
+}
+
+/** Relays db-worker broadcasts to windows. Manual-scan lifecycle events go to
+ * the requesting window only (today's ⌘R semantics); everything else fans out
+ * to every window. */
+function relayWorkerEvents(db: DbWorkerClient): void {
+  db.onEvent(event => {
+    // Boot handshake (`ready` / `init-error`) is consumed by the client
+    // itself — never relayed to windows.
+    if (event.event === 'ready' || event.event === 'init-error') return
+    switch (event.event) {
+      case 'scan:progress':
+        if (event.manual) {
+          if (scanRequester && !scanRequester.isDestroyed()) scanRequester.send('scan:progress', event.progress)
+        } else {
+          broadcast('scan:progress', event.progress)
+        }
+        break
+      case 'scan:error':
+        if (scanRequester && !scanRequester.isDestroyed()) scanRequester.send('scan:error', event.message)
+        break
+      case 'store:changed':
+        broadcast('store:changed', event.metadata)
+        break
+      case 'scan:idle':
+        broadcast('scan:idle')
+        break
+      case 'config:changed':
+        broadcast('config:changed')
+        break
+      case 'currency:changed':
+        broadcast('currency:changed', event.currency)
+        break
     }
-  } catch {
-    // missing or unreadable dir counts as zero
-  }
-  return total
+  })
 }
 
-function userDataPaths(): { dataDir: string; dbSize: number; dataDirSize: number; cacheDir: string; cacheSize: number } {
-  const dataDir = app.getPath('userData')
-  // The ledger (ledger.db) is the only database now — the old report's data.db
-  // is gone, and the Settings General pane must report the live store's size.
-  const dbPath = join(dataDir, 'ledger.db')
-  const cacheDir = join(dataDir, 'cache')
-  let dbSize = 0
-  try { dbSize = statSync(dbPath).size } catch { /* no db yet */ }
-  return {
-    dataDir,
-    dbSize,
-    dataDirSize: dirSize(dataDir),
-    cacheDir,
-    cacheSize: dirSize(cacheDir)
-  }
-}
-
-/**
- * The scan ALWAYS ports lifetime (epoch → now): the ledger must absorb every
- * file's full history on its first scan, and the old report-era 30-day default
- * (or any windowed scan) would silently strand anything outside the window
- * forever — a cold first scan has no cache entry to fall back to as an
- * `unchanged` backfill. The views apply their own period at read time
- * (aggregation), never at scan time, so a windowed scan is never wanted.
- */
-function lifetimeRange(): DateRange {
-  return { start: new Date(0), end: new Date() }
-}
-
-/** Tells every window the display currency's rate has been refreshed (ticket
- * 32), so the renderer can repaint money values with the fresh cached rate
- * the moment it lands — without ever polling or fetching itself. */
-function broadcastCurrencyChanged(currency: ActiveCurrency): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('currency:changed', currency)
-  }
-}
-
-/** The FX half of the background cadence tick (and the startup prime):
- * refresh the selected currency's cached rate when stale, and broadcast the
- * result to every window only when the rate actually changed — so a minute
- * cadence doesn't spam re-renders while the 24h cache is still fresh. */
-async function refreshFxOnCadence(): Promise<void> {
-  if (!ledger) return
-  const before = getActiveCurrency(ledger)
-  const after = await refreshFxRate(ledger, ledger.getDisplayCurrency())
-  if (after.rate !== before.rate || after.updatedAt !== before.updatedAt) {
-    broadcastCurrencyChanged(after)
-  }
-}
-
-/** Pushes a "the store changed" event to every open window, carrying the
- * completed scan's METADATA (ADR 0004 — `reportId` is gone). The
- * renderer's single refetch trigger (ADR 0004): no renderer-side polling
- * loop; the main process alone decides when data is fresh, whether from a
- * manual (⌘R) or background-cadence scan. */
-function broadcastChanged(metadata: ScanMetadata): void {
-  lastScanMetadata = metadata
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('store:changed', metadata)
-  }
-}
-
-/** Tells every window a config write happened (price override / model alias),
- * so the mounted view refetches with the fresh query-time config — distinct
- * from `store:changed` (ledger changed vs config changed), no rebuild, no
- * rescan (ADR 0004). */
-function broadcastConfigChanged(): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('config:changed')
-  }
-}
-
-/** Runs one scan pass: parse streams per-file deltas into the ledger (ticket
- * 03) and the scan returns metadata — never a `ProjectSummary[]`, never a
- * `saveReport`. Shared by the manual ⌘R-triggered path (scan:start) and the
- * background-cadence timer, so both go through identical port-in + broadcast
- * semantics. Repo URLs are resolved per unique project cwd (memoized) so the
- * ledger's per-source `repo_url` is captured at port-in without a rescan. */
-async function performScan(
-  options: { provider?: string } | undefined,
-  emit: (progress: ScanProgress) => void
-): Promise<ScanMetadata> {
-  if (!ledger) throw new Error('ledger not initialised')
-  const range = lifetimeRange()
-  const repoUrlCache = new Map<string, Promise<string | undefined>>()
-  const portIn = async (delta: PortInput): Promise<void> => {
-    if (delta.cachedFile.failed) return
-    const cwd = delta.cachedFile.canonicalCwd
-    let repoUrl: string | undefined
-    if (cwd) {
-      let lookup = repoUrlCache.get(cwd)
-      if (!lookup) {
-        lookup = getRepoUrl(cwd)
-        repoUrlCache.set(cwd, lookup)
-      }
-      repoUrl = await lookup
-    }
-    await ledger!.portIn({ ...delta, repoUrl })
-  }
-  return runScan(
-    { range, provider: options?.provider },
-    emit,
-    { isAborted: () => abortRequested },
-    // Ledger port-in seam (ADR 0002): every settled session file is streamed
-    // to the ledger while the parse runs. The scan's delta wrapper already
-    // gates out failed parses; `unchanged` is a no-op inside portIn.
-    portIn
-  )
-}
-
-/** Tells every window a background scan attempt has ended without new data
- * (the scan failed silently). Distinct from `store:changed`: it carries no
- * report id and isn't an error the user is shown, but the renderer still
- * needs it to clear its non-blocking progress indicator, or it would stay
- * stuck on after a background scan that broadcast progress and then failed. */
-function broadcastIdle(): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('scan:idle')
-  }
-}
-
-/** Fires on the configured cadence (ADR 0004). Silent on failure — the
- * user's last-known data stays visible (stale-while-revalidate) and they can
- * still trigger a manual scan via ⌘R; background scans don't surface errors
- * as intrusively as a user-initiated one would. Coalesces with any
- * already-running scan rather than overlapping it. */
-async function triggerBackgroundScan(): Promise<void> {
-  if (!ledger || scanActive) return
-  scanActive = true
-  abortRequested = false
-  try {
-    const metadata = await performScan(undefined, progress => broadcastProgress(progress))
-    broadcastChanged(metadata)
-  } catch {
-    // background scans fail silently; manual ⌘R remains available
-    broadcastIdle()
-  } finally {
-    scanActive = false
-  }
-}
-
-/** Background-scan progress goes to every window too (ADR 0004's
- * non-blocking progress indicator applies regardless of which window, if
- * any, is focused when the cadence timer fires). */
-function broadcastProgress(progress: ScanProgress): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send('scan:progress', progress)
-  }
-}
-
-/** (Re)schedules the background-scan timer from the persisted cadence
- * setting. Called at startup and whenever the cadence config changes. */
-function scheduleCadence(): void {
-  if (cadenceTimer) {
-    clearInterval(cadenceTimer)
-    cadenceTimer = null
-  }
-  if (!ledger) return
-  const ms = resolveCadenceMs(ledger.getRefreshCadence())
-  if (ms === null) return // Manual: no background timer
-  // The FX background job rides the same repurposed cadence as the scan
-  // trigger (ADR 0009): each tick also refreshes the selected currency's
-  // rate when it is missing or older than 24h. refreshFxRate never throws,
-  // so a Frankfurter outage can never disturb the scan itself.
-  cadenceTimer = setInterval(() => {
-    void refreshFxOnCadence()
-    void triggerBackgroundScan()
-  }, ms)
-}
-
-function registerIpc(): void {
+function registerIpc(db: DbWorkerClient): void {
   ipcMain.handle('scan:start', async (event, options?: { provider?: string }) => {
-    if (!ledger) throw new Error('ledger not initialised')
-    // A scan is already in flight (background cadence or a concurrent call).
-    // This is NOT a failure: its progress and store:changed events will land
-    // on their own, so the renderer must not surface an error box or a retry
-    // button for it — hence the explicit flag instead of an error string.
-    if (scanActive) return { ok: false, alreadyRunning: true }
-    scanActive = true
-    abortRequested = false
-    const win = BrowserWindow.fromWebContents(event.sender)
-    const emit = (progress: ScanProgress): void => {
-      if (win && !win.isDestroyed()) win.webContents.send('scan:progress', progress)
-    }
-    const fail = (message: string): void => {
-      if (win && !win.isDestroyed()) win.webContents.send('scan:error', message)
-    }
+    // First-come-wins: a concurrent second caller gets `alreadyRunning` from
+    // the worker, so stealing the slot would misroute the live scan's
+    // progress to a window that never started it. A dead slot is free again
+    // (its window closed mid-scan while another one is still waiting).
+    if (!scanRequester || scanRequester.isDestroyed()) scanRequester = event.sender
     try {
-      const metadata = await performScan(options, emit)
-      broadcastChanged(metadata)
-      // The `metadata` lands on `store:changed` (broadcastChanged above); the
-      // scan-result envelope itself carries only the flags scanResultSchema
-      // declares, so the wire stays byte-faithful to the shared schema.
-      return { ok: true }
-    } catch (err) {
-      fail(err instanceof ScanAbortedError ? 'scan aborted' : err instanceof Error ? err.message : String(err))
-      return { ok: false, aborted: err instanceof ScanAbortedError, error: err instanceof Error ? err.message : String(err) }
+      return await db.request('scan:start', options)
     } finally {
-      scanActive = false
+      if (scanRequester === event.sender) scanRequester = null
     }
   })
 
   ipcMain.on('scan:abort', () => {
-    abortRequested = true
+    // Fire-and-forget like the renderer's send: a dead worker must never turn
+    // an abort into an unhandled rejection here.
+    void db.request('scan:abort').catch(() => {})
   })
 
-  ipcMain.handle('cadence:get', () => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return ledger.getRefreshCadence()
-  })
+  ipcMain.handle('cadence:get', () => db.request('cadence:get'))
 
-  ipcMain.handle('cadence:set', (_event, value: string) => {
-    if (!ledger) throw new Error('ledger not initialised')
-    ledger.setRefreshCadence(value)
-    scheduleCadence()
-    return ledger.getRefreshCadence()
-  })
+  ipcMain.handle('cadence:set', (_event, value: string) => db.request('cadence:set', value))
 
-  /** Scan status (ADR 0004): the most recent completed scan's metadata,
-   * or a "never scanned" sentinel when the ledger has no rows at all — the
-   * same shape the renderer's boot reads, then lives off `store:changed`. The
-   * `reportId` world is gone. */
-  ipcMain.handle('store:status', (): { scanned: boolean; metadata?: ScanMetadata } => {
-    if (!ledger) throw new Error('ledger not initialised')
-    const hasRows = ledger.getSources().length > 0
-    return {
-      scanned: hasRows || lastScanMetadata !== null,
-      ...(lastScanMetadata ? { metadata: lastScanMetadata } : {}),
-    }
-  })
+  ipcMain.handle('store:status', () => db.request('store:status'))
 
-  ipcMain.handle('store:views', (): DashboardViews | null => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return buildDashboardViewsFromLedger(ledger)
-  })
+  ipcMain.handle('store:views', () => db.request('store:views'))
 
-  ipcMain.handle('store:projects', () => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return buildProjectRowsFromLedger(ledger)
-  })
+  ipcMain.handle('store:projects', () => db.request('store:projects'))
 
-  ipcMain.handle('store:sessions', (_event, filter?: { project?: string; since?: string; until?: string }) => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return querySessionRowsFromLedger(ledger, filter ?? {})
-  })
+  ipcMain.handle('store:sessions', (_event, filter?: { project?: string; since?: string; until?: string }) =>
+    db.request('store:sessions', filter))
 
-  ipcMain.handle('sessions:view', (_event, scope: OverviewScope): SessionRow[] => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return buildSessionsViewFromLedger(ledger, scope)
-  })
+  ipcMain.handle('sessions:view', (_event, scope: OverviewScope) => db.request('sessions:view', scope))
 
-  ipcMain.handle('pullRequests:view', (_event, scope: OverviewScope): PullRequestsPayload | null => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return buildPullRequestsViewFromLedger(ledger, scope)
-  })
+  ipcMain.handle('pullRequests:view', (_event, scope: OverviewScope) => db.request('pullRequests:view', scope))
 
-  ipcMain.handle('spend:view', (_event, scope: OverviewScope): SpendPayload | null => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return buildSpendViewFromLedger(ledger, scope)
-  })
+  ipcMain.handle('spend:view', (_event, scope: OverviewScope) => db.request('spend:view', scope))
 
-  /** The Models section's scoped payload (ADR 0008): by-model / by-task /
-   * audit lenses. Built at read time from the ledger plus the CURRENT
-   * alias/price-override config tables, so a quick-add write updates the
-   * affected rows on the next query without a rescan. */
-  ipcMain.handle('models:view', (_event, scope: OverviewScope): ModelsPayload | null => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return buildModelsViewFromLedger(ledger, scope, {
-      aliases: ledger.getModelAliases(),
-      overrides: ledger.getPriceOverrides(),
-    })
-  })
+  ipcMain.handle('models:view', (_event, scope: OverviewScope) => db.request('models:view', scope))
 
-  /** The Compare section's scoped payload (ADR 0008): a model-pair picker
-   * over every detected model, plus a query-time side-by-side metrics card,
-   * per-category one-shot bars, and a working-style card. The section honors
-   * the selected custom date range like every other section. */
-  ipcMain.handle('compare:view', (_event, scope: OverviewScope, pair?: ComparePair): ComparePayload | null => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return buildCompareViewFromLedger(ledger, scope, pair)
-  })
+  ipcMain.handle('compare:view', (_event, scope: OverviewScope, pair?: ComparePair) =>
+    db.request('compare:view', scope, pair))
 
-  /** The Optimize section's scoped payload (ADR 0008): a read-only setup-health
-   * grade plus Waste/Fixes findings from the 16 ported detectors. Unlike the
-   * other sections this is async (ghost detectors walk ~/.claude on disk). */
-  ipcMain.handle('optimize:view', async (_event, scope: OverviewScope): Promise<OptimizePayload | null> => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return await buildOptimizeViewFromLedger(ledger, scope)
-  })
+  ipcMain.handle('optimize:view', (_event, scope: OverviewScope) => db.request('optimize:view', scope))
 
   /** The Skills section's detection payload (ticket 24): pure local mining
    * of skill/bash/tool seams plus the on-disk inventory — no consent, no
    * network. Thresholds (frequency × spread) are renderer settings passed
    * per request; defaults (5 × 2) apply when absent. */
-  ipcMain.handle('skills:view', async (_event, scope: OverviewScope, thresholds?: SkillsThresholds): Promise<SkillsPayload | null> => {
-    if (!ledger) throw new Error('ledger not initialised')
-    // Tripwire (ADR 0005): IPC args are `unknown` — safeParse applies the
-    // schema's .int().min(1) guards and .default()s, falling back to the
-    // defaults on garbage so a malformed renderer value can never flip every
-    // pattern into a draft.
-    const parsed = skillsThresholdsSchema.safeParse(thresholds)
-    // Dismissals ride every fetch (ticket 25): the not-a-skill store filters
-    // rejected patterns out of drafts AND opportunities before the gate.
-    return await buildSkillsViewFromLedger(
-      ledger,
-      scope,
-      parsed.success ? parsed.data : DEFAULT_SKILLS_THRESHOLDS,
-      { dismissals: ledger.getSkillDismissals() },
-    )
-  })
+  ipcMain.handle('skills:view', (_event, scope: OverviewScope, thresholds?: SkillsThresholds) =>
+    db.request('skills:view', scope, thresholds))
 
   /** Skills › Save (ticket 25): the ONLY write the draft board can do, and it
    * is user-initiated — the OS save dialog IS the user's confirmation, and no
@@ -405,84 +152,22 @@ function registerIpc(): void {
     }
   })
 
-  /** The Optimize section's Reverts/Abandoned payload (ADR 0008): yield
-   * computed query-time from live git calls on each project's repo, only
-   * fetched when that tab is actually viewed — never persisted at scan time.
-   * All git failures degrade to empty, so a missing/non-git repo simply shows
-   * nothing rather than erroring the section. */
-  ipcMain.handle('optimize:yield', async (_event, scope: OverviewScope): Promise<YieldPayload | null> => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return await buildYieldViewFromLedger(ledger, scope)
-  })
+  ipcMain.handle('optimize:yield', (_event, scope: OverviewScope) => db.request('optimize:yield', scope))
 
-  /** Quick-add alias (ADR 0010): map an unpriced model to a priced one,
-   * writing directly to the ledger's `model_alias` config table and
-   * broadcasting `config:changed` so the mounted view refetches (query-time
-   * config — no rescan). */
-  ipcMain.handle('models:addAlias', (_event, model: string, aliasOf: string): { ok: true } => {
-    if (!ledger) throw new Error('ledger not initialised')
-    if (typeof model !== 'string' || !model.trim() || typeof aliasOf !== 'string' || !aliasOf.trim()) {
-      throw new Error('model and alias target must be non-empty strings')
-    }
-    ledger.setModelAlias(model.trim(), aliasOf.trim())
-    broadcastConfigChanged()
-    return { ok: true }
-  })
+  ipcMain.handle('models:addAlias', (_event, model: string, aliasOf: string) =>
+    db.request('models:addAlias', model, aliasOf))
 
-  /** Read the current model-alias config (Settings › Model aliases CRUD). */
-  ipcMain.handle('models:getAliases', (): Array<{ model: string; aliasOf: string }> => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return ledger.getModelAliases()
-  })
+  ipcMain.handle('models:getAliases', () => db.request('models:getAliases'))
 
-  /** Remove a model alias (Settings › Model aliases CRUD). */
-  ipcMain.handle('models:removeAlias', (_event, model: string): { ok: true } => {
-    if (!ledger) throw new Error('ledger not initialised')
-    if (typeof model !== 'string' || !model.trim()) {
-      throw new Error('model must be a non-empty string')
-    }
-    ledger.removeModelAlias(model.trim())
-    broadcastConfigChanged()
-    return { ok: true }
-  })
+  ipcMain.handle('models:removeAlias', (_event, model: string) => db.request('models:removeAlias', model))
 
-  /** Read the current price-override config (Settings › Pricing CRUD). */
-  ipcMain.handle('models:getPriceOverrides', (): Array<{
-    model: string; inputPricePerMillion: number; outputPricePerMillion: number
-  }> => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return ledger.getPriceOverrides()
-  })
+  ipcMain.handle('models:getPriceOverrides', () => db.request('models:getPriceOverrides'))
 
-  /** Remove a price override (Settings › Pricing CRUD): a pure config delete —
-   * display cost reverts to the stored base on the next query (query-time
-   * pricing), no row updates, no rescan. */
-  ipcMain.handle('models:removePriceOverride', (_event, model: string): { ok: true } => {
-    if (!ledger) throw new Error('ledger not initialised')
-    if (typeof model !== 'string' || !model.trim()) {
-      throw new Error('model must be a non-empty string')
-    }
-    ledger.removePriceOverride(model.trim())
-    broadcastConfigChanged()
-    return { ok: true }
-  })
+  ipcMain.handle('models:removePriceOverride', (_event, model: string) =>
+    db.request('models:removePriceOverride', model))
 
-  /** Quick-add price override (ADR 0010): a manual price (USD per 1M tokens)
-   * for a model, a pure upsert on the ledger's `price_override` config table
-   * (display cost recomputes on read) plus a `config:changed` broadcast. */
-  ipcMain.handle('models:setPrice', (_event, model: string, inputPricePerMillion: number, outputPricePerMillion: number): { ok: true } => {
-    if (!ledger) throw new Error('ledger not initialised')
-    if (typeof model !== 'string' || !model.trim()) {
-      throw new Error('model must be a non-empty string')
-    }
-    if (!Number.isFinite(inputPricePerMillion) || inputPricePerMillion < 0
-      || !Number.isFinite(outputPricePerMillion) || outputPricePerMillion < 0) {
-      throw new Error('prices must be non-negative numbers')
-    }
-    ledger.setPriceOverride(model.trim(), { inputPricePerMillion, outputPricePerMillion })
-    broadcastConfigChanged()
-    return { ok: true }
-  })
+  ipcMain.handle('models:setPrice', (_event, model: string, inputPricePerMillion: number, outputPricePerMillion: number) =>
+    db.request('models:setPrice', model, inputPricePerMillion, outputPricePerMillion))
 
   /** Open a PR in the default browser. Only http(s) URLs are allowed — a
    * malformed or non-web URL is refused so a crafted label can never drive the
@@ -507,51 +192,19 @@ function registerIpc(): void {
     return true
   })
 
-  ipcMain.handle('store:session', (_event, sessionId: string) => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return getSessionDetailFromLedger(ledger, sessionId)
-  })
+  ipcMain.handle('store:session', (_event, sessionId: string) => db.request('store:session', sessionId))
 
-  ipcMain.handle('store:analytics', () => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return buildAnalyticalViewsFromLedger(ledger)
-  })
+  ipcMain.handle('store:analytics', () => db.request('store:analytics'))
 
-  ipcMain.handle('overview:query', (_event, scope: OverviewScope): OverviewPayload | null => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return buildOverviewFromLedger(ledger, scope)
-  })
+  ipcMain.handle('overview:query', (_event, scope: OverviewScope) => db.request('overview:query', scope))
 
-  ipcMain.handle('store:search', (_event, query: string) => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return searchSessionsFromLedger(ledger, query)
-  })
+  ipcMain.handle('store:search', (_event, query: string) => db.request('store:search', query))
 
-  ipcMain.handle('settings:info', async () => {
-    // The Claude-config row in General is nullable: when the config dirs cannot
-    // be resolved we omit the field entirely so the renderer just hides the row.
-    let claudeConfigDirs: string[] | undefined
-    try { claudeConfigDirs = await getClaudeConfigDirs() } catch { /* absent */ }
-    return { ...userDataPaths(), claudeConfigDirs }
-  })
+  ipcMain.handle('settings:info', () => db.request('settings:info'))
 
-  ipcMain.handle('settings:clear', async () => {
-    if (!ledger) throw new Error('ledger not initialised')
-    ledger.clear()
-    lastScanMetadata = null
-    let claudeConfigDirs: string[] | undefined
-    try { claudeConfigDirs = await getClaudeConfigDirs() } catch { /* absent */ }
-    return { ...userDataPaths(), claudeConfigDirs }
-  })
+  ipcMain.handle('settings:clear', () => db.request('settings:clear'))
 
-  ipcMain.handle('pricing:refresh', async () => {
-    try {
-      await refreshPricingNow()
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  })
+  ipcMain.handle('pricing:refresh', () => db.request('pricing:refresh'))
 
   /** The About area's version (ADR 0012): `app.getVersion()` reads it from
    * package.json, which electron-builder also stamps into the packaged app. */
@@ -568,50 +221,17 @@ function registerIpc(): void {
     return updateChecker.check()
   })
 
-  /** The active display currency (ADR 0009): the persisted code plus its
-   * CACHED rate from the FX side-table. The renderer never calls Frankfurter
-   * directly — this is its only read path, and it degrades to the last
-   * cached rate (or USD) without ever touching the network. */
-  ipcMain.handle('currency:get', (): ActiveCurrency => {
-    if (!ledger) throw new Error('ledger not initialised')
-    return getActiveCurrency(ledger)
-  })
+  ipcMain.handle('currency:get', () => db.request('currency:get'))
 
-  /** Select a display currency (ADR 0009): persists the choice, kicks off a
-   * non-blocking Frankfurter refresh in the background when the cached rate
-   * is missing/stale, and returns the current state immediately — the app
-   * keeps working on the last cached rate (or USD) while the fetch runs.
-   * When the fetch lands, `currency:changed` is broadcast so every window
-   * re-reads the fresh rate (this is also why the renderer never needs to
-   * call Frankfurter itself). */
-  ipcMain.handle('currency:set', (_event, code: string): ActiveCurrency => {
-    if (!ledger) throw new Error('ledger not initialised')
-    if (typeof code !== 'string' || !isValidCurrencyCode(code)) {
-      throw new Error('invalid ISO 4217 currency code')
-    }
-    ledger.setDisplayCurrency(code)
-    void refreshFxRate(ledger, code).then(broadcastCurrencyChanged)
-    return getActiveCurrency(ledger)
-  })
+  ipcMain.handle('currency:set', (_event, code: string) => db.request('currency:set', code))
 
   /** The full ISO 4217 currency list (162 codes) for the Settings selector. */
-  ipcMain.handle('currency:list', (): CurrencyOption[] => {
-    return listCurrencies()
-  })
+  ipcMain.handle('currency:list', () => db.request('currency:list'))
 
-  /** CSV/JSON export in the selected display currency (ADR 0009 seam for
-   * ADR 0013's Export pane). The main process shows a folder picker when no
-   * destination is supplied. Reads the FULL ledger history through the
-   * aggregation layer (ADR 0013): the gate is "ledger has any rows",
-   * and there is no date-range filter — exports cover full history. Cost
-   * figures stay USD-anchored in the ledger; conversion is applied only to
-   * the files produced here. */
+  /** CSV/JSON export in the selected display currency. The main process shows
+   * a folder picker when no destination is supplied; the worker computes and
+   * writes the files (it owns the ledger the export reads). */
   async function runExport(kind: 'csv' | 'json', destination?: string): Promise<ExportResult> {
-    if (!ledger) throw new Error('ledger not initialised')
-    const projects = buildProjectsFromLedger(ledger)
-    if (projects.length === 0) {
-      return { ok: false, error: 'no data to export yet — scan first' }
-    }
     let target = destination
     if (!target) {
       if (kind === 'csv') {
@@ -632,14 +252,7 @@ function registerIpc(): void {
         target = picked.filePath
       }
     }
-    try {
-      const path = kind === 'csv'
-        ? await exportCsv(projects, target, ledger)
-        : await exportJson(projects, target, ledger)
-      return { ok: true, path }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
+    return (await db.request(`export:${kind}`, target)) as ExportResult
   }
 
   ipcMain.handle('export:csv', (_event, destination?: string): Promise<ExportResult> => runExport('csv', destination))
@@ -650,12 +263,12 @@ function registerIpc(): void {
   // dismissal store, and draft prose. The runner is lazy: the AI SDK loads on
   // the first harness-touching call, never at boot. Runs are user-initiated
   // from the unified Coach & Skills surface (ADR 0017); dismissals are a
-  // ledger config table so they survive clear().
+  // ledger config table (written through the worker) so they survive clear().
   agentsCleanup = registerAgentsIpc({
     dismissals: {
-      // The skills:view read goes straight to the ledger above; this source
-      // carries only the write (ticket 25).
-      dismiss: (source, name, reason) => ledger?.dismissSkill(source, name, reason),
+      dismiss: async (source, name, reason) => {
+        await db.request('skills:dismiss', { source, name, reason })
+      },
     },
     // The app root: bundled ACP servers (codex) resolve from its node_modules.
     appPath: app.getAppPath(),
@@ -709,16 +322,30 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  process.env['WATCHTOWER_CACHE_DIR'] = join(app.getPath('userData'), 'cache')
-  ledger = new LedgerStore(join(app.getPath('userData'), 'ledger.db'))
+  const dataDir = app.getPath('userData')
+  // The data plane boots first: the worker owns the ledger from here on —
+  // requests simply queue on its port until its synchronous init finishes.
+  const db = new DbWorkerClient(
+    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir: join(dataDir, 'cache') },
+    join(__dirname, 'db-worker.js'),
+  )
+  relayWorkerEvents(db)
+  dbClient = db
   updateChecker = createUpdateChecker({ currentVersion: app.getVersion() })
-  registerIpc()
+  registerIpc(db)
   createWindow()
-  scheduleCadence()
-  // Prime the FX side-table for the persisted display currency at startup,
-  // non-blocking: the renderer reads the cached rate (or USD) meanwhile, and
-  // a broadcast lands the fresh rate if the cache was stale.
-  void refreshFxOnCadence()
+
+  // The worker queues requests until its synchronous init finishes, so the
+  // window can paint immediately. A boot failure (unopenable ledger) cannot
+  // heal — surface it once and quit instead of serving IPC errors forever.
+  // The worker is never respawned in that case (client policy).
+  void db.ready.then(undefined, err => {
+    dialog.showErrorBox(
+      'Watchtower',
+      `The local data layer failed to start and the app cannot continue.\n\n${err instanceof Error ? err.message : String(err)}`,
+    )
+    app.quit()
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -732,7 +359,10 @@ app.on('window-all-closed', () => {
 // Tear down the coach conversation's temp workspace (map 53) so a reset or a
 // quit never leaks a scratch directory under the OS temp root. Best-effort:
 // the runner awaits run teardowns and retries the delete, and a leftover
-// scratch dir is cleaned by the OS — quitting must never block on it.
+// scratch dir is cleaned by the OS — quitting must never block on it. The
+// data worker gets the same best-effort treatment: a chance to checkpoint
+// and close the ledger before the process dies.
 app.on('before-quit', () => {
   void agentsCleanup?.reset()
+  void dbClient?.shutdown().catch(() => {})
 })
