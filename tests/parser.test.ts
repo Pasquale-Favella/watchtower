@@ -9,12 +9,38 @@ import {
 // Canonical project identity (#103): one checkout, one grouping key,
 // whatever the provider's spelling. Expected values are hand-written
 // literals from the observed repro, not recomputed by the code.
+//
+// The seam only normalizes native-absolute paths: a foreign-format path
+// (Windows spelling on POSIX, POSIX spelling on Windows) passes through
+// untouched because it can never be walked here. The unification fixtures
+// below therefore branch on the platform so the suite is green on both
+// Windows dev machines and Linux CI; the foreign-format tests cover the
+// opposite branch on each platform.
+const NATIVE =
+  process.platform === 'win32'
+    ? {
+        variants: [
+          'C:\\Users\\P.Favella\\PROGETTI\\PERSONAL\\watchtower',
+          'C:/Users/P.Favella/PROGETTI/PERSONAL/watchtower/',
+          'c:\\users\\p.favella\\progetti\\personal\\watchtower',
+        ],
+        expected: 'c:/users/p.favella/progetti/personal/watchtower',
+        otherCheckout: 'C:\\other\\checkout',
+        worktree: { input: 'C:\\Users\\tester\\repo-work', expected: 'c:/users/tester/repo-work' },
+      }
+    : {
+        variants: [
+          '/home/tester/PROGETTI/PERSONAL/watchtower',
+          '/home/tester/progetti/personal/watchtower/',
+          '/home/tester/progetti/personal/WATCHTOWER',
+        ],
+        expected: '/home/tester/progetti/personal/watchtower',
+        otherCheckout: '/other/checkout',
+        worktree: { input: '/home/tester/REPO-WORK', expected: '/home/tester/repo-work' },
+      }
 describe('normalizeProjectPathKey', () => {
   it('unifies slash direction, trailing separators and drive-letter case', () => {
-    const expected = 'c:/users/p.favella/progetti/personal/watchtower'
-    expect(normalizeProjectPathKey('C:\\Users\\P.Favella\\PROGETTI\\PERSONAL\\watchtower')).toBe(expected)
-    expect(normalizeProjectPathKey('C:/Users/P.Favella/PROGETTI/PERSONAL/watchtower/')).toBe(expected)
-    expect(normalizeProjectPathKey('c:\\users\\p.favella\\progetti\\personal\\watchtower')).toBe(expected)
+    for (const variant of NATIVE.variants) expect(normalizeProjectPathKey(variant)).toBe(NATIVE.expected)
   })
 
   it('passes foreign-format paths through untouched (never lowercased or refolded)', () => {
@@ -32,15 +58,11 @@ describe('normalizeProjectPathKey', () => {
 
 describe('deriveCanonicalProjectKey', () => {
   it('prefers the canonical project path over the exact working directory', () => {
-    expect(
-      deriveCanonicalProjectKey('C:\\Users\\P.Favella\\PROGETTI\\PERSONAL\\watchtower', 'C:\\other\\checkout', 'codex'),
-    ).toBe('c:/users/p.favella/progetti/personal/watchtower')
+    expect(deriveCanonicalProjectKey(NATIVE.variants[0], NATIVE.otherCheckout, 'codex')).toBe(NATIVE.expected)
   })
 
   it('falls back to the working directory when no canonical path is known', () => {
-    expect(
-      deriveCanonicalProjectKey(undefined, 'C:\\Users\\P.Favella\\PROGETTI\\PERSONAL\\watchtower', 'copilot'),
-    ).toBe('c:/users/p.favella/progetti/personal/watchtower')
+    expect(deriveCanonicalProjectKey(undefined, NATIVE.variants[0], 'copilot')).toBe(NATIVE.expected)
   })
 
   it('falls back to an explicit per-provider orphan bucket when no directory is known', () => {
@@ -57,9 +79,7 @@ describe('deriveCanonicalProjectKey', () => {
   it('stays lexical: worktree folding happens upstream, the seam only normalizes', () => {
     // Callers canonicalize linked worktrees via resolveCanonicalProjectPath
     // before deriving the key; the seam itself never touches the filesystem.
-    expect(
-      deriveCanonicalProjectKey('C:\\Users\\tester\\repo-work', undefined, 'codex'),
-    ).toBe('c:/users/tester/repo-work')
+    expect(deriveCanonicalProjectKey(NATIVE.worktree.input, undefined, 'codex')).toBe(NATIVE.worktree.expected)
   })
 })
 
