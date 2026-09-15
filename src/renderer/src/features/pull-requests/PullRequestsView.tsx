@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { GitPullRequest, ChevronRight } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
 import { Panel } from '@/shared/components/Panel'
+import { InfoTip } from '@/shared/components/InfoTip'
 import { MetricCard } from '@/features/overview/MetricCard'
 import { Card } from '@/shared/components/ui/card'
 import { SegTabs } from '@/shared/components/SegTabs'
@@ -120,11 +121,15 @@ function PrRowView({ pr, expanded, onToggle }: { pr: PullRequestRow; expanded: b
 
 /** Bento summary: the hero card carries the salient number (attributed spend)
  * with its supporting details, flanked by two compact MetricCards for the
- * pull-request and session counts. */
-function HeroMini({ label, children }: { label: string; children: React.ReactNode }) {
+ * pull-request and session counts. Each label carries an info tooltip with a
+ * practical explanation of what its number represents. */
+function HeroMini({ label, info, children }: { label: string; info?: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0">
-      <div className="truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <div className="truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+        {info ? <InfoTip label={`About ${label.toLowerCase()}`} text={info} /> : null}
+      </div>
       <div className="mt-0.5 min-w-0 text-[12.5px]">{children}</div>
     </div>
   )
@@ -142,13 +147,22 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
       <Card className="flex flex-col gap-0 rounded-lg border border-border bg-card px-4 py-3 shadow-[var(--card-shadow)] ring-0 [--card-spacing:0px] sm:col-span-2">
         <div className="grid flex-1 grid-cols-2 content-between gap-x-4 gap-y-3">
           <div className="min-w-0">
-            <div className="truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Attributed spend</div>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <div className="truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Attributed spend</div>
+              <InfoTip
+                label="About attributed spend"
+                text="AI spend pinned to one of the PRs listed below. Counted turn by turn, so a session working on two PRs splits its cost instead of counting it twice."
+              />
+            </div>
             <div className="mt-2 truncate font-mono text-3xl font-semibold tracking-tight tabular-nums text-primary">
               {formatUsd(attributedCost)}
             </div>
           </div>
           {coveragePct !== null ? (
-            <HeroMini label="Coverage">
+            <HeroMini
+              label="Coverage"
+              info="Share of PR-linked spend pinned to a specific PR. The rest is work from those same sessions done before any PR was mentioned, so it cannot be tied to one PR."
+            >
               <span className="block truncate">
                 <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
                   {coveragePct.toLocaleString('en-US')}%
@@ -160,7 +174,10 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
               </span>
             </HeroMini>
           ) : (
-            <HeroMini label="Coverage">
+            <HeroMini
+              label="Coverage"
+              info="Share of PR-linked spend pinned to a specific PR. The rest is work from those same sessions done before any PR was mentioned, so it cannot be tied to one PR."
+            >
               <span className="block truncate">
                 <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">—</span>{' '}
                 <span className="text-muted-foreground">of linked spend</span>
@@ -171,7 +188,10 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
             </HeroMini>
           )}
           {top ? (
-            <HeroMini label="Top PR by spend">
+            <HeroMini
+              label="Top PR by spend"
+              info="The PR that absorbed the most AI spend in the current scope. Click its name to open it."
+            >
               <span className="flex min-w-0 items-center gap-1.5">
                 <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <a
@@ -186,11 +206,17 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
               </span>
             </HeroMini>
           ) : (
-            <HeroMini label="Top PR by spend">
+            <HeroMini
+              label="Top PR by spend"
+              info="The PR that absorbed the most AI spend in the current scope. Click its name to open it."
+            >
               <span className="block truncate text-muted-foreground">—</span>
             </HeroMini>
           )}
-          <HeroMini label="Unattributed">
+          <HeroMini
+            label="Unattributed"
+            info="Spend from PR-linked sessions that cannot be tied to one PR - mostly work done before the first PR link appeared in the session."
+          >
             <strong className="block truncate font-mono tabular-nums text-foreground">{formatUsd(payload.unattributedCost)}</strong>
           </HeroMini>
         </div>
@@ -201,12 +227,14 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
           value={payload.rows.length.toLocaleString('en-US')}
           sub={payloadSpan(payload.rows)}
           subInline
+          info="Distinct PR links found in sessions for the current scope. The line below shows their active window, from the earliest start to the latest end."
         />
         <MetricCard
           label="Linked sessions"
           value={payload.distinctSessions.toLocaleString('en-US')}
           sub={payload.rows.length > 0 ? `Avg ${(payload.distinctSessions / payload.rows.length).toFixed(1)} per PR` : undefined}
           subInline
+          info="Parent sessions that mention at least one PR. Subagent runs are folded into their parent session, so they add cost but never inflate this count."
         />
       </div>
     </div>
