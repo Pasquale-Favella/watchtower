@@ -5,16 +5,17 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* shadcn/typeset — chat preset, wired to the app's own fonts and compact
- * desktop scale (13px body) so prose sits next to the 11.5–12.5px UI text.
+/* shadcn/typeset — chat preset, wired to the app's own fonts and an airy
+ * reading scale: ~14.5px body with generous leading so assistant turns read
+ * as full-width prose next to the denser 11.5–12.5px UI chrome.
  * Unlayered so it beats the layered .typeset defaults. */
 .typeset-chat {
   --typeset-font-body: var(--font-sans);
   --typeset-font-heading: var(--font-sans);
   --typeset-font-mono: var(--font-mono);
-  --typeset-size: 13px;
+  --typeset-size: 14.5px;
   --typeset-leading: 1.75;
-  --typeset-flow: 1.25em;
+  --typeset-flow: 1em;
 }
 
 @theme inline {
