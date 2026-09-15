@@ -539,7 +539,7 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
     const events = []
     for await (const event of runtime.run({
       harness: claudeHarness,
-      modelId: 'nope',
+      modelId: 'haiku',
       workspacePath: realWorkspace(),
       prompt: 'p',
     })) {
@@ -781,5 +781,217 @@ describe('createHarnessRuntime — win32 spawn wrapping end-to-end', () => {
     const config = createACPProvider.mock.calls[0]![0]
     expect(config.command).toBe(process.execPath)
     expect(config.args).toEqual([bundledHarness.bundledEntry, ...(spec.adapter.acpConfig.args ?? [])])
+  })
+})
+
+describe('createHarnessRuntime — codex/pi live handshake shapes (regression)', () => {
+  /** Codex live shape: bracketed legacy model ids (`gpt-5.6-luna[high]`) plus
+   *  base config values (`gpt-5.6-luna`) — the picker shows the legacy ids,
+   *  so only the legacy write accepts them. */
+  function codexSession() {
+    return {
+      sessionId: 'sess_9',
+      models: {
+        availableModels: [
+          { modelId: 'gpt-5.6-luna[high]', name: 'GPT-5.6-Luna (high)' },
+          { modelId: 'gpt-5.5[low]', name: 'GPT-5.5 (low)' },
+        ],
+        currentModelId: 'gpt-5.6-luna[high]',
+      },
+      modes: {
+        availableModes: [
+          { id: 'agent', name: 'Agent' },
+          { id: 'read-only', name: 'Read-only' },
+        ],
+        currentModeId: 'agent',
+      },
+      configOptions: [
+        {
+          id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: 'agent',
+          options: [{ value: 'agent', name: 'Agent' }, { value: 'read-only', name: 'Read-only' }],
+        },
+        {
+          id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'gpt-5.6-luna',
+          options: [{ value: 'gpt-5.6-luna', name: 'GPT-5.6-Luna' }, { value: 'gpt-5.5', name: 'GPT-5.5' }],
+        },
+        {
+          id: 'reasoning_effort', name: 'Reasoning', category: 'thought_level', type: 'select', currentValue: 'high',
+          options: [{ value: 'high', name: 'High' }, { value: 'low', name: 'Low' }],
+        },
+      ],
+    }
+  }
+
+  /** Pi live shape: mirrored model lists (legacy + config, config-only
+   *  write) and thinking-level modes with NO `mode` config select. */
+  function piSession() {
+    return {
+      sessionId: 'sess_9',
+      models: {
+        availableModels: [
+          { modelId: 'openrouter/a', name: 'A' },
+          { modelId: 'openrouter/b', name: 'B' },
+        ],
+        currentModelId: 'openrouter/a',
+      },
+      modes: {
+        availableModes: [
+          { id: 'low', name: 'Thinking: low' },
+          { id: 'medium', name: 'Thinking: medium' },
+        ],
+        currentModeId: 'medium',
+      },
+      configOptions: [
+        {
+          id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'openrouter/a',
+          options: [{ value: 'openrouter/a', name: 'A' }, { value: 'openrouter/b', name: 'B' }],
+        },
+        {
+          id: 'thought_level', name: 'Thinking', category: 'thought_level', type: 'select', currentValue: 'medium',
+          options: [{ value: 'low', name: 'Thinking: low' }, { value: 'medium', name: 'Thinking: medium' }],
+        },
+      ],
+    }
+  }
+
+  it('routes a codex bracketed model id via legacy setModel, never setConfigOption', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    Object.assign(sessionResponse, codexSession())
+    const setModel = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => ({}))
+    Object.assign(provider, { setModel, setConfigOption })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness, modelId: 'gpt-5.5[low]', workspacePath: realWorkspace(), prompt: 'p',
+    })) {
+      events.push(event)
+    }
+
+    expect(setModel).toHaveBeenCalledWith('gpt-5.5[low]')
+    expect(setConfigOption).not.toHaveBeenCalled()
+    expect(streamText).toHaveBeenCalledOnce()
+    expect(events[0]).toEqual({ kind: 'status', state: 'starting' })
+  })
+
+  it('routes a codex mode via legacy setMode, never setConfigOption', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    Object.assign(sessionResponse, codexSession())
+    const setMode = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => ({}))
+    Object.assign(provider, { setMode, setConfigOption })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    for await (const _event of runtime.run({
+      harness: claudeHarness, modeId: 'read-only', workspacePath: realWorkspace(), prompt: 'p',
+    })) {
+      // no-op
+    }
+
+    expect(setMode).toHaveBeenCalledWith('read-only')
+    expect(setConfigOption).not.toHaveBeenCalled()
+    expect(streamText).toHaveBeenCalledOnce()
+  })
+
+  it('routes a pi model via setConfigOption, never legacy setModel', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    Object.assign(sessionResponse, piSession())
+    const setModel = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => ({}))
+    Object.assign(provider, { setModel, setConfigOption })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    for await (const _event of runtime.run({
+      harness: claudeHarness, modelId: 'openrouter/b', workspacePath: realWorkspace(), prompt: 'p',
+    })) {
+      // no-op
+    }
+
+    expect(setConfigOption).toHaveBeenCalledWith({ sessionId: 'sess_9', configId: 'model', value: 'openrouter/b' })
+    expect(setModel).not.toHaveBeenCalled()
+    expect(streamText).toHaveBeenCalledOnce()
+  })
+
+  it('routes a pi thinking mode via legacy setMode, never config `mode`', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    Object.assign(sessionResponse, piSession())
+    const setMode = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => ({}))
+    Object.assign(provider, { setMode, setConfigOption })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    for await (const _event of runtime.run({
+      harness: claudeHarness, modeId: 'low', workspacePath: realWorkspace(), prompt: 'p',
+    })) {
+      // no-op
+    }
+
+    expect(setMode).toHaveBeenCalledWith('low')
+    expect(setConfigOption).not.toHaveBeenCalled()
+    expect(streamText).toHaveBeenCalledOnce()
+  })
+
+  it('skips the write when the pick already equals the live current (idempotent)', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    Object.assign(sessionResponse, piSession())
+    const setMode = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => ({}))
+    Object.assign(provider, { setMode, setConfigOption })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    for await (const _event of runtime.run({
+      harness: claudeHarness, modeId: 'medium', workspacePath: realWorkspace(), prompt: 'p',
+    })) {
+      // no-op
+    }
+
+    expect(setMode).not.toHaveBeenCalled()
+    expect(setConfigOption).not.toHaveBeenCalled()
+    expect(streamText).toHaveBeenCalledOnce()
+  })
+
+  it('falls back to legacy setModel when the resumed-session config write fails (codex)', async () => {
+    const { sdk, provider, streamText } = fakeSdk([])
+    const setModel = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => {
+      throw new Error('Invalid params')
+    })
+    Object.assign(provider, { setModel, setConfigOption })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness, modelId: 'gpt-5.5[low]', workspacePath: realWorkspace(), prompt: 'p',
+      sessionId: 'sess_prev',
+    })) {
+      events.push(event)
+    }
+
+    expect(setConfigOption).toHaveBeenCalledOnce()
+    expect(setModel).toHaveBeenCalledWith('gpt-5.5[low]')
+    expect(streamText).toHaveBeenCalledOnce()
+    expect(events[0]).toEqual({ kind: 'status', state: 'starting' })
+  })
+
+  it('falls back to legacy setMode when the resumed-session config write fails (pi thinking)', async () => {
+    const { sdk, provider, streamText } = fakeSdk([])
+    const setMode = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => {
+      throw new Error('Unknown config option: mode')
+    })
+    Object.assign(provider, { setMode, setConfigOption })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    for await (const _event of runtime.run({
+      harness: claudeHarness, modeId: 'low', workspacePath: realWorkspace(), prompt: 'p',
+      sessionId: 'sess_prev',
+    })) {
+      // no-op
+    }
+
+    expect(setConfigOption).toHaveBeenCalled()
+    expect(setMode).toHaveBeenCalledWith('low')
+    expect(streamText).toHaveBeenCalledOnce()
   })
 })

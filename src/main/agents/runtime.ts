@@ -43,9 +43,13 @@ export type AcpProviderConfig = ACPProviderSettings
  *  plus the optional session-config setter the seam adds in loadHarnessSdk
  *  (the real ACPProvider has setModel/setMode for the legacy handshake
  *  fields; configOptions-based agents like claude-agent-acp and opencode need
- *  `session/set_config_option` instead — see applyConfigSelection). */
+ *  `session/set_config_option` instead — see applyModelSelection /
+ *  applyModeSelection). setModel/setMode are optional so fakes may omit them;
+ *  the real provider always exposes them. */
 export type AcpProvider = Pick<ACPProvider, 'languageModel' | 'tools' | 'initSession' | 'cleanup'> & {
   setConfigOption?: (args: { sessionId: string; configId: string; value: string }) => Promise<unknown>
+  setModel?: (modelId: string) => Promise<unknown>
+  setMode?: (modeId: string) => Promise<unknown>
 }
 
 /** The SDK surface the seam depends on — a narrow slice of `ai` +
@@ -208,13 +212,88 @@ function findConfigOption(session: AcpSessionResponse, category: 'model' | 'mode
   return byId
 }
 
-/** The configId to address for a category — the option's own id when the
- *  handshake advertised it, else the conventional id (resumed sessions return
- *  only `{ sessionId }`, so the id must be guessed — both live agents use the
- *  conventional `model`/`mode` ids). */
-function configIdForCategory(session: AcpSessionResponse | undefined, category: 'model' | 'mode'): string | undefined {
-  if (!session) return category
-  return findConfigOption(session, category)?.id ?? category
+/** Finds the thinking-level select (`thought_level` category — pi's
+ *  `thought_level`, codex's `reasoning_effort`): the mode-equivalent for
+ *  agents without a `mode` select. Category match wins; id match is the
+ *  fallback for agents that omit it. */
+function findThoughtLevelOption(session: AcpSessionResponse): (Record<string, unknown> & { id: string }) | undefined {
+  if (!Array.isArray(session.configOptions)) return undefined
+  let byId: (Record<string, unknown> & { id: string }) | undefined
+  for (const entry of session.configOptions as unknown[]) {
+    if (!isRecord(entry)) continue
+    const id = asString(entry.id)
+    if (!id) continue
+    const candidate = entry as Record<string, unknown> & { id: string }
+    if (entry.category === 'thought_level') return candidate
+    if ((id === 'thought_level' || id === 'reasoning_effort') && !byId) byId = candidate
+  }
+  return byId
+}
+
+/** A resolved config select: its id plus the valid values and current. */
+interface ConfigSelectInfo {
+  id: string
+  values: Set<string>
+  current?: string
+}
+
+function configSelectInfo(option: (Record<string, unknown> & { id: string }) | undefined): ConfigSelectInfo | undefined {
+  if (!option) return undefined
+  const values = new Set(flattenConfigOptions(option.options).map(o => o.value))
+  if (values.size === 0) return undefined
+  const current = typeof option.currentValue === 'string' && option.currentValue.length > 0
+    ? (option.currentValue as string)
+    : undefined
+  return { id: option.id, values, ...(current ? { current } : {}) }
+}
+
+/** The model select for a session (the `model` category only — never the
+ *  thinking level). */
+function configModelSelect(session: AcpSessionResponse | undefined): ConfigSelectInfo | undefined {
+  if (!session) return undefined
+  return configSelectInfo(findConfigOption(session, 'model'))
+}
+
+/** The mode select for a session: the `mode` select first, else the
+ *  thinking-level select (pi exposes thinking levels only there). */
+function configModeSelect(session: AcpSessionResponse | undefined): ConfigSelectInfo | undefined {
+  if (!session) return undefined
+  return configSelectInfo(findConfigOption(session, 'mode')) ?? configSelectInfo(findThoughtLevelOption(session))
+}
+
+/** Usable legacy model ids + current, or undefined when the handshake
+ *  declares no usable legacy set. */
+function legacyModelInfo(session: AcpSessionResponse | undefined): { ids: Set<string>; current?: string } | undefined {
+  if (!session || !isRecord(session.models)) return undefined
+  const available = (session.models as { availableModels?: unknown }).availableModels
+  const current = (session.models as { currentModelId?: unknown }).currentModelId
+  if (!Array.isArray(available)) return undefined
+  const ids = new Set<string>()
+  for (const entry of available) {
+    if (!isRecord(entry)) continue
+    const modelId = asString(entry.modelId)
+    if (modelId) ids.add(modelId)
+  }
+  if (ids.size === 0) return undefined
+  const currentId = typeof current === 'string' && current.length > 0 ? current : undefined
+  return { ids, ...(currentId ? { current: currentId } : {}) }
+}
+
+/** Usable legacy mode ids + current, or undefined when absent. */
+function legacyModeInfo(session: AcpSessionResponse | undefined): { ids: Set<string>; current?: string } | undefined {
+  if (!session || !isRecord(session.modes)) return undefined
+  const available = (session.modes as { availableModes?: unknown }).availableModes
+  const current = (session.modes as { currentModeId?: unknown }).currentModeId
+  if (!Array.isArray(available)) return undefined
+  const ids = new Set<string>()
+  for (const entry of available) {
+    if (!isRecord(entry)) continue
+    const id = asString(entry.id)
+    if (id) ids.add(id)
+  }
+  if (ids.size === 0) return undefined
+  const currentId = typeof current === 'string' && current.length > 0 ? current : undefined
+  return { ids, ...(currentId ? { current: currentId } : {}) }
 }
 
 /** Derives CoachSessionModels from a handshake response: legacy `models`
@@ -247,7 +326,8 @@ function modelsFromSession(session: AcpSessionResponse): CoachSessionModels | un
 }
 
 /** Derives CoachSessionModes the same way (legacy `modes`, else the
- *  `configOptions` mode select — opencode only advertises the latter). */
+ *  `configOptions` mode select — opencode only advertises the latter — else
+ *  the thinking-level select, which is pi's mode-equivalent). */
 function modesFromSession(session: AcpSessionResponse): CoachSessionModes | undefined {
   if (isRecord(session.modes)) {
     const available = (session.modes as { availableModes?: unknown }).availableModes
@@ -263,7 +343,7 @@ function modesFromSession(session: AcpSessionResponse): CoachSessionModes | unde
       if (rows.length > 0) return { availableModes: rows, currentModeId: current }
     }
   }
-  const option = findConfigOption(session, 'mode')
+  const option = findConfigOption(session, 'mode') ?? findThoughtLevelOption(session)
   if (!option || typeof option.currentValue !== 'string' || option.currentValue.length === 0) return undefined
   const rows = flattenConfigOptions(option.options).map(o => ({
     id: o.value,
@@ -274,28 +354,164 @@ function modesFromSession(session: AcpSessionResponse): CoachSessionModes | unde
   return { availableModes: rows, currentModeId: option.currentValue as string }
 }
 
-/** Applies a user's model/mode picks to a live session for configOptions-based
- *  agents (`session/set_config_option`). Legacy-only agents keep the existing
- *  `languageModel(modelId, modeId)` path — this only fires when the handshake
- *  advertised (or conventionally implies) a config select AND the provider
- *  exposes setConfigOption (the real SDK wrapper; fakes skip it harmlessly).
- *  Throws with the agent's message on failure so the run surfaces an error
- *  event instead of silently running with the wrong model. */
-async function applyConfigSelection(
+/** Applies a user's MODEL pick to a live session, routing by where the picked
+ *  value is actually valid (verified live against codex + pi):
+ *  - codex advertises bracketed legacy ids (`gpt-5.6-luna[high]`) AND base
+ *    config values (`gpt-5.6-luna`): only the legacy `unstable_setSessionModel`
+ *    accepts the bracketed ids the picker shows — a config write with one
+ *    fails with Invalid params.
+ *  - pi mirrors its model list in both shapes but only implements the config
+ *    write — the legacy call fails with "Method not found".
+ *  - opencode/claude-agent-acp advertise models only via configOptions.
+ *  Routing: a value present in the config select goes via `setConfigOption`
+ *  (config-first, since pi/opencode/claude require it); otherwise a value
+ *  present in the legacy set goes via legacy `setModel`. Each path skips when
+ *  the pick already equals that path's current (idempotent re-run). A routed
+ *  failure falls back to the other path when the value is valid there (covers
+ *  agents where both shapes overlap but only one mechanism works); a resumed
+ *  session (minimal `{ sessionId }` handshake) tries the conventional config
+ *  id first, then legacy. Throws with the agent's message when nothing
+ *  applies, so the run surfaces an error event instead of silently running
+ *  with the wrong model. Fakes exposing neither setter are skipped
+ *  harmlessly (their languageModel assertion still runs). */
+async function applyModelSelection(
   provider: AcpProvider,
   session: AcpSessionResponse | undefined,
-  sessionId: string | undefined,
-  input: { modelId?: string; modeId?: string },
+  sessionId: string,
+  modelId: string,
 ): Promise<void> {
-  if (!sessionId || !provider.setConfigOption) return
-  if (input.modelId) {
-    const configId = configIdForCategory(session, 'model')
-    if (configId) await provider.setConfigOption({ sessionId, configId, value: input.modelId })
+  const config = configModelSelect(session)
+  const legacy = legacyModelInfo(session)
+  const inConfig = config?.values.has(modelId) ?? false
+  const inLegacy = legacy?.ids.has(modelId) ?? false
+  const minimal = !config && !legacy
+
+  if (inConfig && config) {
+    if (config.current === modelId) return
+    if (!provider.setConfigOption) return
+    try {
+      await provider.setConfigOption({ sessionId, configId: config.id, value: modelId })
+      return
+    } catch (err) {
+      if (inLegacy && provider.setModel) {
+        await provider.setModel(modelId)
+        return
+      }
+      throw err
+    }
   }
-  if (input.modeId) {
-    const configId = configIdForCategory(session, 'mode')
-    if (configId) await provider.setConfigOption({ sessionId, configId, value: input.modeId })
+  if (inLegacy) {
+    if (legacy?.current === modelId) return
+    if (!provider.setModel) return
+    try {
+      await provider.setModel(modelId)
+      return
+    } catch (err) {
+      if (inConfig && config && provider.setConfigOption) {
+        await provider.setConfigOption({ sessionId, configId: config.id, value: modelId })
+        return
+      }
+      throw err
+    }
   }
+  if (minimal) {
+    if (provider.setConfigOption) {
+      try {
+        // Minimal handshake (resumed `{ sessionId }`): the id must be
+        // guessed — all live config-based agents use the conventional ids.
+        await provider.setConfigOption({ sessionId, configId: 'model', value: modelId })
+        return
+      } catch {
+        // Fall through to legacy below (resumed codex: bracketed ids are
+        // legacy-only, so the conventional config write must fail there).
+      }
+    }
+    if (provider.setModel) {
+      await provider.setModel(modelId)
+      return
+    }
+    return
+  }
+  if (provider.setModel) {
+    await provider.setModel(modelId)
+    return
+  }
+  throw new Error(`Model "${modelId}" is not available`)
+}
+
+/** Applies a user's MODE pick the same way, with the opposite preference
+ *  (verified live): pi/codex/claude all accept the legacy `setSessionMode`
+ *  for the thinking/mode ids the picker shows, while pi has NO `mode` config
+ *  select at all (only `thought_level`) — guessing configId `mode` fails with
+ *  "Unknown config option: mode". Routing: a value present in the legacy set
+ *  goes via legacy `setMode`; otherwise a value present in the mode (or
+ *  thinking-level) config select goes via `setConfigOption`. Resumed sessions
+ *  try the conventional `mode` config id, then `thought_level`, then legacy. */
+async function applyModeSelection(
+  provider: AcpProvider,
+  session: AcpSessionResponse | undefined,
+  sessionId: string,
+  modeId: string,
+): Promise<void> {
+  const config = configModeSelect(session)
+  const legacy = legacyModeInfo(session)
+  const inConfig = config?.values.has(modeId) ?? false
+  const inLegacy = legacy?.ids.has(modeId) ?? false
+  const minimal = !config && !legacy
+
+  if (inLegacy) {
+    if (legacy?.current === modeId) return
+    if (!provider.setMode) return
+    try {
+      await provider.setMode(modeId)
+      return
+    } catch (err) {
+      if (inConfig && config && provider.setConfigOption) {
+        await provider.setConfigOption({ sessionId, configId: config.id, value: modeId })
+        return
+      }
+      throw err
+    }
+  }
+  if (inConfig && config) {
+    if (config.current === modeId) return
+    if (!provider.setConfigOption) return
+    try {
+      await provider.setConfigOption({ sessionId, configId: config.id, value: modeId })
+      return
+    } catch (err) {
+      if (inLegacy && provider.setMode) {
+        await provider.setMode(modeId)
+        return
+      }
+      throw err
+    }
+  }
+  if (minimal) {
+    if (provider.setConfigOption) {
+      // Minimal handshake (resumed `{ sessionId }`): guess the conventional
+      // ids — `mode` first, then `thought_level` (pi's thinking select) —
+      // before falling back to legacy below.
+      for (const configId of ['mode', 'thought_level']) {
+        try {
+          await provider.setConfigOption({ sessionId, configId, value: modeId })
+          return
+        } catch {
+          // Try the next config id, then legacy below.
+        }
+      }
+    }
+    if (provider.setMode) {
+      await provider.setMode(modeId)
+      return
+    }
+    return
+  }
+  if (provider.setMode) {
+    await provider.setMode(modeId)
+    return
+  }
+  throw new Error(`Mode "${modeId}" is not available`)
 }
 
 /** Runs one initSession on a provider and derives the session CoachEvent
@@ -454,16 +670,20 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           }
         }
 
-        // Progressive selection for configOptions-based agents: the renderer's
-        // model/mode ids come from the handshake's own selects, but the AI SDK
-        // provider only knows the legacy `unstable_setSessionModel` /
-        // `setSessionMode` calls (claude-agent-acp rejects the former with
-        // "Method not found"). Apply the picks explicitly via
-        // `session/set_config_option` before streaming — a failure is a real
-        // error event, never a silent run with the wrong model.
+        // Progressive selection: the renderer's model/mode ids come from the
+        // handshake's own selects, but the warmed session already exists, so
+        // the AI SDK provider's automatic setModel/setMode (which only runs
+        // inside startSession when no session exists yet) never fires for
+        // this turn — apply the picks explicitly before streaming. Routing is
+        // value-aware (see applyModelSelection/applyModeSelection): codex's
+        // bracketed legacy model ids go via legacy `setModel`, pi/opencode/
+        // claude models via `set_config_option`, pi thinking modes via legacy
+        // `setMode`. A failure is a real error event, never a silent run with
+        // the wrong model.
         if ((input.modelId || input.modeId) && sessionId) {
           try {
-            await applyConfigSelection(provider, warmSessionData, sessionId, input)
+            if (input.modelId) await applyModelSelection(provider, warmSessionData, sessionId, input.modelId)
+            if (input.modeId) await applyModeSelection(provider, warmSessionData, sessionId, input.modeId)
           } catch (err) {
             yield { kind: 'error', message: err instanceof Error ? err.message : String(err) }
             return
