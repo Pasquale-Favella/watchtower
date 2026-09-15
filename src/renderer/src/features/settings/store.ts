@@ -28,6 +28,12 @@ export interface SettingsState {
    * like theme, consumed by the main process per request. */
   skillsFrequency: number
   skillsSpread: number
+  /** Coach harness API-key passthrough (opt-in, default off): when true,
+   *  Coach runs/probes inherit API-key env vars (e.g. ANTHROPIC_API_KEY) from
+   *  the app's environment instead of the main process scrubbing them — for
+   *  users whose terminal sign-in is key-based rather than stored-login. The
+   *  key itself is never stored: this flag only controls scrubbing. */
+  allowHarnessApiKeyEnv: boolean
   setTheme: (theme: Theme) => void
   setDefaultPeriod: (period: string) => void
   markOnboarded: () => void
@@ -37,6 +43,7 @@ export interface SettingsState {
   loadCurrency: () => Promise<void>
   loadCurrencyOptions: () => Promise<void>
   setSkillsThresholds: (frequency: number, spread: number) => void
+  setAllowHarnessApiKeyEnv: (allow: boolean) => void
   onCurrencyChanged: (currency: ActiveCurrency) => void
 }
 
@@ -51,10 +58,12 @@ export const useSettingsStore = create<SettingsState>()(
       currencyOptions: [],
       skillsFrequency: DEFAULT_SKILLS_THRESHOLDS.frequency,
       skillsSpread: DEFAULT_SKILLS_THRESHOLDS.spread,
+      allowHarnessApiKeyEnv: false,
       setTheme: (theme) => set({ theme }),
       setDefaultPeriod: (defaultPeriod) => set({ defaultPeriod }),
       markOnboarded: () => set({ onboarded: true }),
       setSkillsThresholds: (frequency, spread) => set({ skillsFrequency: frequency, skillsSpread: spread }),
+      setAllowHarnessApiKeyEnv: (allowHarnessApiKeyEnv) => set({ allowHarnessApiKeyEnv }),
       setCadence: async (value) => {
         // Optimistic, matching today's Settings › General handler: paint the
         // choice immediately, confirm it with the main process's persisted value.
@@ -100,6 +109,7 @@ export const useSettingsStore = create<SettingsState>()(
         onboarded: s.onboarded,
         skillsFrequency: s.skillsFrequency,
         skillsSpread: s.skillsSpread,
+        allowHarnessApiKeyEnv: s.allowHarnessApiKeyEnv,
       }),
     },
   ),

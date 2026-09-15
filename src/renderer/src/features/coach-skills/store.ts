@@ -304,7 +304,12 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     // still retried on the next open.
     if (get().modelsByKind[kind]) return
     set({ inspectingKind: kind })
-    const result = await fetchCoachInspect(kind)
+    // The probe warms a session the first run may resume — spawn it with the
+    // same API-key opt-in the run will use, or the resumed session would
+    // carry the wrong environment.
+    const allowApiKeyEnv = useSettingsStore.getState().allowHarnessApiKeyEnv
+    const inspectRequest = allowApiKeyEnv ? { kind, allowApiKeyEnv: true as const } : { kind }
+    const result = await fetchCoachInspect(inspectRequest)
     set(state => (state.inspectingKind === kind ? { inspectingKind: null } : state))
     if (!result.ok || !result.data.ok) return
     const { models, modes } = result.data
@@ -594,6 +599,10 @@ async function startRun(input: {
   setRunPending(userMessage, assistantMessage, options.replaceAssistantId)
 
   const sessionId = input.resume ? s.sessionId : undefined
+  // API-key passthrough opt-in (persisted Coach setting): lets key-based
+  // terminal sign-ins work inside harness runs. Sent per run (never stored
+  // with the conversation) so toggling applies immediately.
+  const allowApiKeyEnv = useSettingsStore.getState().allowHarnessApiKeyEnv
   const result = await fetchCoachRun({
     harnessKind: s.harnessKind,
     // The conversation's UI-scope snapshot (map 53): no longer baked into the
@@ -606,6 +615,7 @@ async function startRun(input: {
     ...(s.sessionModels ? { modelId: s.modelId ?? undefined } : {}),
     ...(s.sessionModes ? { modeId: s.modeId ?? undefined } : {}),
     ...(sessionId ? { sessionId } : {}),
+    ...(allowApiKeyEnv ? { allowApiKeyEnv: true as const } : {}),
   })
   if (!result.ok) {
     setRunFailed(result.error)

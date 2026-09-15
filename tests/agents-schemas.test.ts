@@ -4,6 +4,7 @@ import {
   coachEventEnvelopeSchema,
   coachEventSchema,
   coachHarnessRowSchema,
+  coachInspectRequestSchema,
   coachInspectResultSchema,
   coachRunRequestSchema,
   coachRunResultSchema,
@@ -118,6 +119,24 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     })
     expect(withEvidence.success).toBe(true)
     if (withEvidence.success) expect('evidence' in withEvidence.data).toBe(false)
+  })
+
+  it('parses the API-key passthrough opt-in on the run request (absent = stored-login default)', () => {
+    expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', allowApiKeyEnv: true }).success).toBe(true)
+    const without = coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p' })
+    expect(without.success).toBe(true)
+    if (without.success) expect('allowApiKeyEnv' in without.data).toBe(false)
+    expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', allowApiKeyEnv: 'yes' }).success).toBe(false)
+  })
+
+  it('parses the inspect request as a bare key or key-plus-passthrough', () => {
+    expect(coachInspectRequestSchema.safeParse('claude').success).toBe(true)
+    expect(coachInspectRequestSchema.safeParse({ kind: 'claude' }).success).toBe(true)
+    expect(coachInspectRequestSchema.safeParse({ kind: 'claude', allowApiKeyEnv: true }).success).toBe(true)
+    expect(coachInspectRequestSchema.safeParse('').success).toBe(false)
+    expect(coachInspectRequestSchema.safeParse({ kind: '' }).success).toBe(false)
+    expect(coachInspectRequestSchema.safeParse({ kind: 'claude', allowApiKeyEnv: 'yes' }).success).toBe(false)
+    expect(coachInspectRequestSchema.safeParse(42).success).toBe(false)
   })
 
   it('parses both ack arms of the run result', () => {

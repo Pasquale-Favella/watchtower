@@ -301,6 +301,49 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect(run).toHaveBeenCalledWith(expect.not.objectContaining({ modelId: expect.anything(), modeId: expect.anything() }))
   })
 
+  it('forwards the API-key passthrough opt-in into the runtime run input', async () => {
+    const run = vi.fn(async function* () { /* no-op */ })
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+
+    await runner.start({ ...request, allowApiKeyEnv: true }, () => {})
+
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ allowApiKeyEnv: true }))
+  })
+
+  it('omits allowApiKeyEnv from the run input when the request has none (stored-login default)', async () => {
+    const run = vi.fn(async function* () { /* no-op */ })
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+
+    await runner.start(request, () => {})
+
+    expect(run).toHaveBeenCalledWith(expect.not.objectContaining({ allowApiKeyEnv: expect.anything() }))
+  })
+
+  it('does not resume a probe-warmed session under a different API-key opt-in', async () => {
+    const run = vi.fn(async function* () { /* no-op */ })
+    const inspect = vi.fn(async () => ({ sessionId: 'sess_warm' }))
+    const runner = makeRunner({ run, inspect } as unknown as HarnessRuntime)
+
+    // Probe warms a session WITHOUT the opt-in …
+    await runner.inspect('claude')
+    // … then the first run opts in: resuming would silently carry the wrong
+    // environment, so the run must start fresh.
+    await runner.start({ ...request, allowApiKeyEnv: true }, () => {})
+
+    expect(run).toHaveBeenCalledWith(expect.not.objectContaining({ sessionId: expect.anything() }))
+  })
+
+  it('resumes a probe-warmed session when the API-key opt-in matches', async () => {
+    const run = vi.fn(async function* () { /* no-op */ })
+    const inspect = vi.fn(async () => ({ sessionId: 'sess_warm' }))
+    const runner = makeRunner({ run, inspect } as unknown as HarnessRuntime)
+
+    await runner.inspect({ kind: 'claude', allowApiKeyEnv: true })
+    await runner.start({ ...request, allowApiKeyEnv: true }, () => {})
+
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'sess_warm' }))
+  })
+
   it('rejects a malformed request against the frozen wire schema', async () => {
     const run = vi.fn(async function* () { /* no-op */ })
     const runner = makeRunner({ run } as unknown as HarnessRuntime)
@@ -371,6 +414,26 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
     })
     expect(inspect).toHaveBeenCalledWith(expect.objectContaining({ harness: harnesses[0] }))
     expect(inspect.mock.calls[0]?.[0]).toHaveProperty('workspacePath')
+  })
+
+  it('accepts the object inspect request and forwards the env flag to the probe', async () => {
+    const inspect = vi.fn(async () => ({}))
+    const runner = makeRunner({ run: vi.fn(async function* () { /* no-op */ }), inspect } as unknown as HarnessRuntime)
+
+    const result = await runner.inspect({ kind: 'claude', allowApiKeyEnv: true })
+
+    expect(result).toEqual({ ok: true })
+    expect(inspect).toHaveBeenCalledWith(expect.objectContaining({ allowApiKeyEnv: true }))
+  })
+
+  it('rejects a malformed inspect request without spawning', async () => {
+    const inspect = vi.fn()
+    const runner = makeRunner({ run: vi.fn(async function* () { /* no-op */ }), inspect } as unknown as HarnessRuntime)
+
+    const result = await runner.inspect({ kind: '' })
+
+    expect(result).toEqual({ ok: false, error: 'invalid coach inspect request' })
+    expect(inspect).not.toHaveBeenCalled()
   })
 
   it('probes in the conversation workspace (a real dir under the OS temp dir)', async () => {

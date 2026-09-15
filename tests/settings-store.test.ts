@@ -41,6 +41,7 @@ describe('useSettingsStore (ADR 0011)', () => {
     expect(s.cadence).toBe('1m')
     expect(s.activeCurrency).toEqual({ code: 'USD', symbol: '$', rate: 1 })
     expect(s.currencyOptions).toEqual([])
+    expect(s.allowHarnessApiKeyEnv).toBe(false)
   })
 
   it('persists only the partialized slice under one key', () => {
@@ -53,7 +54,15 @@ describe('useSettingsStore (ADR 0011)', () => {
       onboarded: true,
       skillsFrequency: 5,
       skillsSpread: 2,
+      allowHarnessApiKeyEnv: false,
     })
+  })
+
+  it('setAllowHarnessApiKeyEnv toggles the persisted passthrough opt-in', () => {
+    useSettingsStore.getState().setAllowHarnessApiKeyEnv(true)
+    expect(useSettingsStore.getState().allowHarnessApiKeyEnv).toBe(true)
+    const persisted = JSON.parse(memory.getItem(PERSIST_KEY)!)
+    expect(persisted.state.allowHarnessApiKeyEnv).toBe(true)
   })
 
   it('setTheme and markOnboarded update state', () => {

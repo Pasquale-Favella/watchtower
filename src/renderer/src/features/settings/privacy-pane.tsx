@@ -64,7 +64,7 @@ export function PrivacyPane() {
           <KeyRound className="mt-0.5 size-4 shrink-0 text-brand-text" />
           <div>
             <p className="text-[12.5px] font-medium text-foreground">No API keys</p>
-            <p className="text-[11px] text-muted-foreground">Usage is detected from local files; no provider API keys are required.</p>
+            <p className="text-[11px] text-muted-foreground">Usage is detected from local files; no provider API keys are required. Coach runs use each harness&apos;s own sign-in — an opt-in toggle in Coach can pass environment keys through instead.</p>
           </div>
         </div>
       </Card>
