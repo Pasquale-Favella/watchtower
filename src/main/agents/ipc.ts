@@ -436,9 +436,10 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
 
 /** The main-side dismissal write (ticket 25), wired to the ledger so the
  *  not-a-skill signal persists. The skills:view handler reads the ledger
- *  directly (index.ts owns that read); this source only carries the write. */
+ *  directly (the db-worker owns that read); this source only carries the
+ *  write — async, because the ledger lives on the worker thread. */
 export interface SkillsDismissalSource {
-  dismiss: (source: SkillsDismissal['source'], name: string, reason: string) => void
+  dismiss: (source: SkillsDismissal['source'], name: string, reason: string) => void | Promise<void>
 }
 
 export interface AgentsIpcSources {
@@ -529,10 +530,10 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
   // this module owns the harness-touching wire — skill prose runs through
   // coach:run's single coach mode (ADR 0017 reshaped), so no separate prose
   // channel exists here.
-  ipcMain.handle('skills:dismiss', (_event, request: unknown): SkillsDismissalResult => {
+  ipcMain.handle('skills:dismiss', async (_event, request: unknown): Promise<SkillsDismissalResult> => {
     const parsed = skillsDismissalRequestSchema.safeParse(request)
     if (!parsed.success) return { ok: false, error: 'invalid dismissal request' }
-    dismissals.dismiss(parsed.data.source, parsed.data.name, parsed.data.reason)
+    await dismissals.dismiss(parsed.data.source, parsed.data.name, parsed.data.reason)
     return { ok: true }
   })
 

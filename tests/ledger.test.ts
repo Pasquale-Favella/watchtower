@@ -315,6 +315,32 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.close()
   })
 
+  it('clear() still deletes when the reclaim step fails (locked VACUUM)', () => {
+    const store = makeStore()
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    expect(store.getSources()).toHaveLength(1)
+
+    // Force the best-effort reclaim path: a VACUUM that cannot take its
+    // exclusive lock (transient file lock, I/O error) must not fail the
+    // clear — the DELETEs are already committed.
+    const db = (store as unknown as { db: { exec: (sql: string) => void } }).db
+    const realExec = db.exec.bind(db)
+    db.exec = (sql: string): void => {
+      if (/VACUUM/.test(sql)) throw new Error('SQLITE_LOCKED: database table is locked')
+      realExec(sql)
+    }
+    try {
+      store.clear()
+    } finally {
+      db.exec = realExec
+    }
+
+    expect(store.getSources()).toEqual([])
+    expect(store.getCalls()).toEqual([])
+
+    store.close()
+  })
+
   it('repoUrl is captured per source at port-in and read back without a rescan', () => {
     const store = makeStore()
     store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })

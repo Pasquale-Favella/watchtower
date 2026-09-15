@@ -546,7 +546,12 @@ export class LedgerStore {
    * (freed pages stay in the freelist and the WAL keeps them), so the
    * Settings › Privacy & data sizes would look untouched after a clear —
    * VACUUM reclaims the pages and the checkpoint truncates the WAL, in this
-   * order, so `statSync`-based sizes drop while the connection stays open. */
+   * order, so `statSync`-based sizes drop while the connection stays open.
+   * The reclaim is best-effort: it needs a lock state VACUUM can take
+   * exclusively, and transient states (a file lock held by a scanner, an I/O
+   * error) must never fail the clear — the DELETEs above are already
+   * committed, so the data is gone regardless and only the size display lags
+   * until the next successful reclaim. */
   clear(): void {
     this.db.exec(`
       DELETE FROM ledger_call;
@@ -554,8 +559,12 @@ export class LedgerStore {
       DELETE FROM ledger_session;
       DELETE FROM ledger_source;
     `)
-    this.db.exec(`VACUUM;`)
-    this.db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`)
+    try {
+      this.db.exec(`VACUUM;`)
+      this.db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`)
+    } catch {
+      // Best-effort reclaim (see above): never fail the clear for it.
+    }
   }
 
   close(): void {
