@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -283,6 +283,34 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     expect(store.getSessions()).toEqual([])
     expect(store.getTurns()).toEqual([])
     expect(store.getCalls()).toEqual([])
+
+    store.close()
+  })
+
+  it('clear() reclaims disk space, so the Settings sizes visibly drop', () => {
+    const store = makeStore()
+    for (let i = 0; i < 200; i++) {
+      store.portIn({
+        ...baseInput,
+        filePath: `/Users/demo/.local/share/opencode/demo-project/sess-${i}.jsonl`,
+        verdict: 'new',
+        cachedFile: buildFixtureCachedFile(),
+      })
+    }
+    expect(store.getSources()).toHaveLength(200)
+    const before = statSync(store.dbPath).size
+
+    store.clear()
+
+    expect(store.getSources()).toEqual([])
+    // Without VACUUM + WAL checkpoint the file keeps its freelist pages and
+    // statSync reports the same size — the Privacy & data pane then looks
+    // untouched after a clear.
+    expect(statSync(store.dbPath).size).toBeLessThan(before)
+
+    // The store stays usable after the reclaim.
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    expect(store.getSources()).toHaveLength(1)
 
     store.close()
   })

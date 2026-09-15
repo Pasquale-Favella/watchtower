@@ -542,7 +542,11 @@ export class LedgerStore {
   }
 
   /** Clears all scan-derived ledger data. Config tables are user settings and
-   * are left untouched. */
+   * are left untouched. A bare DELETE would leave the file size unchanged
+   * (freed pages stay in the freelist and the WAL keeps them), so the
+   * Settings › Privacy & data sizes would look untouched after a clear —
+   * VACUUM reclaims the pages and the checkpoint truncates the WAL, in this
+   * order, so `statSync`-based sizes drop while the connection stays open. */
   clear(): void {
     this.db.exec(`
       DELETE FROM ledger_call;
@@ -550,6 +554,8 @@ export class LedgerStore {
       DELETE FROM ledger_session;
       DELETE FROM ledger_source;
     `)
+    this.db.exec(`VACUUM;`)
+    this.db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`)
   }
 
   close(): void {

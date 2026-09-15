@@ -7,8 +7,7 @@ import { Button } from '@/shared/components/ui/button'
 import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
 import { formatBytes } from '@/features/settings/lib'
 import { fetchClearData, fetchSettings } from '@/shared/lib/api'
-import { useScanStore } from '@/app/stores/scan-store'
-import { useSettingsStore } from '@/features/settings/store'
+import { subscribeToRefresh, useScanStore } from '@/app/stores/scan-store'
 import type { SettingsInfo } from '@/features/settings/settings-types'
 
 /** Settings › Privacy & data: the local-only/no-API-keys claims, the SQLite
@@ -28,6 +27,11 @@ export function PrivacyPane() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // A clear triggers a rescan, so re-read the on-disk sizes whenever a scan
+  // (or config change) settles — otherwise the pane keeps showing the
+  // post-clear payload while the store refills underneath it.
+  useEffect(() => subscribeToRefresh(() => { void load() }), [load])
 
   const clear = async (): Promise<void> => {
     setClearError(null)
