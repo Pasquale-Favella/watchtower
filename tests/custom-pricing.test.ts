@@ -152,6 +152,44 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
     expect(weird.costUSD).toBeCloseTo(0.0105, 4)
     expect(weird.costUSD).toBeGreaterThan(0)
 
+    // A Price override on the effective model wins in Compare too, while raw
+    // row identity is preserved: 1000 in @ $6/M + 500 out @ $30/M.
+    store.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 6, outputPricePerMillion: 30 })
+    const repriced = buildCompareViewFromLedger(store, { period: 'lifetime' }, undefined, NOW)
+    const weirdRepriced = repriced.models.find(m => m.model === 'weird-model')!
+    expect(weirdRepriced.costUSD).toBeCloseTo(0.021, 9)
+
+    store.close()
+  })
+
+  it('changing the Alias target reprices every Section to the new target', () => {
+    const store = makeStore()
+    port(store, [
+      { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' },
+    ])
+    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
+    const first = buildSessionSummaries(store, { range: FULL_RANGE })[0]!
+    expect(first.turns[0]!.assistantCalls[0]!.model).toBe('claude-sonnet-4-6')
+
+    store.setModelAlias('weird-model', 'claude-opus-4')
+    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    expect(summaries[0]!.turns[0]!.assistantCalls[0]!.model).toBe('claude-opus-4')
+    expect(summaries[0]!.turns[0]!.assistantCalls[0]!.rawModel).toBe('weird-model')
+    const key = Object.keys(summaries[0]!.modelBreakdown)[0]!
+    expect(summaries[0]!.modelBreakdown[key]!.sourceModels).toEqual(['weird-model'])
+
+    const overview = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
+    expect(overview.kpis.cost).toBeCloseTo(summaries[0]!.totalCostUSD, 9)
+
+    const models = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
+      aliases: store.getModelAliases(),
+      overrides: store.getPriceOverrides(),
+    }, NOW)
+    expect(models.byModel[0]!.model).toBe('claude-opus-4')
+    expect(models.byModel[0]!.sourceModels).toEqual(['weird-model'])
+    expect(models.audit[0]!.model).toBe('weird-model')
+    expect(models.audit[0]!.aliasOf).toBe('claude-opus-4')
+
     store.close()
   })
 
