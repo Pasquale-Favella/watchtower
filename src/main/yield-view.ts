@@ -372,10 +372,10 @@ export async function buildYieldPayload(
 /**
  * Ledger-backed Yield payload (map 07): the aggregation seam applies the
  * scope's range/provider at the SQL read and groups through
- * `groupSummariesIntoProjects` (whose `projectPath` degrades to the project
- * label, so the git-backed categorization reads abandoned/ambiguous for
- * sessions without a working directory) before the same `buildYieldPayload`
- * core.
+ * `groupSummariesIntoProjects` (whose `projectPath` is the canonical checkout
+ * path, so the git-backed categorization reads the real tree; orphan-bucket
+ * sessions without any path read abandoned/ambiguous) before the same
+ * `buildYieldPayload` core.
  */
 export async function buildYieldViewFromLedger(
   store: LedgerStore,

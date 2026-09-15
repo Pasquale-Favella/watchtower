@@ -50,10 +50,6 @@ import type {
 import { classifyTurn, BASH_TOOLS, EDIT_TOOLS } from './classifier.js'
 import { extractBashCommands } from './bash-utils.js'
 
-function unsanitizePath(dirName: string): string {
-  return dirName.replace(/-/g, '/')
-}
-
 // ── Delta seam (map T3): per-file port-in events ─────────────────────────
 
 export type {
@@ -93,21 +89,60 @@ function warnProviderPortFailure(providerName: string, sourcePath: string): void
 }
 
 
-function claudeSlugFallbackPath(dirName: string): string {
+// ── Canonical project identity seam (#103): one checkout, one grouping key,
+// whatever the provider's spelling. Pure and lexical only — no filesystem
+// access, so worktree folding stays at the existing async call sites and the
+// key derivation itself needs no mocks.
+//
+// Whether a path is absolute is always judged on the CURRENT platform: a
+// foreign-format path (a Windows checkout recorded on a machine that now runs
+// macOS, or vice versa) can never be walked here and passes through untouched.
+export function isAbsoluteProjectPath(projectPath: string): boolean {
+  const trimmed = projectPath.trim()
+  return process.platform === 'win32' ? /^[a-zA-Z]:[/\\]/.test(trimmed) : trimmed.startsWith('/')
+}
+export function claudeSlugFallbackPath(dirName: string): string {
   // Claude project directory names are lossy: a dash may be either a path
   // separator from the original cwd or a literal dash in the leaf name.
   // Without cwd metadata, keep the slug intact instead of inventing segments.
   return dirName
 }
 
-function normalizeProjectPathKey(projectPath: string): string {
-  const normalized = projectPath.trim().replace(/\\/g, '/')
-  return (normalized.replace(/\/+$/, '') || normalized).toLowerCase()
+export function normalizeProjectPathKey(projectPath: string): string {
+  const trimmed = projectPath.trim()
+  // Foreign-format guard (mirrors resolveCanonicalProjectPath): a path that
+  // is not absolute on the current platform passes through untouched — the
+  // key derivation must never reinterpret another platform's spelling.
+  if (!isAbsoluteProjectPath(trimmed)) return projectPath
+  const normalized = trimmed.replace(/\\/g, '/')
+  const stripped = normalized.replace(/\/+$/, '')
+  // A stripped remainder of '' means the input was all slashes (a root):
+  // keep the root instead of collapsing to the empty string.
+  return (stripped || (normalized.startsWith('/') ? '/' : normalized)).toLowerCase()
 }
 
-function projectNameFromPath(projectPath: string, fallback: string): string {
+export function projectNameFromPath(projectPath: string, fallback: string): string {
   const normalized = projectPath.trim().replace(/\\/g, '/').replace(/\/+$/, '')
   return normalized.split('/').filter(Boolean).pop() ?? fallback
+}
+
+/** Derive the grouping key for one session. Precedence: the worktree-folded
+ * canonical checkout first (callers canonicalize linked worktrees beforehand
+ * via resolveCanonicalProjectPath), then the canonical path, then the exact
+ * working directory — falling back to an explicit per-provider orphan bucket
+ * when no directory is known. Never the empty string, never a session id,
+ * never a cross-provider 'unknown'. The display label is derived separately
+ * via projectNameFromPath so the key stays lowercase while display keeps its
+ * original case. */
+export function deriveCanonicalProjectKey(
+  projectPath: string | null | undefined,
+  workingDirectory: string | null | undefined,
+  provider: string,
+  canonicalCwd?: string | null,
+): string {
+  const canonical = (canonicalCwd ?? projectPath ?? workingDirectory ?? '').trim()
+  if (!canonical) return `orphan:${provider}`
+  return normalizeProjectPathKey(canonical)
 }
 
 
@@ -145,10 +180,7 @@ async function resolveCanonicalProjectPath(cwd: string): Promise<{ path: string;
   // that now runs macOS): only walk paths that look like absolute paths on the
   // current platform. A relative or foreign-format path cannot be walked on
   // the current filesystem without risking false positives.
-  const isAbsoluteOnCurrentPlatform = process.platform === 'win32'
-    ? /^[a-zA-Z]:[/\\]/.test(trimmed)
-    : trimmed.startsWith('/')
-  if (!isAbsoluteOnCurrentPlatform) return { path: cwd, isWorktree: false }
+  if (!isAbsoluteProjectPath(trimmed)) return { path: cwd, isWorktree: false }
 
   let dir = trimmed
   while (true) {
@@ -3437,7 +3469,7 @@ async function parseProviderSources(
 
   const projects: ProjectSummary[] = []
   for (const [dirName, { projectPath, sessions }] of projectMap) {
-    projects.push(summarizeProject(dirName, projectPath ?? unsanitizePath(dirName), sessions))
+    projects.push(summarizeProject(dirName, projectPath ?? claudeSlugFallbackPath(dirName), sessions))
   }
 
   return projects

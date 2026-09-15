@@ -564,7 +564,7 @@ let userProxyPaths: string[] = []
 /// (Windows configs / cwds), strip leading AND trailing slashes, fold case on
 /// case-insensitive filesystems. Leading slashes are stripped because provider
 /// project paths arrive in two forms — Claude keeps the absolute "/Users/x"
-/// while Codex (sanitizeProject) and the unsanitizePath fallback drop the
+/// while Codex (sanitizeProject) and the slug fallback drop the
 /// leading slash to "Users/x". Folding both to a slashless form (mirroring
 /// crossProviderKey) makes matching agnostic to which provider produced the
 /// path, so the same directory is flagged whether or not a Claude session

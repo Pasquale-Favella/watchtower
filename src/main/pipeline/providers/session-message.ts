@@ -81,6 +81,9 @@ export function buildAssistantCall(opts: {
   parts: PartData[]
   timeCreatedMs: number
   userMessage: string
+  /// Exact session directory when the store records one (drives the
+  /// canonical project identity; copilot/codex carry the same pair).
+  directory?: string
 }): ParsedProviderCall | null {
   const { data, parts } = opts
 
@@ -196,5 +199,6 @@ export function buildAssistantCall(opts: {
     userMessage: opts.userMessage,
     ...(assistantText ? { assistantText } : {}),
     sessionId: opts.sessionId,
+    ...(opts.directory ? { projectPath: opts.directory, workingDirectory: opts.directory } : {}),
   }
 }

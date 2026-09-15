@@ -43,6 +43,10 @@ function oldPathSummaries(cachedFile: ReturnType<typeof buildFixtureCachedFile>)
     return cachedTurnToClassified(turn, carriedBranch)
   })
   const summary = buildSessionSummary('sess-0', project, turns, cachedFile.mcpInventory)
+  // Canonical identity (#102): the fixture carries canonicalCwd
+  // '/workspace/demo-project', so the seam derives this key, path and display.
+  summary.projectKey = '/workspace/demo-project'
+  summary.projectPath = '/workspace/demo-project'
   const explicitLinks = new Set(turns.flatMap(turn => turn.prRefs ?? []))
   for (const link of cachedFile.prLinks ?? []) explicitLinks.add(link)
   if (explicitLinks.size) summary.prLinks = [...explicitLinks].sort()

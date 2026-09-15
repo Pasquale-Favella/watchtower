@@ -273,12 +273,16 @@ function yieldCachedFile(index: number, opts: {
     timestamp: opts.iso,
     calls: [call],
   })
-  return buildFixtureCachedFile({
+  const file = buildFixtureCachedFile({
     canonicalProjectName: opts.project ?? 'app',
     title: '',
     turns: [turn],
     ...(opts.workingDirectory ? { workingDirectory: opts.workingDirectory } : {}),
   })
+  // The shared fixture defaults to a Claude-style canonicalCwd that would
+  // shadow the working directory under test; these fixtures never set one.
+  delete (file as { canonicalCwd?: string }).canonicalCwd
+  return file
 }
 
 function yieldPort(store: LedgerStore, files: CachedFile[]): void {

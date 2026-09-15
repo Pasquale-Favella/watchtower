@@ -64,6 +64,22 @@ function tryQuerySessionTokens(db: SqliteDatabase, sessionId: string): {
   }
 }
 
+/// Exact session directory for the canonical project identity. Older vendor
+/// schemas have no `directory` column — then this yields undefined and the
+/// session flows to the orphan bucket instead of aborting the whole parse
+/// (same degradation shape as tryQuerySessionTokens above).
+function tryQuerySessionDir(db: SqliteDatabase, sessionId: string): string | undefined {
+  try {
+    const rows = db.query<{ directory: Uint8Array | string }>(
+      'SELECT CAST(directory AS BLOB) AS directory FROM session WHERE id = ?',
+      [sessionId],
+    )
+    return blobToText(rows[0]?.directory) || undefined
+  } catch {
+    return undefined
+  }
+}
+
 type SchemaCheckResult = { ok: true } | { ok: false; missing: string[] }
 
 function validateSchemaDetailed(db: SqliteDatabase): SchemaCheckResult {
@@ -131,6 +147,10 @@ export function createSqliteSessionParser(
           warnUnrecognizedSchemaOnce(config.displayName, schema.missing)
           return
         }
+
+        // Exact session directory for the canonical project identity. The
+        // discovery label is a lossy slug; this is the real checkout path.
+        const sessionDir = tryQuerySessionDir(db, sessionId)
 
         const messages = db.query<MessageRow>(
           `WITH RECURSIVE session_tree(id) AS (
@@ -217,6 +237,7 @@ export function createSqliteSessionParser(
             parts: partsByMsg.get(msg.id) ?? [],
             timeCreatedMs: msg.time_created,
             userMessage: currentUserMessageBySession.get(msg.session_id) ?? '',
+            ...(sessionDir ? { directory: sessionDir } : {}),
           })
           if (!call) continue
 
@@ -252,6 +273,7 @@ export function createSqliteSessionParser(
                 deduplicationKey: dedupKey,
                 userMessage: '',
                 sessionId,
+                ...(sessionDir ? { projectPath: sessionDir, workingDirectory: sessionDir } : {}),
               }
               yieldCount++
             }
@@ -313,6 +335,7 @@ export async function discoverSqliteSessions(
           path: `${dbPath}:${row.id}`,
           project: dir ? sanitize(dir) : sanitize(title),
           provider: config.providerName,
+          ...(dir ? { workingDirectory: dir } : {}),
         })
       }
     } catch {
