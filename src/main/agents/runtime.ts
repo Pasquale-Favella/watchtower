@@ -72,6 +72,12 @@ export interface HarnessProviderInput {
   workspacePath: string
   /** Resume handle from a previous run's session event. */
   sessionId?: string
+  /** Opt-in API-key passthrough: when true the harness's API-key env vars
+   *  (e.g. ANTHROPIC_API_KEY) are NOT scrubbed before spawn, so the agent
+   *  authenticates the same way the user's terminal does. Default
+   *  (absent/false) keeps the ADR 0012 stored-login behaviour. The key itself
+   *  is never passed explicitly — it is simply left in the inherited env. */
+  allowApiKeyEnv?: boolean
   /** Extra MCP servers to attach to the agent session (the injected in-app
    *  ledger server — map 53). Merged AFTER the spec's own servers. */
   mcpServers?: AcpMcpServer[]
@@ -261,6 +267,14 @@ function configModeSelect(session: AcpSessionResponse | undefined): ConfigSelect
   return configSelectInfo(findConfigOption(session, 'mode')) ?? configSelectInfo(findThoughtLevelOption(session))
 }
 
+/** The thinking-level select for a session (pi's `thought_level`, codex's
+ *  `reasoning_effort`) — the write target for a bracketed model id's effort
+ *  suffix. Distinct from configModeSelect, which prefers the `mode` select. */
+function configThinkingSelect(session: AcpSessionResponse | undefined): ConfigSelectInfo | undefined {
+  if (!session) return undefined
+  return configSelectInfo(findThoughtLevelOption(session))
+}
+
 /** Usable legacy model ids + current, or undefined when the handshake
  *  declares no usable legacy set. */
 function legacyModelInfo(session: AcpSessionResponse | undefined): { ids: Set<string>; current?: string } | undefined {
@@ -354,6 +368,16 @@ function modesFromSession(session: AcpSessionResponse): CoachSessionModes | unde
   return { availableModes: rows, currentModeId: option.currentValue as string }
 }
 
+/** Splits a legacy codex-style bracketed model id (`gpt-5.6-luna[low]`) into
+ *  base + suffix. Codex changed its advertised catalog between versions
+ *  (bracketed legacy ids vs base names); a pick cached from the old catalog
+ *  must still resolve against the new one. Null when no bracket suffix. */
+function splitBracketedModelId(modelId: string): { base: string; suffix: string } | null {
+  const match = /^(.*)\[([^\]]+)\]$/.exec(modelId)
+  if (!match || !match[1]) return null
+  return { base: match[1], suffix: match[2] ?? '' }
+}
+
 /** Applies a user's MODEL pick to a live session, routing by where the picked
  *  value is actually valid (verified live against codex + pi):
  *  - codex advertises bracketed legacy ids (`gpt-5.6-luna[high]`) AND base
@@ -373,68 +397,154 @@ function modesFromSession(session: AcpSessionResponse): CoachSessionModes | unde
  *  id first, then legacy. Throws with the agent's message when nothing
  *  applies, so the run surfaces an error event instead of silently running
  *  with the wrong model. Fakes exposing neither setter are skipped
- *  harmlessly (their languageModel assertion still runs). */
+ *  harmlessly (their languageModel assertion still runs).
+ *
+ *  Backward compat: a bracketed pick cached from an older codex catalog
+ *  (`gpt-5.6-luna[low]`) resolves to its base (`gpt-5.6-luna`) when the exact
+ *  id is unknown but the base is advertised — the suffix encoded a thinking
+ *  level from the old catalog shape, and failing the whole run on a stale
+ *  restored pick is worse than running the base model.
+ *
+ *  Bracketed codex picks with a model config present are DECOMPOSED, never
+ *  routed as-is: provider.setModel validates any id against the base-name
+ *  config values and throws before reaching the legacy RPC, so `base[effort]`
+ *  is applied as setConfigOption(model, base) + setConfigOption(thinking,
+ *  effort). An unknown effort suffix (or no thinking select) degrades to the
+ *  base model rather than failing the run.
+ *
+ *  Returns the id `languageModel` must be constructed with: the applied
+ *  (possibly base-normalized) id, so the provider never validates a stale raw
+ *  id after a successful apply. Anthropic/Claude ids never carry a bracket
+ *  suffix, so that path always returns the pick untouched. */
 async function applyModelSelection(
   provider: AcpProvider,
   session: AcpSessionResponse | undefined,
   sessionId: string,
   modelId: string,
-): Promise<void> {
+): Promise<string> {
   const config = configModelSelect(session)
   const legacy = legacyModelInfo(session)
-  const inConfig = config?.values.has(modelId) ?? false
-  const inLegacy = legacy?.ids.has(modelId) ?? false
+  const split = splitBracketedModelId(modelId)
+  // Normalize a stale bracketed pick to its advertised base before routing.
+  let effectiveId = modelId
+  if (
+    split &&
+    !(config?.values.has(modelId) ?? false) &&
+    !(legacy?.ids.has(modelId) ?? false) &&
+    ((config?.values.has(split.base) ?? false) || (legacy?.ids.has(split.base) ?? false))
+  ) {
+    effectiveId = split.base
+  }
+  const inConfig = config?.values.has(effectiveId) ?? false
+  const inLegacy = legacy?.ids.has(effectiveId) ?? false
   const minimal = !config && !legacy
 
+  // Bracketed codex pick with a model config present (`gpt-5.6-luna[low]`
+  // against base-name config values): routing the bracketed id anywhere
+  // fails — provider.setModel validates it against the config values and
+  // throws before any legacy RPC. Decompose into base model + thinking-level
+  // effort, each written only when it differs from current (idempotent).
+  if (split && config && !config.values.has(modelId) && config.values.has(split.base)) {
+    const thinking = configThinkingSelect(session)
+    if (config.current !== split.base) {
+      if (!provider.setConfigOption) return split.base
+      await provider.setConfigOption({ sessionId, configId: config.id, value: split.base })
+    }
+    if (thinking && thinking.values.has(split.suffix) && thinking.current !== split.suffix) {
+      if (!provider.setConfigOption) return split.base
+      await provider.setConfigOption({ sessionId, configId: thinking.id, value: split.suffix })
+    }
+    return split.base
+  }
+
   if (inConfig && config) {
-    if (config.current === modelId) return
-    if (!provider.setConfigOption) return
+    if (config.current === effectiveId) return effectiveId
+    if (!provider.setConfigOption) return effectiveId
     try {
-      await provider.setConfigOption({ sessionId, configId: config.id, value: modelId })
-      return
+      await provider.setConfigOption({ sessionId, configId: config.id, value: effectiveId })
+      return effectiveId
     } catch (err) {
       if (inLegacy && provider.setModel) {
-        await provider.setModel(modelId)
-        return
+        await provider.setModel(effectiveId)
+        return effectiveId
       }
       throw err
     }
   }
   if (inLegacy) {
-    if (legacy?.current === modelId) return
-    if (!provider.setModel) return
+    if (legacy?.current === effectiveId) return effectiveId
+    if (!provider.setModel) return effectiveId
     try {
-      await provider.setModel(modelId)
-      return
+      await provider.setModel(effectiveId)
+      return effectiveId
     } catch (err) {
       if (inConfig && config && provider.setConfigOption) {
-        await provider.setConfigOption({ sessionId, configId: config.id, value: modelId })
-        return
+        await provider.setConfigOption({ sessionId, configId: config.id, value: effectiveId })
+        return effectiveId
       }
       throw err
     }
   }
   if (minimal) {
+    // Resumed sessions carry no catalog. Try the exact pick in PR #69 order
+    // first (config, then legacy — a bracketed codex id must reach legacy
+    // setModel, never the config path with its base, or the effort suffix is
+    // silently lost); only a stale bracketed pick that fails everywhere falls
+    // back to its base.
+    const base = split && split.base !== modelId ? split.base : null
     if (provider.setConfigOption) {
       try {
         // Minimal handshake (resumed `{ sessionId }`): the id must be
         // guessed — all live config-based agents use the conventional ids.
         await provider.setConfigOption({ sessionId, configId: 'model', value: modelId })
-        return
+        return modelId
       } catch {
         // Fall through to legacy below (resumed codex: bracketed ids are
         // legacy-only, so the conventional config write must fail there).
       }
     }
     if (provider.setModel) {
-      await provider.setModel(modelId)
-      return
+      try {
+        await provider.setModel(modelId)
+        return modelId
+      } catch (err) {
+        if (!base) throw err
+        // Stale bracketed pick against a base-only catalog — retry its base.
+      }
+    } else if (!base) {
+      return modelId
     }
-    return
+    if (base) {
+      if (provider.setConfigOption) {
+        try {
+          await provider.setConfigOption({ sessionId, configId: 'model', value: base })
+          return base
+        } catch (err) {
+          if (!provider.setModel) throw err
+        }
+      }
+      if (provider.setModel) {
+        await provider.setModel(base)
+        return base
+      }
+      return modelId
+    }
+    return modelId
   }
   if (provider.setModel) {
-    await provider.setModel(modelId)
-    return
+    try {
+      await provider.setModel(effectiveId)
+      return effectiveId
+    } catch (err) {
+      // Last resort already tried the normalized form — retry the alternate
+      // bracket form once before surfacing the agent's error.
+      const alternate = split && split.base !== effectiveId ? split.base : null
+      if (alternate) {
+        await provider.setModel(alternate)
+        return alternate
+      }
+      throw err
+    }
   }
   throw new Error(`Model "${modelId}" is not available`)
 }
@@ -533,13 +643,65 @@ async function warmSession(provider: AcpProvider): Promise<{ sessionId?: string;
 /** The env handed to the agent process: the host env MINUS the spec's
  *  scrubEnv keys (ADR 0012) — API keys are never passed, so the CLI uses its
  *  own stored login. The ACP provider's `env` is explicit, so an omitted key
- *  is genuinely absent rather than inherited. */
-function scrubbedEnv(scrubEnv: readonly string[]): Record<string, string> {
+ *  is genuinely absent rather than inherited. The `allowApiKeyEnv` opt-in
+ *  (Coach "use API keys from environment") skips scrubbing entirely: the
+ *  agent then authenticates exactly like the user's terminal does. */
+function scrubbedEnv(scrubEnv: readonly string[], allowApiKeyEnv = false): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !scrubEnv.includes(key)) env[key] = value
+    if (value === undefined) continue
+    if (!allowApiKeyEnv && scrubEnv.includes(key)) continue
+    env[key] = value
   }
   return env
+}
+
+/** Signatures of a harness-side AUTHENTICATION failure (stored login expired
+ *  or missing, e.g. Claude's "OAuth session expired and could not be
+ *  refreshed"). Matched case-insensitively against raw agent/provider error
+ *  text. Deliberately narrow: a plain "session expired" (an ACP resume-handle
+ *  expiry, which has its own retry path) must NOT match. */
+const AUTH_FAILURE_PATTERNS = [
+  /failed to authenticate/i,
+  /oauth session expired/i,
+  /authentication_failed/i,
+  /authrequired/i,
+  /please run \/login/i,
+  /not logged in/i,
+]
+
+/** True when a raw agent/provider error message reports an authentication
+ *  wall rather than any other failure. Pure — unit-tested directly. */
+export function isAuthFailureMessage(message: string): boolean {
+  return AUTH_FAILURE_PATTERNS.some(pattern => pattern.test(message))
+}
+
+/** Actionable remedy for an authentication wall, per harness. The ACP
+ *  handshake reports models/modes WITHOUT authenticating, so by the time
+ *  this fires the picker already looked healthy — the message must say what
+ *  to do, not just what broke. */
+function authHintForHarness(kind: string, displayName: string): string {
+  if (kind === 'claude') {
+    return (
+      `${displayName} sign-in required — run 'claude auth login' in a terminal, then retry. ` +
+      `If you sign in with ANTHROPIC_API_KEY in your terminal instead, turn on ` +
+      `'Use API keys from environment' in Coach and retry.`
+    )
+  }
+  return `${displayName} sign-in required — sign in with the harness's own CLI, then retry.`
+}
+
+/** Raw auth-wall detail is truncated for the hint — the full message stays in
+ *  logs, the renderer shows just enough to debug. */
+const AUTH_DETAIL_MAX_CHARS = 300
+
+/** Maps a raw run failure onto the CoachEvent the renderer shows: auth walls
+ *  become the actionable hint (with the raw detail appended for
+ *  debuggability); everything else passes through untouched. */
+function toHarnessError(harness: HarnessInfo, rawMessage: string): CoachEvent {
+  if (!isAuthFailureMessage(rawMessage)) return { kind: 'error', message: rawMessage }
+  const detail = rawMessage.length > AUTH_DETAIL_MAX_CHARS ? `${rawMessage.slice(0, AUTH_DETAIL_MAX_CHARS)}…` : rawMessage
+  return { kind: 'error', message: `${authHintForHarness(harness.kind, harness.displayName)} (detail: ${detail})` }
 }
 
 export interface HarnessRuntimeOptions {
@@ -597,7 +759,7 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
       ? { command: process.execPath, args: [input.harness.bundledEntry, ...(acp.args ?? [])] }
       : acpSpawnCommand(acp.command, acp.args ?? [], platform)
 
-    const env = scrubbedEnv(input.harness.scrubEnv)
+    const env = scrubbedEnv(input.harness.scrubEnv, input.allowApiKeyEnv)
     // Bundled JS entries run as plain Node inside the app's binary (dev:
     // electron.exe; packaged: the app exe) — the flag is inert under real
     // Node, so tests are unaffected.
@@ -648,7 +810,7 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           // restarting would drop the conversation context the user expects
           // to continue, so their failure remains an error event.
           if (!input.sessionId || !input.resumeIsExpendable) {
-            yield { kind: 'error', message }
+            yield toHarnessError(input.harness, message)
             return
           }
           // Tear the failed resume provider down, then rebuild the provider
@@ -665,7 +827,7 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
             warmSessionData = warm.session
             if (warm.event) yield warm.event
           } catch (err2) {
-            yield { kind: 'error', message: err2 instanceof Error ? err2.message : String(err2) }
+            yield toHarnessError(input.harness, err2 instanceof Error ? err2.message : String(err2))
             return
           }
         }
@@ -676,13 +838,18 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         // inside startSession when no session exists yet) never fires for
         // this turn — apply the picks explicitly before streaming. Routing is
         // value-aware (see applyModelSelection/applyModeSelection): codex's
-        // bracketed legacy model ids go via legacy `setModel`, pi/opencode/
-        // claude models via `set_config_option`, pi thinking modes via legacy
-        // `setMode`. A failure is a real error event, never a silent run with
-        // the wrong model.
+        // bracketed model ids decompose into base model + thinking effort via
+        // `set_config_option` (provider.setModel validates against the
+        // base-name config values and would throw), pi/opencode/claude models
+        // via `set_config_option`, pi thinking modes via legacy `setMode`. A
+        // failure is a real error event, never a silent run with the wrong
+        // model. The model constructor takes the APPLIED id back from
+        // applyModelSelection (a stale bracketed codex pick resolves to its
+        // base), so the provider never validates a stale raw id here.
+        let languageModelId = input.modelId
         if ((input.modelId || input.modeId) && sessionId) {
           try {
-            if (input.modelId) await applyModelSelection(provider, warmSessionData, sessionId, input.modelId)
+            if (input.modelId) languageModelId = await applyModelSelection(provider, warmSessionData, sessionId, input.modelId)
             if (input.modeId) await applyModeSelection(provider, warmSessionData, sessionId, input.modeId)
           } catch (err) {
             yield { kind: 'error', message: err instanceof Error ? err.message : String(err) }
@@ -691,7 +858,7 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         }
 
         const stream = sdk.streamText({
-          model: provider.languageModel(input.modelId, input.modeId),
+          model: provider.languageModel(languageModelId, input.modeId),
           prompt: input.prompt,
           tools: provider.tools,
         })
@@ -709,7 +876,13 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           for (;;) {
             const { done, value } = await iterator.next()
             if (done) break
-            yield* deriveCoachEvents(value as CoachStreamPart)
+            // Stream-time failures (e.g. the first prompt turn hitting an
+            // expired stored login) ride `error` parts — map auth walls to
+            // the actionable hint here too, at the point the harness is
+            // still known (events.ts stays harness-agnostic).
+            for (const event of deriveCoachEvents(value as CoachStreamPart)) {
+              yield event.kind === 'error' ? toHarnessError(input.harness, event.message) : event
+            }
           }
         } finally {
           if (typeof iterator.return === 'function') {

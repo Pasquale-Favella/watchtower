@@ -20,6 +20,7 @@ const memory = createMemoryStorage()
 vi.stubGlobal('localStorage', memory)
 
 const { useCoachSkillsStore } = await import('../src/renderer/src/features/coach-skills/store.js')
+const { useSettingsStore } = await import('../src/renderer/src/features/settings/store.js')
 const { selectScope, useScopeStore } = await import('../src/renderer/src/app/stores/scope-store.js')
 
 /** The UI-scope snapshot the store attaches to every run (map 53). */
@@ -143,6 +144,34 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     expect(startCoachRun).toHaveBeenCalledWith(expect.not.objectContaining({ modelId: expect.anything(), modeId: expect.anything() }))
   })
 
+  it('sendCoach forwards the API-key passthrough opt-in only when enabled in settings', async () => {
+    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
+    mockWindow({ startCoachRun })
+    useCoachSkillsStore.setState({ harnessKind: 'claude' })
+
+    await useCoachSkillsStore.getState().sendCoach('p')
+    expect(startCoachRun).toHaveBeenCalledWith(expect.not.objectContaining({ allowApiKeyEnv: expect.anything() }))
+
+    // The acked first run is still "in flight" (no completion events in this
+    // test) — settle it so the second send is not refused as concurrent.
+    useCoachSkillsStore.setState({ running: false, activeRunId: null })
+    useSettingsStore.getState().setAllowHarnessApiKeyEnv(true)
+    await useCoachSkillsStore.getState().sendCoach('p2')
+    expect(startCoachRun).toHaveBeenLastCalledWith(expect.objectContaining({ allowApiKeyEnv: true }))
+    useSettingsStore.getState().setAllowHarnessApiKeyEnv(false)
+  })
+
+  it('inspectHarness carries the API-key passthrough opt-in from settings', async () => {
+    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: false, error: 'nope' }))
+    mockWindow({ inspectCoachHarness })
+    useSettingsStore.getState().setAllowHarnessApiKeyEnv(true)
+
+    await useCoachSkillsStore.getState().inspectHarness('claude')
+
+    expect(inspectCoachHarness).toHaveBeenCalledWith({ kind: 'claude', allowApiKeyEnv: true })
+    useSettingsStore.getState().setAllowHarnessApiKeyEnv(false)
+  })
+
   it('setHarness clears the live set for an UNCACHED harness and probes it', () => {
     const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: false, error: 'agent binary not found' }))
     mockWindow({ inspectCoachHarness })
@@ -162,7 +191,7 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     expect(s.sessionModes).toBeNull()
     expect(s.modelId).toBeNull()
     expect(s.modeId).toBeNull()
-    expect(inspectCoachHarness).toHaveBeenCalledWith('gemini')
+    expect(inspectCoachHarness).toHaveBeenCalledWith({ kind: 'gemini' })
   })
 
   it('setHarness restores a CACHED harness instantly — no probe, picks included', () => {
@@ -538,7 +567,7 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
     await vi.waitFor(() => expect(useCoachSkillsStore.getState().sessionModels).not.toBeNull())
 
     const s = useCoachSkillsStore.getState()
-    expect(inspectCoachHarness).toHaveBeenCalledWith('claude')
+    expect(inspectCoachHarness).toHaveBeenCalledWith({ kind: 'claude' })
     expect(s.harnessKind).toBe('claude')
     expect(s.sessionModels?.availableModels).toEqual(models.availableModels)
     expect(s.sessionModes?.availableModes).toEqual(modes.availableModes)
@@ -620,7 +649,7 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
     expect(s.modelId).toBeNull()
     expect(s.modeId).toBeNull()
     // The switch warms the new agent's models immediately — no open needed.
-    expect(inspectCoachHarness).toHaveBeenCalledWith('gemini')
+    expect(inspectCoachHarness).toHaveBeenCalledWith({ kind: 'gemini' })
     await vi.waitFor(() => expect(useCoachSkillsStore.getState().sessionModels).toEqual(models))
     // The successful probe cached gemini — a later switch-back restores it.
     expect(useCoachSkillsStore.getState().modelsByKind['gemini']?.models).toEqual(models)
@@ -630,10 +659,10 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
   })
 
   it('a switch-back to a probed harness restores its set WITHOUT re-probing', async () => {
-    const inspectCoachHarness = vi.fn((kind: string) => Promise.resolve({
+    const inspectCoachHarness = vi.fn((request: { kind: string }) => Promise.resolve({
       ok: true,
-      ...(kind === 'claude' ? { models } : {}),
-      ...(kind === 'gemini' ? { models: { availableModels: [{ modelId: 'gem-1', name: 'Gemini' }], currentModelId: 'gem-1' } } : {}),
+      ...(request.kind === 'claude' ? { models } : {}),
+      ...(request.kind === 'gemini' ? { models: { availableModels: [{ modelId: 'gem-1', name: 'Gemini' }], currentModelId: 'gem-1' } } : {}),
     }))
     mockWindow({ inspectCoachHarness })
     useCoachSkillsStore.setState({ harnessKind: 'claude' })
@@ -660,7 +689,7 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
     await useCoachSkillsStore.getState().inspectHarness('claude')
 
     const s = useCoachSkillsStore.getState()
-    expect(inspectCoachHarness).toHaveBeenCalledWith('claude')
+    expect(inspectCoachHarness).toHaveBeenCalledWith({ kind: 'claude' })
     expect(s.sessionModels?.availableModels).toEqual(models.availableModels)
     expect(s.sessionModes?.availableModes).toEqual(modes.availableModes)
     expect(s.modelId).toBe('opus')

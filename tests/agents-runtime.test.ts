@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { CoachStreamPart } from '../src/main/agents/events.js'
-import { acpSpawnCommand, createHarnessRuntime, type HarnessSdk } from '../src/main/agents/runtime.js'
+import { acpSpawnCommand, createHarnessRuntime, isAuthFailureMessage, type HarnessSdk } from '../src/main/agents/runtime.js'
 import { harnessSpecs } from '../src/main/agents/harnesses/index.js'
 
 const claudeHarness: HarnessInfo = {
@@ -270,6 +270,83 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
       { kind: 'session', sessionId: 'sess_9' },
       { kind: 'error', message: 'credential wall' },
     ])
+  })
+
+  it('keeps the harness API keys in the agent env when the passthrough opt-in is set', async () => {
+    process.env.ANTHROPIC_API_KEY = 'secret-key'
+    const { sdk, createACPProvider } = fakeSdk([])
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    for await (const _event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p', allowApiKeyEnv: true })) {
+      // no-op
+    }
+
+    const env = createACPProvider.mock.calls[0]![0].env as Record<string, string>
+    expect(env.ANTHROPIC_API_KEY).toBe('secret-key')
+  })
+
+  it('maps a warm-up authentication wall to the actionable Claude sign-in error', async () => {
+    const { sdk, provider, streamText } = fakeSdk([])
+    provider.initSession.mockRejectedValue(new Error('Internal error: Failed to authenticate: OAuth session expired and could not be refreshed'))
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      { kind: 'status', state: 'starting' },
+      { kind: 'error', message: expect.stringContaining('claude auth login') },
+    ])
+    expect((events[1] as { message: string }).message).toContain('OAuth session expired')
+    expect(streamText).not.toHaveBeenCalled()
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+  })
+
+  it('maps a stream-time authentication wall to the actionable Claude sign-in error', async () => {
+    const { sdk } = fakeSdk([{ type: 'error', error: new Error('Failed to authenticate: OAuth session expired and could not be refreshed') }])
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      { kind: 'status', state: 'starting' },
+      { kind: 'session', sessionId: 'sess_9' },
+      { kind: 'error', message: expect.stringContaining('claude auth login') },
+    ])
+  })
+
+  it('uses the generic sign-in hint for non-Claude harnesses', async () => {
+    const { sdk, provider } = fakeSdk([])
+    provider.initSession.mockRejectedValue(new Error('Failed to authenticate'))
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const codexHarness: HarnessInfo = { ...claudeHarness, name: 'codex', kind: 'codex', displayName: 'Codex', scrubEnv: ['OPENAI_API_KEY'] }
+
+    const events = []
+    for await (const event of runtime.run({ harness: codexHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+      events.push(event)
+    }
+
+    expect(events[1]).toEqual({
+      kind: 'error',
+      message: expect.stringContaining('Codex sign-in required'),
+    })
+    expect((events[1] as { message: string }).message).not.toContain('claude auth login')
+  })
+
+  it('isAuthFailureMessage matches auth walls only — never plain session/resume expiries', () => {
+    expect(isAuthFailureMessage('Internal error: Failed to authenticate: OAuth session expired and could not be refreshed')).toBe(true)
+    expect(isAuthFailureMessage('Session expired. Please run /login to sign in again.')).toBe(true)
+    expect(isAuthFailureMessage('Not logged in · Please run /login')).toBe(true)
+    expect(isAuthFailureMessage('ACPError: authentication_failed')).toBe(true)
+    expect(isAuthFailureMessage('agent binary not found')).toBe(false)
+    // An ACP resume-handle expiry has its own retry path — mapping it to a
+    // sign-in hint would mislead.
+    expect(isAuthFailureMessage('ACP session expired, resume with a fresh id')).toBe(false)
   })
 
   it('cancelling the run interrupts the SAME SDK iterator and cleans up the provider', async () => {
@@ -854,7 +931,7 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
     }
   }
 
-  it('routes a codex bracketed model id via legacy setModel, never setConfigOption', async () => {
+  it('routes a codex bracketed model id as base + effort via setConfigOption, never setModel', async () => {
     const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
     Object.assign(sessionResponse, codexSession())
     const setModel = vi.fn(async () => ({}))
@@ -869,10 +946,63 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
       events.push(event)
     }
 
-    expect(setModel).toHaveBeenCalledWith('gpt-5.5[low]')
-    expect(setConfigOption).not.toHaveBeenCalled()
+    // provider.setModel validates any id against the base-name config values
+    // and throws before any legacy RPC — the seam decomposes the bracketed
+    // pick into base model + thinking effort instead.
+    expect(setConfigOption).toHaveBeenCalledWith({ sessionId: 'sess_9', configId: 'model', value: 'gpt-5.5' })
+    expect(setConfigOption).toHaveBeenCalledWith({ sessionId: 'sess_9', configId: 'reasoning_effort', value: 'low' })
+    expect(setModel).not.toHaveBeenCalled()
+    expect(provider.languageModel).toHaveBeenCalledWith('gpt-5.5', undefined)
     expect(streamText).toHaveBeenCalledOnce()
     expect(events[0]).toEqual({ kind: 'status', state: 'starting' })
+  })
+
+  it('skips both writes when the bracketed pick already matches base + effort current', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    Object.assign(sessionResponse, codexSession())
+    const setModel = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => ({}))
+    Object.assign(provider, { setModel, setConfigOption })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness, modelId: 'gpt-5.6-luna[high]', workspacePath: realWorkspace(), prompt: 'p',
+    })) {
+      events.push(event)
+    }
+
+    // Base 'gpt-5.6-luna' is the config current and effort 'high' is the
+    // reasoning_effort current — fully idempotent, yet the constructor still
+    // takes the base (this is the `[high]`-works case from the live report).
+    expect(setConfigOption).not.toHaveBeenCalled()
+    expect(setModel).not.toHaveBeenCalled()
+    expect(provider.languageModel).toHaveBeenCalledWith('gpt-5.6-luna', undefined)
+    expect(streamText).toHaveBeenCalledOnce()
+    expect(events).not.toContainEqual(expect.objectContaining({ kind: 'error' }))
+  })
+
+  it('applies the base when the bracket suffix matches no advertised effort', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    Object.assign(sessionResponse, codexSession())
+    const setModel = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => ({}))
+    Object.assign(provider, { setModel, setConfigOption })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness, modelId: 'gpt-5.5[ultra]', workspacePath: realWorkspace(), prompt: 'p',
+    })) {
+      events.push(event)
+    }
+
+    // Unknown effort degrades to the base model instead of failing the run.
+    expect(setConfigOption).toHaveBeenCalledOnce()
+    expect(setConfigOption).toHaveBeenCalledWith({ sessionId: 'sess_9', configId: 'model', value: 'gpt-5.5' })
+    expect(setModel).not.toHaveBeenCalled()
+    expect(streamText).toHaveBeenCalledOnce()
+    expect(events).not.toContainEqual(expect.objectContaining({ kind: 'error' }))
   })
 
   it('routes a codex mode via legacy setMode, never setConfigOption', async () => {
@@ -993,5 +1123,118 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
     expect(setConfigOption).toHaveBeenCalled()
     expect(setMode).toHaveBeenCalledWith('low')
     expect(streamText).toHaveBeenCalledOnce()
+  })
+
+  it('migrates a stale bracketed codex pick to its advertised base (new base-only catalog)', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    Object.assign(sessionResponse, {
+      sessionId: 'sess_9',
+      models: {
+        availableModels: [
+          { modelId: 'gpt-5.6-terra', name: 'GPT-5.6-Terra' },
+          { modelId: 'gpt-5.6-luna', name: 'GPT-5.6-Luna' },
+          { modelId: 'gpt-5.5', name: 'GPT-5.5' },
+        ],
+        currentModelId: 'gpt-5.6-luna',
+      },
+      configOptions: [
+        {
+          id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'gpt-5.6-terra',
+          options: [
+            { value: 'gpt-5.6-terra', name: 'GPT-5.6-Terra' },
+            { value: 'gpt-5.6-luna', name: 'GPT-5.6-Luna' },
+            { value: 'gpt-5.5', name: 'GPT-5.5' },
+          ],
+        },
+      ],
+    })
+    const setModel = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => ({}))
+    // The live provider validates the constructed model id like the agent
+    // does — a stale bracketed id must never reach it after a successful
+    // base apply.
+    const languageModel = vi.fn((modelId: string) => {
+      if (modelId.includes('[')) throw new Error(`Model "${modelId}" is not available. Available models: gpt-5.6-terra, gpt-5.6-luna, gpt-5.5`)
+      return { providerId: 'acp' }
+    })
+    Object.assign(provider, { setModel, setConfigOption, languageModel })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness, modelId: 'gpt-5.6-luna[low]', workspacePath: realWorkspace(), prompt: 'p',
+    })) {
+      events.push(event)
+    }
+
+    // The stale bracketed id resolves to its advertised base via the config
+    // write instead of failing the run.
+    expect(setConfigOption).toHaveBeenCalledWith({ sessionId: 'sess_9', configId: 'model', value: 'gpt-5.6-luna' })
+    expect(setModel).not.toHaveBeenCalled()
+    expect(languageModel).toHaveBeenCalledWith('gpt-5.6-luna', undefined)
+    expect(streamText).toHaveBeenCalledOnce()
+    expect(events).not.toContainEqual(expect.objectContaining({ kind: 'error' }))
+  })
+
+  it('leaves anthropic-style ids untouched end to end (no bracket = no normalization)', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    Object.assign(sessionResponse, {
+      sessionId: 'sess_9',
+      configOptions: [
+        {
+          id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'sonnet',
+          options: [
+            { value: 'opus', name: 'Opus' },
+            { value: 'sonnet', name: 'Sonnet' },
+          ],
+        },
+      ],
+    })
+    const setModel = vi.fn(async () => ({}))
+    const setConfigOption = vi.fn(async () => ({}))
+    const languageModel = vi.fn(() => ({ providerId: 'acp' }))
+    Object.assign(provider, { setModel, setConfigOption, languageModel })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness, modelId: 'opus', workspacePath: realWorkspace(), prompt: 'p',
+    })) {
+      events.push(event)
+    }
+
+    expect(setConfigOption).toHaveBeenCalledWith({ sessionId: 'sess_9', configId: 'model', value: 'opus' })
+    expect(setModel).not.toHaveBeenCalled()
+    expect(languageModel).toHaveBeenCalledWith('opus', undefined)
+    expect(streamText).toHaveBeenCalledOnce()
+    expect(events).not.toContainEqual(expect.objectContaining({ kind: 'error' }))
+  })
+
+  it('falls back to the bracket base on a resumed session with no catalog (minimal handshake)', async () => {
+    const { sdk, provider, streamText } = fakeSdk([])
+    const setModel = vi.fn(async (id: string) => {
+      if (id === 'gpt-5.6-luna[low]') throw new Error('Model "gpt-5.6-luna[low]" is not available. Available models: gpt-5.6-terra, gpt-5.6-luna, gpt-5.5')
+      return {}
+    })
+    const languageModel = vi.fn((modelId: string) => {
+      if (modelId.includes('[')) throw new Error(`Model "${modelId}" is not available. Available models: gpt-5.6-terra, gpt-5.6-luna, gpt-5.5`)
+      return { providerId: 'acp' }
+    })
+    Object.assign(provider, { setModel, languageModel })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    const events = []
+    for await (const event of runtime.run({
+      harness: claudeHarness, modelId: 'gpt-5.6-luna[low]', workspacePath: realWorkspace(), prompt: 'p',
+      sessionId: 'sess_prev',
+    })) {
+      events.push(event)
+    }
+
+    expect(setModel).toHaveBeenCalledWith('gpt-5.6-luna[low]')
+    expect(setModel).toHaveBeenLastCalledWith('gpt-5.6-luna')
+    expect(languageModel).toHaveBeenCalledWith('gpt-5.6-luna', undefined)
+    expect(streamText).toHaveBeenCalledOnce()
+    expect(events).not.toContainEqual(expect.objectContaining({ kind: 'error' }))
   })
 })

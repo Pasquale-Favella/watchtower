@@ -20,12 +20,72 @@ import {
   SelectValue,
 } from '@/shared/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip'
+import { InfoTip } from '@/shared/components/InfoTip'
 import { formatUsd } from '@/shared/lib/models'
 import { useCoachSkillsStore } from '@/features/coach-skills/store'
+import { useSettingsStore } from '@/features/settings/store'
 import { candidateKey, craftSkillPrompt } from '@/features/coach-skills/lib'
 import type { SkillCandidate } from '../../../../shared/schemas/skills.js'
 import { HarnessModelPicker } from './harness-model-picker'
 import { Thread } from './thread'
+
+/** Claude sign-in hint + API-key passthrough toggle, shown as a floating pill
+ *  above the composer, almost as wide as the textarea card (slightly inset
+ *  on both sides so it still reads as a floating element) and slightly
+ *  tucked behind it (the card overlaps its bottom edge), only while Claude
+ *  Code is the selected harness. The detection probe reports the CLI's own
+ *  login state, but an env-key sign-in (ANTHROPIC_API_KEY in the user's
+ *  terminal) is invisible to it — the toggle covers that case by letting
+ *  harness runs inherit the app environment's keys instead of the default
+ *  stored-login scrub. Off by default (ADR 0012). */
+function ClaudeAuthHint() {
+  const harnessKind = useCoachSkillsStore(s => s.harnessKind)
+  const claudeRow = useCoachSkillsStore(s => s.harnesses.find(h => h.kind === 'claude'))
+  const allowApiKeyEnv = useSettingsStore(s => s.allowHarnessApiKeyEnv)
+  const setAllowHarnessApiKeyEnv = useSettingsStore(s => s.setAllowHarnessApiKeyEnv)
+  if (harnessKind !== 'claude' || !claudeRow) return null
+  const signedOut = claudeRow.authStatus !== 'configured'
+  const infoText = allowApiKeyEnv
+    ? 'Passthrough is On: Coach runs inherit ANTHROPIC_API_KEY from the app environment instead of Claude Code’s stored login. Make sure you launched the app from a terminal where ANTHROPIC_API_KEY is set, or runs will fail authentication.'
+    : 'Passthrough is Off: Coach runs use Claude Code’s stored login. Make sure sign-in is detected — otherwise run `claude auth login` in a terminal and retry. Turn passthrough On only if you sign in via ANTHROPIC_API_KEY in your terminal.'
+  const promptText = signedOut
+    ? 'Or, if you sign in with ANTHROPIC_API_KEY in your terminal:'
+    : 'On an API key instead of stored login?'
+  const toggleLabel = `API-key passthrough: ${allowApiKeyEnv ? 'On' : 'Off'}`
+  const togglePassthrough = (): void => {
+    setAllowHarnessApiKeyEnv(!allowApiKeyEnv)
+  }
+  // Pill radius follows the golden ratio from the card's rounded-xl (12px):
+  // 12 × φ ≈ 19px on the top corners only (the bottom edge hides behind
+  // the card). -mb-2 pulls the card up over the pill's bottom edge; pb-3
+  // compensates so the visible padding stays balanced (top pt-1 == visible
+  // bottom).
+  return (
+    <div className="-mb-2 px-5">
+      <div className="flex w-full flex-wrap items-center justify-center gap-x-2 gap-y-0.5 rounded-t-[19px] border border-border bg-card px-4 pb-3 pt-1 text-center text-[11px] leading-relaxed text-muted-foreground shadow-sm">
+        <InfoTip label="How Claude authentication works" text={infoText} />
+        {signedOut && (
+          <span>
+            Claude Code sign-in not detected — run{' '}
+            <code className="rounded bg-muted px-1 font-mono text-[10.5px]">claude auth login</code>{' '}
+            in a terminal, then retry.
+          </span>
+        )}
+        <span>{promptText}</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={togglePassthrough}
+          title="When on, Coach runs inherit API keys (e.g. ANTHROPIC_API_KEY) from the app's environment instead of using each harness's stored login. The key itself is never stored by the app."
+          className="h-6 px-1.5 text-[11px] font-medium text-primary hover:text-primary"
+        >
+          {toggleLabel}
+        </Button>
+      </div>
+    </div>
+  )
+}
 
 /** Sample coach prompts shown on the courtesy screen — each starts a normal
  *  coach run, so they work exactly like typing the prompt. The skill-crafting
@@ -264,7 +324,7 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-card shadow-[var(--card-shadow)] transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+    <div className="relative z-10 overflow-hidden rounded-xl border border-border bg-card shadow-[var(--card-shadow)] transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
       <textarea
         ref={textareaRef}
         value={prompt}
@@ -408,13 +468,18 @@ export function ConversationView() {
         </>
       )}
 
-      {/* Pinned prompt bar — always visible, in both states. */}
-      <ConversationComposer
-        running={running}
-        canSend={!!harnessKind}
-        onSend={text => start(text)}
-        onStop={cancel}
-      />
+      {/* Pinned prompt bar — always visible, in both states. The Claude auth
+          hint (when present) floats centered above it as a pill slightly
+          tucked behind the textarea card. */}
+      <div>
+        <ClaudeAuthHint />
+        <ConversationComposer
+          running={running}
+          canSend={!!harnessKind}
+          onSend={text => start(text)}
+          onStop={cancel}
+        />
+      </div>
 
       {error && <p className="px-0.5 pt-1 text-[10.5px] text-destructive">{error}</p>}
     </div>

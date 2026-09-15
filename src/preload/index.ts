@@ -31,6 +31,7 @@ import type {
 import type {
   CoachEventEnvelope,
   CoachHarnessesResult,
+  CoachInspectRequest,
   CoachInspectResult,
   CoachRunRequest,
   CoachRunResult,
@@ -163,8 +164,8 @@ const api = {
    * models/modes without a run, so the model/mode pickers render before the
    * first message. A failed probe is `{ ok: false }` — the pickers stay
    * absent and the first run surfaces the real error. */
-  inspectCoachHarness: (kind: string): Promise<CoachInspectResult> =>
-    ipcRenderer.invoke('coach:inspect', kind),
+  inspectCoachHarness: (request: CoachInspectRequest): Promise<CoachInspectResult> =>
+    ipcRenderer.invoke('coach:inspect', request),
   /** Starts a harness run; resolves with the immediate ack. Events stream on
    * `onCoachEvent` keyed by the returned runId. */
   startCoachRun: (request: CoachRunRequest): Promise<CoachRunResult> =>

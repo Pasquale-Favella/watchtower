@@ -4,12 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserWindow, ipcMain } from 'electron'
 import { detectHarnesses, type HarnessInfo } from './detect.js'
+import { probeClaudeAuthStatus } from './auth-probe.js'
 import { createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
 import { resolveBundledEntry } from './harnesses/bundled.js'
 import { buildCoachPrompt, buildLedgerBriefing } from './prompts.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import type { OverviewScope } from '../../shared/schemas/overview.js'
 import {
+  coachInspectRequestSchema,
   coachRunRequestSchema,
   type CoachEvent,
   type CoachEventEnvelope,
@@ -71,7 +73,7 @@ export interface CoachRunner {
    *  probe's cwd. A `{ ok: false }` result means the probe failed (unknown
    *  harness, unavailable agent) — the renderer just leaves the pickers
    *  absent and the first run surfaces the real error. */
-  inspect(kind: string): Promise<CoachInspectResult>
+  inspect(request: unknown): Promise<CoachInspectResult>
   /** Validates, acks immediately with a runId, then streams events to `emit`
    *  as they arrive. A `{ ok: false }` ack means the request never launched
    *  (unknown harness, malformed request). */
@@ -88,6 +90,23 @@ export interface CoachRunner {
   reset(): Promise<void>
 }
 
+/** Normalized pre-flight probe input — the registry key plus the env flag
+ *  the warmed session must be spawned with (see runProbe). */
+interface ProbeInput {
+  kind: string
+  allowApiKeyEnv: boolean
+}
+
+/** Normalizes the `coach:inspect` wire payload (bare registry key or
+ *  `{ kind, allowApiKeyEnv }`) so the probe, its warmed session, and the runs
+ *  that resume it all agree on the environment. Null when invalid. */
+function toProbeInput(request: unknown): ProbeInput | null {
+  const parsed = coachInspectRequestSchema.safeParse(request)
+  if (!parsed.success) return null
+  if (typeof parsed.data === 'string') return { kind: parsed.data, allowApiKeyEnv: false }
+  return { kind: parsed.data.kind, allowApiKeyEnv: parsed.data.allowApiKeyEnv ?? false }
+}
+
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   const activeRuns = new Map<string, AsyncGenerator<CoachEvent>>()
   /** The conversation's private temp workspace (map 53 ticket 56): created on
@@ -102,7 +121,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
    *  Cleared once the first run consumes it. The probed session carries NO
    *  prompt — `start` still includes the ledger briefing on that first run
    *  (it keys on the absent renderer sessionId, which holds exactly here). */
-  let probedSession: { kind: string; sessionId: string; workspace: string } | null = null
+  let probedSession: { kind: string; sessionId: string; workspace: string; allowApiKeyEnv: boolean } | null = null
   /** The single in-flight probe (coalescing, optimization): rapid harness
    *  switching must not spawn one ACP process per switch. One probe runs at a
    *  time; `probedQueued` holds the NEWEST request while an older probe is in
@@ -111,7 +130,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
    *  a 'superseded' arm when a newer request replaced it before its spawn);
    *  the renderer's stale-guard drops anything it has moved past. */
   let probedChain: Promise<CoachInspectResult> | null = null
-  let probedQueued: { kind: string; resolve: (result: CoachInspectResult | Promise<CoachInspectResult>) => void } | null = null
+  let probedQueued: { input: ProbeInput; resolve: (result: CoachInspectResult | Promise<CoachInspectResult>) => void } | null = null
   /** Bumped by every `reset`: a probe that started before a reset must not
    *  remember its session afterwards (it was warmed in a conversation the
    *  reset just discarded — the workspace-keyed guard alone cannot catch the
@@ -138,13 +157,13 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
    *  workspace, remember the session for the first-run resume, and return the
    *  renderer-facing result (the session id stays main-side — the renderer's
    *  resume handle comes from the run's session event as usual). */
-  async function runProbe(kind: string): Promise<CoachInspectResult> {
+  async function runProbe(input: ProbeInput): Promise<CoachInspectResult> {
     const generation = conversationGeneration
     try {
       const found = await deps.detect()
-      const harness = found.find(h => h.kind === kind)
+      const harness = found.find(h => h.kind === input.kind)
       if (!harness) {
-        return { ok: false, error: `harness not detected: ${kind}` }
+        return { ok: false, error: `harness not detected: ${input.kind}` }
       }
       const runtime = await deps.getRuntime()
       // The conversation workspace as the probe's cwd — created lazily, the
@@ -153,12 +172,19 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // locally: a reset mid-probe must not re-key the remembered session to
       // the NEW workspace it would otherwise point the closure at.
       const probeWorkspace = workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-'))
-      const result = await runtime.inspect({ harness, workspacePath: probeWorkspace })
+      // The probe spawns the agent EXACTLY like the run would — including the
+      // API-key passthrough opt-in — so the warmed session the first run
+      // resumes carries the same environment.
+      const result = await runtime.inspect({
+        harness,
+        workspacePath: probeWorkspace,
+        ...(input.allowApiKeyEnv ? { allowApiKeyEnv: true as const } : {}),
+      })
       // Only remember the session if no reset happened while probing — a
       // stale probe belongs to a discarded conversation and must never be
       // resumed by the next one (generation, not workspace, is the truth).
       if (result.sessionId && conversationGeneration === generation) {
-        probedSession = { kind, sessionId: result.sessionId, workspace: probeWorkspace }
+        probedSession = { kind: input.kind, sessionId: result.sessionId, workspace: probeWorkspace, allowApiKeyEnv: input.allowApiKeyEnv }
       }
       return {
         ok: true,
@@ -180,15 +206,15 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
     const queued = probedQueued
     if (queued) {
       probedQueued = null
-      queued.resolve(startProbe(queued.kind))
+      queued.resolve(startProbe(queued.input))
     }
   }
 
   /** Starts the probe chain (or continues it after the active probe settles):
    *  the chain is the single spawn slot — when it frees up, a queued newer
    *  kind is probed next and its caller resolves with its own result. */
-  function startProbe(kind: string): Promise<CoachInspectResult> {
-    probedChain = runProbe(kind).then(
+  function startProbe(input: ProbeInput): Promise<CoachInspectResult> {
+    probedChain = runProbe(input).then(
       result => {
         releaseProbeSlot()
         return result
@@ -214,17 +240,21 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       }))
     },
 
-    async inspect(kind): Promise<CoachInspectResult> {
+    async inspect(request: unknown): Promise<CoachInspectResult> {
+      const input = toProbeInput(request)
+      if (!input) {
+        return { ok: false, error: 'invalid coach inspect request' }
+      }
       // Coalesce (optimization): never run two probes at once. A free slot
       // spawns immediately; otherwise the newest requested kind queues (a
       // previously queued one is superseded and resolved now — it never gets
       // its spawn, and the renderer would have dropped its result anyway).
       if (probedChain === null) {
-        return startProbe(kind)
+        return startProbe(input)
       }
       if (probedQueued) probedQueued.resolve({ ok: false, error: 'superseded' })
       return new Promise(resolve => {
-        probedQueued = { kind, resolve }
+        probedQueued = { input, resolve }
       })
     },
 
@@ -286,6 +316,10 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         && probedSession !== null
         && probedSession.kind === req.harnessKind
         && probedSession.workspace === workspace
+        // A probe-warmed session is bound to the environment it was spawned
+        // with: resuming it under a different API-key opt-in would silently
+        // run with the wrong credentials, so a flag mismatch starts fresh.
+        && probedSession.allowApiKeyEnv === (req.allowApiKeyEnv ?? false)
       // (the re-check narrows probedSession for TS — resumeProbed alone cannot
       // prove it is non-null)
       const resumeSessionId = resumeProbed && probedSession ? probedSession.sessionId : req.sessionId
@@ -318,6 +352,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
           // optional — absent means the agent's default model/mode.
           ...(req.modelId ? { modelId: req.modelId } : {}),
           ...(req.modeId ? { modeId: req.modeId } : {}),
+          ...(req.allowApiKeyEnv ? { allowApiKeyEnv: true as const } : {}),
           ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
           // A probe-warmed session is expendable: if its resume fails on this
           // first run, the seam restarts fresh instead of erroring — nothing
@@ -433,7 +468,16 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
       runtimePromise ??= loadHarnessSdk().then(createHarnessRuntime)
       return runtimePromise
     },
-    detect: () => detectHarnesses({ resolveBundled: spec => resolveBundledEntry(spec, appPath) }),
+    detect: () => detectHarnesses({
+      resolveBundled: spec => resolveBundledEntry(spec, appPath),
+      // Claude Code sign-in probe (auth wall early signal): the ACP
+      // handshake reports models/modes WITHOUT authenticating, so without
+      // this the picker would offer a harness that cannot run. The probe
+      // reads only the CLI's logged-in boolean and never throws (see
+      // auth-probe.ts). Other harnesses have no probe yet and stay
+      // 'unknown' — informative only, never blocking.
+      authProbe: kind => (kind === 'claude' ? probeClaudeAuthStatus() : Promise.resolve('unknown')),
+    }),
     ledgerMcpServer,
   })
 
@@ -444,11 +488,10 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
    *  message. The request is a bare registry key — the runner re-detects and
    *  never trusts it beyond that key, and a probe failure is `{ ok: false }`
    *  (pickers absent, chat unaffected). */
-  ipcMain.handle('coach:inspect', async (_event, kind: unknown): Promise<CoachInspectResult> => {
-    if (typeof kind !== 'string' || kind.trim() === '') {
-      return { ok: false, error: 'invalid coach inspect request' }
-    }
-    return runner.inspect(kind)
+  ipcMain.handle('coach:inspect', async (_event, request: unknown): Promise<CoachInspectResult> => {
+    // The runner validates (bare key or { kind, allowApiKeyEnv }) — a probe
+    // failure is `{ ok: false }` (pickers absent, chat unaffected).
+    return runner.inspect(request)
   })
 
   ipcMain.handle('coach:run', async (event, request: unknown): Promise<CoachRunResult> => {

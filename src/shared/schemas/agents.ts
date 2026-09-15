@@ -144,6 +144,13 @@ export const coachRunRequestSchema = z.object({
   prompt: z.string().optional(),
   /** Resume handle from a previous run's session event. */
   sessionId: z.string().optional(),
+  /** Opt-in API-key passthrough: when true the main process does NOT scrub
+   *  the harness's API-key env vars (e.g. ANTHROPIC_API_KEY) before spawning
+   *  the agent, so a harness authenticates the same way the user's terminal
+   *  does. Default (absent/false) keeps the ADR 0012 stored-login behaviour.
+   *  The key itself is never sent over this wire — it stays in the app
+   *  process's own environment. */
+  allowApiKeyEnv: z.boolean().optional(),
 })
 export type CoachRunRequest = z.infer<typeof coachRunRequestSchema>
 
@@ -171,6 +178,19 @@ export type CoachHarnessRow = z.infer<typeof coachHarnessRowSchema>
 /** `coach:harnesses` response — the detected harnesses for the picker. */
 export const coachHarnessesResultSchema = z.array(coachHarnessRowSchema)
 export type CoachHarnessesResult = z.infer<typeof coachHarnessesResultSchema>
+
+/** `coach:inspect` request — a bare registry key (legacy) or the key plus the
+ *  API-key passthrough opt-in. The probe spawns the agent exactly like a run
+ *  would, so it must honour the same env flag — otherwise a probe-warmed
+ *  session resumed by the first run would carry the wrong environment. */
+export const coachInspectRequestSchema = z.union([
+  z.string().min(1),
+  z.object({
+    kind: z.string().min(1),
+    allowApiKeyEnv: z.boolean().optional(),
+  }),
+])
+export type CoachInspectRequest = z.infer<typeof coachInspectRequestSchema>
 
 /** `coach:inspect` response — a pre-flight probe of a harness's handshake
  *  declared models/modes, WITHOUT running a prompt (map 47 ticket 50,
