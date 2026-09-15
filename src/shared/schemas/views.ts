@@ -49,6 +49,9 @@ export const sessionRowSchema = z.object({
   project: z.string(),
   provider: z.string(),
   models: z.array(z.string()),
+  /** Per-model raw feeders for Alias-merged rows (`models` holds the merged
+   * identity). Present only when a merge happened. */
+  modelProvenance: z.record(z.string(), z.array(z.string())).optional(),
   cost: z.number(),
   savingsUSD: z.number(),
   calls: z.number(),

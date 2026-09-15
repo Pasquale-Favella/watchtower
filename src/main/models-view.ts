@@ -155,15 +155,16 @@ function callCacheReadTokens(call: ParsedCall): number {
 
 /** The rates the audit lens attributes to a raw model, resolved through the
  * same chain as `resolveCallCost` so the recompute tracks the attributed
- * cost: an override contributes its two rates (zero cache/web — that is all
- * the stored override covers); an aliased model inherits its target's full
- * rate card; otherwise the model's own pricing stands. */
+ * cost: an override on the EFFECTIVE model wins (zero cache/web — that is
+ * all the stored override covers); an aliased model inherits its target's
+ * full rate card; otherwise the model's own pricing stands. */
 function auditRatesFor(
   model: string,
+  effectiveModel: string,
   aliasMap: Map<string, string>,
   overrides: Map<string, { inputPricePerMillion: number; outputPricePerMillion: number }>,
 ): ModelCosts | null {
-  const override = overrides.get(model)
+  const override = overrides.get(effectiveModel) ?? (effectiveModel === model ? overrides.get(model) : undefined)
   if (override) {
     return {
       inputCostPerToken: override.inputPricePerMillion / 1_000_000,
@@ -214,8 +215,13 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
     for (const turn of session.turns) {
       for (const call of turn.assistantCalls) {
         const provider = call.provider || 'unknown'
-        const rawModel = call.model || 'unknown'
-        const model = aliasMap.get(rawModel) ?? rawModel
+        // The seam already merged identity (`model` is resolved) and repriced
+        // cost (`costUSD` is display); recover the raw id via `rawModel` so
+        // the audit lens keeps token-source identity while by-model/by-task
+        // stay merged. Hand-built summaries without `rawModel` degrade to the
+        // pre-seam behaviour (resolve here).
+        const rawModel = call.rawModel ?? call.model ?? 'unknown'
+        const model = aliasMap.get(rawModel) ?? call.model ?? 'unknown'
         const category: TaskCategory = turn.category
 
         const input = call.usage.inputTokens
@@ -310,7 +316,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
       cacheWriteTokens: bucket.raw.cacheCreationInputTokens,
       cacheReadTokens: bucket.cacheReadDisplayed,
     }
-    const rates = auditRatesFor(bucket.model, aliasMap, overrideMap)
+    const rates = auditRatesFor(bucket.model, aliasMap.get(bucket.model) ?? bucket.model, aliasMap, overrideMap)
     const cost = {
       input: rates ? displayed.inputTokens * rates.inputCostPerToken : 0,
       output: rates ? displayed.outputTokens * rates.outputCostPerToken : 0,

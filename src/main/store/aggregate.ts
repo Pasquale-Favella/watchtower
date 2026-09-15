@@ -1,4 +1,4 @@
-import { getShortModelName } from '../pipeline/models.js'
+import { calculateCost, getShortModelName } from '../pipeline/models.js'
 import { buildSpawnPrSets, extractPrUrlsFromProviderCall } from '../pipeline/parser.js'
 import { sessionRowFromSummary, type SessionRow } from '../pipeline/sessions-report.js'
 import type {
@@ -27,7 +27,9 @@ export const DEFAULT_RANGE_DAYS = 30
 export type ScopedCall = LedgerCallRow & {
   /** `model` after a configured `model_alias` rewrite (identity for display/grouping). */
   resolvedModel: string
-  /** Query-time cost: tokens × `price_override` when configured, else the stored base cost. */
+  /** Query-time cost mirroring the Models lens: a Price override on the
+   * effective model wins, else an aliased call reprices at its target's
+   * rates, else the stored base cost stands. */
   displayCostUSD: number
 }
 
@@ -68,18 +70,31 @@ function resolveModel(model: string): string {
   return ALIASES.get(model) ?? model
 }
 
-// Mirrors the pipeline's output-side pricing convention: Claude bills output
-// tokens only; other providers fold reasoning tokens into the output bucket.
-function outputTokensForCost(provider: string, outputTokens: number, reasoningTokens: number): number {
-  return provider === 'claude' ? outputTokens : outputTokens + reasoningTokens
-}
-
-function resolveDisplayCost(call: LedgerCallRow): number {
-  const override = OVERRIDES.get(call.model)
-  if (!override) return call.baseCostUSD
-  const input = call.inputTokens * (override.inputPerMillion / 1_000_000)
-  const output = outputTokensForCost(call.provider, call.outputTokens, call.reasoningTokens) * (override.outputPerMillion / 1_000_000)
-  return Number.isFinite(input + output) ? input + output : call.baseCostUSD
+/** The cost a call contributes to its session aggregate. Mirrors the Models
+ * lens exactly (models-view `resolveCallCost`) so every Section reconciles:
+ * a Price override on the EFFECTIVE (aliased) model wins; otherwise an
+ * aliased call reprices through the normal pricing pipeline at its target's
+ * rates; otherwise the scan's stored base cost stands. Override alone never
+ * renames a model — identity comes from `resolveModel`, not from here. */
+function resolveDisplayCost(call: LedgerCallRow, resolvedModel: string): number {
+  const override = OVERRIDES.get(resolvedModel)
+  if (override) {
+    const input = call.inputTokens * (override.inputPerMillion / 1_000_000)
+    const output = call.outputTokens * (override.outputPerMillion / 1_000_000)
+    return Number.isFinite(input + output) ? input + output : call.baseCostUSD
+  }
+  if (resolvedModel !== call.model) {
+    return calculateCost(
+      resolvedModel,
+      call.inputTokens,
+      call.outputTokens,
+      call.cacheCreationInputTokens,
+      Math.max(call.cacheReadInputTokens, call.cachedInputTokens),
+      call.webSearchRequests,
+      call.speed,
+    )
+  }
+  return call.baseCostUSD
 }
 
 /** SQL read seam: flat rows for the scope, provider-filtered, priced/aliased on read. */
@@ -100,7 +115,8 @@ export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerSco
   const calls: ScopedCall[] = []
   for (const call of store.getCalls()) {
     if (!keepSource(call.sourceId)) continue
-    calls.push({ ...call, resolvedModel: resolveModel(call.model), displayCostUSD: resolveDisplayCost(call) })
+    const resolvedModel = resolveModel(call.model)
+    calls.push({ ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel) })
   }
 
   return { sessions, turns, calls }
@@ -125,9 +141,12 @@ function reconstructCall(row: ScopedCall): ParsedApiCall {
   }
   const call: ParsedApiCall = {
     provider: row.provider,
-    model: row.model,
+    // The resolved (merged) model is the grouping/display identity in all
+    // aggregated Sections; the raw model survives only via `rawModel` (Models
+    // audit lens, Compare row identity, merged-row provenance).
+    model: row.resolvedModel,
     usage,
-    costUSD: row.baseCostUSD,
+    costUSD: row.displayCostUSD,
     tools: row.tools,
     mcpTools: row.mcpTools,
     skills: row.skills,
@@ -144,6 +163,7 @@ function reconstructCall(row: ScopedCall): ParsedApiCall {
     cacheCreationOneHourTokens: row.cacheCreationOneHourTokens > 0 ? row.cacheCreationOneHourTokens : undefined,
     toolSequence: row.toolSequence.length > 0 ? row.toolSequence : undefined,
   }
+  if (row.resolvedModel !== row.model) call.rawModel = row.model
   if (row.savingsUSD > 0) {
     call.savingsUSD = row.savingsUSD
     call.savingsBaselineModel = row.savingsBaselineModel ?? undefined
@@ -236,6 +256,10 @@ export function assembleSession(
   const categoryBreakdown: SessionSummary['categoryBreakdown'] = {} as SessionSummary['categoryBreakdown']
   const skillBreakdown: SessionSummary['skillBreakdown'] = {}
   const subagentBreakdown: SessionSummary['subagentBreakdown'] = {}
+  // Provenance for merged rows: resolved short-name key -> raw model ids that
+  // fed it via an alias. Only populated when a merge actually happened, so
+  // unaliased sessions stay byte-identical to the old parser assembly.
+  const provenance = new Map<string, Set<string>>()
 
   let totalCost = 0
   let totalSavings = 0
@@ -312,6 +336,14 @@ export function assembleSession(
       model.tokens.cacheReadInputTokens += call.usage.cacheReadInputTokens
       model.tokens.cacheCreationInputTokens += call.usage.cacheCreationInputTokens
       model.tokens.reasoningTokens += call.usage.reasoningTokens
+      if (call.rawModel && call.rawModel !== call.model) {
+        let set = provenance.get(modelKey)
+        if (!set) {
+          set = new Set<string>()
+          provenance.set(modelKey, set)
+        }
+        set.add(call.rawModel)
+      }
 
       for (const tool of call.tools.filter(t => !t.startsWith('mcp__'))) {
         toolBreakdown[tool] = toolBreakdown[tool] ?? { calls: 0 }
@@ -336,6 +368,11 @@ export function assembleSession(
       if (!firstTs || call.timestamp < firstTs) firstTs = call.timestamp
       if (!lastTs || call.timestamp > lastTs) lastTs = call.timestamp
     }
+  }
+
+  for (const [key, raws] of provenance) {
+    const bucket = modelBreakdown[key]
+    if (bucket && raws.size > 0) bucket.sourceModels = [...raws].sort()
   }
 
   const summary: SessionSummary = {

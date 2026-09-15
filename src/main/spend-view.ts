@@ -147,6 +147,7 @@ function buildSpendPayload(
   const matrix = new Map<string, Map<string, number>>()
   const projectTotals = new Map<string, number>()
   const modelTotals = new Map<string, number>()
+  const modelProvenance = new Map<string, Set<string>>()
 
   for (const { project, session } of scoped) {
     for (const turn of session.turns) {
@@ -155,6 +156,14 @@ function buildSpendPayload(
         if (!cost || cost <= 0) continue
         const model = getShortModelName(call.model)
         if (model === '<synthetic>') continue
+        if (call.rawModel && call.rawModel !== call.model) {
+          let set = modelProvenance.get(model)
+          if (!set) {
+            set = new Set<string>()
+            modelProvenance.set(model, set)
+          }
+          set.add(call.rawModel)
+        }
 
         let modelCosts = matrix.get(project)
         if (!modelCosts) {
@@ -187,11 +196,19 @@ function buildSpendPayload(
     }
   }
 
-  const byModel = contiguousDayEntries(byModelDay, winStart, winEnd)
+  const provenanceFor = (model: string): { sourceModels: string[] } | {} => {
+    const raws = modelProvenance.get(model)
+    return raws && raws.size > 0 ? { sourceModels: [...raws].sort() } : {}
+  }
+  const byModel = contiguousDayEntries(byModelDay, winStart, winEnd).map(entry => ({
+    ...entry,
+    segments: entry.segments.map(seg => ({ ...seg, ...provenanceFor(seg.name) })),
+  }))
   const byProject = contiguousDayEntries(byProjectDay, winStart, winEnd)
   const dataStart = earliestKey(byModelDay, byProjectDay)
 
-  const { nodes: models, keep: keptModels } = buildNodes(modelTotals)
+  const { nodes: rawModels, keep: keptModels } = buildNodes(modelTotals)
+  const models = rawModels.map(node => ({ ...node, ...provenanceFor(node.id) }))
   const { nodes: projects, keep: keptProjects } = buildNodes(projectTotals)
   const modelOrder = new Map(models.map((node, index) => [node.id, index]))
   const projectOrder = new Map(projects.map((node, index) => [node.id, index]))

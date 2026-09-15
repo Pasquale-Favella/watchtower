@@ -9,6 +9,8 @@ export type SessionRow = {
   project: string
   provider: string
   models: string[]
+  /// Per-model raw feeders for Alias-merged rows. Present only on merge.
+  modelProvenance?: Record<string, string[]>
   cost: number
   savingsUSD: number
   calls: number
@@ -47,12 +49,17 @@ function durationMs(startedAt: string, endedAt: string): number {
  * `aggregateSessions` and the ledger aggregation seam (map 03) so both emit
  * byte-identical rows. */
 export function sessionRowFromSummary(session: SessionSummary, project: string): SessionRow {
+  const provenance: Record<string, string[]> = {}
+  for (const [model, breakdown] of Object.entries(session.modelBreakdown)) {
+    if (breakdown.sourceModels?.length) provenance[model] = [...breakdown.sourceModels].sort()
+  }
   return {
     sessionId: session.sessionId,
     title: session.title ?? '',
     project: session.project || project,
     provider: inferProvider(session),
     models: Object.keys(session.modelBreakdown),
+    ...(Object.keys(provenance).length > 0 ? { modelProvenance: provenance } : {}),
     cost: session.totalCostUSD,
     savingsUSD: session.totalSavingsUSD,
     calls: session.apiCalls,

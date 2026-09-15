@@ -45,7 +45,14 @@ function ModelsTable({ payload }: { payload: OverviewPayload }) {
     <div className="flex flex-col">
       {payload.models.map(model => (
         <div key={model.name} className="flex items-center gap-3 border-t border-border py-1.5 first:border-t-0">
-          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{model.name}</span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[12.5px] font-medium">{model.name}</span>
+            {model.sourceModels?.length ? (
+              <span className="block truncate text-[10.5px] text-muted-foreground" title={model.sourceModels.join(', ')}>
+                includes {model.sourceModels.join(', ')}
+              </span>
+            ) : null}
+          </span>
           <span className="w-14 text-right font-mono text-[11px] tabular-nums text-muted-foreground">{formatCompact(model.inputTokens)}</span>
           <span className="w-14 text-right font-mono text-[11px] tabular-nums text-muted-foreground">{formatCompact(model.outputTokens)}</span>
           <span className="w-12 text-right font-mono text-[11.5px] tabular-nums text-foreground">{model.calls.toLocaleString('en-US')}</span>
