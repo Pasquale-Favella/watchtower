@@ -1,6 +1,7 @@
 import { mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import {
@@ -465,4 +466,253 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.close()
   })
 
+})
+
+describe('DDL-Zod parity: table and column shape (#97)', () => {
+  // The ledger's database shape is defined twice by hand: the DDL in
+  // LedgerStore and the validation schemas in shared/schemas/ledger. This
+  // gate locks the two together at the observable seam — a temporary store's
+  // live shape read back through a direct read-only handle — so any column
+  // added, renamed, retyped, or re-defaulted fails naming the table+column.
+  // No production code changes: pure introspection (PRAGMA table_xinfo),
+  // never text snapshots, so harmless SQL reformatting stays green.
+  type ExpectedColumn = {
+    name: string
+    type: string
+    dflt: string | null
+    nullable: boolean
+    hidden: number
+    pk: number
+  }
+
+  const EXPECTED_TABLES = [
+    'currency_rate',
+    'display_currency_config',
+    'ledger_call',
+    'ledger_session',
+    'ledger_source',
+    'ledger_turn',
+    'model_alias',
+    'price_override',
+    'refresh_cadence_config',
+    'skills_dismissal_config',
+  ]
+
+  const EXPECTED_COLUMNS: Record<string, ExpectedColumn[]> = {
+    ledger_source: [
+      { name: 'id', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 1 },
+      { name: 'provider', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'env_fingerprint', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'file_path', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'repo_url', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'project', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      // Stored as INTEGER but read back as digit-exact TEXT via CAST (NTFS
+      // identifiers exceed 2^53): the schemas expect strings, the DDL keeps
+      // integers. The parity contract is the column presence + INTEGER type.
+      { name: 'fingerprint_dev', type: 'INTEGER', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'fingerprint_ino', type: 'INTEGER', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'fingerprint_mtime_ms', type: 'REAL', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'fingerprint_size_bytes', type: 'INTEGER', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'last_ported_at', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+    ],
+    ledger_call: [
+      { name: 'source_id', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'session_id', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'turn_index', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'call_index', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'dedup_key', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'provider', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'model', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'timestamp', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'speed', type: 'TEXT', dflt: "'standard'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'project', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'project_path', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'working_directory', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'base_cost_usd', type: 'REAL', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'is_estimated', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'savings_usd', type: 'REAL', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'savings_baseline_model', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'input_tokens', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'output_tokens', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'cache_creation_input_tokens', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'cache_read_input_tokens', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'cached_input_tokens', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'reasoning_tokens', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'web_search_requests', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'cache_creation_one_hour_tokens', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'agent_type', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'tools_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'mcp_tools_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'skills_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'subagent_types_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'bash_commands_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'tool_sequence_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'loc_added', type: 'INTEGER', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'loc_removed', type: 'INTEGER', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'interrupted', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'user_modified', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'tool_errors', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'edit_failed', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      // Generated STORED idempotency key: introspection reports notnull 0, so
+      // the nullability rule sees it as nullable — but it is always populated
+      // (COALESCE). The lock here is presence + TEXT type + hidden flag; the
+      // expression + uniqueness coverage belong to the #98 constraint gate.
+      { name: 'call_key', type: 'TEXT', dflt: null, nullable: true, hidden: 3, pk: 0 },
+    ],
+    ledger_turn: [
+      { name: 'source_id', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 1 },
+      { name: 'session_id', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 2 },
+      { name: 'turn_index', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 3 },
+      { name: 'timestamp', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'user_message', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'git_branch', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'pr_refs_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'spawn_tool_use_ids_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'category', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'sub_category', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'retries', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'has_edits', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+    ],
+    ledger_session: [
+      { name: 'source_id', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 1 },
+      { name: 'session_id', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 2 },
+      { name: 'project', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'project_path', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'working_directory', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'canonical_project', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'canonical_cwd', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'agent_type', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'title', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'pr_links_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'is_sidechain', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+      { name: 'parent_session_id', type: 'TEXT', dflt: null, nullable: true, hidden: 0, pk: 0 },
+      { name: 'agent_spawn_links_json', type: 'TEXT', dflt: "'{}'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'mcp_inventory_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'ambiguous_spawn_agent_ids_json', type: 'TEXT', dflt: "'[]'", nullable: false, hidden: 0, pk: 0 },
+      { name: 'ever_had_branch', type: 'INTEGER', dflt: '0', nullable: false, hidden: 0, pk: 0 },
+    ],
+    model_alias: [
+      { name: 'model', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 1 },
+      { name: 'alias_of', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+    ],
+    price_override: [
+      { name: 'model', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 1 },
+      { name: 'input_price_per_million', type: 'REAL', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'output_price_per_million', type: 'REAL', dflt: null, nullable: false, hidden: 0, pk: 0 },
+    ],
+    currency_rate: [
+      { name: 'code', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 1 },
+      { name: 'symbol', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'rate', type: 'REAL', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'updated_at', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+    ],
+    refresh_cadence_config: [
+      { name: 'id', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 1 },
+      { name: 'value', type: 'TEXT', dflt: "'1m'", nullable: false, hidden: 0, pk: 0 },
+    ],
+    display_currency_config: [
+      { name: 'id', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 1 },
+      { name: 'code', type: 'TEXT', dflt: "'USD'", nullable: false, hidden: 0, pk: 0 },
+    ],
+    skills_dismissal_config: [
+      { name: 'source', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 1 },
+      { name: 'name', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 2 },
+      { name: 'reason', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+      { name: 'created', type: 'TEXT', dflt: null, nullable: false, hidden: 0, pk: 0 },
+    ],
+  }
+
+  type XinfoRow = {
+    cid: number
+    name: string
+    type: string
+    notnull: number
+    dflt_value: string | null
+    pk: number
+    hidden: number
+  }
+
+  function readTableNames(ro: DatabaseSync): string[] {
+    const rows = ro.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC",
+    ).all() as Array<{ name: string }>
+    return rows.map(r => r.name)
+  }
+
+  function readColumns(ro: DatabaseSync, table: string): XinfoRow[] {
+    // Quote the identifier: table names are a fixed allow-list above.
+    return ro.prepare(`PRAGMA table_xinfo("${table}")`).all() as XinfoRow[]
+  }
+
+  it('locks the ten-table set (four ledger + six config)', () => {
+    const store = makeStore()
+    try {
+      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
+      try {
+        expect(readTableNames(ro), 'ledger tables').toEqual(EXPECTED_TABLES)
+      } finally {
+        ro.close()
+      }
+    } finally {
+      store.close()
+    }
+  })
+
+  it('locks every table column: name, exact type, literal default, nullability, hidden flag', () => {
+    const store = makeStore()
+    try {
+      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
+      try {
+        for (const table of EXPECTED_TABLES) {
+          const actual = readColumns(ro, table)
+          const expected = EXPECTED_COLUMNS[table]!
+          expect(
+            actual.map(c => c.name),
+            `[${table}] column names`,
+          ).toEqual(expected.map(c => c.name))
+          for (const exp of expected) {
+            const col = actual.find(c => c.name === exp.name)
+            expect(col, `[${table}.${exp.name}] present`).toBeDefined()
+            if (!col) continue
+            expect(col.type, `[${table}.${exp.name}] type`).toBe(exp.type)
+            // Literal-aware defaults: quoted text stays quoted ('[]' !== []),
+            // numeric defaults arrive as their literal text ('0').
+            expect(col.dflt_value, `[${table}.${exp.name}] default`).toBe(exp.dflt)
+            // The engine reports PK columns as nullable unless explicitly
+            // constrained, so a PK counts as NOT NULL by position alone.
+            const effectivelyNotNull = col.notnull === 1 || col.pk > 0
+            expect(effectivelyNotNull, `[${table}.${exp.name}] nullability`).toBe(!exp.nullable)
+            expect(col.hidden, `[${table}.${exp.name}] hidden`).toBe(exp.hidden)
+            expect(col.pk, `[${table}.${exp.name}] pk order`).toBe(exp.pk)
+          }
+        }
+      } finally {
+        ro.close()
+      }
+    } finally {
+      store.close()
+    }
+  })
+
+  it('locks composite primary-key order positionally', () => {
+    const store = makeStore()
+    try {
+      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
+      try {
+        const pkOrder = (table: string): string[] =>
+          readColumns(ro, table)
+            .filter(c => c.pk > 0)
+            .sort((a, b) => a.pk - b.pk)
+            .map(c => c.name)
+        expect(pkOrder('ledger_turn'), '[ledger_turn] pk order').toEqual(['source_id', 'session_id', 'turn_index'])
+        expect(pkOrder('ledger_session'), '[ledger_session] pk order').toEqual(['source_id', 'session_id'])
+        expect(pkOrder('skills_dismissal_config'), '[skills_dismissal_config] pk order').toEqual(['source', 'name'])
+        expect(pkOrder('ledger_source'), '[ledger_source] pk order').toEqual(['id'])
+      } finally {
+        ro.close()
+      }
+    } finally {
+      store.close()
+    }
+  })
 })
