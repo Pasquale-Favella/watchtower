@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { MouseEvent } from 'react'
 import { ArrowLeft, ChevronDown, GitBranch, Link2, Tag } from 'lucide-react'
 import { useParams } from '@tanstack/react-router'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/shared/components/ui/card'
@@ -15,6 +16,16 @@ import type { SessionDetail } from '@/features/sessions/drilldown'
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+// PR links open in the default browser through the guarded `open-external`
+// IPC channel (http/https only, main-process enforced) — the same pattern
+// the pull requests section uses. A bare <a href target="_blank"> would
+// navigate the Electron window away from the app / open an in-app window.
+function openPr(event: MouseEvent<HTMLAnchorElement>, url: string): void {
+  event.preventDefault()
+  event.stopPropagation()
+  void window.api.openExternal(url)
 }
 
 function Stat({ label, value }: { label: string; value: string }): React.JSX.Element {
@@ -79,7 +90,7 @@ function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Ele
           {turn.prRefs.length > 0 && (
             <div className="mt-1 flex flex-wrap gap-1">
               {turn.prRefs.map((pr) => (
-                <a key={pr} href={pr} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-xs text-brand-text hover:underline">
+                <a key={pr} href={pr} title={pr} onClick={event => openPr(event, pr)} className="inline-flex items-center gap-0.5 text-xs text-brand-text hover:underline">
                   <Link2 className="h-3 w-3" />PR
                 </a>
               ))}
@@ -152,7 +163,7 @@ export function SessionView(): React.JSX.Element {
           {session.prLinks.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {session.prLinks.map((pr) => (
-                <a key={pr} href={pr} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-brand-text hover:bg-muted">
+                <a key={pr} href={pr} title={pr} onClick={event => openPr(event, pr)} className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-brand-text hover:bg-muted">
                   <Link2 className="h-3 w-3" />{pr.split('/').slice(-2).join('/')}
                 </a>
               ))}
