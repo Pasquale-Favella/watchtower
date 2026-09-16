@@ -171,6 +171,28 @@ describe('models rows expose their pricing state (alias/override management)', (
     store.close()
   })
 
+  it('an alias on the bare name merges variant-spelled usage into the target row', () => {
+    const store = modelsMakeLedger()
+    modelsPort(store, [{
+      sessionId: 'sess-mx', project: 'demo-project', provider: 'opencode', model: 'Opencode/Weird-Model@20250929', cost: 0, date: '2026-07-10', usage: PRICED_USAGE,
+    }])
+    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
+    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
+      aliases: store.getModelAliases(),
+      overrides: store.getPriceOverrides(),
+    }, NOW)
+
+    const row = payload.byModel[0]!
+    expect(row.model).toBe('claude-sonnet-4-6')
+    expect(row.costUSD).toBeCloseTo(0.0105, 9)
+    expect(row.sourceModels).toEqual(['Opencode/Weird-Model@20250929'])
+    const auditRow = payload.audit[0]!
+    expect(auditRow.model).toBe('Opencode/Weird-Model@20250929')
+    expect(auditRow.aliasOf).toBe('claude-sonnet-4-6')
+    expect(auditRow.attributedCostUSD).toBeCloseTo(0.0105, 9)
+    store.close()
+  })
+
   it('a Price override on the effective model is exposed on by-model and audit rows', () => {
     const store = modelsMakeLedger()
     modelsPort(store, [{

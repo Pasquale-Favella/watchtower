@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import { buildSessionRows, buildSessionSummaries, defaultRange, queryScope } from '../src/main/store/aggregate.js'
+import { calculateCost } from '../src/main/pipeline/models.js'
 import { buildSessionSummary, cachedTurnToClassified } from '../src/main/pipeline/parser.js'
 import { aggregateSessions } from '../src/main/pipeline/sessions-report.js'
 import type { ClassifiedTurn } from '../src/main/pipeline/types.js'
@@ -261,6 +262,48 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
     expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
     expect(queryScope(store, { range: FULL_RANGE }).calls[0]!.displayCostUSD).toBeCloseTo(0.00105, 9)
+
+    store.close()
+  })
+
+  it('an Alias matches provider-prefixed, pinned and cased variants of the stored id', () => {
+    const store = makeStore()
+    const variants = [
+      'Opencode/Demo-Model@20250929',
+      'openrouter/opencode/demo-model',
+      'demo-model:thinking',
+    ]
+    variants.forEach((model, i) => {
+      const file = buildFixtureCachedFile()
+      file.turns[0]!.calls[0]!.model = model
+      store.portIn({ ...baseInput, filePath: `/cache/opencode/variant-${i}.jsonl`, verdict: 'new', cachedFile: file })
+    })
+    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
+
+    // Fixture usage: input 100, output 50, cache-read 20, repriced at the target's rates.
+    const expected = calculateCost('claude-sonnet-4-6', 100, 50, 0, 20, 0, 'standard')
+    expect(expected).toBeGreaterThan(0)
+    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    expect(summaries).toHaveLength(variants.length)
+    for (const summary of summaries) {
+      expect(summary.totalCostUSD).toBeCloseTo(expected, 9)
+      expect(summary.turns[0]!.assistantCalls[0]!.model).toBe('claude-sonnet-4-6')
+    }
+    expect(summaries.map(s => s.turns[0]!.assistantCalls[0]!.rawModel).sort()).toEqual([...variants].sort())
+
+    store.close()
+  })
+
+  it('a Price override matches variant spellings of the effective model', () => {
+    const store = makeStore()
+    const file = buildFixtureCachedFile()
+    file.turns[0]!.calls[0]!.model = 'DEMO-MODEL'
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    store.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+
+    // Fixture usage: input 100, output 50 → 0.0003 + 0.00075 (input+output only).
+    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
 
     store.close()
   })

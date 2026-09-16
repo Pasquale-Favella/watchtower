@@ -620,6 +620,68 @@ function getCanonicalName(model: string): string {
     .replace(/^[^/]+\//, '') // strip provider prefix: anthropic/foo -> foo
 }
 
+/// Canonical key for USER-config matching (alias sources, override names).
+/// Strips `@pin` / date suffixes, ALL provider prefixes and known pricing
+/// variant suffixes (`:thinking`, `:cloud`, `-TEE`), then case-folds — so a
+/// manually typed `claude-sonnet-4-6` also catches provider-prefixed, pinned
+/// or differently cased spellings of the same model in the ledger. Exact user
+/// text always wins; this is only the fallback when nothing matches verbatim.
+/// Deliberately NOT the full pricing fallback: a bare alias must never swallow
+/// a longer distinct model (e.g. `gpt-5` must not match `gpt-5-mini`).
+export function normalizeModelKey(model: string): string {
+  return model
+    .replace(/:(thinking|cloud)$/i, '')
+    .replace(/-TEE$/i, '')
+    .replace(/@.*$/, '')       // strip pin: claude-sonnet-4-6@20250929 -> claude-sonnet-4-6
+    .replace(/-\d{8}$/, '')   // strip date: claude-sonnet-4-20250514 -> claude-sonnet-4
+    .replace(/^([^/]+\/)+/, '') // strip provider prefixes: a/b/foo -> foo
+    .toLowerCase()
+}
+
+export interface ConfigRatePair {
+  inputPricePerMillion: number
+  outputPricePerMillion: number
+}
+
+/// Shared user-config lookup (aliases + price overrides) with verbatim-first,
+/// normalized-fallback matching. The aggregation seam and the Models lens both
+/// build it, so every Section resolves identical identities and rates.
+/// Later entries win on any key collision.
+export interface PricingConfigLookup {
+  resolveAlias(model: string): string
+  findOverride(name: string): ConfigRatePair | undefined
+}
+
+export function createPricingConfigLookup(
+  aliases: ReadonlyArray<{ model: string; aliasOf: string }>,
+  overrides: ReadonlyArray<{ model: string; inputPricePerMillion: number; outputPricePerMillion: number }>,
+): PricingConfigLookup {
+  const aliasExact = new Map<string, string>()
+  const aliasNorm = new Map<string, string>()
+  for (const alias of aliases) {
+    aliasExact.set(alias.model, alias.aliasOf)
+    aliasNorm.set(normalizeModelKey(alias.model), alias.aliasOf)
+  }
+  const overrideExact = new Map<string, ConfigRatePair>()
+  const overrideNorm = new Map<string, ConfigRatePair>()
+  for (const override of overrides) {
+    const rates = {
+      inputPricePerMillion: override.inputPricePerMillion,
+      outputPricePerMillion: override.outputPricePerMillion,
+    }
+    overrideExact.set(override.model, rates)
+    overrideNorm.set(normalizeModelKey(override.model), rates)
+  }
+  return {
+    resolveAlias(model: string): string {
+      return aliasExact.get(model) ?? aliasNorm.get(normalizeModelKey(model)) ?? model
+    },
+    findOverride(name: string): ConfigRatePair | undefined {
+      return overrideExact.get(name) ?? overrideNorm.get(normalizeModelKey(name))
+    },
+  }
+}
+
 function stripKnownPricingVariantSuffix(model: string): string | null {
   const withoutColonSuffix = model.replace(/:(thinking|cloud)$/i, '')
   if (withoutColonSuffix !== model) return withoutColonSuffix

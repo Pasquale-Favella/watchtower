@@ -37,14 +37,29 @@ function rowKeyDown(event: KeyboardEvent<HTMLDivElement>, toggle: () => void): v
   }
 }
 
-function ModelChips({ models }: { models: string[] }) {
+type ModelChipsProps = { models: string[]; provenance?: Record<string, string[]> }
+function ModelChips({ models, provenance }: ModelChipsProps) {
+  const merged = models.flatMap(model => {
+    const raws = provenance?.[model]
+    return raws?.length ? [{ model, raws }] : []
+  })
   return (
-    <div className="flex flex-wrap gap-1" aria-label={models.length ? `Models used: ${models.join(', ')}` : 'No model data'}>
-      {models.map(model => (
-        <span key={model} className="rounded border border-border bg-background px-1.5 py-px font-mono text-[10px] text-muted-foreground">
-          {model}
+    <div className="flex min-w-0 flex-col items-end gap-1">
+      <div className="flex flex-wrap justify-end gap-1" aria-label={models.length ? `Models used: ${models.join(', ')}` : 'No model data'}>
+        {models.map(model => (
+          <span key={model} className="rounded border border-border bg-background px-1.5 py-px font-mono text-[10px] text-muted-foreground">
+            {model}
+          </span>
+        ))}
+      </div>
+      {merged.length > 0 && (
+        <span
+          className="block max-w-full truncate text-[10px] text-muted-foreground"
+          title={merged.map(entry => `${entry.model}: ${entry.raws.join(', ')}`).join(' · ')}
+        >
+          includes {merged.map(entry => entry.raws.join(', ')).join(', ')}
         </span>
-      ))}
+      )}
     </div>
   )
 }
@@ -79,7 +94,7 @@ function PrRowView({ pr, expanded, onToggle }: { pr: PullRequestRow; expanded: b
         </div>
         <div className="hidden min-w-0 max-w-[260px] shrink-0 flex-col items-end gap-1 lg:flex">
           <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Models</span>
-          <ModelChips models={models} />
+          <ModelChips models={models} provenance={pr.modelProvenance} />
         </div>
         <div className="w-20 shrink-0 text-right">
           <span className="block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Spend</span>

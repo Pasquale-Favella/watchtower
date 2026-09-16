@@ -1,4 +1,4 @@
-import { calculateCost, getModelCosts, getShortModelName, type ModelCosts } from './pipeline/models.js'
+import { calculateCost, createPricingConfigLookup, getModelCosts, getShortModelName, type ModelCosts, type PricingConfigLookup } from './pipeline/models.js'
 import type { SessionSummary, TaskCategory } from './pipeline/types.js'
 import { overviewDateRange, type OverviewScope } from './overview.js'
 import { buildSessionSummaries } from './store/aggregate.js'
@@ -127,13 +127,14 @@ function accumulate(
  * to pay — its two stored rates price the row's input and output); otherwise
  * a store alias that rewrote the model re-prices the call through the normal
  * pipeline (the scan priced the raw name, typically at $0); otherwise the
- * scan's recorded cost stands. */
+ * scan's recorded cost stands. Identity and rates come from the shared
+ * pricing-config lookup, so this lens resolves exactly like the seam. */
 function resolveCallCost(
   call: ParsedCall,
   effectiveModel: string,
-  overrides: Map<string, { inputPricePerMillion: number; outputPricePerMillion: number }>,
+  pricingConfig: PricingConfigLookup,
 ): number {
-  const override = overrides.get(effectiveModel)
+  const override = pricingConfig.findOverride(effectiveModel)
   if (override) {
     return (call.usage.inputTokens / 1_000_000) * override.inputPricePerMillion
       + (call.usage.outputTokens / 1_000_000) * override.outputPricePerMillion
@@ -165,12 +166,10 @@ function callCacheReadTokens(call: ParsedCall): number {
  * all the stored override covers); an aliased model inherits its target's
  * full rate card; otherwise the model's own pricing stands. */
 function auditRatesFor(
-  model: string,
   effectiveModel: string,
-  aliasMap: Map<string, string>,
-  overrides: Map<string, { inputPricePerMillion: number; outputPricePerMillion: number }>,
+  pricingConfig: PricingConfigLookup,
 ): ModelCosts | null {
-  const override = overrides.get(effectiveModel) ?? (effectiveModel === model ? overrides.get(model) : undefined)
+  const override = pricingConfig.findOverride(effectiveModel)
   if (override) {
     return {
       inputCostPerToken: override.inputPricePerMillion / 1_000_000,
@@ -181,8 +180,7 @@ function auditRatesFor(
       fastMultiplier: 1,
     }
   }
-  const aliasOf = aliasMap.get(model)
-  return getModelCosts(aliasOf ?? model)
+  return getModelCosts(effectiveModel)
 }
 
 /** The Price override attached to a by-model/by-task row's effective model,
@@ -190,9 +188,9 @@ function auditRatesFor(
  * so plain rows stay byte-identical to the pre-state payload. */
 function overrideFor(
   effectiveModel: string,
-  overrides: Map<string, { inputPricePerMillion: number; outputPricePerMillion: number }>,
+  pricingConfig: PricingConfigLookup,
 ): { override: RowOverride } | {} {
-  const found = overrides.get(effectiveModel)
+  const found = pricingConfig.findOverride(effectiveModel)
   return found
     ? { override: { inputPricePerMillion: found.inputPricePerMillion, outputPricePerMillion: found.outputPricePerMillion } }
     : {}
@@ -222,8 +220,9 @@ export function buildModelsViewFromLedger(
 }
 
 function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): ModelsPayload {
-  const aliasMap = new Map(config.aliases.map(alias => [alias.model, alias.aliasOf]))
-  const overrideMap = new Map(config.overrides.map(o => [o.model, o]))
+  // One shared lookup with the aggregation seam: identical alias/override
+  // resolution here and in every other Section.
+  const pricingConfig = createPricingConfigLookup(config.aliases, config.overrides)
 
   const modelBuckets = new Map<string, ModelBucket>()
   const taskBuckets = new Map<string, ModelBucket>()
@@ -240,7 +239,8 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
         // stay merged. Hand-built summaries without `rawModel` degrade to the
         // pre-seam behaviour (resolve here).
         const rawModel = call.rawModel ?? call.model ?? 'unknown'
-        const model = aliasMap.get(rawModel) ?? call.model ?? 'unknown'
+        const resolved = pricingConfig.resolveAlias(rawModel)
+        const model = resolved !== rawModel ? resolved : (call.model ?? 'unknown')
         const category: TaskCategory = turn.category
 
         const input = call.usage.inputTokens
@@ -248,7 +248,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
         const cacheWrite = call.usage.cacheCreationInputTokens
         const cacheRead = callCacheReadTokens(call)
         const reasoning = call.usage.reasoningTokens
-        const cost = resolveCallCost(call, model, overrideMap)
+        const cost = resolveCallCost(call, model, pricingConfig)
         const savings = call.savingsUSD ?? 0
         const baseline = call.savingsBaselineModel ?? ''
 
@@ -306,7 +306,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
     savingsBaselineModel: b.savingsBaselineModel,
     calls: b.calls,
     ...(b.sources.size > 0 ? { sourceModels: [...b.sources].sort() } : {}),
-    ...overrideFor(b.model, overrideMap),
+    ...overrideFor(b.model, pricingConfig),
   })
 
   const byModel: ModelReportRow[] = []
@@ -339,7 +339,8 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
       cacheWriteTokens: bucket.raw.cacheCreationInputTokens,
       cacheReadTokens: bucket.cacheReadDisplayed,
     }
-    const rates = auditRatesFor(bucket.model, aliasMap.get(bucket.model) ?? bucket.model, aliasMap, overrideMap)
+    const effectiveModel = pricingConfig.resolveAlias(bucket.model)
+    const rates = auditRatesFor(effectiveModel, pricingConfig)
     const cost = {
       input: rates ? displayed.inputTokens * rates.inputCostPerToken : 0,
       output: rates ? displayed.outputTokens * rates.outputCostPerToken : 0,
@@ -349,7 +350,6 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
       recomputedTotalUSD: 0,
     }
     cost.recomputedTotalUSD = cost.input + cost.output + cost.cacheWrite + cost.cacheRead + cost.webSearch
-    const effectiveModel = aliasMap.get(bucket.model) ?? bucket.model
     audit.push({
       provider: bucket.provider,
       model: bucket.model,
@@ -361,7 +361,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
       cost,
       attributedCostUSD: bucket.attributedCostUSD,
       ...(effectiveModel !== bucket.model ? { aliasOf: effectiveModel } : {}),
-      ...overrideFor(effectiveModel, overrideMap),
+      ...overrideFor(effectiveModel, pricingConfig),
     })
   }
   audit.sort((a, b) => b.attributedCostUSD - a.attributedCostUSD)
