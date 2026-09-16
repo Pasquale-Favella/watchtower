@@ -166,11 +166,10 @@ function callCacheReadTokens(call: ParsedCall): number {
  * all the stored override covers); an aliased model inherits its target's
  * full rate card; otherwise the model's own pricing stands. */
 function auditRatesFor(
-  model: string,
   effectiveModel: string,
   pricingConfig: PricingConfigLookup,
 ): ModelCosts | null {
-  const override = pricingConfig.findOverride(effectiveModel) ?? (effectiveModel === model ? pricingConfig.findOverride(model) : undefined)
+  const override = pricingConfig.findOverride(effectiveModel)
   if (override) {
     return {
       inputCostPerToken: override.inputPricePerMillion / 1_000_000,
@@ -181,8 +180,7 @@ function auditRatesFor(
       fastMultiplier: 1,
     }
   }
-  const aliasOf = effectiveModel !== model ? effectiveModel : undefined
-  return getModelCosts(aliasOf ?? model)
+  return getModelCosts(effectiveModel)
 }
 
 /** The Price override attached to a by-model/by-task row's effective model,
@@ -341,7 +339,8 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
       cacheWriteTokens: bucket.raw.cacheCreationInputTokens,
       cacheReadTokens: bucket.cacheReadDisplayed,
     }
-    const rates = auditRatesFor(bucket.model, pricingConfig.resolveAlias(bucket.model), pricingConfig)
+    const effectiveModel = pricingConfig.resolveAlias(bucket.model)
+    const rates = auditRatesFor(effectiveModel, pricingConfig)
     const cost = {
       input: rates ? displayed.inputTokens * rates.inputCostPerToken : 0,
       output: rates ? displayed.outputTokens * rates.outputCostPerToken : 0,
@@ -351,7 +350,6 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
       recomputedTotalUSD: 0,
     }
     cost.recomputedTotalUSD = cost.input + cost.output + cost.cacheWrite + cost.cacheRead + cost.webSearch
-    const effectiveModel = pricingConfig.resolveAlias(bucket.model)
     audit.push({
       provider: bucket.provider,
       model: bucket.model,

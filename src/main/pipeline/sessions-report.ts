@@ -337,28 +337,39 @@ function addToMap(m: Map<string, number>, key: string, value: number): void {
   m.set(key, (m.get(key) ?? 0) + value)
 }
 
+function setFor(m: Map<string, Set<string>>, key: string): Set<string> {
+  let set = m.get(key)
+  if (!set) {
+    set = new Set<string>()
+    m.set(key, set)
+  }
+  return set
+}
+
 /// Record an Alias merge for provenance: the raw model id folded into its
 /// resolved identity. No-op when the call was never merged, so unaliased
 /// contributions stay byte-identical to before.
 function addProvenance(m: Map<string, Set<string>>, resolved: string, raw: string | undefined): void {
   if (!raw || raw === resolved) return
-  let set = m.get(resolved)
-  if (!set) {
-    set = new Set<string>()
-    m.set(resolved, set)
-  }
-  set.add(raw)
+  setFor(m, resolved).add(raw)
 }
 
 function mergeProvenance(into: Map<string, Set<string>>, from: Map<string, Set<string>>): void {
   for (const [resolved, raws] of from) {
-    let set = into.get(resolved)
-    if (!set) {
-      set = new Set<string>()
-      into.set(resolved, set)
-    }
+    const set = setFor(into, resolved)
     for (const raw of raws) set.add(raw)
   }
+}
+
+function recordModel(
+  models: Map<string, number>,
+  provenance: Map<string, Set<string>>,
+  model: string,
+  cost: number,
+  raw: string | undefined,
+): void {
+  addToMap(models, model, cost)
+  addProvenance(provenance, model, raw)
 }
 
 function ensureContribution(map: Map<string, PrContribution>, url: string): PrContribution {
@@ -551,8 +562,7 @@ function buildChildFold(child: SessionSummary, index: Map<string, SessionSummary
     for (const call of turn.assistantCalls) {
       turnCost += call.costUSD
       if (call.model) {
-        addToMap(models, call.model, call.costUSD)
-        addProvenance(provenance, call.model, call.rawModel)
+        recordModel(models, provenance, call.model, call.costUSD, call.rawModel)
       }
     }
     if (turn.category) addToMap(categories, turn.category, turnCost)
@@ -716,8 +726,7 @@ export function attributeSessionPrSpend(session: AttributableSession): SessionPr
       for (const turn of session.turns) {
         for (const call of turn.assistantCalls) {
           if (call.model) {
-            addToMap(legacyModels, call.model, call.costUSD)
-            addProvenance(legacyProvenance, call.model, call.rawModel)
+            recordModel(legacyModels, legacyProvenance, call.model, call.costUSD, call.rawModel)
           }
         }
       }
@@ -753,8 +762,7 @@ export function attributeSessionPrSpend(session: AttributableSession): SessionPr
     const modelProvenanceInTurn = new Map<string, Set<string>>()
     for (const call of turn.assistantCalls) {
       if (call.model) {
-        addToMap(modelCostInTurn, call.model, call.costUSD)
-        addProvenance(modelProvenanceInTurn, call.model, call.rawModel)
+        recordModel(modelCostInTurn, modelProvenanceInTurn, call.model, call.costUSD, call.rawModel)
       }
     }
     const share = 1 / current.length
@@ -900,16 +908,12 @@ export function buildPrAttribution(sessions: SessionSummary[], anchors: SessionS
       for (const [resolved, raws] of r.provenance) {
         if (resolved === '<synthetic>' || raws.size === 0) continue
         const short = getShortModelName(resolved)
-        let set = shortProvenance.get(short)
-        if (!set) {
-          set = new Set<string>()
-          shortProvenance.set(short, set)
-        }
+        const set = setFor(shortProvenance, short)
         for (const raw of raws) set.add(raw)
       }
       const modelProvenance: Record<string, string[]> = {}
       for (const [short, raws] of shortProvenance) {
-        if (raws.size > 0) modelProvenance[short] = [...raws].sort()
+        modelProvenance[short] = [...raws].sort()
       }
       const models = [...shortCosts.entries()]
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))

@@ -37,8 +37,12 @@ function rowKeyDown(event: KeyboardEvent<HTMLDivElement>, toggle: () => void): v
   }
 }
 
-function ModelChips({ models, provenance }: { models: string[]; provenance?: Record<string, string[]> }) {
-  const merged = models.filter(model => provenance?.[model]?.length)
+type ModelChipsProps = { models: string[]; provenance?: Record<string, string[]> }
+function ModelChips({ models, provenance }: ModelChipsProps) {
+  const merged = models.flatMap(model => {
+    const raws = provenance?.[model]
+    return raws?.length ? [{ model, raws }] : []
+  })
   return (
     <div className="flex min-w-0 flex-col items-end gap-1">
       <div className="flex flex-wrap justify-end gap-1" aria-label={models.length ? `Models used: ${models.join(', ')}` : 'No model data'}>
@@ -51,9 +55,9 @@ function ModelChips({ models, provenance }: { models: string[]; provenance?: Rec
       {merged.length > 0 && (
         <span
           className="block max-w-full truncate text-[10px] text-muted-foreground"
-          title={merged.map(model => `${model}: ${provenance![model]!.join(', ')}`).join(' · ')}
+          title={merged.map(entry => `${entry.model}: ${entry.raws.join(', ')}`).join(' · ')}
         >
-          includes {merged.map(model => provenance![model]!.join(', ')).join(', ')}
+          includes {merged.map(entry => entry.raws.join(', ')).join(', ')}
         </span>
       )}
     </div>

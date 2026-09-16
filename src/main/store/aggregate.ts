@@ -50,18 +50,13 @@ export function defaultRange(end: Date = new Date(), days: number = DEFAULT_RANG
   return { start, end }
 }
 
-/** Pricing/alias config, preloaded once per scope read so per-row resolution is
+/** Preload pricing/alias config once per scope read so per-row resolution is
  * a map hit. One shared lookup (also used by the Models lens) so every
  * Section resolves identical identities and rates. */
 let pricingConfig: PricingConfigLookup = createPricingConfigLookup([], [])
 
-/** Preload pricing/alias config once per scope read so per-row resolution is a map hit. */
 function loadConfig(store: LedgerStore): void {
   pricingConfig = createPricingConfigLookup(store.getModelAliases(), store.getPriceOverrides())
-}
-
-function resolveModel(model: string): string {
-  return pricingConfig.resolveAlias(model)
 }
 
 /** The cost a call contributes to its session aggregate. Mirrors the Models
@@ -69,7 +64,7 @@ function resolveModel(model: string): string {
  * a Price override on the EFFECTIVE (aliased) model wins; otherwise an
  * aliased call reprices through the normal pricing pipeline at its target's
  * rates; otherwise the scan's stored base cost stands. Override alone never
- * renames a model — identity comes from `resolveModel`, not from here.
+ * renames a model — identity comes from `pricingConfig.resolveAlias`, not from here.
  * Override names match verbatim first, then by normalized key (same spelling
  * tolerance as aliases). */
 function resolveDisplayCost(call: LedgerCallRow, resolvedModel: string): number {
@@ -111,7 +106,7 @@ export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerSco
   const calls: ScopedCall[] = []
   for (const call of store.getCalls()) {
     if (!keepSource(call.sourceId)) continue
-    const resolvedModel = resolveModel(call.model)
+    const resolvedModel = pricingConfig.resolveAlias(call.model)
     calls.push({ ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel) })
   }
 

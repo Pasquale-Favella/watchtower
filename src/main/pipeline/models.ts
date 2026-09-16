@@ -673,8 +673,12 @@ export function createPricingConfigLookup(
     overrideNorm.set(normalizeModelKey(override.model), rates)
   }
   return {
-    resolveAlias: model => aliasExact.get(model) ?? aliasNorm.get(normalizeModelKey(model)) ?? model,
-    findOverride: name => overrideExact.get(name) ?? overrideNorm.get(normalizeModelKey(name)),
+    resolveAlias(model: string): string {
+      return aliasExact.get(model) ?? aliasNorm.get(normalizeModelKey(model)) ?? model
+    },
+    findOverride(name: string): ConfigRatePair | undefined {
+      return overrideExact.get(name) ?? overrideNorm.get(normalizeModelKey(name))
+    },
   }
 }
 
