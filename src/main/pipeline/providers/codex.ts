@@ -130,7 +130,7 @@ function getCodexDir(override?: string): string {
 }
 
 function sanitizeProject(cwd: string): string {
-  return cwd.replace(/^\//, '').replace(/\//g, '-')
+  return cwd.replace(/^[/\\]+/, '').replace(/[/\\]/g, '-')
 }
 
 // Cap how many bytes we'll read while looking for the first newline. Real
@@ -309,7 +309,17 @@ async function discoverSessionFile(filePath: string): Promise<SessionSource | nu
   if (!valid || !meta) return null
 
   const cwd = meta.payload?.cwd ?? 'unknown'
-  return { path: filePath, project: sanitizeProject(cwd), provider: 'codex' }
+  // Forward the absolute checkout so the port-in seam can attribute the
+  // session even when the file-level cache carries no directory (the
+  // call-level fallback in port.ts covers already-cached files; this covers
+  // fresh discoveries and keeps `source.workingDirectory` truthful).
+  const workingDirectory = cwd !== 'unknown' && cwd.trim() ? cwd : undefined
+  return {
+    path: filePath,
+    project: sanitizeProject(cwd),
+    provider: 'codex',
+    ...(workingDirectory ? { workingDirectory } : {}),
+  }
 }
 
 async function discoverSessionsInDir(codexDir: string): Promise<SessionSource[]> {
