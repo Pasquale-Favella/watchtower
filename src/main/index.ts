@@ -15,6 +15,7 @@ import type { OverviewScope } from './overview.js'
 import type { ComparePair } from './compare-view.js'
 import { registerAgentsIpc, type LedgerMcpAttachment } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
+import { createSidecarPool } from './agents/ledger-mcp/pool.js'
 import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
 import { DbWorkerClient } from './db-worker/client.js'
 
@@ -32,6 +33,10 @@ let updateChecker: UpdateChecker | null = null
 let agentsCleanup: { reset: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
 let dbClient: DbWorkerClient | null = null
+/** Pooled loopback-HTTP ledger sidecar (ADR 0026): one sidecar per
+ *  conversation for harnesses that reject stdio — created pure (no side
+ *  effects until the first acquire) and dropped on reset/quit. */
+const sidecarPool = createSidecarPool({ spawn: ctx => startLedgerMcpHttp(ctx) })
 /** The requesting window of the in-flight manual scan (progress/error routing). */
 let scanRequester: WebContents | null = null
 
@@ -287,12 +292,13 @@ function registerIpc(db: DbWorkerClient): void {
       if (!existsSync(dbPath)) return null
       const entryPath = join(app.getAppPath(), 'out/main/ledger-mcp.js')
       // Harnesses that reject client-provided stdio servers (Copilot) get
-      // the same ledger over a per-run loopback-HTTP sidecar instead. A
-      // sidecar that fails to boot degrades to no-tools (the turn still
-      // runs) rather than failing the turn.
+      // the same ledger over the pooled loopback-HTTP sidecar instead — one
+      // sidecar per conversation, reused across turns (ADR 0026). A null
+      // (spawn failure, reset raced the spawn) degrades to no-tools (the
+      // turn still runs) rather than failing the turn.
       if (ledgerMcpTransportFor(harnessKind) === 'http') {
         try {
-          return await startLedgerMcpHttp({ execPath: process.execPath, entryPath, dbPath })
+          return await sidecarPool.acquire({ execPath: process.execPath, entryPath, dbPath })
         } catch {
           return null
         }
@@ -303,6 +309,21 @@ function registerIpc(db: DbWorkerClient): void {
       }
     },
   })
+  // Conversation reset drops the pooled sidecar with the conversation it
+  // served (a reset is a brand-new conversation — the next turn spawns
+  // fresh). Runs settle first (their per-run releases are pool no-ops), then
+  // the sidecar is killed. The quit path below rides the same handle, so no
+  // sidecar outlives the app.
+  const runnerCleanup = agentsCleanup
+  agentsCleanup = {
+    reset: async () => {
+      try {
+        await runnerCleanup.reset()
+      } finally {
+        sidecarPool.releaseAll()
+      }
+    },
+  }
 }
 
 function createWindow(): void {
@@ -375,6 +396,11 @@ app.on('window-all-closed', () => {
 // data worker gets the same best-effort treatment: a chance to checkpoint
 // and close the ledger before the process dies.
 app.on('before-quit', () => {
+  // The pool kill is synchronous (the signal is delivered even as this
+  // process exits) — unlike the matching release inside reset()'s finally,
+  // which sits behind awaits the quit may never let run. Belt-and-braces
+  // with the child's own parent-liveness watch.
+  sidecarPool.releaseAll()
   void agentsCleanup?.reset()
   void dbClient?.shutdown().catch(() => {})
 })

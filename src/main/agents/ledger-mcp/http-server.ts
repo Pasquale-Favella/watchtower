@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 
 import type { LedgerStore } from '../../store/ledger.js'
+import { hasBearerAuthorization } from './auth.js'
 import { createLedgerMcpServer } from './server.js'
 
 /**
@@ -26,10 +27,6 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body)
   res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text) })
   res.end(text)
-}
-
-function isAuthorized(req: IncomingMessage, token: string): boolean {
-  return req.headers.authorization === `Bearer ${token}`
 }
 
 function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -61,7 +58,7 @@ export function createLedgerMcpHttpHandler(
   token: string,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
-    if (!isAuthorized(req, token)) {
+    if (!hasBearerAuthorization(req.headers.authorization, token)) {
       sendJson(res, 401, { error: 'unauthorized' })
       return
     }

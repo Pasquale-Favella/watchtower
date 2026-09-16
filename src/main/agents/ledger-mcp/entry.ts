@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { LedgerStore } from '../../store/ledger.js'
 import { createLedgerMcpHttpHandler } from './http-server.js'
 import { createLedgerMcpServer } from './server.js'
+import { readContext, readHttpContext, type LedgerMcpContext, type LedgerMcpHttpContext } from './spawn-env.js'
 
 /**
  * The `watchtower-ledger` MCP server CLI entry (map 53, ADR 0020). The harness
@@ -25,42 +26,6 @@ import { createLedgerMcpServer } from './server.js'
  * the server exits when the agent closes stdin.
  */
 
-interface LedgerMcpContext {
-  dbPath: string
-}
-
-interface LedgerMcpHttpContext {
-  dbPath: string
-  port: number
-  token: string
-}
-
-function readContext(): LedgerMcpContext {
-  const raw: unknown = JSON.parse(process.env['WATCHTOWER_LEDGER_MCP'] ?? '')
-  const parsed = raw as { dbPath?: unknown }
-  if (typeof parsed?.dbPath !== 'string' || parsed.dbPath.length === 0) {
-    throw new Error('context must carry dbPath')
-  }
-  return { dbPath: parsed.dbPath }
-}
-
-function readHttpContext(): LedgerMcpHttpContext {
-  const raw: unknown = JSON.parse(process.env['WATCHTOWER_LEDGER_MCP'] ?? '')
-  const parsed = raw as { dbPath?: unknown; port?: unknown; token?: unknown }
-  if (typeof parsed?.dbPath !== 'string' || parsed.dbPath.length === 0) {
-    throw new Error('context must carry dbPath')
-  }
-  const port = parsed?.port
-  if (!Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535) {
-    throw new Error('context must carry a valid port')
-  }
-  const token = parsed?.token
-  if (typeof token !== 'string' || token.length === 0) {
-    throw new Error('context must carry token')
-  }
-  return { dbPath: parsed.dbPath, port: port as number, token }
-}
-
 function openStoreReadOnly(dbPath: string): LedgerStore {
   try {
     return new LedgerStore(dbPath, { readOnly: true })
@@ -70,11 +35,32 @@ function openStoreReadOnly(dbPath: string): LedgerStore {
   }
 }
 
+/** The parent is the only thing that should ever outlive this process: if
+ *  the main process dies without killing its sidecar (a crash between spawn
+ *  and release), exit instead of lingering on a loopback port holding a
+ *  read-only DB handle. `kill(pid, 0)` only tests existence — ESRCH means the
+ *  parent is gone (reparenting aside, the handle is useless anyway); any
+ *  other outcome, including EPERM, means it is alive. */
+function watchParentLiveness(): void {
+  const parentPid = process.ppid
+  if (!parentPid) return
+  const timer = setInterval(() => {
+    try {
+      process.kill(parentPid, 0)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') process.exit(0)
+    }
+  }, 5_000)
+  timer.unref()
+}
+
 /** Loopback-HTTP mode (`--ledger-mcp-http`): the same ledger over
  *  StreamableHTTP for harnesses that reject client-provided stdio servers.
- *  Bound to 127.0.0.1 on the main-picked port; every route needs the
- *  per-spawn bearer token. The process lives until killed by the spawner
- *  (the run's release). */
+ *  Binds port 0 itself and reports the bound port on stdout (`READY
+ *  {"port": N}`) — the spawner never picks ports, so there is no probe and
+ *  no bind race. Every route needs the per-spawn bearer token. The process
+ *  lives until the spawner's pool releases it (conversation reset/quit), or
+ *  until its parent dies — whichever comes first. */
 async function serveHttp(): Promise<void> {
   let ctx: LedgerMcpHttpContext
   try {
@@ -86,11 +72,19 @@ async function serveHttp(): Promise<void> {
   }
   const store = openStoreReadOnly(ctx.dbPath)
   const handler = createLedgerMcpHttpHandler(store, ctx.token)
-  await new Promise<void>((resolve, reject) => {
-    createServer((req, res) => {
+  const port = await new Promise<number>((resolve, reject) => {
+    const server = createServer((req, res) => {
       void handler(req, res)
-    }).listen(ctx.port, '127.0.0.1', () => resolve()).once('error', reject)
+    })
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (typeof address === 'object' && address) resolve(address.port)
+      else reject(new Error('no loopback address'))
+    })
   })
+  process.stdout.write(`READY ${JSON.stringify({ port })}\n`)
+  watchParentLiveness()
 }
 
 async function main(): Promise<void> {

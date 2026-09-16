@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 import { createLedgerMcpHttpHandler } from '../src/main/agents/ledger-mcp/http-server.js'
+import { bearerHeaderValue } from '../src/main/agents/ledger-mcp/auth.js'
 import { ledgerMcpTransportFor } from '../src/main/agents/ledger-mcp/config.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 
@@ -76,7 +77,7 @@ function authedTransport(url: string): StreamableHTTPClientTransport {
   // NESTED requestInit — the documented StreamableHTTPClientTransportOptions
   // shape (a flat RequestInit is silently ignored: no auth header goes out).
   return new StreamableHTTPClientTransport(new URL(url), {
-    requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+    requestInit: { headers: { authorization: bearerHeaderValue(TOKEN) } },
   })
 }
 
@@ -121,7 +122,7 @@ describe('ledger MCP loopback HTTP (stdio-rejecting harnesses)', () => {
     const anon = await fetch(`${baseUrl}/health`)
     expect(anon.status).toBe(401)
 
-    const authed = await fetch(`${baseUrl}/health`, { headers: { authorization: `Bearer ${TOKEN}` } })
+    const authed = await fetch(`${baseUrl}/health`, { headers: { authorization: bearerHeaderValue(TOKEN) } })
     expect(authed.status).toBe(200)
     expect(await authed.json()).toEqual({ ok: true })
   })
