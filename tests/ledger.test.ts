@@ -5,6 +5,15 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import {
+  currencyRateRowSchema,
+  ledgerCallRowSchema,
+  ledgerSessionRowSchema,
+  ledgerSourceRowSchema,
+  ledgerTurnRowSchema,
+  modelAliasRowSchema,
+  priceOverrideRowSchema,
+} from '../src/shared/schemas/ledger.js'
+import {
   buildFixtureCachedCall,
   buildFixtureCachedFile,
   buildFixtureCachedTurn,
@@ -662,6 +671,38 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     return ro.prepare(`PRAGMA table_xinfo("${table}")`).all() as XinfoRow[]
   }
 
+  // The Zod row schemas are `z.object().transform()` pipes in Zod v4, so the
+  // storage-side input shape lives at `.def.in`. JSON columns are the pipe
+  // fields (string through `JSON.parse`); every other column is a scalar.
+  type ZodInputField = { def: { type: string } }
+  type ZodPipedObject = {
+    def: {
+      in?: { def: { shape?: Record<string, ZodInputField> } }
+      shape?: Record<string, ZodInputField>
+    }
+  }
+
+  function zodInputShape(schema: unknown): Record<string, ZodInputField> {
+    const piped = schema as ZodPipedObject
+    const pipedShape = piped.def.in?.def.shape
+    if (pipedShape !== undefined) return pipedShape
+    const directShape = piped.def.shape
+    if (directShape !== undefined) return directShape
+    return {}
+  }
+
+  function zodInputKeys(schema: unknown): string[] {
+    return Object.keys(zodInputShape(schema)).sort()
+  }
+
+  function zodJsonKeys(schema: unknown): string[] {
+    const shape = zodInputShape(schema)
+    return Object.entries(shape)
+      .filter(([, field]) => field.def.type === 'pipe')
+      .map(([name]) => name)
+      .sort()
+  }
+
   it('locks the ten-table set (four ledger + six config)', () => {
     withTempLedgerReadOnly(ro => {
       expect(readTableNames(ro), 'ledger tables').toEqual(EXPECTED_TABLES)
@@ -698,16 +739,43 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
 
   it('locks composite primary-key order positionally', () => {
     withTempLedgerReadOnly(ro => {
-      const pkOrder = (table: string): string[] =>
-        readColumns(ro, table)
+      function pkOrder(table: string): string[] {
+        return readColumns(ro, table)
           .filter(c => c.pk > 0)
           .sort((a, b) => a.pk - b.pk)
           .map(c => c.name)
+      }
       expect(pkOrder('ledger_turn'), '[ledger_turn] pk order').toEqual(['source_id', 'session_id', 'turn_index'])
       expect(pkOrder('ledger_session'), '[ledger_session] pk order').toEqual(['source_id', 'session_id'])
       expect(pkOrder('skills_dismissal_config'), '[skills_dismissal_config] pk order').toEqual(['source', 'name'])
       expect(pkOrder('ledger_source'), '[ledger_source] pk order').toEqual(['id'])
     })
+  })
+
+  it('locks the Zod row schemas to the column catalog (schema-only drift fails)', () => {
+    // The shape gate above locks live DDL against EXPECTED_COLUMNS. This
+    // locks EXPECTED_COLUMNS against the Zod input shapes, so a column added
+    // or renamed on either side alone turns red. JSON helper coverage (S8) is
+    // locked the same way: every `*_json` DDL column must be a JSON-parsing
+    // pipe in Zod, and vice versa. Behavioural proof stays in #99.
+    const linked = {
+      ledger_source: ledgerSourceRowSchema,
+      ledger_session: ledgerSessionRowSchema,
+      ledger_turn: ledgerTurnRowSchema,
+      ledger_call: ledgerCallRowSchema,
+      model_alias: modelAliasRowSchema,
+      price_override: priceOverrideRowSchema,
+      currency_rate: currencyRateRowSchema,
+    }
+    for (const [table, schema] of Object.entries(linked)) {
+      const dbColumns = EXPECTED_COLUMNS[table]!.map(c => c.name).sort()
+      expect(zodInputKeys(schema), `[${table}] Zod input keys match DDL columns`).toEqual(dbColumns)
+      const dbJson = dbColumns.filter(name => name.endsWith('_json'))
+      expect(zodJsonKeys(schema), `[${table}] JSON columns use JSON helpers`).toEqual(dbJson)
+    }
+    // refresh_cadence_config, display_currency_config and
+    // skills_dismissal_config have no Zod row schemas (scalar reads); the
+    // shape gate above owns them.
   })
 })
 
@@ -1315,7 +1383,7 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
         },
       ])
 
-      const undefinedPaths = (value: unknown, prefix = ''): string[] => {
+      function undefinedPaths(value: unknown, prefix = ''): string[] {
         if (typeof value !== 'object' || value === null) return []
         if (Array.isArray(value)) {
           return value.flatMap((item, i) => undefinedPaths(item, `${prefix}[${i}]`))
