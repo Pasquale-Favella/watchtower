@@ -1126,7 +1126,9 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
   it('reads fingerprint identifiers back as digit-exact strings, never arithmetized', () => {
     // Companion to the existing oversized-identifier test (which proves reads
     // beyond 2^53 never throw): this locks the TEXT contract itself — even
-    // small identifiers come back as strings, while mtime/size stay numeric.
+    // small identifiers come back as strings, while mtime/size stay numeric —
+    // and re-anchors one oversized round trip so this gate owns the criterion
+    // directly instead of by reference.
     const store = makeStore()
     try {
       store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
@@ -1140,6 +1142,18 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
         mtimeMs: 1_751_300_000_000,
         sizeBytes: 4096,
       })
+
+      const oversized = buildFixtureCachedFile()
+      oversized.fingerprint = { dev: 2 ** 53, ino: 2 ** 53 + 100, mtimeMs: 1_751_300_000_000, sizeBytes: 4096 }
+      store.portIn({
+        ...baseInput,
+        filePath: '/Users/demo/.local/share/opencode/demo-project/sess-oversized.jsonl',
+        verdict: 'new',
+        cachedFile: oversized,
+      })
+      const anchor = store.getSources().find(s => s.filePath.endsWith('sess-oversized.jsonl'))!
+      expect(anchor.fingerprint.dev).toBe(String(2 ** 53))
+      expect(anchor.fingerprint.ino).toBe(String(2 ** 53 + 100))
     } finally {
       store.close()
     }
