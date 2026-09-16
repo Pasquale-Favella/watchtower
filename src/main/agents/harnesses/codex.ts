@@ -23,6 +23,10 @@ const codex: HarnessSpec = {
   },
   scrubEnv: ['OPENAI_API_KEY'],
   preference: 2,
+  // Proven live (ADR 0027 Stage 1): a real run called
+  // `mcp.watchtower-ledger.ledger_scope` over the loopback-HTTP sidecar and
+  // reported DB-exact counts — so the runner injects the ledger over HTTP.
+  clientMcpTransport: 'http',
   adapter: {
     kind: 'acp',
     acpConfig: {
