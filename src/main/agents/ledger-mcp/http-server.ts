@@ -82,7 +82,12 @@ export function createLedgerMcpHttpHandler(
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
       await createLedgerMcpServer(store).connect(transport)
       await transport.handleRequest(req, res, body)
-    } catch {
+    } catch (error) {
+      console.error('Ledger MCP HTTP request failed', {
+        method: req.method,
+        pathname,
+        error,
+      })
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' })
     }
   }
