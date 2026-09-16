@@ -83,6 +83,14 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     await expect(c.dispatch('currency:set', ['ZZZ'])).rejects.toThrow(/ISO 4217/)
   })
 
+  it('persists the local ledger MCP startup mode and defaults to on-demand', async () => {
+    const c = open()
+    expect(await c.dispatch('ledger-mcp:startup:get', [])).toBe('on-demand')
+    expect(await c.dispatch('ledger-mcp:startup:set', ['at-launch'])).toBe('at-launch')
+    expect(await c.dispatch('ledger-mcp:startup:get', [])).toBe('at-launch')
+    expect(await c.dispatch('ledger-mcp:startup:set', ['invalid'])).toBe('on-demand')
+  })
+
   it('reports settings sizes for the temp data dir', async () => {
     const info = await open().dispatch('settings:info', []) as { dataDir: string; dbSize: number }
     expect(info.dataDir).toBe(dir)

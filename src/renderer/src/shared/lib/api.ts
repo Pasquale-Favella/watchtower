@@ -74,6 +74,13 @@ import {
 import { cadenceValueSchema, type CadenceValue } from '../../../../shared/schemas/cadence.js'
 import { exportResultSchema, type ExportResult } from '../../../../shared/schemas/export.js'
 import {
+  ledgerMcpConnectionSchema,
+  ledgerMcpStatusSchema,
+  type LedgerMcpStartupMode,
+  type LedgerMcpStatus,
+  type LedgerMcpConnection,
+} from '../../../../shared/schemas/ledger-mcp.js'
+import {
   coachHarnessesResultSchema,
   coachInspectResultSchema,
   coachRunResultSchema,
@@ -216,6 +223,22 @@ export function fetchSettings(): Promise<ApiResult<SettingsInfo>> {
 
 export function fetchClearData(): Promise<ApiResult<SettingsInfo>> {
   return fetchPayload('cleared settings', settingsInfoSchema, () => window.api.clearData())
+}
+
+export function fetchLedgerMcpStatus(): Promise<ApiResult<LedgerMcpStatus>> {
+  return fetchPayload('ledger MCP status', ledgerMcpStatusSchema, () => window.api.getLedgerMcpStatus())
+}
+
+export function fetchSetLedgerMcpStartupMode(mode: LedgerMcpStartupMode): Promise<ApiResult<LedgerMcpStatus>> {
+  return fetchPayload('ledger MCP startup mode', ledgerMcpStatusSchema, () => window.api.setLedgerMcpStartupMode(mode))
+}
+
+export function fetchLedgerMcpConnection(): Promise<ApiResult<LedgerMcpConnection>> {
+  return fetchPayload('ledger MCP connection', ledgerMcpConnectionSchema, () => window.api.getLedgerMcpConnection())
+}
+
+export function fetchRegenerateLedgerMcpToken(): Promise<ApiResult<LedgerMcpStatus>> {
+  return fetchPayload('ledger MCP token', ledgerMcpStatusSchema, () => window.api.regenerateLedgerMcpToken())
 }
 
 export function fetchRefreshPricing(): Promise<ApiResult<PricingRefreshResult>> {

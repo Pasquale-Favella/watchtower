@@ -49,20 +49,33 @@ import {
  * The renderer revalidates every payload against the same schemas (ADR 0005).
  */
 
+/** An acquired ledger MCP attachment: the session server config plus its
+ *  release. Stdio attachments are agent-spawned (release is a no-op); HTTP
+ *  attachments are pooled per conversation (release is a pool no-op — the
+ *  app quits). Either way the runner releases every attachment when its run
+ *  settles. */
+export interface LedgerMcpAttachment {
+  server: AcpMcpServer
+  release: () => void
+}
+
 export interface CoachRunnerDeps {
   /** Lazily-provided seam — the SDK loads on the first run, not at boot. */
   getRuntime: () => Promise<HarnessRuntime>
   /** Detection for the picker AND the run's HarnessInfo (scrubEnv, bin). The
    *  runner never trusts the renderer's kind string beyond a registry key. */
   detect: () => Promise<HarnessInfo[]>
-  /** Builds the in-app ledger MCP server config (map 53). App-specific
-   *  (execPath, asar entry path, dbPath) — injected so the runner stays
+  /** Acquires the in-app ledger MCP server for a harness registry key
+   *  (map 53, reshaped for per-harness transports). App-specific (execPath,
+   *  asar entry path, dbPath, sidecar spawn) — injected so the runner stays
    *  electron-free; tests inject a fake. Takes NO scope: the server serves the
    *  full lifetime ledger and the harness filters through the tools' optional
    *  `scope` argument. Null when there is no ledger.db yet (fresh install,
    *  nothing scanned) — the run then has no data tools, which is correct:
-   *  there is no data to serve. */
-  ledgerMcpServer: () => AcpMcpServer | null
+   *  there is no data to serve. A spawn failure degrades the same way (the
+   *  turn still runs, just without data tools) rather than failing the turn.
+   *  The runner releases every acquired attachment when its run settles. */
+  ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
 }
 
 export interface CoachRunner {
@@ -286,12 +299,19 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       }
 
       // The in-app ledger MCP server (map 53): read-only platform data scoped
-      // to this conversation. Null on a fresh install (no ledger.db yet) —
-      // then there are no data tools and the prompts carry no briefing (the
-      // agent must not be told to call tools that do not exist). Built only
-      // AFTER the harness check: a run that never launches must not spawn
-      // anything.
-      const ledgerServer = deps.ledgerMcpServer()
+      // to this conversation. Null on a fresh install (no ledger.db yet) or
+      // when the sidecar fails to boot — then there are no data tools and the
+      // prompts carry no briefing (the agent must not be told to call tools
+      // that do not exist). Acquired only AFTER the harness check: a run that
+      // never launches must not spawn anything. Released when the run's
+      // stream settles (see both finallys below).
+      let attachment: LedgerMcpAttachment | null = null
+      try {
+        attachment = await deps.ledgerMcpServer(req.harnessKind)
+      } catch {
+        attachment = null
+      }
+      const ledgerServer = attachment?.server ?? null
       // The MCP briefing (ADR 0020): what the ledger tools are, that they
       // serve the full lifetime ledger filtered through an optional `scope`
       // argument, and the ground-your-answer rule — plus the user's current
@@ -380,11 +400,13 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
             emit(runId, { kind: 'error', message: err instanceof Error ? err.message : String(err) })
           } finally {
             activeRuns.delete(runId)
+            attachment?.release()
           }
         })()
 
         return { ok: true, runId }
       } catch (err) {
+        attachment?.release()
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
@@ -448,12 +470,13 @@ export interface AgentsIpcSources {
    *  are resolved from `<appPath>/node_modules`, so no global install is
    *  needed (ADR 0016 map 47 ticket 49). */
   appPath: string
-  /** Builds the in-app ledger MCP server (map 53) — the runner's app-specific
-   *  dep, supplied by the composition root (main/index.ts). Takes no scope:
-   *  the server serves the full lifetime ledger, and the harness filters via
-   *  the tools' optional `scope` argument. Null when there is no ledger.db yet
-   *  (fresh install) — no data, no tools. */
-  ledgerMcpServer: () => AcpMcpServer | null
+  /** Acquires the in-app ledger MCP server for a harness registry key
+   *  (map 53) — the runner's app-specific dep, supplied by the composition
+   *  root (main/index.ts). Takes no scope: the server serves the full
+   *  lifetime ledger, and the harness filters via the tools' optional `scope`
+   *  argument. Null when there is no ledger.db yet (fresh install) or the
+   *  sidecar fails to boot — no data, no tools. */
+  ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
 }
 
 /** Wire the Coach & Skills IPC surface onto ipcMain. Call once from

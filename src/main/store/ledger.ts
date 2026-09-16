@@ -30,6 +30,7 @@ import {
   type PriceOverride,
 } from '../../shared/schemas/ledger.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
+import { ledgerMcpStartupModeSchema, type LedgerMcpStartupMode } from '../../shared/schemas/ledger-mcp.js'
 
 export type {
   CurrencyRate,
@@ -50,8 +51,8 @@ export type {
  * Everything a view shows is re-derived at query time; nothing is materialized.
  *
  * Config tables (model aliases, price overrides, currency, refresh cadence,
- * display currency) are NOT scan data: they are user/app settings that survive
- * `clear()`.
+ * display currency, local MCP startup) are NOT scan data: they are user/app
+ * settings that survive `clear()`.
  */
 export interface LedgerStoreOptions {
   /** Open the ledger READ-ONLY (the in-app ledger MCP server's second
@@ -207,6 +208,11 @@ export class LedgerStore {
         reason TEXT NOT NULL,
         created TEXT NOT NULL,
         PRIMARY KEY (source, name)
+      );
+
+      CREATE TABLE IF NOT EXISTS ledger_mcp_config (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        startup_mode TEXT NOT NULL DEFAULT 'on-demand'
       );
     `)
     // Greenfield: no migration path exists — the app is not yet distributed, so
@@ -524,6 +530,24 @@ export class LedgerStore {
       INSERT INTO refresh_cadence_config (id, value) VALUES (1, ?)
       ON CONFLICT(id) DO UPDATE SET value = excluded.value
     `).run(cadence)
+  }
+
+  getLedgerMcpStartupMode(): LedgerMcpStartupMode {
+    const row = this.db.prepare('SELECT startup_mode FROM ledger_mcp_config WHERE id = 1').get() as
+      | { startup_mode: unknown }
+      | undefined
+    const parsed = ledgerMcpStartupModeSchema.safeParse(row?.startup_mode)
+    return parsed.success ? parsed.data : 'on-demand'
+  }
+
+  setLedgerMcpStartupMode(value: unknown): LedgerMcpStartupMode {
+    const parsed = ledgerMcpStartupModeSchema.safeParse(value)
+    const startupMode = parsed.success ? parsed.data : 'on-demand'
+    this.db.prepare(`
+      INSERT INTO ledger_mcp_config (id, startup_mode) VALUES (1, ?)
+      ON CONFLICT(id) DO UPDATE SET startup_mode = excluded.startup_mode
+    `).run(startupMode)
+    return startupMode
   }
 
   /** Not-a-skill dismissals (ticket 25): candidate patterns the user rejected,

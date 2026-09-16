@@ -491,6 +491,12 @@ export class DbWorkerContext {
       case 'settings:info':
         return this.settingsInfo()
 
+      case 'ledger-mcp:startup:get':
+        return this.ledger.getLedgerMcpStartupMode()
+
+      case 'ledger-mcp:startup:set':
+        return this.ledger.setLedgerMcpStartupMode(args[0])
+
       case 'settings:clear': {
         ledger.clear()
         this.lastScanMetadata = null

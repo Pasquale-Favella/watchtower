@@ -15,6 +15,10 @@ const copilot: HarnessSpec = {
   commands: ['copilot'],
   scrubEnv: ['GITHUB_TOKEN', 'GH_TOKEN', 'OPENAI_API_KEY'],
   preference: 9,
+  // The Copilot CLI rejects client-provided stdio MCP servers (logged
+  // verbatim: `Rejecting non-http/sse MCP server ... from client`), so the
+  // runner injects the ledger over loopback HTTP for this harness.
+  clientMcpTransport: 'http',
   adapter: {
     kind: 'acp',
     acpConfig: {

@@ -1,5 +1,9 @@
 import { z } from 'zod'
 import { scanMetadataSchema, scanProgressSchema } from './scan.js'
+import { ledgerMcpConnectionSchema, ledgerMcpStatusSchema, type LedgerMcpConnection, type LedgerMcpStatus } from './ledger-mcp.js'
+
+export { ledgerMcpConnectionSchema, ledgerMcpStatusSchema }
+export type { LedgerMcpConnection, LedgerMcpStatus }
 
 /** The preload's `scan:progress` message — the same `ScanProgress` the scan
  * emits (its `stage` is the shared enum, not a free string). */

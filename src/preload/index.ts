@@ -27,6 +27,8 @@ import type {
   ScanStatus,
   SettingsInfo,
   StoreChangedMessage,
+  LedgerMcpConnection,
+  LedgerMcpStatus,
 } from '../shared/schemas/ipc.js'
 import type {
   CoachEventEnvelope,
@@ -44,6 +46,8 @@ export type {
   ScanStatus,
   SettingsInfo,
   StoreChangedMessage,
+  LedgerMcpConnection,
+  LedgerMcpStatus,
 } from '../shared/schemas/ipc.js'
 export type {
   CoachEventEnvelope,
@@ -136,6 +140,11 @@ const api = {
   search: (query: string): Promise<SearchHit[]> => ipcRenderer.invoke('store:search', query),
   getSettings: (): Promise<SettingsInfo> => ipcRenderer.invoke('settings:info'),
   clearData: (): Promise<SettingsInfo> => ipcRenderer.invoke('settings:clear'),
+  getLedgerMcpStatus: (): Promise<LedgerMcpStatus> => ipcRenderer.invoke('ledger-mcp:status'),
+  setLedgerMcpStartupMode: (mode: 'on-demand' | 'at-launch'): Promise<LedgerMcpStatus> =>
+    ipcRenderer.invoke('ledger-mcp:startup:set', mode),
+  getLedgerMcpConnection: (): Promise<LedgerMcpConnection> => ipcRenderer.invoke('ledger-mcp:connection'),
+  regenerateLedgerMcpToken: (): Promise<LedgerMcpStatus> => ipcRenderer.invoke('ledger-mcp:token:regenerate'),
   refreshPricing: (): Promise<PricingRefreshResult> => ipcRenderer.invoke('pricing:refresh'),
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),

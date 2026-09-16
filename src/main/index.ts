@@ -13,9 +13,18 @@ import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './up
 import type { ExportResult } from './export.js'
 import type { OverviewScope } from './overview.js'
 import type { ComparePair } from './compare-view.js'
-import { registerAgentsIpc } from './agents/ipc.js'
-import { buildLedgerMcpServer } from './agents/ledger-mcp/config.js'
+import { registerAgentsIpc, type LedgerMcpAttachment } from './agents/ipc.js'
+import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
+import { createSidecarPool } from './agents/ledger-mcp/pool.js'
+import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
+import type { AcpMcpServer } from './agents/harnesses/types.js'
 import { DbWorkerClient } from './db-worker/client.js'
+import {
+  ledgerMcpStartupModeSchema,
+  type LedgerMcpConnection,
+  type LedgerMcpStartupMode,
+  type LedgerMcpStatus,
+} from '../shared/schemas/ledger-mcp.js'
 
 /**
  * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the
@@ -31,6 +40,11 @@ let updateChecker: UpdateChecker | null = null
 let agentsCleanup: { reset: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
 let dbClient: DbWorkerClient | null = null
+/** App-level loopback-HTTP ledger sidecar: shared by Copilot, local external
+ * MCP clients, and any future harness that rejects stdio. It remains lazy by
+ * default and is prewarmed after the data worker is ready when the persisted
+ * startup setting requests it. */
+const sidecarPool = createSidecarPool({ spawn: ctx => startLedgerMcpHttp(ctx) })
 /** The requesting window of the in-flight manual scan (progress/error routing). */
 let scanRequester: WebContents | null = null
 
@@ -38,6 +52,33 @@ function broadcast(channel: string, data?: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(channel, data)
   }
+}
+
+function ledgerMcpContext(): { execPath: string; entryPath: string; dbPath: string } {
+  return {
+    execPath: process.execPath,
+    entryPath: join(app.getAppPath(), 'out/main/ledger-mcp.js'),
+    dbPath: join(app.getPath('userData'), 'ledger.db'),
+  }
+}
+
+function ledgerMcpConnection(server: AcpMcpServer): LedgerMcpConnection {
+  if (!('url' in server) || !('headers' in server)) throw new Error('ledger MCP sidecar is not using HTTP')
+  const headers = Object.fromEntries(server.headers.map(header => [header.name, header.value]))
+  return {
+    url: server.url,
+    config: JSON.stringify({
+      mcpServers: {
+        [server.name]: { type: 'http', url: server.url, headers },
+      },
+    }, null, 2),
+  }
+}
+
+async function ledgerMcpStatus(db: DbWorkerClient): Promise<LedgerMcpStatus> {
+  const startupMode = await db.request('ledger-mcp:startup:get') as LedgerMcpStartupMode
+  const server = await sidecarPool.status()
+  return { startupMode, running: server !== null, url: server && 'url' in server ? server.url : null }
 }
 
 /** Relays db-worker broadcasts to windows. Manual-scan lifecycle events go to
@@ -204,6 +245,33 @@ function registerIpc(db: DbWorkerClient): void {
 
   ipcMain.handle('settings:clear', () => db.request('settings:clear'))
 
+  ipcMain.handle('ledger-mcp:status', () => ledgerMcpStatus(db))
+
+  ipcMain.handle('ledger-mcp:startup:set', async (_event, value: unknown): Promise<LedgerMcpStatus> => {
+    const parsed = ledgerMcpStartupModeSchema.safeParse(value)
+    if (!parsed.success) throw new Error('invalid ledger MCP startup mode')
+    const startupMode = await db.request('ledger-mcp:startup:set', parsed.data) as LedgerMcpStartupMode
+    if (startupMode === 'at-launch') {
+      // Starting is best-effort: a broken bundle or unavailable DB leaves the
+      // Coach able to run without grounding tools.
+      await sidecarPool.connection(ledgerMcpContext())
+    }
+    return ledgerMcpStatus(db)
+  })
+
+  ipcMain.handle('ledger-mcp:connection', async (): Promise<LedgerMcpConnection> => {
+    await db.ready
+    const server = await sidecarPool.connection(ledgerMcpContext())
+    if (!server) throw new Error('ledger MCP server is unavailable')
+    return ledgerMcpConnection(server)
+  })
+
+  ipcMain.handle('ledger-mcp:token:regenerate', async (): Promise<LedgerMcpStatus> => {
+    await db.ready
+    await sidecarPool.regenerate(ledgerMcpContext())
+    return ledgerMcpStatus(db)
+  })
+
   ipcMain.handle('pricing:refresh', () => db.request('pricing:refresh'))
 
   /** The About area's version (ADR 0012): `app.getVersion()` reads it from
@@ -278,17 +346,29 @@ function registerIpc(db: DbWorkerClient): void {
     // filters through each tool's optional `scope` argument). Paths:
     // `process.execPath` (dev + packaged), the bundled entry under appPath,
     // and the ledger DB beside the cache.
-    ledgerMcpServer: () => {
+    ledgerMcpServer: async (harnessKind: string): Promise<LedgerMcpAttachment | null> => {
+      await db.ready
       // Fresh install: no ledger.db yet → no data to serve, so no MCP server
       // (its read-only open would throw on a missing file). Once the first
       // scan lands, the next run injects it.
-      const dbPath = join(app.getPath('userData'), 'ledger.db')
+      const context = ledgerMcpContext()
+      const dbPath = context.dbPath
       if (!existsSync(dbPath)) return null
-      return buildLedgerMcpServer({
-        execPath: process.execPath,
-        entryPath: join(app.getAppPath(), 'out/main/ledger-mcp.js'),
-        dbPath,
-      })
+      // Harnesses that reject client-provided stdio servers (Copilot) get
+      // the same ledger over the app-level loopback-HTTP sidecar instead. A null
+      // (spawn failure, reset raced the spawn) degrades to no-tools (the
+      // turn still runs) rather than failing the turn.
+      if (ledgerMcpTransportFor(harnessKind) === 'http') {
+        try {
+          return await sidecarPool.acquire(context)
+        } catch {
+          return null
+        }
+      }
+      return {
+        server: buildLedgerMcpServer(context),
+        release: () => {},
+      }
     },
   })
 }
@@ -335,6 +415,19 @@ app.whenReady().then(() => {
   registerIpc(db)
   createWindow()
 
+  // Optional app-level prewarm: the persisted setting is read only after the
+  // data worker owns the DB, so the sidecar can safely open its read-only
+  // connection. A failed prewarm is non-fatal; the next Coach run or an
+  // explicit copy-config action can retry on demand.
+  void db.ready.then(async () => {
+    const startupMode = await db.request('ledger-mcp:startup:get') as LedgerMcpStartupMode
+    if (startupMode === 'at-launch') {
+      await sidecarPool.connection(ledgerMcpContext())
+    }
+  }).catch(err => {
+    process.stderr.write(`watchtower-ledger(http): launch prewarm failed: ${String(err)}\n`)
+  })
+
   // The worker queues requests until its synchronous init finishes, so the
   // window can paint immediately. A boot failure (unopenable ledger) cannot
   // heal — surface it once and quit instead of serving IPC errors forever.
@@ -363,6 +456,10 @@ app.on('window-all-closed', () => {
 // data worker gets the same best-effort treatment: a chance to checkpoint
 // and close the ledger before the process dies.
 app.on('before-quit', () => {
+  // The pool kill is synchronous (the signal is delivered even as this
+  // process exits). Belt-and-braces with the child's own parent-liveness
+  // watch so a main-process crash cannot leave a local sidecar behind.
+  sidecarPool.releaseAll()
   void agentsCleanup?.reset()
   void dbClient?.shutdown().catch(() => {})
 })
