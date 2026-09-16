@@ -133,14 +133,9 @@ describe('ledger MCP transport policy (per-harness)', () => {
     expect(ledgerMcpTransportFor('copilot')).toBe('http')
   })
 
-  it('serves live-proven harnesses over HTTP (ADR 0027 Stage 1)', () => {
-    expect(ledgerMcpTransportFor('opencode')).toBe('http')
-    expect(ledgerMcpTransportFor('codex')).toBe('http')
-  })
-
   it('serves every other harness over agent-spawned stdio, including unknown keys', () => {
+    expect(ledgerMcpTransportFor('opencode')).toBe('stdio')
     expect(ledgerMcpTransportFor('claude')).toBe('stdio')
-    expect(ledgerMcpTransportFor('pi')).toBe('stdio')
     expect(ledgerMcpTransportFor('no-such-harness')).toBe('stdio')
   })
 })

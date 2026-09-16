@@ -11,10 +11,6 @@ const opencode: HarnessSpec = {
   commands: ['opencode', 'opencode-ai'],
   scrubEnv: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
   preference: 3,
-  // Proven live (ADR 0027 Stage 1): a real run called
-  // `watchtower-ledger_ledger_scope` over the loopback-HTTP sidecar and
-  // reported DB-exact counts — so the runner injects the ledger over HTTP.
-  clientMcpTransport: 'http',
   adapter: {
     kind: 'acp',
     acpConfig: {
