@@ -59,6 +59,13 @@ describe('normalizeProjectPathKey', () => {
     expect(normalizeProjectPathKey('/')).toBe('/')
     if (process.platform !== 'win32') expect(normalizeProjectPathKey('///')).toBe('/')
   })
+
+  it('preserves a Windows drive root instead of degrading to a drive-relative key', () => {
+    if (process.platform !== 'win32') return
+    expect(normalizeProjectPathKey('C:\\')).toBe('c:/')
+    expect(normalizeProjectPathKey('C:/')).toBe('c:/')
+    expect(normalizeProjectPathKey('C:///')).toBe('c:/')
+  })
 })
 
 describe('deriveCanonicalProjectKey', () => {

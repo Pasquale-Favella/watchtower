@@ -117,8 +117,12 @@ export function normalizeProjectPathKey(projectPath: string): string {
   const normalized = trimmed.replace(/\\/g, '/')
   const stripped = normalized.replace(/\/+$/, '')
   // A stripped remainder of '' means the input was all slashes (a root):
-  // keep the root instead of collapsing to the empty string.
-  return (stripped || (normalized.startsWith('/') ? '/' : normalized)).toLowerCase()
+  // keep the root instead of collapsing to the empty string. A bare drive
+  // letter means a Windows drive root (e.g. `C:\` → `C:` after trimming):
+  // preserve the root slash instead of degrading to a drive-relative key.
+  if (!stripped) return normalized.startsWith('/') ? '/' : normalized
+  if (/^[a-zA-Z]:$/.test(stripped)) return `${stripped.toLowerCase()}/`
+  return stripped.toLowerCase()
 }
 
 export function projectNameFromPath(projectPath: string, fallback: string): string {

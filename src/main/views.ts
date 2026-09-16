@@ -2,7 +2,7 @@ import { sessionRowFromSummary, type SessionRow as ReportSessionRow } from './pi
 import { isProxiedPath } from './pipeline/models.js'
 import { CATEGORY_LABELS } from './pipeline/types.js'
 import type { ProjectSummary, SessionSummary, TaskCategory } from './pipeline/types.js'
-import { buildSessionRows, buildSessionSummaries, groupSummariesIntoProjects } from './store/aggregate.js'
+import { buildSessionRows, buildSessionSummaries, groupSummariesIntoProjects, sessionProjectKey } from './store/aggregate.js'
 import type { LedgerStore } from './store/ledger.js'
 import {
   analyticalViewsSchema,
@@ -150,18 +150,21 @@ function buildProjectRowsCore(store: LedgerStore): ProjectRow[] {
   }
   const byProject = new Map<string, ProjectRow>()
   for (const s of summaries) {
-    let row = byProject.get(s.project)
+    // Key on the canonical project key so same-leaf checkouts (/a/src,
+    // /b/src) stay separate buckets; the row keeps the leaf only for display.
+    const key = sessionProjectKey(s)
+    let row = byProject.get(key)
     if (!row) {
       row = {
         project: s.project,
-        projectPath: projectPathBySession.get(s.sessionId) ?? '',
+        projectPath: s.projectPath ?? projectPathBySession.get(s.sessionId) ?? '',
         cost: 0,
         calls: 0,
         sessions: 0,
         firstTimestamp: '',
         lastTimestamp: '',
       }
-      byProject.set(s.project, row)
+      byProject.set(key, row)
     }
     row.cost += s.totalCostUSD
     row.calls += s.apiCalls
@@ -297,6 +300,10 @@ function buildDashboardCore(
   const modelSum = new Map<string, Sum>()
   const projectSum = new Map<string, Sum>()
   const categorySum = new Map<TaskCategory, Sum>()
+  // Same-leaf checkouts share a display leaf but never a canonical key: group
+  // the project bucket by key and keep the leaf only for display.
+  const projectKeyBySession = new Map(sessions.map(s => [s.sessionId, sessionProjectKey(s)]))
+  const projectDisplayByKey = new Map<string, string>()
 
   for (const row of rows) {
     const day = row.startedAt.slice(0, 10)
@@ -312,9 +319,11 @@ function buildDashboardCore(
       modelSum.set(model, modelEntry)
     }
 
-    const project = projectSum.get(row.project) ?? emptySum()
+    const projectKey = projectKeyBySession.get(row.sessionId) ?? row.project
+    if (!projectDisplayByKey.has(projectKey)) projectDisplayByKey.set(projectKey, row.project)
+    const project = projectSum.get(projectKey) ?? emptySum()
     addSum(project, row.cost, row.calls, row.turns)
-    projectSum.set(row.project, project)
+    projectSum.set(projectKey, project)
   }
 
   for (const session of sessions) {
@@ -339,7 +348,10 @@ function buildDashboardCore(
       .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
     byProvider: toEntry<DashboardViews['byProvider'][number]>(providerSum).map(e => ({ ...e, sessions: providerSum.get(e.name)!.sessions })),
     byModel: toEntry<DashboardViews['byModel'][number]>(modelSum),
-    byProject: toEntry<DashboardViews['byProject'][number]>(projectSum),
+    byProject: toEntry<DashboardViews['byProject'][number]>(projectSum).map(e => ({
+      ...e,
+      name: projectDisplayByKey.get(e.name) ?? e.name,
+    })),
     byCategory: Array.from(categorySum.entries())
       .filter(([, s]) => s.cost !== 0 || s.turns !== 0)
       .map(([category, s]) => ({ name: CATEGORY_LABELS[category] ?? category, cost: s.cost, turns: s.turns }))
@@ -370,7 +382,7 @@ function buildDashboardCoreFromLedger(store: LedgerStore): DashboardViews {
     totalProxiedCost: 0,
     totalCalls: 0,
     totalSessions: summaries.length,
-    totalProjects: new Set(summaries.map(s => s.project)).size,
+    totalProjects: new Set(summaries.map(s => sessionProjectKey(s))).size,
     totalInputTokens: 0,
     totalOutputTokens: 0,
     totalCacheReadTokens: 0,

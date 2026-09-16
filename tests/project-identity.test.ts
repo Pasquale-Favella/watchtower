@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { LedgerStore } from '../src/main/store/ledger.js'
+import { normalizeProjectPathKey } from '../src/main/pipeline/parser.js'
 import {
   buildSessionRows,
   buildSessionSummaries,
@@ -10,7 +11,7 @@ import {
   groupSummariesIntoProjects,
 } from '../src/main/store/aggregate.js'
 import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
-import { buildProjectsFromLedger } from '../src/main/views.js'
+import { buildProjectsFromLedger, buildProjectRowsFromLedger } from '../src/main/views.js'
 import {
   buildFixtureCachedFile,
   buildFixtureCachedTurn,
@@ -190,13 +191,54 @@ describe('canonical project identity at the aggregation seam', () => {
     store.close()
   })
 
+  it('keeps same-leaf checkouts as separate Projects/Spend buckets keyed by canonical path', () => {
+    const store = makeStore()
+    portSession(store, {
+      provider: 'codex',
+      sessionId: 'sess-src-a',
+      filePath: '/tmp/tr-ident/same/a.jsonl',
+      project: 'src',
+      costUSD: 1,
+      workingDirectory: '/a/src',
+    })
+    portSession(store, {
+      provider: 'codex',
+      sessionId: 'sess-src-b',
+      filePath: '/tmp/tr-ident/same/b.jsonl',
+      project: 'src',
+      costUSD: 2,
+      workingDirectory: '/b/src',
+    })
+
+    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    expect(summaries).toHaveLength(2)
+    expect(summaries[0]!.projectKey).not.toBe(summaries[1]!.projectKey)
+    // The leaf survives only as the display label.
+    expect(summaries.map(s => s.project)).toEqual(['src', 'src'])
+
+    const rows = buildProjectRowsFromLedger(store)
+    expect(rows).toHaveLength(2)
+    expect(rows.map(r => r.project)).toEqual(['src', 'src'])
+    expect(rows.map(r => r.cost).sort((a, b) => a - b)).toEqual([1, 2])
+
+    const payload = buildSpendViewFromLedger(store, { period: 'lifetime' }, new Date('2026-08-01T00:00:00.000Z'))
+    expect(payload.flow.projects).toHaveLength(2)
+    expect(payload.flow.projects.map(p => p.label)).toEqual(['src', 'src'])
+    expect(payload.flow.projects.map(p => p.id).sort()).toEqual(
+      [normalizeProjectPathKey('/a/src'), normalizeProjectPathKey('/b/src')].sort(),
+    )
+
+    store.close()
+  })
+
   it('shows one project with the summed cost in the Spend section', () => {
     const store = makeStore()
     portCheckout(store)
 
     const payload = buildSpendViewFromLedger(store, { period: 'lifetime' }, new Date('2026-08-01T00:00:00.000Z'))
-    const projectNames = payload.flow.projects.map(p => p.id)
-    expect(projectNames).toEqual(['watchtower'])
+    // Flow node ids are canonical keys (link-stable); labels keep the leaf.
+    expect(payload.flow.projects.map(p => p.id)).toEqual([normalizeProjectPathKey(NATIVE)])
+    expect(payload.flow.projects.map(p => p.label)).toEqual(['watchtower'])
     expect(payload.flow.projects[0]!.cost).toBeCloseTo(1.0, 9)
 
     store.close()
