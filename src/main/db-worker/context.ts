@@ -116,7 +116,13 @@ export class DbWorkerContext {
     const repoUrlCache = new Map<string, Promise<string | undefined>>()
     const portIn = async (delta: PortInput): Promise<void> => {
       if (delta.cachedFile.failed) return
+      // Repository badge (#106): resolve from the canonical project path for
+      // every provider — the worktree-folded cwd when the parser derived one,
+      // else the provider's exact working directory. Same memoized-per-scan,
+      // silent-when-absent semantics as before; never an identity key.
       const cwd = delta.cachedFile.canonicalCwd
+        ?? delta.workingDirectory
+        ?? delta.cachedFile.workingDirectory
       let repoUrl: string | undefined
       if (cwd) {
         let lookup = repoUrlCache.get(cwd)

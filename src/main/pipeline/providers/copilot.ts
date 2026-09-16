@@ -2163,23 +2163,51 @@ export function getVSCodeGlobalStorageDirs(home: string, os: string): string[] {
   ]
 }
 
-async function resolveWorkspaceProject(wsDir: string, hashDir: string): Promise<string> {
+/// Decode a VS Code workspace folder URI to a host-local checkout path.
+/// Only `file://` URIs map to a real directory; remote flavours
+/// (vscode-remote, ssh, wsl) have no host-local path and yield undefined so
+/// those sessions keep flowing to the orphan bucket instead of inventing an
+/// identity. Mirrors cursor.ts `workspaceFsPath` (kept local to avoid a
+/// cross-provider import).
+function copilotWorkspaceFsPath(uri: string): string | undefined {
+  if (!uri.startsWith('file://')) return undefined
+  let path = uri.slice('file://'.length)
+  try {
+    path = decodeURIComponent(path)
+  } catch {
+    // Malformed percent encoding — keep the raw remainder rather than throw.
+  }
+  // file:///C:/work → C:/work (drop the URI-root slash before a drive letter).
+  return path.replace(/^\/([a-zA-Z]:\/)/, '$1')
+}
+
+async function resolveWorkspaceProject(wsDir: string, hashDir: string): Promise<{ project: string; workingDirectory?: string }> {
   let project = hashDir
+  let workingDirectory: string | undefined
   try {
     const wsJson = await readSessionFile(join(wsDir, hashDir, 'workspace.json'))
     if (wsJson) {
       const data = JSON.parse(wsJson) as { folder?: string }
       if (typeof data.folder === 'string') {
         // folder is a URI like 'file:///home/user/myapp' or 'file:///C:/Users/...'
-        const folder = data.folder.replace(/^file:\/\//, '').replace(/\/+$/, '')
-        const name = basename(folder)
-        if (name) project = name
+        const fsPath = copilotWorkspaceFsPath(data.folder)
+        if (fsPath) {
+          const clean = fsPath.replace(/\/+$/, '')
+          const name = basename(clean)
+          if (name) project = name
+          if (clean) workingDirectory = clean
+        } else {
+          // Remote URI (vscode-remote, wsl): no host-local checkout, but keep
+          // the basename as the grouping label rather than the storage hash.
+          const name = basename(data.folder.replace(/\/+$/, ''))
+          if (name) project = name
+        }
       }
     }
   } catch {
     // workspace.json may be absent or malformed
   }
-  return project
+  return workingDirectory ? { project, workingDirectory } : { project }
 }
 
 async function hasChatSessionFiles(chatSessionsDir: string): Promise<boolean> {
@@ -2224,7 +2252,7 @@ async function discoverWorkspaceChatSessions(
         continue
       }
 
-      const project = await resolveWorkspaceProject(wsDir, hashDir)
+      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir)
       for (const file of files) {
         if (!file.endsWith('.jsonl')) continue
         const path = join(chatSessionsDir, file)
@@ -2235,6 +2263,7 @@ async function discoverWorkspaceChatSessions(
           project,
           provider: 'copilot',
           sourceType: 'chatsession',
+          ...(workingDirectory ? { workingDirectory } : {}),
         })
       }
     }
@@ -2301,7 +2330,7 @@ async function discoverTranscriptSessions(
       if (await hasChatSessionFiles(chatSessionsDir)) continue
 
       const transcriptsDir = join(wsDir, hashDir, 'GitHub.copilot-chat', 'transcripts')
-      const project = await resolveWorkspaceProject(wsDir, hashDir)
+      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir)
 
       let transcriptFiles: string[]
       try {
@@ -2319,6 +2348,7 @@ async function discoverTranscriptSessions(
           project,
           provider: 'copilot',
           sourceType: 'jsonl',
+          ...(workingDirectory ? { workingDirectory } : {}),
         })
       }
     }

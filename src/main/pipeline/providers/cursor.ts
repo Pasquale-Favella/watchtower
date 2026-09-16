@@ -136,8 +136,37 @@ function sanitizeWorkspaceUri(uri: string): string {
   return path.replace(/\/+/g, '-')
 }
 
+/// Decode a workspace folder URI to a local filesystem path for the canonical
+/// project identity. Only `file://` URIs map to a real checkout; remote
+/// flavours (vscode-remote, ssh, wsl) have no host-local path and yield
+/// undefined so those sessions keep flowing to the orphan bucket instead of
+/// inventing an identity. Visible for tests.
+export function workspaceFsPath(uri: string): string | undefined {
+  if (!uri.startsWith('file://')) return undefined
+  let path = uri.slice('file://'.length)
+  try {
+    path = decodeURIComponent(path)
+  } catch {
+    // Malformed percent encoding — keep the raw remainder rather than throw.
+  }
+  // file:///C:/work → C:/work (drop the URI-root slash before a drive letter).
+  return path.replace(/^\/([a-zA-Z]:\/)/, '$1')
+}
+
 let workspaceMapCache: WorkspaceMapping | null = null
 let workspaceMapCacheRoot: string | null = null
+
+/// Attach a source's exact checkout to one parsed call for the canonical
+/// project identity. A local workspace path sets both path fields; an
+/// undefined checkout (remote URI, orphan source) leaves the call untouched
+/// so the session keeps flowing to the orphan bucket. Pure — the yield-attach
+/// seam under test without a bubble-DB fixture.
+export function attachWorkspacePaths(
+  call: ParsedProviderCall,
+  workspacePath: string | undefined,
+): ParsedProviderCall {
+  return workspacePath ? { ...call, projectPath: workspacePath, workingDirectory: workspacePath } : call
+}
 
 /// Visible for tests so a fixture can rebuild the map after writing fresh
 /// workspace directories.
@@ -980,6 +1009,12 @@ function createParser(
       // Cache is keyed on the bare DB path so multiple workspace-scoped
       // sources reuse one parsed bubble set per CLI run. Filtering happens
       // post-cache so each source emits only its own composers.
+      //
+      // The workspace folder URI doubles as this source's exact checkout for
+      // the canonical project identity (non-file URIs and the orphan source
+      // yield undefined and keep flowing to the orphan bucket). Attached
+      // here, post-cache, so the shared bubble cache stays workspace-neutral.
+      const workspacePath = workspaceFsPath(workspaceTag)
       let allCalls: ParsedProviderCall[] | null = null
       const cached = await readCachedResults(dbPath, timeFloor)
       if (cached) {
@@ -1026,7 +1061,7 @@ function createParser(
         }
         if (seenKeys.has(call.deduplicationKey)) continue
         seenKeys.add(call.deduplicationKey)
-        yield call
+        yield attachWorkspacePaths(call, workspacePath)
       }
     },
   }
@@ -1054,10 +1089,12 @@ export function createCursorProvider(dbPathOverride?: string): Provider {
       const wsMap = loadWorkspaceMap(getCursorWorkspaceStorageDir(dbPath))
       const sources: SessionSource[] = []
       for (const [folder, project] of wsMap.workspaceProjectName) {
+        const workspacePath = workspaceFsPath(folder)
         sources.push({
           path: encodeSourcePath(dbPath, folder),
           project,
           provider: 'cursor',
+          ...(workspacePath ? { workingDirectory: workspacePath } : {}),
         })
       }
       // Always emit a catch-all source for composers with no workspace

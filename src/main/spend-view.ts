@@ -1,6 +1,6 @@
 import { getShortModelName } from './pipeline/models.js'
 import type { SessionSummary } from './pipeline/types.js'
-import { buildSessionSummaries } from './store/aggregate.js'
+import { buildSessionSummaries, sessionProjectKey } from './store/aggregate.js'
 import { localDateKey, overviewDateRange, type OverviewScope } from './overview.js'
 import type { LedgerStore } from './store/ledger.js'
 import {
@@ -35,6 +35,23 @@ function sortedEntries(totals: Map<string, number>): Array<[string, number]> {
     const byCost = bCost - aCost
     return byCost !== 0 ? byCost : aName.localeCompare(bName)
   })
+}
+
+/** Map key-keyed day segments back to leaf display names. Same-leaf checkouts
+ * sharing a day merge into one display segment (costs summed, no spend lost);
+ * the Sankey flow below keeps them as separate key-id nodes. */
+function displayProjectSegments(
+  segments: SpendSegment[],
+  displayByKey: Map<string, string>,
+): SpendSegment[] {
+  const merged = new Map<string, number>()
+  for (const seg of segments) {
+    const display = displayByKey.get(seg.name) ?? seg.name
+    merged.set(display, (merged.get(display) ?? 0) + seg.cost)
+  }
+  return [...merged.entries()]
+    .map(([name, cost]) => ({ name, cost }))
+    .sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name))
 }
 
 /** The top `TOP_NODE_LIMIT`
@@ -122,12 +139,14 @@ function rollLinks(
  */
 export function buildSpendViewFromLedger(store: LedgerStore, scope: OverviewScope, now = new Date()): SpendPayload {
   const scoped = buildSessionSummaries(store, { range: overviewDateRange(scope, now), provider: scope.provider })
-    .map(summary => ({ project: summary.project, session: summary }))
+    // Key spend buckets on the canonical project key so same-leaf checkouts
+    // (/a/src, /b/src) never collapse; the leaf rides along for display only.
+    .map(summary => ({ projectKey: sessionProjectKey(summary), project: summary.project, session: summary }))
   return spendPayloadSchema.parse(buildSpendPayload(scoped, scope, now))
 }
 
 function buildSpendPayload(
-  scoped: Array<{ project: string; session: SessionSummary }>,
+  scoped: Array<{ projectKey: string; project: string; session: SessionSummary }>,
   scope: OverviewScope,
   now: Date,
 ): SpendPayload {
@@ -148,8 +167,12 @@ function buildSpendPayload(
   const projectTotals = new Map<string, number>()
   const modelTotals = new Map<string, number>()
   const modelProvenance = new Map<string, Set<string>>()
+  const projectDisplayByKey = new Map<string, string>()
+  for (const { projectKey, project } of scoped) {
+    if (!projectDisplayByKey.has(projectKey)) projectDisplayByKey.set(projectKey, project)
+  }
 
-  for (const { project, session } of scoped) {
+  for (const { projectKey, session } of scoped) {
     for (const turn of session.turns) {
       for (const call of turn.assistantCalls) {
         const cost = call.costUSD
@@ -165,13 +188,13 @@ function buildSpendPayload(
           set.add(call.rawModel)
         }
 
-        let modelCosts = matrix.get(project)
+        let modelCosts = matrix.get(projectKey)
         if (!modelCosts) {
           modelCosts = new Map<string, number>()
-          matrix.set(project, modelCosts)
+          matrix.set(projectKey, modelCosts)
         }
         addToMap(modelCosts, model, cost)
-        addToMap(projectTotals, project, cost)
+        addToMap(projectTotals, projectKey, cost)
         addToMap(modelTotals, model, cost)
 
         const ms = Date.parse(call.timestamp)
@@ -191,7 +214,7 @@ function buildSpendPayload(
           projectDay = new Map<string, number>()
           byProjectDay.set(dayKey, projectDay)
         }
-        addToMap(projectDay, project, cost)
+        addToMap(projectDay, projectKey, cost)
       }
     }
   }
@@ -204,12 +227,21 @@ function buildSpendPayload(
     ...entry,
     segments: entry.segments.map(seg => ({ ...seg, ...provenanceFor(seg.name) })),
   }))
-  const byProject = contiguousDayEntries(byProjectDay, winStart, winEnd)
+  const byProject = contiguousDayEntries(byProjectDay, winStart, winEnd).map(entry => ({
+    ...entry,
+    segments: displayProjectSegments(entry.segments, projectDisplayByKey),
+  }))
   const dataStart = earliestKey(byModelDay, byProjectDay)
 
   const { nodes: rawModels, keep: keptModels } = buildNodes(modelTotals)
   const models = rawModels.map(node => ({ ...node, ...provenanceFor(node.id) }))
-  const { nodes: projects, keep: keptProjects } = buildNodes(projectTotals)
+  const { nodes: rawProjects, keep: keptProjects } = buildNodes(projectTotals)
+  // Flow node ids stay canonical keys (link-stable); labels show the leaf.
+  // The "__other__" rollup node keeps its own label — it has no project key.
+  const projects = rawProjects.map(node => ({
+    ...node,
+    label: projectDisplayByKey.get(node.id) ?? node.label,
+  }))
   const modelOrder = new Map(models.map((node, index) => [node.id, index]))
   const projectOrder = new Map(projects.map((node, index) => [node.id, index]))
   const links = rollLinks(matrix, keptModels, keptProjects).sort((a, b) => {

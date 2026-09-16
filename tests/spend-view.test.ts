@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
+import { normalizeProjectPathKey } from '../src/main/pipeline/parser.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
 import {
@@ -26,6 +27,12 @@ function makeLedger(): LedgerStore {
 
 type SpendSessionSpec = { sessionId: string; provider: string; model: string; project: string; cost: number; date: string }
 
+// Distinct native checkouts per project label: the canonical key (not the
+// display name) is the grouping identity, so fixtures must not share one
+// canonical directory across two projects.
+const SPEND_ROOT = process.platform === 'win32' ? 'C:/workspace' : '/workspace'
+const spendKeyFor = (project: string): string => normalizeProjectPathKey(`${SPEND_ROOT}/${project}`)
+
 function spendCachedFile(spec: SpendSessionSpec): CachedFile {
   const ts = new Date(`${spec.date}T12:00:00`).toISOString()
   const call = {
@@ -36,7 +43,12 @@ function spendCachedFile(spec: SpendSessionSpec): CachedFile {
     timestamp: ts,
   }
   const turn = buildFixtureCachedTurn(0, 'task', { sessionId: spec.sessionId, timestamp: ts, calls: [call] })
-  return buildFixtureCachedFile({ canonicalProjectName: spec.project, title: '', turns: [turn] })
+  return buildFixtureCachedFile({
+    canonicalProjectName: spec.project,
+    canonicalCwd: `${SPEND_ROOT}/${spec.project}`,
+    title: '',
+    turns: [turn],
+  })
 }
 
 function portSpendSessions(store: LedgerStore, specs: SpendSessionSpec[]): void {
@@ -81,13 +93,13 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
         { id: 'Sonnet 4', label: 'Sonnet 4', cost: 4 },
       ],
       projects: [
-        { id: 'alpha', label: 'alpha', cost: 14 },
-        { id: 'beta', label: 'beta', cost: 6 },
+        { id: spendKeyFor('alpha'), label: 'alpha', cost: 14 },
+        { id: spendKeyFor('beta'), label: 'beta', cost: 6 },
       ],
       links: [
-        { model: 'Opus 4', project: 'alpha', cost: 10 },
-        { model: 'Opus 4', project: 'beta', cost: 6 },
-        { model: 'Sonnet 4', project: 'alpha', cost: 4 },
+        { model: 'Opus 4', project: spendKeyFor('alpha'), cost: 10 },
+        { model: 'Opus 4', project: spendKeyFor('beta'), cost: 6 },
+        { model: 'Sonnet 4', project: spendKeyFor('alpha'), cost: 4 },
       ],
     })
     store.close()
@@ -130,7 +142,7 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
 
     expect(payload.byModel[0]).toEqual({ date: '2026-07-10', cost: 10, segments: [{ name: 'Opus 4', cost: 10 }] })
     expect(payload.byProject[0]).toEqual({ date: '2026-07-10', cost: 10, segments: [{ name: 'alpha', cost: 10 }] })
-    expect(payload.flow.projects).toEqual([{ id: 'alpha', label: 'alpha', cost: 10 }])
+    expect(payload.flow.projects).toEqual([{ id: spendKeyFor('alpha'), label: 'alpha', cost: 10 }])
     store.close()
   })
 
@@ -156,7 +168,7 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
       'model-5', 'model-6', 'model-7', '__other__',
     ])
     expect(payload.flow.models[8]).toEqual({ id: '__other__', label: 'Other', cost: 3 })
-    expect(payload.flow.projects).toEqual([{ id: 'alpha', label: 'alpha', cost: 55 }])
+    expect(payload.flow.projects).toEqual([{ id: spendKeyFor('alpha'), label: 'alpha', cost: 55 }])
     store.close()
   })
 

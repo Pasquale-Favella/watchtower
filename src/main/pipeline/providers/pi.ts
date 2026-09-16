@@ -133,8 +133,17 @@ async function discoverSessionsInDir(sessionsDir: string, providerName: string):
       const first = await readFirstEntry(filePath)
       if (!first || first.type !== 'session') continue
 
-      const cwd = first.cwd ?? dirName
-      sources.push({ path: filePath, project: basename(cwd), provider: providerName })
+      // The session file's `cwd` is the absolute checkout; the directory name
+      // is only an encoded fallback. Forward the absolute path so the port-in
+      // seam can attribute the session instead of bucketing it as an orphan.
+      const cwd = first.cwd?.trim() ? first.cwd : undefined
+      const label = cwd ?? dirName
+      sources.push({
+        path: filePath,
+        project: basename(label),
+        provider: providerName,
+        ...(cwd ? { workingDirectory: cwd } : {}),
+      })
     }
   }
 
@@ -148,6 +157,9 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       if (content === null) return
       const lines = content.split('\n').filter(l => l.trim())
       let sessionId = basename(source.path, '.jsonl')
+      // The absolute checkout, preferring the session entry's own `cwd` and
+      // falling back to the discovery-time directory (the codex pattern).
+      let sessionCwd: string | undefined = source.workingDirectory
       let pendingUserMessage = ''
 
       for (const [lineIdx, line] of lines.entries()) {
@@ -160,6 +172,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
 
         if (entry.type === 'session') {
           sessionId = entry.id ?? sessionId
+          if (entry.cwd?.trim()) sessionCwd = entry.cwd
           continue
         }
 
@@ -245,6 +258,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           deduplicationKey: dedupKey,
           userMessage: pendingUserMessage,
           sessionId,
+          ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
         }
 
         pendingUserMessage = ''

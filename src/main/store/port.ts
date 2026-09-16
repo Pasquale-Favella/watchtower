@@ -53,10 +53,29 @@ export function mapFileToLedgerRows(input: PortInput): MappedFile {
   // which keyed sessions by `turn.sessionId`.
   const sessionId = classifiedTurns[0]?.sessionId || basename(filePath, '.jsonl')
   const dirName = basename(dirname(filePath)) || sessionId
+  // Call-level fallback (codex pattern): generic providers stamp the absolute
+  // checkout on each call but never on the file, and discovery may not forward
+  // `workingDirectory`. Without consulting the calls, such sessions degrade to
+  // the directory fallback (a day number, a slug) and bucket as orphans
+  // downstream even though every call knows the real checkout.
+  let firstCallWorkingDirectory: string | undefined
+  let firstCallProjectPath: string | undefined
+  for (const turn of cachedFile.turns) {
+    for (const call of turn.calls) {
+      if (!firstCallWorkingDirectory && typeof call.workingDirectory === 'string' && call.workingDirectory.trim()) {
+        firstCallWorkingDirectory = call.workingDirectory
+      }
+      if (!firstCallProjectPath && typeof call.projectPath === 'string' && call.projectPath.trim()) {
+        firstCallProjectPath = call.projectPath
+      }
+      if (firstCallWorkingDirectory && firstCallProjectPath) break
+    }
+    if (firstCallWorkingDirectory && firstCallProjectPath) break
+  }
   // Discovery-time metadata beats the cache fallbacks: `canonicalProjectName`/
   // `canonicalCwd` are set only for Claude worktrees, so without `project`/`workingDirectory`
   // every other provider degrades to the directory UUID — the pre-fix symptom.
-  const projectPath = cachedFile.canonicalCwd ?? workingDirectory ?? dirName
+  const projectPath = cachedFile.canonicalCwd ?? workingDirectory ?? firstCallWorkingDirectory ?? firstCallProjectPath ?? dirName
   const projectName = project ?? cachedFile.canonicalProjectName ?? dirName
 
   // Session PR links = union of every turn's resolved refs + the file's native
@@ -71,7 +90,7 @@ export function mapFileToLedgerRows(input: PortInput): MappedFile {
     sessionId,
     project: projectName,
     projectPath,
-    workingDirectory: workingDirectory ?? cachedFile.workingDirectory ?? null,
+    workingDirectory: workingDirectory ?? cachedFile.workingDirectory ?? firstCallWorkingDirectory ?? null,
     canonicalProject: cachedFile.canonicalProjectName ?? null,
     canonicalCwd: cachedFile.canonicalCwd ?? null,
     agentType: cachedFile.agentType ?? null,

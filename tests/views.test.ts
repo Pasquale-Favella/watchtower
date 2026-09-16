@@ -51,7 +51,15 @@ function viewsCachedFile(spec: ViewsSessionSpec): CachedFile {
     calls: [call],
     prRefs: spec.prRefs ?? [],
   })
-  return buildFixtureCachedFile({ canonicalProjectName: spec.project, title: spec.title ?? '', turns: [turn] })
+  // Distinct native checkouts per project label: the canonical key (not the
+  // display name) is the grouping identity.
+  const root = process.platform === 'win32' ? 'C:/workspace' : '/workspace'
+  return buildFixtureCachedFile({
+    canonicalProjectName: spec.project,
+    canonicalCwd: `${root}/${spec.project}`,
+    title: spec.title ?? '',
+    turns: [turn],
+  })
 }
 
 function portViews(store: LedgerStore, specs: ViewsSessionSpec[]): void {

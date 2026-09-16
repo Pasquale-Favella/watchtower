@@ -77,6 +77,7 @@ export async function discoverOpenCodeFileSessions(
         path,
         project: sanitize(meta.directory || meta.title || ''),
         provider: providerName,
+        ...(meta.directory ? { workingDirectory: meta.directory } : {}),
       })
     }
   }
@@ -143,6 +144,7 @@ export function createOpenCodeFileSessionParser(
           parts,
           timeCreatedMs: data.time?.created ?? meta.time?.created ?? 0,
           userMessage: currentUserMessage,
+          ...(meta.directory ? { directory: meta.directory } : {}),
         })
         if (!call) continue
 

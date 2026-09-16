@@ -1,5 +1,5 @@
 import { calculateCost, getShortModelName } from '../pipeline/models.js'
-import { buildSpawnPrSets, extractPrUrlsFromProviderCall } from '../pipeline/parser.js'
+import { buildSpawnPrSets, deriveCanonicalProjectKey, extractPrUrlsFromProviderCall, isAbsoluteProjectPath, projectNameFromPath } from '../pipeline/parser.js'
 import { sessionRowFromSummary, type SessionRow } from '../pipeline/sessions-report.js'
 import type {
   ClassifiedTurn,
@@ -428,6 +428,55 @@ export function assembleSession(
 }
 
 /**
+ * The grouping key for one session summary: the canonical project key when
+ * the derivation ran, else the legacy project label. Project shells key on
+ * this so one checkout is one shell; view payloads group by the summary's
+ * display label (canonical leaf or orphan bucket, rewritten at the same
+ * seam), which unifies the same spellings. Summaries assembled before the
+ * derivation (fixtures, parser path) keep grouping exactly as before.
+ */
+export function sessionProjectKey(summary: SessionSummary): string {
+  return summary.projectKey ?? summary.project
+}
+
+/**
+ * Query-time canonical identity (#102): derive the grouping key and display
+ * label from the stored path fields. `project_path` may hold the
+ * discovery-dir fallback (a bare label, never an absolute path) when no
+ * directory was ever known — only a native-absolute stored path counts as a
+ * real checkout; anything else is a legacy label and the session belongs in
+ * the per-provider orphan bucket (lossy slugs are never reparsed into paths).
+ * Sessions with a canonical path display its leaf (original case); orphan
+ * sessions display the bucket name, so every section — shells, rows, spend,
+ * overview, compare, export — groups them into the visible bucket with no
+ * per-view special cases.
+ */
+function attachCanonicalIdentity(
+  summary: SessionSummary,
+  session: LedgerSessionRow,
+  provider: string,
+): void {
+  const storedPath = session.projectPath?.trim()
+  const pathCandidate = storedPath && isAbsoluteProjectPath(storedPath) ? storedPath : undefined
+  summary.projectKey = deriveCanonicalProjectKey(
+    pathCandidate,
+    session.workingDirectory,
+    provider,
+    session.canonicalCwd,
+  )
+  const canonicalPath = (session.canonicalCwd ?? session.workingDirectory ?? pathCandidate ?? '').trim()
+  if (canonicalPath) {
+    summary.projectPath = canonicalPath
+  }
+  // Display precedence: the explicit canonical project name first (Claude
+  // worktrees — set from this same canonical path at parse time, so identical
+  // for real data), then the path leaf in original case, then the legacy
+  // label for orphans via the bucket name (set below).
+  summary.project = session.canonicalProject
+    ?? (canonicalPath ? projectNameFromPath(summary.projectPath!, summary.project) : summary.projectKey)
+}
+
+/**
  * The aggregation seam: per-session aggregates for a scope, in range-slice order
  * (session_id asc), byte-compatible with what the parser's date-filtered rebuild
  * produced. Empty when the scope has no in-range data.
@@ -458,7 +507,9 @@ export function buildSessionSummaries(store: LedgerStore, scope: AggregateScope)
   for (const session of data.sessions) sessionsByKey.set(sessionKey(session.sourceId, session.sessionId), session)
 
   const repoUrlBySource = new Map<number, string>()
+  const providerBySource = new Map<number, string>()
   for (const source of store.getSources()) {
+    providerBySource.set(source.id, source.provider)
     if (source.repoUrl) repoUrlBySource.set(source.id, source.repoUrl)
   }
 
@@ -473,6 +524,7 @@ export function buildSessionSummaries(store: LedgerStore, scope: AggregateScope)
     })
     const assembled = assembleSession(session, turnsSorted, scope.range)
     if (!assembled) continue
+    attachCanonicalIdentity(assembled, session, providerBySource.get(session.sourceId) ?? 'unknown')
     const repoUrl = repoUrlBySource.get(session.sourceId)
     if (repoUrl) assembled.repoUrl = repoUrl
     out.push(assembled)
@@ -493,27 +545,35 @@ export function buildSessionRows(store: LedgerStore, scope: AggregateScope): Ses
 /**
  * Group the aggregation seam's session summaries into ProjectSummary shells for
  * consumers that still need the old project shape (export reassembly, the
- * Optimize/Yield detector cores). `projectPath` degrades to the project label
- * because the seam summary carries the working directory but no canonical path;
- * the git-based yield path then falls back to its "not a work tree → no
- * commits" behavior for such sessions.
+ * Optimize/Yield detector cores). Shells key on the canonical project key so
+ * one checkout is one project; orphan-bucket shells keep their explicit
+ * `orphan:<provider>` name so unattributed spend stays visible.
  */
 export function groupSummariesIntoProjects(sessions: SessionSummary[]): ProjectSummary[] {
-  const byProject = new Map<string, SessionSummary[]>()
+  const byKey = new Map<string, SessionSummary[]>()
   for (const session of sessions) {
-    const list = byProject.get(session.project)
+    const key = sessionProjectKey(session)
+    const list = byKey.get(key)
     if (list) list.push(session)
-    else byProject.set(session.project, [session])
+    else byKey.set(key, [session])
   }
-  return [...byProject.entries()].map(([project, list]) => ({
-    project,
-    projectPath: list.find(s => s.workingDirectory)?.workingDirectory ?? project,
-    totalCostUSD: list.reduce((sum, s) => sum + s.totalCostUSD, 0),
-    totalSavingsUSD: list.reduce((sum, s) => sum + s.totalSavingsUSD, 0),
-    totalEstimatedCostUSD: list.reduce((sum, s) => sum + (s.totalEstimatedCostUSD ?? 0), 0),
-    totalApiCalls: list.reduce((sum, s) => sum + s.apiCalls, 0),
-    totalProxiedCostUSD: 0,
-    sessions: list,
-    repoUrl: list.find(s => s.repoUrl)?.repoUrl,
-  }))
+  return [...byKey.entries()].map(([key, list]) => {
+    const first = list[0]!
+    const canonicalPath = list.find(s => s.projectPath)?.projectPath
+    // Shell display is the first member's seam-derived display (canonical
+    // leaf, explicit canonical name, or orphan bucket) — the same label its
+    // rows carry — so shells and rows never diverge. Pre-seam summaries
+    // (parser path, fixtures) fall back to their legacy label untouched.
+    return {
+      project: key.startsWith('orphan:') ? key : first.project,
+      projectPath: canonicalPath ?? list.find(s => s.workingDirectory)?.workingDirectory ?? first.project,
+      totalCostUSD: list.reduce((sum, s) => sum + s.totalCostUSD, 0),
+      totalSavingsUSD: list.reduce((sum, s) => sum + s.totalSavingsUSD, 0),
+      totalEstimatedCostUSD: list.reduce((sum, s) => sum + (s.totalEstimatedCostUSD ?? 0), 0),
+      totalApiCalls: list.reduce((sum, s) => sum + s.apiCalls, 0),
+      totalProxiedCostUSD: 0,
+      sessions: list,
+      repoUrl: list.find(s => s.repoUrl)?.repoUrl,
+    }
+  })
 }

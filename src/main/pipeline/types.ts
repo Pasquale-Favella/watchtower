@@ -198,6 +198,16 @@ export type SessionSourceMetadata = {
 export type SessionSummary = {
   sessionId: string
   project: string
+  /// Canonical grouping key for the uniform project identity (#102): the
+  /// normalized canonical checkout path, or `orphan:<provider>` when no
+  /// directory is known. Grouping sites key on this (falling back to the
+  /// legacy `project` label) so one checkout is one project everywhere.
+  /// Optional so summaries assembled before the derivation ran keep compiling.
+  projectKey?: string
+  /// The canonical checkout path behind `projectKey`, original case for
+  /// display. Absent for orphan-bucket sessions, which keep their legacy
+  /// label as the row display.
+  projectPath?: string
   /// Exact working directory recorded by the provider before git-worktree
   /// canonicalization. Used to correlate sessions from different AI tools that
   /// worked in the same checkout. Never synthesized from timestamps.
