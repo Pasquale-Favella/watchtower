@@ -1,22 +1,24 @@
 import type { LedgerMcpAttachment } from '../ipc.js'
+import type { AcpMcpServer } from '../harnesses/types.js'
 import type { LedgerMcpSpawnContext } from './config.js'
 import type { StartedLedgerMcpHttp } from './sidecar.js'
 
 /**
- * Per-conversation pool for the loopback-HTTP ledger sidecar (ADR 0026): one
- * sidecar serves every turn of a conversation instead of spawning + booting +
- * readiness-probing on each one. Reuse is safe because the sidecar carries no
- * per-turn state (it serves the full lifetime ledger) and the ledger runs in
- * WAL mode (a long-lived read-only handle never blocks writers nor goes
- * stale — every statement reads the latest commit).
+ * App-level pool for the loopback-HTTP ledger sidecar: one sidecar serves
+ * every Coach conversation and explicitly configured local MCP clients
+ * instead of spawning + booting + readiness-probing for each conversation.
+ * Reuse is safe because the sidecar carries no per-turn state (it serves the
+ * full lifetime ledger) and the ledger runs in WAL mode (a long-lived
+ * read-only handle never blocks writers nor goes stale — every statement
+ * reads the latest commit).
  *
  * The pool sits behind the runner's `ledgerMcpServer` seam, so the runner is
  * untouched: per-run attachments carry a no-op release (the settle path is
- * unchanged) and the pool drops the sidecar on conversation reset/quit. A
- * pooled sidecar is health-gated on every acquire — one that died between
- * turns is respawned, never handed out. A reset racing an in-flight spawn
- * kills the orphan and degrades that turn to no-tools (the booked honesty
- * rule) rather than leaking a stale server into the new conversation.
+ * unchanged). A pooled sidecar is health-gated on every acquire — one that
+ * died between turns is respawned, never handed out. Conversation reset does
+ * not drop it because a local external client may be using it independently;
+ * app quit still releases it. A reset-like generation race kills an orphan
+ * and degrades that turn to no-tools (the booked honesty rule).
  */
 
 export interface SidecarPoolDeps {
@@ -28,8 +30,15 @@ export interface SidecarPool {
    *  (spawn failure, reset raced the spawn) — the turn runs without data
    *  tools, exactly like a sidecar that fails to boot. */
   acquire: (ctx: LedgerMcpSpawnContext) => Promise<LedgerMcpAttachment | null>
-  /** Drops the pooled sidecar (conversation reset/quit). In-flight spawns are
-   *  orphaned by generation and killed on arrival — never pooled. */
+  /** Returns the healthy HTTP server config for a Coach or local client. */
+  connection: (ctx: LedgerMcpSpawnContext) => Promise<AcpMcpServer | null>
+  /** Replaces the running sidecar and bearer token. If it was stopped, this
+   *  starts it on demand. */
+  regenerate: (ctx: LedgerMcpSpawnContext) => Promise<AcpMcpServer | null>
+  /** Returns the current healthy server, if one is running. */
+  status: () => Promise<AcpMcpServer | null>
+  /** Drops the app-level sidecar (app quit). In-flight spawns are orphaned by
+   *  generation and killed on arrival — never pooled. */
   releaseAll: () => void
 }
 
@@ -54,41 +63,64 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
     return started
   }
 
-  return {
-    async acquire(ctx: LedgerMcpSpawnContext): Promise<LedgerMcpAttachment | null> {
-      // The app serves a single ledger.db — one slot, no keying. A pooled
-      // sidecar is health-gated on every acquire: one that died between
-      // turns is respawned, never handed out.
-      if (pooled) {
-        try {
-          if (await pooled.checkHealth()) {
-            return { server: pooled.server, release: () => {} }
-          }
-        } catch {
-          // Unhealthy — fall through to respawn.
+  async function acquire(ctx: LedgerMcpSpawnContext): Promise<LedgerMcpAttachment | null> {
+    // The app serves a single ledger.db — one slot, no keying. A pooled
+    // sidecar is health-gated on every acquire: one that died between
+    // conversations is respawned, never handed out.
+    if (pooled) {
+      try {
+        if (await pooled.checkHealth()) {
+          return { server: pooled.server, release: () => {} }
         }
-        pooled.release()
-        pooled = null
+      } catch {
+        // Unhealthy — fall through to respawn.
       }
-      // Coalesce: rapid turns while a spawn is in flight share it instead of
-      // spawning one sidecar each. The guard clears only the owning slot, so
-      // a reset racing a spawn can never orphan a newer spawn's handle (which
-      // would leak a duplicate sidecar no acquire can reach).
-      if (!inflight) {
-        const slot: Promise<StartedLedgerMcpHttp | null> = spawnFresh(ctx).finally(() => {
-          if (inflight === slot) inflight = null
-        })
-        inflight = slot
-      }
-      const started = await inflight
-      return started ? { server: started.server, release: () => {} } : null
-    },
-
-    releaseAll(): void {
-      generation++
-      inflight = null
-      pooled?.release()
+      pooled.release()
       pooled = null
-    },
+    }
+    // Coalesce: rapid turns while a spawn is in flight share it instead of
+    // spawning one sidecar each. The guard clears only the owning slot, so
+    // a reset racing a spawn can never orphan a newer spawn's handle (which
+    // would leak a duplicate sidecar no acquire can reach).
+    if (!inflight) {
+      const slot: Promise<StartedLedgerMcpHttp | null> = spawnFresh(ctx).finally(() => {
+        if (inflight === slot) inflight = null
+      })
+      inflight = slot
+    }
+    const started = await inflight
+    return started ? { server: started.server, release: () => {} } : null
   }
+
+  async function connection(ctx: LedgerMcpSpawnContext): Promise<AcpMcpServer | null> {
+    const attachment = await acquire(ctx)
+    return attachment?.server ?? null
+  }
+
+  async function regenerate(ctx: LedgerMcpSpawnContext): Promise<AcpMcpServer | null> {
+    releaseAll()
+    return connection(ctx)
+  }
+
+  async function status(): Promise<AcpMcpServer | null> {
+    if (!pooled) return null
+    try {
+      if (await pooled.checkHealth()) return pooled.server
+    } catch {
+      // Treat a failed health check as stopped and let the next acquire boot
+      // a fresh sidecar.
+    }
+    pooled.release()
+    pooled = null
+    return null
+  }
+
+  function releaseAll(): void {
+    generation++
+    inflight = null
+    pooled?.release()
+    pooled = null
+  }
+
+  return { acquire, connection, regenerate, status, releaseAll }
 }

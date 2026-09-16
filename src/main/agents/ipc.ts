@@ -52,8 +52,8 @@ import {
 /** An acquired ledger MCP attachment: the session server config plus its
  *  release. Stdio attachments are agent-spawned (release is a no-op); HTTP
  *  attachments are pooled per conversation (release is a pool no-op — the
- *  pool drops the sidecar on conversation reset/quit). Either way the runner
- *  releases every attachment when its run settles. */
+ *  app quits). Either way the runner releases every attachment when its run
+ *  settles. */
 export interface LedgerMcpAttachment {
   server: AcpMcpServer
   release: () => void

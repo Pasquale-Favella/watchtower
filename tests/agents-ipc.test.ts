@@ -208,7 +208,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect(ledgerMcpServer).toHaveBeenCalledWith('claude')
   })
 
-  it('releases the ledger attachment when the run stream settles (per-run sidecar lifetime)', async () => {
+  it('releases the ledger attachment when the run stream settles (app-level sidecar release is a no-op)', async () => {
     releaseLedgerMcp.mockClear()
     const runner = makeRunner(scriptedRuntime([{ kind: 'status', state: 'done' }]))
 

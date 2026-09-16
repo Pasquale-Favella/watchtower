@@ -556,6 +556,7 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     'currency_rate',
     'display_currency_config',
     'ledger_call',
+    'ledger_mcp_config',
     'ledger_session',
     'ledger_source',
     'ledger_turn',
@@ -625,6 +626,10 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
       // (COALESCE). The lock here is presence + TEXT type + hidden flag; the
       // expression + uniqueness coverage belong to the #98 constraint gate.
       { name: 'call_key', type: 'TEXT', dflt: null, nullable: true, hidden: 3, pk: 0 },
+    ],
+    ledger_mcp_config: [
+      { name: 'id', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 1 },
+      { name: 'startup_mode', type: 'TEXT', dflt: "'on-demand'", nullable: false, hidden: 0, pk: 0 },
     ],
     ledger_turn: [
       { name: 'source_id', type: 'INTEGER', dflt: null, nullable: false, hidden: 0, pk: 1 },
@@ -711,7 +716,7 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     return ro.prepare(`PRAGMA table_xinfo("${table}")`).all() as XinfoRow[]
   }
 
-  it('locks the ten-table set (four ledger + six config)', () => {
+  it('locks the eleven-table set (four ledger + seven config)', () => {
     withTempLedgerReadOnly(ro => {
       expect(readTableNames(ro), 'ledger tables').toEqual(EXPECTED_TABLES)
     })
@@ -782,7 +787,7 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
       const dbJson = dbColumns.filter(name => name.endsWith('_json'))
       expect(zodJsonKeys(schema), `[${table}] JSON columns use JSON helpers`).toEqual(dbJson)
     }
-    // refresh_cadence_config, display_currency_config and
+    // refresh_cadence_config, display_currency_config, ledger_mcp_config and
     // skills_dismissal_config have no Zod row schemas (scalar reads); the
     // shape gate above owns them.
   })
@@ -832,7 +837,7 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
   // INTEGER PRIMARY KEY is a rowid alias: no separate index entry exists.
   // PK position itself is locked by the #97 column gate; here we lock the
   // absence of an auto-index plus the singleton CHECK via definition text.
-  const ROWID_PK_TABLES = ['refresh_cadence_config', 'display_currency_config']
+  const ROWID_PK_TABLES = ['refresh_cadence_config', 'display_currency_config', 'ledger_mcp_config']
 
   function readIndexList(ro: DatabaseSync, table: string): IndexListRow[] {
     return ro.prepare(`PRAGMA index_list("${table}")`).all() as IndexListRow[]

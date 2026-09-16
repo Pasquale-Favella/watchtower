@@ -59,7 +59,7 @@ function watchParentLiveness(): void {
  *  Binds port 0 itself and reports the bound port on stdout (`READY
  *  {"port": N}`) — the spawner never picks ports, so there is no probe and
  *  no bind race. Every route needs the per-spawn bearer token. The process
- *  lives until the spawner's pool releases it (conversation reset/quit), or
+ *  lives until the spawner's pool releases it (app quit), or
  *  until its parent dies — whichever comes first. */
 async function serveHttp(): Promise<void> {
   let ctx: LedgerMcpHttpContext

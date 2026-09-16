@@ -90,7 +90,7 @@ describe('sidecar ready announcement (parent-side port handoff)', () => {
   })
 })
 
-describe('sidecar pool (one sidecar per conversation, ADR 0026)', () => {
+describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
   it('reuses a healthy sidecar across turns — one spawn, per-run releases are no-ops', async () => {
     let spawns = 0
     const pool = createSidecarPool({
@@ -107,6 +107,45 @@ describe('sidecar pool (one sidecar per conversation, ADR 0026)', () => {
     second?.release()
 
     expect(spawns).toBe(1)
+  })
+
+  it('exposes the same healthy connection to Coach and local clients', async () => {
+    let spawns = 0
+    const pool = createSidecarPool({
+      spawn: async () => {
+        spawns++
+        return fakeSidecar(() => true)
+      },
+    })
+
+    const coach = await pool.connection(CTX)
+    const local = await pool.connection(CTX)
+
+    expect(local).toEqual(coach)
+    expect(spawns).toBe(1)
+    expect(await pool.status()).toEqual(coach)
+  })
+
+  it('regenerates the app-level sidecar and token on demand', async () => {
+    let spawns = 0
+    const released: FakeSidecar[] = []
+    const pool = createSidecarPool({
+      spawn: async () => {
+        spawns++
+        const started = fakeSidecar(() => true)
+        const release = started.release
+        started.release = () => { released.push(started); release() }
+        started.server = { ...started.server, url: `http://127.0.0.1:${9_999 + spawns}/mcp` }
+        return started
+      },
+    })
+
+    const first = await pool.connection(CTX)
+    const second = await pool.regenerate(CTX)
+
+    expect(second).not.toEqual(first)
+    expect(spawns).toBe(2)
+    expect(released).toHaveLength(1)
   })
 
   it('respawns when the pooled sidecar died between turns — the dead one is released, never handed out', async () => {
@@ -167,7 +206,7 @@ describe('sidecar pool (one sidecar per conversation, ADR 0026)', () => {
     expect(await pool.acquire(CTX)).toBeNull()
   })
 
-  it('releaseAll kills the pooled sidecar and the next turn spawns fresh', async () => {
+  it('releaseAll kills the pooled sidecar and the next acquire spawns fresh', async () => {
     let spawns = 0
     const released: FakeSidecar[] = []
     const pool = createSidecarPool({

@@ -14,9 +14,10 @@ import type { LedgerMcpSpawnContext } from './config.js'
  * connects back over the loopback. Same read-only ledger, same tools — only
  * the transport differs from the agent-spawned stdio default.
  *
- * Lifetime is pooled per conversation (`pool.ts`): the pool reuses one
- * sidecar across turns and releases it on conversation reset/quit — per-run
- * acquire/release stays a no-op so the runner's settle path is unchanged.
+ * Lifetime is pooled at app scope (`pool.ts`): the pool reuses one sidecar
+ * across Coach conversations and local MCP clients, releasing it on app quit
+ * — per-run acquire/release stays a no-op so the runner's settle path is
+ * unchanged.
  * Electron-free (child_process only) so the spawner stays testable.
  */
 
