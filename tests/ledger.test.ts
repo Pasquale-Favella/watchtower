@@ -45,6 +45,46 @@ function withTempLedgerReadOnly(fn: (ro: DatabaseSync) => void): void {
   }
 }
 
+// Zod shape introspection for the parity gates below. The row schemas are
+// `z.object().transform()` pipes in Zod v4, so the storage-side input shape
+// lives at `.def.in`. JSON columns are the pipe fields (string through
+// `JSON.parse`); every other column is a scalar.
+type ZodInputField = { def: { type: string } }
+type ZodPipedObject = {
+  def: {
+    in?: { def: { shape?: Record<string, ZodInputField> } }
+    shape?: Record<string, ZodInputField>
+  }
+}
+
+function zodInputShape(schema: unknown): Record<string, ZodInputField> {
+  const piped = schema as ZodPipedObject
+  const pipedShape = piped.def.in?.def.shape
+  if (pipedShape !== undefined) return pipedShape
+  const directShape = piped.def.shape
+  if (directShape !== undefined) return directShape
+  return {}
+}
+
+function zodInputKeys(schema: unknown): string[] {
+  return Object.keys(zodInputShape(schema)).sort()
+}
+
+function zodJsonKeys(schema: unknown): string[] {
+  const shape = zodInputShape(schema)
+  return Object.entries(shape)
+    .filter(([, field]) => field.def.type === 'pipe')
+    .map(([name]) => name)
+    .sort()
+}
+
+function jsonIsNonEmpty(raw: string): boolean {
+  const parsed: unknown = JSON.parse(raw)
+  if (Array.isArray(parsed)) return parsed.length > 0
+  if (typeof parsed === 'object' && parsed !== null) return Object.keys(parsed).length > 0
+  return true
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     // temp dirs are left to the OS; only the store handle is closed by tests
@@ -671,38 +711,6 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     return ro.prepare(`PRAGMA table_xinfo("${table}")`).all() as XinfoRow[]
   }
 
-  // The Zod row schemas are `z.object().transform()` pipes in Zod v4, so the
-  // storage-side input shape lives at `.def.in`. JSON columns are the pipe
-  // fields (string through `JSON.parse`); every other column is a scalar.
-  type ZodInputField = { def: { type: string } }
-  type ZodPipedObject = {
-    def: {
-      in?: { def: { shape?: Record<string, ZodInputField> } }
-      shape?: Record<string, ZodInputField>
-    }
-  }
-
-  function zodInputShape(schema: unknown): Record<string, ZodInputField> {
-    const piped = schema as ZodPipedObject
-    const pipedShape = piped.def.in?.def.shape
-    if (pipedShape !== undefined) return pipedShape
-    const directShape = piped.def.shape
-    if (directShape !== undefined) return directShape
-    return {}
-  }
-
-  function zodInputKeys(schema: unknown): string[] {
-    return Object.keys(zodInputShape(schema)).sort()
-  }
-
-  function zodJsonKeys(schema: unknown): string[] {
-    const shape = zodInputShape(schema)
-    return Object.entries(shape)
-      .filter(([, field]) => field.def.type === 'pipe')
-      .map(([name]) => name)
-      .sort()
-  }
-
   it('locks the ten-table set (four ledger + six config)', () => {
     withTempLedgerReadOnly(ro => {
       expect(readTableNames(ro), 'ledger tables').toEqual(EXPECTED_TABLES)
@@ -757,7 +765,8 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     // locks EXPECTED_COLUMNS against the Zod input shapes, so a column added
     // or renamed on either side alone turns red. JSON helper coverage (S8) is
     // locked the same way: every `*_json` DDL column must be a JSON-parsing
-    // pipe in Zod, and vice versa. Behavioural proof stays in #99.
+    // pipe in Zod, and vice versa. Behavioural proof plus the per-column
+    // exercise forcing live in #99.
     const linked = {
       ledger_source: ledgerSourceRowSchema,
       ledger_session: ledgerSessionRowSchema,
@@ -1145,6 +1154,33 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         toolErrors: 0,
         editFailed: 0,
       })
+
+      // S8 forcing: every `*_json` column derived from the Zod shapes must
+      // carry a non-default payload in this fixture — a future JSON column
+      // wired through DDL + schemas but never exercised here fails naming
+      // the table+column instead of shipping unproven.
+      const jsonTables = {
+        ledger_session: ledgerSessionRowSchema,
+        ledger_turn: ledgerTurnRowSchema,
+        ledger_call: ledgerCallRowSchema,
+      }
+      const probe = new DatabaseSync(store.dbPath, { readOnly: true })
+      try {
+        for (const [table, schema] of Object.entries(jsonTables)) {
+          for (const column of zodJsonKeys(schema)) {
+            // Identifiers come from the fixed table map above plus Zod shape
+            // keys — never from fixture input.
+            const values = probe.prepare(`SELECT "${column}" AS v FROM "${table}"`).all() as Array<{ v: string }>
+            expect(values.length, `[${table}.${column}] rows probed`).toBeGreaterThan(0)
+            expect(
+              values.some(r => jsonIsNonEmpty(r.v)),
+              `[${table}.${column}] non-default JSON payload ported`,
+            ).toBe(true)
+          }
+        }
+      } finally {
+        probe.close()
+      }
 
       // Null→undefined shaping: a source ported without discovery metadata
       // (no repoUrl/project) reads its nullable columns back shaped to
