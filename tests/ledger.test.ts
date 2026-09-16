@@ -1118,3 +1118,125 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
     }
   })
 })
+
+describe('DDL-Zod parity: targeted edge tests (#100)', () => {
+  // What neither the shape gates (#97/#98) nor the round trip (#99) reach:
+  // platform identifier precision, enum closedness, and read-query column
+  // coverage. Test-only, same seams as the file's existing tests.
+  it('reads fingerprint identifiers back as digit-exact strings, never arithmetized', () => {
+    // Companion to the existing oversized-identifier test (which proves reads
+    // beyond 2^53 never throw): this locks the TEXT contract itself — even
+    // small identifiers come back as strings, while mtime/size stay numeric.
+    const store = makeStore()
+    try {
+      store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+      const sources = store.getSources()
+      expect(sources).toHaveLength(1)
+      expect(typeof sources[0]!.fingerprint.dev).toBe('string')
+      expect(typeof sources[0]!.fingerprint.ino).toBe('string')
+      expect(sources[0]!.fingerprint).toEqual({
+        dev: '42',
+        ino: '4242',
+        mtimeMs: 1_751_300_000_000,
+        sizeBytes: 4096,
+      })
+    } finally {
+      store.close()
+    }
+  })
+
+  it('rejects an unknown speed value at the schema boundary', () => {
+    // The database cannot anchor the enum (speed is plain TEXT with a
+    // 'standard' default and no CHECK), so the schema is the only closed
+    // gate: a value smuggled past port-in must fail the read-back parse.
+    const store = makeStore()
+    try {
+      store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+      const db = (store as unknown as { db: DatabaseSync }).db
+      db.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
+      expect(() => store.getCalls()).toThrow(/speed/i)
+    } finally {
+      store.close()
+    }
+  })
+
+  it('covers every mapped field in the read-back queries (no forgotten column)', () => {
+    // A read query that forgets a column still parses whenever the schema
+    // field is optional — so port a fully-populated fixture and assert no
+    // read-back field is undefined. Any dropped selected column flips its
+    // field to undefined (or throws for required ones) and names the path.
+    const store = makeStore()
+    try {
+      const file = buildFixtureCachedFile({
+        title: 'Coverage probe',
+        agentType: 'coverage-harness',
+        workingDirectory: '/wrk/coverage',
+        mcpInventory: ['cov-mcp'],
+        agentSpawnLinks: { 'spawn-cov-1': 'sess-cov-side' },
+        ambiguousSpawnAgentIds: ['spawn-ambiguous-cov'],
+        prLinks: ['https://github.com/acme/demo-project/pull/9'],
+        isSidechain: true,
+        parentSessionId: 'sess-parent-cov',
+      })
+      file.turns[0] = {
+        ...buildFixtureCachedTurn(0, 'Coverage probe turn'),
+        gitBranch: 'coverage/branch',
+        prRefs: ['https://github.com/acme/demo-project/pull/10'],
+        spawnToolUseIds: ['tooluse-cov-1'],
+        calls: [
+          {
+            ...buildFixtureCachedCall(0),
+            tools: ['Edit', 'mcp__cov__tool'],
+            bashCommands: ['make coverage'],
+            skills: ['cov-skill'],
+            subagentTypes: ['cov-subagent'],
+            toolSequence: [[{ tool: 'Edit', file: 'src/cov.ts' }]],
+            usage: {
+              inputTokens: 7,
+              outputTokens: 8,
+              cacheCreationInputTokens: 9,
+              cacheReadInputTokens: 10,
+              cachedInputTokens: 11,
+              reasoningTokens: 12,
+              webSearchRequests: 1,
+              cacheCreationOneHourTokens: 2,
+            },
+            costUSD: 2.5,
+            isEstimated: true,
+            locAdded: 1,
+            locRemoved: 2,
+            interrupted: true,
+            userModified: true,
+            toolErrors: 3,
+            editFailed: 4,
+          },
+        ],
+      }
+      store.portIn({ ...baseInput, verdict: 'new', cachedFile: file, project: 'demo-project' })
+
+      const undefinedPaths = (value: unknown, prefix = ''): string[] => {
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) return []
+        const out: string[] = []
+        for (const [key, nested] of Object.entries(value)) {
+          if (nested === undefined) out.push(prefix + key)
+          else out.push(...undefinedPaths(nested, `${prefix}${key}.`))
+        }
+        return out
+      }
+      const tables = {
+        source: store.getSources(),
+        session: store.getSessions(),
+        turn: store.getTurns(),
+        call: store.getCalls(),
+      } as const
+      for (const [table, rows] of Object.entries(tables)) {
+        expect(rows.length, `[${table}] rows read back`).toBeGreaterThan(0)
+        for (const row of rows) {
+          expect(undefinedPaths(row), `[${table}] fully-populated row has no undefined fields`).toEqual([])
+        }
+      }
+    } finally {
+      store.close()
+    }
+  })
+})
