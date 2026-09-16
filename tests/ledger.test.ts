@@ -716,3 +716,152 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     }
   })
 })
+
+describe('DDL-Zod parity: indexes and constraints (#98)', () => {
+  // The constraint gate: performance indexes, uniqueness and primary-key
+  // coverage, plus the spots introspection cannot see. Named (`origin = 'c'`)
+  // indexes are distinguished from implicit constraint auto-indexes
+  // (`origin = 'u'`/`'pk'`); full-definition text is used ONLY where
+  // introspection is blind (generated-column expression, singleton CHECKs).
+  // Test-only, same seam as #97: temp store + direct read-only handle.
+  type IndexListRow = {
+    seq: number
+    name: string
+    unique: number
+    origin: string
+    partial: number
+  }
+
+  type IndexXinfoRow = {
+    seqno: number
+    cid: number
+    name: string | null
+    key: number
+  }
+
+  const EXPECTED_NAMED_CALL_INDEXES: Record<string, string> = {
+    idx_ledger_call_timestamp: 'timestamp',
+    idx_ledger_call_session: 'session_id',
+    idx_ledger_call_model: 'model',
+    idx_ledger_call_project: 'project',
+    idx_ledger_call_provider: 'provider',
+  }
+
+  const EXPECTED_IMPLICIT: Record<string, Array<{ origin: string; columns: string[] }>> = {
+    ledger_call: [{ origin: 'u', columns: ['source_id', 'session_id', 'call_key'] }],
+    ledger_source: [{ origin: 'u', columns: ['provider', 'env_fingerprint', 'file_path'] }],
+    ledger_session: [{ origin: 'pk', columns: ['source_id', 'session_id'] }],
+    ledger_turn: [{ origin: 'pk', columns: ['source_id', 'session_id', 'turn_index'] }],
+    model_alias: [{ origin: 'pk', columns: ['model'] }],
+    price_override: [{ origin: 'pk', columns: ['model'] }],
+    currency_rate: [{ origin: 'pk', columns: ['code'] }],
+    skills_dismissal_config: [{ origin: 'pk', columns: ['source', 'name'] }],
+  }
+
+  // INTEGER PRIMARY KEY is a rowid alias: no separate index entry exists.
+  // PK position itself is locked by the #97 column gate; here we lock the
+  // absence of an auto-index plus the singleton CHECK via definition text.
+  const ROWID_PK_TABLES = ['refresh_cadence_config', 'display_currency_config']
+
+  function readIndexList(ro: DatabaseSync, table: string): IndexListRow[] {
+    return ro.prepare(`PRAGMA index_list("${table}")`).all() as IndexListRow[]
+  }
+
+  function readIndexColumns(ro: DatabaseSync, index: string): string[] {
+    const rows = ro.prepare(`PRAGMA index_xinfo("${index}")`).all() as IndexXinfoRow[]
+    return rows
+      .filter(r => r.key === 1)
+      .sort((a, b) => a.seqno - b.seqno)
+      .map(r => r.name!)
+  }
+
+  function readTableSql(ro: DatabaseSync, table: string): string {
+    const row = ro.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get(table) as { sql: string | null } | undefined
+    return row?.sql ?? ''
+  }
+
+  it('locks the five named call-table indexes with their exact single columns', () => {
+    const store = makeStore()
+    try {
+      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
+      try {
+        const list = readIndexList(ro, 'ledger_call')
+        const named = list.filter(i => i.origin === 'c')
+        expect(
+          named.map(i => i.name).sort(),
+          '[ledger_call] named indexes',
+        ).toEqual(Object.keys(EXPECTED_NAMED_CALL_INDEXES).sort())
+        for (const [index, column] of Object.entries(EXPECTED_NAMED_CALL_INDEXES)) {
+          const entry = named.find(i => i.name === index)
+          expect(entry, `[ledger_call.${index}] present`).toBeDefined()
+          if (!entry) continue
+          expect(entry.origin, `[ledger_call.${index}] origin`).toBe('c')
+          expect(entry.unique, `[ledger_call.${index}] unique`).toBe(0)
+          expect(readIndexColumns(ro, index), `[ledger_call.${index}] columns`).toEqual([column])
+        }
+      } finally {
+        ro.close()
+      }
+    } finally {
+      store.close()
+    }
+  })
+
+  it('locks implicit primary-key and uniqueness coverage, including the generated-column span', () => {
+    const store = makeStore()
+    try {
+      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
+      try {
+        for (const [table, expected] of Object.entries(EXPECTED_IMPLICIT)) {
+          const implicit = readIndexList(ro, table).filter(i => i.origin !== 'c')
+          const actual = implicit.map(i => ({
+            origin: i.origin,
+            columns: readIndexColumns(ro, i.name),
+          }))
+          expect(actual, `[${table}] implicit indexes`).toEqual(expected)
+          for (const entry of implicit) {
+            expect(entry.unique, `[${table}.${entry.name}] unique`).toBe(1)
+          }
+        }
+        // The idempotency guarantee is database-enforced: the call uniqueness
+        // spans the generated call_key (COALESCE over dedup_key).
+        const callUnique = readIndexList(ro, 'ledger_call').find(i => i.origin === 'u')!
+        expect(
+          readIndexColumns(ro, callUnique.name),
+          '[ledger_call.UNIQUE(source_id, session_id, call_key)] columns',
+        ).toEqual(['source_id', 'session_id', 'call_key'])
+        for (const table of ROWID_PK_TABLES) {
+          expect(readIndexList(ro, table), `[${table}] no separate index (rowid PK)`).toEqual([])
+        }
+      } finally {
+        ro.close()
+      }
+    } finally {
+      store.close()
+    }
+  })
+
+  it('spot-checks definition text only where introspection is blind', () => {
+    const store = makeStore()
+    try {
+      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
+      try {
+        const callSql = readTableSql(ro, 'ledger_call')
+        expect(callSql, '[ledger_call.call_key] generated marker').toContain('GENERATED ALWAYS AS')
+        expect(callSql, '[ledger_call.call_key] generated expression').toContain(
+          "COALESCE(dedup_key, printf('%d:%d', turn_index, call_index))",
+        )
+        expect(callSql, '[ledger_call.call_key] stored marker').toContain('STORED')
+        for (const table of ROWID_PK_TABLES) {
+          expect(readTableSql(ro, table), `[${table}] singleton-row check`).toContain('CHECK (id = 1)')
+        }
+      } finally {
+        ro.close()
+      }
+    } finally {
+      store.close()
+    }
+  })
+})
