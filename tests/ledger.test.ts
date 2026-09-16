@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import {
+  buildFixtureCachedCall,
   buildFixtureCachedFile,
   buildFixtureCachedTurn,
   FIXTURE_SOURCE_PATH,
@@ -860,6 +861,232 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
       } finally {
         ro.close()
       }
+    } finally {
+      store.close()
+    }
+  })
+})
+
+describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
+  // The behavioral proof for what shape assertions cannot see: one fixture
+  // ports non-default payloads through every `*_json` column, exercises
+  // nullable columns both empty and set plus both speed values, and asserts
+  // the API-shaped (camelCase, null→undefined/''-shaped) read-back deep-equal
+  // to the input mapping — so a broken data-format helper, name remapping, or
+  // default-shaping rule fails on the wire contract, not silently.
+  // Test-only, same seam: temp store port-in → typed getters.
+  it('round-trips adversarial payloads through every JSON column with exact API shaping', () => {
+    const store = makeStore()
+    try {
+      const file = buildFixtureCachedFile({
+        title: 'Parity adversarial round trip',
+        agentType: 'parity-harness',
+        workingDirectory: '/workspace/demo-project',
+        mcpInventory: ['parity-mcp-server'],
+        agentSpawnLinks: { 'spawn-parity-1': 'sess-side-parity' },
+        ambiguousSpawnAgentIds: ['spawn-ambiguous-parity'],
+        prLinks: ['https://github.com/acme/demo-project/pull/8'],
+        isSidechain: true,
+        parentSessionId: 'sess-parent-parity',
+      })
+      file.turns[0] = {
+        ...buildFixtureCachedTurn(0, 'Refactor the auth module'),
+        prRefs: ['https://github.com/acme/demo-project/pull/7'],
+        spawnToolUseIds: ['tooluse-parity-1'],
+        calls: [
+          {
+            ...buildFixtureCachedCall(0),
+            tools: ['Edit', 'Bash', 'mcp__parity__query'],
+            bashCommands: ['npm run parity', 'git status --porcelain'],
+            skills: ['parity-skill'],
+            subagentTypes: ['parity-subagent'],
+            toolSequence: [
+              [
+                { tool: 'Edit', file: 'src/parity.ts' },
+                { tool: 'Bash', command: 'npm run parity' },
+              ],
+              [{ tool: 'Read', file: 'src/parity.ts' }],
+            ],
+            usage: {
+              inputTokens: 111,
+              outputTokens: 22,
+              cacheCreationInputTokens: 33,
+              cacheReadInputTokens: 44,
+              cachedInputTokens: 55,
+              reasoningTokens: 66,
+              webSearchRequests: 7,
+              cacheCreationOneHourTokens: 8,
+            },
+            costUSD: 1.23,
+            isEstimated: true,
+            locAdded: 12,
+            locRemoved: 3,
+            interrupted: true,
+            toolErrors: 2,
+            editFailed: 1,
+          },
+        ],
+      }
+      file.turns.push({
+        ...buildFixtureCachedTurn(1, 'Add the new endpoint'),
+        gitBranch: 'parity/branch',
+        calls: [
+          {
+            ...buildFixtureCachedCall(1),
+            speed: 'fast',
+            workingDirectory: '/tmp/parity-other',
+            costUSD: 0.07,
+          },
+        ],
+      })
+
+      const result = store.portIn({ ...baseInput, verdict: 'new', cachedFile: file, project: 'demo-project' })
+      expect(result.inserted).toEqual({ sessions: 1, turns: 2, calls: 2 })
+
+      const sourceId = store.getSources()[0]!.id
+      expect(store.getSources()).toMatchObject([
+        {
+          provider: 'opencode',
+          envFingerprint: 'env-demo',
+          filePath: FIXTURE_SOURCE_PATH,
+          repoUrl: 'https://github.com/acme/demo-project',
+          project: 'demo-project',
+          fingerprint: { dev: '42', ino: '4242', mtimeMs: 1_751_300_000_000, sizeBytes: 4096 },
+          lastPortedAt: expect.any(String),
+        },
+      ])
+
+      // Session: all four JSON columns non-default, nullable set, remapped.
+      expect(store.getSessions()).toEqual([
+        {
+          sourceId,
+          sessionId: 'sess-0',
+          project: 'demo-project',
+          projectPath: '/workspace/demo-project',
+          workingDirectory: '/workspace/demo-project',
+          canonicalProject: 'demo-project',
+          canonicalCwd: '/workspace/demo-project',
+          agentType: 'parity-harness',
+          title: 'Parity adversarial round trip',
+          prLinks: [
+            'https://github.com/acme/demo-project/pull/7',
+            'https://github.com/acme/demo-project/pull/8',
+          ],
+          isSidechain: 1,
+          parentSessionId: 'sess-parent-parity',
+          agentSpawnLinks: { 'spawn-parity-1': 'sess-side-parity' },
+          mcpInventory: ['parity-mcp-server'],
+          ambiguousSpawnAgentIds: ['spawn-ambiguous-parity'],
+          everHadBranch: 1,
+        },
+      ])
+
+      // Turns: nullable git_branch/pr_refs/spawn ids empty on turn 0 side and
+      // set on turn 1 side (branch carry-forward needs the null first).
+      const turns = store.getTurns()
+      expect(turns).toHaveLength(2)
+      expect(turns[0]).toMatchObject({
+        sourceId,
+        sessionId: 'sess-0',
+        turnIndex: 0,
+        timestamp: '2026-07-01T09:00:00.000Z',
+        userMessage: 'Refactor the auth module',
+        gitBranch: null,
+        prRefs: ['https://github.com/acme/demo-project/pull/7'],
+        spawnToolUseIds: ['tooluse-parity-1'],
+        category: 'refactoring',
+        // The classifier derives the turn's sub-category from the invoked
+        // skill: the parity skill invocation above reclassifies the turn.
+        subCategory: 'parity-skill',
+        retries: 0,
+        hasEdits: 1,
+      })
+      expect(turns[1]).toMatchObject({
+        sourceId,
+        sessionId: 'sess-0',
+        turnIndex: 1,
+        timestamp: '2026-07-01T09:11:00.000Z',
+        userMessage: 'Add the new endpoint',
+        gitBranch: 'parity/branch',
+        prRefs: [],
+        spawnToolUseIds: [],
+        category: 'feature',
+        retries: 0,
+      })
+
+      // Calls: all six JSON columns non-default on call 0, default-shaped on
+      // call 1; both speeds; nullable loc set/null; remapped + shaped.
+      const calls = store.getCalls()
+      expect(calls).toHaveLength(2)
+      expect(calls[0]).toMatchObject({
+        sourceId,
+        sessionId: 'sess-0',
+        turnIndex: 0,
+        callIndex: 0,
+        callKey: 'call-1',
+        dedupKey: 'call-1',
+        provider: 'opencode',
+        model: 'demo-model',
+        timestamp: '2026-07-01T09:00:00.000Z',
+        speed: 'standard',
+        project: 'demo-project',
+        projectPath: '/workspace/demo-project',
+        workingDirectory: '/workspace/demo-project',
+        isEstimated: 1,
+        savingsUSD: 0,
+        savingsBaselineModel: null,
+        inputTokens: 111,
+        outputTokens: 22,
+        cacheCreationInputTokens: 33,
+        cacheReadInputTokens: 44,
+        cachedInputTokens: 55,
+        reasoningTokens: 66,
+        webSearchRequests: 7,
+        cacheCreationOneHourTokens: 8,
+        agentType: 'parity-harness',
+        tools: ['Edit', 'Bash', 'mcp__parity__query'],
+        mcpTools: ['mcp__parity__query'],
+        skills: ['parity-skill'],
+        subagentTypes: ['parity-subagent'],
+        bashCommands: ['npm run parity', 'git status --porcelain'],
+        toolSequence: [
+          [
+            { tool: 'Edit', file: 'src/parity.ts' },
+            { tool: 'Bash', command: 'npm run parity' },
+          ],
+          [{ tool: 'Read', file: 'src/parity.ts' }],
+        ],
+        locAdded: 12,
+        locRemoved: 3,
+        interrupted: 1,
+        userModified: 0,
+        toolErrors: 2,
+        editFailed: 1,
+      })
+      expect(calls[0]!.baseCostUSD).toBeCloseTo(1.23, 9)
+      expect(calls[1]).toMatchObject({
+        sourceId,
+        sessionId: 'sess-0',
+        turnIndex: 1,
+        callIndex: 0,
+        callKey: 'call-2',
+        dedupKey: 'call-2',
+        speed: 'fast',
+        workingDirectory: '/tmp/parity-other',
+        isEstimated: 0,
+        tools: ['Edit'],
+        mcpTools: [],
+        skills: [],
+        subagentTypes: [],
+        bashCommands: [],
+        toolSequence: [],
+        locAdded: null,
+        locRemoved: null,
+        interrupted: 0,
+        toolErrors: 0,
+        editFailed: 0,
+      })
+      expect(calls[1]!.baseCostUSD).toBeCloseTo(0.07, 9)
     } finally {
       store.close()
     }
