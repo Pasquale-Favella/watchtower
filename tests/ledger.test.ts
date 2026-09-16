@@ -871,9 +871,11 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
   // The behavioral proof for what shape assertions cannot see: one fixture
   // ports non-default payloads through every `*_json` column, exercises
   // nullable columns both empty and set plus both speed values, and asserts
-  // the API-shaped (camelCase, null→undefined/''-shaped) read-back deep-equal
-  // to the input mapping — so a broken data-format helper, name remapping, or
-  // default-shaping rule fails on the wire contract, not silently.
+  // the API-shaped (snake_case→camelCase, digit-exact fingerprint strings,
+  // null→undefined source shaping) read-back deep-equal to the input mapping
+  // — so a broken data-format helper, name remapping, or default-shaping rule
+  // fails on the wire contract, not silently. Call/session INTEGER and NULL
+  // passthrough is asserted exactly as the schemas define it.
   // Test-only, same seam: temp store port-in → typed getters.
   it('round-trips adversarial payloads through every JSON column with exact API shaping', () => {
     const store = makeStore()
@@ -1011,7 +1013,9 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         prRefs: [],
         spawnToolUseIds: [],
         category: 'feature',
+        subCategory: null,
         retries: 0,
+        hasEdits: 1,
       })
 
       // Calls: all six JSON columns non-default on call 0, default-shaped on
@@ -1071,8 +1075,14 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         callIndex: 0,
         callKey: 'call-2',
         dedupKey: 'call-2',
+        provider: 'opencode',
+        model: 'demo-model',
+        timestamp: '2026-07-01T09:11:00.000Z',
         speed: 'fast',
+        project: 'demo-project',
+        projectPath: '/workspace/demo-project',
         workingDirectory: '/tmp/parity-other',
+        agentType: 'parity-harness',
         isEstimated: 0,
         tools: ['Edit'],
         mcpTools: [],
@@ -1087,6 +1097,22 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         editFailed: 0,
       })
       expect(calls[1]!.baseCostUSD).toBeCloseTo(0.07, 9)
+
+      // Null→undefined shaping: a source ported without discovery metadata
+      // (no repoUrl/project) reads its nullable columns back shaped to
+      // undefined — never null — so a broken default-shaping rule fails here.
+      store.portIn({
+        provider: 'opencode',
+        envFingerprint: 'env-demo',
+        filePath: '/Users/demo/.local/share/opencode/demo-project/sess-unshaped.jsonl',
+        verdict: 'new',
+        cachedFile: buildFixtureCachedFile(),
+      })
+      const unshaped = store
+        .getSources()
+        .find(s => s.filePath.endsWith('sess-unshaped.jsonl'))!
+      expect(unshaped.repoUrl).toBeUndefined()
+      expect(unshaped.project).toBeUndefined()
     } finally {
       store.close()
     }
