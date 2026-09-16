@@ -30,7 +30,7 @@ function payloadFrom(sessions: SessionSummary[], anchors: SessionSummary[]): Pul
   const { rows, totals } = buildPrAttribution(sessions, anchors)
   const attributedCost = rows.reduce((sum, r) => sum + r.cost, 0)
   return {
-    rows: rows.map(({ url, label, cost, sessions, calls, firstStarted, lastEnded, models, categories }) => ({
+    rows: rows.map(({ url, label, cost, sessions, calls, firstStarted, lastEnded, models, modelProvenance, categories }) => ({
       url,
       label,
       cost,
@@ -39,6 +39,7 @@ function payloadFrom(sessions: SessionSummary[], anchors: SessionSummary[]): Pul
       firstStarted,
       lastEnded,
       models,
+      ...(modelProvenance && Object.keys(modelProvenance).length > 0 ? { modelProvenance } : {}),
       ...(categories?.length ? { categories } : {}),
     })),
     distinctCost: attributedCost + totals.unattributedCost,

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
+import { calculateCost } from '../src/main/pipeline/models.js'
+import { buildModelsViewFromLedger } from '../src/main/models-view.js'
 import { buildPullRequestsViewFromLedger } from '../src/main/pull-requests-view.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
 import {
@@ -132,6 +134,59 @@ describe('buildPullRequestsViewFromLedger (aggregation seam scope)', () => {
     expect(payload).toEqual({
       rows: [], distinctCost: 0, distinctSessions: 0, subagentSessions: 0, attributedCost: 0, unattributedCost: 0,
     })
+    store.close()
+  })
+
+  it('an Alias reprices PR rows with no rescan and names its raw feeders', () => {
+    const store = prMakeLedger()
+    prPort(store, [
+      { provider: 'claude', localDate: '2026-07-10', prLinks: [PR_A], turnCosts: [{ cost: 0, prRefs: [PR_A] }] },
+    ])
+    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
+
+    const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
+    // Fixture usage: 100 in / 50 out / 20 cache-read, repriced at the target's rates.
+    const expected = calculateCost('claude-sonnet-4-6', 100, 50, 0, 20, 0, 'standard')
+    expect(expected).toBeGreaterThan(0)
+    expect(payload.rows).toHaveLength(1)
+    expect(payload.rows[0]!.cost).toBeCloseTo(expected, 9)
+    expect(payload.attributedCost).toBeCloseTo(expected, 9)
+    expect(payload.distinctCost).toBeCloseTo(expected, 9)
+    // Same rules as every other Section: the Models lens agrees on the money…
+    const models = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
+      aliases: store.getModelAliases(),
+      overrides: store.getPriceOverrides(),
+    }, new Date(2026, 7, 6))
+    expect(models.byModel[0]!.costUSD).toBeCloseTo(expected, 9)
+    // …and the row carries the merge provenance instead of hiding it.
+    expect(models.byModel[0]!.sourceModels).toEqual(['demo-model'])
+    expect(payload.rows[0]!.modelProvenance).toEqual({
+      [models.byModel[0]!.modelDisplayName]: ['demo-model'],
+    })
+    store.close()
+  })
+
+  it('a Price override on the effective model wins in the PR section too', () => {
+    const store = prMakeLedger()
+    prPort(store, [
+      { provider: 'claude', localDate: '2026-07-10', prLinks: [PR_A], turnCosts: [{ cost: 0, prRefs: [PR_A] }] },
+    ])
+    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
+    store.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+
+    // Fixture usage: 100 in @ $3/M + 50 out @ $15/M (input+output only, Models-lens rule).
+    const expected = (100 / 1_000_000) * 3 + (50 / 1_000_000) * 15
+    const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
+    expect(payload.rows[0]!.cost).toBeCloseTo(expected, 9)
+    expect(payload.attributedCost).toBeCloseTo(expected, 9)
+    store.close()
+  })
+
+  it('unaliased PR rows carry no provenance', () => {
+    const store = prMakeLedger()
+    prPort(store, PR_SPECS)
+    const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
+    for (const row of payload.rows) expect(row.modelProvenance).toBeUndefined()
     store.close()
   })
 
