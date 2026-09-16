@@ -25,6 +25,8 @@ type PrSessionSpec = {
   localDate: string
   prLinks: string[]
   turnCosts: Array<{ cost: number; prRefs?: string[] }>
+  /** Stored model id for every call (defaults to the fixture's `demo-model`). */
+  model?: string
 }
 
 function prMakeLedger(): LedgerStore {
@@ -35,9 +37,11 @@ function prMakeLedger(): LedgerStore {
 function prCachedFile(index: number, opts: PrSessionSpec): CachedFile {
   const noon = new Date(`${opts.localDate}T12:00:00`).toISOString()
   const turns = opts.turnCosts.map((turn, turnIndex) => {
+    const base = buildFixtureCachedCall(index * 10 + turnIndex)
     const call = {
-      ...buildFixtureCachedCall(index * 10 + turnIndex),
+      ...base,
       provider: opts.provider,
+      model: opts.model ?? base.model,
       costUSD: turn.cost,
       timestamp: noon,
     }
@@ -187,6 +191,34 @@ describe('buildPullRequestsViewFromLedger (aggregation seam scope)', () => {
     prPort(store, PR_SPECS)
     const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
     for (const row of payload.rows) expect(row.modelProvenance).toBeUndefined()
+    store.close()
+  })
+
+  it('an Alias on the bare name reprices variant-spelled PR calls', () => {
+    const store = prMakeLedger()
+    prPort(store, [
+      {
+        provider: 'opencode', localDate: '2026-07-10', prLinks: [PR_A],
+        turnCosts: [{ cost: 0, prRefs: [PR_A] }], model: 'Opencode/Demo-Model@20250929',
+      },
+    ])
+    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
+
+    // Fixture usage: 100 in / 50 out / 20 cache-read, repriced at the target's rates.
+    const expected = calculateCost('claude-sonnet-4-6', 100, 50, 0, 20, 0, 'standard')
+    expect(expected).toBeGreaterThan(0)
+    const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
+    expect(payload.rows).toHaveLength(1)
+    expect(payload.rows[0]!.cost).toBeCloseTo(expected, 9)
+    expect(payload.attributedCost).toBeCloseTo(expected, 9)
+    const models = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
+      aliases: store.getModelAliases(),
+      overrides: store.getPriceOverrides(),
+    }, new Date(2026, 7, 6))
+    expect(models.byModel[0]!.costUSD).toBeCloseTo(expected, 9)
+    expect(payload.rows[0]!.modelProvenance).toEqual({
+      [models.byModel[0]!.modelDisplayName]: ['Opencode/Demo-Model@20250929'],
+    })
     store.close()
   })
 
