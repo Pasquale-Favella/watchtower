@@ -19,6 +19,23 @@ function makeStore(): LedgerStore {
   return new LedgerStore(join(dir, 'data.db'))
 }
 
+/** Parity introspection seam: a temp store plus a direct read-only handle
+ * onto its database file, both closed afterwards. The #97/#98 gates share
+ * this two-handle shape instead of repeating the open/close. */
+function withTempLedgerReadOnly(fn: (ro: DatabaseSync) => void): void {
+  const store = makeStore()
+  try {
+    const ro = new DatabaseSync(store.dbPath, { readOnly: true })
+    try {
+      fn(ro)
+    } finally {
+      ro.close()
+    }
+  } finally {
+    store.close()
+  }
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     // temp dirs are left to the OS; only the store handle is closed by tests
@@ -646,75 +663,51 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
   }
 
   it('locks the ten-table set (four ledger + six config)', () => {
-    const store = makeStore()
-    try {
-      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
-      try {
-        expect(readTableNames(ro), 'ledger tables').toEqual(EXPECTED_TABLES)
-      } finally {
-        ro.close()
-      }
-    } finally {
-      store.close()
-    }
+    withTempLedgerReadOnly(ro => {
+      expect(readTableNames(ro), 'ledger tables').toEqual(EXPECTED_TABLES)
+    })
   })
 
   it('locks every table column: name, exact type, literal default, nullability, hidden flag', () => {
-    const store = makeStore()
-    try {
-      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
-      try {
-        for (const table of EXPECTED_TABLES) {
-          const actual = readColumns(ro, table)
-          const expected = EXPECTED_COLUMNS[table]!
-          expect(
-            actual.map(c => c.name),
-            `[${table}] column names`,
-          ).toEqual(expected.map(c => c.name))
-          for (const exp of expected) {
-            const col = actual.find(c => c.name === exp.name)
-            expect(col, `[${table}.${exp.name}] present`).toBeDefined()
-            if (!col) continue
-            expect(col.type, `[${table}.${exp.name}] type`).toBe(exp.type)
-            // Literal-aware defaults: quoted text stays quoted ('[]' !== []),
-            // numeric defaults arrive as their literal text ('0').
-            expect(col.dflt_value, `[${table}.${exp.name}] default`).toBe(exp.dflt)
-            // The engine reports PK columns as nullable unless explicitly
-            // constrained, so a PK counts as NOT NULL by position alone.
-            const effectivelyNotNull = col.notnull === 1 || col.pk > 0
-            expect(effectivelyNotNull, `[${table}.${exp.name}] nullability`).toBe(!exp.nullable)
-            expect(col.hidden, `[${table}.${exp.name}] hidden`).toBe(exp.hidden)
-            expect(col.pk, `[${table}.${exp.name}] pk order`).toBe(exp.pk)
-          }
+    withTempLedgerReadOnly(ro => {
+      for (const table of EXPECTED_TABLES) {
+        const actual = readColumns(ro, table)
+        const expected = EXPECTED_COLUMNS[table]!
+        expect(
+          actual.map(c => c.name),
+          `[${table}] column names`,
+        ).toEqual(expected.map(c => c.name))
+        for (const exp of expected) {
+          const col = actual.find(c => c.name === exp.name)
+          expect(col, `[${table}.${exp.name}] present`).toBeDefined()
+          if (!col) continue
+          expect(col.type, `[${table}.${exp.name}] type`).toBe(exp.type)
+          // Literal-aware defaults: quoted text stays quoted ('[]' !== []),
+          // numeric defaults arrive as their literal text ('0').
+          expect(col.dflt_value, `[${table}.${exp.name}] default`).toBe(exp.dflt)
+          // The engine reports PK columns as nullable unless explicitly
+          // constrained, so a PK counts as NOT NULL by position alone.
+          const effectivelyNotNull = col.notnull === 1 || col.pk > 0
+          expect(effectivelyNotNull, `[${table}.${exp.name}] nullability`).toBe(!exp.nullable)
+          expect(col.hidden, `[${table}.${exp.name}] hidden`).toBe(exp.hidden)
+          expect(col.pk, `[${table}.${exp.name}] pk order`).toBe(exp.pk)
         }
-      } finally {
-        ro.close()
       }
-    } finally {
-      store.close()
-    }
+    })
   })
 
   it('locks composite primary-key order positionally', () => {
-    const store = makeStore()
-    try {
-      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
-      try {
-        const pkOrder = (table: string): string[] =>
-          readColumns(ro, table)
-            .filter(c => c.pk > 0)
-            .sort((a, b) => a.pk - b.pk)
-            .map(c => c.name)
-        expect(pkOrder('ledger_turn'), '[ledger_turn] pk order').toEqual(['source_id', 'session_id', 'turn_index'])
-        expect(pkOrder('ledger_session'), '[ledger_session] pk order').toEqual(['source_id', 'session_id'])
-        expect(pkOrder('skills_dismissal_config'), '[skills_dismissal_config] pk order').toEqual(['source', 'name'])
-        expect(pkOrder('ledger_source'), '[ledger_source] pk order').toEqual(['id'])
-      } finally {
-        ro.close()
-      }
-    } finally {
-      store.close()
-    }
+    withTempLedgerReadOnly(ro => {
+      const pkOrder = (table: string): string[] =>
+        readColumns(ro, table)
+          .filter(c => c.pk > 0)
+          .sort((a, b) => a.pk - b.pk)
+          .map(c => c.name)
+      expect(pkOrder('ledger_turn'), '[ledger_turn] pk order').toEqual(['source_id', 'session_id', 'turn_index'])
+      expect(pkOrder('ledger_session'), '[ledger_session] pk order').toEqual(['source_id', 'session_id'])
+      expect(pkOrder('skills_dismissal_config'), '[skills_dismissal_config] pk order').toEqual(['source', 'name'])
+      expect(pkOrder('ledger_source'), '[ledger_source] pk order').toEqual(['id'])
+    })
   })
 })
 
@@ -784,86 +777,62 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
   }
 
   it('locks the five named call-table indexes with their exact single columns', () => {
-    const store = makeStore()
-    try {
-      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
-      try {
-        const list = readIndexList(ro, 'ledger_call')
-        const named = list.filter(i => i.origin === 'c')
-        expect(
-          named.map(i => i.name).sort(),
-          '[ledger_call] named indexes',
-        ).toEqual(Object.keys(EXPECTED_NAMED_CALL_INDEXES).sort())
-        for (const [index, column] of Object.entries(EXPECTED_NAMED_CALL_INDEXES)) {
-          const entry = named.find(i => i.name === index)
-          expect(entry, `[ledger_call.${index}] present`).toBeDefined()
-          if (!entry) continue
-          expect(entry.origin, `[ledger_call.${index}] origin`).toBe('c')
-          expect(entry.unique, `[ledger_call.${index}] unique`).toBe(0)
-          expect(readIndexColumns(ro, index), `[ledger_call.${index}] columns`).toEqual([column])
-        }
-      } finally {
-        ro.close()
+    withTempLedgerReadOnly(ro => {
+      const list = readIndexList(ro, 'ledger_call')
+      const named = list.filter(i => i.origin === 'c')
+      expect(
+        named.map(i => i.name).sort(),
+        '[ledger_call] named indexes',
+      ).toEqual(Object.keys(EXPECTED_NAMED_CALL_INDEXES).sort())
+      for (const [index, column] of Object.entries(EXPECTED_NAMED_CALL_INDEXES)) {
+        const entry = named.find(i => i.name === index)
+        expect(entry, `[ledger_call.${index}] present`).toBeDefined()
+        if (!entry) continue
+        expect(entry.origin, `[ledger_call.${index}] origin`).toBe('c')
+        expect(entry.unique, `[ledger_call.${index}] unique`).toBe(0)
+        expect(readIndexColumns(ro, index), `[ledger_call.${index}] columns`).toEqual([column])
       }
-    } finally {
-      store.close()
-    }
+    })
   })
 
   it('locks implicit primary-key and uniqueness coverage, including the generated-column span', () => {
-    const store = makeStore()
-    try {
-      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
-      try {
-        for (const [table, expected] of Object.entries(EXPECTED_IMPLICIT)) {
-          const implicit = readIndexList(ro, table).filter(i => i.origin !== 'c')
-          const actual = implicit.map(i => ({
-            origin: i.origin,
-            columns: readIndexColumns(ro, i.name),
-          }))
-          expect(actual, `[${table}] implicit indexes`).toEqual(expected)
-          for (const entry of implicit) {
-            expect(entry.unique, `[${table}.${entry.name}] unique`).toBe(1)
-          }
+    withTempLedgerReadOnly(ro => {
+      for (const [table, expected] of Object.entries(EXPECTED_IMPLICIT)) {
+        const implicit = readIndexList(ro, table).filter(i => i.origin !== 'c')
+        const actual = implicit.map(i => ({
+          origin: i.origin,
+          columns: readIndexColumns(ro, i.name),
+        }))
+        expect(actual, `[${table}] implicit indexes`).toEqual(expected)
+        for (const entry of implicit) {
+          expect(entry.unique, `[${table}.${entry.name}] unique`).toBe(1)
         }
-        // The idempotency guarantee is database-enforced: the call uniqueness
-        // spans the generated call_key (COALESCE over dedup_key).
-        const callUnique = readIndexList(ro, 'ledger_call').find(i => i.origin === 'u')!
-        expect(
-          readIndexColumns(ro, callUnique.name),
-          '[ledger_call.UNIQUE(source_id, session_id, call_key)] columns',
-        ).toEqual(['source_id', 'session_id', 'call_key'])
-        for (const table of ROWID_PK_TABLES) {
-          expect(readIndexList(ro, table), `[${table}] no separate index (rowid PK)`).toEqual([])
-        }
-      } finally {
-        ro.close()
       }
-    } finally {
-      store.close()
-    }
+      // The idempotency guarantee is database-enforced: the call uniqueness
+      // spans the generated call_key (COALESCE over dedup_key).
+      const callUnique = readIndexList(ro, 'ledger_call').find(i => i.origin === 'u')!
+      expect(
+        readIndexColumns(ro, callUnique.name),
+        '[ledger_call.UNIQUE(source_id, session_id, call_key)] columns',
+      ).toEqual(['source_id', 'session_id', 'call_key'])
+      for (const table of ROWID_PK_TABLES) {
+        expect(readIndexList(ro, table), `[${table}] no separate index (rowid PK)`).toEqual([])
+      }
+    })
   })
 
   it('spot-checks definition text only where introspection is blind', () => {
-    const store = makeStore()
-    try {
-      const ro = new DatabaseSync(store.dbPath, { readOnly: true })
-      try {
-        const callSql = readTableSql(ro, 'ledger_call')
-        expect(callSql, '[ledger_call.call_key] generated marker').toContain('GENERATED ALWAYS AS')
-        expect(callSql, '[ledger_call.call_key] generated expression').toContain(
-          "COALESCE(dedup_key, printf('%d:%d', turn_index, call_index))",
-        )
-        expect(callSql, '[ledger_call.call_key] stored marker').toContain('STORED')
-        for (const table of ROWID_PK_TABLES) {
-          expect(readTableSql(ro, table), `[${table}] singleton-row check`).toContain('CHECK (id = 1)')
-        }
-      } finally {
-        ro.close()
+    withTempLedgerReadOnly(ro => {
+      const callSql = readTableSql(ro, 'ledger_call')
+      expect(callSql, '[ledger_call.call_key] generated marker').toContain('GENERATED ALWAYS AS')
+      expect(callSql, '[ledger_call.call_key] generated expression').toContain(
+        "COALESCE(dedup_key, printf('%d:%d', turn_index, call_index))",
+      )
+      expect(callSql, '[ledger_call.call_key] stored marker').toContain('STORED')
+      for (const table of ROWID_PK_TABLES) {
+        expect(readTableSql(ro, table), `[${table}] singleton-row check`).toContain('CHECK (id = 1)')
       }
-    } finally {
-      store.close()
-    }
+    })
   })
 })
 
@@ -987,7 +956,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
       // set on turn 1 side (branch carry-forward needs the null first).
       const turns = store.getTurns()
       expect(turns).toHaveLength(2)
-      expect(turns[0]).toMatchObject({
+      expect(turns[0]).toEqual({
         sourceId,
         sessionId: 'sess-0',
         turnIndex: 0,
@@ -1003,7 +972,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         retries: 0,
         hasEdits: 1,
       })
-      expect(turns[1]).toMatchObject({
+      expect(turns[1]).toEqual({
         sourceId,
         sessionId: 'sess-0',
         turnIndex: 1,
@@ -1022,7 +991,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
       // call 1; both speeds; nullable loc set/null; remapped + shaped.
       const calls = store.getCalls()
       expect(calls).toHaveLength(2)
-      expect(calls[0]).toMatchObject({
+      expect(calls[0]).toEqual({
         sourceId,
         sessionId: 'sess-0',
         turnIndex: 0,
@@ -1036,6 +1005,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         project: 'demo-project',
         projectPath: '/workspace/demo-project',
         workingDirectory: '/workspace/demo-project',
+        baseCostUSD: 1.23,
         isEstimated: 1,
         savingsUSD: 0,
         savingsBaselineModel: null,
@@ -1067,8 +1037,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         toolErrors: 2,
         editFailed: 1,
       })
-      expect(calls[0]!.baseCostUSD).toBeCloseTo(1.23, 9)
-      expect(calls[1]).toMatchObject({
+      expect(calls[1]).toEqual({
         sourceId,
         sessionId: 'sess-0',
         turnIndex: 1,
@@ -1083,7 +1052,18 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         projectPath: '/workspace/demo-project',
         workingDirectory: '/tmp/parity-other',
         agentType: 'parity-harness',
+        baseCostUSD: 0.07,
         isEstimated: 0,
+        savingsUSD: 0,
+        savingsBaselineModel: null,
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 20,
+        cachedInputTokens: 0,
+        reasoningTokens: 5,
+        webSearchRequests: 0,
+        cacheCreationOneHourTokens: 0,
         tools: ['Edit'],
         mcpTools: [],
         skills: [],
@@ -1093,10 +1073,10 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         locAdded: null,
         locRemoved: null,
         interrupted: 0,
+        userModified: 0,
         toolErrors: 0,
         editFailed: 0,
       })
-      expect(calls[1]!.baseCostUSD).toBeCloseTo(0.07, 9)
 
       // Null→undefined shaping: a source ported without discovery metadata
       // (no repoUrl/project) reads its nullable columns back shaped to
@@ -1163,22 +1143,34 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
     // The database cannot anchor the enum (speed is plain TEXT with a
     // 'standard' default and no CHECK), so the schema is the only closed
     // gate: a value smuggled past port-in must fail the read-back parse.
-    const store = makeStore()
+    // Public surface only: seed through the store, close it, smuggle the
+    // value through a plain database handle, and read back with a fresh
+    // store — no production internals touched.
+    const seeding = makeStore()
+    seeding.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const dbPath = seeding.dbPath
+    seeding.close()
+    const writer = new DatabaseSync(dbPath)
     try {
-      store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-      const db = (store as unknown as { db: DatabaseSync }).db
-      db.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
-      expect(() => store.getCalls()).toThrow(/speed/i)
+      writer.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
     } finally {
-      store.close()
+      writer.close()
+    }
+    const reopened = new LedgerStore(dbPath)
+    try {
+      expect(() => reopened.getCalls()).toThrow(/speed/i)
+    } finally {
+      reopened.close()
     }
   })
 
   it('covers every mapped field in the read-back queries (no forgotten column)', () => {
     // A read query that forgets a column still parses whenever the schema
-    // field is optional — so port a fully-populated fixture and assert no
-    // read-back field is undefined. Any dropped selected column flips its
-    // field to undefined (or throws for required ones) and names the path.
+    // field is optional — so port a fully-populated fixture and assert every
+    // read-back field: exact values (a forgotten column reads back as its
+    // default/undefined instead of the populated value) plus a recursive
+    // undefined scan that names the path. Any dropped selected column fails
+    // one of the two with its field named.
     const store = makeStore()
     try {
       const file = buildFixtureCachedFile({
@@ -1193,7 +1185,7 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
         parentSessionId: 'sess-parent-cov',
       })
       file.turns[0] = {
-        ...buildFixtureCachedTurn(0, 'Coverage probe turn'),
+        ...buildFixtureCachedTurn(0, 'Add the new endpoint'),
         gitBranch: 'coverage/branch',
         prRefs: ['https://github.com/acme/demo-project/pull/10'],
         spawnToolUseIds: ['tooluse-cov-1'],
@@ -1228,8 +1220,106 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
       }
       store.portIn({ ...baseInput, verdict: 'new', cachedFile: file, project: 'demo-project' })
 
+      const sourceId = store.getSources()[0]!.id
+      expect(store.getSources()).toMatchObject([
+        {
+          id: expect.any(Number),
+          provider: 'opencode',
+          envFingerprint: 'env-demo',
+          filePath: FIXTURE_SOURCE_PATH,
+          repoUrl: 'https://github.com/acme/demo-project',
+          project: 'demo-project',
+          fingerprint: { dev: '42', ino: '4242', mtimeMs: 1_751_300_000_000, sizeBytes: 4096 },
+          lastPortedAt: expect.any(String),
+        },
+      ])
+      expect(store.getSessions()).toEqual([
+        {
+          sourceId,
+          sessionId: 'sess-0',
+          project: 'demo-project',
+          projectPath: '/workspace/demo-project',
+          workingDirectory: '/wrk/coverage',
+          canonicalProject: 'demo-project',
+          canonicalCwd: '/workspace/demo-project',
+          agentType: 'coverage-harness',
+          title: 'Coverage probe',
+          prLinks: [
+            'https://github.com/acme/demo-project/pull/10',
+            'https://github.com/acme/demo-project/pull/9',
+          ],
+          isSidechain: 1,
+          parentSessionId: 'sess-parent-cov',
+          agentSpawnLinks: { 'spawn-cov-1': 'sess-cov-side' },
+          mcpInventory: ['cov-mcp'],
+          ambiguousSpawnAgentIds: ['spawn-ambiguous-cov'],
+          everHadBranch: 1,
+        },
+      ])
+      expect(store.getTurns()).toEqual([
+        {
+          sourceId,
+          sessionId: 'sess-0',
+          turnIndex: 0,
+          timestamp: '2026-07-01T09:00:00.000Z',
+          userMessage: 'Add the new endpoint',
+          gitBranch: 'coverage/branch',
+          prRefs: ['https://github.com/acme/demo-project/pull/10'],
+          spawnToolUseIds: ['tooluse-cov-1'],
+          category: 'feature',
+          subCategory: 'cov-skill',
+          retries: 0,
+          hasEdits: 1,
+        },
+      ])
+      expect(store.getCalls()).toEqual([
+        {
+          sourceId,
+          sessionId: 'sess-0',
+          turnIndex: 0,
+          callIndex: 0,
+          callKey: 'call-1',
+          dedupKey: 'call-1',
+          provider: 'opencode',
+          model: 'demo-model',
+          timestamp: '2026-07-01T09:00:00.000Z',
+          speed: 'standard',
+          project: 'demo-project',
+          projectPath: '/workspace/demo-project',
+          workingDirectory: '/wrk/coverage',
+          baseCostUSD: 2.5,
+          isEstimated: 1,
+          savingsUSD: 0,
+          savingsBaselineModel: null,
+          inputTokens: 7,
+          outputTokens: 8,
+          cacheCreationInputTokens: 9,
+          cacheReadInputTokens: 10,
+          cachedInputTokens: 11,
+          reasoningTokens: 12,
+          webSearchRequests: 1,
+          cacheCreationOneHourTokens: 2,
+          agentType: 'coverage-harness',
+          tools: ['Edit', 'mcp__cov__tool'],
+          mcpTools: ['mcp__cov__tool'],
+          skills: ['cov-skill'],
+          subagentTypes: ['cov-subagent'],
+          bashCommands: ['make coverage'],
+          toolSequence: [[{ tool: 'Edit', file: 'src/cov.ts' }]],
+          locAdded: 1,
+          locRemoved: 2,
+          interrupted: 1,
+          userModified: 1,
+          toolErrors: 3,
+          editFailed: 4,
+        },
+      ])
+
       const undefinedPaths = (value: unknown, prefix = ''): string[] => {
-        if (typeof value !== 'object' || value === null || Array.isArray(value)) return []
+        if (typeof value !== 'object' || value === null) return []
+        if (Array.isArray(value)) {
+          return value.flatMap((item, i) => undefinedPaths(item, `${prefix}[${i}]`))
+        }
         const out: string[] = []
         for (const [key, nested] of Object.entries(value)) {
           if (nested === undefined) out.push(prefix + key)
