@@ -92,6 +92,12 @@ export interface HarnessSpec {
   requires?: string[]
   /** Env vars dropped before spawn (host CLI login, no API keys — ADR 0012) */
   scrubEnv: string[]
+  /** Client-provided MCP transport the harness accepts in `session/new`
+   *  params. Most ACP agents spawn stdio servers from the session config; the
+   *  Copilot CLI rejects non-http/sse client servers outright (its own logs:
+   *  `Rejecting non-http/sse MCP server ... from client`), so it gets the
+   *  same ledger over loopback HTTP instead. Default: 'stdio'. */
+  clientMcpTransport?: 'stdio' | 'http'
   /** Lower = higher priority in the default selection (ticket 33) */
   preference?: number
   /** How to construct the harness adapter — discriminated union */

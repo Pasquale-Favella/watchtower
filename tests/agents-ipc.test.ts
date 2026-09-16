@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createCoachRunner, type CoachRunner } from '../src/main/agents/ipc.js'
+import { createCoachRunner, type CoachRunner, type LedgerMcpAttachment } from '../src/main/agents/ipc.js'
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
 import type { HarnessRuntime } from '../src/main/agents/runtime.js'
@@ -23,14 +23,19 @@ const harnesses: HarnessInfo[] = [
 
 const detect = vi.fn(async () => harnesses)
 
-/** A fake ledger MCP config builder: takes NO scope — the server serves the
- *  full lifetime ledger and the harness filters via the tools' `scope`
- *  argument (map 53). */
-const ledgerMcpServer = vi.fn((): AcpMcpServer => ({
-  name: 'watchtower-ledger',
-  command: 'node',
-  args: ['ledger-mcp.js', '--ledger-mcp'],
-  env: [{ name: 'WATCHTOWER_LEDGER_MCP', value: JSON.stringify({}) }],
+/** A fake ledger MCP attachment builder: takes the harness registry key (the
+ *  composition root picks the transport per harness) and NO scope — the
+ *  server serves the full lifetime ledger and the harness filters via the
+ *  tools' `scope` argument (map 53). */
+const releaseLedgerMcp = vi.fn()
+const ledgerMcpServer = vi.fn(async (_harnessKind: string): Promise<LedgerMcpAttachment | null> => ({
+  server: {
+    name: 'watchtower-ledger',
+    command: 'node',
+    args: ['ledger-mcp.js', '--ledger-mcp'],
+    env: [{ name: 'WATCHTOWER_LEDGER_MCP', value: JSON.stringify({}) }],
+  },
+  release: releaseLedgerMcp,
 }))
 
 /** A runtime that streams scripted events to completion. */
@@ -145,7 +150,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
 
     await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, () => {})
 
-    expect(ledgerMcpServer).toHaveBeenCalledWith()
+    expect(ledgerMcpServer).toHaveBeenCalledWith('claude')
     const input = run.mock.calls[0]?.[0] as { mcpServers: AcpMcpServer[] }
     expect(input.mcpServers).toHaveLength(1)
     expect(input.mcpServers[0]!.name).toBe('watchtower-ledger')
@@ -182,7 +187,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('runs with NO data tools and NO briefing when the ledger source returns null (fresh install, no ledger.db yet)', async () => {
-    ledgerMcpServer.mockReturnValueOnce(null as unknown as AcpMcpServer)
+    ledgerMcpServer.mockResolvedValueOnce(null)
     const run = vi.fn(async function* () { /* no-op */ })
     const runner = makeRunner({ run } as unknown as HarnessRuntime)
 
@@ -200,7 +205,42 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
 
     await runner.start(request, () => {})
 
-    expect(ledgerMcpServer).toHaveBeenCalledWith()
+    expect(ledgerMcpServer).toHaveBeenCalledWith('claude')
+  })
+
+  it('releases the ledger attachment when the run stream settles (per-run sidecar lifetime)', async () => {
+    releaseLedgerMcp.mockClear()
+    const runner = makeRunner(scriptedRuntime([{ kind: 'status', state: 'done' }]))
+
+    await runner.start(request, () => {})
+
+    await vi.waitFor(() => expect(releaseLedgerMcp).toHaveBeenCalledTimes(1))
+  })
+
+  it('releases the ledger attachment when the run fails to launch (no stream to settle it)', async () => {
+    releaseLedgerMcp.mockClear()
+    const runner = createCoachRunner({
+      getRuntime: async () => { throw new Error('no sdk') },
+      detect,
+      ledgerMcpServer,
+    })
+
+    const result = await runner.start(request, () => {})
+
+    expect(result.ok).toBe(false)
+    expect(releaseLedgerMcp).toHaveBeenCalledTimes(1)
+  })
+
+  it('degrades to NO data tools and NO briefing when attachment acquisition throws (sidecar failed to boot)', async () => {
+    ledgerMcpServer.mockRejectedValueOnce(new Error('spawn failed'))
+    const run = vi.fn(async function* () { /* no-op */ })
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+
+    await runner.start(request, () => {})
+
+    const input = run.mock.calls[0]?.[0] as { mcpServers: AcpMcpServer[]; prompt: string }
+    expect(input.mcpServers).toHaveLength(0)
+    expect(input.prompt).toBe('Summarise my spend')
   })
 
   it('forwards the resume sessionId AND reuses the same temp workspace for the conversation', async () => {

@@ -13,8 +13,9 @@ import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './up
 import type { ExportResult } from './export.js'
 import type { OverviewScope } from './overview.js'
 import type { ComparePair } from './compare-view.js'
-import { registerAgentsIpc } from './agents/ipc.js'
-import { buildLedgerMcpServer } from './agents/ledger-mcp/config.js'
+import { registerAgentsIpc, type LedgerMcpAttachment } from './agents/ipc.js'
+import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
+import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
 import { DbWorkerClient } from './db-worker/client.js'
 
 /**
@@ -278,17 +279,28 @@ function registerIpc(db: DbWorkerClient): void {
     // filters through each tool's optional `scope` argument). Paths:
     // `process.execPath` (dev + packaged), the bundled entry under appPath,
     // and the ledger DB beside the cache.
-    ledgerMcpServer: () => {
+    ledgerMcpServer: async (harnessKind: string): Promise<LedgerMcpAttachment | null> => {
       // Fresh install: no ledger.db yet → no data to serve, so no MCP server
       // (its read-only open would throw on a missing file). Once the first
       // scan lands, the next run injects it.
       const dbPath = join(app.getPath('userData'), 'ledger.db')
       if (!existsSync(dbPath)) return null
-      return buildLedgerMcpServer({
-        execPath: process.execPath,
-        entryPath: join(app.getAppPath(), 'out/main/ledger-mcp.js'),
-        dbPath,
-      })
+      const entryPath = join(app.getAppPath(), 'out/main/ledger-mcp.js')
+      // Harnesses that reject client-provided stdio servers (Copilot) get
+      // the same ledger over a per-run loopback-HTTP sidecar instead. A
+      // sidecar that fails to boot degrades to no-tools (the turn still
+      // runs) rather than failing the turn.
+      if (ledgerMcpTransportFor(harnessKind) === 'http') {
+        try {
+          return await startLedgerMcpHttp({ execPath: process.execPath, entryPath, dbPath })
+        } catch {
+          return null
+        }
+      }
+      return {
+        server: buildLedgerMcpServer({ execPath: process.execPath, entryPath, dbPath }),
+        release: () => {},
+      }
     },
   })
 }

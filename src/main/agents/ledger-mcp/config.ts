@@ -1,3 +1,4 @@
+import { harnessSpecs } from '../harnesses/index.js'
 import type { AcpMcpServer } from '../harnesses/types.js'
 
 /**
@@ -23,6 +24,13 @@ export interface LedgerMcpSpawnContext {
   entryPath: string
   /** The app ledger DB (`<userData>/ledger.db`). */
   dbPath: string
+}
+
+/** Client-provided MCP transport for a harness registry key: 'http' only
+ *  where the spec says so (Copilot — stdio is rejected there), 'stdio'
+ *  everywhere else including unknown keys (the agent-spawned default). */
+export function ledgerMcpTransportFor(harnessKind: string): 'stdio' | 'http' {
+  return harnessSpecs.find(spec => spec.kind === harnessKind)?.clientMcpTransport ?? 'stdio'
 }
 
 export function buildLedgerMcpServer(ctx: LedgerMcpSpawnContext): AcpMcpServer {
