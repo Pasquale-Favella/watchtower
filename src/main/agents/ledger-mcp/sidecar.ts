@@ -45,6 +45,9 @@ const READY_PREFIX = 'READY '
 /** Preamble cap: the announcement is one short line — megabytes of stdout
  *  before it means the child is chatty-broken, not booting. */
 const MAX_READY_BYTES = 64 * 1024
+/** Reassembly cap: one stderr line is short — megabytes without a newline
+ *  means the child is dumping, not logging, so flush it as one note. */
+const MAX_STDERR_BUFFER_BYTES = 64 * 1024
 
 /** Parses the sidecar's single stdout announcement (`READY {"port": N}`).
  *  Anything else — wrong prefix, bad JSON, out-of-range port — is a boot
@@ -178,7 +181,7 @@ export async function startLedgerMcpHttp(
       if (parsed) onLog(parsed.event, { method: parsed.method, route: parsed.route, code: parsed.code })
       else onLog('sidecar.stderr', { message: trimmed.slice(0, 500) })
     } catch { /* logging must never break the sidecar */ }
-  };
+  }
   child.stderr?.on('data', (chunk: Buffer) => {
     stderrBuffer += chunk.toString()
     let newline = stderrBuffer.indexOf('\n')
@@ -187,7 +190,7 @@ export async function startLedgerMcpHttp(
       stderrBuffer = stderrBuffer.slice(newline + 1)
       newline = stderrBuffer.indexOf('\n')
     }
-    if (stderrBuffer.length > 64 * 1024) {
+    if (stderrBuffer.length > MAX_STDERR_BUFFER_BYTES) {
       forwardStderrLine(stderrBuffer)
       stderrBuffer = ''
     }

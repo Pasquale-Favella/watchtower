@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import pino, { type Logger } from 'pino'
 
@@ -72,20 +72,12 @@ function rotateLog(logDir: string, maxGenerations: number): void {
   try { rmSync(generationPath(logDir, maxGenerations), { force: true }) } catch { /* best effort */ }
   for (let generation = maxGenerations - 1; generation >= 1; generation--) {
     const from = generationPath(logDir, generation)
-    const to = generationPath(logDir, generation + 1)
-    try {
-      statSync(from)
-    } catch {
-      continue
-    }
-    try { renameSync(from, to) } catch { /* best effort */ }
+    if (!existsSync(from)) continue
+    try { renameSync(from, generationPath(logDir, generation + 1)) } catch { /* best effort */ }
   }
-  try {
-    statSync(filePath(logDir))
-    renameSync(filePath(logDir), generationPath(logDir, 1))
-  } catch {
-    // No current file — nothing to rotate.
-  }
+  // No current file — nothing to rotate.
+  if (!existsSync(filePath(logDir))) return
+  try { renameSync(filePath(logDir), generationPath(logDir, 1)) } catch { /* best effort */ }
 }
 
 function createLogger(opts: ActiveLog['opts']): { logger: Logger; dest: ActiveLog['dest'] } {

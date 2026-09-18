@@ -84,9 +84,7 @@ function truncate(value: string, max: number): string {
 
 /** Basename without `node:path` so the sandboxed renderer can share this seam. */
 export function operationalLogBasename(path: string): string {
-  const parts = path.split(/[/\\]+/)
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const part = parts[i]!
+  for (const part of path.split(/[/\\]+/).reverse()) {
     if (part.length > 0) return part
   }
   return path
@@ -258,14 +256,11 @@ export function parseSidecarStderrLine(line: string): ParsedSidecarLog | null {
   }
   if (parsed['event'] !== 'ledger-mcp.request-error') return null
   const out: ParsedSidecarLog = { event: 'ledger-mcp.request-error' }
-  if (typeof parsed['method'] === 'string' && parsed['method'].trim()) {
-    out.method = parsed['method'].trim().slice(0, MAX_SHORT)
-  }
-  if (typeof parsed['route'] === 'string' && parsed['route'].trim()) {
-    out.route = parsed['route'].trim().slice(0, MAX_SHORT)
-  }
-  if (typeof parsed['code'] === 'string' && parsed['code'].trim()) {
-    out.code = parsed['code'].trim().slice(0, MAX_SHORT)
+  for (const key of ['method', 'route', 'code'] as const) {
+    const value = parsed[key]
+    if (typeof value === 'string' && value.trim()) {
+      out[key] = value.trim().slice(0, MAX_SHORT)
+    }
   }
   return out
 }

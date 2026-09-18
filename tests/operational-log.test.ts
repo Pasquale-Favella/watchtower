@@ -1,7 +1,12 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import type { ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
+import { z } from 'zod'
 
 import { buildOperationalLogRecord, isOperationalLogRecord } from '../src/shared/operational-log.js'
 import {
@@ -240,17 +245,14 @@ describe('Worker scan-lifecycle forwarding (ticket #128)', () => {
     expect(JSON.stringify(records)).not.toContain('alice')
   })
 
-  it('keeps the worker free of Electron APIs', async () => {
-    const { readFileSync } = await import('node:fs')
-    const { join: joinPath, dirname } = await import('node:path')
-    const { fileURLToPath } = await import('node:url')
+  it('keeps the worker free of Electron APIs', () => {
     const here = dirname(fileURLToPath(import.meta.url))
-    const root = joinPath(here, '..', 'src', 'main', 'db-worker')
+    const root = join(here, '..', 'src', 'main', 'db-worker')
     for (const file of ['entry.ts', 'context.ts', 'protocol.ts', 'client.ts']) {
-      const text = readFileSync(joinPath(root, file), 'utf8')
+      const text = readFileSync(join(root, file), 'utf8')
       expect(text).not.toMatch(/from ['"]electron['"]/)
     }
-    const shared = readFileSync(joinPath(here, '..', 'src', 'shared', 'operational-log.ts'), 'utf8')
+    const shared = readFileSync(join(here, '..', 'src', 'shared', 'operational-log.ts'), 'utf8')
     expect(shared).not.toMatch(/from ['"]electron['"]/)
     expect(shared).not.toMatch(/from ['"]node:/)
     expect(shared).not.toMatch(/require\(['"]node:/)
@@ -306,8 +308,6 @@ describe('Sidecar forwarding with readiness protection (ticket #129)', () => {
   })
 
   it('keeps request-failure logging off stdout and the READY announcement parseable under load', async () => {
-    const { EventEmitter } = await import('node:events')
-    const { PassThrough } = await import('node:stream')
     const stderrBytes: string[] = []
     const stdoutBytes: string[] = []
     const origStderrWrite = process.stderr.write.bind(process.stderr)
@@ -326,7 +326,7 @@ describe('Sidecar forwarding with readiness protection (ticket #129)', () => {
     expect(stderrBytes.join('')).toContain('WATCHTOWER_LEDGER_LOG')
     expect(stderrBytes.join('')).toContain('/mcp')
 
-    const child = new EventEmitter() as unknown as import('node:child_process').ChildProcess
+    const child = new EventEmitter() as unknown as ChildProcess
     const stdout = new PassThrough()
     const pending = readReadyPort(child, stdout)
     for (let i = 0; i < 50; i++) stdout.write(`(node:${i}) ExperimentalWarning: logging load ${i}\n`)
@@ -337,7 +337,6 @@ describe('Sidecar forwarding with readiness protection (ticket #129)', () => {
 
 describe('Renderer tripwire + Harness and update lifecycle (ticket #130)', () => {
   it('forwards tripwire rejections with label and location only — no payload contents', async () => {
-    const { z } = await import('zod')
     const forwarded: unknown[] = []
     ;(globalThis as { window?: unknown }).window = {
       api: { reportTripwire: (label: string, location: string) => { forwarded.push({ label, location }) } },
@@ -389,28 +388,22 @@ describe('Renderer tripwire + Harness and update lifecycle (ticket #130)', () =>
     expect(record.level).toBe('info')
   })
 
-  it('keeps the renderer free of direct log-file writes', async () => {
-    const { readFileSync } = await import('node:fs')
-    const { join: joinPath, dirname } = await import('node:path')
-    const { fileURLToPath } = await import('node:url')
+  it('keeps the renderer free of direct log-file writes', () => {
     const here = dirname(fileURLToPath(import.meta.url))
-    const text = readFileSync(joinPath(here, '..', 'src', 'renderer', 'src', 'shared', 'lib', 'api.ts'), 'utf8')
+    const text = readFileSync(join(here, '..', 'src', 'renderer', 'src', 'shared', 'lib', 'api.ts'), 'utf8')
     expect(text).not.toMatch(/node:fs/)
     expect(text).not.toMatch(/writeFile/)
   })
 })
 
 describe('Ad-hoc write sweep + single-file integrate-and-verify (ticket #131)', () => {
-  it('keeps zero console.* writes in app code', async () => {
-    const { readFileSync, readdirSync } = await import('node:fs')
-    const { join: joinPath, dirname } = await import('node:path')
-    const { fileURLToPath } = await import('node:url')
+  it('keeps zero console.* writes in app code', () => {
     const here = dirname(fileURLToPath(import.meta.url))
-    const root = joinPath(here, '..', 'src')
+    const root = join(here, '..', 'src')
     const files: string[] = []
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        const full = joinPath(dir, entry.name)
+        const full = join(dir, entry.name)
         if (entry.isDirectory()) walk(full)
         else if (entry.isFile() && /\.(ts|tsx)$/.test(entry.name)) files.push(full)
       }

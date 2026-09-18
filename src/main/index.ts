@@ -64,10 +64,10 @@ function broadcast(channel: string, data?: unknown): void {
 /** IPC invoke wrapper (spec #126 user story 5): failures record only the
  * operation name and a short error code — never arguments. Rethrows so the
  * renderer's tripwire behavior is unchanged. */
-function handleLogged(channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: never[]) => unknown): void {
+function handleLogged<T extends unknown[]>(channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown): void {
   ipcMain.handle(channel, async (event, ...args) => {
     try {
-      return await (listener as (event: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown)(event, ...args)
+      return await listener(event, ...(args as T))
     } catch (err) {
       safeRecordOperationalLog('main', 'ipc.error', {
         op: channel,
