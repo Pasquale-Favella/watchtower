@@ -135,8 +135,10 @@ export function logOperationalEvent(
   for (const key of ALLOWED_STRING_FIELDS) {
     const value = fields[key]
     if (typeof value === 'string') {
-      const trimmed = value.trim().slice(0, 200)
-      if (trimmed) record[key] = trimmed
+      const trimmed = value.trim()
+      const safeValue = key === 'file' ? trimmed.split(/[\\/]/).pop() ?? '' : trimmed
+      const capped = safeValue.slice(0, 200)
+      if (capped) record[key] = capped
     }
   }
   for (const key of ALLOWED_COUNT_FIELDS) {

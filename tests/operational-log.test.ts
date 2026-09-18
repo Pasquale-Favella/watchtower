@@ -134,6 +134,17 @@ describe('Operational log main sink (pino, slice 1)', () => {
     expect(String(parsed[2]!['label'])).toHaveLength(200)
   })
 
+  it('reduces allowlisted file fields to basenames', async () => {
+    const logDir = tempLogDir()
+    await initOperationalLog({ logDir, isPackaged: true })
+    logOperationalEvent('warn', 'scan.file-error', { file: 'C:\\Users\\alice\\sessions.json' })
+    logOperationalEvent('warn', 'scan.file-error', { file: '/Users/alice/sessions.json' })
+    closeOperationalLog()
+    const parsed = readLines(logDir).map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(parsed.map(record => record['file'])).toEqual(['sessions.json', 'sessions.json'])
+    expect(readLines(logDir).join('\n')).not.toContain('alice')
+  })
+
   it('keeps interleaved forwarder records parseable across a forced rotation (#131)', async () => {
     const logDir = tempLogDir()
     // pino-roll parses bare numbers as megabytes — test sizes need a unit.
