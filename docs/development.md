@@ -60,6 +60,24 @@ Notes:
 - e2e is not in the `test.yml` merge gate yet (needs a display/matrix); that
   CI step is a follow-up to #133.
 
+### Adding a spec
+
+`e2e/app.ts` owns the launch fixture — reuse it, don't relaunch by hand:
+
+| File | Covers |
+|------|--------|
+| `e2e/app.ts` | `launchApp` (isolated `--user-data-dir`, `pageErrors` tap), `dismissOnboarding`, `waitForAnyVisible` |
+| `e2e/smoke.spec.ts` | Boot, onboarding dismissal, Overview ↔ Sessions |
+| `e2e/sections.spec.ts` | Every sidebar destination renders (add markers to `markersFor` for new sections) |
+| `e2e/command-palette.spec.ts` | Mod+K → filter → Enter navigates |
+
+Rules (the boot scan reads the host's real sources read-only, so content
+varies machine to machine): never assert data values, row counts, or URLs
+(memory-history router); key readiness off `dismissOnboarding` (a hidden
+splash also matches pre-mount); assert views with content-OR-empty markers
+via `waitForAnyVisible`; end every spec with
+`expect(pageErrors).toEqual([])`.
+
 ## Project layout
 
 ```
