@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { shortcutForAction } from '../src/renderer/src/app/shortcuts.js'
-import { PALETTE_ACTIONS, PALETTE_SECTIONS, ROWS } from '../src/renderer/src/app/components/CommandPalette.js'
+import { PALETTE_ACTIONS, PALETTE_SECTIONS, ROWS, rowFilterValue } from '../src/renderer/src/app/components/CommandPalette.js'
 
 describe('command palette rows (ADR 0028)', () => {
   it('lists every section plus refresh/toggleSidebar — and never itself', () => {
@@ -16,6 +16,12 @@ describe('command palette rows (ADR 0028)', () => {
     expect(ROWS.filter(row => row.source === 'action').map(row => row.action)).toEqual([...PALETTE_ACTIONS])
   })
 
+  it('filter values carry label plus registry id', () => {
+    expect(rowFilterValue({ action: 'pullRequests', source: 'section' })).toBe('Pull requests pullRequests')
+    for (const row of ROWS) {
+      expect(rowFilterValue(row)).toContain(row.action)
+    }
+  })
   it('every row resolves a registry label (unique filter values for cmdk)', () => {
     const labels = [...PALETTE_SECTIONS, ...PALETTE_ACTIONS].map(
       action => shortcutForAction(action)?.label ?? action,

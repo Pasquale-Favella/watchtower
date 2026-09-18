@@ -1,9 +1,6 @@
-import type { ReactNode } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 
-import {
-  LayoutDashboard, PanelsTopLeft, GitPullRequestArrow, BarChart3, Lightbulb,
-  Layers, ArrowLeftRight, Sparkles, Settings, RefreshCw, PanelLeft,
-} from 'lucide-react'
+import { RefreshCw, PanelLeft } from 'lucide-react'
 
 import {
   CommandDialog,
@@ -26,19 +23,7 @@ import { navigateToSection } from '@/app/navigation'
 import { usePaletteStore } from '@/app/stores/palette-store'
 import { useScanStore } from '@/app/stores/scan-store'
 
-/** Section icons — mirrors `SECTION_ICONS` in app-sidebar (kept local so this
- * module never imports the sidebar's router-bound tree). */
-const SECTION_ICONS: Record<Section, ReactNode> = {
-  overview: <LayoutDashboard />,
-  sessions: <PanelsTopLeft />,
-  pullRequests: <GitPullRequestArrow />,
-  spend: <BarChart3 />,
-  optimize: <Lightbulb />,
-  models: <Layers />,
-  compare: <ArrowLeftRight />,
-  coachSkills: <Sparkles />,
-  settings: <Settings />,
-}
+import { SECTION_ICONS } from '@/app/section-icons'
 
 /** The v1 palette rows (ADR 0028): every Section plus the two runnable
  * registry Actions. The palette's own trigger is never a row. */
@@ -65,6 +50,13 @@ function iconFor(row: PaletteRow): ReactNode {
     : ACTION_ICONS[row.action as PaletteAction]
 }
 
+/** cmdk filter key: label plus registry id, so `pullrequests` and
+ * `coachskills` match as well as the display labels. */
+export function rowFilterValue(row: PaletteRow): string {
+  const label = shortcutForAction(row.action)?.label ?? row.action
+  return `${label} ${row.action}`
+}
+
 const ACTION_ICONS: Record<PaletteAction, ReactNode> = {
   refresh: <RefreshCw />,
   toggleSidebar: <PanelLeft />,
@@ -74,7 +66,7 @@ const ACTION_ICONS: Record<PaletteAction, ReactNode> = {
  * (ADR 0001): Sections navigate through app/navigation.ts (ADR 0014),
  * refresh reads the scan store, toggleSidebar reads the sidebar context
  * (same source as SidebarToggleShortcut). Mount inside SidebarProvider. */
-export function CommandPalette() {
+export function CommandPalette(): ReactElement {
   const open = usePaletteStore(s => s.open)
   const setOpen = usePaletteStore(s => s.setOpen)
   const refresh = useScanStore(s => s.refresh)
@@ -96,7 +88,7 @@ export function CommandPalette() {
   const renderRow = (row: PaletteRow): ReactNode => {
     const label = shortcutForAction(row.action)?.label ?? row.action
     return (
-      <CommandItem key={row.action} value={label} onSelect={() => run(row.action)}>
+      <CommandItem key={row.action} value={rowFilterValue(row)} onSelect={() => run(row.action)}>
         {iconFor(row)}
         <span>{label}</span>
         <CommandShortcut>{displayShortcutForAction(row.action)}</CommandShortcut>

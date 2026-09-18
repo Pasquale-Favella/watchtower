@@ -52,8 +52,7 @@ Global search is a future row source, not a synonym for the palette.
 _Avoid_: global search, quick switcher, command menu
 
 **Command**:
-One runnable row in the command palette — navigates to a Section or runs a
-registry Action.
+One row in the command palette — either a Section or a registry Action.
 _Avoid_: shortcut, action
 
 **Coach & Skills**:
