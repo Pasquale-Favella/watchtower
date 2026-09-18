@@ -25,9 +25,40 @@ behavior and the macOS Full Disk Access requirement.
 | `npm run preview` | Preview a built app |
 | `npm run typecheck` | Type-check both node and web targets (`typecheck:node` / `typecheck:web`) |
 | `npm test` | Run the vitest suite (`tests/`) |
+| `npm run test:e2e` | Build the bundles, then run the Playwright Electron smoke (`e2e/`) |
 | `npm run package` | Build + package for the platform you are on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux) |
 | `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS) |
 | `npm run icons` | Regenerate `build/icon.png` from `assets/watchtower-logo.svg` |
+
+## End-to-end tests
+
+Unit/integration coverage lives in `tests/` (Vitest). The Electron smoke lives
+in `e2e/` (Playwright, `playwright.config.ts`) and drives the real app window:
+
+```bash
+npm run test:e2e
+```
+
+What it does: builds the current bundles (`out/`, git-ignored), launches
+`electron .` with a fresh `--user-data-dir` under the OS temp root, and
+asserts boot (window title), first-run onboarding dismissal, and
+Overview ↔ Sessions navigation with no renderer `pageerror`. The temp profile
+is deleted afterwards, so the suite never touches your real Watchtower data.
+
+First launch hydrates through a full scan of the host's real assistant sources
+(read-only — only the ledger destination is isolated), so the first run can
+take minutes; the ceiling in `playwright.config.ts` reflects that.
+
+Notes:
+
+- No browser download needed: Electron specs drive the repo's own Electron
+  binary, so `npx playwright install` is NOT required.
+- `npx playwright test` alone reuses the last `npm run build` output when you
+  want to iterate without rebuilding.
+- Linux without a display needs a virtual server (`xvfb-run -a npm run
+  test:e2e`); Windows and macOS run headed as-is.
+- e2e is not in the `test.yml` merge gate yet (needs a display/matrix); that
+  CI step is a follow-up to #133.
 
 ## Project layout
 
