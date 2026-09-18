@@ -11,7 +11,7 @@ import { buildCoachPrompt, buildLedgerBriefing } from './prompts.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import type { OverviewScope } from '../../shared/schemas/overview.js'
 import { operationalLogCodeFor } from '../../shared/operational-log.js'
-import type { OperationalLogEvent, OperationalLogFields, OperationalLogForwarder } from '../../shared/operational-log.js'
+import { safeRecordOperationalLog } from '../operational-log.js'
 import {
   coachInspectRequestSchema,
   coachRunRequestSchema,
@@ -78,9 +78,6 @@ export interface CoachRunnerDeps {
    *  turn still runs, just without data tools) rather than failing the turn.
    *  The runner releases every acquired attachment when its run settles. */
   ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
-  /** Operational log forwarder (ticket #130): Harness run start/finish/error
-   * by kind only — never prompts. Defaults to a no-op for unit tests. */
-  onOperationalLog?: OperationalLogForwarder
 }
 
 export interface CoachRunner {
@@ -127,10 +124,6 @@ function toProbeInput(request: unknown): ProbeInput | null {
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   const activeRuns = new Map<string, AsyncGenerator<CoachEvent>>()
-  const onLog = deps.onOperationalLog ?? (() => {})
-  function logHarness(event: OperationalLogEvent, fields: OperationalLogFields): void {
-    try { onLog(event, fields) } catch { /* logging must never break a run */ }
-  }
   /** The conversation's private temp workspace (map 53 ticket 56): created on
    *  the first run, reused while the session resumes, deleted on reset/quit. */
   let workspace: string | null = null
@@ -397,7 +390,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         if (resumeProbed) probedSession = null
         activeRuns.set(runId, gen)
         // Operational log (ticket #130): Harness kind only — never prompts.
-        logHarness('harness.start', { harnessKind: harness.kind })
+        safeRecordOperationalLog('main', 'harness.start', { harnessKind: harness.kind })
 
         // Stream in the background — the ack returns immediately; events land
         // on the push channel as they stream. A generator throw (SDK failure)
@@ -407,9 +400,9 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
             for await (const event of gen) {
               emit(runId, event)
             }
-            logHarness('harness.finish', { harnessKind: harness.kind })
+            safeRecordOperationalLog('main', 'harness.finish', { harnessKind: harness.kind })
           } catch (err) {
-            logHarness('harness.error', { harnessKind: harness.kind, code: operationalLogCodeFor(err, 'failed') })
+            safeRecordOperationalLog('main', 'harness.error', { harnessKind: harness.kind, code: operationalLogCodeFor(err, 'failed') })
             emit(runId, { kind: 'error', message: err instanceof Error ? err.message : String(err) })
           } finally {
             activeRuns.delete(runId)
@@ -421,10 +414,10 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       } catch (err) {
         // A launch failure after the harness was resolved still records by
         // kind only — the prompt never leaves this closure.
-        try {
-          const kind = found.find(h => h.kind === req.harnessKind)?.kind ?? req.harnessKind
-          logHarness('harness.error', { harnessKind: kind, code: operationalLogCodeFor(err, 'failed') })
-        } catch { /* logging must never break the ack */ }
+        safeRecordOperationalLog('main', 'harness.error', {
+          harnessKind: found.find(h => h.kind === req.harnessKind)?.kind ?? req.harnessKind,
+          code: operationalLogCodeFor(err, 'failed'),
+        })
         attachment?.release()
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
@@ -496,19 +489,15 @@ export interface AgentsIpcSources {
    *  argument. Null when there is no ledger.db yet (fresh install) or the
    *  sidecar fails to boot — no data, no tools. */
   ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
-  /** Operational log forwarder (ticket #130): Harness lifecycle by kind plus
-   * `ipc.error` for Coach/Skills handler failures. Injected by the
-   * composition root; defaults to a no-op for unit tests. */
-  onOperationalLog?: OperationalLogForwarder
 }
 
 /** Wire the Coach & Skills IPC surface onto ipcMain. Call once from
  *  registerIpc(); returns the runner cleanup handle (temp workspace teardown)
  *  for the app's quit path. `dismissals` bridges the not-a-skill store. */
 export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Promise<void> } {
-  const { dismissals, appPath, ledgerMcpServer, onOperationalLog } = sources
+  const { dismissals, appPath, ledgerMcpServer } = sources
   function logIpcError(op: string, err: unknown): void {
-    try { onOperationalLog?.('ipc.error', { op, code: operationalLogCodeFor(err, 'failed') }) } catch { /* best effort */ }
+    safeRecordOperationalLog('main', 'ipc.error', { op, code: operationalLogCodeFor(err, 'failed') })
   }
   let runtimePromise: Promise<HarnessRuntime> | null = null
   const runner = createCoachRunner({
@@ -529,7 +518,6 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
       authProbe: kind => (kind === 'claude' ? probeClaudeAuthStatus() : Promise.resolve('unknown')),
     }),
     ledgerMcpServer,
-    ...(onOperationalLog ? { onOperationalLog } : {}),
   })
 
   ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> => {

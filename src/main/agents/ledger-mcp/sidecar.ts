@@ -5,7 +5,8 @@ import { createInterface } from 'node:readline'
 import type { AcpMcpServer } from '../harnesses/types.js'
 import { bearerHeaderValue } from './auth.js'
 import type { LedgerMcpSpawnContext } from './config.js'
-import { parseSidecarStderrLine, type OperationalLogForwarder } from '../../../shared/operational-log.js'
+import { parseSidecarStderrLine } from '../../../shared/operational-log.js'
+import { safeRecordOperationalLog } from '../../operational-log.js'
 
 /**
  * Main-side spawner for the loopback-HTTP `watchtower-ledger` MCP server:
@@ -143,11 +144,7 @@ function sidecarEnv(httpCtx: { dbPath: string; token: string }): Record<string, 
   return env
 }
 
-export async function startLedgerMcpHttp(
-  ctx: LedgerMcpSpawnContext,
-  deps: { onOperationalLog?: OperationalLogForwarder } = {},
-): Promise<StartedLedgerMcpHttp> {
-  const onLog = deps.onOperationalLog ?? (() => {})
+export async function startLedgerMcpHttp(ctx: LedgerMcpSpawnContext): Promise<StartedLedgerMcpHttp> {
   const token = randomUUID()
   const child: ChildProcess = spawn(ctx.execPath, [ctx.entryPath, '--ledger-mcp-http'], {
     env: sidecarEnv({ dbPath: ctx.dbPath, token }),
@@ -166,10 +163,8 @@ export async function startLedgerMcpHttp(
       const trimmed = line.trim()
       if (!trimmed) return
       const parsed = parseSidecarStderrLine(trimmed)
-      try {
-        if (parsed) onLog('ledger-mcp.request-error', parsed)
-        else onLog('sidecar.stderr', { message: trimmed.slice(0, 500) })
-      } catch { /* logging must never break the sidecar */ }
+      if (parsed) safeRecordOperationalLog('sidecar', 'ledger-mcp.request-error', parsed)
+      else safeRecordOperationalLog('sidecar', 'sidecar.stderr', { message: trimmed.slice(0, 500) })
     })
   }
   if (!child.stdout) {

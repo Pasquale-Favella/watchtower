@@ -10,7 +10,7 @@ import {
   type SkillsThresholds,
 } from '../shared/schemas/skills.js'
 import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
-import { closeOperationalLog, initOperationalLog, recordOperationalLog, safeRecordOperationalLog } from './operational-log.js'
+import { closeOperationalLog, initOperationalLog, safeRecordOperationalLog } from './operational-log.js'
 import { operationalLogCodeFor } from '../shared/operational-log.js'
 import type { ExportResult } from './export.js'
 import type { OverviewScope } from './overview.js'
@@ -46,12 +46,7 @@ let dbClient: DbWorkerClient | null = null
  * MCP clients, and any future harness that rejects stdio. It remains lazy by
  * default and is prewarmed after the data worker is ready when the persisted
  * startup setting requests it. */
-const sidecarPool = createSidecarPool({
-  spawn: ctx => startLedgerMcpHttp(ctx, {
-    onOperationalLog: (event, fields) => safeRecordOperationalLog('sidecar', event, fields ?? {}),
-  }),
-  onOperationalLog: (event, fields) => safeRecordOperationalLog('sidecar', event, fields ?? {}),
-})
+const sidecarPool = createSidecarPool({ spawn: ctx => startLedgerMcpHttp(ctx) })
 /** The requesting window of the in-flight manual scan (progress/error routing). */
 let scanRequester: WebContents | null = null
 
@@ -169,16 +164,14 @@ function registerIpc(db: DbWorkerClient): void {
   // Renderer tripwire forward (ticket #130): label and location only — never
   // payload contents. Malformed forwards are dropped, never logged.
   ipcMain.on('operational-log:renderer', (_event, raw: unknown) => {
-    try {
-      const payload = raw as { label?: unknown; location?: unknown } | null
-      if (!payload || typeof payload !== 'object') return
-      if (typeof payload.label !== 'string' || !payload.label.trim()) return
-      if (typeof payload.location !== 'string' || !payload.location.trim()) return
-      recordOperationalLog('renderer', 'renderer.tripwire', {
-        label: payload.label,
-        location: payload.location,
-      })
-    } catch { /* logging must never break IPC */ }
+    const payload = raw as { label?: unknown; location?: unknown } | null
+    if (!payload || typeof payload !== 'object') return
+    if (typeof payload.label !== 'string' || !payload.label.trim()) return
+    if (typeof payload.location !== 'string' || !payload.location.trim()) return
+    safeRecordOperationalLog('renderer', 'renderer.tripwire', {
+      label: payload.label,
+      location: payload.location,
+    })
   })
 
   handleLogged('cadence:get', () => db.request('cadence:get'))
@@ -415,8 +408,6 @@ function registerIpc(db: DbWorkerClient): void {
         release: () => {},
       }
     },
-    // Harness lifecycle + Coach/Skills IPC failures (ticket #130): kind only.
-    onOperationalLog: (event, fields) => safeRecordOperationalLog('main', event, fields ?? {}),
   })
 }
 
@@ -464,10 +455,7 @@ app.whenReady().then(async () => {
   )
   relayWorkerEvents(db)
   dbClient = db
-  updateChecker = createUpdateChecker({
-    currentVersion: app.getVersion(),
-    onOperationalLog: (event, fields) => safeRecordOperationalLog('main', event, fields ?? {}),
-  })
+  updateChecker = createUpdateChecker({ currentVersion: app.getVersion() })
   registerIpc(db)
   createWindow()
 

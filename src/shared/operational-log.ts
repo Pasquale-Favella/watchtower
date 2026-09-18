@@ -19,28 +19,29 @@ export type OperationalLogContext = 'main' | 'worker' | 'sidecar' | 'renderer'
 
 export type OperationalLogLevel = 'debug' | 'info' | 'warn' | 'error'
 
-/** Minimal event allowlist only — no per-file success chatter. Single source
- * for the event union and the runtime guard below: add an event once here. */
-const OPERATIONAL_LOG_EVENTS = [
-  'worker.ready',
-  'worker.init-error',
-  'scan.start',
-  'scan.finish',
-  'scan.abort',
-  'file.error',
-  'ipc.error',
-  'sidecar.boot-error',
-  'sidecar.health-failure',
-  'sidecar.stderr',
-  'ledger-mcp.request-error',
-  'harness.start',
-  'harness.finish',
-  'harness.error',
-  'updates.offline',
-  'renderer.tripwire',
-] as const
+/** Minimal event allowlist with its default level — no per-file success
+ * chatter. Single source for the event union and the level mapping: add an
+ * event once here. Offline checks are info notes, never errors. */
+const OPERATIONAL_LOG_EVENT_LEVELS = {
+  'worker.ready': 'info',
+  'worker.init-error': 'error',
+  'scan.start': 'info',
+  'scan.finish': 'info',
+  'scan.abort': 'warn',
+  'file.error': 'error',
+  'ipc.error': 'error',
+  'sidecar.boot-error': 'error',
+  'sidecar.health-failure': 'error',
+  'sidecar.stderr': 'warn',
+  'ledger-mcp.request-error': 'error',
+  'harness.start': 'info',
+  'harness.finish': 'info',
+  'harness.error': 'error',
+  'updates.offline': 'info',
+  'renderer.tripwire': 'warn',
+} as const
 
-export type OperationalLogEvent = typeof OPERATIONAL_LOG_EVENTS[number]
+export type OperationalLogEvent = keyof typeof OPERATIONAL_LOG_EVENT_LEVELS
 
 export interface OperationalLogPerProviderUnparsed {
   provider: string
@@ -106,24 +107,9 @@ function cleanCount(value: unknown): number | undefined {
   return Math.floor(value)
 }
 
-/** Default level per event: offline checks are info notes, never errors. */
+/** Default level per event, from the table above. */
 export function operationalLogLevelFor(event: OperationalLogEvent): OperationalLogLevel {
-  switch (event) {
-    case 'scan.start':
-    case 'scan.finish':
-    case 'worker.ready':
-    case 'harness.start':
-    case 'harness.finish':
-    case 'updates.offline':
-      return 'info'
-    case 'renderer.tripwire':
-    case 'sidecar.stderr':
-      return 'warn'
-    case 'scan.abort':
-      return 'warn'
-    default:
-      return 'error'
-  }
+  return OPERATIONAL_LOG_EVENT_LEVELS[event]
 }
 
 /** Type guard for per-provider unparsed tallies arriving in scan metadata. */
@@ -190,11 +176,6 @@ export function operationalLogCodeFor(err: unknown, fallback = 'unknown'): strin
   }
   return fallback
 }
-
-/** Shared forwarder signature: one allowlisted record per call. Reused by the
- * sidecar pool, the Harness runner, and the update checker so the tuple never
- * drifts per call site. */
-export type OperationalLogForwarder = (event: OperationalLogEvent, fields?: OperationalLogFields) => void
 
 /** Parses one sidecar stderr line back out of the JSON pino writes there,
  * picking method and route only (no bodies, tokens, or ledger facts). Pure —

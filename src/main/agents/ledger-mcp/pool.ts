@@ -2,7 +2,7 @@ import type { LedgerMcpAttachment } from '../ipc.js'
 import type { AcpMcpServer } from '../harnesses/types.js'
 import type { LedgerMcpSpawnContext } from './config.js'
 import type { StartedLedgerMcpHttp } from './sidecar.js'
-import type { OperationalLogForwarder } from '../../../shared/operational-log.js'
+import { safeRecordOperationalLog } from '../../operational-log.js'
 
 /**
  * App-level pool for the loopback-HTTP ledger sidecar: one sidecar serves
@@ -24,9 +24,6 @@ import type { OperationalLogForwarder } from '../../../shared/operational-log.js
 
 export interface SidecarPoolDeps {
   spawn: (ctx: LedgerMcpSpawnContext) => Promise<StartedLedgerMcpHttp>
-  /** Operational log forwarder (ticket #129): boot and health failures land
-   * in the single main-owned file. Defaults to a no-op for unit tests. */
-  onOperationalLog?: OperationalLogForwarder
 }
 
 export interface SidecarPool {
@@ -50,15 +47,6 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
   let pooled: StartedLedgerMcpHttp | null = null
   let inflight: Promise<StartedLedgerMcpHttp | null> | null = null
   let generation = 0
-  const onLog = deps.onOperationalLog ?? (() => {})
-
-  function logBootError(code: string): void {
-    try { onLog('sidecar.boot-error', { code }) } catch { /* logging must never break acquire */ }
-  }
-
-  function logHealthFailure(): void {
-    try { onLog('sidecar.health-failure', { code: 'unhealthy' }) } catch { /* best effort */ }
-  }
 
   async function spawnFresh(ctx: LedgerMcpSpawnContext): Promise<StartedLedgerMcpHttp | null> {
     const gen = generation
@@ -66,7 +54,7 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
     try {
       started = await deps.spawn(ctx)
     } catch {
-      logBootError('spawn-failed')
+      safeRecordOperationalLog('sidecar', 'sidecar.boot-error', { code: 'spawn-failed' })
       return null
     }
     if (gen !== generation) {
@@ -92,7 +80,7 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
         return { server: pooled.server, release: () => {} }
       }
       // Unhealthy between turns — recorded once, then respawned below.
-      logHealthFailure()
+      safeRecordOperationalLog('sidecar', 'sidecar.health-failure', { code: 'unhealthy' })
       pooled.release()
       pooled = null
     }

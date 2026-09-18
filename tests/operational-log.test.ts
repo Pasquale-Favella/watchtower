@@ -40,6 +40,15 @@ async function settleLogDir(logDir: string): Promise<void> {
   }
 }
 
+/** pino-roll names size-rotated files extension-last (`operational.1.log`). */
+function logFiles(logDir: string): string[] {
+  return readdirSync(logDir).filter(f => /^operational\.\d+\.log$/.test(f))
+}
+
+function readLogText(logDir: string): string {
+  return logFiles(logDir).map(f => readFileSync(join(logDir, f), 'utf8')).join('\n')
+}
+
 describe('Operational log record seam (spec #126, ticket #127)', () => {
   it('builds a parseable record carrying timestamp, level, context, event and allowlisted fields only', () => {
     const record = buildOperationalLogRecord('main', 'scan.finish', {
@@ -99,13 +108,7 @@ describe('Operational log file sink (ticket #127)', () => {
     return join(dir, 'logs')
   }
 
-  /** pino-roll names size-rotated files extension-last (`operational.1.log`). */
-  function logFiles(logDir: string): string[] {
-    return readdirSync(logDir).filter(f => /^operational\.\d+\.log$/.test(f))
-  }
-
-  function readLines(logDir: string): string[] {
-    const lines: string[] = []
+  function readLines(logDir: string): string[] {    const lines: string[] = []
     for (const file of logFiles(logDir)) {
       const text = readFileSync(join(logDir, file), 'utf8')
       lines.push(...text.split('\n').filter(line => line.trim().length > 0))
@@ -333,32 +336,46 @@ describe('Sidecar forwarding with readiness protection (ticket #129)', () => {
   })
 
   it('logs a sidecar boot failure once when the spawn throws', async () => {
-    const seen: Array<{ event: string; fields: Record<string, unknown> }> = []
-    const pool = createSidecarPool({
-      spawn: async () => { throw new Error('no binary') },
-      onOperationalLog: (event, fields) => { seen.push({ event, fields }) },
-    })
-    const ctx = { execPath: '/bin/app', entryPath: '/app/ledger-mcp.js', dbPath: '/data/ledger.db' }
-    expect(await pool.acquire(ctx)).toBeNull()
-    expect(seen.filter(s => s.event === 'sidecar.boot-error')).toHaveLength(1)
+    const tdir = mkdtempSync(join(tmpdir(), 'watchtower-oplog-sidecar-'))
+    const logDir = join(tdir, 'logs')
+    await initOperationalLog({ logDir, isPackaged: true })
+    try {
+      const pool = createSidecarPool({
+        spawn: async () => { throw new Error('no binary') },
+      })
+      const ctx = { execPath: '/bin/app', entryPath: '/app/ledger-mcp.js', dbPath: '/data/ledger.db' }
+      expect(await pool.acquire(ctx)).toBeNull()
+    } finally {
+      closeOperationalLog()
+    }
+    const matches = readLogText(logDir).split('\n').filter(line => line.includes('sidecar.boot-error'))
+    expect(matches).toHaveLength(1)
+    rmSync(tdir, { recursive: true, force: true })
   })
 
   it('logs a health failure once when the pooled sidecar dies between turns', async () => {
     let alive = true
-    const seen: Array<{ event: string }> = []
-    const pool = createSidecarPool({
-      spawn: async () => ({
-        server: { type: 'http', name: 'watchtower-ledger', url: 'http://127.0.0.1:9999/mcp', headers: [] } as never,
-        release: () => {},
-        checkHealth: async () => alive,
-      }),
-      onOperationalLog: (event) => { seen.push({ event: event as string }) },
-    })
-    const ctx = { execPath: '/bin/app', entryPath: '/app/ledger-mcp.js', dbPath: '/data/ledger.db' }
-    await pool.acquire(ctx)
-    alive = false
-    await pool.acquire(ctx)
-    expect(seen.filter(s => s.event === 'sidecar.health-failure')).toHaveLength(1)
+    const tdir = mkdtempSync(join(tmpdir(), 'watchtower-oplog-sidecar-'))
+    const logDir = join(tdir, 'logs')
+    await initOperationalLog({ logDir, isPackaged: true })
+    try {
+      const pool = createSidecarPool({
+        spawn: async () => ({
+          server: { type: 'http', name: 'watchtower-ledger', url: 'http://127.0.0.1:9999/mcp', headers: [] } as never,
+          release: () => {},
+          checkHealth: async () => alive,
+        }),
+      })
+      const ctx = { execPath: '/bin/app', entryPath: '/app/ledger-mcp.js', dbPath: '/data/ledger.db' }
+      await pool.acquire(ctx)
+      alive = false
+      await pool.acquire(ctx)
+    } finally {
+      closeOperationalLog()
+    }
+    const matches = readLogText(logDir).split('\n').filter(line => line.includes('sidecar.health-failure'))
+    expect(matches).toHaveLength(1)
+    rmSync(tdir, { recursive: true, force: true })
   })
 
   it('keeps request-failure logging off stdout and the READY announcement parseable under load', async () => {
@@ -409,7 +426,9 @@ describe('Renderer tripwire + Harness and update lifecycle (ticket #130)', () =>
   })
 
   it('records Harness runs by kind only — no prompts', async () => {
-    const seen: Array<{ event: string; fields: Record<string, unknown> }> = []
+    const tdir = mkdtempSync(join(tmpdir(), 'watchtower-oplog-harness-'))
+    const logDir = join(tdir, 'logs')
+    await initOperationalLog({ logDir, isPackaged: true })
     const runner = createCoachRunner({
       getRuntime: async () => ({
         async *run() { yield { kind: 'text', delta: 'hi' } as never },
@@ -417,30 +436,42 @@ describe('Renderer tripwire + Harness and update lifecycle (ticket #130)', () =>
       }),
       detect: async () => [{ kind: 'claude', displayName: 'Claude', bin: '/bin/claude', scrubEnv: [], authStatus: 'unknown' }],
       ledgerMcpServer: async () => null,
-      onOperationalLog: (event, fields) => { seen.push({ event: event as string, fields: (fields ?? {}) as Record<string, unknown> }) },
     })
-    const ack = await runner.start({ harnessKind: 'claude', prompt: 'secret prompt body' }, () => {})
-    expect(ack.ok).toBe(true)
-    await new Promise(resolve => setTimeout(resolve, 20))
-    const events = seen.map(s => s.event)
-    expect(events).toContain('harness.start')
-    expect(events).toContain('harness.finish')
-    expect(JSON.stringify(seen)).not.toContain('secret prompt body')
-    expect(JSON.stringify(seen)).toContain('claude')
-    await runner.reset()
+    try {
+      const ack = await runner.start({ harnessKind: 'claude', prompt: 'secret prompt body' }, () => {})
+      expect(ack.ok).toBe(true)
+      await new Promise(resolve => setTimeout(resolve, 20))
+    } finally {
+      await runner.reset()
+      closeOperationalLog()
+    }
+    const raw = readLogText(logDir)
+    expect(raw).toContain('harness.start')
+    expect(raw).toContain('harness.finish')
+    expect(raw).not.toContain('secret prompt body')
+    expect(raw).toContain('claude')
+    rmSync(tdir, { recursive: true, force: true })
   })
 
   it('records offline update checks as info, never errors', async () => {
-    const seen: Array<{ event: string; fields: Record<string, unknown> }> = []
+    const tdir = mkdtempSync(join(tmpdir(), 'watchtower-oplog-updates-'))
+    const logDir = join(tdir, 'logs')
+    await initOperationalLog({ logDir, isPackaged: true })
     const checker = createUpdateChecker({
       currentVersion: '0.1.0',
       fetchReleasesImpl: async () => { throw new Error('offline') },
-      onOperationalLog: (event, fields) => { seen.push({ event: event as string, fields: (fields ?? {}) as Record<string, unknown> }) },
     })
-    await checker.check()
-    expect(seen.map(s => s.event)).toEqual(['updates.offline'])
-    const record = buildOperationalLogRecord('main', 'updates.offline', seen[0]!.fields)
-    expect(record.level).toBe('info')
+    try {
+      await checker.check()
+    } finally {
+      closeOperationalLog()
+    }
+    const lines = readLogText(logDir).split('\n').filter(line => line.trim().length > 0)
+    expect(lines).toHaveLength(1)
+    const parsed = JSON.parse(lines[0]!) as Record<string, unknown>
+    expect(parsed['event']).toBe('updates.offline')
+    expect(parsed['level']).toBe('info')
+    rmSync(tdir, { recursive: true, force: true })
   })
 
   it('keeps the renderer free of direct log-file writes', () => {
