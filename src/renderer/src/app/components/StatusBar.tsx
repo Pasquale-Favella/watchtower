@@ -14,7 +14,7 @@ export function StatusBar() {
       <span><kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('settings')}</kbd>Settings</span>
       <span title={shortcutForAction('commandPalette')?.label}>
         <kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('commandPalette')}</kbd>
-        Palette
+        Command Palette
       </span>
       <span>
         <kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('refresh')}</kbd>
