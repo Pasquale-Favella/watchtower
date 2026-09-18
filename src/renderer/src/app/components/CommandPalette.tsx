@@ -46,6 +46,25 @@ export const PALETTE_SECTIONS: readonly Section[] = NAV_SECTIONS
 export const PALETTE_ACTIONS = ['refresh', 'toggleSidebar'] as const
 export type PaletteAction = (typeof PALETTE_ACTIONS)[number]
 
+/** One palette row: the registry action plus its explicit source (spec §What
+ * to build). The Sections/Actions groups below are views over ROWS, so a
+ * future `global` source plugs in as data, not structure. */
+export interface PaletteRow {
+  action: Section | PaletteAction
+  source: 'section' | 'action'
+}
+
+export const ROWS: readonly PaletteRow[] = [
+  ...PALETTE_SECTIONS.map((action): PaletteRow => ({ action, source: 'section' })),
+  ...PALETTE_ACTIONS.map((action): PaletteRow => ({ action, source: 'action' })),
+]
+
+function iconFor(row: PaletteRow): ReactNode {
+  return row.source === 'section'
+    ? SECTION_ICONS[row.action as Section]
+    : ACTION_ICONS[row.action as PaletteAction]
+}
+
 const ACTION_ICONS: Record<PaletteAction, ReactNode> = {
   refresh: <RefreshCw />,
   toggleSidebar: <PanelLeft />,
@@ -54,9 +73,7 @@ const ACTION_ICONS: Record<PaletteAction, ReactNode> = {
 /** Command palette dialog (ADR 0028) — a pure view over the shortcut registry
  * (ADR 0001): Sections navigate through app/navigation.ts (ADR 0014),
  * refresh reads the scan store, toggleSidebar reads the sidebar context
- * (same source as SidebarToggleShortcut). Mount inside SidebarProvider.
- * Rows carry an implicit `section | action` source split via the two groups,
- * reserved for a future global-search source. */
+ * (same source as SidebarToggleShortcut). Mount inside SidebarProvider. */
 export function CommandPalette() {
   const open = usePaletteStore(s => s.open)
   const setOpen = usePaletteStore(s => s.setOpen)
@@ -76,37 +93,28 @@ export function CommandPalette() {
     navigateToSection(action)
   }
 
+  const renderRow = (row: PaletteRow): ReactNode => {
+    const label = shortcutForAction(row.action)?.label ?? row.action
+    return (
+      <CommandItem key={row.action} value={label} onSelect={() => run(row.action)}>
+        {iconFor(row)}
+        <span>{label}</span>
+        <CommandShortcut>{displayShortcutForAction(row.action)}</CommandShortcut>
+      </CommandItem>
+    )
+  }
+
   return (
     <CommandDialog open={open} onOpenChange={setOpen}>
       <CommandInput placeholder="Go to a section or run an action..." />
       <CommandList>
         <CommandEmpty>No matching section or action.</CommandEmpty>
         <CommandGroup heading="Sections">
-          {PALETTE_SECTIONS.map(section => (
-            <CommandItem
-              key={section}
-              value={shortcutForAction(section)?.label ?? section}
-              onSelect={() => run(section)}
-            >
-              {SECTION_ICONS[section]}
-              <span>{shortcutForAction(section)?.label ?? section}</span>
-              <CommandShortcut>{displayShortcutForAction(section)}</CommandShortcut>
-            </CommandItem>
-          ))}
+          {ROWS.filter(row => row.source === 'section').map(renderRow)}
         </CommandGroup>
         <CommandSeparator />
         <CommandGroup heading="Actions">
-          {PALETTE_ACTIONS.map(action => (
-            <CommandItem
-              key={action}
-              value={shortcutForAction(action)?.label ?? action}
-              onSelect={() => run(action)}
-            >
-              {ACTION_ICONS[action]}
-              <span>{shortcutForAction(action)?.label ?? action}</span>
-              <CommandShortcut>{displayShortcutForAction(action)}</CommandShortcut>
-            </CommandItem>
-          ))}
+          {ROWS.filter(row => row.source === 'action').map(renderRow)}
         </CommandGroup>
       </CommandList>
     </CommandDialog>

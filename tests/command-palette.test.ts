@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
 import { shortcutForAction } from '../src/renderer/src/app/shortcuts.js'
-import { PALETTE_ACTIONS, PALETTE_SECTIONS } from '../src/renderer/src/app/components/CommandPalette.js'
+import { PALETTE_ACTIONS, PALETTE_SECTIONS, ROWS } from '../src/renderer/src/app/components/CommandPalette.js'
 
 describe('command palette rows (ADR 0028)', () => {
   it('lists every section plus refresh/toggleSidebar — and never itself', () => {
     expect(PALETTE_SECTIONS).toHaveLength(9)
     expect([...PALETTE_ACTIONS]).toEqual(['refresh', 'toggleSidebar'])
     expect([...PALETTE_SECTIONS, ...PALETTE_ACTIONS]).not.toContain('commandPalette')
+  })
+
+  it('every row carries an explicit section|action source (spec §What to build)', () => {
+    expect(ROWS).toHaveLength(PALETTE_SECTIONS.length + PALETTE_ACTIONS.length)
+    expect(ROWS.filter(row => row.source === 'section').map(row => row.action)).toEqual([...PALETTE_SECTIONS])
+    expect(ROWS.filter(row => row.source === 'action').map(row => row.action)).toEqual([...PALETTE_ACTIONS])
   })
 
   it('every row resolves a registry label (unique filter values for cmdk)', () => {
