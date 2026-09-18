@@ -57,7 +57,7 @@ function broadcast(channel: string, data?: unknown): void {
 
 /** Single IPC failure seam: operation name + short code only, never args. */
 function handleLogged<T extends unknown[]>(channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown): void {
-  handleLogged(channel, async (event, ...args) => {
+  ipcMain.handle(channel, async (event, ...args) => {
     try {
       return await listener(event, ...(args as T))
     } catch (err) {
