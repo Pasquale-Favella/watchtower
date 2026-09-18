@@ -10,6 +10,7 @@ import { Onboarding } from './components/Onboarding'
 import { AppSidebar } from './components/app-sidebar'
 import { ScanIndicator } from './components/ScanIndicator'
 import { SidebarToggleShortcut } from './components/SidebarToggleShortcut'
+import { CommandPalette } from './components/CommandPalette'
 import { useScanStore } from './stores/scan-store'
 import { useSettingsStore } from '@/features/settings/store'
 
@@ -36,6 +37,7 @@ export function AppRoot() {
       <TooltipProvider delay={0}>
         <SidebarProvider className="h-screen">
           <SidebarToggleShortcut />
+          <CommandPalette />
           <AppSidebar />
           <SidebarInset className="min-h-0">
             <ScanIndicator />

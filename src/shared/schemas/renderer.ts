@@ -30,7 +30,7 @@ export const sectionSchema = z.enum([
 ])
 export type Section = z.infer<typeof sectionSchema>
 
-export const shortcutActionSchema = sectionSchema.or(z.enum(['refresh', 'toggleSidebar']))
+export const shortcutActionSchema = sectionSchema.or(z.enum(['refresh', 'toggleSidebar', 'commandPalette']))
 export type ShortcutAction = z.infer<typeof shortcutActionSchema>
 
 export const platformSchema = z.enum(['mac', 'windows', 'linux'])

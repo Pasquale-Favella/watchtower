@@ -1,4 +1,4 @@
-import { displayShortcutForAction, sectionsRangeLabel } from '@/app/shortcuts'
+import { displayShortcutForAction, sectionsRangeLabel, shortcutForAction } from '@/app/shortcuts'
 import { useScanStore } from '@/app/stores/scan-store'
 
 /** The footer — reads scanning/unparsed from the scan store and the shortcut
@@ -12,6 +12,10 @@ export function StatusBar() {
     <div className="flex items-center gap-3.5 border-t border-border px-4 py-2 text-[10.5px] text-muted-foreground">
       {sectionsRange && <span><kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{sectionsRange}</kbd>Navigate</span>}
       <span><kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('settings')}</kbd>Settings</span>
+      <span title={shortcutForAction('commandPalette')?.label}>
+        <kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('commandPalette')}</kbd>
+        Command Palette
+      </span>
       <span>
         <kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('refresh')}</kbd>
         {scanning ? 'Refreshing…' : 'Refresh'}

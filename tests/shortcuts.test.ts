@@ -17,10 +17,11 @@ describe('shortcut registry', () => {
     })
   })
 
-  it('maps settings to Mod+, and refresh/toggle-sidebar to Mod+R/Mod+B', () => {
+  it('maps settings to Mod+, and refresh/toggle-sidebar/palette to Mod+R/Mod+B/Mod+K', () => {
     expect(shortcutForAction('settings')?.hotkey).toBe('Mod+,')
     expect(shortcutForAction('refresh')?.hotkey).toBe('Mod+R')
     expect(shortcutForAction('toggleSidebar')?.hotkey).toBe('Mod+B')
+    expect(shortcutForAction('commandPalette')?.hotkey).toBe('Mod+K')
   })
 
   it('registers nothing for digits beyond the numbered sections (Mod+9/Mod+10 no-op)', () => {
@@ -28,6 +29,7 @@ describe('shortcut registry', () => {
     expect(hotkeys.has('Mod+9')).toBe(false)
     expect(hotkeys.has('Mod+10')).toBe(false)
     expect(NUMBERED_SECTION_SHORTCUTS).toHaveLength(NAV_SECTIONS.length - 1)
+    expect(NUMBERED_SECTION_SHORTCUTS.some(def => def.action === 'commandPalette')).toBe(false)
   })
 
   it('declares exactly one definition per action and per key (no duplicates)', () => {

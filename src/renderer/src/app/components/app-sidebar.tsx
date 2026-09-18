@@ -1,10 +1,7 @@
 import type { ComponentProps, ReactNode } from 'react'
 
-import {
-  LayoutDashboard, PanelsTopLeft, GitPullRequestArrow, BarChart3, Lightbulb,
-  Layers, ArrowLeftRight, Sparkles, Settings,
-} from 'lucide-react'
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
+import { SECTION_ICONS } from '@/app/section-icons'
 import { shortcutForAction, displayShortcutForAction, type Section } from '@/app/shortcuts'
 import {
   Sidebar,
@@ -25,18 +22,6 @@ import { useRouterState } from '@tanstack/react-router'
 import { SECTIONS, navigateToSection, sectionForPath } from '@/app/navigation'
 import { useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
-
-const SECTION_ICONS: Record<Section, ReactNode> = {
-  overview: <LayoutDashboard />,
-  sessions: <PanelsTopLeft />,
-  pullRequests: <GitPullRequestArrow />,
-  spend: <BarChart3 />,
-  optimize: <Lightbulb />,
-  models: <Layers />,
-  compare: <ArrowLeftRight />,
-  coachSkills: <Sparkles />,
-  settings: <Settings />,
-}
 
 /** Sidebar nav — ids and order come from navigation (ADR 0014, SECTIONS);
  * labels and keycap hints come from the shortcuts registry (ADR 0001). */

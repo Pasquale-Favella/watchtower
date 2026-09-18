@@ -46,6 +46,15 @@ models, compare, coach & skills, settings. The sidebar and the numbered shortcut
 navigate between them.
 _Avoid_: page, tab
 
+**Command palette**:
+The single keyboard-driven launcher (`Mod+K`) listing Sections and Actions.
+Global search is a future row source, not a synonym for the palette.
+_Avoid_: global search, quick switcher, command menu
+
+**Command**:
+One row in the command palette — either a Section or a registry Action.
+_Avoid_: shortcut, action
+
 **Coach & Skills**:
 The unified chat section (ADR 0017): one surface where a single harness agent
 serves two scopes — coaching analysis and skill authoring — grounded in the
