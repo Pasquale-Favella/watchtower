@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { dismissOnboarding, launchApp, waitForAnyVisible } from './app'
+import { dismissOnboarding, waitForAnyVisible, withApp } from './app'
 
 /**
  * Smoke (spins out of #123 W7, tracks #133): the built app boots in a real
@@ -7,8 +7,7 @@ import { dismissOnboarding, launchApp, waitForAnyVisible } from './app'
  * dismisses, and section navigation works without renderer crashes.
  */
 test('app boots, onboarding dismisses, sections navigate', async () => {
-  const { app, window, pageErrors, close } = await launchApp()
-  try {
+  await withApp(async ({ app, window }) => {
     await expect(window).toHaveTitle(/Watchtower/)
     await dismissOnboarding(window)
 
@@ -28,9 +27,5 @@ test('app boots, onboarding dismisses, sections navigate', async () => {
     await expect(searchSessions.or(sessionsEmpty)).toBeHidden()
     await expect(window.getByText('Total spend', { exact: true })).toBeVisible()
     expect(app.windows().length).toBe(1)
-
-    expect(pageErrors).toEqual([])
-  } finally {
-    await close()
-  }
+  })
 })

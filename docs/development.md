@@ -43,7 +43,9 @@ What it does: builds the current bundles (`out/`, git-ignored), launches
 `electron .` with a fresh `--user-data-dir` under the OS temp root, and
 asserts boot (window title), first-run onboarding dismissal, and
 Overview ↔ Sessions navigation with no renderer `pageerror`. The temp profile
-is deleted afterwards, so the suite never touches your real Watchtower data.
+is deleted afterwards. Note the isolation boundary: the ledger destination is
+isolated, but the boot scan still READS the host's real assistant sources
+(read-only) — your files are never modified, but the run sees your data.
 
 First launch hydrates through a full scan of the host's real assistant sources
 (read-only — only the ledger destination is isolated), so the first run can
@@ -56,7 +58,8 @@ Notes:
 - `npx playwright test` alone reuses the last `npm run build` output when you
   want to iterate without rebuilding.
 - Linux without a display needs a virtual server (`xvfb-run -a npm run
-  test:e2e`); Windows and macOS run headed as-is.
+  test:e2e`); Windows and macOS run headed as-is. There is no headless mode:
+  Electron always opens a real window (Linux fakes the display via xvfb).
 - e2e is not in the `test.yml` merge gate yet (needs a display/matrix); that
   CI step is a follow-up to #133.
 
@@ -66,21 +69,27 @@ Notes:
 
 | File | Covers |
 |------|--------|
-| `e2e/app.ts` | `launchApp` (isolated `--user-data-dir`, `pageErrors` tap), `dismissOnboarding`, `waitForAnyVisible` |
+| `e2e/app.ts` | `launchApp` (isolated `--user-data-dir`, `pageErrors` tap), `dismissOnboarding`, `waitForAnyVisible`, `withApp` (lifecycle + zero-`pageerror` assert) |
 | `e2e/smoke.spec.ts` | Boot, onboarding dismissal, Overview ↔ Sessions |
-| `e2e/sections.spec.ts` | Every sidebar destination renders (add markers to `markersFor` for new sections) |
+| `e2e/sections.spec.ts` | Every sidebar destination renders (extend the `MARKERS` map for new sections) |
 | `e2e/command-palette.spec.ts` | Mod+K → filter → Enter navigates |
 
 Rules (the boot scan reads the host's real sources read-only, so content
 varies machine to machine): never assert data values, row counts, or URLs
 (memory-history router); key readiness off `dismissOnboarding` (a hidden
 splash also matches pre-mount); assert views with content-OR-empty markers
-via `waitForAnyVisible`; end every spec with
-`expect(pageErrors).toEqual([])`.
+via `waitForAnyVisible`; wrap every spec in `withApp` (asserts zero
+`pageerror`s for you).
 
 ## Project layout
 
 ```
+e2e/                      # Playwright Electron specs (npm run test:e2e)
+├─ app.ts                 # launch fixture: launchApp, dismissOnboarding, waitForAnyVisible, withApp
+├─ smoke.spec.ts          # boot + onboarding + Overview ↔ Sessions
+├─ sections.spec.ts       # all-section render walk (MARKERS map)
+└─ command-palette.spec.ts # Mod+K → filter → Enter navigates
+playwright.config.ts      # testDir e2e, single worker, generous first-scan ceiling
 src/
 ├─ main/                    # Electron main process, owns everything
 │  ├─ index.ts              # window, IPC surface, scan orchestration, cadence

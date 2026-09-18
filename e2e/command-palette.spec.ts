@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { dismissOnboarding, launchApp } from './app'
+import { dismissOnboarding, withApp } from './app'
 
 /**
  * Command palette v1 (ADR 0028, tracks #133): Mod+K opens the launcher over
@@ -9,8 +9,7 @@ import { dismissOnboarding, launchApp } from './app'
  * window wiring (hotkey → dialog → navigation).
  */
 test('palette opens, filters, and navigates to Models', async () => {
-  const { window, pageErrors, close } = await launchApp()
-  try {
+  await withApp(async ({ window }) => {
     await dismissOnboarding(window)
 
     await window.keyboard.press('ControlOrMeta+k')
@@ -26,9 +25,5 @@ test('palette opens, filters, and navigates to Models', async () => {
     // lens tabs.
     await expect(window.getByRole('dialog')).toBeHidden()
     await expect(window.getByRole('tab', { name: 'By model' })).toBeVisible({ timeout: 30_000 })
-
-    expect(pageErrors).toEqual([])
-  } finally {
-    await close()
-  }
+  })
 })
