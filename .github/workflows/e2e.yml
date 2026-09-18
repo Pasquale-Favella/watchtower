@@ -1,0 +1,46 @@
+name: e2e
+
+# Playwright Electron end-to-end (tracks #133, built in #134). Intentionally
+# NON-BLOCKING while timing stabilises: the merge gate stays test.yml
+# (ADR 0015) — failures here notify without blocking merges. Promote into
+# the gate (follow-up #135) once green runs are routine.
+#
+# No browser download needed: the specs drive the repo's own Electron binary.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Run e2e (Linux, virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npx playwright test
+      - name: Run e2e (Windows)
+        if: runner.os == 'Windows'
+        run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-results-${{ matrix.os }}
+          path: |
+            test-results/
+            playwright-report/

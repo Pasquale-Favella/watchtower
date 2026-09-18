@@ -60,8 +60,10 @@ Notes:
 - Linux without a display needs a virtual server (`xvfb-run -a npm run
   test:e2e`); Windows and macOS run headed as-is. There is no headless mode:
   Electron always opens a real window (Linux fakes the display via xvfb).
-- e2e is not in the `test.yml` merge gate yet (needs a display/matrix); that
-  CI step is a follow-up to #133.
+- CI runs the suite non-blocking via `.github/workflows/e2e.yml`
+  (Windows + Linux matrix, `xvfb-run` on Linux) — failures notify but never
+  block the `test.yml` merge gate; promoting it into the gate is tracked in
+  #135.
 
 ### Adding a spec
 
