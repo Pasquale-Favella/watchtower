@@ -79,6 +79,11 @@ A custom price entered manually as input/output rates for a model; it wins
 over any other price source.
 _Avoid_: manual price, manual
 
+**Operational log**:
+The append-only local record of app lifecycle and errors, containing no
+prompts and no ledger facts.
+_Avoid_: telemetry, diagnostics bundle, console log
+
 ## Rules
 
 - The README's platform claim (Windows | macOS | Linux) is the product
