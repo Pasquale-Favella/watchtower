@@ -448,13 +448,13 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const dataDir = app.getPath('userData')
   // Operational log first (ticket #127): the single main-owned file under
   // `<userData>/logs`. Packaged builds write info only; development writes
   // debug plus a console mirror.
   try {
-    initOperationalLog({ logDir: join(dataDir, 'logs'), isPackaged: app.isPackaged })
+    await initOperationalLog({ logDir: join(dataDir, 'logs'), isPackaged: app.isPackaged })
   } catch { /* logging must never break boot */ }
   // The data plane boots first: the worker owns the ledger from here on —
   // requests simply queue on its port until its synchronous init finishes.

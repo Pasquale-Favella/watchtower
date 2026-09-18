@@ -24,6 +24,20 @@ import { createCoachRunner } from '../src/main/agents/ipc.js'
 import { createUpdateChecker } from '../src/main/updates.js'
 import { createSidecarPool } from '../src/main/agents/ledger-mcp/pool.js'
 
+/** Rotation and retention settle asynchronously inside pino-roll: wait for two
+ * consecutive identical listings so assertions observe the final state. */
+async function settleLogDir(logDir: string): Promise<void> {
+  const deadline = Date.now() + 5000
+  let last = ''
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const now = readdirSync(logDir).sort().join('\n')
+    if (now === last) return
+    last = now
+    if (Date.now() > deadline) throw new Error('log dir did not settle')
+  }
+}
+
 describe('Operational log record seam (spec #126, ticket #127)', () => {
   it('builds a parseable record carrying timestamp, level, context, event and allowlisted fields only', () => {
     const record = buildOperationalLogRecord('main', 'scan.finish', {
@@ -83,14 +97,23 @@ describe('Operational log file sink (ticket #127)', () => {
     return join(dir, 'logs')
   }
 
-  function readLines(logDir: string): string[] {
-    const text = readFileSync(join(logDir, 'operational.log'), 'utf8')
-    return text.split('\n').filter(line => line.trim().length > 0)
+  /** pino-roll names size-rotated files extension-last (`operational.1.log`). */
+  function logFiles(logDir: string): string[] {
+    return readdirSync(logDir).filter(f => /^operational\.\d+\.log$/.test(f))
   }
 
-  it('writes parseable JSON lines carrying timestamp, level, context, event and allowlisted fields', () => {
+  function readLines(logDir: string): string[] {
+    const lines: string[] = []
+    for (const file of logFiles(logDir)) {
+      const text = readFileSync(join(logDir, file), 'utf8')
+      lines.push(...text.split('\n').filter(line => line.trim().length > 0))
+    }
+    return lines
+  }
+
+  it('writes parseable JSON lines carrying timestamp, level, context, event and allowlisted fields', async () => {
     const logDir = tempLogDir()
-    initOperationalLog({ logDir, isPackaged: true })
+    await initOperationalLog({ logDir, isPackaged: true })
     recordOperationalLog('main', 'scan.finish', { count: 2 })
     closeOperationalLog()
     const lines = readLines(logDir)
@@ -98,12 +121,18 @@ describe('Operational log file sink (ticket #127)', () => {
     const parsed = JSON.parse(lines[0]!) as Record<string, unknown>
     expect(parsed['context']).toBe('main')
     expect(parsed['event']).toBe('scan.finish')
-    expect(parsed['timestamp'] ?? parsed['time']).toBeDefined()
+    expect(parsed['timestamp']).toBeDefined()
+    // Trimmed pino line shape: string level from formatters, no epoch time,
+    // no pid/hostname constants.
+    expect(parsed['level']).toBe('info')
+    expect(parsed).not.toHaveProperty('time')
+    expect(parsed).not.toHaveProperty('pid')
+    expect(parsed).not.toHaveProperty('hostname')
   })
 
-  it('never persists forbidden values to the bytes on disk', () => {
+  it('never persists forbidden values to the bytes on disk', async () => {
     const logDir = tempLogDir()
-    initOperationalLog({ logDir, isPackaged: true })
+    await initOperationalLog({ logDir, isPackaged: true })
     recordOperationalLog('main', 'ipc.error', {
       op: 'overview:query',
       code: 'failed',
@@ -113,15 +142,15 @@ describe('Operational log file sink (ticket #127)', () => {
       token: 'Bearer sk-secret',
     })
     closeOperationalLog()
-    const raw = readFileSync(join(logDir, 'operational.log'), 'utf8')
+    const raw = readLines(logDir).join('\n')
     expect(raw).not.toContain('secret prompt body')
     expect(raw).not.toContain('sk-secret')
     expect(raw).toContain('overview:query')
   })
 
-  it('writes debug in development and drops debug in packaged builds', () => {
+  it('writes debug in development and drops debug in packaged builds', async () => {
     const devDir = tempLogDir()
-    initOperationalLog({ logDir: devDir, isPackaged: false })
+    await initOperationalLog({ logDir: devDir, isPackaged: false })
     recordOperationalLog('main', 'scan.start', {}, { level: 'debug' })
     closeOperationalLog()
     expect(readLines(devDir)).toHaveLength(1)
@@ -129,33 +158,53 @@ describe('Operational log file sink (ticket #127)', () => {
     const prodParent = mkdtempSync(join(tmpdir(), 'watchtower-oplog-prod-'))
     const prodDir = join(prodParent, 'logs')
     try {
-      initOperationalLog({ logDir: prodDir, isPackaged: true })
+      await initOperationalLog({ logDir: prodDir, isPackaged: true })
       recordOperationalLog('main', 'scan.start', {}, { level: 'debug' })
       closeOperationalLog()
-      const text = readFileSync(join(prodDir, 'operational.log'), 'utf8')
-      expect(text.trim()).toBe('')
+      expect(readLines(prodDir)).toHaveLength(0)
     } finally {
       rmSync(prodParent, { recursive: true, force: true })
     }
   })
 
-  it('caps rotation across generations and prunes stale generations on boot', () => {
+  it('caps rotation across generations within quota', async () => {
     const logDir = tempLogDir()
-    initOperationalLog({ logDir, isPackaged: true, maxFileBytes: 300, maxGenerations: 2 })
-    for (let i = 0; i < 20; i++) {
+    await initOperationalLog({ logDir, isPackaged: true, size: '1k', count: 1 })
+    for (let i = 0; i < 30; i++) {
       recordOperationalLog('main', 'scan.finish', { count: i, message: `note-${i}-padding-to-force-rotation-xxxxxxxx` })
     }
+    await settleLogDir(logDir)
     closeOperationalLog()
-    const files = readdirSync(logDir).filter(f => f.startsWith('operational.log'))
-    expect(files.length).toBeLessThanOrEqual(3)
+    const files = logFiles(logDir)
+    expect(files.length).toBeLessThanOrEqual(2)
     let total = 0
     for (const f of files) total += statSync(join(logDir, f)).size
-    expect(total).toBeLessThanOrEqual(3 * 1024)
+    expect(total).toBeLessThanOrEqual(2 * (1024 + 1024))
+    for (const line of readLines(logDir)) {
+      const parsed = JSON.parse(line) as Record<string, unknown>
+      expect(parsed['context']).toBe('main')
+    }
+  })
 
-    writeFileSync(join(logDir, 'operational.log.99'), 'stale')
-    initOperationalLog({ logDir, isPackaged: true, maxFileBytes: 300, maxGenerations: 2 })
+  it('retention spans reboot: pre-existing generations are trimmed, foreign files survive', async () => {
+    const logDir = tempLogDir()
+    await initOperationalLog({ logDir, isPackaged: true, size: '1k', count: 1 })
+    for (let i = 0; i < 30; i++) {
+      recordOperationalLog('main', 'scan.finish', { count: i, message: `note-${i}-padding-to-force-rotation-xxxxxxxx` })
+    }
+    await settleLogDir(logDir)
     closeOperationalLog()
-    expect(readdirSync(logDir).some((f: string) => f === 'operational.log.99')).toBe(false)
+    // A foreign file shares the dir but not the roll family: only matching
+    // generations are ever managed.
+    writeFileSync(join(logDir, 'notes.txt'), 'not a log')
+    await initOperationalLog({ logDir, isPackaged: true, size: '1k', count: 1 })
+    for (let i = 0; i < 30; i++) {
+      recordOperationalLog('main', 'scan.finish', { count: i, message: `reboot-${i}-padding-to-force-rotation-xxxxxx` })
+    }
+    await settleLogDir(logDir)
+    closeOperationalLog()
+    expect(logFiles(logDir).length).toBeLessThanOrEqual(2)
+    expect(readFileSync(join(logDir, 'notes.txt'), 'utf8')).toBe('not a log')
   })
 })
 
@@ -417,7 +466,7 @@ describe('Ad-hoc write sweep + single-file integrate-and-verify (ticket #131)', 
     expect(offenders).toEqual([])
   })
 
-  it('redaction sweep: hostile values through every public entry point never reach the record or disk', () => {
+  it('redaction sweep: hostile values through every public entry point never reach the record or disk', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'watchtower-oplog-sweep-'))
     const logDir = join(parent, 'logs')
     const secrets = {
@@ -429,7 +478,7 @@ describe('Ad-hoc write sweep + single-file integrate-and-verify (ticket #131)', 
       fullPath: '/Users/sweepsecret/.config/app/sessions/hidden.jsonl',
     }
     try {
-      initOperationalLog({ logDir, isPackaged: true })
+      await initOperationalLog({ logDir, isPackaged: true })
       const entries: Array<[Parameters<typeof buildOperationalLogRecord>[0], Parameters<typeof buildOperationalLogRecord>[1], Record<string, unknown>]> = [
         ['main', 'scan.finish', { count: 1, ...secrets }],
         ['worker', 'file.error', { provider: 'claude', file: secrets.fullPath, code: 'read-failed', ...secrets }],
@@ -454,7 +503,10 @@ describe('Ad-hoc write sweep + single-file integrate-and-verify (ticket #131)', 
       expect(JSON.stringify(parsedSidecar)).not.toContain(secrets.requestBody)
       expect(JSON.stringify(parsedSidecar)).not.toContain(secrets.token)
       closeOperationalLog()
-      const raw = readFileSync(join(logDir, 'operational.log'), 'utf8')
+      const raw = readdirSync(logDir)
+        .filter(f => /^operational\.\d+\.log$/.test(f))
+        .map(f => readFileSync(join(logDir, f), 'utf8'))
+        .join('\n')
       for (const secret of [secrets.prompt, secrets.token, secrets.fileContent, secrets.requestBody, secrets.ledgerFact]) {
         expect(raw).not.toContain(secret)
       }
@@ -465,18 +517,19 @@ describe('Ad-hoc write sweep + single-file integrate-and-verify (ticket #131)', 
     }
   })
 
-  it('interleaved worker and sidecar records across a forced rotation stay complete, parseable and within quota', () => {
+  it('interleaved worker and sidecar records across a forced rotation stay complete, parseable and within quota', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'watchtower-oplog-interleave-'))
     const logDir = join(parent, 'logs')
     try {
-      initOperationalLog({ logDir, isPackaged: true, maxFileBytes: 500, maxGenerations: 2 })
+      await initOperationalLog({ logDir, isPackaged: true, size: '1k', count: 2 })
       for (let i = 0; i < 30; i++) {
         if (i % 3 === 0) recordOperationalLog('worker', 'scan.finish', { manual: false, count: i, unparsed: [{ provider: 'claude', unparsed: i }] })
         else if (i % 3 === 1) recordOperationalLog('sidecar', 'ledger-mcp.request-error', { method: 'POST', route: '/mcp', code: 'internal' })
         else recordOperationalLog('renderer', 'renderer.tripwire', { label: 'scan status', location: 'broadcast' })
       }
+      await settleLogDir(logDir)
       closeOperationalLog()
-      const files = readdirSync(logDir).filter((f: string) => f.startsWith('operational.log'))
+      const files = readdirSync(logDir).filter((f: string) => /^operational\.\d+\.log$/.test(f))
       expect(files.length).toBeLessThanOrEqual(3)
       let total = 0
       const contexts = new Set<string>()
@@ -488,13 +541,13 @@ describe('Ad-hoc write sweep + single-file integrate-and-verify (ticket #131)', 
         for (const line of text.split('\n')) {
           if (!line.trim()) continue
           const parsed = JSON.parse(line) as Record<string, unknown>
-          expect(parsed['timestamp'] ?? parsed['time']).toBeDefined()
+          expect(parsed['timestamp']).toBeDefined()
           expect(typeof parsed['context']).toBe('string')
           expect(typeof parsed['event']).toBe('string')
           contexts.add(parsed['context'] as string)
         }
       }
-      expect(total).toBeLessThanOrEqual(3 * 1024)
+      expect(total).toBeLessThanOrEqual(3 * (1024 + 1024))
       expect(contexts.has('worker')).toBe(true)
       expect(contexts.has('sidecar')).toBe(true)
     } finally {

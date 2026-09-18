@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import pino, { type Logger } from 'pino'
+import pretty from 'pino-pretty'
+import buildRoll from 'pino-roll'
 
 import {
   buildOperationalLogRecord,
@@ -13,108 +14,80 @@ import {
 /**
  * Main-owned Operational log file sink (spec #126, ADR 0029, ticket #127).
  *
- * One shared JSON-lines file under `<userData>/logs`, owned exclusively by
+ * One JSON-lines log family under `<userData>/logs`, owned exclusively by
  * the main process — worker/sidecar/renderer records are forwarded here, never
- * appended directly. Packaged builds write info level only; development writes
- * debug and mirrors human-readable lines to the console. Rotation caps the
- * total size (~5MB x3 by default); stale generations are pruned on boot so no
- * background sweeper is needed.
+ * appended directly. The transport is pure pino power, no custom rotation:
+ * pino-roll owns size rotation, retention (including pre-existing generations
+ * in our dedicated log dir), and boot numbering; a multistream fans debug
+ * output to a human-readable console mirror in development; level filtering,
+ * string level names, and the trimmed line shape come from pino options.
+ * Packaged builds write info level only; development writes debug. This module
+ * only maps our seam onto those knobs.
  */
 
 export const OPERATIONAL_LOG_FILE = 'operational.log'
-export const DEFAULT_MAX_FILE_BYTES = 5 * 1024 * 1024
-export const DEFAULT_MAX_GENERATIONS = 3
+const DEFAULT_ROLL_SIZE = '5m'
+/** Rotated files kept besides the active one (~5MB x3 total per ADR 0029). */
+const DEFAULT_ROLL_COUNT = 2
 
 export interface OperationalLogOptions {
   logDir: string
   isPackaged: boolean
-  maxFileBytes?: number
-  maxGenerations?: number
+  /** pino-roll size (default '5m'): plain numbers are MB, 'k'/'m'/'g' suffixes. */
+  size?: string | number
+  /** pino-roll limit.count: rotated files kept besides the active one. */
+  count?: number
 }
 
 interface ActiveLog {
-  opts: Required<Pick<OperationalLogOptions, 'logDir' | 'maxFileBytes' | 'maxGenerations'>> & { isPackaged: boolean }
-  logger: Logger
-  /** The open file handle. Ended before any rename so rotation never moves an
-   * open file (Windows) and no descriptor leaks across rotations. */
-  dest: { flushSync?: () => void; end?: () => void }
+  /** The four level methods only: plain and multistream loggers share them,
+   * but differ in generics, so the seam depends on just what it calls. */
+  logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>
+  /** The open roll stream. Ended on re-init/close; the console mirror writes
+   * to process stdout and is never closed by us. */
+  stream: { end(): void }
 }
 
 let active: ActiveLog | null = null
 
-function filePath(logDir: string): string {
-  return join(logDir, OPERATIONAL_LOG_FILE)
-}
-
-function generationPath(logDir: string, generation: number): string {
-  return join(logDir, `${OPERATIONAL_LOG_FILE}.${generation}`)
-}
-
-/** Deletes generations beyond the cap (boot prune, no background sweeper). */
-export function pruneStaleGenerations(logDir: string, maxGenerations: number): void {
-  let entries: string[] = []
-  try {
-    entries = readdirSync(logDir)
-  } catch {
-    return
-  }
-  for (const entry of entries) {
-    const match = /^operational\.log\.(\d+)$/.exec(entry)
-    if (!match) continue
-    const generation = Number(match[1])
-    if (!Number.isInteger(generation) || generation < 1 || generation > maxGenerations) {
-      try { rmSync(join(logDir, entry), { force: true }) } catch { /* best effort */ }
-    }
+/** One clean JSON line per record: string level, our ISO timestamp only. */
+function loggerOptions(level: 'info' | 'debug'): Parameters<typeof pino>[0] {
+  return {
+    level,
+    formatters: {
+      level: (label: string): { level: string } => ({ level: label }),
+    },
+    // The seam's own ISO timestamp is the record's time; pid/hostname are
+    // constants in this single-writer file — all three would be noise.
+    timestamp: false,
+    base: null,
   }
 }
 
-function rotateLog(logDir: string, maxGenerations: number): void {
-  try { rmSync(generationPath(logDir, maxGenerations), { force: true }) } catch { /* best effort */ }
-  for (let generation = maxGenerations - 1; generation >= 1; generation--) {
-    const from = generationPath(logDir, generation)
-    if (!existsSync(from)) continue
-    try { renameSync(from, generationPath(logDir, generation + 1)) } catch { /* best effort */ }
-  }
-  // No current file — nothing to rotate.
-  if (!existsSync(filePath(logDir))) return
-  try { renameSync(filePath(logDir), generationPath(logDir, 1)) } catch { /* best effort */ }
-}
-
-function createLogger(opts: ActiveLog['opts']): { logger: Logger; dest: ActiveLog['dest'] } {
+/** Boots (or re-boots) the singleton sink. Numbering continues across reboots
+ * and retention applies to pre-existing generations (dedicated log dir). */
+export async function initOperationalLog(opts: OperationalLogOptions): Promise<void> {
   const level = opts.isPackaged ? 'info' : 'debug'
-  const dest = pino.destination({ dest: filePath(opts.logDir), append: true, sync: true, mkdir: true })
-  return { logger: pino({ level }, dest), dest: dest as unknown as ActiveLog['dest'] }
-}
-
-function endDest(dest: ActiveLog['dest']): void {
-  try { dest.flushSync?.() } catch { /* best effort */ }
-  try { dest.end?.() } catch { /* best effort */ }
-}
-
-function currentSize(logDir: string): number {
-  try {
-    return statSync(filePath(logDir)).size
-  } catch {
-    return 0
-  }
-}
-
-/** Boots (or re-boots) the singleton sink. Prunes stale generations first. */
-export function initOperationalLog(opts: OperationalLogOptions): void {
-  const resolved = {
-    logDir: opts.logDir,
-    isPackaged: opts.isPackaged,
-    maxFileBytes: opts.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES,
-    maxGenerations: opts.maxGenerations ?? DEFAULT_MAX_GENERATIONS,
-  }
-  mkdirSync(resolved.logDir, { recursive: true })
-  pruneStaleGenerations(resolved.logDir, resolved.maxGenerations)
-  if (active) endDest(active.dest)
-  if (currentSize(resolved.logDir) > resolved.maxFileBytes) {
-    rotateLog(resolved.logDir, resolved.maxGenerations)
-  }
-  const created = createLogger(resolved)
-  active = { opts: resolved, logger: created.logger, dest: created.dest }
+  if (active) active.stream.end()
+  const stream = await buildRoll({
+    file: join(opts.logDir, OPERATIONAL_LOG_FILE),
+    size: opts.size ?? DEFAULT_ROLL_SIZE,
+    limit: { count: opts.count ?? DEFAULT_ROLL_COUNT, removeOtherLogFiles: true },
+    mkdir: true,
+    sync: true,
+  })
+  // Explicit per-stream levels: multistream streams without one default to
+  // info and would silently drop debug lines from the file in development.
+  const logger = opts.isPackaged
+    ? pino(loggerOptions(level), stream)
+    : pino(
+      loggerOptions(level),
+      pino.multistream([
+        { stream, level },
+        { stream: pretty({ colorize: false, singleLine: true }), level: 'debug' },
+      ]),
+    )
+  active = { logger, stream }
 }
 
 /** Records one allowlisted record — the ONLY way main-path code emits. */
@@ -125,15 +98,6 @@ export function recordOperationalLog(
   opts: { level?: OperationalLogLevel; timestamp?: string } = {},
 ): void {
   if (!active) return
-  if (currentSize(active.opts.logDir) > active.opts.maxFileBytes) {
-    // End the open handle BEFORE renaming so the rotation moves closed files
-    // only — every line stays complete and parseable, none is truncated.
-    endDest(active.dest)
-    rotateLog(active.opts.logDir, active.opts.maxGenerations)
-    const created = createLogger(active.opts)
-    active.logger = created.logger
-    active.dest = created.dest
-  }
   const record = buildOperationalLogRecord(context, event, fields, opts)
   const logger = active.logger
   switch (record.level) {
@@ -142,19 +106,13 @@ export function recordOperationalLog(
     case 'warn': logger.warn(record); break
     case 'error': logger.error(record); break
   }
-  if (!active.opts.isPackaged) {
-    // Development console mirror: human-readable, never JSON-parsed. Stdout
-    // only — the sidecar readiness contract reserves its own stdout.
-    try {
-      process.stdout.write(`${record.level} ${record.context}/${record.event}\n`)
-    } catch { /* best effort */ }
-  }
 }
 
-/** Flushes and closes the sink (tests + quit path). Re-entrant. */
+/** Ends the sink (tests + quit path). Re-entrant. Sync writes are already
+ * durable; rotation itself completes asynchronously inside pino-roll. */
 export function closeOperationalLog(): void {
   if (!active) return
-  endDest(active.dest)
+  try { active.stream.end() } catch { /* best effort */ }
   active = null
 }
 
