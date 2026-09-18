@@ -12,12 +12,17 @@
 //   plane) with zero-dependency core rules only:
 //     renderer/ may not import Electron/Node or main/preload sources;
 //     main/ may not import renderer/preload sources or touch DOM globals;
-//     shared/ may not import Electron or process-specific sources.
-//   Preload intentionally keeps its `import type` contract from `../main/**`
-//   (the IPC wire types) — value imports from main are what would break the
-//   sandbox, and there are none.
+//     shared/ may not import Electron or process-specific sources;
+//     preload/ may import main sources as types only (the IPC wire contract).
 // - `eslint-config-prettier` LAST so formatting stays Prettier's job.
+//
+// What this deliberately does NOT cover (see PR #137 + follow-up):
+// - `@/*` needs no restriction: the alias is renderer-scoped in every config
+//   that defines it (tsconfig.web.json paths, electron.vite.config.ts renderer
+//   resolve.alias, vitest.config.ts resolve.alias). main/preload have no alias
+//   configured, so `@/...` cannot resolve outside the renderer.
 
+import { builtinModules } from 'node:module'
 import js from '@eslint/js'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
@@ -28,34 +33,21 @@ import prettierConfig from 'eslint-config-prettier'
 
 // Depths 1-5 cover every nesting level under src/renderer|main|shared today
 // (renderer goes 4 deep: src/renderer/src/features/<area>/file).
-const rendererToMain = [1, 2, 3, 4, 5].map(n => `${'../'.repeat(n)}main/**`)
-const rendererToPreload = [1, 2, 3, 4, 5].map(n => `${'../'.repeat(n)}preload/**`)
-const mainToRenderer = [1, 2, 3, 4].map(n => `${'../'.repeat(n)}renderer/**`)
-const mainToPreload = [1, 2, 3, 4].map(n => `${'../'.repeat(n)}preload/**`)
+function depthPatterns(dir, maxDepth) {
+  return Array.from({ length: maxDepth }, (_, i) => `${'../'.repeat(i + 1)}${dir}/**`)
+}
+const rendererToMain = depthPatterns('main', 5)
+const rendererToPreload = depthPatterns('preload', 5)
+const mainToRenderer = depthPatterns('renderer', 4)
+const mainToPreload = depthPatterns('preload', 4)
 
-// Bare Node core modules (the repo also uses the `node:` prefix, covered below).
-// Kept to modules the main process actually uses plus the obvious others —
-// extend if a new core dependency appears in main/.
-const bareNodeCores = [
-  'fs',
-  'fs/*',
-  'path',
-  'path/*',
-  'os',
-  'os/*',
-  'child_process',
-  'worker_threads',
-  'crypto',
-  'stream',
-  'util',
-  'events',
-  'http',
-  'https',
-  'net',
-  'tls',
-  'zlib',
-  'readline',
-]
+// Every Node builtin, bare and `node:`-prefixed, derived from the running
+// runtime — no hand-kept denylist that silently omits `assert`/`buffer`/`url`
+// et al. (PR #137 review). A superset across Node versions is fine: every
+// entry is something the renderer must never import (ADR 0005).
+const bareNodeCores = builtinModules
+  .filter(name => !name.startsWith('node:') && !name.startsWith('_'))
+  .flatMap(name => [name, `${name}/*`])
 
 export default tseslint.config(
   {
@@ -103,6 +95,13 @@ export default tseslint.config(
   {
     files: ['src/renderer/**/*.{ts,tsx}'],
     languageOptions: { globals: { ...globals.browser, ...globals.es2023 } },
+  },
+  {
+    // Shared is imported by both processes (spec: "importable from both"), so
+    // it gets both environments. (`no-undef` is off for TS anyway — this is
+    // documentation the config checker enforces structurally elsewhere.)
+    files: ['src/shared/**/*.ts'],
+    languageOptions: { globals: { ...globals.node, ...globals.browser, ...globals.es2023 } },
   },
   {
     files: ['e2e/**/*.{ts,mts}', 'playwright.config.ts'],
@@ -208,11 +207,15 @@ export default tseslint.config(
         'error',
         { name: 'window', message: "Main has no DOM — did you mean Electron's BrowserWindow?" },
         { name: 'document', message: 'Main has no DOM — renderer-only global.' },
+        { name: 'navigator', message: 'Main has no DOM — renderer-only global.' },
+        { name: 'localStorage', message: 'Main has no DOM storage — persist via the ledger or settings file.' },
       ],
     },
   },
   {
     // Shared is imported by every process: no Electron, no process sources.
+    // src/shared nests at most 2 deep (src/shared/<lib|schemas>/file), so
+    // depths 1-2 are complete — verified against the tree, not assumed.
     files: ['src/shared/**/*.ts'],
     rules: {
       'no-restricted-imports': [
@@ -226,6 +229,29 @@ export default tseslint.config(
             },
             { group: ['../renderer/**', '../../renderer/**'], message: 'Shared must not import renderer sources.' },
             { group: ['../preload/**', '../../preload/**'], message: 'Shared must not import the preload bridge.' },
+          ],
+        },
+      ],
+    },
+  },
+
+  {
+    // Preload is the sandbox seam: Electron + main *types* in, nothing else.
+    // `allowTypeImports` keeps the IPC wire-type contract (`import type` from
+    // ../main/**) while a value import from main — the thing that would break
+    // the sandbox — fails the gate. The tree has zero value imports today.
+    files: ['src/preload/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['../main/**'],
+              allowTypeImports: true,
+              message:
+                'Preload may only take types from main (IPC wire contract) — a value import drags main code across the sandbox seam.',
+            },
           ],
         },
       ],

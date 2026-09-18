@@ -68,7 +68,7 @@ Every release ships all three platforms. AppImage and `.deb` are the two Linux f
 | **Renderer** | React 19, Tailwind CSS 4, shadcn/ui, Zustand, Recharts, GSAP, TanStack Hotkeys |
 | **Data & contracts** | SQLite (built-in `node:sqlite`), Zod 4 schemas shared between main and renderer |
 | **Build & packaging** | electron-vite 5, Vite 7, electron-builder (Windows NSIS, macOS DMG/zip universal, Linux AppImage/deb, built in CI) |
-| **Tests** | Vitest (`tests/`) + Playwright Electron smoke (`e2e/`, `npm run test:e2e`) |
+| **Tests** | Vitest (`tests/`) + Playwright Electron smoke (`e2e/`, `npm run test:e2e`) + ESLint 9 gate (`npm run lint`) |
 
 ## Quick start
 
@@ -105,7 +105,7 @@ That is **38 providers** in total. Each lives in a single file under `src/main/p
 
 ## Releases
 
-Installers for **Windows (NSIS), macOS (DMG/zip, one universal binary for Apple Silicon and Intel), and Linux (AppImage/deb)** are built in CI only when a `v*` tag is pushed (ADR 0015). Typecheck and tests run on every PR and every push to `main` as the merge-readiness gate; a tag then builds all three installers and publishes them as a GitHub Release.
+Installers for **Windows (NSIS), macOS (DMG/zip, one universal binary for Apple Silicon and Intel), and Linux (AppImage/deb)** are built in CI only when a `v*` tag is pushed (ADR 0015). Typecheck, lint, and tests run on every PR and every push to `main` as the merge-readiness gate; a tag then builds all three installers and publishes them as a GitHub Release.
 
 Artifacts are currently **unsigned** by design: Windows shows a SmartScreen "unknown publisher" warning, and macOS users must right-click and choose Open the first time. Code signing is sign-ready; drop `CSC_LINK`/`CSC_KEY_PASSWORD` into CI secrets and builds sign themselves. macOS notarization needs a one-line config flip (`mac.notarize: true`) plus Apple secrets first (ADR 0015).
 
