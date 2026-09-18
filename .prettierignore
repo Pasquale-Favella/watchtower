@@ -1,0 +1,10 @@
+# Prettier never touches build outputs, test artefacts, or vendored assets.
+out/
+dist/
+release/
+coverage/
+test-results/
+playwright-report/
+node_modules/
+assets/
+.electron-vite/

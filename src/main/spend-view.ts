@@ -219,7 +219,7 @@ function buildSpendPayload(
     }
   }
 
-  const provenanceFor = (model: string): { sourceModels: string[] } | {} => {
+  const provenanceFor = (model: string): { sourceModels: string[] } | Record<string, never> => {
     const raws = modelProvenance.get(model)
     return raws && raws.size > 0 ? { sourceModels: [...raws].sort() } : {}
   }

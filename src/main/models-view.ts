@@ -189,7 +189,7 @@ function auditRatesFor(
 function overrideFor(
   effectiveModel: string,
   pricingConfig: PricingConfigLookup,
-): { override: RowOverride } | {} {
+): { override: RowOverride } | Record<string, never> {
   const found = pricingConfig.findOverride(effectiveModel)
   return found
     ? { override: { inputPricePerMillion: found.inputPricePerMillion, outputPricePerMillion: found.outputPricePerMillion } }

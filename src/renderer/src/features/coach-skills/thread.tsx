@@ -125,11 +125,13 @@ export function MessageBubble({ message, canRetry, onRetry }: {
 export function Thread({ messages }: {
   messages: ChatMessage[]
 }) {
+  // Hooks before the empty-transcript early return (rules-of-hooks): the
+  // selector subscription must run in the same order on every render.
+  const retryAssistant = useCoachSkillsStore(s => s.retryAssistant)
   if (messages.length === 0) {
     return null
   }
   const streaming = messages.some(message => message.streaming)
-  const retryAssistant = useCoachSkillsStore(s => s.retryAssistant)
   // The last assistant turn is the one a retry can regenerate in place.
   const lastAssistantId = [...messages].reverse().find(m => m.role === 'assistant')?.id ?? null
   return (
