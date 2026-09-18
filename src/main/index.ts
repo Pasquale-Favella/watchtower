@@ -10,7 +10,7 @@ import {
   type SkillsThresholds,
 } from '../shared/schemas/skills.js'
 import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
-import { closeOperationalLog, initOperationalLog, recordOperationalLog } from './operational-log.js'
+import { closeOperationalLog, initOperationalLog, recordOperationalLog, safeRecordOperationalLog } from './operational-log.js'
 import { operationalLogCodeFor } from '../shared/operational-log.js'
 import type { ExportResult } from './export.js'
 import type { OverviewScope } from './overview.js'
@@ -48,13 +48,9 @@ let dbClient: DbWorkerClient | null = null
  * startup setting requests it. */
 const sidecarPool = createSidecarPool({
   spawn: ctx => startLedgerMcpHttp(ctx, {
-    onOperationalLog: (event, fields) => {
-      try { recordOperationalLog('sidecar', event, fields ?? {}) } catch { /* logging must never break spawn */ }
-    },
+    onOperationalLog: (event, fields) => safeRecordOperationalLog('sidecar', event, fields ?? {}),
   }),
-  onOperationalLog: (event, fields) => {
-    try { recordOperationalLog('sidecar', event, fields ?? {}) } catch { /* best effort */ }
-  },
+  onOperationalLog: (event, fields) => safeRecordOperationalLog('sidecar', event, fields ?? {}),
 })
 /** The requesting window of the in-flight manual scan (progress/error routing). */
 let scanRequester: WebContents | null = null
@@ -73,12 +69,10 @@ function handleLogged(channel: string, listener: (event: Electron.IpcMainInvokeE
     try {
       return await (listener as (event: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown)(event, ...args)
     } catch (err) {
-      try {
-        recordOperationalLog('main', 'ipc.error', {
-          op: channel,
-          code: operationalLogCodeFor(err, 'failed'),
-        })
-      } catch { /* logging must never break IPC */ }
+      safeRecordOperationalLog('main', 'ipc.error', {
+        op: channel,
+        code: operationalLogCodeFor(err, 'failed'),
+      })
       throw err
     }
   })
@@ -122,9 +116,7 @@ function relayWorkerEvents(db: DbWorkerClient): void {
     if (event.event === 'ready' || event.event === 'init-error') return
     // Forwarded Operational log records (ticket #128): single-file write.
     if (event.event === 'operational-log') {
-      try {
-        recordOperationalLog(event.record.context, event.record.event, event.record)
-      } catch { /* logging must never break relay */ }
+      safeRecordOperationalLog(event.record.context, event.record.event, event.record)
       return
     }
     switch (event.event) {
@@ -424,9 +416,7 @@ function registerIpc(db: DbWorkerClient): void {
       }
     },
     // Harness lifecycle + Coach/Skills IPC failures (ticket #130): kind only.
-    onOperationalLog: (event, fields) => {
-      try { recordOperationalLog('main', event, fields ?? {}) } catch { /* logging must never break runs */ }
-    },
+    onOperationalLog: (event, fields) => safeRecordOperationalLog('main', event, fields ?? {}),
   })
 }
 
@@ -476,9 +466,7 @@ app.whenReady().then(() => {
   dbClient = db
   updateChecker = createUpdateChecker({
     currentVersion: app.getVersion(),
-    onOperationalLog: (event, fields) => {
-      try { recordOperationalLog('main', event, fields ?? {}) } catch { /* best effort */ }
-    },
+    onOperationalLog: (event, fields) => safeRecordOperationalLog('main', event, fields ?? {}),
   })
   registerIpc(db)
   createWindow()
@@ -488,20 +476,16 @@ app.whenReady().then(() => {
   // connection. A failed prewarm is non-fatal; the next Coach run or an
   // explicit copy-config action can retry on demand.
   void db.ready.then(async () => {
-    try {
-      recordOperationalLog('worker', 'worker.ready', {})
-    } catch { /* logging must never break boot */ }
+    safeRecordOperationalLog('worker', 'worker.ready', {})
     const startupMode = await db.request('ledger-mcp:startup:get') as LedgerMcpStartupMode
     if (startupMode === 'at-launch') {
       await sidecarPool.connection(ledgerMcpContext())
     }
   }).catch(err => {
-    try {
-      recordOperationalLog('sidecar', 'sidecar.boot-error', {
-        code: operationalLogCodeFor(err, 'prewarm-failed'),
-        message: err instanceof Error ? err.message : String(err),
-      })
-    } catch { /* logging must never break boot */ }
+    safeRecordOperationalLog('sidecar', 'sidecar.boot-error', {
+      code: operationalLogCodeFor(err, 'prewarm-failed'),
+      message: err instanceof Error ? err.message : String(err),
+    })
   })
 
   // The worker queues requests until its synchronous init finishes, so the
@@ -509,12 +493,10 @@ app.whenReady().then(() => {
   // heal — surface it once and quit instead of serving IPC errors forever.
   // The worker is never respawned in that case (client policy).
   void db.ready.then(undefined, err => {
-    try {
-      recordOperationalLog('worker', 'worker.init-error', {
-        code: operationalLogCodeFor(err, 'boot-failed'),
-        message: err instanceof Error ? err.message : String(err),
-      })
-    } catch { /* logging must never break the error box */ }
+    safeRecordOperationalLog('worker', 'worker.init-error', {
+      code: operationalLogCodeFor(err, 'boot-failed'),
+      message: err instanceof Error ? err.message : String(err),
+    })
     dialog.showErrorBox(
       'Watchtower',
       `The local data layer failed to start and the app cannot continue.\n\n${err instanceof Error ? err.message : String(err)}`,

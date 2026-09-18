@@ -12,7 +12,7 @@ import {
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan.js'
-import { parseSidecarStderrLine, reportLedgerRequestFailure } from '../src/main/agents/ledger-mcp/sidecar.js'
+import { parseSidecarStderrLine, reportLedgerRequestFailure } from '../src/shared/operational-log.js'
 import { readReadyPort } from '../src/main/agents/ledger-mcp/sidecar.js'
 import { parseEvent } from '../src/renderer/src/shared/lib/api.js'
 import { createCoachRunner } from '../src/main/agents/ipc.js'

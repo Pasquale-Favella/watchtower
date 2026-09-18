@@ -6,7 +6,7 @@ import {
   type DbWorkerData,
   type DbWorkerEvent,
 } from './protocol.js'
-import { recordOperationalLog } from '../operational-log.js'
+import { safeRecordOperationalLog } from '../operational-log.js'
 
 /**
  * Main-side handle to the db-worker thread (ADR 0023). `request(op, ...args)`
@@ -115,12 +115,10 @@ export class DbWorkerClient {
       } catch (spawnErr) {
         // Operational log (ticket #127): the single main-path record for a
         // restart failure — never an ad-hoc stderr write.
-        try {
-          recordOperationalLog('main', 'worker.init-error', {
-            code: 'restart-failed',
-            message: spawnErr instanceof Error ? spawnErr.message : String(spawnErr),
-          })
-        } catch { /* logging must never break respawn */ }
+        safeRecordOperationalLog('main', 'worker.init-error', {
+          code: 'restart-failed',
+          message: spawnErr instanceof Error ? spawnErr.message : String(spawnErr),
+        })
       }
     })
   }

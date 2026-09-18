@@ -165,3 +165,16 @@ export function closeOperationalLog(): void {
   endDest(active.dest)
   active = null
 }
+
+/** Never-throwing record for call sites where logging must not break the
+ * surrounding path (IPC handlers, boot, quit). Collapses the repeated
+ * try/catch guard into the seam itself. */
+export function safeRecordOperationalLog(
+  context: OperationalLogContext,
+  event: OperationalLogEvent,
+  fields: OperationalLogFields = {},
+): void {
+  try {
+    recordOperationalLog(context, event, fields)
+  } catch { /* logging must never break callers */ }
+}

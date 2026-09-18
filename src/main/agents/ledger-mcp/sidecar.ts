@@ -37,12 +37,6 @@ export type SidecarLogFn = OperationalLogForwarder
 // The structured stderr protocol (prefix, parser, sidecar-side reporter)
 // lives in the shared seam so the sidecar bundle never imports this
 // spawner (which needs `node:child_process`).
-export {
-  SIDECAR_LOG_PREFIX,
-  parseSidecarStderrLine,
-  reportLedgerRequestFailure,
-  type ParsedSidecarLog,
-} from '../../../shared/operational-log.js'
 import { parseSidecarStderrLine } from '../../../shared/operational-log.js'
 
 const READY_TIMEOUT_MS = 10_000
