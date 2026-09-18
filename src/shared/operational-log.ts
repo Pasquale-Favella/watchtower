@@ -153,25 +153,13 @@ export function buildOperationalLogRecord(
     context,
     event,
   }
-  const provider = cleanShort(fields.provider, MAX_SHORT)
-  if (provider) record.provider = provider
+  for (const key of ['provider', 'code', 'op', 'method', 'route', 'harnessKind', 'label', 'location'] as const) {
+    const value = cleanShort(fields[key], MAX_SHORT)
+    if (value) record[key] = value
+  }
   if (typeof fields.file === 'string' && fields.file.trim()) {
     record.file = truncate(operationalLogBasename(fields.file.trim()), MAX_FILE)
   }
-  const code = cleanShort(fields.code, MAX_SHORT)
-  if (code) record.code = code
-  const op = cleanShort(fields.op, MAX_SHORT)
-  if (op) record.op = op
-  const method = cleanShort(fields.method, MAX_SHORT)
-  if (method) record.method = method
-  const route = cleanShort(fields.route, MAX_SHORT)
-  if (route) record.route = route
-  const harnessKind = cleanShort(fields.harnessKind, MAX_SHORT)
-  if (harnessKind) record.harnessKind = harnessKind
-  const label = cleanShort(fields.label, MAX_SHORT)
-  if (label) record.label = label
-  const location = cleanShort(fields.location, MAX_SHORT)
-  if (location) record.location = location
   if (typeof fields.message === 'string' && fields.message.trim()) {
     record.message = truncate(fields.message.trim(), MAX_MESSAGE)
   }
@@ -228,14 +216,9 @@ export function isOperationalLogRecord(raw: unknown): raw is OperationalLogRecor
  * drifts per call site. */
 export type OperationalLogForwarder = (event: OperationalLogEvent, fields?: OperationalLogFields) => void
 
-/** Structured stderr protocol (ticket #129): the sidecar process writes
- * allowlisted JSON lines with this prefix to stderr — never stdout, so the
- * single `READY {"port": N}` stdout announcement stays parseable under any
- * logging load. Main parses each line back into a record carrying method and
- * route only (no bodies, tokens, or ledger facts). Pure — no `node:` imports,
- * so every bundle (including the sidecar entry) can share it. */
-export const SIDECAR_LOG_PREFIX = 'WATCHTOWER_LEDGER_LOG '
-
+/** One sidecar stderr line, picked back out of the JSON pino writes there:
+ * method and route only (no bodies, tokens, or ledger facts). Pure — no
+ * `node:` imports, so every bundle (including the sidecar entry) shares it. */
 export interface ParsedSidecarLog {
   event: OperationalLogEvent
   method?: string
@@ -243,18 +226,17 @@ export interface ParsedSidecarLog {
   code?: string
 }
 
-/** Parses one structured sidecar stderr line. Returns null for preamble and
- * plain-text lines (Node warnings, legacy prefixes) — those become truncated
- * `sidecar.stderr` notes at the call site, never parse failures. */
+/** Parses one sidecar stderr line. Only JSON lines carrying a method or route
+ * qualify — preamble and plain-text lines (Node warnings) return null and
+ * become truncated `sidecar.stderr` notes at the call site, never failures. */
 export function parseSidecarStderrLine(line: string): ParsedSidecarLog | null {
-  if (!line.startsWith(SIDECAR_LOG_PREFIX)) return null
   let parsed: Record<string, unknown>
   try {
-    parsed = JSON.parse(line.slice(SIDECAR_LOG_PREFIX.length)) as Record<string, unknown>
+    parsed = JSON.parse(line) as Record<string, unknown>
   } catch {
     return null
   }
-  if (parsed['event'] !== 'ledger-mcp.request-error') return null
+  if (!parsed || typeof parsed !== 'object') return null
   const out: ParsedSidecarLog = { event: 'ledger-mcp.request-error' }
   for (const key of ['method', 'route', 'code'] as const) {
     const value = parsed[key]
@@ -262,17 +244,6 @@ export function parseSidecarStderrLine(line: string): ParsedSidecarLog | null {
       out[key] = value.trim().slice(0, MAX_SHORT)
     }
   }
+  if (out.method === undefined && out.route === undefined) return null
   return out
-}
-
-/** Sidecar-side failure reporter (runs IN the sidecar process): one
- * allowlisted JSON line to stderr — method and route only. Never touches
- * stdout, so readiness stays parseable. Top-level `process` access only, so
- * importing this module never touches globals at load time. */
-export function reportLedgerRequestFailure(method: string, route: string, code = 'internal'): void {
-  try {
-    process.stderr.write(
-      `${SIDECAR_LOG_PREFIX}${JSON.stringify({ event: 'ledger-mcp.request-error', method, route, code })}\n`,
-    )
-  } catch { /* logging must never break serving */ }
 }

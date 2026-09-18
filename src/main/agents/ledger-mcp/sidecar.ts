@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createInterface } from 'node:readline'
 
 import type { AcpMcpServer } from '../harnesses/types.js'
 import { bearerHeaderValue } from './auth.js'
 import type { LedgerMcpSpawnContext } from './config.js'
-import type { OperationalLogForwarder } from '../../../shared/operational-log.js'
+import { parseSidecarStderrLine, type OperationalLogForwarder } from '../../../shared/operational-log.js'
 
 /**
  * Main-side spawner for the loopback-HTTP `watchtower-ledger` MCP server:
@@ -34,20 +35,12 @@ export interface StartedLedgerMcpHttp {
  * Defaults to a no-op so unit tests without a logger stay silent. */
 export type SidecarLogFn = OperationalLogForwarder
 
-// The structured stderr protocol (prefix, parser, sidecar-side reporter)
-// lives in the shared seam so the sidecar bundle never imports this
-// spawner (which needs `node:child_process`).
-import { parseSidecarStderrLine } from '../../../shared/operational-log.js'
-
 const READY_TIMEOUT_MS = 10_000
 const READY_POLL_MS = 100
 const READY_PREFIX = 'READY '
 /** Preamble cap: the announcement is one short line — megabytes of stdout
  *  before it means the child is chatty-broken, not booting. */
 const MAX_READY_BYTES = 64 * 1024
-/** Reassembly cap: one stderr line is short — megabytes without a newline
- *  means the child is dumping, not logging, so flush it as one note. */
-const MAX_STDERR_BUFFER_BYTES = 64 * 1024
 
 /** Parses the sidecar's single stdout announcement (`READY {"port": N}`).
  *  Anything else — wrong prefix, bad JSON, out-of-range port — is a boot
@@ -168,33 +161,21 @@ export async function startLedgerMcpHttp(
     // behind a readiness timeout. Stdout is never written here.
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  // Line-buffered stderr forwarder (ticket #129): structured lines become
-  // method-and-route-only records; anything else becomes a truncated note.
-  // Chunk splits are reassembled — a JSON line split across two `data`
-  // events still parses.
-  let stderrBuffer = ''
-  const forwardStderrLine = (line: string): void => {
-    const trimmed = line.trim()
-    if (!trimmed) return
-    const parsed = parseSidecarStderrLine(trimmed)
-    try {
-      if (parsed) onLog(parsed.event, { method: parsed.method, route: parsed.route, code: parsed.code })
-      else onLog('sidecar.stderr', { message: trimmed.slice(0, 500) })
-    } catch { /* logging must never break the sidecar */ }
+  // Stderr forwarder (ticket #129): pino JSON lines become method-and-route
+  // records; anything else becomes a truncated note. readline owns chunk
+  // reassembly — no manual buffering.
+  if (child.stderr) {
+    const lines = createInterface({ input: child.stderr })
+    lines.on('line', line => {
+      const trimmed = line.trim()
+      if (!trimmed) return
+      const parsed = parseSidecarStderrLine(trimmed)
+      try {
+        if (parsed) onLog(parsed.event, { method: parsed.method, route: parsed.route, code: parsed.code })
+        else onLog('sidecar.stderr', { message: trimmed.slice(0, 500) })
+      } catch { /* logging must never break the sidecar */ }
+    })
   }
-  child.stderr?.on('data', (chunk: Buffer) => {
-    stderrBuffer += chunk.toString()
-    let newline = stderrBuffer.indexOf('\n')
-    while (newline >= 0) {
-      forwardStderrLine(stderrBuffer.slice(0, newline))
-      stderrBuffer = stderrBuffer.slice(newline + 1)
-      newline = stderrBuffer.indexOf('\n')
-    }
-    if (stderrBuffer.length > MAX_STDERR_BUFFER_BYTES) {
-      forwardStderrLine(stderrBuffer)
-      stderrBuffer = ''
-    }
-  })
   if (!child.stdout) {
     child.kill()
     throw new Error('ledger MCP HTTP server has no stdout for its ready announcement')

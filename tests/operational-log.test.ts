@@ -17,7 +17,8 @@ import {
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan.js'
-import { parseSidecarStderrLine, reportLedgerRequestFailure } from '../src/shared/operational-log.js'
+import { parseSidecarStderrLine } from '../src/shared/operational-log.js'
+import { reportLedgerRequestFailure } from '../src/main/agents/ledger-mcp/http-server.js'
 import { readReadyPort } from '../src/main/agents/ledger-mcp/sidecar.js'
 import { parseEvent } from '../src/renderer/src/shared/lib/api.js'
 import { createCoachRunner } from '../src/main/agents/ipc.js'
@@ -309,22 +310,23 @@ describe('Worker scan-lifecycle forwarding (ticket #128)', () => {
 })
 
 describe('Sidecar forwarding with readiness protection (ticket #129)', () => {
-  it('parses structured stderr lines into method-and-route-only fields', () => {
+  it('parses pino stderr lines into method-and-route-only fields', () => {
     const parsed = parseSidecarStderrLine(
-      'WATCHTOWER_LEDGER_LOG {"event":"ledger-mcp.request-error","method":"POST","route":"/mcp","code":"internal"}',
+      '{"level":40,"method":"POST","route":"/mcp","code":"internal"}',
     )
     expect(parsed).toMatchObject({ event: 'ledger-mcp.request-error', method: 'POST', route: '/mcp' })
   })
 
   it('drops bodies, tokens and ledger facts from stderr lines and ignores preamble', () => {
     const parsed = parseSidecarStderrLine(
-      'WATCHTOWER_LEDGER_LOG {"event":"ledger-mcp.request-error","method":"POST","route":"/mcp","body":{"prompt":"secret"},"token":"Bearer sk-secret"}',
+      '{"level":40,"method":"POST","route":"/mcp","body":{"prompt":"secret"},"token":"Bearer sk-secret"}',
     )
     const text = JSON.stringify(parsed)
     expect(text).not.toContain('secret')
     expect(text).not.toContain('sk-secret')
     expect(parseSidecarStderrLine('(node:123) ExperimentalWarning: foo')).toBeNull()
     expect(parseSidecarStderrLine('watchtower-ledger(http): some plain line')).toBeNull()
+    expect(parseSidecarStderrLine('{"level":30,"msg":"a pino line without method or route"}')).toBeNull()
   })
 
   it('logs a sidecar boot failure once when the spawn throws', async () => {
@@ -372,8 +374,9 @@ describe('Sidecar forwarding with readiness protection (ticket #129)', () => {
       process.stdout.write = origStdoutWrite
     }
     expect(stdoutBytes.join('')).toBe('')
-    expect(stderrBytes.join('')).toContain('WATCHTOWER_LEDGER_LOG')
-    expect(stderrBytes.join('')).toContain('/mcp')
+    const logged = JSON.parse(stderrBytes.join('')) as Record<string, unknown>
+    expect(logged['method']).toBe('POST')
+    expect(logged['route']).toBe('/mcp')
 
     const child = new EventEmitter() as unknown as ChildProcess
     const stdout = new PassThrough()
@@ -498,7 +501,7 @@ describe('Ad-hoc write sweep + single-file integrate-and-verify (ticket #131)', 
         recordOperationalLog(context, event, fields as never)
       }
       const parsedSidecar = parseSidecarStderrLine(
-        `WATCHTOWER_LEDGER_LOG ${JSON.stringify({ event: 'ledger-mcp.request-error', method: 'POST', route: '/mcp', body: secrets.requestBody, token: secrets.token })}`,
+        JSON.stringify({ level: 40, method: 'POST', route: '/mcp', body: secrets.requestBody, token: secrets.token }),
       )
       expect(JSON.stringify(parsedSidecar)).not.toContain(secrets.requestBody)
       expect(JSON.stringify(parsedSidecar)).not.toContain(secrets.token)
