@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import pino from 'pino'
 
 import type { LedgerStore } from '../../store/ledger.js'
 import { hasBearerAuthorization } from './auth.js'
@@ -23,21 +22,6 @@ import { createLedgerMcpServer } from './server.js'
 /** Tool args are tiny scope objects — 1MB is a generous ceiling that still
  *  bounds a neighbour process stuffing the request pipe. */
 const MAX_BODY_BYTES = 1_000_000
-
-/** Sidecar-side Operational log (ticket #129): pino serialises structured lines
- * to stderr — never stdout, so the `READY` announcement stays parseable under
- * logging load. Main picks method and route back out of each JSON line. The
- * raw stderr stream keeps writes flowing through `process.stderr.write`, so
- * the report stays deterministically testable. */
-const sidecarLog = pino({ level: 'warn', timestamp: false, base: null }, process.stderr)
-
-/** The failure report: method and route only — never bodies, tokens, or
- * ledger facts. pino owns serialisation and line framing. */
-export function reportLedgerRequestFailure(method: string, route: string, code = 'internal'): void {
-  try {
-    sidecarLog.warn({ method, route, code })
-  } catch { /* logging must never break serving */ }
-}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body)
@@ -98,8 +82,12 @@ export function createLedgerMcpHttpHandler(
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
       await createLedgerMcpServer(store).connect(transport)
       await transport.handleRequest(req, res, body)
-    } catch {
-      reportLedgerRequestFailure(req.method ?? 'UNKNOWN', pathname, 'internal')
+    } catch (error) {
+      console.error('Ledger MCP HTTP request failed', {
+        method: req.method,
+        pathname,
+        error,
+      })
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' })
     }
   }

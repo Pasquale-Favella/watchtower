@@ -9,12 +9,6 @@ import {
   type SessionRow,
 } from '../views.js'
 import { runScan, ScanAbortedError, type ScanMetadata, type ScanProgress } from '../pipeline/scan.js'
-import {
-  buildOperationalLogRecord,
-  operationalLogCodeFor,
-  type OperationalLogEvent,
-  type OperationalLogFields,
-} from '../../shared/operational-log.js'
 import { buildOverviewFromLedger, type OverviewScope } from '../overview.js'
 import { buildSessionsViewFromLedger } from '../sessions-view.js'
 import { buildPullRequestsViewFromLedger, type PullRequestsPayload } from '../pull-requests-view.js'
@@ -82,10 +76,6 @@ export class DbWorkerContext {
   private dataDir: string
   private cacheDir: string
   private emit: DbWorkerEmit
-  /** Scan runner seam (ticket #128): the real pipeline by default; tests
-   * inject a fake so forwarding is covered without touching real user files.
-   * Stays Electron-free — the log directory travels in `workerData`. */
-  private runScanImpl: typeof runScan
   /** The most recent completed scan's metadata — the `getScanStatus()` answer
    * and the `store:changed` payload (ADR 0004). In-memory only. */
   private lastScanMetadata: ScanMetadata | null = null
@@ -97,11 +87,10 @@ export class DbWorkerContext {
   private cadenceTimer: ReturnType<typeof setInterval> | null = null
   private closed = false
 
-  constructor(init: DbWorkerData, emit: DbWorkerEmit, deps: { runScan?: typeof runScan } = {}) {
+  constructor(init: DbWorkerData, emit: DbWorkerEmit) {
     this.dataDir = init.dataDir
     this.cacheDir = init.cacheDir
     this.emit = emit
-    this.runScanImpl = deps.runScan ?? runScan
     mkdirSync(dirname(init.dbPath), { recursive: true })
     this.ledger = new LedgerStore(init.dbPath)
     this.scheduleCadence()
@@ -109,23 +98,6 @@ export class DbWorkerContext {
     // non-blocking: readers use the cached rate (or USD) meanwhile, and an
     // event lands the fresh rate if the cache was stale.
     void this.refreshFxOnCadence()
-  }
-
-  /** Forward-only Operational log emission (ticket #128): one allowlisted
-   * record per call, written to the single main-owned file — the worker never
-   * touches the filesystem log itself and never logs per-file successes. */
-  private opLog(event: OperationalLogEvent, fields: OperationalLogFields = {}): void {
-    try {
-      this.emit({ event: 'operational-log', record: buildOperationalLogRecord('worker', event, fields) })
-    } catch { /* logging must never break the scan */ }
-  }
-
-  private scanFinishFields(metadata: ScanMetadata, manual: boolean): OperationalLogFields {
-    return {
-      manual,
-      count: metadata.portedFiles,
-      unparsed: metadata.perProvider.map(row => ({ provider: row.provider, unparsed: row.unparsed })),
-    }
   }
 
   // ── Scan pipeline ───────────────────────────────────────────────────
@@ -143,16 +115,7 @@ export class DbWorkerContext {
     const range = lifetimeRange()
     const repoUrlCache = new Map<string, Promise<string | undefined>>()
     const portIn = async (delta: PortInput): Promise<void> => {
-      if (delta.cachedFile.failed) {
-        // Provider file errors (ticket #128): basename + code only — never
-        // contents, prompts, or full paths. No success-path chatter.
-        this.opLog('file.error', {
-          provider: delta.provider,
-          file: delta.filePath,
-          code: 'parse-failed',
-        })
-        return
-      }
+      if (delta.cachedFile.failed) return
       // Repository badge (#106): resolve from the canonical project path for
       // every provider — the worktree-folded cwd when the parser derived one,
       // else the provider's exact working directory. Same memoized-per-scan,
@@ -171,7 +134,7 @@ export class DbWorkerContext {
       }
       this.ledger.portIn({ ...delta, repoUrl })
     }
-    return this.runScanImpl(
+    return runScan(
       { range, provider: options?.provider },
       emit,
       { isAborted: () => this.abortRequested },
@@ -192,17 +155,13 @@ export class DbWorkerContext {
     this.scanActive = true
     this.manualScan = false
     this.abortRequested = false
-    this.opLog('scan.start', { manual: false })
     try {
       const metadata = await this.performScan(undefined, progress =>
         this.emit({ event: 'scan:progress', manual: false, progress }))
       this.lastScanMetadata = metadata
-      this.opLog('scan.finish', this.scanFinishFields(metadata, false))
       this.emit({ event: 'store:changed', metadata })
-    } catch (err) {
+    } catch {
       // background scans fail silently; manual ⌘R remains available
-      if (err instanceof ScanAbortedError) this.opLog('scan.abort', { manual: false })
-      else this.opLog('scan.finish', { manual: false, code: operationalLogCodeFor(err, 'failed') })
       this.emit({ event: 'scan:idle' })
     } finally {
       this.scanActive = false
@@ -300,12 +259,10 @@ export class DbWorkerContext {
         this.scanActive = true
         this.manualScan = true
         this.abortRequested = false
-        this.opLog('scan.start', { manual: true, ...(options?.provider ? { provider: options.provider } : {}) })
         try {
           const metadata = await this.performScan(options, progress =>
             this.emit({ event: 'scan:progress', manual: true, progress }))
           this.lastScanMetadata = metadata
-          this.opLog('scan.finish', this.scanFinishFields(metadata, true))
           this.emit({ event: 'store:changed', metadata })
           // The `metadata` lands on `store:changed`; the scan-result envelope
           // itself carries only the flags scanResultSchema declares, so the
@@ -315,8 +272,6 @@ export class DbWorkerContext {
           const message = err instanceof ScanAbortedError
             ? 'scan aborted'
             : err instanceof Error ? err.message : String(err)
-          if (err instanceof ScanAbortedError) this.opLog('scan.abort', { manual: true })
-          else this.opLog('scan.finish', { manual: true, code: operationalLogCodeFor(err, 'failed') })
           this.emit({ event: 'scan:error', manual: true, message })
           return { ok: false, aborted: err instanceof ScanAbortedError, error: err instanceof Error ? err.message : String(err) }
         } finally {

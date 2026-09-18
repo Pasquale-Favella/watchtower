@@ -16,7 +16,6 @@
 // requires *some* User-Agent, which the default satisfies. See fetchReleases.
 
 import type { UpdateStatus } from '../shared/schemas/updates.js'
-import { safeRecordOperationalLog } from './operational-log.js'
 
 export type { UpdateStatus } from '../shared/schemas/updates.js'
 
@@ -107,9 +106,7 @@ export function createUpdateChecker(opts: {
         }
       } catch {
         // Offline / GitHub error / private repo / timeout: silent no-op. Keep
-        // the last known status so the next click retries cleanly. Recorded
-        // as an info note (ticket #130) — being offline is not breakage.
-        safeRecordOperationalLog('main', 'updates.offline', { code: 'unavailable' })
+        // the last known status so the next click retries cleanly.
       } finally {
         clearTimeout(timer)
         inflight = null

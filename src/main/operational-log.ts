@@ -1,130 +1,133 @@
 import { join } from 'node:path'
 import pino, { type Logger } from 'pino'
 import pretty from 'pino-pretty'
+// @ts-expect-error pino-roll ships without bundled types; single-use import kept local
+// so no ambient declaration file or web-tsconfig change is needed.
 import buildRoll from 'pino-roll'
 
-import {
-  buildOperationalLogRecord,
-  type OperationalLogContext,
-  type OperationalLogEvent,
-  type OperationalLogFields,
-  type OperationalLogLevel,
-} from '../shared/operational-log.js'
-
 /**
- * Main-owned Operational log file sink (spec #126, ADR 0029, ticket #127).
+ * Main-owned Operational log (spec #126 slice 1, ADR 0029).
  *
- * One JSON-lines log family under `<userData>/logs`, owned exclusively by
- * the main process — worker/sidecar/renderer records are forwarded here, never
- * appended directly. The transport is pure pino power, no custom rotation:
- * pino-roll owns size rotation, retention (including pre-existing generations
- * in our dedicated log dir), and boot numbering; a multistream fans debug
- * output to a human-readable console mirror in development; level filtering,
- * string level names, and the trimmed line shape come from pino options.
- * Packaged builds write info level only; development writes debug. This module
- * only maps our seam onto those knobs.
+ * Simple pino tactic: one JSON-lines file under `<userData>/logs`, owned
+ * exclusively by main. Pino owns levels, JSON framing, ISO timestamps, and
+ * redaction — callers pass plain objects, never pre-shaped records. Worker /
+ * sidecar / renderer forwarding (#128-#130) is deferred; this slice covers
+ * main boot + IPC failures only.
  */
 
 export const OPERATIONAL_LOG_FILE = 'operational.log'
 const DEFAULT_ROLL_SIZE = '5m'
-/** Rotated files kept besides the active one (~5MB x3 total per ADR 0029). */
 const DEFAULT_ROLL_COUNT = 2
 
 export interface OperationalLogOptions {
   logDir: string
   isPackaged: boolean
-  /** pino-roll size (default '5m'): plain numbers are MB, 'k'/'m'/'g' suffixes. */
   size?: string | number
-  /** pino-roll limit.count: rotated files kept besides the active one. */
   count?: number
 }
 
+type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+
 interface ActiveLog {
-  /** The four level methods only: plain and multistream loggers share them,
-   * but differ in generics, so the seam depends on just what it calls. */
   logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>
-  /** The open roll stream. Ended on re-init/close; the console mirror writes
-   * to process stdout and is never closed by us. */
   stream: { end(): void }
 }
 
 let active: ActiveLog | null = null
 
-/** One clean JSON line per record: string level, our ISO timestamp only. */
 function loggerOptions(level: 'info' | 'debug'): Parameters<typeof pino>[0] {
   return {
     level,
-    formatters: {
-      level: (label: string): { level: string } => ({ level: label }),
-    },
-    // The seam's own ISO timestamp is the record's time; pid/hostname are
-    // constants in this single-writer file — all three would be noise.
-    timestamp: false,
+    formatters: { level: (label: string): { level: string } => ({ level: label }) },
+    timestamp: pino.stdTimeFunctions.isoTime,
     base: null,
+    redact: {
+      paths: [
+        'prompt',
+        '*.prompt',
+        'token',
+        '*.token',
+        'authorization',
+        '*.authorization',
+        'headers',
+        '*.headers',
+        'body',
+        '*.body',
+        'requestBody',
+        'fileContent',
+        'fileContents',
+      ],
+      censor: '[Redacted]',
+    },
   }
 }
 
-/** Boots (or re-boots) the singleton sink. Numbering continues across reboots
- * and retention applies to pre-existing generations (dedicated log dir). */
 export async function initOperationalLog(opts: OperationalLogOptions): Promise<void> {
   const level = opts.isPackaged ? 'info' : 'debug'
   if (active) active.stream.end()
-  const stream = await buildRoll({
+  const stream = await (buildRoll as (o: unknown) => Promise<{ end(): void } & NodeJS.WritableStream>)({
     file: join(opts.logDir, OPERATIONAL_LOG_FILE),
     size: opts.size ?? DEFAULT_ROLL_SIZE,
     limit: { count: opts.count ?? DEFAULT_ROLL_COUNT, removeOtherLogFiles: true },
     mkdir: true,
     sync: true,
   })
-  // Explicit per-stream levels: multistream streams without one default to
-  // info and would silently drop debug lines from the file in development.
-  const logger = opts.isPackaged
-    ? pino(loggerOptions(level), stream)
-    : pino(
-      loggerOptions(level),
-      pino.multistream([
-        { stream, level },
-        { stream: pretty({ colorize: false, singleLine: true }), level: 'debug' },
-      ]),
-    )
+  const logger = (
+    opts.isPackaged
+      ? pino(loggerOptions(level), stream)
+      : pino(
+        loggerOptions(level),
+        pino.multistream([
+          { stream, level },
+          { stream: pretty({ colorize: false, singleLine: true }), level: 'debug' },
+        ]),
+      )
+  ) as ActiveLog['logger']
   active = { logger, stream }
 }
 
-/** Records one allowlisted record — the ONLY way main-path code emits. */
-export function recordOperationalLog(
-  context: OperationalLogContext,
-  event: OperationalLogEvent,
-  fields: OperationalLogFields = {},
-  opts: { level?: OperationalLogLevel; timestamp?: string } = {},
+export function logOperationalEvent(
+  level: LogLevel,
+  event: string,
+  fields: Record<string, unknown> = {},
 ): void {
   if (!active) return
-  const record = buildOperationalLogRecord(context, event, fields, opts)
-  const logger = active.logger
-  switch (record.level) {
-    case 'debug': logger.debug(record); break
-    case 'info': logger.info(record); break
-    case 'warn': logger.warn(record); break
-    case 'error': logger.error(record); break
-  }
+  active.logger[level]({ event, ...fields })
 }
 
-/** Ends the sink (tests + quit path). Re-entrant. Sync writes are already
- * durable; rotation itself completes asynchronously inside pino-roll. */
+/** Short machine code for an error — never the message body. */
+export function logCodeFor(err: unknown, fallback = 'failed'): string {
+  if (err instanceof Error && err.name && err.name !== 'Error') {
+    const slug = err.name
+      .replace(/Error$/, '')
+      .replace(/[^a-z0-9]+/gi, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase()
+    return slug || fallback
+  }
+  return fallback
+}
+
+/** Never-throwing IPC failure record: operation name + code only. */
+export function logIpcError(op: string, err: unknown): void {
+  try {
+    logOperationalEvent('error', 'ipc.error', { op, code: logCodeFor(err) })
+  } catch { /* logging must never break callers */ }
+}
+
+/** Never-throwing generic record for boot paths. */
+export function safeLogOperationalEvent(
+  level: LogLevel,
+  event: string,
+  fields: Record<string, unknown> = {},
+): void {
+  try {
+    logOperationalEvent(level, event, fields)
+  } catch { /* logging must never break boot */ }
+}
+
 export function closeOperationalLog(): void {
   if (!active) return
   try { active.stream.end() } catch { /* best effort */ }
   active = null
-}
-
-/** Never-throwing record for call sites where logging must not break the
- * surrounding path (IPC handlers, boot, quit). Collapses the repeated
- * try/catch guard into the seam itself. */
-export function safeRecordOperationalLog(
-  context: OperationalLogContext,
-  event: OperationalLogEvent,
-  fields: OperationalLogFields = {},
-): void {
-  try {
-    recordOperationalLog(context, event, fields)
-  } catch { /* logging must never break callers */ }
 }

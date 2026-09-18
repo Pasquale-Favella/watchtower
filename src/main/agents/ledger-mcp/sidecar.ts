@@ -1,12 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createInterface } from 'node:readline'
 
 import type { AcpMcpServer } from '../harnesses/types.js'
 import { bearerHeaderValue } from './auth.js'
 import type { LedgerMcpSpawnContext } from './config.js'
-import { parseSidecarStderrLine } from '../../../shared/operational-log.js'
-import { safeRecordOperationalLog } from '../../operational-log.js'
 
 /**
  * Main-side spawner for the loopback-HTTP `watchtower-ledger` MCP server:
@@ -150,23 +147,13 @@ export async function startLedgerMcpHttp(ctx: LedgerMcpSpawnContext): Promise<St
     env: sidecarEnv({ dbPath: ctx.dbPath, token }),
     // stdout carries the single READY line (consumed below, then drained);
     // stderr stays piped so a sidecar that fails to boot (bad bundle, locked
-    // DB) leaves a trace in the Operational log instead of dying silently
-    // behind a readiness timeout. Stdout is never written here.
+    // DB) leaves a trace in the main-process console instead of dying
+    // silently behind a readiness timeout.
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  // Stderr forwarder (ticket #129): pino JSON lines become method-and-route
-  // records; anything else becomes a truncated note. readline owns chunk
-  // reassembly — no manual buffering.
-  if (child.stderr) {
-    const lines = createInterface({ input: child.stderr })
-    lines.on('line', line => {
-      const trimmed = line.trim()
-      if (!trimmed) return
-      const parsed = parseSidecarStderrLine(trimmed)
-      if (parsed) safeRecordOperationalLog('sidecar', 'ledger-mcp.request-error', parsed)
-      else safeRecordOperationalLog('sidecar', 'sidecar.stderr', { message: trimmed.slice(0, 500) })
-    })
-  }
+  child.stderr?.on('data', (chunk: Buffer) => {
+    process.stderr.write(`watchtower-ledger(http): ${chunk.toString()}`)
+  })
   if (!child.stdout) {
     child.kill()
     throw new Error('ledger MCP HTTP server has no stdout for its ready announcement')

@@ -20,8 +20,6 @@ export interface DbWorkerData {
   dataDir: string
   /** Absolute cache dir (`WATCHTOWER_CACHE_DIR` for the pipeline). */
   cacheDir: string
-  /** Absolute Operational log dir (forward-only; the worker never writes files). */
-  logDir?: string
 }
 
 /** Main → worker: invoke op `op` with positional `args`. */
@@ -40,12 +38,10 @@ export type DbWorkerResponse =
  * `manual` tags scan-lifecycle events that belong to the requesting window
  * only (a manual ⌘R scan); background-cadence events go to every window.
  * `ready` / `init-error` are consumed by the client itself (boot handshake),
- * never relayed to windows. `operational-log` carries one allowlisted record
- * for the main-owned single file (ticket #128) — never relayed to windows. */
+ * never relayed to windows. */
 export type DbWorkerEvent =
   | { event: 'ready' }
   | { event: 'init-error'; error: string }
-  | { event: 'operational-log'; record: import('../../shared/operational-log.js').OperationalLogRecord }
   | { event: 'scan:progress'; manual: boolean; progress: unknown }
   | { event: 'scan:error'; manual: boolean; message: string }
   | { event: 'store:changed'; metadata: unknown }

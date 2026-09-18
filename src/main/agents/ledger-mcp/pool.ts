@@ -2,7 +2,6 @@ import type { LedgerMcpAttachment } from '../ipc.js'
 import type { AcpMcpServer } from '../harnesses/types.js'
 import type { LedgerMcpSpawnContext } from './config.js'
 import type { StartedLedgerMcpHttp } from './sidecar.js'
-import { safeRecordOperationalLog } from '../../operational-log.js'
 
 /**
  * App-level pool for the loopback-HTTP ledger sidecar: one sidecar serves
@@ -54,7 +53,6 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
     try {
       started = await deps.spawn(ctx)
     } catch {
-      safeRecordOperationalLog('sidecar', 'sidecar.boot-error', { code: 'spawn-failed' })
       return null
     }
     if (gen !== generation) {
@@ -70,17 +68,13 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
     // sidecar is health-gated on every acquire: one that died between
     // conversations is respawned, never handed out.
     if (pooled) {
-      let healthy = false
       try {
-        healthy = await pooled.checkHealth()
+        if (await pooled.checkHealth()) {
+          return { server: pooled.server, release: () => {} }
+        }
       } catch {
-        healthy = false
+        // Unhealthy — fall through to respawn.
       }
-      if (healthy) {
-        return { server: pooled.server, release: () => {} }
-      }
-      // Unhealthy between turns — recorded once, then respawned below.
-      safeRecordOperationalLog('sidecar', 'sidecar.health-failure', { code: 'unhealthy' })
       pooled.release()
       pooled = null
     }

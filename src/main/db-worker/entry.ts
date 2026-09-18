@@ -24,11 +24,6 @@ const init = workerData as DbWorkerData
 // respawns a worker that never lived.
 try {
   process.env['WATCHTOWER_CACHE_DIR'] = init.cacheDir
-  // The Operational log directory travels in `workerData` (ADR 0029) so the
-  // worker stays Electron-free: no `app.getPath` here. Forward-only — the
-  // worker emits `operational-log` events over the port and main owns the
-  // single file, so this is stashed for future pipeline use, never written.
-  if (init.logDir) process.env['WATCHTOWER_LOG_DIR'] = init.logDir
 
   const ctx = new DbWorkerContext(init, event => port.postMessage(event))
 

@@ -191,14 +191,6 @@ const api = {
     ipcRenderer.on('coach:event', listener)
     return () => ipcRenderer.removeListener('coach:event', listener)
   },
-  /** Operational log tripwire forward (spec #126, ticket #130): the sandboxed
-   * renderer never writes files — malformed-broadcast notices travel over IPC
-   * for main to record with label and location only. Fire-and-forget. */
-  reportTripwire: (label: string, location: string): void => {
-    try {
-      ipcRenderer.send('operational-log:renderer', { label, location })
-    } catch { /* forwarding must never break rendering */ }
-  },
 }
 
 contextBridge.exposeInMainWorld('api', api)

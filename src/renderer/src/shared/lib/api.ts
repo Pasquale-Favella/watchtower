@@ -122,18 +122,16 @@ export async function fetchPayload<T>(
 }
 
 /** The subscription-event tripwire (ADR 0005): broadcast channels carry
- * payloads too. A malformed broadcast is dropped and forwarded to the
- * Operational log (ticket #130) with its label and location only — never
- * payload contents — so a bad `scan:progress` or `currency:changed` can't
- * paint garbage, it just falls back to the last good value. */
+ * payloads too. A malformed broadcast is dropped and logged, never applied to
+ * renderer state — a bad `scan:progress` or `currency:changed` can't paint
+ * garbage, it just falls back to the last good value. */
 export function parseEvent<T>(schema: z.ZodType<T>, label: string, raw: unknown): T | null {
   const parsed = schema.safeParse(raw)
   if (parsed.success) return parsed.data
-  try {
-    if (typeof window !== 'undefined') {
-      (window as unknown as { api?: { reportTripwire?: (label: string, location: string) => void } }).api?.reportTripwire?.(label, 'broadcast')
-    }
-  } catch { /* forwarding must never break rendering */ }
+  const issue = parsed.error.issues[0]
+  const where = issue && issue.path.length ? issue.path.join('.') : 'payload'
+  const detail = issue ? issue.message : 'does not match the expected shape'
+  console.error(`Invalid ${label} event (${where}: ${detail})`)
   return null
 }
 

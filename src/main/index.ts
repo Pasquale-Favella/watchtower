@@ -10,8 +10,7 @@ import {
   type SkillsThresholds,
 } from '../shared/schemas/skills.js'
 import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
-import { closeOperationalLog, initOperationalLog, safeRecordOperationalLog } from './operational-log.js'
-import { operationalLogCodeFor } from '../shared/operational-log.js'
+import { closeOperationalLog, initOperationalLog, logCodeFor, logIpcError, safeLogOperationalEvent } from './operational-log.js'
 import type { ExportResult } from './export.js'
 import type { OverviewScope } from './overview.js'
 import type { ComparePair } from './compare-view.js'
@@ -56,18 +55,13 @@ function broadcast(channel: string, data?: unknown): void {
   }
 }
 
-/** IPC invoke wrapper (spec #126 user story 5): failures record only the
- * operation name and a short error code — never arguments. Rethrows so the
- * renderer's tripwire behavior is unchanged. */
+/** Single IPC failure seam: operation name + short code only, never args. */
 function handleLogged<T extends unknown[]>(channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown): void {
-  ipcMain.handle(channel, async (event, ...args) => {
+  handleLogged(channel, async (event, ...args) => {
     try {
       return await listener(event, ...(args as T))
     } catch (err) {
-      safeRecordOperationalLog('main', 'ipc.error', {
-        op: channel,
-        code: operationalLogCodeFor(err, 'failed'),
-      })
+      logIpcError(channel, err)
       throw err
     }
   })
@@ -102,18 +96,12 @@ async function ledgerMcpStatus(db: DbWorkerClient): Promise<LedgerMcpStatus> {
 
 /** Relays db-worker broadcasts to windows. Manual-scan lifecycle events go to
  * the requesting window only (today's ⌘R semantics); everything else fans out
- * to every window. Operational log records from the worker are written to the
- * single main-owned file, never relayed to windows. */
+ * to every window. */
 function relayWorkerEvents(db: DbWorkerClient): void {
   db.onEvent(event => {
     // Boot handshake (`ready` / `init-error`) is consumed by the client
     // itself — never relayed to windows.
     if (event.event === 'ready' || event.event === 'init-error') return
-    // Forwarded Operational log records (ticket #128): single-file write.
-    if (event.event === 'operational-log') {
-      safeRecordOperationalLog(event.record.context, event.record.event, event.record)
-      return
-    }
     switch (event.event) {
       case 'scan:progress':
         if (event.manual) {
@@ -159,19 +147,6 @@ function registerIpc(db: DbWorkerClient): void {
     // Fire-and-forget like the renderer's send: a dead worker must never turn
     // an abort into an unhandled rejection here.
     void db.request('scan:abort').catch(() => {})
-  })
-
-  // Renderer tripwire forward (ticket #130): label and location only — never
-  // payload contents. Malformed forwards are dropped, never logged.
-  ipcMain.on('operational-log:renderer', (_event, raw: unknown) => {
-    const payload = raw as { label?: unknown; location?: unknown } | null
-    if (!payload || typeof payload !== 'object') return
-    if (typeof payload.label !== 'string' || !payload.label.trim()) return
-    if (typeof payload.location !== 'string' || !payload.location.trim()) return
-    safeRecordOperationalLog('renderer', 'renderer.tripwire', {
-      label: payload.label,
-      location: payload.location,
-    })
   })
 
   handleLogged('cadence:get', () => db.request('cadence:get'))
@@ -441,16 +416,13 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   const dataDir = app.getPath('userData')
-  // Operational log first (ticket #127): the single main-owned file under
-  // `<userData>/logs`. Packaged builds write info only; development writes
-  // debug plus a console mirror.
   try {
     await initOperationalLog({ logDir: join(dataDir, 'logs'), isPackaged: app.isPackaged })
   } catch { /* logging must never break boot */ }
   // The data plane boots first: the worker owns the ledger from here on —
   // requests simply queue on its port until its synchronous init finishes.
   const db = new DbWorkerClient(
-    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir: join(dataDir, 'cache'), logDir: join(dataDir, 'logs') },
+    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir: join(dataDir, 'cache') },
     join(__dirname, 'db-worker.js'),
   )
   relayWorkerEvents(db)
@@ -464,15 +436,14 @@ app.whenReady().then(async () => {
   // connection. A failed prewarm is non-fatal; the next Coach run or an
   // explicit copy-config action can retry on demand.
   void db.ready.then(async () => {
-    safeRecordOperationalLog('worker', 'worker.ready', {})
+    safeLogOperationalEvent('info', 'boot.ready', {})
     const startupMode = await db.request('ledger-mcp:startup:get') as LedgerMcpStartupMode
     if (startupMode === 'at-launch') {
       await sidecarPool.connection(ledgerMcpContext())
     }
   }).catch(err => {
-    safeRecordOperationalLog('sidecar', 'sidecar.boot-error', {
-      code: operationalLogCodeFor(err, 'prewarm-failed'),
-      message: err instanceof Error ? err.message : String(err),
+    safeLogOperationalEvent('error', 'boot.error', {
+      code: logCodeFor(err, 'prewarm-failed'),
     })
   })
 
@@ -481,10 +452,7 @@ app.whenReady().then(async () => {
   // heal — surface it once and quit instead of serving IPC errors forever.
   // The worker is never respawned in that case (client policy).
   void db.ready.then(undefined, err => {
-    safeRecordOperationalLog('worker', 'worker.init-error', {
-      code: operationalLogCodeFor(err, 'boot-failed'),
-      message: err instanceof Error ? err.message : String(err),
-    })
+    safeLogOperationalEvent('error', 'boot.error', { code: logCodeFor(err, 'boot-failed') })
     dialog.showErrorBox(
       'Watchtower',
       `The local data layer failed to start and the app cannot continue.\n\n${err instanceof Error ? err.message : String(err)}`,
