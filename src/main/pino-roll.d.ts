@@ -1,20 +1,18 @@
 /**
- * Minimal typings for `pino-roll` (v4 ships no declarations). Covers only the
- * options this repo's Operational log sink uses; anything else passes through
- * the index signature to the builder untouched.
+ * Minimal typings for `pino-roll`: v4 ships no declarations (and DefinitelyTyped
+ * has none), so this shim declares the sliver the Operational log sink uses.
+ * It must stay visible to BOTH tsconfigs: the web program reaches
+ * main/operational-log.ts through the preload's main imports (hence the extra
+ * include in tsconfig.web.json) — an incorporates-it-in-the-importer attempt
+ * fails with TS2665.
  */
 declare module 'pino-roll' {
   export interface PinoRollOptions {
     file: string | (() => string)
     size?: string | number
-    frequency?: string | number
-    extension?: string
-    symlink?: boolean
-    dateFormat?: string
     mkdir?: boolean
     sync?: boolean
     limit?: { count?: number; removeOtherLogFiles?: boolean }
-    [key: string]: unknown
   }
 
   export interface RollStream extends NodeJS.WritableStream {

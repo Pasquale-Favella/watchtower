@@ -19,6 +19,9 @@
   "include": [
     "src/renderer/src/**/*",
     "src/preload/index.d.ts",
-    "src/shared/**/*"
+    "src/shared/**/*",
+    // Ambient pino-roll typings: the web program reaches main/operational-log.ts
+    // through the preload's main imports, so the declaration must be visible here too.
+    "src/main/pino-roll.d.ts"
   ]
 }
