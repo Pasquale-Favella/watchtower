@@ -507,9 +507,9 @@ export interface AgentsIpcSources {
  *  for the app's quit path. `dismissals` bridges the not-a-skill store. */
 export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Promise<void> } {
   const { dismissals, appPath, ledgerMcpServer, onOperationalLog } = sources
-  const logIpcError = (op: string, err: unknown): void => {
+  function logIpcError(op: string, err: unknown): void {
     try { onOperationalLog?.('ipc.error', { op, code: operationalLogCodeFor(err, 'failed') }) } catch { /* best effort */ }
-  };
+  }
   let runtimePromise: Promise<HarnessRuntime> | null = null
   const runner = createCoachRunner({
     // The SDK is ESM and heavy; boot stays independent of it (the seam's

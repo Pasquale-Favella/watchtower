@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
 import { buildOperationalLogRecord, isOperationalLogRecord } from '../src/shared/operational-log.js'
+import type { OperationalLogContext, OperationalLogEvent, OperationalLogFields } from '../src/shared/operational-log.js'
 import {
   closeOperationalLog,
   initOperationalLog,
@@ -388,7 +389,7 @@ describe('Sidecar forwarding with readiness protection (ticket #129)', () => {
 })
 
 describe('Renderer tripwire + Harness and update lifecycle (ticket #130)', () => {
-  it('forwards tripwire rejections with label and location only — no payload contents', async () => {
+  it('forwards tripwire rejections with label and location only — no payload contents', () => {
     const forwarded: unknown[] = []
     ;(globalThis as { window?: unknown }).window = {
       api: { reportTripwire: (label: string, location: string) => { forwarded.push({ label, location }) } },
@@ -453,7 +454,7 @@ describe('Ad-hoc write sweep + single-file integrate-and-verify (ticket #131)', 
     const here = dirname(fileURLToPath(import.meta.url))
     const root = join(here, '..', 'src')
     const files: string[] = []
-    const walk = (dir: string): void => {
+    function walk(dir: string): void {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = join(dir, entry.name)
         if (entry.isDirectory()) walk(full)
@@ -482,7 +483,7 @@ describe('Ad-hoc write sweep + single-file integrate-and-verify (ticket #131)', 
     }
     try {
       await initOperationalLog({ logDir, isPackaged: true })
-      const entries: Array<[Parameters<typeof buildOperationalLogRecord>[0], Parameters<typeof buildOperationalLogRecord>[1], Record<string, unknown>]> = [
+      const entries: Array<[OperationalLogContext, OperationalLogEvent, OperationalLogFields & Record<string, unknown>]> = [
         ['main', 'scan.finish', { count: 1, ...secrets }],
         ['worker', 'file.error', { provider: 'claude', file: secrets.fullPath, code: 'read-failed', ...secrets }],
         ['main', 'ipc.error', { op: 'overview:query', code: 'failed', ...secrets }],
@@ -492,13 +493,13 @@ describe('Ad-hoc write sweep + single-file integrate-and-verify (ticket #131)', 
         ['renderer', 'renderer.tripwire', { label: 'scan status', location: 'broadcast', ...secrets }],
       ]
       for (const [context, event, fields] of entries) {
-        const record = buildOperationalLogRecord(context, event, fields as never)
+        const record = buildOperationalLogRecord(context, event, fields)
         const text = JSON.stringify(record)
         for (const secret of Object.values(secrets)) {
           if (secret === secrets.fullPath) continue
           expect(text).not.toContain(secret)
         }
-        recordOperationalLog(context, event, fields as never)
+        recordOperationalLog(context, event, fields)
       }
       const parsedSidecar = parseSidecarStderrLine(
         JSON.stringify({ level: 40, method: 'POST', route: '/mcp', body: secrets.requestBody, token: secrets.token }),

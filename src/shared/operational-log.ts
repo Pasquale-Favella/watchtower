@@ -19,24 +19,28 @@ export type OperationalLogContext = 'main' | 'worker' | 'sidecar' | 'renderer'
 
 export type OperationalLogLevel = 'debug' | 'info' | 'warn' | 'error'
 
-/** Minimal event allowlist only — no per-file success chatter. */
-export type OperationalLogEvent =
-  | 'worker.ready'
-  | 'worker.init-error'
-  | 'scan.start'
-  | 'scan.finish'
-  | 'scan.abort'
-  | 'file.error'
-  | 'ipc.error'
-  | 'sidecar.boot-error'
-  | 'sidecar.health-failure'
-  | 'sidecar.stderr'
-  | 'ledger-mcp.request-error'
-  | 'harness.start'
-  | 'harness.finish'
-  | 'harness.error'
-  | 'updates.offline'
-  | 'renderer.tripwire'
+/** Minimal event allowlist only — no per-file success chatter. Single source
+ * for the event union and the runtime guard below: add an event once here. */
+const OPERATIONAL_LOG_EVENTS = [
+  'worker.ready',
+  'worker.init-error',
+  'scan.start',
+  'scan.finish',
+  'scan.abort',
+  'file.error',
+  'ipc.error',
+  'sidecar.boot-error',
+  'sidecar.health-failure',
+  'sidecar.stderr',
+  'ledger-mcp.request-error',
+  'harness.start',
+  'harness.finish',
+  'harness.error',
+  'updates.offline',
+  'renderer.tripwire',
+] as const
+
+export type OperationalLogEvent = typeof OPERATIONAL_LOG_EVENTS[number]
 
 export interface OperationalLogPerProviderUnparsed {
   provider: string
@@ -122,6 +126,13 @@ export function operationalLogLevelFor(event: OperationalLogEvent): OperationalL
   }
 }
 
+/** Type guard for per-provider unparsed tallies arriving in scan metadata. */
+function isUnparsedRow(row: unknown): row is OperationalLogPerProviderUnparsed {
+  if (!row || typeof row !== 'object') return false
+  const candidate = row as { provider?: unknown; unparsed?: unknown }
+  return typeof candidate.provider === 'string' && typeof candidate.unparsed === 'number'
+}
+
 /**
  * Builds one Operational log record. Only allowlisted fields survive;
  * `file` is reduced to its basename; short strings are truncated.
@@ -134,12 +145,7 @@ export function buildOperationalLogRecord(
 ): OperationalLogRecord {
   const unparsed = Array.isArray(fields.unparsed)
     ? fields.unparsed
-        .filter(
-          (row): row is OperationalLogPerProviderUnparsed =>
-            !!row && typeof row === 'object' &&
-            typeof (row as { provider?: unknown }).provider === 'string' &&
-            typeof (row as { unparsed?: unknown }).unparsed === 'number',
-        )
+        .filter(isUnparsedRow)
         .map(row => ({
           provider: truncate(row.provider.trim(), MAX_SHORT),
           unparsed: Math.max(0, Math.floor(row.unparsed)),
@@ -175,29 +181,17 @@ export function buildOperationalLogRecord(
  * the fallback so message text can never become a code. */
 export function operationalLogCodeFor(err: unknown, fallback = 'unknown'): string {
   if (err instanceof Error && err.name && err.name !== 'Error') {
-    return truncate(err.name.replace(/Error$/, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || fallback, MAX_SHORT)
+    const slug = err.name
+      .replace(/Error$/, '')
+      .replace(/[^a-z0-9]+/gi, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase()
+    return truncate(slug || fallback, MAX_SHORT)
   }
   return fallback
 }
 
-const RECORD_EVENTS: ReadonlySet<string> = new Set([
-  'worker.ready',
-  'worker.init-error',
-  'scan.start',
-  'scan.finish',
-  'scan.abort',
-  'file.error',
-  'ipc.error',
-  'sidecar.boot-error',
-  'sidecar.health-failure',
-  'sidecar.stderr',
-  'ledger-mcp.request-error',
-  'harness.start',
-  'harness.finish',
-  'harness.error',
-  'updates.offline',
-  'renderer.tripwire',
-])
+const RECORD_EVENTS: ReadonlySet<string> = new Set(OPERATIONAL_LOG_EVENTS)
 
 export function isOperationalLogRecord(raw: unknown): raw is OperationalLogRecord {
   if (!raw || typeof raw !== 'object') return false
