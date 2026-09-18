@@ -34,7 +34,7 @@ function readLines(logDir: string): string[] {
 }
 
 describe('Operational log main sink (pino, slice 1)', () => {
-  it('writes parseable JSON lines with level, event and fields', async () => {
+  it('writes parseable JSON lines with level, context, event and fields', async () => {
     const logDir = tempLogDir()
     await initOperationalLog({ logDir, isPackaged: true })
     logOperationalEvent('info', 'boot.ready', { op: 'test' })
@@ -43,27 +43,36 @@ describe('Operational log main sink (pino, slice 1)', () => {
     expect(lines).toHaveLength(1)
     const parsed = JSON.parse(lines[0]!) as Record<string, unknown>
     expect(parsed['level']).toBe('info')
+    expect(parsed['context']).toBe('main')
     expect(parsed['event']).toBe('boot.ready')
     expect(parsed['op']).toBe('test')
     expect(parsed['time']).toBeDefined()
   })
 
-  it('redacts prompts, tokens and bodies via pino', async () => {
+  it('drops non-allowlisted fields before emission (prompts, paths, facts, tokens)', async () => {
     const logDir = tempLogDir()
     await initOperationalLog({ logDir, isPackaged: true })
     logOperationalEvent('info', 'test', {
+      op: 'test',
       prompt: 'secret prompt body',
+      filePath: '/Users/alice/secret.txt',
+      ledgerFact: 'total spend $456.78',
       token: 'Bearer sk-secret',
-      body: 'request bytes',
+      body: { prompt: 'nested bytes' },
     })
     closeOperationalLog()
     const lines = readLines(logDir)
     expect(lines).toHaveLength(1)
     const text = lines[0]!
     expect(text).not.toContain('secret prompt body')
+    expect(text).not.toContain('alice')
+    expect(text).not.toContain('456.78')
     expect(text).not.toContain('sk-secret')
-    expect(text).not.toContain('request bytes')
-    expect(text).toContain('[Redacted]')
+    const parsed = JSON.parse(text) as Record<string, unknown>
+    expect(parsed['op']).toBe('test')
+    expect(parsed).not.toHaveProperty('prompt')
+    expect(parsed).not.toHaveProperty('filePath')
+    expect(parsed).not.toHaveProperty('ledgerFact')
   })
 
   it('drops debug in packaged builds but keeps it in development', async () => {
@@ -90,6 +99,7 @@ describe('Operational log main sink (pino, slice 1)', () => {
     const lines = readLines(logDir)
     expect(lines).toHaveLength(1)
     const parsed = JSON.parse(lines[0]!) as Record<string, unknown>
+    expect(parsed['context']).toBe('main')
     expect(parsed['event']).toBe('ipc.error')
     expect(parsed['op']).toBe('overview:query')
     expect(parsed['code']).toBe('type')

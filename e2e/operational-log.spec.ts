@@ -34,6 +34,7 @@ test('operational log records boot and IPC failures as JSON lines', async () => 
       { timeout: 60_000 },
     ).toBe(1)
     expect(readRecords().find(record => record['event'] === 'boot.ready')?.['level']).toBe('info')
+    expect(readRecords().find(record => record['event'] === 'boot.ready')?.['context']).toBe('main')
 
     // Force one IPC failure with an invalid startup mode. The rejection is
     // expected — the record must carry op + code only, never the message.
