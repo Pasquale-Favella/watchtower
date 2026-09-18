@@ -191,39 +191,17 @@ export function operationalLogCodeFor(err: unknown, fallback = 'unknown'): strin
   return fallback
 }
 
-const RECORD_EVENTS: ReadonlySet<string> = new Set(OPERATIONAL_LOG_EVENTS)
-
-export function isOperationalLogRecord(raw: unknown): raw is OperationalLogRecord {
-  if (!raw || typeof raw !== 'object') return false
-  const msg = raw as Record<string, unknown>
-  return (
-    typeof msg['timestamp'] === 'string' &&
-    typeof msg['level'] === 'string' &&
-    (msg['context'] === 'main' || msg['context'] === 'worker' || msg['context'] === 'sidecar' || msg['context'] === 'renderer') &&
-    typeof msg['event'] === 'string' &&
-    RECORD_EVENTS.has(msg['event'] as string)
-  )
-}
-
 /** Shared forwarder signature: one allowlisted record per call. Reused by the
  * sidecar pool, the Harness runner, and the update checker so the tuple never
  * drifts per call site. */
 export type OperationalLogForwarder = (event: OperationalLogEvent, fields?: OperationalLogFields) => void
 
-/** One sidecar stderr line, picked back out of the JSON pino writes there:
- * method and route only (no bodies, tokens, or ledger facts). Pure — no
- * `node:` imports, so every bundle (including the sidecar entry) shares it. */
-export interface ParsedSidecarLog {
-  event: OperationalLogEvent
-  method?: string
-  route?: string
-  code?: string
-}
-
-/** Parses one sidecar stderr line. Only JSON lines carrying a method or route
- * qualify — preamble and plain-text lines (Node warnings) return null and
- * become truncated `sidecar.stderr` notes at the call site, never failures. */
-export function parseSidecarStderrLine(line: string): ParsedSidecarLog | null {
+/** Parses one sidecar stderr line back out of the JSON pino writes there,
+ * picking method and route only (no bodies, tokens, or ledger facts). Pure —
+ * no `node:` imports, so every bundle (including the sidecar entry) shares
+ * it. Preamble and plain-text lines (Node warnings) return null and become
+ * truncated `sidecar.stderr` notes at the call site, never failures. */
+export function parseSidecarStderrLine(line: string): OperationalLogFields | null {
   let parsed: Record<string, unknown>
   try {
     parsed = JSON.parse(line) as Record<string, unknown>
@@ -231,7 +209,7 @@ export function parseSidecarStderrLine(line: string): ParsedSidecarLog | null {
     return null
   }
   if (!parsed || typeof parsed !== 'object') return null
-  const out: ParsedSidecarLog = { event: 'ledger-mcp.request-error' }
+  const out: OperationalLogFields = {}
   for (const key of ['method', 'route', 'code'] as const) {
     const value = parsed[key]
     if (typeof value === 'string' && value.trim()) {

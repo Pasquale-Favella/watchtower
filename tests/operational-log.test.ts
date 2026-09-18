@@ -8,7 +8,7 @@ import type { ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
-import { buildOperationalLogRecord, isOperationalLogRecord } from '../src/shared/operational-log.js'
+import { buildOperationalLogRecord } from '../src/shared/operational-log.js'
 import type { OperationalLogContext, OperationalLogEvent, OperationalLogFields } from '../src/shared/operational-log.js'
 import {
   closeOperationalLog,
@@ -257,7 +257,9 @@ describe('Worker scan-lifecycle forwarding (ticket #128)', () => {
     const finish = records.find(r => r['event'] === 'scan.finish')!
     expect(finish['unparsed']).toEqual([{ provider: 'claude', unparsed: 4 }])
     for (const r of records) {
-      expect(isOperationalLogRecord({ timestamp: new Date().toISOString(), level: 'info', context: 'worker', ...r })).toBe(true)
+      expect(r['context']).toBe('worker')
+      expect(typeof r['timestamp']).toBe('string')
+      expect(typeof r['level']).toBe('string')
     }
   })
 
@@ -315,7 +317,7 @@ describe('Sidecar forwarding with readiness protection (ticket #129)', () => {
     const parsed = parseSidecarStderrLine(
       '{"level":40,"method":"POST","route":"/mcp","code":"internal"}',
     )
-    expect(parsed).toMatchObject({ event: 'ledger-mcp.request-error', method: 'POST', route: '/mcp' })
+    expect(parsed).toEqual({ method: 'POST', route: '/mcp', code: 'internal' })
   })
 
   it('drops bodies, tokens and ledger facts from stderr lines and ignores preamble', () => {

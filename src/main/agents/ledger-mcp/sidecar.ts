@@ -31,10 +31,6 @@ export interface StartedLedgerMcpHttp {
   checkHealth: () => Promise<boolean>
 }
 
-/** Operational log forwarder injected by the composition root (main/index).
- * Defaults to a no-op so unit tests without a logger stay silent. */
-export type SidecarLogFn = OperationalLogForwarder
-
 const READY_TIMEOUT_MS = 10_000
 const READY_POLL_MS = 100
 const READY_PREFIX = 'READY '
@@ -149,7 +145,7 @@ function sidecarEnv(httpCtx: { dbPath: string; token: string }): Record<string, 
 
 export async function startLedgerMcpHttp(
   ctx: LedgerMcpSpawnContext,
-  deps: { onOperationalLog?: SidecarLogFn } = {},
+  deps: { onOperationalLog?: OperationalLogForwarder } = {},
 ): Promise<StartedLedgerMcpHttp> {
   const onLog = deps.onOperationalLog ?? (() => {})
   const token = randomUUID()
@@ -171,7 +167,7 @@ export async function startLedgerMcpHttp(
       if (!trimmed) return
       const parsed = parseSidecarStderrLine(trimmed)
       try {
-        if (parsed) onLog(parsed.event, { method: parsed.method, route: parsed.route, code: parsed.code })
+        if (parsed) onLog('ledger-mcp.request-error', parsed)
         else onLog('sidecar.stderr', { message: trimmed.slice(0, 500) })
       } catch { /* logging must never break the sidecar */ }
     })
