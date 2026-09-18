@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { RefreshCw, PanelLeft } from 'lucide-react'
 
 import {
+  Command,
   CommandDialog,
   CommandEmpty,
   CommandGroup,
@@ -104,17 +105,21 @@ export function CommandPalette(): ReactElement {
 
   return (
     <CommandDialog open={open} onOpenChange={setOpen}>
-      <CommandInput placeholder="Go to a section or run an action..." />
-      <CommandList>
-        <CommandEmpty>No matching section or action.</CommandEmpty>
-        <CommandGroup heading="Sections">
-          {SECTION_ROWS.map(renderRow)}
-        </CommandGroup>
-        <CommandSeparator />
-        <CommandGroup heading="Actions">
-          {ACTION_ROWS.map(renderRow)}
-        </CommandGroup>
-      </CommandList>
+      {/* Command owns the cmdk store — every sub-component below reads it
+        from context and throws without this ancestor. */}
+      <Command>
+        <CommandInput placeholder="Go to a section or run an action..." />
+        <CommandList>
+          <CommandEmpty>No matching section or action.</CommandEmpty>
+          <CommandGroup heading="Sections">
+            {SECTION_ROWS.map(renderRow)}
+          </CommandGroup>
+          <CommandSeparator />
+          <CommandGroup heading="Actions">
+            {ACTION_ROWS.map(renderRow)}
+          </CommandGroup>
+        </CommandList>
+      </Command>
     </CommandDialog>
   )
 }
