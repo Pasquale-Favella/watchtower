@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { LedgerStore } from '../../store/ledger.js'
 import { hasBearerAuthorization } from './auth.js'
 import { createLedgerMcpServer } from './server.js'
-import { fileErrorCode } from '../../pipeline/file-errors.js'
+import { reportSidecarRequestFailure } from './sidecar-log.js'
 
 /**
  * The loopback-HTTP face of the `watchtower-ledger` MCP server: the SAME
@@ -23,19 +23,6 @@ import { fileErrorCode } from '../../pipeline/file-errors.js'
 /** Tool args are tiny scope objects — 1MB is a generous ceiling that still
  *  bounds a neighbour process stuffing the request pipe. */
 const MAX_BODY_BYTES = 1_000_000
-
-/** One JSON line to stderr per failed request (#129 protocol): kind +
- * method + route + code only (the shared `fileErrorCode`, never the error
- * object — it can carry bodies and tokens). Stdout stays reserved for the
- * READY announcement, and emitting never breaks serving. */
-function reportRequestFailure(method: string | undefined, route: string, err: unknown): void {
-  try {
-    const record: Record<string, string> = { kind: 'request', code: fileErrorCode(err, 'failed') }
-    if (method) record['method'] = method
-    if (route) record['route'] = route
-    process.stderr.write(`${JSON.stringify(record)}\n`)
-  } catch { /* serving must never break on logging */ }
-}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body)
@@ -97,7 +84,7 @@ export function createLedgerMcpHttpHandler(
       await createLedgerMcpServer(store).connect(transport)
       await transport.handleRequest(req, res, body)
     } catch (error) {
-      reportRequestFailure(req.method, pathname, error)
+      reportSidecarRequestFailure(req.method, pathname, error)
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' })
     }
   }

@@ -6,6 +6,7 @@ import { LedgerStore } from '../../store/ledger.js'
 import { createLedgerMcpHttpHandler } from './http-server.js'
 import { createLedgerMcpServer } from './server.js'
 import { readContext, readHttpContext, type LedgerMcpContext, type LedgerMcpHttpContext } from './spawn-env.js'
+import { reportSidecarBootFailure } from './sidecar-log.js'
 
 /**
  * The `watchtower-ledger` MCP server CLI entry (map 53, ADR 0020). The harness
@@ -30,20 +31,9 @@ function openStoreReadOnly(dbPath: string): LedgerStore {
   try {
     return new LedgerStore(dbPath, { readOnly: true })
   } catch (err) {
-    reportBootFailure((err as NodeJS.ErrnoException | undefined)?.code ?? 'db-open-failed')
+    reportSidecarBootFailure((err as NodeJS.ErrnoException | undefined)?.code ?? 'db-open-failed')
     process.exit(1)
   }
-}
-
-/** One JSON line to stderr per boot failure (#129 protocol): op + short code
- * only — never messages (they embed paths). The spawner files it via the
- * shared seam; stdout stays reserved for the READY announcement. Emitting
- * never breaks the exit that follows. */
-function reportBootFailure(code: unknown): void {
-  try {
-    const short = typeof code === 'string' && code.trim() ? code : 'failed'
-    process.stderr.write(`${JSON.stringify({ kind: 'boot', op: 'ledger-mcp-boot', code: short })}\n`)
-  } catch { /* exiting anyway */ }
 }
 
 /** The parent is the only thing that should ever outlive this process: if
@@ -77,7 +67,7 @@ async function serveHttp(): Promise<void> {
   try {
     ctx = readHttpContext()
   } catch {
-    reportBootFailure('bad-context')
+    reportSidecarBootFailure('bad-context')
     process.exit(1)
     return
   }
@@ -111,7 +101,7 @@ async function main(): Promise<void> {
   try {
     ctx = readContext()
   } catch {
-    reportBootFailure('bad-context')
+    reportSidecarBootFailure('bad-context')
     process.exit(1)
     return
   }

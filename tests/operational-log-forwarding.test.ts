@@ -76,7 +76,7 @@ describe('file-error outbox (#128)', () => {
 
 describe('sidecar stderr protocol (#129)', () => {
   it('parses a request-failure line to kind + method + route + code', () => {
-    expect(parseSidecarLogLine(JSON.stringify({ kind: 'request', method: 'POST', route: '/mcp', code: 'failed' }))).toEqual({
+    expect(parseSidecarLogLine(JSON.stringify({ level: 50, time: 0, kind: 'request', method: 'POST', route: '/mcp', code: 'failed' }))).toEqual({
       kind: 'request',
       method: 'POST',
       route: '/mcp',
@@ -85,7 +85,7 @@ describe('sidecar stderr protocol (#129)', () => {
   })
 
   it('parses a boot-failure line to kind + op + code', () => {
-    expect(parseSidecarLogLine(JSON.stringify({ kind: 'boot', op: 'ledger-mcp-boot', code: 'db-open-failed' }))).toEqual({
+    expect(parseSidecarLogLine(JSON.stringify({ level: 50, time: 0, kind: 'boot', op: 'ledger-mcp-boot', code: 'db-open-failed' }))).toEqual({
       kind: 'boot',
       op: 'ledger-mcp-boot',
       code: 'db-open-failed',
