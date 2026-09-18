@@ -148,6 +148,11 @@ const api = {
   refreshPricing: (): Promise<PricingRefreshResult> => ipcRenderer.invoke('pricing:refresh'),
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
+  /** Renderer tripwire forward (#130): a dropped subscription payload is
+   * filed with its label + location only — never contents. Fire-and-forget
+   * from the renderer's side; a rejected forward never breaks rendering. */
+  notifyNotice: (label: string, location: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('log:notice', { label, location }),
   /** The active display currency (ADR 0009) — the renderer's only FX read
    * path; it never calls Frankfurter directly. */
   getCurrency: (): Promise<ActiveCurrency> => ipcRenderer.invoke('currency:get'),

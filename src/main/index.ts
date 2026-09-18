@@ -26,6 +26,7 @@ import {
   type LedgerMcpStartupMode,
   type LedgerMcpStatus,
 } from '../shared/schemas/ledger-mcp.js'
+import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
 
 /**
  * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the
@@ -125,11 +126,26 @@ function relayWorkerEvents(db: DbWorkerClient): void {
       case 'currency:changed':
         broadcast('currency:changed', event.currency)
         break
+      case 'oplog':
+        // Worker Operational-log forward (#128): filed via the shared seam
+        // with the worker context — never relayed to windows.
+        safeLogOperationalEvent(event.level, event.logEvent, event.fields, 'worker')
+        break
     }
   })
 }
 
 function registerIpc(db: DbWorkerClient): void {
+  /** Renderer tripwire forward (#130): a dropped subscription payload lands
+   * here with its label + location only — never contents. Zod-validated and
+   * length-capped at the schema; a malformed notice is itself an IPC error. */
+  handleLogged('log:notice', (notice: unknown): { ok: true } => {
+    const parsed = rendererNoticeSchema.safeParse(notice)
+    if (!parsed.success) throw new Error('invalid renderer notice')
+    safeLogOperationalEvent('warn', 'renderer.notice', { label: parsed.data.label, location: parsed.data.location }, 'renderer')
+    return { ok: true }
+  })
+
   handleLogged('scan:start', async (event, options?: { provider?: string }) => {
     // First-come-wins: a concurrent second caller gets `alreadyRunning` from
     // the worker, so stealing the slot would misroute the live scan's
@@ -437,6 +453,7 @@ app.whenReady().then(async () => {
   // explicit copy-config action can retry on demand.
   void db.ready.then(async () => {
     safeLogOperationalEvent('info', 'boot.ready', {})
+    safeLogOperationalEvent('info', 'worker.ready', {}, 'worker')
     const startupMode = await db.request('ledger-mcp:startup:get') as LedgerMcpStartupMode
     if (startupMode === 'at-launch') {
       await sidecarPool.connection(ledgerMcpContext())
@@ -453,6 +470,7 @@ app.whenReady().then(async () => {
   // The worker is never respawned in that case (client policy).
   void db.ready.then(undefined, err => {
     safeLogOperationalEvent('error', 'boot.error', { code: logCodeFor(err, 'boot-failed') })
+    safeLogOperationalEvent('error', 'worker.error', { op: 'worker', code: logCodeFor(err, 'boot-failed') }, 'worker')
     dialog.showErrorBox(
       'Watchtower',
       `The local data layer failed to start and the app cannot continue.\n\n${err instanceof Error ? err.message : String(err)}`,

@@ -19,10 +19,10 @@ export function parseOrSkip<T>(
   const result = schema.safeParse(value)
   if (result.success) return result.data
   tally.count++
-  const issues = result.error.issues
-    .slice(0, 3)
-    .map(i => `${i.path.join('.') || '(root)'}: ${i.message}`)
-    .join('; ')
-  process.stderr.write(`watchtower: unparsed ${context}: ${issues}\n`)
+  // No console output: the tally aggregates into the scan's per-provider
+  // unparsed counts, which the Operational log files as `scan.provider`
+  // records — the full context (which embeds source paths) never leaves the
+  // scan, and this module stays renderer-safe (no `process` access).
+  void context
   return null
 }

@@ -48,6 +48,16 @@ export type DbWorkerEvent =
   | { event: 'scan:idle' }
   | { event: 'config:changed' }
   | { event: 'currency:changed'; currency: unknown }
+  | {
+      /** Operational-log forward (#128): an allowlisted record for main to
+       * file via the shared seam. `fields` carries short strings and counts
+       * only (provider names, basenames, codes) — main stamps
+       * `context: 'worker'` and drops anything outside the allowlist. */
+      event: 'oplog'
+      level: 'debug' | 'info' | 'warn' | 'error'
+      logEvent: string
+      fields: Record<string, string | number>
+    }
 
 /** Pure-read ops: safe to coalesce when the same op+args is already in
  * flight (double-mounts, tick+mount races). Everything else — scans, writes,

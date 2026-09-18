@@ -8,6 +8,7 @@ import { calculateCost } from '../models.js'
 import { openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { normalizeContentBlocks } from '../content-utils.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
+import { reportProviderIssue } from '../file-errors.js'
 import type {
   Provider,
   SessionSource,
@@ -434,7 +435,7 @@ function createParser(
         if (!parsed.recognized) {
           if (!warnedUnrecognizedTranscripts.has(source.path)) {
             warnedUnrecognizedTranscripts.add(source.path)
-            process.stderr.write(`watchtower: skipped ${basename(source.path)}: unrecognized cursor-agent transcript format\n`)
+            reportProviderIssue('cursor-agent', 'format-unrecognized', source.path)
           }
           return
         }

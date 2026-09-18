@@ -3,8 +3,9 @@ import { homedir } from 'os'
 
 import { extractBashCommands } from '../bash-utils.js'
 import { calculateCost, getShortModelName } from '../models.js'
-import { blobToText, getSqliteLoadError, isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { blobToText, isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
+import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
 import { safeNumber } from '../parser.js'
 
@@ -316,7 +317,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
-        process.stderr.write(getSqliteLoadError() + '\n')
+        reportProviderIssue('warp', 'sqlite-unavailable')
         return
       }
 
@@ -327,7 +328,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       try {
         db = openDatabase(dbPath)
       } catch (err) {
-        process.stderr.write(`watchtower: cannot open Warp database: ${err instanceof Error ? err.message : err}\n`)
+        reportProviderIssue('warp', fileErrorCode(err, 'db-open-failed'))
         return
       }
 

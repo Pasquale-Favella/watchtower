@@ -3,8 +3,9 @@ import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
 
 import { calculateCost, getShortModelName } from '../models.js'
-import { isSqliteAvailable, getSqliteLoadError, openDatabase, isSqliteBusyError, type SqliteDatabase } from '../sqlite.js'
+import { isSqliteAvailable, openDatabase, isSqliteBusyError, type SqliteDatabase } from '../sqlite.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import type { ToolCall } from '../types.js'
 
 type HermesSessionRow = {
@@ -296,7 +297,7 @@ async function discoverFromDb(dbPath: string, profile: string): Promise<SessionS
     }))
   } catch (err) {
     if (isSqliteBusyError(err)) throw err
-    process.stderr.write(`watchtower: error querying Hermes database: ${err instanceof Error ? err.message : err}\n`)
+    reportProviderIssue('hermes', fileErrorCode(err, 'db-query-failed'))
     return []
   } finally {
     db.close()
@@ -307,7 +308,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, hermesHome: 
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
-        process.stderr.write(getSqliteLoadError() + '\n')
+        reportProviderIssue('hermes', 'sqlite-unavailable')
         return
       }
 
@@ -319,7 +320,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, hermesHome: 
       try {
         db = openDatabase(decoded.dbPath)
       } catch (err) {
-        process.stderr.write(`watchtower: cannot open Hermes database: ${err instanceof Error ? err.message : err}\n`)
+        reportProviderIssue('hermes', fileErrorCode(err, 'db-open-failed'))
         return
       }
 
@@ -437,7 +438,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, hermesHome: 
         // A transient lock on the live state.db must propagate so the caller
         // retries, not get swallowed into an empty (negatively cached) result.
         if (isSqliteBusyError(err)) throw err
-        process.stderr.write(`watchtower: error querying Hermes database: ${err instanceof Error ? err.message : err}\n`)
+        reportProviderIssue('hermes', fileErrorCode(err, 'db-query-failed'))
         return
       } finally {
         db.close()

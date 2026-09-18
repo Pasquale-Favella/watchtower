@@ -6,6 +6,7 @@ import { createHash } from 'crypto'
 
 import type { Provider, ProbeRoot, SessionSource, SessionParser } from './types.js'
 import { getShortModelName } from '../models.js'
+import { reportProviderIssue } from '../file-errors.js'
 import { readConfig } from '../config.js'
 
 export type ClaudeConfigSource = {
@@ -333,11 +334,8 @@ export const claude: Provider = {
     // silently resolves to nothing on disk.
     const explicitMulti = process.env['CLAUDE_CONFIG_DIRS']
     if (!anyDirReadable && explicitMulti !== undefined && explicitMulti !== '' && configSources.length > 0) {
-      process.stderr.write(
-        `watchtower: CLAUDE_CONFIG_DIRS was set but no listed directory could be read. ` +
-        `Tried: ${configSources.map(s => s.path).join(', ')}. ` +
-        `Use "${pathDelimiter}" as the separator on this platform.\n`,
-      )
+      // User-configured paths never reach any output — provider + code only.
+      reportProviderIssue('claude', 'config-unreadable')
     }
 
     for (const desktopBase of getDesktopSessionsDirs()) {

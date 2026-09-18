@@ -6,15 +6,16 @@ import pretty from 'pino-pretty'
 import buildRoll from 'pino-roll'
 
 /**
- * Main-owned Operational log (spec #126 slice 1, ADR 0029).
+ * Main-owned Operational log (spec #126, ADR 0029).
  *
  * Simple pino tactic: one JSON-lines file under `<userData>/logs`, owned
  * exclusively by main. Pino owns levels, JSON framing, ISO timestamps, and
  * redaction; a minimal field allowlist drops everything else before emission,
- * so prompts, paths, and ledger facts can never reach the file. Worker /
- * sidecar / renderer forwarding (#128-#130) extends the allowlist with the
- * shared seam; this slice covers main boot + IPC failures only
- * (`op` + `code`).
+ * so prompts, paths, and ledger facts can never reach the file. The db-worker
+ * thread (#128) and the ledger-MCP sidecar (#129) forward allowlisted records
+ * to main over their existing channels (worker host events, sidecar stderr);
+ * the sandboxed renderer (#130) forwards tripwire notices over IPC. Main
+ * records everything through this module — nobody else touches the file.
  */
 
 export const OPERATIONAL_LOG_FILE = 'operational.log'
@@ -28,13 +29,39 @@ const DEFAULT_ROLL_COUNT = 2
 export interface OperationalLogOptions {
   logDir: string
   isPackaged: boolean
+  /** Test-only rotation overrides for the #131 quota test; production always
+   * uses the defaults above. */
+  size?: string | number
+  count?: number
 }
 
-/** Allowlisted record fields for the main-only slice: short values only,
- * set by the two producers below. Unknown keys never reach pino. */
-const ALLOWED_FIELDS = new Set(['op', 'code'])
+/** Emitting context for every record (spec #126 record shape). Forwarders
+ * stamp their own; main paths use the default. */
+export type LogContext = 'main' | 'worker' | 'sidecar' | 'renderer'
 
-type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+const LOG_CONTEXTS = new Set<string>(['main', 'worker', 'sidecar', 'renderer'])
+
+/** Allowlisted short-string record fields: identifiers and codes only —
+ * never prompts, bodies, paths, tokens, or ledger facts. Unknown keys never
+ * reach pino. Values are trimmed and capped: forwarders pass identifiers, so
+ * anything longer is a hostile shape, not data. */
+const ALLOWED_STRING_FIELDS = new Set([
+  'op',
+  'code',
+  'provider',
+  'file',
+  'method',
+  'route',
+  'kind',
+  'label',
+  'location',
+  'model',
+])
+
+/** Allowlisted numeric record fields: finite counts only. */
+const ALLOWED_COUNT_FIELDS = new Set(['count', 'ported', 'unparsed', 'failed'])
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
 interface ActiveLog {
   logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>
@@ -75,8 +102,8 @@ export async function initOperationalLog(opts: OperationalLogOptions): Promise<v
   if (active) active.stream.end()
   const stream = await (buildRoll as (o: unknown) => Promise<{ end(): void } & NodeJS.WritableStream>)({
     file: join(opts.logDir, OPERATIONAL_LOG_FILE),
-    size: DEFAULT_ROLL_SIZE,
-    limit: { count: DEFAULT_ROLL_COUNT, removeOtherLogFiles: true },
+    size: opts.size ?? DEFAULT_ROLL_SIZE,
+    limit: { count: opts.count ?? DEFAULT_ROLL_COUNT, removeOtherLogFiles: true },
     mkdir: true,
     sync: true,
   })
@@ -98,12 +125,23 @@ export function logOperationalEvent(
   level: LogLevel,
   event: string,
   fields: Record<string, unknown> = {},
+  context: LogContext = 'main',
 ): void {
   if (!active) return
-  const record: Record<string, unknown> = { context: 'main', event }
-  for (const key of ALLOWED_FIELDS) {
+  const record: Record<string, unknown> = {
+    context: LOG_CONTEXTS.has(context) ? context : 'main',
+    event,
+  }
+  for (const key of ALLOWED_STRING_FIELDS) {
     const value = fields[key]
-    if (typeof value === 'string' && value.trim()) record[key] = value
+    if (typeof value === 'string') {
+      const trimmed = value.trim().slice(0, 200)
+      if (trimmed) record[key] = trimmed
+    }
+  }
+  for (const key of ALLOWED_COUNT_FIELDS) {
+    const value = fields[key]
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) record[key] = value
   }
   active.logger[level](record)
 }
@@ -122,9 +160,9 @@ export function logCodeFor(err: unknown, fallback = 'failed'): string {
 }
 
 /** Never-throwing emit shared by the record helpers below. */
-function emitSafe(level: LogLevel, event: string, fields: Record<string, unknown> = {}): void {
+function emitSafe(level: LogLevel, event: string, fields: Record<string, unknown> = {}, context: LogContext = 'main'): void {
   try {
-    logOperationalEvent(level, event, fields)
+    logOperationalEvent(level, event, fields, context)
   } catch { /* logging must never break callers */ }
 }
 
@@ -133,13 +171,14 @@ export function logIpcError(op: string, err: unknown): void {
   emitSafe('error', 'ipc.error', { op, code: logCodeFor(err) })
 }
 
-/** Never-throwing generic record for boot paths. */
+/** Never-throwing generic record for boot paths and forwarders. */
 export function safeLogOperationalEvent(
   level: LogLevel,
   event: string,
   fields: Record<string, unknown> = {},
+  context: LogContext = 'main',
 ): void {
-  emitSafe(level, event, fields)
+  emitSafe(level, event, fields, context)
 }
 
 export function closeOperationalLog(): void {

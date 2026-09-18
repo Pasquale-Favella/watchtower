@@ -25,6 +25,7 @@ import { rooCode } from './roo-code.js'
 import { zerostack } from './zerostack.js'
 import { grok } from './grok.js'
 import type { Provider, SessionSource } from './types.js'
+import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 
 let antigravityProvider: Provider | null = null
 let antigravityLoadAttempted = false
@@ -241,10 +242,7 @@ export async function safeDiscoverSessions(provider: Provider): Promise<SessionS
   } catch (err) {
     if (!warnedDiscoveryFailures.has(provider.name)) {
       warnedDiscoveryFailures.add(provider.name)
-      const msg = err instanceof Error ? err.message : String(err)
-      process.stderr.write(
-        `watchtower: skipped ${provider.name} discovery after an error: ${msg}\n`
-      )
+      reportProviderIssue(provider.name, fileErrorCode(err, 'discovery-failed'))
     }
     return []
   }

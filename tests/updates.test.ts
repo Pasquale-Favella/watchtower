@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   compareSemver,
   createUpdateChecker,
   fetchReleases,
   pickLatestDesktopVersion,
 } from '../src/main/updates.js'
+import { closeOperationalLog, initOperationalLog } from '../src/main/operational-log.js'
 import { releasePageUrl } from '../src/renderer/src/features/settings/updates.js'
 
 const CURRENT = '0.1.0'
@@ -121,6 +125,28 @@ describe('createUpdateChecker', () => {
     const [first, second] = await Promise.all([slow.check(), slow.check()])
     expect(first).toEqual(second)
     expect(fetches).toBe(1)
+  })
+
+  it('records an offline check as an informational note, never an error (#130)', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'watchtower-updates-log-'))
+    try {
+      await initOperationalLog({ logDir: join(base, 'logs'), isPackaged: true })
+      const broken = createUpdateChecker({
+        currentVersion: CURRENT,
+        fetchReleasesImpl: async () => { throw new Error('offline') },
+      })
+      expect((await broken.check()).updateAvailable).toBe(false)
+      const lines: string[] = []
+      for (const file of readdirSync(join(base, 'logs')).filter(f => f.startsWith('operational'))) {
+        lines.push(...readFileSync(join(base, 'logs', file), 'utf8').split('\n').filter(l => l.trim()))
+      }
+      expect(lines).toHaveLength(1)
+      const parsed = JSON.parse(lines[0]!) as Record<string, unknown>
+      expect(parsed).toMatchObject({ level: 'info', event: 'update.offline', op: 'updates:check', code: 'unavailable' })
+    } finally {
+      try { closeOperationalLog() } catch { /* not initialised */ }
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 })
 

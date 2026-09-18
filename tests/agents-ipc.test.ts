@@ -1,9 +1,10 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createCoachRunner, type CoachRunner, type LedgerMcpAttachment } from '../src/main/agents/ipc.js'
+import { closeOperationalLog, initOperationalLog } from '../src/main/operational-log.js'
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
 import type { HarnessRuntime } from '../src/main/agents/runtime.js'
@@ -706,5 +707,86 @@ describe('Ledger MCP config (map 53) — the self-serve stdio server the agent s
     await runner.start({ ...request, harnessKind: 'ghost' }, () => {})
 
     expect(ledgerMcpServer).not.toHaveBeenCalled()
+  })
+})
+
+describe('Harness lifecycle records (#130) — kind only, never prompts', () => {
+  let base = ''
+
+  function tempLogDir(): string {
+    base = mkdtempSync(join(tmpdir(), 'watchtower-harness-log-'))
+    return join(base, 'logs')
+  }
+
+  function readRecords(): Array<Record<string, unknown>> {
+    const lines: string[] = []
+    for (const file of readdirSync(join(base, 'logs')).filter(f => f.startsWith('operational'))) {
+      const text = readFileSync(join(base, 'logs', file), 'utf8')
+      lines.push(...text.split('\n').filter(l => l.trim().length > 0))
+    }
+    return lines.map(line => JSON.parse(line) as Record<string, unknown>)
+  }
+
+  beforeEach(async () => {
+    await initOperationalLog({ logDir: tempLogDir(), isPackaged: true })
+  })
+
+  afterEach(() => {
+    try { closeOperationalLog() } catch { /* not initialised */ }
+    if (base) rmSync(base, { recursive: true, force: true })
+    base = ''
+  })
+
+  it('records harness start and finish by kind, never the prompt', async () => {
+    const runner = makeRunner(scriptedRuntime([
+      { kind: 'status', state: 'starting' },
+      { kind: 'status', state: 'done' },
+    ]))
+    const result = await runner.start(request, () => {})
+    expect(result).toEqual({ ok: true, runId: expect.any(String) })
+    await vi.waitFor(() => {
+      expect(readRecords().filter(r => r['event'] === 'harness.finish')).toHaveLength(1)
+    })
+    const records = readRecords()
+    expect(records.filter(r => r['event'] === 'harness.start')).toHaveLength(1)
+    expect(records.find(r => r['event'] === 'harness.start')).toMatchObject({ kind: 'claude' })
+    expect(JSON.stringify(records)).not.toContain('Summarise my spend')
+  })
+
+  it('records harness errors with kind and code only', async () => {
+    const failing: HarnessRuntime = {
+      async *run(): AsyncGenerator<CoachEvent> {
+        yield { kind: 'status', state: 'starting' }
+        throw new Error('boom')
+      },
+      async inspect() {
+        return {}
+      },
+    }
+    const runner = makeRunner(failing)
+    const events: CoachEvent[] = []
+    const result = await runner.start(request, (_runId, event) => { events.push(event) })
+    expect(result).toEqual({ ok: true, runId: expect.any(String) })
+    await vi.waitFor(() => {
+      expect(readRecords().filter(r => r['event'] === 'harness.error')).toHaveLength(1)
+    })
+    expect(events).toContainEqual({ kind: 'error', message: 'boom' })
+    const record = readRecords().find(r => r['event'] === 'harness.error')!
+    expect(record['kind']).toBe('claude')
+    expect(record['code']).toBe('failed')
+    expect(JSON.stringify(record)).not.toContain('boom')
+  })
+
+  it('records harness cancel instead of finish when the user stops the run', async () => {
+    const { runtime } = streamingRuntime()
+    const runner = makeRunner(runtime)
+    const result = await runner.start(request, () => {})
+    const runId = (result as { ok: true; runId: string }).runId
+    await flush()
+    await runner.cancel(runId)
+    await vi.waitFor(() => {
+      expect(readRecords().filter(r => r['event'] === 'harness.cancel')).toHaveLength(1)
+    })
+    expect(readRecords().filter(r => r['event'] === 'harness.finish')).toHaveLength(0)
   })
 })

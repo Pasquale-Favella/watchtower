@@ -110,3 +110,36 @@ export async function runScan(
     aborted,
   }
 }
+
+/** Operational-log record shape for a finished scan (#128): one `scan.finish`
+ * totals record plus one `scan.provider` record per provider that has
+ * unparsed or failed files. Providers with a clean run stay silent, so the
+ * success path never chatters. Pure (unit-tested without a worker). */
+export interface ScanSummaryRecord {
+  logEvent: string
+  level: 'info' | 'warn'
+  fields: Record<string, string | number>
+}
+
+export function buildScanSummaryRecords(metadata: ScanMetadata): ScanSummaryRecord[] {
+  const records: ScanSummaryRecord[] = []
+  let unparsed = 0
+  let failed = 0
+  for (const row of metadata.perProvider ?? []) {
+    unparsed += row.unparsed
+    failed += row.failed
+    if (row.unparsed > 0 || row.failed > 0) {
+      records.push({
+        logEvent: 'scan.provider',
+        level: 'warn',
+        fields: { provider: row.provider, unparsed: row.unparsed, failed: row.failed },
+      })
+    }
+  }
+  records.unshift({
+    logEvent: 'scan.finish',
+    level: 'info',
+    fields: { op: 'scan', ported: metadata.portedFiles, unparsed, failed },
+  })
+  return records
+}

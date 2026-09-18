@@ -5,8 +5,9 @@ import { homedir } from 'os'
 import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { readCachedResults, writeCachedResults } from '../cursor-cache.js'
-import { isSqliteAvailable, isSqliteBusyError, getSqliteLoadError, openDatabase, blobToText, type SqliteDatabase } from '../sqlite.js'
+import { isSqliteAvailable, isSqliteBusyError, openDatabase, blobToText, type SqliteDatabase } from '../sqlite.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
+import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../file-errors.js'
 import type { DateRange } from '../types.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 
@@ -736,11 +737,11 @@ function parseBubbles(
       const scan = scanBubblesPaged(db, timeFloor, MAX_BUBBLES)
       rows = scan.rows
       if (scan.truncated) {
-        process.stderr.write(
-          `watchtower: Cursor database has ${total.toLocaleString()} bubbles and the ` +
-          `requested range exceeds the ${MAX_BUBBLES.toLocaleString()}-bubble scan budget; ` +
-          `the oldest sessions in range may be missing from this report.\n`
-        )
+        queueLogRecord({
+          logEvent: 'scan.file-error',
+          level: 'warn',
+          fields: { op: 'scan', provider: 'cursor', code: 'scan-truncated', count: total },
+        })
       }
     } else {
       rows = db.query<BubbleRow>(BUBBLE_QUERY_SINCE, [timeFloor])
@@ -959,7 +960,11 @@ function parseBubbles(
   }
 
   if (skipped > 0) {
-    process.stderr.write(`watchtower: skipped ${skipped} unreadable Cursor entries\n`)
+    queueLogRecord({
+      logEvent: 'scan.file-error',
+      level: 'warn',
+      fields: { op: 'scan', provider: 'cursor', code: 'entries-unreadable', count: skipped },
+    })
   }
 
   return { calls: results }
@@ -975,7 +980,7 @@ function createParser(
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
-        process.stderr.write(getSqliteLoadError() + '\n')
+        reportProviderIssue('cursor', 'sqlite-unavailable')
         return
       }
 
@@ -1025,12 +1030,12 @@ function createParser(
           db = openDatabase(dbPath)
         } catch (err) {
           rethrowBusy(err)
-          process.stderr.write(`watchtower: cannot open Cursor database: ${err instanceof Error ? err.message : err}\n`)
+          reportProviderIssue('cursor', fileErrorCode(err, 'db-open-failed'))
           return
         }
         try {
           if (!validateSchema(db)) {
-            process.stderr.write('watchtower: Cursor storage format not recognized. You may need to update Watchtower.\n')
+            reportProviderIssue('cursor', 'format-unrecognized')
             return
           }
           // Use a fresh local Set for intra-parse dedup so the global

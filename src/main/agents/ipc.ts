@@ -25,6 +25,7 @@ import {
   type SkillsDismissal,
   type SkillsDismissalResult,
 } from '../../shared/schemas/skills.js'
+import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
 
 /**
  * Coach & Skills IPC (ADR 0017, reshaped by map 53): the wire between the
@@ -122,6 +123,9 @@ function toProbeInput(request: unknown): ProbeInput | null {
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   const activeRuns = new Map<string, AsyncGenerator<CoachEvent>>()
+  /** Runs cancelled by the user before their stream settled — the settle path
+   * logs `harness.cancel` instead of `harness.finish` for these (#130). */
+  const cancelledRuns = new Set<string>()
   /** The conversation's private temp workspace (map 53 ticket 56): created on
    *  the first run, reused while the session resumes, deleted on reset/quit. */
   let workspace: string | null = null
@@ -390,15 +394,28 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
 
         // Stream in the background — the ack returns immediately; events land
         // on the push channel as they stream. A generator throw (SDK failure)
-        // becomes an error event, never a crash.
+        // becomes an error event, never a crash. Lifecycle lands in the
+        // Operational log by harness kind only — never prompts (#130).
+        safeLogOperationalEvent('info', 'harness.start', { kind: req.harnessKind })
         void (async () => {
+          let settled = false
           try {
             for await (const event of gen) {
               emit(runId, event)
             }
+            settled = true
           } catch (err) {
             emit(runId, { kind: 'error', message: err instanceof Error ? err.message : String(err) })
+            safeLogOperationalEvent('error', 'harness.error', { kind: req.harnessKind, code: logCodeFor(err) })
           } finally {
+            const wasCancelled = cancelledRuns.delete(runId)
+            if (settled) {
+              if (wasCancelled) {
+                safeLogOperationalEvent('info', 'harness.cancel', { kind: req.harnessKind })
+              } else {
+                safeLogOperationalEvent('info', 'harness.finish', { kind: req.harnessKind })
+              }
+            }
             activeRuns.delete(runId)
             attachment?.release()
           }
@@ -414,6 +431,10 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
     cancel(runId) {
       const gen = activeRuns.get(runId)
       if (gen && typeof gen.return === 'function') {
+        // Marked so the stream settle path logs `harness.cancel` instead of
+        // `harness.finish` (#130). UUID runIds never repeat, and the settle
+        // path deletes the mark — no leak.
+        cancelledRuns.add(runId)
         // Same-iterator interruption: the finally in the seam's run() then
         // tears the ACP provider's child process down (ADR 0016). The promise
         // resolves when that teardown completes — reset() awaits it so the

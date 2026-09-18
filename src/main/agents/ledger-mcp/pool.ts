@@ -1,5 +1,6 @@
 import type { LedgerMcpAttachment } from '../ipc.js'
 import type { AcpMcpServer } from '../harnesses/types.js'
+import { safeLogOperationalEvent } from '../../operational-log.js'
 import type { LedgerMcpSpawnContext } from './config.js'
 import type { StartedLedgerMcpHttp } from './sidecar.js'
 
@@ -75,6 +76,9 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
       } catch {
         // Unhealthy — fall through to respawn.
       }
+      // A sidecar that died between turns is respawned, never handed out —
+      // and the death is recorded (health failures are log records, #129).
+      safeLogOperationalEvent('error', 'sidecar.error', { op: 'ledger-mcp-health', code: 'unhealthy' }, 'sidecar')
       pooled.release()
       pooled = null
     }

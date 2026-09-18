@@ -37,12 +37,15 @@ describe('extraction seam under zod (ADR 0003: loose + skip-and-report)', () => 
 
   it('a declared field failing its type is skipped and counted, never thrown', () => {
     const tally = { count: 0 }
+    // Skip-and-report tallies without console output (#131): the unparsed
+    // counts reach the Operational log as `scan.provider` records, and the
+    // full context (which embeds source paths) never leaves the scan.
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
 
     const bad = parseOrSkip(parsedProviderCallSchema, { ...validCall, costUSD: 'not-a-number' }, tally, 'demo session /x.jsonl')
     expect(bad).toBeNull()
     expect(tally.count).toBe(1)
-    expect(stderr).toHaveBeenCalled()
+    expect(stderr).not.toHaveBeenCalled()
 
     // A subsequent valid call still parses — one bad row never poisons the stream.
     const good = parseOrSkip(parsedProviderCallSchema, validCall, tally, 'demo session /x.jsonl')

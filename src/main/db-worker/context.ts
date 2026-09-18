@@ -8,7 +8,8 @@ import {
   buildAnalyticalViewsFromLedger, searchSessionsFromLedger, buildProjectsFromLedger,
   type SessionRow,
 } from '../views.js'
-import { runScan, ScanAbortedError, type ScanMetadata, type ScanProgress } from '../pipeline/scan.js'
+import { runScan, ScanAbortedError, buildScanSummaryRecords, type ScanMetadata, type ScanProgress } from '../pipeline/scan.js'
+import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
 import { buildOverviewFromLedger, type OverviewScope } from '../overview.js'
 import { buildSessionsViewFromLedger } from '../sessions-view.js'
 import { buildPullRequestsViewFromLedger, type PullRequestsPayload } from '../pull-requests-view.js'
@@ -145,6 +146,42 @@ export class DbWorkerContext {
     )
   }
 
+  /** Operational-log forwards (#128): scan lifecycle over the existing host
+   * event channel. Main files each `oplog` via the shared seam with
+   * `context: 'worker'` — allowlisted fields only. */
+  private emitScanStart(provider?: string): void {
+    this.emit({
+      event: 'oplog',
+      level: 'info',
+      logEvent: 'scan.start',
+      fields: provider ? { op: 'scan', provider } : { op: 'scan' },
+    })
+  }
+
+  private emitScanFinish(metadata: ScanMetadata): void {
+    for (const record of buildScanSummaryRecords(metadata)) {
+      this.emit({ event: 'oplog', level: record.level, logEvent: record.logEvent, fields: record.fields })
+    }
+    this.drainQueuedLogs()
+  }
+
+  private emitScanFailure(err: unknown): void {
+    if (err instanceof ScanAbortedError) {
+      this.emit({ event: 'oplog', level: 'warn', logEvent: 'scan.abort', fields: { op: 'scan', code: 'aborted' } })
+    } else {
+      this.emit({ event: 'oplog', level: 'error', logEvent: 'scan.error', fields: { op: 'scan', code: fileErrorCode(err, 'failed') } })
+    }
+    this.drainQueuedLogs()
+  }
+
+  /** Files the file-error outbox queued during the scan (provider + basename
+   * + code, never contents or full paths). */
+  private drainQueuedLogs(): void {
+    for (const queued of takeQueuedLogRecords()) {
+      this.emit({ event: 'oplog', level: queued.level, logEvent: queued.logEvent, fields: { ...queued.fields } })
+    }
+  }
+
   /** Fires on the configured cadence (ADR 0004). Silent on failure — the
    * user's last-known data stays visible (stale-while-revalidate) and they can
    * still trigger a manual scan via ⌘R; background scans don't surface errors
@@ -155,14 +192,17 @@ export class DbWorkerContext {
     this.scanActive = true
     this.manualScan = false
     this.abortRequested = false
+    this.emitScanStart()
     try {
       const metadata = await this.performScan(undefined, progress =>
         this.emit({ event: 'scan:progress', manual: false, progress }))
       this.lastScanMetadata = metadata
       this.emit({ event: 'store:changed', metadata })
-    } catch {
+      this.emitScanFinish(metadata)
+    } catch (err) {
       // background scans fail silently; manual ⌘R remains available
       this.emit({ event: 'scan:idle' })
+      this.emitScanFailure(err)
     } finally {
       this.scanActive = false
     }
@@ -259,11 +299,13 @@ export class DbWorkerContext {
         this.scanActive = true
         this.manualScan = true
         this.abortRequested = false
+        this.emitScanStart(options?.provider)
         try {
           const metadata = await this.performScan(options, progress =>
             this.emit({ event: 'scan:progress', manual: true, progress }))
           this.lastScanMetadata = metadata
           this.emit({ event: 'store:changed', metadata })
+          this.emitScanFinish(metadata)
           // The `metadata` lands on `store:changed`; the scan-result envelope
           // itself carries only the flags scanResultSchema declares, so the
           // wire stays byte-faithful to the shared schema.
@@ -273,6 +315,7 @@ export class DbWorkerContext {
             ? 'scan aborted'
             : err instanceof Error ? err.message : String(err)
           this.emit({ event: 'scan:error', manual: true, message })
+          this.emitScanFailure(err)
           return { ok: false, aborted: err instanceof ScanAbortedError, error: err instanceof Error ? err.message : String(err) }
         } finally {
           this.scanActive = false

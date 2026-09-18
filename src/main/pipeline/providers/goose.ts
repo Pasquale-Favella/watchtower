@@ -3,7 +3,8 @@ import { homedir, platform } from 'os'
 
 import { calculateCost, getShortModelName } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
-import { isSqliteAvailable, getSqliteLoadError, openDatabase, blobToText, type SqliteDatabase } from '../sqlite.js'
+import { isSqliteAvailable, openDatabase, blobToText, type SqliteDatabase } from '../sqlite.js'
+import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import type { ToolCall } from '../types.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 
@@ -154,7 +155,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
-        process.stderr.write(getSqliteLoadError() + '\n')
+        reportProviderIssue('goose', 'sqlite-unavailable')
         return
       }
 
@@ -166,7 +167,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       try {
         db = openDatabase(dbPath)
       } catch (err) {
-        process.stderr.write(`watchtower: cannot open Goose database: ${err instanceof Error ? err.message : err}\n`)
+        reportProviderIssue('goose', fileErrorCode(err, 'db-open-failed'))
         return
       }
 

@@ -1,5 +1,7 @@
 import { readFile, stat } from 'fs/promises'
 import { readFileSync, statSync, createReadStream } from 'fs'
+import { basename } from 'node:path'
+import { logFileName, queueLogRecord } from './file-errors.js'
 
 // Hard cap well below V8's 512 MB string limit. Callers that need line-by-line
 // processing should use readSessionLines(), which avoids materializing the
@@ -23,10 +25,22 @@ function warn(msg: string): void {
   if (verbose()) process.stderr.write(`watchtower: ${msg}\n`)
 }
 
+/** Basename a path for verbose diagnostics — absolute paths embed usernames
+ * and never reach even opt-in console output (#131). */
+function shortPath(filePath: string): string {
+  return basename(filePath)
+}
+
 // Always surfaced (not verbose-gated): dropping an entire session file silently
-// understates reported usage with no signal, so oversize skips use this.
-function notice(msg: string): void {
-  process.stderr.write(`watchtower: ${msg}\n`)
+// understates reported usage with no signal, so oversize skips queue a log
+// record (basename + code, drained into the Operational log after the scan)
+// instead of writing the console.
+function notice(filePath: string, code: string): void {
+  queueLogRecord({
+    logEvent: 'scan.file-error',
+    level: 'warn',
+    fields: { op: 'scan', file: logFileName(filePath), code },
+  })
 }
 
 export async function readSessionFile(
@@ -37,19 +51,19 @@ export async function readSessionFile(
   try {
     size = (await stat(filePath)).size
   } catch (err) {
-    warn(`stat failed for ${filePath}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
+    warn(`stat failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
     return null
   }
 
   if (size > MAX_SESSION_FILE_BYTES) {
-    warn(`skipped oversize file ${filePath} (${size} bytes > cap ${MAX_SESSION_FILE_BYTES})`)
+    warn(`skipped oversize file ${shortPath(filePath)} (${size} bytes > cap ${MAX_SESSION_FILE_BYTES})`)
     return null
   }
 
   try {
     return await readFile(filePath, encoding)
   } catch (err) {
-    warn(`read failed for ${filePath}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
+    warn(`read failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
     return null
   }
 }
@@ -59,19 +73,19 @@ export function readSessionFileSync(filePath: string): string | null {
   try {
     size = statSync(filePath).size
   } catch (err) {
-    warn(`stat failed for ${filePath}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
+    warn(`stat failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
     return null
   }
 
   if (size > MAX_SESSION_FILE_BYTES) {
-    warn(`skipped oversize file ${filePath} (${size} bytes > cap ${MAX_SESSION_FILE_BYTES})`)
+    warn(`skipped oversize file ${shortPath(filePath)} (${size} bytes > cap ${MAX_SESSION_FILE_BYTES})`)
     return null
   }
 
   try {
     return readFileSync(filePath, 'utf-8')
   } catch (err) {
-    warn(`read failed for ${filePath}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
+    warn(`read failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
     return null
   }
 }
@@ -104,15 +118,13 @@ export async function* readSessionLines(
   try {
     size = (await stat(filePath)).size
   } catch (err) {
-    warn(`stat failed for ${filePath}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
+    warn(`stat failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
     return
   }
 
   const maxBytes = options.maxBytes ?? MAX_STREAM_SESSION_FILE_BYTES
   if (size > maxBytes) {
-    notice(
-      `skipped oversize session ${filePath} (${size} bytes > cap ${maxBytes}); its usage is NOT counted`,
-    )
+    notice(filePath, 'oversize')
     return
   }
 
@@ -220,7 +232,7 @@ export async function* readSessionLines(
       }
     }
   } catch (err) {
-    warn(`stream read failed for ${filePath}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
+    warn(`stream read failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
   } finally {
     stream.destroy()
   }

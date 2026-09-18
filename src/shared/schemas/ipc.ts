@@ -51,3 +51,13 @@ export type PricingRefreshResult = z.infer<typeof pricingRefreshResultSchema>
  * the same object `runScan` returns. */
 export const storeChangedMessageSchema = scanMetadataSchema
 export type StoreChangedMessage = z.infer<typeof storeChangedMessageSchema>
+
+/** Renderer tripwire forward (#130): a dropped subscription payload. Label
+ * names the channel, location the failing field path — short static strings
+ * only, never payload contents. Length-capped so a hostile shape can't flood
+ * the log through a long path. */
+export const rendererNoticeSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  location: z.string().trim().min(1).max(120),
+})
+export type RendererNotice = z.infer<typeof rendererNoticeSchema>

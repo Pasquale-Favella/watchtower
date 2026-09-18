@@ -1,6 +1,7 @@
 import type { DateRange } from '../types.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 import { fetchWithTimeout } from '../fetch-utils.js'
+import { fileErrorCode, queueLogRecord } from '../file-errors.js'
 
 const REPORT_URL = 'https://ai-gateway.vercel.sh/v1/report'
 
@@ -51,21 +52,23 @@ export async function fetchVercelGatewayReport(
     })
 
     if (!res.ok) {
-      const detail = await res.text().catch(() => '')
-      process.stderr.write(
-        `watchtower: Vercel AI Gateway report failed (HTTP ${res.status}). ` +
-          'Requires AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN (Pro/Enterprise for /v1/report). ' +
-          `${detail.slice(0, 200)}\n`,
-      )
+      // The gateway error body can carry request echoes — status only.
+      queueLogRecord({
+        logEvent: 'scan.file-error',
+        level: 'warn',
+        fields: { op: 'scan', provider: 'vercel-gateway', code: `http-${res.status}` },
+      })
       return []
     }
 
     const body = (await res.json()) as { results?: ReportRow[] }
     return body.results ?? []
   } catch (err) {
-    process.stderr.write(
-      `watchtower: Vercel AI Gateway report unreachable (${err instanceof Error ? err.message : String(err)}).\n`,
-    )
+    queueLogRecord({
+      logEvent: 'scan.file-error',
+      level: 'warn',
+      fields: { op: 'scan', provider: 'vercel-gateway', code: fileErrorCode(err, 'unreachable') },
+    })
     return []
   }
 }
