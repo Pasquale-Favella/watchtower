@@ -26,6 +26,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { action: 'settings', hotkey: 'Mod+,', label: 'Settings' },
   { action: 'refresh', hotkey: 'Mod+R', label: 'Refresh' },
   { action: 'toggleSidebar', hotkey: 'Mod+B', label: 'Toggle sidebar' },
+  { action: 'commandPalette', hotkey: 'Mod+K', label: 'Command palette' },
 ]
 
 const byAction = new Map<ShortcutAction, ShortcutDef>(SHORTCUTS.map(def => [def.action, def]))
@@ -36,7 +37,7 @@ export function shortcutForAction(action: ShortcutAction): ShortcutDef | undefin
 
 /** The numbered section shortcuts (settings excluded): `Mod+1`..`Mod+N` in nav order. */
 export const NUMBERED_SECTION_SHORTCUTS: readonly ShortcutDef[] = SHORTCUTS.filter(
-  def => def.action !== 'settings' && def.action !== 'refresh' && def.action !== 'toggleSidebar'
+  def => def.action !== 'settings' && def.action !== 'refresh' && def.action !== 'toggleSidebar' && def.action !== 'commandPalette'
 )
 
 /** Platform-aware shortcut badge: `⌘1` on mac, `Ctrl+1` on Windows/Linux. */
