@@ -10,6 +10,7 @@ import {
   type SkillsThresholds,
 } from '../shared/schemas/skills.js'
 import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
+import { closeOperationalLog, initOperationalLog, logCodeFor, logIpcError, safeLogOperationalEvent } from './operational-log.js'
 import type { ExportResult } from './export.js'
 import type { OverviewScope } from './overview.js'
 import type { ComparePair } from './compare-view.js'
@@ -52,6 +53,18 @@ function broadcast(channel: string, data?: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(channel, data)
   }
+}
+
+/** Single IPC failure seam: operation name + short code only, never args. */
+function handleLogged<T extends unknown[]>(channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown): void {
+  ipcMain.handle(channel, async (event, ...args) => {
+    try {
+      return await listener(event, ...(args as T))
+    } catch (err) {
+      logIpcError(channel, err)
+      throw err
+    }
+  })
 }
 
 function ledgerMcpContext(): { execPath: string; entryPath: string; dbPath: string } {
@@ -117,7 +130,7 @@ function relayWorkerEvents(db: DbWorkerClient): void {
 }
 
 function registerIpc(db: DbWorkerClient): void {
-  ipcMain.handle('scan:start', async (event, options?: { provider?: string }) => {
+  handleLogged('scan:start', async (event, options?: { provider?: string }) => {
     // First-come-wins: a concurrent second caller gets `alreadyRunning` from
     // the worker, so stealing the slot would misroute the live scan's
     // progress to a window that never started it. A dead slot is free again
@@ -136,43 +149,43 @@ function registerIpc(db: DbWorkerClient): void {
     void db.request('scan:abort').catch(() => {})
   })
 
-  ipcMain.handle('cadence:get', () => db.request('cadence:get'))
+  handleLogged('cadence:get', () => db.request('cadence:get'))
 
-  ipcMain.handle('cadence:set', (_event, value: string) => db.request('cadence:set', value))
+  handleLogged('cadence:set', (_event, value: string) => db.request('cadence:set', value))
 
-  ipcMain.handle('store:status', () => db.request('store:status'))
+  handleLogged('store:status', () => db.request('store:status'))
 
-  ipcMain.handle('store:views', () => db.request('store:views'))
+  handleLogged('store:views', () => db.request('store:views'))
 
-  ipcMain.handle('store:projects', () => db.request('store:projects'))
+  handleLogged('store:projects', () => db.request('store:projects'))
 
-  ipcMain.handle('store:sessions', (_event, filter?: { project?: string; since?: string; until?: string }) =>
+  handleLogged('store:sessions', (_event, filter?: { project?: string; since?: string; until?: string }) =>
     db.request('store:sessions', filter))
 
-  ipcMain.handle('sessions:view', (_event, scope: OverviewScope) => db.request('sessions:view', scope))
+  handleLogged('sessions:view', (_event, scope: OverviewScope) => db.request('sessions:view', scope))
 
-  ipcMain.handle('pullRequests:view', (_event, scope: OverviewScope) => db.request('pullRequests:view', scope))
+  handleLogged('pullRequests:view', (_event, scope: OverviewScope) => db.request('pullRequests:view', scope))
 
-  ipcMain.handle('spend:view', (_event, scope: OverviewScope) => db.request('spend:view', scope))
+  handleLogged('spend:view', (_event, scope: OverviewScope) => db.request('spend:view', scope))
 
-  ipcMain.handle('models:view', (_event, scope: OverviewScope) => db.request('models:view', scope))
+  handleLogged('models:view', (_event, scope: OverviewScope) => db.request('models:view', scope))
 
-  ipcMain.handle('compare:view', (_event, scope: OverviewScope, pair?: ComparePair) =>
+  handleLogged('compare:view', (_event, scope: OverviewScope, pair?: ComparePair) =>
     db.request('compare:view', scope, pair))
 
-  ipcMain.handle('optimize:view', (_event, scope: OverviewScope) => db.request('optimize:view', scope))
+  handleLogged('optimize:view', (_event, scope: OverviewScope) => db.request('optimize:view', scope))
 
   /** The Skills section's detection payload (ticket 24): pure local mining
    * of skill/bash/tool seams plus the on-disk inventory — no consent, no
    * network. Thresholds (frequency × spread) are renderer settings passed
    * per request; defaults (5 × 2) apply when absent. */
-  ipcMain.handle('skills:view', (_event, scope: OverviewScope, thresholds?: SkillsThresholds) =>
+  handleLogged('skills:view', (_event, scope: OverviewScope, thresholds?: SkillsThresholds) =>
     db.request('skills:view', scope, thresholds))
 
   /** Skills › Save (ticket 25): the ONLY write the draft board can do, and it
    * is user-initiated — the OS save dialog IS the user's confirmation, and no
    * path is ever written without it. Defaults to `.agents/skills/` in home. */
-  ipcMain.handle('skills:save', async (_event, request: unknown): Promise<SkillsSaveResult> => {
+  handleLogged('skills:save', async (_event, request: unknown): Promise<SkillsSaveResult> => {
     const parsed = skillsSaveRequestSchema.safeParse(request)
     if (!parsed.success) return { ok: false, error: 'invalid save request' }
     const defaultPath = join(homedir(), '.agents', 'skills', slugifyCandidateName(parsed.data.name), 'SKILL.md')
@@ -193,27 +206,27 @@ function registerIpc(db: DbWorkerClient): void {
     }
   })
 
-  ipcMain.handle('optimize:yield', (_event, scope: OverviewScope) => db.request('optimize:yield', scope))
+  handleLogged('optimize:yield', (_event, scope: OverviewScope) => db.request('optimize:yield', scope))
 
-  ipcMain.handle('models:addAlias', (_event, model: string, aliasOf: string) =>
+  handleLogged('models:addAlias', (_event, model: string, aliasOf: string) =>
     db.request('models:addAlias', model, aliasOf))
 
-  ipcMain.handle('models:getAliases', () => db.request('models:getAliases'))
+  handleLogged('models:getAliases', () => db.request('models:getAliases'))
 
-  ipcMain.handle('models:removeAlias', (_event, model: string) => db.request('models:removeAlias', model))
+  handleLogged('models:removeAlias', (_event, model: string) => db.request('models:removeAlias', model))
 
-  ipcMain.handle('models:getPriceOverrides', () => db.request('models:getPriceOverrides'))
+  handleLogged('models:getPriceOverrides', () => db.request('models:getPriceOverrides'))
 
-  ipcMain.handle('models:removePriceOverride', (_event, model: string) =>
+  handleLogged('models:removePriceOverride', (_event, model: string) =>
     db.request('models:removePriceOverride', model))
 
-  ipcMain.handle('models:setPrice', (_event, model: string, inputPricePerMillion: number, outputPricePerMillion: number) =>
+  handleLogged('models:setPrice', (_event, model: string, inputPricePerMillion: number, outputPricePerMillion: number) =>
     db.request('models:setPrice', model, inputPricePerMillion, outputPricePerMillion))
 
   /** Open a PR in the default browser. Only http(s) URLs are allowed — a
    * malformed or non-web URL is refused so a crafted label can never drive the
    * shell into an arbitrary protocol handler. */
-  ipcMain.handle('open-external', (_event, url: string) => {
+  handleLogged('open-external', (_event, url: string) => {
     try {
       const { protocol } = new URL(url)
       if (protocol === 'https:' || protocol === 'http:') return shell.openExternal(url)
@@ -225,7 +238,7 @@ function registerIpc(db: DbWorkerClient): void {
    * `open-external` channel refuses non-http(s) schemes, so the TCC pane's
    * `x-apple.systempreferences:` URL gets its own narrow handler — a no-op
    * anywhere that isn't macOS. */
-  ipcMain.handle('open-fda-settings', (): boolean => {
+  handleLogged('open-fda-settings', (): boolean => {
     if (process.platform !== 'darwin') return false
     // Best-effort like `open-external`: a refused URL must never surface as
     // an unhandled rejection.
@@ -233,21 +246,21 @@ function registerIpc(db: DbWorkerClient): void {
     return true
   })
 
-  ipcMain.handle('store:session', (_event, sessionId: string) => db.request('store:session', sessionId))
+  handleLogged('store:session', (_event, sessionId: string) => db.request('store:session', sessionId))
 
-  ipcMain.handle('store:analytics', () => db.request('store:analytics'))
+  handleLogged('store:analytics', () => db.request('store:analytics'))
 
-  ipcMain.handle('overview:query', (_event, scope: OverviewScope) => db.request('overview:query', scope))
+  handleLogged('overview:query', (_event, scope: OverviewScope) => db.request('overview:query', scope))
 
-  ipcMain.handle('store:search', (_event, query: string) => db.request('store:search', query))
+  handleLogged('store:search', (_event, query: string) => db.request('store:search', query))
 
-  ipcMain.handle('settings:info', () => db.request('settings:info'))
+  handleLogged('settings:info', () => db.request('settings:info'))
 
-  ipcMain.handle('settings:clear', () => db.request('settings:clear'))
+  handleLogged('settings:clear', () => db.request('settings:clear'))
 
-  ipcMain.handle('ledger-mcp:status', () => ledgerMcpStatus(db))
+  handleLogged('ledger-mcp:status', () => ledgerMcpStatus(db))
 
-  ipcMain.handle('ledger-mcp:startup:set', async (_event, value: unknown): Promise<LedgerMcpStatus> => {
+  handleLogged('ledger-mcp:startup:set', async (_event, value: unknown): Promise<LedgerMcpStatus> => {
     const parsed = ledgerMcpStartupModeSchema.safeParse(value)
     if (!parsed.success) throw new Error('invalid ledger MCP startup mode')
     const startupMode = await db.request('ledger-mcp:startup:set', parsed.data) as LedgerMcpStartupMode
@@ -259,24 +272,24 @@ function registerIpc(db: DbWorkerClient): void {
     return ledgerMcpStatus(db)
   })
 
-  ipcMain.handle('ledger-mcp:connection', async (): Promise<LedgerMcpConnection> => {
+  handleLogged('ledger-mcp:connection', async (): Promise<LedgerMcpConnection> => {
     await db.ready
     const server = await sidecarPool.connection(ledgerMcpContext())
     if (!server) throw new Error('ledger MCP server is unavailable')
     return ledgerMcpConnection(server)
   })
 
-  ipcMain.handle('ledger-mcp:token:regenerate', async (): Promise<LedgerMcpStatus> => {
+  handleLogged('ledger-mcp:token:regenerate', async (): Promise<LedgerMcpStatus> => {
     await db.ready
     await sidecarPool.regenerate(ledgerMcpContext())
     return ledgerMcpStatus(db)
   })
 
-  ipcMain.handle('pricing:refresh', () => db.request('pricing:refresh'))
+  handleLogged('pricing:refresh', () => db.request('pricing:refresh'))
 
   /** The About area's version (ADR 0012): `app.getVersion()` reads it from
    * package.json, which electron-builder also stamps into the packaged app. */
-  ipcMain.handle('app:version', () => app.getVersion())
+  handleLogged('app:version', () => app.getVersion())
 
   /** Manual "Check for updates" (ADR 0012): forces one fresh read of the
    * the Watchtower repo's GitHub Releases feed and reports whether a newer desktop
@@ -284,17 +297,17 @@ function registerIpc(db: DbWorkerClient): void {
    * schedule — this fires only when the user clicks the button. All failures
    * (offline, private repo, timeout) degrade to an informational "unable to
    * check" status rather than an error. */
-  ipcMain.handle('updates:check', async (): Promise<UpdateStatus> => {
+  handleLogged('updates:check', async (): Promise<UpdateStatus> => {
     if (!updateChecker) throw new Error('update checker not initialised')
     return updateChecker.check()
   })
 
-  ipcMain.handle('currency:get', () => db.request('currency:get'))
+  handleLogged('currency:get', () => db.request('currency:get'))
 
-  ipcMain.handle('currency:set', (_event, code: string) => db.request('currency:set', code))
+  handleLogged('currency:set', (_event, code: string) => db.request('currency:set', code))
 
   /** The full ISO 4217 currency list (162 codes) for the Settings selector. */
-  ipcMain.handle('currency:list', () => db.request('currency:list'))
+  handleLogged('currency:list', () => db.request('currency:list'))
 
   /** CSV/JSON export in the selected display currency. The main process shows
    * a folder picker when no destination is supplied; the worker computes and
@@ -323,8 +336,8 @@ function registerIpc(db: DbWorkerClient): void {
     return (await db.request(`export:${kind}`, target)) as ExportResult
   }
 
-  ipcMain.handle('export:csv', (_event, destination?: string): Promise<ExportResult> => runExport('csv', destination))
-  ipcMain.handle('export:json', (_event, destination?: string): Promise<ExportResult> => runExport('json', destination))
+  handleLogged('export:csv', (_event, destination?: string): Promise<ExportResult> => runExport('csv', destination))
+  handleLogged('export:json', (_event, destination?: string): Promise<ExportResult> => runExport('json', destination))
 
   // Coach + Skills agent chain (tickets 21–25): the HarnessRuntime seam's IPC
   // surface — harness listing, run ack/stream/cancel, the not-a-skill
@@ -401,8 +414,11 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const dataDir = app.getPath('userData')
+  try {
+    await initOperationalLog({ logDir: join(dataDir, 'logs'), isPackaged: app.isPackaged })
+  } catch { /* logging must never break boot */ }
   // The data plane boots first: the worker owns the ledger from here on —
   // requests simply queue on its port until its synchronous init finishes.
   const db = new DbWorkerClient(
@@ -420,12 +436,15 @@ app.whenReady().then(() => {
   // connection. A failed prewarm is non-fatal; the next Coach run or an
   // explicit copy-config action can retry on demand.
   void db.ready.then(async () => {
+    safeLogOperationalEvent('info', 'boot.ready', {})
     const startupMode = await db.request('ledger-mcp:startup:get') as LedgerMcpStartupMode
     if (startupMode === 'at-launch') {
       await sidecarPool.connection(ledgerMcpContext())
     }
   }).catch(err => {
-    process.stderr.write(`watchtower-ledger(http): launch prewarm failed: ${String(err)}\n`)
+    safeLogOperationalEvent('error', 'boot.error', {
+      code: logCodeFor(err, 'prewarm-failed'),
+    })
   })
 
   // The worker queues requests until its synchronous init finishes, so the
@@ -433,6 +452,7 @@ app.whenReady().then(() => {
   // heal — surface it once and quit instead of serving IPC errors forever.
   // The worker is never respawned in that case (client policy).
   void db.ready.then(undefined, err => {
+    safeLogOperationalEvent('error', 'boot.error', { code: logCodeFor(err, 'boot-failed') })
     dialog.showErrorBox(
       'Watchtower',
       `The local data layer failed to start and the app cannot continue.\n\n${err instanceof Error ? err.message : String(err)}`,
@@ -462,4 +482,5 @@ app.on('before-quit', () => {
   sidecarPool.releaseAll()
   void agentsCleanup?.reset()
   void dbClient?.shutdown().catch(() => {})
+  try { closeOperationalLog() } catch { /* best effort */ }
 })
