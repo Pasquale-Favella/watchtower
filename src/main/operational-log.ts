@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import pino, { type Logger } from 'pino'
 import pretty from 'pino-pretty'
+import { errorCodeFor, sanitizeOperationalRecord, type LogContext, type LogLevel } from '../shared/logging.js'
 // @ts-expect-error pino-roll ships without bundled types; single-use import kept local
 // so no ambient declaration file or web-tsconfig change is needed.
 import buildRoll from 'pino-roll'
@@ -37,31 +38,7 @@ export interface OperationalLogOptions {
 
 /** Emitting context for every record (spec #126 record shape). Forwarders
  * stamp their own; main paths use the default. */
-export type LogContext = 'main' | 'worker' | 'sidecar' | 'renderer'
-
-const LOG_CONTEXTS = new Set<string>(['main', 'worker', 'sidecar', 'renderer'])
-
-/** Allowlisted short-string record fields: identifiers and codes only —
- * never prompts, bodies, paths, tokens, or ledger facts. Unknown keys never
- * reach pino. Values are trimmed and capped: forwarders pass identifiers, so
- * anything longer is a hostile shape, not data. */
-const ALLOWED_STRING_FIELDS = new Set([
-  'op',
-  'code',
-  'provider',
-  'file',
-  'method',
-  'route',
-  'kind',
-  'label',
-  'location',
-  'model',
-])
-
-/** Allowlisted numeric record fields: finite counts only. */
-const ALLOWED_COUNT_FIELDS = new Set(['count', 'ported', 'unparsed', 'failed'])
-
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+export type { LogContext, LogLevel } from '../shared/logging.js'
 
 interface ActiveLog {
   logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>
@@ -128,38 +105,10 @@ export function logOperationalEvent(
   context: LogContext = 'main',
 ): void {
   if (!active) return
-  const record: Record<string, unknown> = {
-    context: LOG_CONTEXTS.has(context) ? context : 'main',
-    event,
-  }
-  for (const key of ALLOWED_STRING_FIELDS) {
-    const value = fields[key]
-    if (typeof value === 'string') {
-      const trimmed = value.trim()
-      const safeValue = key === 'file' ? trimmed.split(/[\\/]/).pop() ?? '' : trimmed
-      const capped = safeValue.slice(0, 200)
-      if (capped) record[key] = capped
-    }
-  }
-  for (const key of ALLOWED_COUNT_FIELDS) {
-    const value = fields[key]
-    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) record[key] = value
-  }
-  active.logger[level](record)
+  active.logger[level](sanitizeOperationalRecord(event, fields, context))
 }
 
-/** Short machine code for an error — never the message body. */
-export function logCodeFor(err: unknown, fallback = 'failed'): string {
-  if (err instanceof Error && err.name && err.name !== 'Error') {
-    const slug = err.name
-      .replace(/Error$/, '')
-      .replace(/[^a-z0-9]+/gi, '-')
-      .replace(/^-+|-+$/g, '')
-      .toLowerCase()
-    return slug || fallback
-  }
-  return fallback
-}
+export const logCodeFor = errorCodeFor
 
 /** Never-throwing emit shared by the record helpers below. */
 function emitSafe(level: LogLevel, event: string, fields: Record<string, unknown> = {}, context: LogContext = 'main'): void {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import { buildScanSummaryRecords } from '../src/main/pipeline/scan.js'
-import { logFileName, queueLogRecord, takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
+import { fileErrorCode, logFileName, queueLogRecord, takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
+import { logCodeFor } from '../src/main/operational-log.js'
 import { parseSidecarLogLine } from '../src/main/agents/ledger-mcp/sidecar.js'
 import { rendererNoticeSchema } from '../src/shared/schemas/ipc.js'
 import type { ScanMetadata } from '../src/shared/schemas/scan.js'
@@ -56,6 +57,12 @@ describe('scan summary records (#128)', () => {
 })
 
 describe('file-error outbox (#128)', () => {
+  it('shares error-code shaping while preserving main and worker precedence', () => {
+    const error = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    expect(logCodeFor(error)).toBe('failed')
+    expect(fileErrorCode(error, 'failed')).toBe('EACCES')
+  })
+
   it('drains queued records in order and empties the queue', () => {
     queueLogRecord({ logEvent: 'scan.file-error', level: 'warn', fields: { op: 'scan', provider: 'x', code: 'a' } })
     queueLogRecord({ logEvent: 'scan.file-error', level: 'warn', fields: { op: 'scan', provider: 'y', code: 'b' } })
