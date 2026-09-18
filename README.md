@@ -68,7 +68,7 @@ Every release ships all three platforms. AppImage and `.deb` are the two Linux f
 | **Renderer** | React 19, Tailwind CSS 4, shadcn/ui, Zustand, Recharts, GSAP, TanStack Hotkeys |
 | **Data & contracts** | SQLite (built-in `node:sqlite`), Zod 4 schemas shared between main and renderer |
 | **Build & packaging** | electron-vite 5, Vite 7, electron-builder (Windows NSIS, macOS DMG/zip universal, Linux AppImage/deb, built in CI) |
-| **Tests** | Vitest (`tests/`) |
+| **Tests** | Vitest (`tests/`) + Playwright Electron smoke (`e2e/`, `npm run test:e2e`) |
 
 ## Quick start
 
