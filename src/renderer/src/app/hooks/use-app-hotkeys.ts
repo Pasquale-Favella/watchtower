@@ -12,16 +12,22 @@ import { useScanStore } from '@/app/stores/scan-store'
  * working during the first-hydrate splash. */
 export function useAppHotkeys(): void {
   const refresh = useScanStore(s => s.refresh)
+  const togglePalette = usePaletteStore(s => s.toggle)
   useHotkeys(
     SHORTCUTS.filter(def => def.action !== 'toggleSidebar').map(def => ({
       hotkey: def.hotkey,
       callback: () => {
-        if (def.action === 'refresh') {
-          void refresh()
-        } else if (def.action === 'commandPalette') {
-          usePaletteStore.getState().toggle()
-        } else if (def.action !== 'toggleSidebar') {
-          navigateToSection(def.action)
+        switch (def.action) {
+          case 'refresh':
+            void refresh()
+            break
+          case 'commandPalette':
+            togglePalette()
+            break
+          case 'toggleSidebar':
+            break // owned by SidebarToggleShortcut, filtered above
+          default:
+            navigateToSection(def.action)
         }
       },
       options: { meta: { name: def.label, description: def.action } },

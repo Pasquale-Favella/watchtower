@@ -32,34 +32,40 @@ export const PALETTE_ACTIONS = ['refresh', 'toggleSidebar'] as const
 export type PaletteAction = (typeof PALETTE_ACTIONS)[number]
 
 /** One palette row: the registry action plus its explicit source (spec §What
- * to build). The Sections/Actions groups below are views over ROWS, so a
- * future `global` source plugs in as data, not structure. */
-export interface PaletteRow {
-  action: Section | PaletteAction
-  source: 'section' | 'action'
-}
+ * to build). The Sections/Actions groups below are views over PALETTE_ROWS,
+ * so a future `global` source plugs in as data, not structure. */
+export type PaletteRow =
+  | { action: Section; source: 'section' }
+  | { action: PaletteAction; source: 'action' }
 
-export const ROWS: readonly PaletteRow[] = [
+export const PALETTE_ROWS: readonly PaletteRow[] = [
   ...PALETTE_SECTIONS.map((action): PaletteRow => ({ action, source: 'section' })),
   ...PALETTE_ACTIONS.map((action): PaletteRow => ({ action, source: 'action' })),
 ]
 
+const SECTION_ROWS: readonly PaletteRow[] = PALETTE_ROWS.filter(row => row.source === 'section')
+const ACTION_ROWS: readonly PaletteRow[] = PALETTE_ROWS.filter(row => row.source === 'action')
+
+const ACTION_ICONS: Record<PaletteAction, ReactNode> = {
+  refresh: <RefreshCw />,
+  toggleSidebar: <PanelLeft />,
+}
+
+/** Registry label for a row — the single source for display text and filter base. */
+export function rowLabel(row: PaletteRow): string {
+  return shortcutForAction(row.action)?.label ?? row.action
+}
+
 function iconFor(row: PaletteRow): ReactNode {
   return row.source === 'section'
-    ? SECTION_ICONS[row.action as Section]
-    : ACTION_ICONS[row.action as PaletteAction]
+    ? SECTION_ICONS[row.action]
+    : ACTION_ICONS[row.action]
 }
 
 /** cmdk filter key: label plus registry id, so `pullrequests` and
  * `coachskills` match as well as the display labels. */
 export function rowFilterValue(row: PaletteRow): string {
-  const label = shortcutForAction(row.action)?.label ?? row.action
-  return `${label} ${row.action}`
-}
-
-const ACTION_ICONS: Record<PaletteAction, ReactNode> = {
-  refresh: <RefreshCw />,
-  toggleSidebar: <PanelLeft />,
+  return `${rowLabel(row)} ${row.action}`
 }
 
 /** Command palette dialog (ADR 0028) — a pure view over the shortcut registry
@@ -72,7 +78,7 @@ export function CommandPalette(): ReactElement {
   const refresh = useScanStore(s => s.refresh)
   const { toggleSidebar } = useSidebar()
 
-  const run = (action: Section | PaletteAction): void => {
+  function runCommand(action: Section | PaletteAction): void {
     setOpen(false)
     if (action === 'refresh') {
       void refresh()
@@ -85,10 +91,10 @@ export function CommandPalette(): ReactElement {
     navigateToSection(action)
   }
 
-  const renderRow = (row: PaletteRow): ReactNode => {
-    const label = shortcutForAction(row.action)?.label ?? row.action
+  function renderRow(row: PaletteRow): ReactNode {
+    const label = rowLabel(row)
     return (
-      <CommandItem key={row.action} value={rowFilterValue(row)} onSelect={() => run(row.action)}>
+      <CommandItem key={row.action} value={rowFilterValue(row)} onSelect={() => runCommand(row.action)}>
         {iconFor(row)}
         <span>{label}</span>
         <CommandShortcut>{displayShortcutForAction(row.action)}</CommandShortcut>
@@ -102,11 +108,11 @@ export function CommandPalette(): ReactElement {
       <CommandList>
         <CommandEmpty>No matching section or action.</CommandEmpty>
         <CommandGroup heading="Sections">
-          {ROWS.filter(row => row.source === 'section').map(renderRow)}
+          {SECTION_ROWS.map(renderRow)}
         </CommandGroup>
         <CommandSeparator />
         <CommandGroup heading="Actions">
-          {ROWS.filter(row => row.source === 'action').map(renderRow)}
+          {ACTION_ROWS.map(renderRow)}
         </CommandGroup>
       </CommandList>
     </CommandDialog>

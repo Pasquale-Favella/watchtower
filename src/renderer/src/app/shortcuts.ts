@@ -35,9 +35,15 @@ export function shortcutForAction(action: ShortcutAction): ShortcutDef | undefin
   return byAction.get(action)
 }
 
+/** Shortcut actions without a numbered section jump — excluded from the
+ * numbered badges and the footer range. */
+const NON_NUMBERED: ReadonlySet<ShortcutAction> = new Set([
+  'settings', 'refresh', 'toggleSidebar', 'commandPalette',
+])
+
 /** The numbered section shortcuts (settings excluded): `Mod+1`..`Mod+N` in nav order. */
 export const NUMBERED_SECTION_SHORTCUTS: readonly ShortcutDef[] = SHORTCUTS.filter(
-  def => def.action !== 'settings' && def.action !== 'refresh' && def.action !== 'toggleSidebar' && def.action !== 'commandPalette'
+  def => !NON_NUMBERED.has(def.action)
 )
 
 /** Platform-aware shortcut badge: `⌘1` on mac, `Ctrl+1` on Windows/Linux. */

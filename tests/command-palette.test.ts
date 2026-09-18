@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { shortcutForAction } from '../src/renderer/src/app/shortcuts.js'
-import { PALETTE_ACTIONS, PALETTE_SECTIONS, ROWS, rowFilterValue } from '../src/renderer/src/app/components/CommandPalette.js'
+import { PALETTE_ACTIONS, PALETTE_SECTIONS, PALETTE_ROWS, rowFilterValue } from '../src/renderer/src/app/components/CommandPalette.js'
 
 describe('command palette rows (ADR 0028)', () => {
   it('lists every section plus refresh/toggleSidebar — and never itself', () => {
@@ -11,14 +11,14 @@ describe('command palette rows (ADR 0028)', () => {
   })
 
   it('every row carries an explicit section|action source (spec §What to build)', () => {
-    expect(ROWS).toHaveLength(PALETTE_SECTIONS.length + PALETTE_ACTIONS.length)
-    expect(ROWS.filter(row => row.source === 'section').map(row => row.action)).toEqual([...PALETTE_SECTIONS])
-    expect(ROWS.filter(row => row.source === 'action').map(row => row.action)).toEqual([...PALETTE_ACTIONS])
+    expect(PALETTE_ROWS).toHaveLength(PALETTE_SECTIONS.length + PALETTE_ACTIONS.length)
+    expect(PALETTE_ROWS.filter(row => row.source === 'section').map(row => row.action)).toEqual([...PALETTE_SECTIONS])
+    expect(PALETTE_ROWS.filter(row => row.source === 'action').map(row => row.action)).toEqual([...PALETTE_ACTIONS])
   })
 
   it('filter values carry label plus registry id', () => {
     expect(rowFilterValue({ action: 'pullRequests', source: 'section' })).toBe('Pull requests pullRequests')
-    for (const row of ROWS) {
+    for (const row of PALETTE_ROWS) {
       expect(rowFilterValue(row)).toContain(row.action)
     }
   })
