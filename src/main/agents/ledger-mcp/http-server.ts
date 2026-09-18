@@ -5,6 +5,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { LedgerStore } from '../../store/ledger.js'
 import { hasBearerAuthorization } from './auth.js'
 import { createLedgerMcpServer } from './server.js'
+// Shared seam directly — never the spawner (`sidecar.ts` needs
+// `node:child_process`, which the sidecar bundle must not pull in).
+import { reportLedgerRequestFailure } from '../../../shared/operational-log.js'
 
 /**
  * The loopback-HTTP face of the `watchtower-ledger` MCP server: the SAME
@@ -82,12 +85,11 @@ export function createLedgerMcpHttpHandler(
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
       await createLedgerMcpServer(store).connect(transport)
       await transport.handleRequest(req, res, body)
-    } catch (error) {
-      console.error('Ledger MCP HTTP request failed', {
-        method: req.method,
-        pathname,
-        error,
-      })
+    } catch {
+      // Operational log (ticket #129): method and route only — never bodies,
+      // tokens, or ledger facts. Stderr only, so the stdout READY announcement
+      // stays parseable under logging load.
+      reportLedgerRequestFailure(req.method ?? 'UNKNOWN', pathname, 'internal')
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' })
     }
   }

@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import type { AcpMcpServer } from '../harnesses/types.js'
 import { bearerHeaderValue } from './auth.js'
 import type { LedgerMcpSpawnContext } from './config.js'
+import type { OperationalLogForwarder } from '../../../shared/operational-log.js'
 
 /**
  * Main-side spawner for the loopback-HTTP `watchtower-ledger` MCP server:
@@ -28,6 +29,21 @@ export interface StartedLedgerMcpHttp {
    *  sidecar that died between turns is respawned instead of handed out. */
   checkHealth: () => Promise<boolean>
 }
+
+/** Operational log forwarder injected by the composition root (main/index).
+ * Defaults to a no-op so unit tests without a logger stay silent. */
+export type SidecarLogFn = OperationalLogForwarder
+
+// The structured stderr protocol (prefix, parser, sidecar-side reporter)
+// lives in the shared seam so the sidecar bundle never imports this
+// spawner (which needs `node:child_process`).
+export {
+  SIDECAR_LOG_PREFIX,
+  parseSidecarStderrLine,
+  reportLedgerRequestFailure,
+  type ParsedSidecarLog,
+} from '../../../shared/operational-log.js'
+import { parseSidecarStderrLine } from '../../../shared/operational-log.js'
 
 const READY_TIMEOUT_MS = 10_000
 const READY_POLL_MS = 100
@@ -141,18 +157,46 @@ function sidecarEnv(httpCtx: { dbPath: string; token: string }): Record<string, 
   return env
 }
 
-export async function startLedgerMcpHttp(ctx: LedgerMcpSpawnContext): Promise<StartedLedgerMcpHttp> {
+export async function startLedgerMcpHttp(
+  ctx: LedgerMcpSpawnContext,
+  deps: { onOperationalLog?: SidecarLogFn } = {},
+): Promise<StartedLedgerMcpHttp> {
+  const onLog = deps.onOperationalLog ?? (() => {})
   const token = randomUUID()
   const child: ChildProcess = spawn(ctx.execPath, [ctx.entryPath, '--ledger-mcp-http'], {
     env: sidecarEnv({ dbPath: ctx.dbPath, token }),
     // stdout carries the single READY line (consumed below, then drained);
     // stderr stays piped so a sidecar that fails to boot (bad bundle, locked
-    // DB) leaves a trace in the main-process console instead of dying
-    // silently behind a readiness timeout.
+    // DB) leaves a trace in the Operational log instead of dying silently
+    // behind a readiness timeout. Stdout is never written here.
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+  // Line-buffered stderr forwarder (ticket #129): structured lines become
+  // method-and-route-only records; anything else becomes a truncated note.
+  // Chunk splits are reassembled — a JSON line split across two `data`
+  // events still parses.
+  let stderrBuffer = ''
+  const forwardStderrLine = (line: string): void => {
+    const trimmed = line.trim()
+    if (!trimmed) return
+    const parsed = parseSidecarStderrLine(trimmed)
+    try {
+      if (parsed) onLog(parsed.event, { method: parsed.method, route: parsed.route, code: parsed.code })
+      else onLog('sidecar.stderr', { message: trimmed.slice(0, 500) })
+    } catch { /* logging must never break the sidecar */ }
+  };
   child.stderr?.on('data', (chunk: Buffer) => {
-    process.stderr.write(`watchtower-ledger(http): ${chunk.toString()}`)
+    stderrBuffer += chunk.toString()
+    let newline = stderrBuffer.indexOf('\n')
+    while (newline >= 0) {
+      forwardStderrLine(stderrBuffer.slice(0, newline))
+      stderrBuffer = stderrBuffer.slice(newline + 1)
+      newline = stderrBuffer.indexOf('\n')
+    }
+    if (stderrBuffer.length > 64 * 1024) {
+      forwardStderrLine(stderrBuffer)
+      stderrBuffer = ''
+    }
   })
   if (!child.stdout) {
     child.kill()

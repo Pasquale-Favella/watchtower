@@ -2,6 +2,7 @@ import type { LedgerMcpAttachment } from '../ipc.js'
 import type { AcpMcpServer } from '../harnesses/types.js'
 import type { LedgerMcpSpawnContext } from './config.js'
 import type { StartedLedgerMcpHttp } from './sidecar.js'
+import type { OperationalLogForwarder } from '../../../shared/operational-log.js'
 
 /**
  * App-level pool for the loopback-HTTP ledger sidecar: one sidecar serves
@@ -23,6 +24,9 @@ import type { StartedLedgerMcpHttp } from './sidecar.js'
 
 export interface SidecarPoolDeps {
   spawn: (ctx: LedgerMcpSpawnContext) => Promise<StartedLedgerMcpHttp>
+  /** Operational log forwarder (ticket #129): boot and health failures land
+   * in the single main-owned file. Defaults to a no-op for unit tests. */
+  onOperationalLog?: OperationalLogForwarder
 }
 
 export interface SidecarPool {
@@ -46,6 +50,15 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
   let pooled: StartedLedgerMcpHttp | null = null
   let inflight: Promise<StartedLedgerMcpHttp | null> | null = null
   let generation = 0
+  const onLog = deps.onOperationalLog ?? (() => {})
+
+  function logBootError(code: string): void {
+    try { onLog('sidecar.boot-error', { code }) } catch { /* logging must never break acquire */ }
+  }
+
+  function logHealthFailure(): void {
+    try { onLog('sidecar.health-failure', { code: 'unhealthy' }) } catch { /* best effort */ }
+  }
 
   async function spawnFresh(ctx: LedgerMcpSpawnContext): Promise<StartedLedgerMcpHttp | null> {
     const gen = generation
@@ -53,6 +66,7 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
     try {
       started = await deps.spawn(ctx)
     } catch {
+      logBootError('spawn-failed')
       return null
     }
     if (gen !== generation) {
@@ -68,13 +82,17 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
     // sidecar is health-gated on every acquire: one that died between
     // conversations is respawned, never handed out.
     if (pooled) {
+      let healthy = false
       try {
-        if (await pooled.checkHealth()) {
-          return { server: pooled.server, release: () => {} }
-        }
+        healthy = await pooled.checkHealth()
       } catch {
-        // Unhealthy — fall through to respawn.
+        healthy = false
       }
+      if (healthy) {
+        return { server: pooled.server, release: () => {} }
+      }
+      // Unhealthy between turns — recorded once, then respawned below.
+      logHealthFailure()
       pooled.release()
       pooled = null
     }

@@ -10,6 +10,8 @@ import { resolveBundledEntry } from './harnesses/bundled.js'
 import { buildCoachPrompt, buildLedgerBriefing } from './prompts.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import type { OverviewScope } from '../../shared/schemas/overview.js'
+import { operationalLogCodeFor } from '../../shared/operational-log.js'
+import type { OperationalLogEvent, OperationalLogFields, OperationalLogForwarder } from '../../shared/operational-log.js'
 import {
   coachInspectRequestSchema,
   coachRunRequestSchema,
@@ -76,6 +78,9 @@ export interface CoachRunnerDeps {
    *  turn still runs, just without data tools) rather than failing the turn.
    *  The runner releases every acquired attachment when its run settles. */
   ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
+  /** Operational log forwarder (ticket #130): Harness run start/finish/error
+   * by kind only — never prompts. Defaults to a no-op for unit tests. */
+  onOperationalLog?: OperationalLogForwarder
 }
 
 export interface CoachRunner {
@@ -122,6 +127,10 @@ function toProbeInput(request: unknown): ProbeInput | null {
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   const activeRuns = new Map<string, AsyncGenerator<CoachEvent>>()
+  const onLog = deps.onOperationalLog ?? (() => {})
+  function logHarness(event: OperationalLogEvent, fields: OperationalLogFields): void {
+    try { onLog(event, fields) } catch { /* logging must never break a run */ }
+  }
   /** The conversation's private temp workspace (map 53 ticket 56): created on
    *  the first run, reused while the session resumes, deleted on reset/quit. */
   let workspace: string | null = null
@@ -387,6 +396,8 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         // consumed (a second session-less run must not resume it again).
         if (resumeProbed) probedSession = null
         activeRuns.set(runId, gen)
+        // Operational log (ticket #130): Harness kind only — never prompts.
+        logHarness('harness.start', { harnessKind: harness.kind })
 
         // Stream in the background — the ack returns immediately; events land
         // on the push channel as they stream. A generator throw (SDK failure)
@@ -396,7 +407,9 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
             for await (const event of gen) {
               emit(runId, event)
             }
+            logHarness('harness.finish', { harnessKind: harness.kind })
           } catch (err) {
+            logHarness('harness.error', { harnessKind: harness.kind, code: operationalLogCodeFor(err, 'failed') })
             emit(runId, { kind: 'error', message: err instanceof Error ? err.message : String(err) })
           } finally {
             activeRuns.delete(runId)
@@ -406,6 +419,12 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
 
         return { ok: true, runId }
       } catch (err) {
+        // A launch failure after the harness was resolved still records by
+        // kind only — the prompt never leaves this closure.
+        try {
+          const kind = found.find(h => h.kind === req.harnessKind)?.kind ?? req.harnessKind
+          logHarness('harness.error', { harnessKind: kind, code: operationalLogCodeFor(err, 'failed') })
+        } catch { /* logging must never break the ack */ }
         attachment?.release()
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
@@ -477,13 +496,20 @@ export interface AgentsIpcSources {
    *  argument. Null when there is no ledger.db yet (fresh install) or the
    *  sidecar fails to boot — no data, no tools. */
   ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
+  /** Operational log forwarder (ticket #130): Harness lifecycle by kind plus
+   * `ipc.error` for Coach/Skills handler failures. Injected by the
+   * composition root; defaults to a no-op for unit tests. */
+  onOperationalLog?: OperationalLogForwarder
 }
 
 /** Wire the Coach & Skills IPC surface onto ipcMain. Call once from
  *  registerIpc(); returns the runner cleanup handle (temp workspace teardown)
  *  for the app's quit path. `dismissals` bridges the not-a-skill store. */
 export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Promise<void> } {
-  const { dismissals, appPath, ledgerMcpServer } = sources
+  const { dismissals, appPath, ledgerMcpServer, onOperationalLog } = sources
+  const logIpcError = (op: string, err: unknown): void => {
+    try { onOperationalLog?.('ipc.error', { op, code: operationalLogCodeFor(err, 'failed') }) } catch { /* best effort */ }
+  };
   let runtimePromise: Promise<HarnessRuntime> | null = null
   const runner = createCoachRunner({
     // The SDK is ESM and heavy; boot stays independent of it (the seam's
@@ -503,9 +529,17 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
       authProbe: kind => (kind === 'claude' ? probeClaudeAuthStatus() : Promise.resolve('unknown')),
     }),
     ledgerMcpServer,
+    ...(onOperationalLog ? { onOperationalLog } : {}),
   })
 
-  ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> => runner.harnesses())
+  ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> => {
+    try {
+      return await runner.harnesses()
+    } catch (err) {
+      logIpcError('coach:harnesses', err)
+      throw err
+    }
+  })
 
   /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
    *  models/modes without a run, so the pickers render before the first
@@ -515,21 +549,31 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
   ipcMain.handle('coach:inspect', async (_event, request: unknown): Promise<CoachInspectResult> => {
     // The runner validates (bare key or { kind, allowApiKeyEnv }) — a probe
     // failure is `{ ok: false }` (pickers absent, chat unaffected).
-    return runner.inspect(request)
+    try {
+      return await runner.inspect(request)
+    } catch (err) {
+      logIpcError('coach:inspect', err)
+      throw err
+    }
   })
 
   ipcMain.handle('coach:run', async (event, request: unknown): Promise<CoachRunResult> => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win) return { ok: false, error: 'no window' }
-    return runner.start(request, (runId, coachEvent) => {
-      if (!win.isDestroyed()) {
-        win.webContents.send('coach:event', { runId, event: coachEvent } satisfies CoachEventEnvelope)
-      } else {
-        // The window that launched the run is gone — stop pulling the stream
-        // so the ACP child process is torn down instead of leaking.
-        runner.cancel(runId)
-      }
-    })
+    try {
+      return await runner.start(request, (runId, coachEvent) => {
+        if (!win.isDestroyed()) {
+          win.webContents.send('coach:event', { runId, event: coachEvent } satisfies CoachEventEnvelope)
+        } else {
+          // The window that launched the run is gone — stop pulling the stream
+          // so the ACP child process is torn down instead of leaking.
+          runner.cancel(runId)
+        }
+      })
+    } catch (err) {
+      logIpcError('coach:run', err)
+      throw err
+    }
   })
 
   ipcMain.on('coach:cancel', (_event, runId: string) => {
@@ -554,10 +598,15 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
   // coach:run's single coach mode (ADR 0017 reshaped), so no separate prose
   // channel exists here.
   ipcMain.handle('skills:dismiss', async (_event, request: unknown): Promise<SkillsDismissalResult> => {
-    const parsed = skillsDismissalRequestSchema.safeParse(request)
-    if (!parsed.success) return { ok: false, error: 'invalid dismissal request' }
-    await dismissals.dismiss(parsed.data.source, parsed.data.name, parsed.data.reason)
-    return { ok: true }
+    try {
+      const parsed = skillsDismissalRequestSchema.safeParse(request)
+      if (!parsed.success) return { ok: false, error: 'invalid dismissal request' }
+      await dismissals.dismiss(parsed.data.source, parsed.data.name, parsed.data.reason)
+      return { ok: true }
+    } catch (err) {
+      logIpcError('skills:dismiss', err)
+      throw err
+    }
   })
 
   return { reset: () => runner.reset() }

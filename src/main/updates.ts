@@ -16,6 +16,7 @@
 // requires *some* User-Agent, which the default satisfies. See fetchReleases.
 
 import type { UpdateStatus } from '../shared/schemas/updates.js'
+import type { OperationalLogForwarder } from '../shared/operational-log.js'
 
 export type { UpdateStatus } from '../shared/schemas/updates.js'
 
@@ -79,8 +80,12 @@ export function createUpdateChecker(opts: {
   currentVersion: string
   /** Injected in tests; defaults to the real GitHub read. */
   fetchReleasesImpl?: (signal: AbortSignal) => Promise<GitHubRelease[]>
+  /** Operational log forwarder (ticket #130): offline/unreachable checks land
+   * as info notes, never errors. Defaults to a no-op for unit tests. */
+  onOperationalLog?: OperationalLogForwarder
 }): UpdateChecker {
   const fetchReleasesImpl = opts.fetchReleasesImpl ?? ((signal: AbortSignal) => fetchReleases(signal))
+  const onLog = opts.onOperationalLog ?? (() => {})
 
   let cached = baselineStatus(opts.currentVersion)
   let inflight: Promise<UpdateStatus> | null = null
@@ -106,7 +111,9 @@ export function createUpdateChecker(opts: {
         }
       } catch {
         // Offline / GitHub error / private repo / timeout: silent no-op. Keep
-        // the last known status so the next click retries cleanly.
+        // the last known status so the next click retries cleanly. Recorded
+        // as an info note (ticket #130) — being offline is not breakage.
+        try { onLog('updates.offline', { code: 'unavailable' }) } catch { /* best effort */ }
       } finally {
         clearTimeout(timer)
         inflight = null
