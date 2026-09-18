@@ -9,12 +9,38 @@ name: e2e
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'src/**'
+      - 'e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'electron.vite.config.ts'
+      - 'playwright.config.ts'
+      - '.github/workflows/e2e.yml'
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'electron.vite.config.ts'
+      - 'playwright.config.ts'
+      - '.github/workflows/e2e.yml'
   workflow_dispatch:
+
+# Superseded commits cancel instead of burning two OS runners each:
+# a push burst costs ~1 run, not N. Safe here because e2e.yml is never
+# called as a reusable workflow (unlike test.yml, see its header).
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   e2e:
+    # Drafts are by definition not mergeable — skip them, run on ready PRs.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
