@@ -18,17 +18,21 @@ behavior and the macOS Full Disk Access requirement.
 
 ## Scripts
 
-| Command | What it does |
-|---------|--------------|
-| `npm run dev` | Run the app in development (electron-vite) |
-| `npm run build` | Compile main, preload, and renderer bundles |
-| `npm run preview` | Preview a built app |
-| `npm run typecheck` | Type-check both node and web targets (`typecheck:node` / `typecheck:web`) |
-| `npm test` | Run the vitest suite (`tests/`) |
-| `npm run test:e2e` | Build the bundles, then run the Playwright Electron smoke (`e2e/`) |
-| `npm run package` | Build + package for the platform you are on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux) |
-| `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS) |
-| `npm run icons` | Regenerate `build/icon.png` from `assets/watchtower-logo.svg` |
+| Command                                                 | What it does                                                                                           |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `npm run dev`                                           | Run the app in development (electron-vite)                                                             |
+| `npm run build`                                         | Compile main, preload, and renderer bundles                                                            |
+| `npm run preview`                                       | Preview a built app                                                                                    |
+| `npm run typecheck`                                     | Type-check both node and web targets (`typecheck:node` / `typecheck:web`)                              |
+| `npm test`                                              | Run the vitest suite (`tests/`)                                                                        |
+| `npm run test:e2e`                                      | Build the bundles, then run the Playwright Electron smoke (`e2e/`)                                     |
+| `npm run lint`                                          | ESLint v9 flat gate (`eslint.config.mjs`) — blocking in CI (`test.yml`)                                |
+| `npm run lint:fix`                                      | Autofix what ESLint can (import order), report the rest                                                |
+| `npm run format`                                        | Rewrite everything with Prettier (`.prettierrc.json`)                                                  |
+| `npm run format:check`                                  | Prettier check — advisory until the one-time whole-tree pass lands                                     |
+| `npm run package`                                       | Build + package for the platform you are on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux) |
+| `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS)                                     |
+| `npm run icons`                                         | Regenerate `build/icon.png` from `assets/watchtower-logo.svg`                                          |
 
 ## End-to-end tests
 
@@ -58,7 +62,7 @@ Notes:
 - `npx playwright test` alone reuses the last `npm run build` output when you
   want to iterate without rebuilding.
 - Linux without a display needs a virtual server (`xvfb-run -a npm run
-  test:e2e`); Windows and macOS run headed as-is. There is no headless mode:
+test:e2e`); Windows and macOS run headed as-is. There is no headless mode:
   Electron always opens a real window (Linux fakes the display via xvfb).
 - CI runs the suite non-blocking via `.github/workflows/e2e.yml`
   (Windows + Linux matrix, `xvfb-run` on Linux) — failures notify but never
@@ -69,12 +73,12 @@ Notes:
 
 `e2e/app.ts` owns the launch fixture — reuse it, don't relaunch by hand:
 
-| File | Covers |
-|------|--------|
-| `e2e/app.ts` | `launchApp` (isolated `--user-data-dir`, `pageErrors` tap), `dismissOnboarding`, `waitForAnyVisible`, `withApp` (lifecycle + zero-`pageerror` assert) |
-| `e2e/smoke.spec.ts` | Boot, onboarding dismissal, Overview ↔ Sessions |
-| `e2e/sections.spec.ts` | Every sidebar destination renders (extend the `MARKERS` map for new sections) |
-| `e2e/command-palette.spec.ts` | Mod+K → filter → Enter navigates |
+| File                          | Covers                                                                                                                                                |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `e2e/app.ts`                  | `launchApp` (isolated `--user-data-dir`, `pageErrors` tap), `dismissOnboarding`, `waitForAnyVisible`, `withApp` (lifecycle + zero-`pageerror` assert) |
+| `e2e/smoke.spec.ts`           | Boot, onboarding dismissal, Overview ↔ Sessions                                                                                                       |
+| `e2e/sections.spec.ts`        | Every sidebar destination renders (extend the `MARKERS` map for new sections)                                                                         |
+| `e2e/command-palette.spec.ts` | Mod+K → filter → Enter navigates                                                                                                                      |
 
 Rules (the boot scan reads the host's real sources read-only, so content
 varies machine to machine): never assert data values, row counts, or URLs
@@ -82,6 +86,30 @@ varies machine to machine): never assert data values, row counts, or URLs
 splash also matches pre-mount); assert views with content-OR-empty markers
 via `waitForAnyVisible`; wrap every spec in `withApp` (asserts zero
 `pageerror`s for you).
+
+## Lint & formatting
+
+ESLint v9 (flat `eslint.config.mjs`) + Prettier (`.prettierrc.json`), scaffolded
+in #136 out of #123 (W6/W11/W14 + Phase 1 lint gate):
+
+- **Process boundaries are the point.** The renderer is sandboxed (ADR 0005) and
+  the data plane lives on the db-worker (ADR 0023) — `npm run lint` fails on any
+  `electron`/`node:*` import inside `src/renderer/`, any `main ↔ renderer`
+  cross-import, or any `window`/`document` use inside `src/main/`. Preload keeps
+  its `import type` contract from `../main/**` (IPC wire types); value imports
+  from main would break the sandbox and there are none.
+- **Warn-first, by design.** The tree predates the gate, so pervasive
+  pre-existing style (non-null assertions, import order, unused vars, control-
+  char sanitizer regexes, dynamic cache deletes) reports as warnings while the
+  gate stays green — each gets promoted to error with its own cleanup diff in
+  the follow-up, never as one giant reformatting PR.
+- **Formatting is advisory for now.** `npm run format:check` runs in CI
+  non-blocking (same pattern as `e2e.yml`): the tree predates Prettier, so the
+  one-time `prettier --write` whole-tree pass plus promotion to blocking rides
+  the follow-up. `endOfLine` is `auto` until the repo adopts a line-ending
+  policy (no `.gitattributes` yet; blobs are LF, Windows checkouts land CRLF).
+- Editor: install the ESLint + Prettier extensions — `.vscode/settings.json`
+  already turns on format-on-save and fix-on-save.
 
 ## Project layout
 
@@ -141,7 +169,7 @@ referenced inline in the code, for example the shortcut registry (ADR 0001) in
 
 ## Environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `WATCHTOWER_CACHE_DIR` | Override the session-cache directory (set automatically to `<userData>/cache` at startup) |
+| Variable                        | Description                                                                                         |
+| ------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `WATCHTOWER_CACHE_DIR`          | Override the session-cache directory (set automatically to `<userData>/cache` at startup)           |
 | `CSC_LINK` / `CSC_KEY_PASSWORD` | (Optional) code-signing certificate for Windows/macOS builds; signs when present, skips when absent |

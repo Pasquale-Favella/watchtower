@@ -1,8 +1,9 @@
 name: test
 
-# Typecheck + tests — the merge-readiness gate (ADR 0015). Runs standalone on
-# every pull request and push to main, and is also reusable: release.yml calls
-# it on version tags so a release only builds code that just passed tests.
+# Typecheck + tests + lint — the merge-readiness gate (ADR 0015). Runs
+# standalone on every pull request and push to main, and is also reusable:
+# release.yml calls it on version tags so a release only builds code that
+# just passed tests.
 #
 # Builds never run here — installers are produced only on version tags, in
 # release.yml.
@@ -19,6 +20,29 @@ on:
 # starts. The caller (release.yml) owns cancellation for release runs.
 
 jobs:
+  lint:
+    # Lint gate scaffold (#136, spins out of #123 W6/W11/W14 + Phase 1).
+    # `npm run lint` is BLOCKING (exit 1 on any error); the warn-first set
+    # (non-null assertions, import order, unused vars — see eslint.config.mjs)
+    # stays advisory until the follow-up promotes each to error with its own
+    # cleanup diff. `format:check` is intentionally NON-BLOCKING here: the
+    # tree predates Prettier (305 unformatted files at scaffold time), so the
+    # one-time `prettier --write` pass plus promotion to blocking rides the
+    # follow-up, mirroring how e2e.yml went non-blocking first (#133/#134).
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+        continue-on-error: true
+
   test:
     name: Typecheck + tests
     runs-on: ubuntu-latest

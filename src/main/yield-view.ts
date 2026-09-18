@@ -109,7 +109,7 @@ async function resolveRepoIdentity(
   return identity
 }
 
-const SAFE_REF_PATTERN = /^[A-Za-z0-9._/\-]+$/
+const SAFE_REF_PATTERN = /^[A-Za-z0-9._/-]+$/
 
 async function getMainBranch(cwd: string): Promise<string> {
   const result = await runGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], cwd)

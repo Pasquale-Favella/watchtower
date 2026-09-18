@@ -1053,7 +1053,7 @@ export function compactEntry(raw: JournalEntry): JournalEntry {
   const contentArr = Array.isArray(rawContent) ? rawContent : []
   const toolBlocks = contentArr.filter((b): b is ToolUseBlock => b != null && typeof b === 'object' && b.type === 'tool_use')
   const compactContent: ContentBlock[] = toolBlocks.slice(0, MAX_TOOL_BLOCKS).map(tb => {
-    let input: Record<string, unknown> = {}
+    const input: Record<string, unknown> = {}
     if (tb.name === 'Skill') {
       const ri = (tb.input ?? {}) as Record<string, unknown>
       if (typeof ri['skill'] === 'string') input['skill'] = (ri['skill'] as string).slice(0, 200)

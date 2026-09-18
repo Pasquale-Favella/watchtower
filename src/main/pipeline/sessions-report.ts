@@ -226,7 +226,7 @@ export function renderTable(rows: SessionRow[], opts: SessionTableOptions = {}):
   for (let i = 0; i < columns.length; i++) {
     const col = columns[i]!
     const longest = Math.max(col.header.length, ...values.map(row => row[i]?.length ?? 0))
-    let spare = available - frameWidth(columns)
+    const spare = available - frameWidth(columns)
     const wanted = Math.max(0, Math.min(longest - col.width, spare))
     col.width += wanted
   }

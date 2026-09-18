@@ -17,6 +17,10 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest",
     "test:e2e": "npm run build && playwright test",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "icons": "node scripts/generate-icons.cjs",
     "package": "electron-vite build && electron-builder --publish never",
     "package:win": "electron-vite build && electron-builder --win --publish never",
@@ -59,6 +63,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.0",
     "@types/node": "^22.19.17",
@@ -68,9 +73,18 @@
     "electron": "^43.2.0",
     "electron-builder": "^26.15.7",
     "electron-vite": "^5.0.0",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "eslint-plugin-simple-import-sort": "^14.0.0",
+    "globals": "^16.5.0",
     "pino-pretty": "^13.1.3",
+    "prettier": "^3.9.8",
+    "prettier-plugin-tailwindcss": "^0.8.1",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.8.0",
+    "typescript-eslint": "^8.70.0",
     "vite": "^7.0.0",
     "vitest": "^3.1.0"
   }
