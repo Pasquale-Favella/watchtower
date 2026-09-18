@@ -25,13 +25,73 @@ behavior and the macOS Full Disk Access requirement.
 | `npm run preview` | Preview a built app |
 | `npm run typecheck` | Type-check both node and web targets (`typecheck:node` / `typecheck:web`) |
 | `npm test` | Run the vitest suite (`tests/`) |
+| `npm run test:e2e` | Build the bundles, then run the Playwright Electron smoke (`e2e/`) |
 | `npm run package` | Build + package for the platform you are on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux) |
 | `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS) |
 | `npm run icons` | Regenerate `build/icon.png` from `assets/watchtower-logo.svg` |
 
+## End-to-end tests
+
+Unit/integration coverage lives in `tests/` (Vitest). The Electron smoke lives
+in `e2e/` (Playwright, `playwright.config.ts`) and drives the real app window:
+
+```bash
+npm run test:e2e
+```
+
+What it does: builds the current bundles (`out/`, git-ignored), launches
+`electron .` with a fresh `--user-data-dir` under the OS temp root, and
+asserts boot (window title), first-run onboarding dismissal, and
+Overview ↔ Sessions navigation with no renderer `pageerror`. The temp profile
+is deleted afterwards. Note the isolation boundary: the ledger destination is
+isolated, but the boot scan still READS the host's real assistant sources
+(read-only) — your files are never modified, but the run sees your data.
+
+First launch hydrates through a full scan of the host's real assistant sources
+(read-only — only the ledger destination is isolated), so the first run can
+take minutes; the ceiling in `playwright.config.ts` reflects that.
+
+Notes:
+
+- No browser download needed: Electron specs drive the repo's own Electron
+  binary, so `npx playwright install` is NOT required.
+- `npx playwright test` alone reuses the last `npm run build` output when you
+  want to iterate without rebuilding.
+- Linux without a display needs a virtual server (`xvfb-run -a npm run
+  test:e2e`); Windows and macOS run headed as-is. There is no headless mode:
+  Electron always opens a real window (Linux fakes the display via xvfb).
+- CI runs the suite non-blocking via `.github/workflows/e2e.yml`
+  (Windows + Linux matrix, `xvfb-run` on Linux) — failures notify but never
+  block the `test.yml` merge gate; promoting it into the gate is tracked in
+  #135.
+
+### Adding a spec
+
+`e2e/app.ts` owns the launch fixture — reuse it, don't relaunch by hand:
+
+| File | Covers |
+|------|--------|
+| `e2e/app.ts` | `launchApp` (isolated `--user-data-dir`, `pageErrors` tap), `dismissOnboarding`, `waitForAnyVisible`, `withApp` (lifecycle + zero-`pageerror` assert) |
+| `e2e/smoke.spec.ts` | Boot, onboarding dismissal, Overview ↔ Sessions |
+| `e2e/sections.spec.ts` | Every sidebar destination renders (extend the `MARKERS` map for new sections) |
+| `e2e/command-palette.spec.ts` | Mod+K → filter → Enter navigates |
+
+Rules (the boot scan reads the host's real sources read-only, so content
+varies machine to machine): never assert data values, row counts, or URLs
+(memory-history router); key readiness off `dismissOnboarding` (a hidden
+splash also matches pre-mount); assert views with content-OR-empty markers
+via `waitForAnyVisible`; wrap every spec in `withApp` (asserts zero
+`pageerror`s for you).
+
 ## Project layout
 
 ```
+e2e/                      # Playwright Electron specs (npm run test:e2e)
+├─ app.ts                 # launch fixture: launchApp, dismissOnboarding, waitForAnyVisible, withApp
+├─ smoke.spec.ts          # boot + onboarding + Overview ↔ Sessions
+├─ sections.spec.ts       # all-section render walk (MARKERS map)
+└─ command-palette.spec.ts # Mod+K → filter → Enter navigates
+playwright.config.ts      # testDir e2e, single worker, generous first-scan ceiling
 src/
 ├─ main/                    # Electron main process, owns everything
 │  ├─ index.ts              # window, IPC surface, scan orchestration, cadence
