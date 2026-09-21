@@ -9,9 +9,15 @@ import {
 } from '../shared/schemas/spend.js'
 import { localDateKey, overviewDateRange, type OverviewScope } from './overview.js'
 import { getShortModelName } from './pipeline/models.js'
-import type { SessionSummary } from './pipeline/types.js'
-import { buildSessionSummaries, sessionProjectKey } from './store/aggregate.js'
-import type { LedgerStore } from './store/ledger.js'
+import {
+  loadScopePricing,
+  resolveScopedCalls,
+  type ScopedCall,
+  scopedSessionKeys,
+  sessionProjectIdentity,
+  turnInRange,
+} from './store/aggregate.js'
+import type { LedgerStore, SessionKey } from './store/ledger.js'
 
 export type {
   SpendDayEntry,
@@ -148,6 +154,102 @@ function rollLinks(
   return [...rolled.values()]
 }
 
+/** Sessions per streamed chunk (#141 item 1): one chunk's sessions, turns,
+ * and calls is the most that ever materializes during a Spend read. Chunks
+ * are session-granular (a session's calls never split across chunks), so
+ * chunking is byte-invisible by construction. Test seam: pass a smaller
+ * `sessionChunkSize` to `buildSpendViewFromLedger` to prove chunk-invariance. */
+export const SPEND_SESSION_CHUNK = 100
+
+/** One spend-contributing call: its canonical project identity plus the
+ * priced/model-resolved facts the accumulation needs. */
+interface SpendFlatCall {
+  projectKey: string
+  project: string
+  model: string
+  rawModel: string | undefined
+  costUSD: number
+  timestamp: string
+}
+
+/** The running Sankey/chart accumulation (small maps — the only state that
+ * survives across streamed chunks). */
+interface SpendAccumulator {
+  byModelDay: Map<string, Map<string, number>>
+  byProjectDay: Map<string, Map<string, number>>
+  matrix: Map<string, Map<string, number>>
+  projectTotals: Map<string, number>
+  modelTotals: Map<string, number>
+  modelProvenance: Map<string, Set<string>>
+  projectDisplayByKey: Map<string, string>
+}
+
+function createSpendAccumulator(): SpendAccumulator {
+  return {
+    byModelDay: new Map(),
+    byProjectDay: new Map(),
+    matrix: new Map(),
+    projectTotals: new Map(),
+    modelTotals: new Map(),
+    modelProvenance: new Map(),
+    projectDisplayByKey: new Map(),
+  }
+}
+
+/** Folds one priced call into the accumulation: flow/matrix/totals see every
+ * gated call, daily buckets only the in-window ones. Verbatim the old
+ * per-call body (same skips, same provenance, same windowing). */
+function accumulateSpendCall(acc: SpendAccumulator, call: SpendFlatCall, winStart: string, winEnd: string): void {
+  const cost = call.costUSD
+  if (!cost || cost <= 0) return
+  const model = getShortModelName(call.model)
+  if (model === '<synthetic>') return
+  if (call.rawModel && call.rawModel !== call.model) {
+    let set = acc.modelProvenance.get(model)
+    if (!set) {
+      set = new Set<string>()
+      acc.modelProvenance.set(model, set)
+    }
+    set.add(call.rawModel)
+  }
+
+  let modelCosts = acc.matrix.get(call.projectKey)
+  if (!modelCosts) {
+    modelCosts = new Map<string, number>()
+    acc.matrix.set(call.projectKey, modelCosts)
+  }
+  addToMap(modelCosts, model, cost)
+  addToMap(acc.projectTotals, call.projectKey, cost)
+  addToMap(acc.modelTotals, model, cost)
+
+  const ms = Date.parse(call.timestamp)
+  if (Number.isNaN(ms)) return
+  const dayKey = localDateKey(new Date(ms))
+  if (dayKey < winStart || dayKey > winEnd) return
+
+  let modelDay = acc.byModelDay.get(dayKey)
+  if (!modelDay) {
+    modelDay = new Map<string, number>()
+    acc.byModelDay.set(dayKey, modelDay)
+  }
+  addToMap(modelDay, model, cost)
+
+  let projectDay = acc.byProjectDay.get(dayKey)
+  if (!projectDay) {
+    projectDay = new Map<string, number>()
+    acc.byProjectDay.set(dayKey, projectDay)
+  }
+  addToMap(projectDay, call.projectKey, cost)
+}
+
+function chunkSessionKeys(keys: SessionKey[], size: number): SessionKey[][] {
+  const out: SessionKey[][] = []
+  for (let i = 0; i < keys.length; i += size) out.push(keys.slice(i, i + size))
+  return out
+}
+
+const sessionKeyOf = (sourceId: number, sessionId: string): string => `${sourceId}\0${sessionId}`
+
 /**
  * The Spend section's scoped payload (ADR 0008). Applies exactly the same
  * period / custom-range / provider scope as the Overview's `overview:query`,
@@ -157,9 +259,11 @@ function rollLinks(
  *   by model and by project (a contiguous window: the custom range, or the
  *   last `SPEND_CHART_DAYS` days ending today);
  * - runs the `computeSpendFlow` aggregation (top-N + "Other", N from the
- *   flow page, default 8) over the full scoped set for the recharts-native
- *   Sankey. A pre-aggregated Sankey (paging the inputs before aggregation) is
- *   a follow-up — the range-filtered SQL read already bounds the input set.
+ *   flow page, default 8) over the range-filtered scoped set for the
+ *   recharts-native Sankey. The Sankey inputs stream in session chunks
+ *   (#141 item 1): only one chunk's rows materialize at a time, while the
+ *   accumulation (small maps) is order-independent — byte-identical to the
+ *   old full-set aggregation.
  * Kept in the main process so the sandboxed renderer only receives
  * serializable rows over IPC.
  */
@@ -168,20 +272,9 @@ export function buildSpendViewFromLedger(
   scope: OverviewScope,
   now = new Date(),
   page?: SpendFlowPage,
+  sessionChunkSize: number = SPEND_SESSION_CHUNK,
 ): SpendPayload {
-  const scoped = buildSessionSummaries(store, { range: overviewDateRange(scope, now), provider: scope.provider })
-    // Key spend buckets on the canonical project key so same-leaf checkouts
-    // (/a/src, /b/src) never collapse; the leaf rides along for display only.
-    .map(summary => ({ projectKey: sessionProjectKey(summary), project: summary.project, session: summary }))
-  return spendPayloadSchema.parse(buildSpendPayload(scoped, scope, now, normalizeSpendFlowLimit(page)))
-}
-
-function buildSpendPayload(
-  scoped: Array<{ projectKey: string; project: string; session: SessionSummary }>,
-  scope: OverviewScope,
-  now: Date,
-  flowLimit: number,
-): SpendPayload {
+  const range = overviewDateRange(scope, now)
   const todayKey = localDateKey(now)
   let winStart: string
   let winEnd: string
@@ -193,62 +286,94 @@ function buildSpendPayload(
     winStart = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - (SPEND_CHART_DAYS - 1)))
   }
 
-  const byModelDay = new Map<string, Map<string, number>>()
-  const byProjectDay = new Map<string, Map<string, number>>()
-  const matrix = new Map<string, Map<string, number>>()
-  const projectTotals = new Map<string, number>()
-  const modelTotals = new Map<string, number>()
-  const modelProvenance = new Map<string, Set<string>>()
-  const projectDisplayByKey = new Map<string, string>()
-  for (const { projectKey, project } of scoped) {
-    if (!projectDisplayByKey.has(projectKey)) projectDisplayByKey.set(projectKey, project)
-  }
+  // Discovery order matches the summaries order (session_id asc) so the
+  // project display map's first-wins behaves identically to the old path.
+  // Key spend buckets on the canonical project key so same-leaf checkouts
+  // (/a/src, /b/src) never collapse; the leaf rides along for display only.
+  const keys = scopedSessionKeys(store, { range, provider: scope.provider }).sort((a, b) =>
+    a.sessionId.localeCompare(b.sessionId),
+  )
+  loadScopePricing(store)
+  const providerBySource = new Map<number, string>()
+  for (const source of store.getSources()) providerBySource.set(source.id, source.provider)
 
-  for (const { projectKey, session } of scoped) {
-    for (const turn of session.turns) {
-      for (const call of turn.assistantCalls) {
-        const cost = call.costUSD
-        if (!cost || cost <= 0) continue
-        const model = getShortModelName(call.model)
-        if (model === '<synthetic>') continue
-        if (call.rawModel && call.rawModel !== call.model) {
-          let set = modelProvenance.get(model)
-          if (!set) {
-            set = new Set<string>()
-            modelProvenance.set(model, set)
-          }
-          set.add(call.rawModel)
-        }
-
-        let modelCosts = matrix.get(projectKey)
-        if (!modelCosts) {
-          modelCosts = new Map<string, number>()
-          matrix.set(projectKey, modelCosts)
-        }
-        addToMap(modelCosts, model, cost)
-        addToMap(projectTotals, projectKey, cost)
-        addToMap(modelTotals, model, cost)
-
-        const ms = Date.parse(call.timestamp)
-        if (Number.isNaN(ms)) continue
-        const dayKey = localDateKey(new Date(ms))
-        if (dayKey < winStart || dayKey > winEnd) continue
-
-        let modelDay = byModelDay.get(dayKey)
-        if (!modelDay) {
-          modelDay = new Map<string, number>()
-          byModelDay.set(dayKey, modelDay)
-        }
-        addToMap(modelDay, model, cost)
-
-        let projectDay = byProjectDay.get(dayKey)
-        if (!projectDay) {
-          projectDay = new Map<string, number>()
-          byProjectDay.set(dayKey, projectDay)
-        }
-        addToMap(projectDay, projectKey, cost)
+  const acc = createSpendAccumulator()
+  const chunkSize = Math.max(1, Math.floor(sessionChunkSize))
+  for (const chunk of chunkSessionKeys(keys, chunkSize)) {
+    const sessionsByKey = new Map(
+      store.getSessionsForKeys(chunk, scope.provider).map(s => [sessionKeyOf(s.sourceId, s.sessionId), s]),
+    )
+    // Turn-row join parity with the summary assembly: calls whose turn row
+    // is absent never reach a summary, so they never reach spend either.
+    const turnKeys = new Set(
+      store.getTurnsForSessionKeys(chunk).map(t => `${sessionKeyOf(t.sourceId, t.sessionId)}\0${t.turnIndex}`),
+    )
+    // Calls arrive ordered by session/turn/call and chunks are
+    // session-granular (a session's calls never split across chunks): group
+    // contiguous turns, gate each group on its first call (exactly
+    // `assembleSession`'s `turnInRange`), and accumulate the survivors.
+    let group: ScopedCall[] = []
+    let groupKey = ''
+    const flushGroup = (calls: ScopedCall[], key: string): void => {
+      const first = calls[0]
+      if (first === undefined || !turnKeys.has(key) || !turnInRange(first.timestamp, range)) return
+      const session = sessionsByKey.get(sessionKeyOf(first.sourceId, first.sessionId))
+      if (session === undefined) return
+      const identity = sessionProjectIdentity(
+        session,
+        providerBySource.get(session.sourceId) ?? 'unknown',
+        session.project ?? '',
+      )
+      if (!acc.projectDisplayByKey.has(identity.projectKey)) {
+        acc.projectDisplayByKey.set(identity.projectKey, identity.project)
+      }
+      for (const call of calls) {
+        accumulateSpendCall(
+          acc,
+          {
+            projectKey: identity.projectKey,
+            project: identity.project,
+            model: call.resolvedModel,
+            rawModel: call.resolvedModel !== call.model ? call.model : undefined,
+            costUSD: call.displayCostUSD,
+            timestamp: call.timestamp,
+          },
+          winStart,
+          winEnd,
+        )
       }
     }
+    for (const call of resolveScopedCalls(store.getCallsForSessionKeys(chunk))) {
+      const key = `${sessionKeyOf(call.sourceId, call.sessionId)}\0${call.turnIndex}`
+      if (group.length > 0 && key !== groupKey) {
+        flushGroup(group, groupKey)
+        group = []
+      }
+      groupKey = key
+      group.push(call)
+    }
+    flushGroup(group, groupKey)
+  }
+
+  return spendPayloadSchema.parse(buildSpendPayload(acc, scope, now, normalizeSpendFlowLimit(page)))
+}
+
+function buildSpendPayload(
+  acc: SpendAccumulator,
+  scope: OverviewScope,
+  now: Date,
+  flowLimit: number,
+): SpendPayload {
+  const { byModelDay, byProjectDay, matrix, projectTotals, modelTotals, modelProvenance, projectDisplayByKey } = acc
+  const todayKey = localDateKey(now)
+  let winStart: string
+  let winEnd: string
+  if (scope.range) {
+    winStart = scope.range.since
+    winEnd = scope.range.until
+  } else {
+    winEnd = todayKey
+    winStart = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - (SPEND_CHART_DAYS - 1)))
   }
 
   const byModel = contiguousDayEntries(byModelDay, winStart, winEnd).map(entry => ({

@@ -204,6 +204,84 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
     store.close()
   })
 
+  it('gates whole turns on their first call timestamp at range boundaries', () => {
+    // Byte lock for the streamed Sankey reads (#141 item 1): a turn whose
+    // FIRST call falls before the range contributes none of its calls, even
+    // the in-range ones; a turn starting in-range contributes all of its
+    // calls to the flow (but only in-window calls to the daily buckets).
+    const store = makeLedger()
+    const early = { ...buildFixtureCachedCall(0), provider: 'claude', model: 'claude-opus-4', costUSD: 100, timestamp: '2026-07-05T12:00:00.000Z' }
+    const late = { ...buildFixtureCachedCall(1), provider: 'claude', model: 'claude-opus-4', costUSD: 50, timestamp: '2026-07-11T12:00:00.000Z' }
+    const straddler = buildFixtureCachedFile({
+      canonicalProjectName: 'alpha',
+      canonicalCwd: `${SPEND_ROOT}/alpha`,
+      title: '',
+      turns: [
+        buildFixtureCachedTurn(0, 'task', { sessionId: 's-straddle', timestamp: '2026-07-05T12:00:00.000Z', calls: [early, late] }),
+      ],
+    })
+    store.portIn({ provider: 'claude', envFingerprint: 'env-demo', filePath: '/cache/claude/straddle.jsonl', verdict: 'new', cachedFile: straddler })
+    portSpendSessions(store, [
+      { sessionId: 's-1', provider: 'claude', model: 'claude-sonnet-4', project: 'beta', cost: 7, date: '2026-07-11' },
+    ])
+    const payload = buildSpendViewFromLedger(
+      store,
+      { period: 'lifetime', range: { since: '2026-07-10', until: '2026-07-12' } },
+      NOW,
+    )
+    // The straddling turn's in-range $50 call is excluded with its turn.
+    expect(payload.byModel[1]).toEqual({ date: '2026-07-11', cost: 7, segments: [{ name: 'Sonnet 4', cost: 7 }] })
+    expect(payload.flow.models).toEqual([{ id: 'Sonnet 4', label: 'Sonnet 4', cost: 7 }])
+    store.close()
+  })
+
+  it('counts out-of-window calls of an in-range turn in the flow but not the daily buckets', () => {
+    const store = makeLedger()
+    const first = { ...buildFixtureCachedCall(0), provider: 'claude', model: 'claude-opus-4', costUSD: 30, timestamp: '2026-07-11T12:00:00.000Z' }
+    const second = { ...buildFixtureCachedCall(1), provider: 'claude', model: 'claude-opus-4', costUSD: 20, timestamp: '2026-07-20T12:00:00.000Z' }
+    const trailing = buildFixtureCachedFile({
+      canonicalProjectName: 'alpha',
+      canonicalCwd: `${SPEND_ROOT}/alpha`,
+      title: '',
+      turns: [
+        buildFixtureCachedTurn(0, 'task', { sessionId: 's-trail', timestamp: '2026-07-11T12:00:00.000Z', calls: [first, second] }),
+      ],
+    })
+    store.portIn({ provider: 'claude', envFingerprint: 'env-demo', filePath: '/cache/claude/trail.jsonl', verdict: 'new', cachedFile: trailing })
+    const payload = buildSpendViewFromLedger(
+      store,
+      { period: 'lifetime', range: { since: '2026-07-10', until: '2026-07-12' } },
+      NOW,
+    )
+    // Flow sees the whole turn ($50); the daily window only the in-window call ($30).
+    expect(payload.flow.models).toEqual([{ id: 'Opus 4', label: 'Opus 4', cost: 50 }])
+    expect(payload.byModel[1]).toEqual({ date: '2026-07-11', cost: 30, segments: [{ name: 'Opus 4', cost: 30 }] })
+    store.close()
+  })
+
+  it('streams session chunks byte-identically at any chunk size (#141 item 1)', () => {
+    const store = makeLedger()
+    const specs: SpendSessionSpec[] = Array.from({ length: 10 }, (_, i) => ({
+      sessionId: `s-${i}`,
+      provider: 'claude',
+      model: `model-${i}`,
+      project: 'alpha',
+      cost: 10 - i,
+      date: `2026-07-${String(i + 1).padStart(2, '0')}`,
+    }))
+    portSpendSessions(store, specs)
+    const scope = {
+      period: 'lifetime',
+      range: { since: '2026-07-01', until: '2026-07-10' },
+    } as const
+    // One session per chunk exercises every chunk boundary; chunks are
+    // session-granular, so the payload must equal the default chunking.
+    const chunked = buildSpendViewFromLedger(store, scope, NOW, undefined, 1)
+    const whole = buildSpendViewFromLedger(store, scope, NOW)
+    expect(chunked).toEqual(whole)
+    store.close()
+  })
+
   it('returns an empty payload for an empty ledger', () => {
     const store = makeLedger()
     const payload = buildSpendViewFromLedger(store, { period: 'lifetime' }, NOW)

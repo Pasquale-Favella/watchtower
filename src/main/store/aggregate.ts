@@ -21,7 +21,7 @@ import type {
   TaskCategory,
   TokenUsage,
 } from '../pipeline/types.js'
-import type { LedgerCallRow, LedgerSessionRow, LedgerStore, LedgerTurnRow } from './ledger.js'
+import type { LedgerCallRow, LedgerSessionRow, LedgerStore, LedgerTurnRow, SessionKey } from './ledger.js'
 
 /**
  * Query-time aggregation (ADR 0002). The ledger stores only transcript
@@ -68,6 +68,13 @@ let pricingConfig: PricingConfigLookup = createPricingConfigLookup([], [])
 
 function loadConfig(store: LedgerStore): void {
   pricingConfig = createPricingConfigLookup(store.getModelAliases(), store.getPriceOverrides())
+}
+
+/** Pricing/alias config loader for batched scoped reads (#141): same
+ * once-per-scope load `queryScope` performs, exposed so streamed readers
+ * price every batch against one config snapshot. */
+export function loadScopePricing(store: LedgerStore): void {
+  loadConfig(store)
 }
 
 /** The cost a call contributes to its session aggregate. Mirrors the Models
@@ -118,8 +125,10 @@ function isRangeFilterable(date: Date): boolean {
   return iso >= MIN_FILTERABLE_ISO && iso <= MAX_FILTERABLE_ISO
 }
 
-/** Price and alias every flat call for the scope (the per-row read seam). */
-function resolveScopedCalls(rows: LedgerCallRow[]): ScopedCall[] {
+/** Price and alias every flat call for the scope (the per-row read seam).
+ * Exported for batched readers (#141): call `loadScopePricing` once, then
+ * this per batch, so streamed reads price identically to `queryScope`. */
+export function resolveScopedCalls(rows: LedgerCallRow[]): ScopedCall[] {
   return rows.map(call => {
     const resolvedModel = pricingConfig.resolveAlias(call.model)
     return { ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel) }
@@ -160,7 +169,27 @@ export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerSco
   }
 }
 
-function turnInRange(firstCallTs: string | undefined, range: DateRange): boolean {
+/** Session keys a scope touches (#141): the same branch decision as
+ * `queryScope` — range-filtered `SELECT DISTINCT` discovery for filterable
+ * ranges, full key scan for all-time scopes (whose ±8.64e15 bounds don't
+ * TEXT-sort). Batched readers page over these keys so only one session
+ * chunk's rows materialize at a time. */
+export function scopedSessionKeys(store: LedgerStore, scope: AggregateScope): SessionKey[] {
+  if (isRangeFilterable(scope.range.start) && isRangeFilterable(scope.range.end)) {
+    return store.getCallSessionKeysInRange(
+      scope.range.start.toISOString(),
+      scope.range.end.toISOString(),
+      scope.provider,
+    )
+  }
+  return store.getAllSessionKeys(scope.provider)
+}
+
+/** In-range gate for one turn, decided by its FIRST call's timestamp
+ * (mirrors the parser's date-sliced rebuild exactly). Exported for batched
+ * readers (#141) so streamed aggregation gates identically to
+ * `assembleSession`. */
+export function turnInRange(firstCallTs: string | undefined, range: DateRange): boolean {
   if (!firstCallTs) return false
   const ts = new Date(firstCallTs).getTime()
   if (Number.isNaN(ts)) return false
@@ -502,27 +531,48 @@ export function sessionProjectKey(summary: SessionSummary): string {
  * sessions display the bucket name, so every section — shells, rows, spend,
  * overview, compare, export — groups them into the visible bucket with no
  * per-view special cases.
+ *
+ * The pure core is `sessionProjectIdentity` (#141): batched readers use it
+ * directly so they never assemble summaries for identity.
  */
-function attachCanonicalIdentity(summary: SessionSummary, session: LedgerSessionRow, provider: string): void {
+export interface SessionProjectIdentity {
+  projectKey: string
+  project: string
+  projectPath?: string
+}
+
+export function sessionProjectIdentity(
+  session: LedgerSessionRow,
+  provider: string,
+  fallbackProject: string,
+): SessionProjectIdentity {
   const storedPath = session.projectPath?.trim()
   const pathCandidate = storedPath && isAbsoluteProjectPath(storedPath) ? storedPath : undefined
-  summary.projectKey = deriveCanonicalProjectKey(
+  const projectKey = deriveCanonicalProjectKey(
     pathCandidate,
     session.workingDirectory,
     provider,
     session.canonicalCwd,
   )
   const canonicalPath = (session.canonicalCwd ?? session.workingDirectory ?? pathCandidate ?? '').trim()
-  if (canonicalPath) {
-    summary.projectPath = canonicalPath
-  }
+  const project =
+    session.canonicalProject ??
+    (canonicalPath ? projectNameFromPath(canonicalPath, fallbackProject) : projectKey)
+  return { projectKey, project, ...(canonicalPath ? { projectPath: canonicalPath } : {}) }
+}
+
+function attachCanonicalIdentity(summary: SessionSummary, session: LedgerSessionRow, provider: string): void {
   // Display precedence: the explicit canonical project name first (Claude
   // worktrees — set from this same canonical path at parse time, so identical
   // for real data), then the path leaf in original case, then the legacy
-  // label for orphans via the bucket name (set below).
-  summary.project =
-    session.canonicalProject ??
-    (canonicalPath ? projectNameFromPath(canonicalPath, summary.project) : summary.projectKey)
+  // label for orphans via the bucket name. Computed in
+  // `sessionProjectIdentity` so summaries and batched readers share it.
+  const identity = sessionProjectIdentity(session, provider, summary.project)
+  summary.projectKey = identity.projectKey
+  if (identity.projectPath !== undefined) {
+    summary.projectPath = identity.projectPath
+  }
+  summary.project = identity.project
 }
 
 /**

@@ -696,6 +696,25 @@ export class LedgerStore {
     return rows.map(r => ({ sourceId: Number(r.source_id), sessionId: r.session_id }))
   }
 
+  /** Every session key with at least one call, optionally restricted to one
+   * provider's sources (#141): the all-time counterpart to
+   * `getCallSessionKeysInRange` — all-time bounds don't TEXT-sort, so there
+   * is no range predicate here. Ordered by source then session for
+   * chunk-stable streamed reads. */
+  getAllSessionKeys(provider?: string): SessionKey[] {
+    const { clause, params } = this.sourceIdClause(this.sourceIdsFor(provider))
+    const rows = this.db
+      .prepare(
+        `
+      SELECT DISTINCT source_id, session_id FROM ledger_call
+      WHERE 1 = 1 ${clause}
+      ORDER BY source_id ASC, session_id ASC
+    `,
+      )
+      .all(...params) as Array<{ source_id: number; session_id: string }>
+    return rows.map(r => ({ sourceId: Number(r.source_id), sessionId: r.session_id }))
+  }
+
   /** Full history for an explicit session-key set (the second phase of the
    * range pushdown). Empty input short-circuits to no rows without querying.
    * The optional provider narrows to that provider's sources. Keyed
