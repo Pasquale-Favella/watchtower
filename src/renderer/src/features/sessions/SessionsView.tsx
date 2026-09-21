@@ -9,7 +9,10 @@ import type { SessionRow } from '@/features/sessions/drilldown'
 import {
   flattenSessionListItems,
   groupSessionsByProvider,
+  SESSION_HEADER_HEIGHT,
+  SESSION_ROW_HEIGHT,
   type SessionListItem,
+  sessionListItemHeight,
   type SessionSort,
   visiblePageNumbers,
 } from '@/features/sessions/sessions-lib'
@@ -90,6 +93,9 @@ interface SessionListRowProps {
   onOpen: (sessionId: string) => void
 }
 
+// Row heights are fixed (`SESSION_ROW_HEIGHT`) so virtual positions are exact:
+// content truncates inside the box and never grows it. The inline height is
+// the single source of truth shared with the virtualizer estimates.
 function SessionListRow({ row, onOpen }: SessionListRowProps): React.JSX.Element {
   const provenance = row.modelProvenance ?? {}
   const merged = row.models.filter(model => provenance[model]?.length)
@@ -97,8 +103,9 @@ function SessionListRow({ row, onOpen }: SessionListRowProps): React.JSX.Element
     <button
       type="button"
       onClick={() => onOpen(row.sessionId)}
+      style={{ height: SESSION_ROW_HEIGHT }}
       className={cn(
-        'border-border hover:bg-accent grid w-full items-center gap-3 border-t px-3 py-1.5 text-left transition-colors',
+        'border-border hover:bg-accent grid w-full items-center gap-3 overflow-hidden border-t px-3 py-1.5 text-left transition-colors',
         COLUMNS,
       )}
     >
@@ -142,7 +149,10 @@ interface SessionGroupHeaderProps {
 
 function SessionGroupHeader({ provider, count, cost }: SessionGroupHeaderProps): React.JSX.Element {
   return (
-    <div className="border-border bg-muted/30 text-muted-foreground flex items-center gap-2 border-t px-3 py-1 text-[11px]">
+    <div
+      style={{ height: SESSION_HEADER_HEIGHT }}
+      className="border-border bg-muted/30 text-muted-foreground flex items-center gap-2 border-t px-3 py-1 text-[11px]"
+    >
       <span className="text-foreground font-medium">{titleCase(provider)}</span>
       <span>
         {count} {count === 1 ? 'session' : 'sessions'}
@@ -152,8 +162,12 @@ function SessionGroupHeader({ provider, count, cost }: SessionGroupHeaderProps):
   )
 }
 
+interface SessionListItemViewProps {
+  item: SessionListItem
+}
+
 /** One mounted virtual list entry: a group header or a session row. */
-function SessionListItemView({ item }: { item: SessionListItem }): React.JSX.Element {
+function SessionListItemView({ item }: SessionListItemViewProps): React.JSX.Element {
   if (item.kind === 'header') {
     return <SessionGroupHeader provider={item.provider} count={item.count} cost={item.cost} />
   }
@@ -162,14 +176,21 @@ function SessionListItemView({ item }: { item: SessionListItem }): React.JSX.Ele
 
 /** The virtualized Sessions row list (#139 scope 4, #141 item 3): only the
  * visible window (+ overscan) mounts, so a full page never mounts every row.
- * Group headers stay in-flow items above their rows. Row heights vary (the
- * merged-models second line), so mounted rows measure themselves and the
- * estimates only seed unmeasured items. */
-function VirtualSessionList({ items }: { items: SessionListItem[] }): React.JSX.Element {
+ * Group headers stay in-flow items above their rows. Every item has a fixed
+ * height (`sessionListItemHeight`), so positions are exact with no measuring:
+ * rows can never overlap or drift. */
+interface VirtualSessionListProps {
+  items: SessionListItem[]
+}
+
+function VirtualSessionList({ items }: VirtualSessionListProps): React.JSX.Element {
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: getSectionScrollElement,
-    estimateSize: index => (items[index]?.kind === 'header' ? 30 : 60),
+    estimateSize: index => {
+      const item = items[index]
+      return item === undefined ? SESSION_ROW_HEIGHT : sessionListItemHeight(item)
+    },
     overscan: 8,
     getItemKey: index => items[index]?.key ?? index,
   })
@@ -181,8 +202,6 @@ function VirtualSessionList({ items }: { items: SessionListItem[] }): React.JSX.
         return (
           <div
             key={virtualRow.key}
-            ref={virtualizer.measureElement}
-            data-index={virtualRow.index}
             style={{
               position: 'absolute',
               top: 0,
@@ -330,8 +349,11 @@ export function SessionsView(): React.JSX.Element {
   const start = data?.start ?? 0
   const pageCount = Math.max(1, Math.ceil(total / SESSIONS_PAGE_SIZE))
   const groups = useMemo(() => (grouped ? groupSessionsByProvider(pageRows, sort) : []), [pageRows, sort, grouped])
-  const flat = useMemo(() => (grouped ? [] : pageRows), [grouped, pageRows])
-  const items = useMemo(() => flattenSessionListItems(groups, flat, grouped), [groups, flat, grouped])
+  const ungrouped = useMemo(() => (grouped ? [] : pageRows), [grouped, pageRows])
+  const items = useMemo(
+    () => flattenSessionListItems(groups, ungrouped, grouped),
+    [groups, ungrouped, grouped],
+  )
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
   const rangeStart = total === 0 ? 0 : start + 1
   const rangeEnd = start + pageRows.length
@@ -405,8 +427,12 @@ export function SessionsView(): React.JSX.Element {
     )
   }
 
+  // Controls stay mounted while a search is active even when it matches
+  // nothing — otherwise the input vanishes with the results and the search
+  // can no longer be cleared. Only a genuinely empty scope hides them.
+  const hasActiveSearch = query.trim() !== ''
   function renderControls(): React.JSX.Element | null {
-    if (data === null || total === 0) return null
+    if (data === null || (total === 0 && !hasActiveSearch)) return null
     return (
       <>
         <div className="flex flex-wrap items-center gap-2.5">

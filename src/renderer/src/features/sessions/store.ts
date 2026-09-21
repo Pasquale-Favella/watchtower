@@ -6,7 +6,7 @@ import { SESSIONS_PAGE_SIZE } from '../../../../shared/lib/sessions-query.js'
 import type { OverviewScope } from '../../../../shared/schemas/overview.js'
 import type { SessionSort } from '../../../../shared/schemas/renderer.js'
 import type { SessionDetail, SessionPageResult } from '../../../../shared/schemas/views.js'
-import { type DataStatus,EMPTY_SCOPE, keyOfScope } from '../../app/stores/data-store'
+import { type DataStatus, EMPTY_SCOPE, keyOfScope } from '../../app/stores/data-store'
 import { subscribeToRefresh } from '../../app/stores/scan-store'
 
 /** What the Sessions list shows: one server-computed page plus the filtered
@@ -55,14 +55,12 @@ export interface SessionsState {
   clearSession: () => void
 }
 
-const FIRST_PAGE_CURSOR: null = null
-
 export const useSessionsStore = create<SessionsState>()((set, get) => {
   async function fetchInto(
     scope: OverviewScope,
     req: SessionsPageRequest,
     request: { limit: number; offset?: number; cursor?: string },
-    applyPage: (result: SessionPageResult) => number,
+    trailCursor?: string,
   ): Promise<void> {
     const dataKey = JSON.stringify(['sessions-page', keyOfScope(scope), req.query, req.sort, request])
     if (get().dataKey !== dataKey) {
@@ -78,9 +76,12 @@ export const useSessionsStore = create<SessionsState>()((set, get) => {
     if (get().dataKey !== dataKey) return
     if (result.ok) {
       const data = result.data
-      const page = applyPage(data)
+      // The page always derives from the server's echoed start, so a
+      // server-side clamp is reflected instead of stranding the pager.
+      const page = Math.floor(data.start / request.limit)
       const tripleKey = JSON.stringify([keyOfScope(scope), req.query, req.sort])
-      const trail = get().tripleKey === tripleKey ? [...get().trail] : [FIRST_PAGE_CURSOR]
+      const trail = get().tripleKey === tripleKey ? [...get().trail] : [null]
+      if (trailCursor !== undefined) trail[page] = trailCursor
       set({ data, error: null, status: 'ready', page, tripleKey, trail })
     } else {
       set({ error: result.error, status: 'ready' })
@@ -101,24 +102,14 @@ export const useSessionsStore = create<SessionsState>()((set, get) => {
     gotoPage: async (scope, req, page) => {
       // Same-triple jumps keep the cursor trail (recorded positions stay
       // valid); a triple change resets it on success inside fetchInto.
-      await fetchInto(scope, req, { limit: SESSIONS_PAGE_SIZE, offset: page * SESSIONS_PAGE_SIZE }, data =>
-        Math.floor(data.start / SESSIONS_PAGE_SIZE),
-      )
+      await fetchInto(scope, req, { limit: SESSIONS_PAGE_SIZE, offset: page * SESSIONS_PAGE_SIZE })
     },
     nextPage: async (scope, req) => {
       const { data, page, trail } = get()
       if (!data) return
       const cursor = trail[page + 1] ?? data.nextCursor
       if (cursor == null) return
-      await fetchInto(scope, req, { limit: SESSIONS_PAGE_SIZE, cursor }, result => {
-        const next = Math.floor(result.start / SESSIONS_PAGE_SIZE)
-        set(state => {
-          const updated = [...state.trail]
-          updated[next] = cursor
-          return { trail: updated }
-        })
-        return next
-      })
+      await fetchInto(scope, req, { limit: SESSIONS_PAGE_SIZE, cursor }, cursor)
     },
     prevPage: async (scope, req) => {
       const { page, trail } = get()
@@ -132,7 +123,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => {
         cursor == null
           ? { limit: SESSIONS_PAGE_SIZE, offset: target * SESSIONS_PAGE_SIZE }
           : { limit: SESSIONS_PAGE_SIZE, cursor }
-      await fetchInto(scope, req, request, data => Math.floor(data.start / SESSIONS_PAGE_SIZE))
+      await fetchInto(scope, req, request)
     },
     reload: async () => {
       const { scope, query, sort, page } = get()

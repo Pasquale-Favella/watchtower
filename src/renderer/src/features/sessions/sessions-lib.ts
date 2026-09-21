@@ -57,14 +57,14 @@ export type SessionListItem =
 
 /** Flattens one fetched page into a single virtual item list: group headers
  * stay in-flow as items (not sticky) with their rows following the header,
- * or plain rows when ungrouped. Exactly one of `groups`/`flat` is non-empty
- * (the view computes one or the other); `grouped` picks which. */
+ * or plain rows when ungrouped. Exactly one of `groups`/`ungrouped` is
+ * non-empty (the view computes one or the other); `grouped` picks which. */
 export function flattenSessionListItems(
   groups: SessionGroup[],
-  flat: SessionRow[],
+  ungrouped: SessionRow[],
   grouped: boolean,
 ): SessionListItem[] {
-  if (!grouped) return flat.map(row => ({ kind: 'row', key: `row:${row.sessionId}`, row }))
+  if (!grouped) return ungrouped.map(row => ({ kind: 'row', key: `row:${row.sessionId}`, row }))
   const out: SessionListItem[] = []
   for (const group of groups) {
     out.push({
@@ -77,6 +77,22 @@ export function flattenSessionListItems(
     for (const row of group.rows) out.push({ kind: 'row', key: `row:${row.sessionId}`, row })
   }
   return out
+}
+
+/** Fixed virtual-list geometry (#141 item 3): every row is exactly
+ * `SESSION_ROW_HEIGHT` and every group header exactly
+ * `SESSION_HEADER_HEIGHT` (the matching `h-16` / `h-8` classes live on the
+ * row components in `SessionsView.tsx`). Fixed heights make virtual positions
+ * pure arithmetic — no measuring, so rows can never overlap or drift. The
+ * contract: row content must always fit its height (truncate, never grow).
+ * Change the content height and these constants together. */
+export const SESSION_ROW_HEIGHT = 64
+export const SESSION_HEADER_HEIGHT = 32
+
+/** The virtual height of one list item: headers and rows each have their
+ * fixed height. */
+export function sessionListItemHeight(item: SessionListItem): number {
+  return item.kind === 'header' ? SESSION_HEADER_HEIGHT : SESSION_ROW_HEIGHT
 }
 
 /** One entry of the pager number row: a zero-based page or a gap marker. */

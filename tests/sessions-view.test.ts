@@ -11,6 +11,9 @@ import type { SessionRow } from '../src/renderer/src/features/sessions/drilldown
 import {
   flattenSessionListItems,
   groupSessionsByProvider,
+  SESSION_HEADER_HEIGHT,
+  SESSION_ROW_HEIGHT,
+  sessionListItemHeight,
   visiblePageNumbers,
 } from '../src/renderer/src/features/sessions/sessions-lib.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
@@ -318,6 +321,18 @@ describe('flattenSessionListItems (virtual list model, #141 item 3)', () => {
   it('returns an empty list for an empty page', () => {
     expect(flattenSessionListItems([], [], true)).toEqual([])
     expect(flattenSessionListItems([], [], false)).toEqual([])
+  })
+
+  it('assigns every item its fixed virtual height (positions stay exact)', () => {
+    const groups = groupSessionsByProvider(ROWS, 'cost')
+    const items = flattenSessionListItems(groups, [], true)
+    expect(items.map(sessionListItemHeight)).toEqual([
+      SESSION_HEADER_HEIGHT,
+      SESSION_ROW_HEIGHT,
+      SESSION_ROW_HEIGHT,
+      SESSION_HEADER_HEIGHT,
+      SESSION_ROW_HEIGHT,
+    ])
   })
 })
 
