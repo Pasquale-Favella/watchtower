@@ -25,9 +25,12 @@ export type {
 const SPEND_CHART_DAYS = 15
 const OTHER_ID = '__other__'
 
-/** Top-N paging for the Spend flow (#139): how many model/project nodes stay
- * outside the "Other" rollup. Request-typed like the Sessions page (ADR 0008)
- * — garbage normalizes to the default instead of throwing. */
+/** Top-N rollup size for the Spend flow (#139, `flowLimit`): how many
+ * model/project nodes stay outside the "Other" rollup. Not offset paging —
+ * the flow aggregates the full range-filtered scoped set, then keeps the top
+ * N (default 8). Paging the Sankey inputs *before* aggregation is the #141
+ * follow-up. Request-typed like the Sessions page (ADR 0008) — garbage
+ * normalizes to the default instead of throwing. */
 export interface SpendFlowPage {
   flowLimit?: unknown
 }

@@ -86,11 +86,34 @@ function chunkArray<T>(items: T[], size: number): T[][] {
 }
 
 /** Binary `session_id` ordering, mirroring SQLite `ORDER BY session_id ASC`
- * for rows merged from several keyed chunk reads. */
+ * for rows merged from several keyed chunk reads. Binary (`<`), not
+ * `localeCompare`, so the in-memory merge matches SQLite's byte order. */
 function compareSessionIds(a: Pick<LedgerSessionRow, 'sessionId'>, b: Pick<LedgerSessionRow, 'sessionId'>): number {
   if (a.sessionId < b.sessionId) return -1
   if (a.sessionId > b.sessionId) return 1
   return 0
+}
+
+/** Binary session + numeric turn ordering for keyed turn reads (same shape
+ * as `ORDER BY session_id ASC, turn_index ASC`). */
+function compareTurnKeys(
+  a: Pick<LedgerTurnRow, 'sessionId' | 'turnIndex'>,
+  b: Pick<LedgerTurnRow, 'sessionId' | 'turnIndex'>,
+): number {
+  if (a.sessionId < b.sessionId) return -1
+  if (a.sessionId > b.sessionId) return 1
+  return a.turnIndex - b.turnIndex
+}
+
+/** Binary session + numeric turn/call ordering for keyed call reads (same
+ * shape as `ORDER BY session_id ASC, turn_index ASC, call_index ASC`). */
+function compareCallKeys(
+  a: Pick<LedgerCallRow, 'sessionId' | 'turnIndex' | 'callIndex'>,
+  b: Pick<LedgerCallRow, 'sessionId' | 'turnIndex' | 'callIndex'>,
+): number {
+  if (a.sessionId < b.sessionId) return -1
+  if (a.sessionId > b.sessionId) return 1
+  return a.turnIndex - b.turnIndex || a.callIndex - b.callIndex
 }
 
 /** Shared column lists for the session/turn/call readers: the unfiltered,
@@ -223,10 +246,12 @@ export class LedgerStore {
       CREATE INDEX IF NOT EXISTS idx_ledger_call_project ON ledger_call(project);
       CREATE INDEX IF NOT EXISTS idx_ledger_call_provider ON ledger_call(provider);
       -- Query-scaling (#139): composite + turn indexes for the scoped reads.
-      -- queryScope filters calls/turns by provider (via source_id) and by
-      -- timestamp range, so the leading column matches the equality predicate
-      -- and the second column the range predicate. The (provider, timestamp)
-      -- pair is kept as well for direct provider-column reads.
+      -- The hot path filters calls/turns by provider (via source_id) and by
+      -- timestamp range, so the source-timestamp indexes are the serving
+      -- indexes (leading equality column + range column). The
+      -- (provider, timestamp) pair is kept for direct provider-column reads;
+      -- the range-discovery DISTINCT still sorts via TEMP B-TREE, which is
+      -- expected for that shape.
       CREATE INDEX IF NOT EXISTS idx_ledger_call_provider_timestamp ON ledger_call(provider, timestamp);
       CREATE INDEX IF NOT EXISTS idx_ledger_call_source_timestamp ON ledger_call(source_id, timestamp);
       CREATE INDEX IF NOT EXISTS idx_ledger_turn_timestamp ON ledger_turn(timestamp);
@@ -677,25 +702,25 @@ export class LedgerStore {
    * `source_id + session_id` reads like the turn/call variants — never a
    * full sessions-table scan — in `session_id` order like `getSessionsScoped`. */
   getSessionsForKeys(keys: SessionKey[], provider?: string): LedgerSessionRow[] {
-    if (keys.length === 0) return []
     const allowed = provider === undefined ? undefined : new Set(this.getSourceIdsForProvider(provider))
-    const wanted = keys.filter(k => allowed === undefined || allowed.has(k.sourceId))
-    if (wanted.length === 0) return []
-    const out: LedgerSessionRow[] = []
-    this.forEachSessionKeyGroup(wanted, (sourceId, chunk) => {
-      const placeholders = chunk.map(() => '?').join(', ')
-      const rows = this.db
-        .prepare(
-          `
+    const wanted = allowed === undefined ? keys : keys.filter(k => allowed.has(k.sourceId))
+    return this.queryKeyedChunks(
+      wanted,
+      (sourceId, chunk) => {
+        const placeholders = chunk.map(() => '?').join(', ')
+        return this.db
+          .prepare(
+            `
         SELECT ${LEDGER_SESSION_COLUMNS}
         FROM ledger_session WHERE source_id = ? AND session_id IN (${placeholders})
         ORDER BY session_id ASC
       `,
-        )
-        .all(sourceId, ...chunk) as Array<Record<string, unknown>>
-      out.push(...z.array(ledgerSessionRowSchema).parse(rows))
-    })
-    return out.sort(compareSessionIds)
+          )
+          .all(sourceId, ...chunk) as Array<Record<string, unknown>>
+      },
+      rows => z.array(ledgerSessionRowSchema).parse(rows),
+      compareSessionIds,
+    )
   }
 
   /** Groups session keys by source and fans each source's ids out in
@@ -715,43 +740,61 @@ export class LedgerStore {
     }
   }
 
-  getTurnsForSessionKeys(keys: SessionKey[]): LedgerTurnRow[] {
+  /** One generic keyed-chunk reader behind `getSessionsForKeys` /
+   * `getTurnsForSessionKeys` / `getCallsForSessionKeys`: fans the keys out by
+   * source, loads each chunk, zod-parses it, and merges in SQL order. Empty
+   * input short-circuits without querying. */
+  private queryKeyedChunks<T>(
+    keys: SessionKey[],
+    loadChunk: (sourceId: number, sessionIds: string[]) => Array<Record<string, unknown>>,
+    parse: (rows: Array<Record<string, unknown>>) => T[],
+    compare: (a: T, b: T) => number,
+  ): T[] {
     if (keys.length === 0) return []
-    const out: LedgerTurnRow[] = []
+    const out: T[] = []
     this.forEachSessionKeyGroup(keys, (sourceId, chunk) => {
-      const placeholders = chunk.map(() => '?').join(', ')
-      const rows = this.db
-        .prepare(
-          `
+      out.push(...parse(loadChunk(sourceId, chunk)))
+    })
+    return out.sort(compare)
+  }
+
+  getTurnsForSessionKeys(keys: SessionKey[]): LedgerTurnRow[] {
+    return this.queryKeyedChunks(
+      keys,
+      (sourceId, chunk) => {
+        const placeholders = chunk.map(() => '?').join(', ')
+        return this.db
+          .prepare(
+            `
         SELECT ${LEDGER_TURN_COLUMNS}
         FROM ledger_turn WHERE source_id = ? AND session_id IN (${placeholders})
         ORDER BY session_id ASC, turn_index ASC
       `,
-        )
-        .all(sourceId, ...chunk) as Array<Record<string, unknown>>
-      out.push(...z.array(ledgerTurnRowSchema).parse(rows))
-    })
-    return out.sort((a, b) => a.sessionId.localeCompare(b.sessionId) || a.turnIndex - b.turnIndex)
+          )
+          .all(sourceId, ...chunk) as Array<Record<string, unknown>>
+      },
+      rows => z.array(ledgerTurnRowSchema).parse(rows),
+      compareTurnKeys,
+    )
   }
 
   getCallsForSessionKeys(keys: SessionKey[]): LedgerCallRow[] {
-    if (keys.length === 0) return []
-    const out: LedgerCallRow[] = []
-    this.forEachSessionKeyGroup(keys, (sourceId, chunk) => {
-      const placeholders = chunk.map(() => '?').join(', ')
-      const rows = this.db
-        .prepare(
-          `
+    return this.queryKeyedChunks(
+      keys,
+      (sourceId, chunk) => {
+        const placeholders = chunk.map(() => '?').join(', ')
+        return this.db
+          .prepare(
+            `
         SELECT ${LEDGER_CALL_COLUMNS}
         FROM ledger_call WHERE source_id = ? AND session_id IN (${placeholders})
         ORDER BY session_id ASC, turn_index ASC, call_index ASC
       `,
-        )
-        .all(sourceId, ...chunk) as Array<Record<string, unknown>>
-      out.push(...z.array(ledgerCallRowSchema).parse(rows))
-    })
-    return out.sort(
-      (a, b) => a.sessionId.localeCompare(b.sessionId) || a.turnIndex - b.turnIndex || a.callIndex - b.callIndex,
+          )
+          .all(sourceId, ...chunk) as Array<Record<string, unknown>>
+      },
+      rows => z.array(ledgerCallRowSchema).parse(rows),
+      compareCallKeys,
     )
   }
 
@@ -759,8 +802,10 @@ export class LedgerStore {
 
   /** Query-plan evidence for the scoped reads (#139): runs `EXPLAIN QUERY
    * PLAN` for one ledger query so tests can assert a range-filtered scan
-   * uses an index instead of a full-table scan. Introspection only — no
-   * production read path calls it. */
+   * uses an index instead of a full-table scan. Test-only introspection —
+   * no production read path calls it, and the query text must be a static
+   * string (params stay bound `?` placeholders, never interpolated), so this
+   * is not a user-input SQL seam. */
   explainQueryPlan(query: string, params: Array<string | number> = []): Array<Record<string, unknown>> {
     return this.db.prepare(`EXPLAIN QUERY PLAN ${query}`).all(...params) as Array<Record<string, unknown>>
   }

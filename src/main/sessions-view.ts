@@ -43,8 +43,12 @@ function compareSessionsNewestFirst(a: SessionRow, b: SessionRow): number {
  * read (sessions count by their in-range turns), then already-shaped
  * `SessionRow[]`, newest-first, sliced to the requested page. Without a page
  * the full scoped list returns (the renderer's local pager slices it); with
- * one, only that window crosses IPC. Kept in the main process so the
- * sandboxed renderer only receives serializable rows over IPC.
+ * one, only that window crosses IPC. The slice is view-level (after
+ * aggregation, so per-session assembly stays intact) — server-side
+ * search/sort + keyset cursors are the #141 follow-up, and the renderer keeps
+ * paging locally until then so search/sort/group stay global. Kept in the
+ * main process so the sandboxed renderer only receives serializable rows over
+ * IPC.
  */
 export function buildSessionsViewFromLedger(
   store: LedgerStore,
