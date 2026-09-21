@@ -7,7 +7,7 @@ import { LedgerStore } from '../src/main/store/ledger.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
 import {
-  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions, paginateSessions,
+  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions, paginateSessions, visiblePageNumbers,
   type SessionSort
 } from '../src/renderer/src/features/sessions/sessions-lib.js'
 import type { SessionRow } from '../src/renderer/src/features/sessions/drilldown.js'
@@ -291,5 +291,24 @@ describe('paginateSessions (one mounted page, #139)', () => {
   it('renders a single page for an empty or short list', () => {
     expect(paginateSessions([], 0, 100)).toEqual({ page: 0, pageCount: 1, pageRows: [] })
     expect(paginateSessions(ROWS, 0, 100).pageCount).toBe(1)
+  })
+})
+
+describe('visiblePageNumbers (shadcn pager slots)', () => {
+  it('lists every page when there are few', () => {
+    expect(visiblePageNumbers(1, 0)).toEqual([0])
+    expect(visiblePageNumbers(5, 2)).toEqual([0, 1, 2, 3, 4])
+    expect(visiblePageNumbers(7, 6)).toEqual([0, 1, 2, 3, 4, 5, 6])
+  })
+
+  it('collapses skipped pages into ellipsis slots around a neighbour window', () => {
+    expect(visiblePageNumbers(10, 0)).toEqual([0, 1, 'ellipsis', 9])
+    expect(visiblePageNumbers(10, 4)).toEqual([0, 'ellipsis', 3, 4, 5, 'ellipsis', 9])
+    expect(visiblePageNumbers(10, 9)).toEqual([0, 'ellipsis', 8, 9])
+  })
+
+  it('clamps a stale current page into range', () => {
+    expect(visiblePageNumbers(10, 99)).toEqual([0, 'ellipsis', 8, 9])
+    expect(visiblePageNumbers(10, -3)).toEqual([0, 1, 'ellipsis', 9])
   })
 })

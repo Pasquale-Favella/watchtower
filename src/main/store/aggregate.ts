@@ -101,6 +101,14 @@ function isRangeFilterable(date: Date): boolean {
   return iso >= '1000-01-01T00:00:00.000Z' && iso <= '9999-12-31T23:59:59.999Z'
 }
 
+/** Price and alias every flat call for the scope (the per-row read seam). */
+function resolveScopedCalls(rows: LedgerCallRow[]): ScopedCall[] {
+  return rows.map(call => {
+    const resolvedModel = pricingConfig.resolveAlias(call.model)
+    return { ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel) }
+  })
+}
+
 /** SQL read seam (#139): flat rows for the scope, provider- and range-filtered
  * in SQL, priced/aliased on read. Two phases: a range-filtered
  * `SELECT DISTINCT` over `ledger_call` discovers the sessions a view touches,
@@ -114,12 +122,6 @@ function isRangeFilterable(date: Date): boolean {
 export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerScope {
   loadConfig(store)
 
-  const resolve = (rows: LedgerCallRow[]): ScopedCall[] =>
-    rows.map(call => {
-      const resolvedModel = pricingConfig.resolveAlias(call.model)
-      return { ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel) }
-    })
-
   if (isRangeFilterable(scope.range.start) && isRangeFilterable(scope.range.end)) {
     const keys = store.getCallSessionKeysInRange(
       scope.range.start.toISOString(),
@@ -129,18 +131,19 @@ export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerSco
     return {
       sessions: store.getSessionsForKeys(keys, scope.provider),
       turns: store.getTurnsForSessionKeys(keys),
-      calls: resolve(store.getCallsForSessionKeys(keys)),
+      calls: resolveScopedCalls(store.getCallsForSessionKeys(keys)),
     }
   }
 
-  const providerBySource = new Map<number, string>()
-  for (const source of store.getSources()) providerBySource.set(source.id, source.provider)
+  const allowedSources = scope.provider === undefined
+    ? undefined
+    : new Set(store.getSourceIdsForProvider(scope.provider))
   const keepSource = (sourceId: number): boolean =>
-    scope.provider === undefined || providerBySource.get(sourceId) === scope.provider
+    allowedSources === undefined || allowedSources.has(sourceId)
   return {
     sessions: store.getSessionsScoped().filter(s => keepSource(s.sourceId)),
     turns: store.getTurnsScoped().filter(t => keepSource(t.sourceId)),
-    calls: resolve(store.getCallsScoped().filter(c => keepSource(c.sourceId))),
+    calls: resolveScopedCalls(store.getCallsScoped().filter(c => keepSource(c.sourceId))),
   }
 }
 

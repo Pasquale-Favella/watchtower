@@ -6,11 +6,20 @@ import { SegTabs, type SegOption } from '@/shared/components/SegTabs'
 import { motionClass } from '@/shared/lib/motion'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import {
-  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions, paginateSessions, SESSIONS_PAGE_SIZE,
+  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions, paginateSessions, visiblePageNumbers, SESSIONS_PAGE_SIZE,
   type SessionSort
 } from '@/features/sessions/sessions-lib'
 import { formatUsd } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from '@/shared/components/ui/pagination'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { useSessionsStore } from '@/features/sessions/store'
@@ -91,6 +100,74 @@ function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: 
   )
 }
 
+interface SessionsPagerProps {
+  page: number
+  pageCount: number
+  total: number
+  rangeStart: number
+  rangeEnd: number
+  onChange: (page: number) => void
+}
+
+function PageNumberLink({ page, isActive, onChange }: { page: number; isActive: boolean; onChange: (page: number) => void }): React.JSX.Element {
+  return (
+    <PaginationLink
+      href="#"
+      isActive={isActive}
+      aria-label={`Go to page ${page + 1}`}
+      onClick={event => { event.preventDefault(); onChange(page) }}
+    >
+      {page + 1}
+    </PaginationLink>
+  )
+}
+
+/** The shadcn pager for the Sessions list: previous/next plus numbered slots
+ * with ellipsis gaps, over the `paginateSessions` window. Links drive local
+ * page state (no navigation), so every click cancels the anchor default. */
+function SessionsPager({ page, pageCount, total, rangeStart, rangeEnd, onChange }: SessionsPagerProps): React.JSX.Element {
+  const firstPage = page === 0
+  const lastPage = page >= pageCount - 1
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-[11px] text-muted-foreground" aria-live="polite">
+        Showing {rangeStart}–{rangeEnd} of {total}
+      </p>
+      <Pagination>
+        <PaginationContent>
+          <PaginationItem>
+            <PaginationPrevious
+              href="#"
+              aria-disabled={firstPage}
+              tabIndex={firstPage ? -1 : undefined}
+              className={firstPage ? 'pointer-events-none opacity-50' : undefined}
+              onClick={event => { event.preventDefault(); onChange(page - 1) }}
+            />
+          </PaginationItem>
+          {visiblePageNumbers(pageCount, page).map((entry, index) => (
+            <PaginationItem key={entry === 'ellipsis' ? `ellipsis-${index}` : `page-${entry}`}>
+              {entry === 'ellipsis' ? (
+                <PaginationEllipsis />
+              ) : (
+                <PageNumberLink page={entry} isActive={entry === page} onChange={onChange} />
+              )}
+            </PaginationItem>
+          ))}
+          <PaginationItem>
+            <PaginationNext
+              href="#"
+              aria-disabled={lastPage}
+              tabIndex={lastPage ? -1 : undefined}
+              className={lastPage ? 'pointer-events-none opacity-50' : undefined}
+              onClick={event => { event.preventDefault(); onChange(page + 1) }}
+            />
+          </PaginationItem>
+        </PaginationContent>
+      </Pagination>
+    </div>
+  )
+}
+
 export function SessionsView(): React.JSX.Element {
   const scope = useScopeStore(useShallow(selectScope))
   const rows = useSessionsStore(s => s.data)
@@ -122,7 +199,7 @@ export function SessionsView(): React.JSX.Element {
   const sorted = useMemo(() => sortSessions(filtered, sort), [filtered, sort])
   const { page: safePage, pageCount, pageRows } = useMemo(() => paginateSessions(sorted, page), [sorted, page])
   const groups = useMemo(() => (grouped ? groupSessionsByProvider(pageRows, sort) : []), [pageRows, sort, grouped])
-  const flat = grouped ? [] : pageRows
+  const flat = useMemo(() => (grouped ? [] : pageRows), [grouped, pageRows])
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
   const rangeStart = sorted.length === 0 ? 0 : safePage * SESSIONS_PAGE_SIZE + 1
   const rangeEnd = safePage * SESSIONS_PAGE_SIZE + pageRows.length
@@ -201,27 +278,14 @@ export function SessionsView(): React.JSX.Element {
                   : flat.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
               </div>
               {pageCount > 1 && (
-                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                  <button
-                    type="button"
-                    disabled={safePage === 0}
-                    onClick={() => setPage(safePage - 1)}
-                    className="rounded-md border border-border px-2.5 py-[3px] transition-colors hover:text-foreground disabled:opacity-40"
-                  >
-                    Previous
-                  </button>
-                  <span aria-live="polite">
-                    Page {safePage + 1} of {pageCount} · showing {rangeStart}–{rangeEnd} of {sorted.length}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={safePage >= pageCount - 1}
-                    onClick={() => setPage(safePage + 1)}
-                    className="rounded-md border border-border px-2.5 py-[3px] transition-colors hover:text-foreground disabled:opacity-40"
-                  >
-                    Next
-                  </button>
-                </div>
+                <SessionsPager
+                  page={safePage}
+                  pageCount={pageCount}
+                  total={sorted.length}
+                  rangeStart={rangeStart}
+                  rangeEnd={rangeEnd}
+                  onChange={setPage}
+                />
               )}
             </>
           )}

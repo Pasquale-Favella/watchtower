@@ -467,16 +467,34 @@ export class LedgerStore {
       .map(s => s.id)
   }
 
-  private sourceIdClause(sourceIds: number[] | undefined, column: string): { clause: string; params: number[] } {
+  private sourceIdsFor(provider: string | undefined): number[] | undefined {
+    return provider !== undefined ? this.getSourceIdsForProvider(provider) : undefined
+  }
+
+  private sourceIdClause(sourceIds: number[] | undefined): { clause: string; params: number[] } {
     if (sourceIds === undefined) return { clause: '', params: [] }
     if (sourceIds.length === 0) return { clause: 'AND 1 = 0', params: [] }
     const placeholders = sourceIds.map(() => '?').join(', ')
-    return { clause: `AND ${column} IN (${placeholders})`, params: [...sourceIds] }
+    return { clause: `AND source_id IN (${placeholders})`, params: [...sourceIds] }
+  }
+
+  private rangeClause(filter: LedgerReadFilter): { clause: string; params: Array<string | number> } {
+    const conditions: string[] = []
+    const params: Array<string | number> = []
+    if (filter.start !== undefined) {
+      conditions.push('timestamp >= ?')
+      params.push(filter.start)
+    }
+    if (filter.end !== undefined) {
+      conditions.push('timestamp <= ?')
+      params.push(filter.end)
+    }
+    if (conditions.length === 0) return { clause: '', params }
+    return { clause: `AND ${conditions.join(' AND ')}`, params }
   }
 
   getSessionsScoped(filter: Pick<LedgerReadFilter, 'provider'> = {}): LedgerSessionRow[] {
-    const sourceIds = filter.provider !== undefined ? this.getSourceIdsForProvider(filter.provider) : undefined
-    const { clause, params } = this.sourceIdClause(sourceIds, 'source_id')
+    const { clause, params } = this.sourceIdClause(this.sourceIdsFor(filter.provider))
     const rows = this.db.prepare(`
       SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
              agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
@@ -487,41 +505,19 @@ export class LedgerStore {
   }
 
   getTurnsScoped(filter: LedgerReadFilter = {}): LedgerTurnRow[] {
-    const sourceIds = filter.provider !== undefined ? this.getSourceIdsForProvider(filter.provider) : undefined
-    const { clause, params } = this.sourceIdClause(sourceIds, 'source_id')
-    const conditions: string[] = []
-    const values: Array<string | number> = [...params]
-    if (filter.start !== undefined) {
-      conditions.push('timestamp >= ?')
-      values.push(filter.start)
-    }
-    if (filter.end !== undefined) {
-      conditions.push('timestamp <= ?')
-      values.push(filter.end)
-    }
-    const range = conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : ''
+    const source = this.sourceIdClause(this.sourceIdsFor(filter.provider))
+    const range = this.rangeClause(filter)
     const rows = this.db.prepare(`
       SELECT source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
              spawn_tool_use_ids_json, category, sub_category, retries, has_edits
-      FROM ledger_turn WHERE 1 = 1 ${clause} ${range} ORDER BY session_id ASC, turn_index ASC
-    `).all(...values) as Array<Record<string, unknown>>
+      FROM ledger_turn WHERE 1 = 1 ${source.clause} ${range.clause} ORDER BY session_id ASC, turn_index ASC
+    `).all(...source.params, ...range.params) as Array<Record<string, unknown>>
     return z.array(ledgerTurnRowSchema).parse(rows)
   }
 
   getCallsScoped(filter: LedgerReadFilter = {}): LedgerCallRow[] {
-    const sourceIds = filter.provider !== undefined ? this.getSourceIdsForProvider(filter.provider) : undefined
-    const { clause, params } = this.sourceIdClause(sourceIds, 'source_id')
-    const conditions: string[] = []
-    const values: Array<string | number> = [...params]
-    if (filter.start !== undefined) {
-      conditions.push('timestamp >= ?')
-      values.push(filter.start)
-    }
-    if (filter.end !== undefined) {
-      conditions.push('timestamp <= ?')
-      values.push(filter.end)
-    }
-    const range = conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : ''
+    const source = this.sourceIdClause(this.sourceIdsFor(filter.provider))
+    const range = this.rangeClause(filter)
     const rows = this.db.prepare(`
       SELECT source_id, session_id, turn_index, call_index, call_key, dedup_key, provider, model, timestamp, speed,
              project, project_path, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
@@ -530,8 +526,8 @@ export class LedgerStore {
              tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
              tool_sequence_json,
              loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
-      FROM ledger_call WHERE 1 = 1 ${clause} ${range} ORDER BY session_id ASC, turn_index ASC, call_index ASC
-    `).all(...values) as Array<Record<string, unknown>>
+      FROM ledger_call WHERE 1 = 1 ${source.clause} ${range.clause} ORDER BY session_id ASC, turn_index ASC, call_index ASC
+    `).all(...source.params, ...range.params) as Array<Record<string, unknown>>
     return z.array(ledgerCallRowSchema).parse(rows)
   }
 
@@ -541,8 +537,7 @@ export class LedgerStore {
    * with one range-filtered `SELECT DISTINCT`, then loads those sessions'
    * FULL history (pre-range turns stay for PR seeding + spawn sets). */
   getCallSessionKeysInRange(start: string, end: string, provider?: string): SessionKey[] {
-    const sourceIds = provider !== undefined ? this.getSourceIdsForProvider(provider) : undefined
-    const { clause, params } = this.sourceIdClause(sourceIds, 'source_id')
+    const { clause, params } = this.sourceIdClause(this.sourceIdsFor(provider))
     const rows = this.db.prepare(`
       SELECT DISTINCT source_id, session_id FROM ledger_call
       WHERE timestamp >= ? AND timestamp <= ? ${clause}
