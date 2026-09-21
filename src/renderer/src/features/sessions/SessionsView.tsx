@@ -1,16 +1,24 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
-import { cn } from '@/shared/lib/utils'
-import { SegTabs, type SegOption } from '@/shared/components/SegTabs'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { navigateToSession } from '@/app/navigation'
+import { useScanStore } from '@/app/stores/scan-store'
+import { selectScope, useScopeStore } from '@/app/stores/scope-store'
+import type { SessionRow } from '@/features/sessions/drilldown'
 import {
-  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions, paginateSessions, visiblePageNumbers, SESSIONS_PAGE_SIZE,
-  type SessionSort
+  filterSessions,
+  groupSessionsByProvider,
+  paginateSessions,
+  SESSIONS_PAGE_SIZE,
+  type SessionSort,
+  sortSessions,
+  summarizeSessions,
+  visiblePageNumbers,
 } from '@/features/sessions/sessions-lib'
-import { formatUsd } from '@/shared/lib/models'
+import { useSessionsStore } from '@/features/sessions/store'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { type SegOption, SegTabs } from '@/shared/components/SegTabs'
+import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import {
   Pagination,
   PaginationContent,
@@ -21,12 +29,10 @@ import {
   PaginationPrevious,
 } from '@/shared/components/ui/pagination'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
-import { useSessionsStore } from '@/features/sessions/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
-import { navigateToSession } from '@/app/navigation'
-import { useScanStore } from '@/app/stores/scan-store'
-import type { SessionRow } from '@/features/sessions/drilldown'
+import { formatUsd } from '@/shared/lib/models'
+import { motionClass } from '@/shared/lib/motion'
+import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { cn } from '@/shared/lib/utils'
 
 const SORT_OPTIONS: SegOption[] = [
   { value: 'cost', label: 'Cost' },
@@ -55,7 +61,12 @@ const COLUMNS = 'grid-cols-[minmax(0,1.4fr)_88px_minmax(0,1fr)_136px_44px_76px_8
 
 function ColumnHeaders(): React.JSX.Element {
   return (
-    <div className={cn('grid items-center gap-3 px-3 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground', COLUMNS)}>
+    <div
+      className={cn(
+        'text-muted-foreground grid items-center gap-3 px-3 pt-2 pb-1 text-[10px] font-medium tracking-wide uppercase',
+        COLUMNS,
+      )}
+    >
       <span>Session</span>
       <span>Provider</span>
       <span>Models</span>
@@ -67,7 +78,12 @@ function ColumnHeaders(): React.JSX.Element {
   )
 }
 
-function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: string) => void }): React.JSX.Element {
+interface SessionListRowProps {
+  row: SessionRow
+  onOpen: (sessionId: string) => void
+}
+
+function SessionListRow({ row, onOpen }: SessionListRowProps): React.JSX.Element {
   const provenance = row.modelProvenance ?? {}
   const merged = row.models.filter(model => provenance[model]?.length)
   return (
@@ -75,27 +91,38 @@ function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: 
       type="button"
       onClick={() => onOpen(row.sessionId)}
       className={cn(
-        'grid w-full items-center gap-3 border-t border-border px-3 py-1.5 text-left transition-colors hover:bg-accent',
+        'border-border hover:bg-accent grid w-full items-center gap-3 border-t px-3 py-1.5 text-left transition-colors',
         COLUMNS,
       )}
     >
       <span className="min-w-0">
-        <span className="block truncate text-[12.5px] font-medium text-foreground">{row.title || row.project || 'Untitled session'}</span>
-        <span className="block truncate font-mono text-[10px] text-muted-foreground">{row.project} · {row.sessionId}</span>
+        <span className="text-foreground block truncate text-[12.5px] font-medium">
+          {row.title || row.project || 'Untitled session'}
+        </span>
+        <span className="text-muted-foreground block truncate font-mono text-[10px]">
+          {row.project} · {row.sessionId}
+        </span>
       </span>
-      <span className="truncate text-[11px] text-muted-foreground">{row.provider}</span>
+      <span className="text-muted-foreground truncate text-[11px]">{row.provider}</span>
       <span className="min-w-0">
-        <span className="block truncate text-[11px] text-muted-foreground">{row.models.join(', ') || '—'}</span>
+        <span className="text-muted-foreground block truncate text-[11px]">{row.models.join(', ') || '—'}</span>
         {merged.length > 0 && (
-          <span className="block truncate text-[10px] text-muted-foreground" title={merged.map(model => `${model}: ${provenance[model]!.join(', ')}`).join(' · ')}>
-            includes {merged.map(model => provenance[model]!.join(', ')).join(', ')}
+          <span
+            className="text-muted-foreground block truncate text-[10px]"
+            title={merged.map(model => `${model}: ${(provenance[model] ?? []).join(', ')}`).join(' · ')}
+          >
+            includes {merged.map(model => (provenance[model] ?? []).join(', ')).join(', ')}
           </span>
         )}
       </span>
-      <span className="truncate text-[11px] text-muted-foreground">{formatDate(row.endedAt)}</span>
-      <span className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">{row.turns.toLocaleString('en-US')}</span>
-      <span className="text-right font-mono text-[11.5px] tabular-nums text-foreground">{formatUsd(row.cost)}</span>
-      <span className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">{formatCompact(row.inputTokens + row.outputTokens)}</span>
+      <span className="text-muted-foreground truncate text-[11px]">{formatDate(row.endedAt)}</span>
+      <span className="text-muted-foreground text-right font-mono text-[11px] tabular-nums">
+        {row.turns.toLocaleString('en-US')}
+      </span>
+      <span className="text-foreground text-right font-mono text-[11.5px] tabular-nums">{formatUsd(row.cost)}</span>
+      <span className="text-muted-foreground text-right font-mono text-[11px] tabular-nums">
+        {formatCompact(row.inputTokens + row.outputTokens)}
+      </span>
     </button>
   )
 }
@@ -109,13 +136,22 @@ interface SessionsPagerProps {
   onChange: (page: number) => void
 }
 
-function PageNumberLink({ page, isActive, onChange }: { page: number; isActive: boolean; onChange: (page: number) => void }): React.JSX.Element {
+interface PageNumberLinkProps {
+  page: number
+  isActive: boolean
+  onChange: (page: number) => void
+}
+
+function PageNumberLink({ page, isActive, onChange }: PageNumberLinkProps): React.JSX.Element {
   return (
     <PaginationLink
       href="#"
       isActive={isActive}
       aria-label={`Go to page ${page + 1}`}
-      onClick={event => { event.preventDefault(); onChange(page) }}
+      onClick={event => {
+        event.preventDefault()
+        onChange(page)
+      }}
     >
       {page + 1}
     </PaginationLink>
@@ -125,12 +161,19 @@ function PageNumberLink({ page, isActive, onChange }: { page: number; isActive: 
 /** The shadcn pager for the Sessions list: previous/next plus numbered slots
  * with ellipsis gaps, over the `paginateSessions` window. Links drive local
  * page state (no navigation), so every click cancels the anchor default. */
-function SessionsPager({ page, pageCount, total, rangeStart, rangeEnd, onChange }: SessionsPagerProps): React.JSX.Element {
+function SessionsPager({
+  page,
+  pageCount,
+  total,
+  rangeStart,
+  rangeEnd,
+  onChange,
+}: SessionsPagerProps): React.JSX.Element {
   const firstPage = page === 0
   const lastPage = page >= pageCount - 1
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-[11px] text-muted-foreground" aria-live="polite">
+      <p className="text-muted-foreground text-[11px]" aria-live="polite">
         Showing {rangeStart}–{rangeEnd} of {total}
       </p>
       <Pagination>
@@ -141,7 +184,10 @@ function SessionsPager({ page, pageCount, total, rangeStart, rangeEnd, onChange 
               aria-disabled={firstPage}
               tabIndex={firstPage ? -1 : undefined}
               className={firstPage ? 'pointer-events-none opacity-50' : undefined}
-              onClick={event => { event.preventDefault(); onChange(page - 1) }}
+              onClick={event => {
+                event.preventDefault()
+                onChange(page - 1)
+              }}
             />
           </PaginationItem>
           {visiblePageNumbers(pageCount, page).map((entry, index) => (
@@ -159,7 +205,10 @@ function SessionsPager({ page, pageCount, total, rangeStart, rangeEnd, onChange 
               aria-disabled={lastPage}
               tabIndex={lastPage ? -1 : undefined}
               className={lastPage ? 'pointer-events-none opacity-50' : undefined}
-              onClick={event => { event.preventDefault(); onChange(page + 1) }}
+              onClick={event => {
+                event.preventDefault()
+                onChange(page + 1)
+              }}
             />
           </PaginationItem>
         </PaginationContent>
@@ -185,11 +234,24 @@ export function SessionsView(): React.JSX.Element {
     void load(scope)
   }, [load, scope])
 
-  // A new search/sort/grouping restarts at the first page; scope reloads
-  // clamp through `paginateSessions` so a background refresh keeps the page.
-  useEffect(() => {
+  // A new search/sort/grouping restarts at the first page (reset alongside
+  // the state change, not in an effect, so no cascading render); scope
+  // reloads clamp through `paginateSessions` so a background refresh keeps
+  // the page.
+  function handleQueryChange(value: string): void {
+    setQuery(value)
     setPage(0)
-  }, [query, sort, grouped])
+  }
+
+  function handleSortChange(value: string): void {
+    setSort(value as SessionSort)
+    setPage(0)
+  }
+
+  function handleGroupedToggle(): void {
+    setGrouped(v => !v)
+    setPage(0)
+  }
 
   const filtered = useMemo(() => filterSessions(rows ?? [], query), [rows, query])
   const summary = useMemo(() => summarizeSessions(filtered), [filtered])
@@ -204,6 +266,112 @@ export function SessionsView(): React.JSX.Element {
   const rangeStart = sorted.length === 0 ? 0 : safePage * SESSIONS_PAGE_SIZE + 1
   const rangeEnd = safePage * SESSIONS_PAGE_SIZE + pageRows.length
 
+  function renderBody(): React.JSX.Element {
+    if (rows === null) {
+      if (error) return <ErrorPanel message={error} />
+      return (
+        <LoadingRegion label="Loading sessions…" className="border-border bg-card overflow-hidden rounded-lg border">
+          <div className="border-border flex flex-wrap items-center gap-2.5 border-b px-3.5 py-3">
+            <Skeleton className="h-[25px] w-full max-w-xs rounded-md" />
+            <Skeleton className="h-[25px] w-44 rounded-md" />
+            <Skeleton className="h-[25px] w-28 rounded-md" />
+          </div>
+          <SkeletonRows rows={8} className="px-3.5" />
+        </LoadingRegion>
+      )
+    }
+    if (rows.length === 0) {
+      return (
+        <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-[12px]">
+          No sessions in this range yet.
+        </div>
+      )
+    }
+    if (filtered.length === 0) {
+      return (
+        <div className="border-border bg-card rounded-lg border px-3.5 py-6 text-center">
+          <p className="text-muted-foreground text-[12px]">No sessions match “{query}”.</p>
+          <button
+            type="button"
+            onClick={() => handleQueryChange('')}
+            className="text-brand-text mt-2 text-[11px] font-medium hover:underline"
+          >
+            Clear search
+          </button>
+        </div>
+      )
+    }
+    return (
+      <>
+        <div className="border-border bg-card overflow-hidden rounded-lg border">
+          <ColumnHeaders />
+          {grouped
+            ? groups.map(group => (
+                <div key={group.provider}>
+                  <div className="border-border bg-muted/30 text-muted-foreground flex items-center gap-2 border-t px-3 py-1 text-[11px]">
+                    <span className="text-foreground font-medium">{titleCase(group.provider)}</span>
+                    <span>
+                      {group.count} {group.count === 1 ? 'session' : 'sessions'}
+                    </span>
+                    <span className="ml-auto font-mono tabular-nums">{formatUsd(group.cost)}</span>
+                  </div>
+                  {group.rows.map(row => (
+                    <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />
+                  ))}
+                </div>
+              ))
+            : flat.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
+        </div>
+        {pageCount > 1 && (
+          <SessionsPager
+            page={safePage}
+            pageCount={pageCount}
+            total={sorted.length}
+            rangeStart={rangeStart}
+            rangeEnd={rangeEnd}
+            onChange={setPage}
+          />
+        )}
+      </>
+    )
+  }
+
+  function renderControls(): React.JSX.Element | null {
+    if (rows === null || rows.length === 0) return null
+    return (
+      <>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <input
+            aria-label="Search sessions"
+            placeholder="Search project, model, or id…"
+            value={query}
+            onChange={e => handleQueryChange(e.target.value)}
+            className="border-border bg-card text-foreground placeholder:text-muted-foreground focus:border-brand h-[25px] w-full max-w-xs rounded-md border px-2 text-[11px] outline-none"
+          />
+          <SegTabs options={SORT_OPTIONS} value={sort} onChange={handleSortChange} />
+          <button
+            type="button"
+            aria-pressed={grouped}
+            onClick={handleGroupedToggle}
+            className={cn(
+              'rounded-md border px-2.5 py-[3px] text-[11px] transition-colors',
+              grouped
+                ? 'border-brand bg-card text-foreground font-medium'
+                : 'border-border text-muted-foreground hover:text-foreground',
+            )}
+          >
+            Group by provider
+          </button>
+        </div>
+
+        <div className="text-muted-foreground text-[11px]">
+          {summary.count.toLocaleString('en-US')} {summary.count === 1 ? 'session' : 'sessions'} ·{' '}
+          {formatUsd(summary.costUSD)} · {formatCompact(summary.tokens)} tokens
+        </div>
+      </>
+    )
+  }
+
   return (
     <div className={cn('w-full max-w-[1180px]', motionClass('flex flex-col gap-3', 'section-fade'))}>
       {providerOptions.length > 1 && (
@@ -212,85 +380,8 @@ export function SessionsView(): React.JSX.Element {
         </div>
       )}
 
-      {rows === null ? (
-        error ? <ErrorPanel message={error} /> : (
-          <LoadingRegion label="Loading sessions…" className="overflow-hidden rounded-lg border border-border bg-card">
-            <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-3.5 py-3">
-              <Skeleton className="h-[25px] w-full max-w-xs rounded-md" />
-              <Skeleton className="h-[25px] w-44 rounded-md" />
-              <Skeleton className="h-[25px] w-28 rounded-md" />
-            </div>
-            <SkeletonRows rows={8} className="px-3.5" />
-          </LoadingRegion>
-        )
-      ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-[12px] text-muted-foreground">No sessions in this range yet.</div>
-      ) : (
-        <>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <input
-              aria-label="Search sessions"
-              placeholder="Search project, model, or id…"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              className="h-[25px] w-full max-w-xs rounded-md border border-border bg-card px-2 text-[11px] text-foreground outline-none placeholder:text-muted-foreground focus:border-brand"
-            />
-            <SegTabs options={SORT_OPTIONS} value={sort} onChange={value => setSort(value as SessionSort)} />
-            <button
-              type="button"
-              aria-pressed={grouped}
-              onClick={() => setGrouped(v => !v)}
-              className={cn(
-                'rounded-md border px-2.5 py-[3px] text-[11px] transition-colors',
-                grouped ? 'border-brand bg-card font-medium text-foreground' : 'border-border text-muted-foreground hover:text-foreground',
-              )}
-            >
-              Group by provider
-            </button>
-          </div>
-
-          <div className="text-[11px] text-muted-foreground">
-            {summary.count.toLocaleString('en-US')} {summary.count === 1 ? 'session' : 'sessions'} · {formatUsd(summary.costUSD)} · {formatCompact(summary.tokens)} tokens
-          </div>
-
-          {filtered.length === 0 ? (
-            <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-center">
-              <p className="text-[12px] text-muted-foreground">No sessions match “{query}”.</p>
-              <button type="button" onClick={() => setQuery('')} className="mt-2 text-[11px] font-medium text-brand-text hover:underline">
-                Clear search
-              </button>
-            </div>
-          ) : (
-            <>
-              <div className="overflow-hidden rounded-lg border border-border bg-card">
-                <ColumnHeaders />
-                {grouped
-                  ? groups.map(group => (
-                    <div key={group.provider}>
-                      <div className="flex items-center gap-2 border-t border-border bg-muted/30 px-3 py-1 text-[11px] text-muted-foreground">
-                        <span className="font-medium text-foreground">{titleCase(group.provider)}</span>
-                        <span>{group.count} {group.count === 1 ? 'session' : 'sessions'}</span>
-                        <span className="ml-auto font-mono tabular-nums">{formatUsd(group.cost)}</span>
-                      </div>
-                      {group.rows.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
-                    </div>
-                  ))
-                  : flat.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
-              </div>
-              {pageCount > 1 && (
-                <SessionsPager
-                  page={safePage}
-                  pageCount={pageCount}
-                  total={sorted.length}
-                  rangeStart={rangeStart}
-                  rangeEnd={rangeEnd}
-                  onChange={setPage}
-                />
-              )}
-            </>
-          )}
-        </>
-      )}
+      {renderControls()}
+      {renderBody()}
     </div>
   )
 }

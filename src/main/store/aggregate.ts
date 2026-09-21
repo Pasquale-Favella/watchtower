@@ -1,6 +1,17 @@
-import { calculateCost, createPricingConfigLookup, getShortModelName, type PricingConfigLookup } from '../pipeline/models.js'
-import { buildSpawnPrSets, deriveCanonicalProjectKey, extractPrUrlsFromProviderCall, isAbsoluteProjectPath, projectNameFromPath } from '../pipeline/parser.js'
-import { sessionRowFromSummary, type SessionRow } from '../pipeline/sessions-report.js'
+import {
+  calculateCost,
+  createPricingConfigLookup,
+  getShortModelName,
+  type PricingConfigLookup,
+} from '../pipeline/models.js'
+import {
+  buildSpawnPrSets,
+  deriveCanonicalProjectKey,
+  extractPrUrlsFromProviderCall,
+  isAbsoluteProjectPath,
+  projectNameFromPath,
+} from '../pipeline/parser.js'
+import { type SessionRow, sessionRowFromSummary } from '../pipeline/sessions-report.js'
 import type {
   ClassifiedTurn,
   DateRange,
@@ -88,6 +99,12 @@ function resolveDisplayCost(call: LedgerCallRow, resolvedModel: string): number 
   return call.baseCostUSD
 }
 
+/** Fixed-width `YYYY-…` UTC bounds: the only ISO shapes whose TEXT comparison
+ * matches chronological order, so the only range bounds that may reach a
+ * `WHERE timestamp` clause. */
+const MIN_FILTERABLE_ISO = '1000-01-01T00:00:00.000Z'
+const MAX_FILTERABLE_ISO = '9999-12-31T23:59:59.999Z'
+
 /** True when a range bound formats as a fixed-width `YYYY-…` UTC instant, the
  * only shape whose TEXT comparison matches chronological order. The all-time
  * scopes (`views.ts` `ALL_TIME_RANGE` at ±8.64e15) format with `-271821` /
@@ -98,7 +115,7 @@ function isRangeFilterable(date: Date): boolean {
   const ms = date.getTime()
   if (!Number.isFinite(ms)) return false
   const iso = date.toISOString()
-  return iso >= '1000-01-01T00:00:00.000Z' && iso <= '9999-12-31T23:59:59.999Z'
+  return iso >= MIN_FILTERABLE_ISO && iso <= MAX_FILTERABLE_ISO
 }
 
 /** Price and alias every flat call for the scope (the per-row read seam). */
@@ -135,11 +152,9 @@ export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerSco
     }
   }
 
-  const allowedSources = scope.provider === undefined
-    ? undefined
-    : new Set(store.getSourceIdsForProvider(scope.provider))
-  const keepSource = (sourceId: number): boolean =>
-    allowedSources === undefined || allowedSources.has(sourceId)
+  const allowedSources =
+    scope.provider === undefined ? undefined : new Set(store.getSourceIdsForProvider(scope.provider))
+  const keepSource = (sourceId: number): boolean => allowedSources === undefined || allowedSources.has(sourceId)
   return {
     sessions: store.getSessionsScoped().filter(s => keepSource(s.sourceId)),
     turns: store.getTurnsScoped().filter(t => keepSource(t.sourceId)),
@@ -212,11 +227,14 @@ function reconstructTurn(row: LedgerTurnRow, calls: ParsedApiCall[]): Classified
   // narrower URL shape): re-extract from the stored user message plus the
   // turn's executed commands, mirroring the parser's provider-call scan, so
   // already-ported sessions gain detection without a re-parse.
-  const prRefs = row.prRefs.length > 0 ? row.prRefs : extractPrUrlsFromProviderCall({
-    userMessage: row.userMessage,
-    bashCommands: calls.flatMap(c => c.bashCommands ?? []),
-    toolSequence: calls.flatMap(c => c.toolSequence ?? []),
-  })
+  const prRefs =
+    row.prRefs.length > 0
+      ? row.prRefs
+      : extractPrUrlsFromProviderCall({
+          userMessage: row.userMessage,
+          bashCommands: calls.flatMap(c => c.bashCommands ?? []),
+          toolSequence: calls.flatMap(c => c.toolSequence ?? []),
+        })
   if (prRefs.length > 0) turn.prRefs = prRefs
   if (row.spawnToolUseIds.length > 0) turn.spawnToolUseIds = row.spawnToolUseIds
   if (row.subCategory) turn.subCategory = row.subCategory
@@ -302,7 +320,14 @@ export function assembleSession(
     const turnCost = turn.assistantCalls.reduce((s, c) => s + c.costUSD, 0)
     const turnSavings = turn.assistantCalls.reduce((s, c) => s + (c.savingsUSD ?? 0), 0)
 
-    const cat = categoryBreakdown[turn.category] ?? { turns: 0, costUSD: 0, savingsUSD: 0, retries: 0, editTurns: 0, oneShotTurns: 0 }
+    const cat = categoryBreakdown[turn.category] ?? {
+      turns: 0,
+      costUSD: 0,
+      savingsUSD: 0,
+      retries: 0,
+      editTurns: 0,
+      oneShotTurns: 0,
+    }
     categoryBreakdown[turn.category] = cat
     cat.turns++
     cat.costUSD += turnCost
@@ -371,23 +396,27 @@ export function assembleSession(
       }
 
       for (const tool of call.tools.filter(t => !t.startsWith('mcp__'))) {
-        toolBreakdown[tool] = toolBreakdown[tool] ?? { calls: 0 }
-        toolBreakdown[tool]!.calls++
+        const entry = toolBreakdown[tool] ?? { calls: 0 }
+        entry.calls++
+        toolBreakdown[tool] = entry
       }
       for (const mcp of call.mcpTools) {
         const server = mcp.split('__')[1] ?? mcp
-        mcpBreakdown[server] = mcpBreakdown[server] ?? { calls: 0 }
-        mcpBreakdown[server]!.calls++
+        const entry = mcpBreakdown[server] ?? { calls: 0 }
+        entry.calls++
+        mcpBreakdown[server] = entry
       }
       for (const cmd of call.bashCommands) {
-        bashBreakdown[cmd] = bashBreakdown[cmd] ?? { calls: 0 }
-        bashBreakdown[cmd]!.calls++
+        const entry = bashBreakdown[cmd] ?? { calls: 0 }
+        entry.calls++
+        bashBreakdown[cmd] = entry
       }
       for (const sat of call.subagentTypes) {
-        subagentBreakdown[sat] = subagentBreakdown[sat] ?? { calls: 0, costUSD: 0, savingsUSD: 0 }
-        subagentBreakdown[sat]!.calls++
-        subagentBreakdown[sat]!.costUSD += call.costUSD
-        subagentBreakdown[sat]!.savingsUSD += callSavings
+        const entry = subagentBreakdown[sat] ?? { calls: 0, costUSD: 0, savingsUSD: 0 }
+        entry.calls++
+        entry.costUSD += call.costUSD
+        entry.savingsUSD += callSavings
+        subagentBreakdown[sat] = entry
       }
 
       if (!firstTs || call.timestamp < firstTs) firstTs = call.timestamp
@@ -476,11 +505,7 @@ export function sessionProjectKey(summary: SessionSummary): string {
  * overview, compare, export — groups them into the visible bucket with no
  * per-view special cases.
  */
-function attachCanonicalIdentity(
-  summary: SessionSummary,
-  session: LedgerSessionRow,
-  provider: string,
-): void {
+function attachCanonicalIdentity(summary: SessionSummary, session: LedgerSessionRow, provider: string): void {
   const storedPath = session.projectPath?.trim()
   const pathCandidate = storedPath && isAbsoluteProjectPath(storedPath) ? storedPath : undefined
   summary.projectKey = deriveCanonicalProjectKey(
@@ -497,8 +522,9 @@ function attachCanonicalIdentity(
   // worktrees — set from this same canonical path at parse time, so identical
   // for real data), then the path leaf in original case, then the legacy
   // label for orphans via the bucket name (set below).
-  summary.project = session.canonicalProject
-    ?? (canonicalPath ? projectNameFromPath(summary.projectPath!, summary.project) : summary.projectKey)
+  summary.project =
+    session.canonicalProject ??
+    (canonicalPath ? projectNameFromPath(canonicalPath, summary.project) : summary.projectKey)
 }
 
 /**
@@ -583,7 +609,8 @@ export function groupSummariesIntoProjects(sessions: SessionSummary[]): ProjectS
     else byKey.set(key, [session])
   }
   return [...byKey.entries()].map(([key, list]) => {
-    const first = list[0]!
+    const first = list[0]
+    if (first === undefined) throw new Error(`groupSummariesIntoProjects: empty group for key ${key}`)
     const canonicalPath = list.find(s => s.projectPath)?.projectPath
     // Shell display is the first member's seam-derived display (canonical
     // leaf, explicit canonical name, or orphan bucket) — the same label its

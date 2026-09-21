@@ -1,7 +1,6 @@
-import type { SessionRow } from './drilldown'
-
 import { clampInt } from '../../../../shared/lib/clamp.js'
 import type { SessionGroup, SessionSort } from '../../../../shared/schemas/renderer.js'
+import type { SessionRow } from './drilldown'
 export type { SessionGroup, SessionSort }
 
 /** Search — case-insensitive match over
@@ -11,8 +10,7 @@ export function filterSessions(rows: SessionRow[], query: string): SessionRow[] 
   const q = query.trim().toLowerCase()
   if (!q) return rows
   return rows.filter(row =>
-    [row.title, row.project, row.sessionId, row.models.join(' ')]
-      .some(value => value.toLowerCase().includes(q))
+    [row.title, row.project, row.sessionId, row.models.join(' ')].some(value => value.toLowerCase().includes(q)),
   )
 }
 
@@ -47,9 +45,12 @@ function groupSortValue(group: SessionGroup, sort: SessionSort): number {
 export function groupSessionsByProvider(rows: SessionRow[], sort: SessionSort): SessionGroup[] {
   const byProvider = new Map<string, SessionRow[]>()
   for (const row of rows) {
-    const list = byProvider.get(row.provider) ?? []
+    let list = byProvider.get(row.provider)
+    if (list === undefined) {
+      list = []
+      byProvider.set(row.provider, list)
+    }
     list.push(row)
-    byProvider.set(row.provider, list)
   }
   return [...byProvider.entries()]
     .map(([provider, providerRows]) => ({
@@ -89,7 +90,11 @@ export interface SessionsPage {
 
 /** Slices already-sorted rows into one page, clamping out-of-range pages
  * (scope reloads, narrowed searches) to the nearest valid page. */
-export function paginateSessions(rows: SessionRow[], page: number, pageSize: number = SESSIONS_PAGE_SIZE): SessionsPage {
+export function paginateSessions(
+  rows: SessionRow[],
+  page: number,
+  pageSize: number = SESSIONS_PAGE_SIZE,
+): SessionsPage {
   const size = clampInt(pageSize, SESSIONS_PAGE_SIZE, 1, Number.MAX_SAFE_INTEGER)
   const pageCount = Math.max(1, Math.ceil(rows.length / size))
   const clamped = clampInt(page, 0, 0, pageCount - 1)

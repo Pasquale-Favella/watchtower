@@ -1,8 +1,8 @@
-import { buildSessionRows } from './store/aggregate.js'
-import { overviewDateRange, type OverviewScope } from './overview.js'
-import type { LedgerStore } from './store/ledger.js'
 import { clampInt } from '../shared/lib/clamp.js'
-import { sessionRowSchema, type SessionRow } from '../shared/schemas/views.js'
+import { type SessionRow, sessionRowSchema } from '../shared/schemas/views.js'
+import { overviewDateRange, type OverviewScope } from './overview.js'
+import { buildSessionRows } from './store/aggregate.js'
+import type { LedgerStore } from './store/ledger.js'
 
 export type { SessionRow } from '../shared/schemas/views.js'
 
@@ -28,6 +28,14 @@ export function normalizeSessionPage(page: SessionPage | undefined): { limit: nu
   }
 }
 
+/** Newest-first ordering for the Sessions row list (equal timestamps keep
+ * their relative order). */
+function compareSessionsNewestFirst(a: SessionRow, b: SessionRow): number {
+  if (a.startedAt < b.startedAt) return 1
+  if (a.startedAt > b.startedAt) return -1
+  return 0
+}
+
 /**
  * The Sessions section's scoped row list (ADR 0008): the same period /
  * custom-range / provider scope as the Overview's `overview:query`, mapped
@@ -44,8 +52,9 @@ export function buildSessionsViewFromLedger(
   now = new Date(),
   page?: SessionPage,
 ): SessionRow[] {
-  const rows = buildSessionRows(store, { range: overviewDateRange(scope, now), provider: scope.provider })
-    .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))
+  const rows = buildSessionRows(store, { range: overviewDateRange(scope, now), provider: scope.provider }).sort(
+    compareSessionsNewestFirst,
+  )
   if (page === undefined) return sessionRowSchema.array().parse(rows)
   const { limit, offset } = normalizeSessionPage(page)
   return sessionRowSchema.array().parse(rows.slice(offset, offset + limit))

@@ -1,17 +1,22 @@
-import { describe, expect, it } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import { describe, expect, it } from 'vitest'
+
+import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { buildSessionsViewFromLedger } from '../src/main/sessions-view.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
-import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
-import {
-  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions, paginateSessions, visiblePageNumbers,
-  type SessionSort
-} from '../src/renderer/src/features/sessions/sessions-lib.js'
 import type { SessionRow } from '../src/renderer/src/features/sessions/drilldown.js'
-
+import {
+  filterSessions,
+  groupSessionsByProvider,
+  paginateSessions,
+  sortSessions,
+  summarizeSessions,
+  visiblePageNumbers,
+} from '../src/renderer/src/features/sessions/sessions-lib.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 // ── Ledger-backed sessions view (map 03) ───────────────────────────────────
 // Same scope semantics as the report-based builder above, but the facts come
@@ -25,7 +30,14 @@ function makeLedger(): LedgerStore {
   return new LedgerStore(join(dir, 'data.db'))
 }
 
-type SessionSpec = { sessionId: string; provider: string; localDate: string; cost: number; turns?: number; title?: string }
+type SessionSpec = {
+  sessionId: string
+  provider: string
+  localDate: string
+  cost: number
+  turns?: number
+  title?: string
+}
 
 function cachedFileFor(spec: SessionSpec): CachedFile {
   const turnCount = spec.turns ?? 1
@@ -46,9 +58,40 @@ function cachedFileFor(spec: SessionSpec): CachedFile {
 }
 
 function portThreeSessions(store: LedgerStore): void {
-  store.portIn({ provider: 'claude', envFingerprint: 'env-demo', filePath: '/cache/claude/sess-0.jsonl', verdict: 'new', cachedFile: cachedFileFor({ sessionId: 'sess-0', provider: 'claude', localDate: '2026-07-10', cost: 10, turns: 3 }) })
-  store.portIn({ provider: 'opencode', envFingerprint: 'env-demo', filePath: '/cache/opencode/sess-1.jsonl', verdict: 'new', cachedFile: cachedFileFor({ sessionId: 'sess-1', provider: 'opencode', localDate: '2026-07-20', cost: 5, turns: 5 }) })
-  store.portIn({ provider: 'claude', envFingerprint: 'env-demo', filePath: '/cache/claude/sess-2.jsonl', verdict: 'new', cachedFile: cachedFileFor({ sessionId: 'sess-2', provider: 'claude', localDate: '2026-08-01', cost: 8, turns: 2, title: 'refactor API' }) })
+  store.portIn({
+    provider: 'claude',
+    envFingerprint: 'env-demo',
+    filePath: '/cache/claude/sess-0.jsonl',
+    verdict: 'new',
+    cachedFile: cachedFileFor({ sessionId: 'sess-0', provider: 'claude', localDate: '2026-07-10', cost: 10, turns: 3 }),
+  })
+  store.portIn({
+    provider: 'opencode',
+    envFingerprint: 'env-demo',
+    filePath: '/cache/opencode/sess-1.jsonl',
+    verdict: 'new',
+    cachedFile: cachedFileFor({
+      sessionId: 'sess-1',
+      provider: 'opencode',
+      localDate: '2026-07-20',
+      cost: 5,
+      turns: 5,
+    }),
+  })
+  store.portIn({
+    provider: 'claude',
+    envFingerprint: 'env-demo',
+    filePath: '/cache/claude/sess-2.jsonl',
+    verdict: 'new',
+    cachedFile: cachedFileFor({
+      sessionId: 'sess-2',
+      provider: 'claude',
+      localDate: '2026-08-01',
+      cost: 8,
+      turns: 2,
+      title: 'refactor API',
+    }),
+  })
 }
 
 describe('buildSessionsViewFromLedger (aggregation seam scope)', () => {
@@ -58,8 +101,8 @@ describe('buildSessionsViewFromLedger (aggregation seam scope)', () => {
     const rows = buildSessionsViewFromLedger(store, { period: 'lifetime' })
     expect(rows.map(r => r.sessionId)).toEqual(['sess-2', 'sess-1', 'sess-0'])
     expect(rows.map(r => r.cost)).toEqual([8, 5, 10])
-    expect(rows[0]!.turns).toBe(2)
-    expect(rows[1]!.title).toBe('')
+    expect(rows[0]?.turns).toBe(2)
+    expect(rows[1]?.title).toBe('')
     store.close()
   })
 
@@ -74,7 +117,13 @@ describe('buildSessionsViewFromLedger (aggregation seam scope)', () => {
   it('excludes sessions whose source is a different provider', () => {
     const store = makeLedger()
     portThreeSessions(store)
-    store.portIn({ provider: 'codex', envFingerprint: 'env-demo', filePath: '/cache/codex/sess-3.jsonl', verdict: 'new', cachedFile: cachedFileFor({ sessionId: 'sess-3', provider: 'codex', localDate: '2026-07-25', cost: 3 }) })
+    store.portIn({
+      provider: 'codex',
+      envFingerprint: 'env-demo',
+      filePath: '/cache/codex/sess-3.jsonl',
+      verdict: 'new',
+      cachedFile: cachedFileFor({ sessionId: 'sess-3', provider: 'codex', localDate: '2026-07-25', cost: 3 }),
+    })
     const rows = buildSessionsViewFromLedger(store, { period: 'lifetime', provider: 'claude' })
     expect(rows.map(r => r.sessionId)).toEqual(['sess-2', 'sess-0'])
     expect(rows).toHaveLength(2)
@@ -118,12 +167,17 @@ describe('buildSessionsViewFromLedger (aggregation seam scope)', () => {
     const store = makeLedger()
     portThreeSessions(store)
     // Newest-first order is sess-2, sess-1, sess-0.
-    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 2, offset: 0 }).map(r => r.sessionId))
-      .toEqual(['sess-2', 'sess-1'])
-    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 2, offset: 2 }).map(r => r.sessionId))
-      .toEqual(['sess-0'])
-    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 2, offset: 10 }))
-      .toEqual([])
+    expect(
+      buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 2, offset: 0 }).map(
+        r => r.sessionId,
+      ),
+    ).toEqual(['sess-2', 'sess-1'])
+    expect(
+      buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 2, offset: 2 }).map(
+        r => r.sessionId,
+      ),
+    ).toEqual(['sess-0'])
+    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 2, offset: 10 })).toEqual([])
     store.close()
   })
 
@@ -131,15 +185,20 @@ describe('buildSessionsViewFromLedger (aggregation seam scope)', () => {
     const store = makeLedger()
     portThreeSessions(store)
     // Negative limits clamp to one row; huge limits cap instead of exploding.
-    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: -5, offset: 0 })).toHaveLength(1)
-    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 100_000, offset: 0 })).toHaveLength(3)
-    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 'all', offset: -3 }).map(r => r.sessionId))
-      .toEqual(['sess-2', 'sess-1', 'sess-0'])
+    expect(
+      buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: -5, offset: 0 }),
+    ).toHaveLength(1)
+    expect(
+      buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 100_000, offset: 0 }),
+    ).toHaveLength(3)
+    expect(
+      buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 'all', offset: -3 }).map(
+        r => r.sessionId,
+      ),
+    ).toEqual(['sess-2', 'sess-1', 'sess-0'])
     store.close()
   })
-
 })
-
 
 function makeRow(partial: Partial<SessionRow>): SessionRow {
   return {
@@ -161,9 +220,41 @@ function makeRow(partial: Partial<SessionRow>): SessionRow {
 }
 
 const ROWS: SessionRow[] = [
-  makeRow({ sessionId: 'sess-aa', provider: 'claude', title: 'Refactor auth', project: 'api', models: ['claude-sonnet'], cost: 10, turns: 3, inputTokens: 1000, outputTokens: 500, endedAt: '2026-07-10T12:00:00.000Z' }),
-  makeRow({ sessionId: 'sess-bb', provider: 'opencode', project: 'web', models: ['deepseek'], cost: 5, turns: 5, inputTokens: 300, outputTokens: 100, endedAt: '2026-07-20T12:00:00.000Z' }),
-  makeRow({ sessionId: 'sess-cc', provider: 'claude', title: 'Bump deps', project: 'api', models: ['claude-sonnet'], cost: 8, turns: 2, inputTokens: 200, outputTokens: 50, endedAt: '2026-07-30T12:00:00.000Z' }),
+  makeRow({
+    sessionId: 'sess-aa',
+    provider: 'claude',
+    title: 'Refactor auth',
+    project: 'api',
+    models: ['claude-sonnet'],
+    cost: 10,
+    turns: 3,
+    inputTokens: 1000,
+    outputTokens: 500,
+    endedAt: '2026-07-10T12:00:00.000Z',
+  }),
+  makeRow({
+    sessionId: 'sess-bb',
+    provider: 'opencode',
+    project: 'web',
+    models: ['deepseek'],
+    cost: 5,
+    turns: 5,
+    inputTokens: 300,
+    outputTokens: 100,
+    endedAt: '2026-07-20T12:00:00.000Z',
+  }),
+  makeRow({
+    sessionId: 'sess-cc',
+    provider: 'claude',
+    title: 'Bump deps',
+    project: 'api',
+    models: ['claude-sonnet'],
+    cost: 8,
+    turns: 2,
+    inputTokens: 200,
+    outputTokens: 50,
+    endedAt: '2026-07-30T12:00:00.000Z',
+  }),
 ]
 
 describe('filterSessions (search over title/project/session-id/model)', () => {
@@ -221,8 +312,10 @@ describe('sortSessions (cost / recent / turns / tokens)', () => {
 describe('groupSessionsByProvider (group-by-provider toggle)', () => {
   it('groups rows under their provider with count and cost', () => {
     const groups = groupSessionsByProvider(ROWS, 'cost')
-    const claude = groups.find(g => g.provider === 'claude')!
-    const opencode = groups.find(g => g.provider === 'opencode')!
+    const claude = groups.find(g => g.provider === 'claude')
+    if (claude === undefined) throw new Error('test invariant violated: expected a claude group')
+    const opencode = groups.find(g => g.provider === 'opencode')
+    if (opencode === undefined) throw new Error('test invariant violated: expected an opencode group')
     expect(claude.count).toBe(2)
     expect(claude.cost).toBe(18)
     expect(opencode.count).toBe(1)
@@ -231,7 +324,8 @@ describe('groupSessionsByProvider (group-by-provider toggle)', () => {
 
   it('sorts each group by the active sort', () => {
     const groups = groupSessionsByProvider(ROWS, 'recent')
-    const claude = groups.find(g => g.provider === 'claude')!
+    const claude = groups.find(g => g.provider === 'claude')
+    if (claude === undefined) throw new Error('test invariant violated: expected a claude group')
     expect(claude.rows.map(r => r.sessionId)).toEqual(['sess-cc', 'sess-aa'])
   })
 
@@ -269,17 +363,18 @@ describe('summarizeSessions (the summary line numbers)', () => {
 
 describe('paginateSessions (one mounted page, #139)', () => {
   const many = Array.from({ length: 250 }, (_, i) =>
-    makeRow({ sessionId: `sess-${String(i).padStart(3, '0')}`, cost: 250 - i }))
+    makeRow({ sessionId: `sess-${String(i).padStart(3, '0')}`, cost: 250 - i }),
+  )
 
   it('slices the sorted rows into bounded pages', () => {
     const first = paginateSessions(many, 0, 100)
     expect(first.page).toBe(0)
     expect(first.pageCount).toBe(3)
     expect(first.pageRows).toHaveLength(100)
-    expect(first.pageRows[0]!.sessionId).toBe('sess-000')
+    expect(first.pageRows[0]?.sessionId).toBe('sess-000')
     const last = paginateSessions(many, 2, 100)
     expect(last.pageRows).toHaveLength(50)
-    expect(last.pageRows[49]!.sessionId).toBe('sess-249')
+    expect(last.pageRows[49]?.sessionId).toBe('sess-249')
   })
 
   it('clamps out-of-range pages to the nearest valid page', () => {

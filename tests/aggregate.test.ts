@@ -1,18 +1,16 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import { afterEach, describe, expect, it } from 'vitest'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { buildSessionRows, buildSessionSummaries, defaultRange, queryScope } from '../src/main/store/aggregate.js'
+
 import { calculateCost } from '../src/main/pipeline/models.js'
 import { buildSessionSummary, cachedTurnToClassified } from '../src/main/pipeline/parser.js'
 import { aggregateSessions } from '../src/main/pipeline/sessions-report.js'
 import type { ClassifiedTurn } from '../src/main/pipeline/types.js'
-import {
-  buildFixtureCachedFile,
-  buildFixtureCachedTurn,
-  FIXTURE_SOURCE_PATH,
-} from './fixtures/cached-file.js'
+import { buildSessionRows, buildSessionSummaries, defaultRange, queryScope } from '../src/main/store/aggregate.js'
+import { LedgerStore } from '../src/main/store/ledger.js'
+import { buildFixtureCachedFile, buildFixtureCachedTurn, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
 const tempDirs: string[] = []
 
@@ -36,7 +34,9 @@ const FULL_RANGE = defaultRange(new Date('2026-08-01T00:00:00.000Z'), 60)
 
 // The OLD path's reference assembly for the same classified facts, mirroring the
 // parser's post-assembly attachments (title, prLinks, workingDirectory).
-function oldPathSummaries(cachedFile: ReturnType<typeof buildFixtureCachedFile>): ReturnType<typeof buildSessionSummaries> {
+function oldPathSummaries(
+  cachedFile: ReturnType<typeof buildFixtureCachedFile>,
+): ReturnType<typeof buildSessionSummaries> {
   const project = cachedFile.canonicalProjectName ?? 'demo-project'
   let carriedBranch: string | undefined
   const turns: ClassifiedTurn[] = cachedFile.turns.map(turn => {
@@ -67,8 +67,8 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
 
     expect(actual).toEqual(expected)
     expect(actual).toHaveLength(1)
-    expect(actual[0]!.totalCostUSD).toBeCloseTo(0.42, 6)
-    expect(actual[0]!.categoryBreakdown['refactoring']).toEqual({
+    expect(actual[0]?.totalCostUSD).toBeCloseTo(0.42, 6)
+    expect(actual[0]?.categoryBreakdown['refactoring']).toEqual({
       turns: 1,
       costUSD: 0.42,
       savingsUSD: 0,
@@ -76,13 +76,13 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
       editTurns: 1,
       oneShotTurns: 1,
     })
-    expect(actual[0]!.modelBreakdown['demo-model']).toMatchObject({
+    expect(actual[0]?.modelBreakdown['demo-model']).toMatchObject({
       calls: 1,
       costUSD: 0.42,
       savingsUSD: 0,
       estimatedCostUSD: 0,
     })
-    expect(actual[0]!.toolBreakdown).toEqual({ Edit: { calls: 1 } })
+    expect(actual[0]?.toolBreakdown).toEqual({ Edit: { calls: 1 } })
 
     store.close()
   })
@@ -91,11 +91,15 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     const store = makeStore()
     const file = buildFixtureCachedFile()
     const turn1 = buildFixtureCachedTurn(1, 'Add the new endpoint')
-    turn1.calls[0]!.bashCommands = ['npm test']
-    turn1.calls[0]!.toolSequence = [[{ tool: 'Edit', file: 'src/api.ts' }]]
+    const turn1Call = turn1.calls[0]
+    if (turn1Call === undefined) throw new Error('test invariant violated: expected a call')
+    turn1Call.bashCommands = ['npm test']
+    turn1Call.toolSequence = [[{ tool: 'Edit', file: 'src/api.ts' }]]
     turn1.prRefs = ['https://github.com/acme/demo-project/pull/7']
     file.turns.push(turn1)
-    file.turns[0]!.prRefs = ['https://github.com/acme/demo-project/pull/6']
+    const firstTurn = file.turns[0]
+    if (firstTurn === undefined) throw new Error('test invariant violated: expected a turn')
+    firstTurn.prRefs = ['https://github.com/acme/demo-project/pull/6']
 
     store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
 
@@ -104,16 +108,17 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
 
     expect(actual).toEqual(expected)
     expect(actual).toHaveLength(1)
-    const session = actual[0]!
+    const session = actual[0]
+    if (session === undefined) throw new Error('test invariant violated: expected a session')
     expect(session.turns).toHaveLength(2)
-    expect(session.turns[0]!.prRefs).toEqual(['https://github.com/acme/demo-project/pull/6'])
-    expect(session.turns[1]!.prRefs).toEqual(['https://github.com/acme/demo-project/pull/7'])
+    expect(session.turns[0]?.prRefs).toEqual(['https://github.com/acme/demo-project/pull/6'])
+    expect(session.turns[1]?.prRefs).toEqual(['https://github.com/acme/demo-project/pull/7'])
     expect(session.prLinks).toEqual([
       'https://github.com/acme/demo-project/pull/6',
       'https://github.com/acme/demo-project/pull/7',
     ])
     expect(session.bashBreakdown).toEqual({ 'npm test': { calls: 1 } })
-    expect(session.turns[1]!.assistantCalls[0]!.toolSequence).toEqual([[{ tool: 'Edit', file: 'src/api.ts' }]])
+    expect(session.turns[1]?.assistantCalls[0]?.toolSequence).toEqual([[{ tool: 'Edit', file: 'src/api.ts' }]])
     expect(session.totalInputTokens).toBe(200)
     expect(session.totalOutputTokens).toBe(100)
     expect(session.apiCalls).toBe(2)
@@ -132,8 +137,8 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
 
     const sessions = buildSessionSummaries(store, { range: FULL_RANGE })
     expect(sessions).toHaveLength(1)
-    expect(sessions[0]!.turns[1]!.gitBranch).toBe('feature/auth')
-    expect(sessions[0]!.everHadBranch).toBe(true)
+    expect(sessions[0]?.turns[1]?.gitBranch).toBe('feature/auth')
+    expect(sessions[0]?.everHadBranch).toBe(true)
 
     store.close()
   })
@@ -143,9 +148,13 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     const file = buildFixtureCachedFile()
     // Turn 0 lands BEFORE the range with a PR reference; turn 1 is in-range and
     // ref-less, so the range-start seeding must carry pull/6 into it.
-    file.turns[0]!.calls[0]!.timestamp = '2026-06-28T09:00:00.000Z'
-    file.turns[0]!.timestamp = '2026-06-28T09:00:00.000Z'
-    file.turns[0]!.prRefs = ['https://github.com/acme/demo-project/pull/6']
+    const firstTurn = file.turns[0]
+    if (firstTurn === undefined) throw new Error('test invariant violated: expected a turn')
+    const firstCall = firstTurn.calls[0]
+    if (firstCall === undefined) throw new Error('test invariant violated: expected a call')
+    firstCall.timestamp = '2026-06-28T09:00:00.000Z'
+    firstTurn.timestamp = '2026-06-28T09:00:00.000Z'
+    firstTurn.prRefs = ['https://github.com/acme/demo-project/pull/6']
     const inRange = buildFixtureCachedTurn(1, 'Add the new endpoint')
     file.turns.push(inRange)
 
@@ -154,9 +163,10 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     const narrow = { range: defaultRange(new Date('2026-07-06T00:00:00.000Z'), 7) }
     const actual = buildSessionSummaries(store, narrow)
     expect(actual).toHaveLength(1)
-    const session = actual[0]!
+    const session = actual[0]
+    if (session === undefined) throw new Error('test invariant violated: expected a session')
     expect(session.turns).toHaveLength(1)
-    expect(session.turns[0]!.prRefs).toBeUndefined()
+    expect(session.turns[0]?.prRefs).toBeUndefined()
     expect(session.prRefsAtRangeStart).toEqual(['https://github.com/acme/demo-project/pull/6'])
     expect(session.totalInputTokens).toBe(100)
     expect(session.firstTimestamp).toBe('2026-07-01T09:11:00.000Z')
@@ -187,7 +197,9 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     expect(codex).toHaveLength(1)
     expect(all).toHaveLength(2)
     // Same session_id across providers stays distinct (keyed by source + id).
-    expect(opencode[0]!.sessionId).toBe(codex[0]!.sessionId)
+    const codexSession = codex[0]
+    if (codexSession === undefined) throw new Error('test invariant violated: expected a session')
+    expect(opencode[0]?.sessionId).toBe(codexSession.sessionId)
 
     store.close()
   })
@@ -201,13 +213,13 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     // Session summaries carry the display (repriced) cost, mirroring the
     // Models lens (override on the effective model; input+output only).
     const scope = buildSessionSummaries(store, { range: FULL_RANGE })
-    expect(scope[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
+    expect(scope[0]?.totalCostUSD).toBeCloseTo(0.00105, 9)
 
     const calls = queryScope(store, { range: FULL_RANGE }).calls
     expect(calls).toHaveLength(1)
     // Models-lens override: input 100 @ $3/M + output 50 @ $15/M = 0.0003 + 0.00075
-    expect(calls[0]!.displayCostUSD).toBeCloseTo(0.00105, 9)
-    expect(calls[0]!.baseCostUSD).toBeCloseTo(0.42, 6)
+    expect(calls[0]?.displayCostUSD).toBeCloseTo(0.00105, 9)
+    expect(calls[0]?.baseCostUSD).toBeCloseTo(0.42, 6)
 
     store.close()
   })
@@ -218,8 +230,8 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     store.setModelAlias('demo-model', 'claude-sonnet-4.5')
 
     const calls = queryScope(store, { range: FULL_RANGE }).calls
-    expect(calls[0]!.resolvedModel).toBe('claude-sonnet-4.5')
-    expect(calls[0]!.model).toBe('demo-model')
+    expect(calls[0]?.resolvedModel).toBe('claude-sonnet-4.5')
+    expect(calls[0]?.model).toBe('demo-model')
 
     store.close()
   })
@@ -231,23 +243,28 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
 
     const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
     expect(summaries).toHaveLength(1)
-    const summary = summaries[0]!
+    const summary = summaries[0]
+    if (summary === undefined) throw new Error('test invariant violated: expected a summary')
     // Identity merges into the target everywhere except Compare/audit.
-    expect(summary.turns[0]!.assistantCalls[0]!.model).toBe('claude-sonnet-4-6')
-    expect(summary.turns[0]!.assistantCalls[0]!.rawModel).toBe('demo-model')
+    expect(summary.turns[0]?.assistantCalls[0]?.model).toBe('claude-sonnet-4-6')
+    expect(summary.turns[0]?.assistantCalls[0]?.rawModel).toBe('demo-model')
     // Cost reprices through the target's rate card (the scan priced the raw
     // name at its stored base); the stored row is untouched.
     expect(summary.totalCostUSD).not.toBeCloseTo(0.42, 6)
     expect(summary.totalCostUSD).toBeGreaterThan(0)
-    expect(summary.totalCostUSD).toBeCloseTo(queryScope(store, { range: FULL_RANGE }).calls[0]!.displayCostUSD, 9)
+    const expectedCall = queryScope(store, { range: FULL_RANGE }).calls[0]
+    if (expectedCall === undefined) throw new Error('test invariant violated: expected a call')
+    expect(summary.totalCostUSD).toBeCloseTo(expectedCall.displayCostUSD, 9)
     // Provenance survives on the merged breakdown row.
     const keys = Object.keys(summary.modelBreakdown)
     expect(keys).toHaveLength(1)
-    expect(summary.modelBreakdown[keys[0]!]!.sourceModels).toEqual(['demo-model'])
+    const key = keys[0]
+    if (key === undefined) throw new Error('test invariant violated: expected a key')
+    expect(summary.modelBreakdown[key]?.sourceModels).toEqual(['demo-model'])
 
     const rows = buildSessionRows(store, { range: FULL_RANGE })
-    expect(rows[0]!.cost).toBeCloseTo(summary.totalCostUSD, 9)
-    expect(rows[0]!.models).toEqual(keys)
+    expect(rows[0]?.cost).toBeCloseTo(summary.totalCostUSD, 9)
+    expect(rows[0]?.models).toEqual(keys)
 
     store.close()
   })
@@ -260,22 +277,22 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
 
     // Fixture usage: input 100, output 50 → 0.0003 + 0.00075.
     const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
-    expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
-    expect(queryScope(store, { range: FULL_RANGE }).calls[0]!.displayCostUSD).toBeCloseTo(0.00105, 9)
+    expect(summaries[0]?.totalCostUSD).toBeCloseTo(0.00105, 9)
+    expect(queryScope(store, { range: FULL_RANGE }).calls[0]?.displayCostUSD).toBeCloseTo(0.00105, 9)
 
     store.close()
   })
 
   it('an Alias matches provider-prefixed, pinned and cased variants of the stored id', () => {
     const store = makeStore()
-    const variants = [
-      'Opencode/Demo-Model@20250929',
-      'openrouter/opencode/demo-model',
-      'demo-model:thinking',
-    ]
+    const variants = ['Opencode/Demo-Model@20250929', 'openrouter/opencode/demo-model', 'demo-model:thinking']
     variants.forEach((model, i) => {
       const file = buildFixtureCachedFile()
-      file.turns[0]!.calls[0]!.model = model
+      const turn = file.turns[0]
+      if (turn === undefined) throw new Error('test invariant violated: expected a turn')
+      const call = turn.calls[0]
+      if (call === undefined) throw new Error('test invariant violated: expected a call')
+      call.model = model
       store.portIn({ ...baseInput, filePath: `/cache/opencode/variant-${i}.jsonl`, verdict: 'new', cachedFile: file })
     })
     store.setModelAlias('demo-model', 'claude-sonnet-4-6')
@@ -287,9 +304,9 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     expect(summaries).toHaveLength(variants.length)
     for (const summary of summaries) {
       expect(summary.totalCostUSD).toBeCloseTo(expected, 9)
-      expect(summary.turns[0]!.assistantCalls[0]!.model).toBe('claude-sonnet-4-6')
+      expect(summary.turns[0]?.assistantCalls[0]?.model).toBe('claude-sonnet-4-6')
     }
-    expect(summaries.map(s => s.turns[0]!.assistantCalls[0]!.rawModel).sort()).toEqual([...variants].sort())
+    expect(summaries.map(s => s.turns[0]?.assistantCalls[0]?.rawModel).sort()).toEqual([...variants].sort())
 
     store.close()
   })
@@ -297,13 +314,17 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
   it('a Price override matches variant spellings of the effective model', () => {
     const store = makeStore()
     const file = buildFixtureCachedFile()
-    file.turns[0]!.calls[0]!.model = 'DEMO-MODEL'
+    const turn = file.turns[0]
+    if (turn === undefined) throw new Error('test invariant violated: expected a turn')
+    const call = turn.calls[0]
+    if (call === undefined) throw new Error('test invariant violated: expected a call')
+    call.model = 'DEMO-MODEL'
     store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
     store.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
 
     // Fixture usage: input 100, output 50 → 0.0003 + 0.00075 (input+output only).
     const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
-    expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
+    expect(summaries[0]?.totalCostUSD).toBeCloseTo(0.00105, 9)
 
     store.close()
   })
@@ -314,16 +335,16 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     store.setModelAlias('demo-model', 'claude-sonnet-4-6')
     store.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
 
-    expect(buildSessionSummaries(store, { range: FULL_RANGE })[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
+    expect(buildSessionSummaries(store, { range: FULL_RANGE })[0]?.totalCostUSD).toBeCloseTo(0.00105, 9)
 
     store.removePriceOverride('claude-sonnet-4-6')
     store.removeModelAlias('demo-model')
 
     const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
-    expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.42, 6)
-    expect(summaries[0]!.turns[0]!.assistantCalls[0]!.model).toBe('demo-model')
-    expect(summaries[0]!.turns[0]!.assistantCalls[0]!.rawModel).toBeUndefined()
-    expect(Object.keys(summaries[0]!.modelBreakdown)).toEqual(['demo-model'])
+    expect(summaries[0]?.totalCostUSD).toBeCloseTo(0.42, 6)
+    expect(summaries[0]?.turns[0]?.assistantCalls[0]?.model).toBe('demo-model')
+    expect(summaries[0]?.turns[0]?.assistantCalls[0]?.rawModel).toBeUndefined()
+    expect(Object.keys(summaries[0]?.modelBreakdown)).toEqual(['demo-model'])
 
     store.close()
   })
@@ -345,8 +366,8 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     const codex = buildSessionSummaries(store, { range: FULL_RANGE, provider: 'codex' })
     expect(opencode).toHaveLength(1)
     expect(codex).toHaveLength(1)
-    expect(opencode[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
-    expect(codex[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
+    expect(opencode[0]?.totalCostUSD).toBeCloseTo(0.00105, 9)
+    expect(codex[0]?.totalCostUSD).toBeCloseTo(0.00105, 9)
 
     store.close()
   })
@@ -356,20 +377,49 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     // An old claude session (out of range), a recent claude session with a
     // pre-range PR turn, and a recent opencode session.
     const oldFile = buildFixtureCachedFile()
-    oldFile.turns[0]!.calls[0]!.timestamp = '2026-06-01T09:00:00.000Z'
-    oldFile.turns[0]!.timestamp = '2026-06-01T09:00:00.000Z'
-    store.portIn({ ...baseInput, provider: 'claude', envFingerprint: 'env-demo', filePath: '/cache/claude/old.jsonl', verdict: 'new', cachedFile: oldFile })
+    const oldTurn = oldFile.turns[0]
+    if (oldTurn === undefined) throw new Error('test invariant violated: expected a turn')
+    const oldCall = oldTurn.calls[0]
+    if (oldCall === undefined) throw new Error('test invariant violated: expected a call')
+    oldCall.timestamp = '2026-06-01T09:00:00.000Z'
+    oldTurn.timestamp = '2026-06-01T09:00:00.000Z'
+    store.portIn({
+      ...baseInput,
+      provider: 'claude',
+      envFingerprint: 'env-demo',
+      filePath: '/cache/claude/old.jsonl',
+      verdict: 'new',
+      cachedFile: oldFile,
+    })
 
     const recentFile = buildFixtureCachedFile()
-    recentFile.turns[0]!.calls[0]!.timestamp = '2026-06-28T09:00:00.000Z'
-    recentFile.turns[0]!.timestamp = '2026-06-28T09:00:00.000Z'
-    recentFile.turns[0]!.prRefs = ['https://github.com/acme/demo-project/pull/6']
+    const recentTurn = recentFile.turns[0]
+    if (recentTurn === undefined) throw new Error('test invariant violated: expected a turn')
+    const recentCall = recentTurn.calls[0]
+    if (recentCall === undefined) throw new Error('test invariant violated: expected a call')
+    recentCall.timestamp = '2026-06-28T09:00:00.000Z'
+    recentTurn.timestamp = '2026-06-28T09:00:00.000Z'
+    recentTurn.prRefs = ['https://github.com/acme/demo-project/pull/6']
     const inRangeTurn = buildFixtureCachedTurn(1, 'Follow-up')
     recentFile.turns.push(inRangeTurn)
-    store.portIn({ ...baseInput, provider: 'claude', envFingerprint: 'env-demo', filePath: '/cache/claude/recent.jsonl', verdict: 'new', cachedFile: recentFile })
+    store.portIn({
+      ...baseInput,
+      provider: 'claude',
+      envFingerprint: 'env-demo',
+      filePath: '/cache/claude/recent.jsonl',
+      verdict: 'new',
+      cachedFile: recentFile,
+    })
 
     const otherFile = buildFixtureCachedFile()
-    store.portIn({ ...baseInput, provider: 'opencode', envFingerprint: 'env-demo', filePath: '/cache/opencode/other.jsonl', verdict: 'new', cachedFile: otherFile })
+    store.portIn({
+      ...baseInput,
+      provider: 'opencode',
+      envFingerprint: 'env-demo',
+      filePath: '/cache/opencode/other.jsonl',
+      verdict: 'new',
+      cachedFile: otherFile,
+    })
 
     const july = { range: defaultRange(new Date('2026-07-06T00:00:00.000Z'), 7), provider: 'claude' }
     const scope = queryScope(store, july)
@@ -380,8 +430,8 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
 
     const summaries = buildSessionSummaries(store, july)
     expect(summaries).toHaveLength(1)
-    expect(summaries[0]!.turns).toHaveLength(1)
-    expect(summaries[0]!.prRefsAtRangeStart).toEqual(['https://github.com/acme/demo-project/pull/6'])
+    expect(summaries[0]?.turns).toHaveLength(1)
+    expect(summaries[0]?.prRefsAtRangeStart).toEqual(['https://github.com/acme/demo-project/pull/6'])
 
     store.close()
   })
@@ -395,7 +445,16 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     // The report-shaped reference: the old view path projects the old-path
     // summaries (already proven byte-equal to the seam) into SessionRow[].
     const expected = aggregateSessions([
-      { project: 'demo-project', projectPath: '/workspace/demo-project', totalCostUSD: 0.42, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 1, totalProxiedCostUSD: 0, sessions: oldPathSummaries(file) },
+      {
+        project: 'demo-project',
+        projectPath: '/workspace/demo-project',
+        totalCostUSD: 0.42,
+        totalSavingsUSD: 0,
+        totalEstimatedCostUSD: 0,
+        totalApiCalls: 1,
+        totalProxiedCostUSD: 0,
+        sessions: oldPathSummaries(file),
+      },
     ])
 
     expect(actual).toEqual(expected)

@@ -1,18 +1,17 @@
 import { clampInt } from '../shared/lib/clamp.js'
-import { getShortModelName } from './pipeline/models.js'
-import type { SessionSummary } from './pipeline/types.js'
-import { buildSessionSummaries, sessionProjectKey } from './store/aggregate.js'
-import { localDateKey, overviewDateRange, type OverviewScope } from './overview.js'
-import type { LedgerStore } from './store/ledger.js'
 import {
-  spendPayloadSchema,
   type SpendDayEntry,
-  type SpendFlow,
   type SpendFlowLink,
   type SpendFlowNode,
   type SpendPayload,
+  spendPayloadSchema,
   type SpendSegment,
 } from '../shared/schemas/spend.js'
+import { localDateKey, overviewDateRange, type OverviewScope } from './overview.js'
+import { getShortModelName } from './pipeline/models.js'
+import type { SessionSummary } from './pipeline/types.js'
+import { buildSessionSummaries, sessionProjectKey } from './store/aggregate.js'
+import type { LedgerStore } from './store/ledger.js'
 
 export type {
   SpendDayEntry,
@@ -52,13 +51,21 @@ function sortedEntries(totals: Map<string, number>): Array<[string, number]> {
   })
 }
 
+/** The merged-row provenance for one short model name: the sorted raw model
+ * ids that fed it via an alias, or an empty object when nothing merged. */
+function provenanceOf(
+  modelProvenance: Map<string, Set<string>>,
+  model: string,
+): { sourceModels: string[] } | Record<string, never> {
+  const raws = modelProvenance.get(model)
+  if (raws !== undefined && raws.size > 0) return { sourceModels: [...raws].sort() }
+  return {}
+}
+
 /** Map key-keyed day segments back to leaf display names. Same-leaf checkouts
  * sharing a day merge into one display segment (costs summed, no spend lost);
  * the Sankey flow below keeps them as separate key-id nodes. */
-function displayProjectSegments(
-  segments: SpendSegment[],
-  displayByKey: Map<string, string>,
-): SpendSegment[] {
+function displayProjectSegments(segments: SpendSegment[], displayByKey: Map<string, string>): SpendSegment[] {
   const merged = new Map<string, number>()
   for (const seg of segments) {
     const display = displayByKey.get(seg.name) ?? seg.name
@@ -69,8 +76,7 @@ function displayProjectSegments(
     .sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name))
 }
 
-/** The top `limit`
- * nodes by cost plus an "Other" rollup node for the rest (when non-zero). */
+/** The top `limit` nodes by cost plus an "Other" rollup node for the rest (when non-zero). */
 function buildNodes(totals: Map<string, number>, limit: number): { nodes: SpendFlowNode[]; keep: Set<string> } {
   const sorted = sortedEntries(totals)
   const top = sorted.slice(0, limit)
@@ -242,13 +248,9 @@ function buildSpendPayload(
     }
   }
 
-  const provenanceFor = (model: string): { sourceModels: string[] } | Record<string, never> => {
-    const raws = modelProvenance.get(model)
-    return raws && raws.size > 0 ? { sourceModels: [...raws].sort() } : {}
-  }
   const byModel = contiguousDayEntries(byModelDay, winStart, winEnd).map(entry => ({
     ...entry,
-    segments: entry.segments.map(seg => ({ ...seg, ...provenanceFor(seg.name) })),
+    segments: entry.segments.map(seg => ({ ...seg, ...provenanceOf(modelProvenance, seg.name) })),
   }))
   const byProject = contiguousDayEntries(byProjectDay, winStart, winEnd).map(entry => ({
     ...entry,
@@ -257,7 +259,7 @@ function buildSpendPayload(
   const dataStart = earliestKey(byModelDay, byProjectDay)
 
   const { nodes: rawModels, keep: keptModels } = buildNodes(modelTotals, flowLimit)
-  const models = rawModels.map(node => ({ ...node, ...provenanceFor(node.id) }))
+  const models = rawModels.map(node => ({ ...node, ...provenanceOf(modelProvenance, node.id) }))
   const { nodes: rawProjects, keep: keptProjects } = buildNodes(projectTotals, flowLimit)
   // Flow node ids stay canonical keys (link-stable); labels show the leaf.
   // The "__other__" rollup node keeps its own label — it has no project key.
@@ -268,9 +270,13 @@ function buildSpendPayload(
   const modelOrder = new Map(models.map((node, index) => [node.id, index]))
   const projectOrder = new Map(projects.map((node, index) => [node.id, index]))
   const links = rollLinks(matrix, keptModels, keptProjects).sort((a, b) => {
-    const byModel = (modelOrder.get(a.model) ?? Number.MAX_SAFE_INTEGER) - (modelOrder.get(b.model) ?? Number.MAX_SAFE_INTEGER)
+    const byModel =
+      (modelOrder.get(a.model) ?? Number.MAX_SAFE_INTEGER) - (modelOrder.get(b.model) ?? Number.MAX_SAFE_INTEGER)
     if (byModel !== 0) return byModel
-    return (projectOrder.get(a.project) ?? Number.MAX_SAFE_INTEGER) - (projectOrder.get(b.project) ?? Number.MAX_SAFE_INTEGER)
+    return (
+      (projectOrder.get(a.project) ?? Number.MAX_SAFE_INTEGER) -
+      (projectOrder.get(b.project) ?? Number.MAX_SAFE_INTEGER)
+    )
   })
 
   return {

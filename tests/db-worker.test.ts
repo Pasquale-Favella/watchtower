@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DbWorkerClient, type DbWorkerPort } from '../src/main/db-worker/client.js'
@@ -18,23 +19,26 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
 
   function open(): DbWorkerContext {
     dir = tempDataDir()
-    ctx = new DbWorkerContext(
-      { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') },
-      event => { events.push(event) },
-    )
+    ctx = new DbWorkerContext({ dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }, event => {
+      events.push(event)
+    })
     return ctx
   }
 
   afterEach(() => {
     events.length = 0
-    try { ctx?.close() } catch { /* already closed */ }
+    try {
+      ctx?.close()
+    } catch {
+      /* already closed */
+    }
     ctx = null
     if (dir) rmSync(dir, { recursive: true, force: true })
     dir = ''
   })
 
   it('reports an unscanned status on a fresh ledger', async () => {
-    const status = await open().dispatch('store:status', []) as { scanned: boolean }
+    const status = (await open().dispatch('store:status', [])) as { scanned: boolean }
     expect(status.scanned).toBe(false)
   })
 
@@ -67,12 +71,13 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
 
   it('records skill dismissals', async () => {
     const c = open()
-    expect(await c.dispatch('skills:dismiss', [{ source: 'bash', name: 'git commit', reason: 'one-off' }]))
-      .toEqual({ ok: true })
+    expect(await c.dispatch('skills:dismiss', [{ source: 'bash', name: 'git commit', reason: 'one-off' }])).toEqual({
+      ok: true,
+    })
   })
 
   it('answers an empty overview with a null dataStart', async () => {
-    const payload = await open().dispatch('overview:query', [{ period: 'today' }]) as { dataStart: null }
+    const payload = (await open().dispatch('overview:query', [{ period: 'today' }])) as { dataStart: null }
     expect(payload.dataStart).toBeNull()
   })
 
@@ -80,7 +85,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     const c = open()
     expect(await c.dispatch('sessions:view', [{ period: 'lifetime' }])).toEqual([])
     expect(await c.dispatch('sessions:view', [{ period: 'lifetime' }, { limit: 2, offset: 0 }])).toEqual([])
-    const spend = await c.dispatch('spend:view', [{ period: 'lifetime' }, { flowLimit: 3 }]) as { flow: unknown }
+    const spend = (await c.dispatch('spend:view', [{ period: 'lifetime' }, { flowLimit: 3 }])) as { flow: unknown }
     expect(spend.flow).toEqual({ models: [], projects: [], links: [] })
   })
 
@@ -100,7 +105,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   })
 
   it('reports settings sizes for the temp data dir', async () => {
-    const info = await open().dispatch('settings:info', []) as { dataDir: string; dbSize: number }
+    const info = (await open().dispatch('settings:info', [])) as { dataDir: string; dbSize: number }
     expect(info.dataDir).toBe(dir)
     expect(info.dbSize).toBeGreaterThan(0)
   })
@@ -118,7 +123,9 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     expect(oplogs[0]).toMatchObject({ level: 'info', logEvent: 'scan.start', fields: { op: 'scan' } })
     // Discovery reads the real provider dirs, so counts vary per machine —
     // assert the shape (allowlisted totals), not the values.
-    const finish = oplogs.find(event => event.event === 'oplog' && (event as { logEvent: string }).logEvent === 'scan.finish')
+    const finish = oplogs.find(
+      event => event.event === 'oplog' && (event as { logEvent: string }).logEvent === 'scan.finish',
+    )
     expect(finish).toMatchObject({ level: 'info' })
     const fields = (finish as { fields: Record<string, unknown> }).fields
     expect(fields['op']).toBe('scan')
@@ -170,7 +177,10 @@ const echoResponder: Responder = (fake, req) => {
   fake.emit('message', { id: req.id, ok: true, data: { op: req.op, args: req.args } })
 }
 
-function makeClient(responder: Responder = echoResponder, onFake?: (fake: FakeWorker) => void): { client: DbWorkerClient; fakes: FakeWorker[] } {
+function makeClient(
+  responder: Responder = echoResponder,
+  onFake?: (fake: FakeWorker) => void,
+): { client: DbWorkerClient; fakes: FakeWorker[] } {
   const fakes: FakeWorker[] = []
   const client = new DbWorkerClient(
     { dbPath: ':memory:', dataDir: ':memory:', cacheDir: ':memory:' },
@@ -208,42 +218,58 @@ describe('DbWorkerClient request/response correlation', () => {
   it('routes worker broadcasts to event listeners', async () => {
     const { client, fakes } = makeClient()
     const seen: DbWorkerEvent[] = []
-    client.onEvent(event => { seen.push(event) })
-    fakes[0]!.emit('message', { event: 'store:changed', metadata: { portedFiles: 1 } })
+    client.onEvent(event => {
+      seen.push(event)
+    })
+    const fake = fakes[0]
+    if (fake === undefined) throw new Error('test invariant violated: expected a fake')
+    fake.emit('message', { event: 'store:changed', metadata: { portedFiles: 1 } })
     expect(seen).toEqual([{ event: 'store:changed', metadata: { portedFiles: 1 } }])
     await client.terminate()
   })
 
   it('rejects in-flight requests and respawns after a live worker exits', async () => {
     const spawn = vi.fn()
-    const { client, fakes } = makeClient(echoResponder, () => { spawn() })
+    const { client, fakes } = makeClient(echoResponder, () => {
+      spawn()
+    })
     expect(spawn).toHaveBeenCalledTimes(1)
-    fakes[0]!.emit('message', { event: 'ready' })
+    const fake = fakes[0]
+    if (fake === undefined) throw new Error('test invariant violated: expected a fake')
+    fake.emit('message', { event: 'ready' })
     await expect(client.ready).resolves.toBeUndefined()
     const pending = client.request('overview:query', {})
-    fakes[0]!.emit('exit', 1)
+    fake.emit('exit', 1)
     await expect(pending).rejects.toThrow(/exited unexpectedly/)
     expect(spawn).toHaveBeenCalledTimes(2)
     // The respawned worker serves new requests once it is ready.
-    fakes[1]!.emit('message', { event: 'ready' })
+    const respawnedFake = fakes[1]
+    if (respawnedFake === undefined) throw new Error('test invariant violated: expected respawned fake')
+    respawnedFake.emit('message', { event: 'ready' })
     await expect(client.request('currency:get')).resolves.toEqual({ op: 'currency:get', args: [] })
     await client.terminate()
   })
 
   it('resolves ready on the boot handshake', async () => {
     const { client, fakes } = makeClient()
-    fakes[0]!.emit('message', { event: 'ready' })
+    const fake = fakes[0]
+    if (fake === undefined) throw new Error('test invariant violated: expected a fake')
+    fake.emit('message', { event: 'ready' })
     await expect(client.ready).resolves.toBeUndefined()
     await client.terminate()
   })
 
   it('never respawns a worker that failed to boot and rejects with its error', async () => {
     const spawn = vi.fn()
-    const { client, fakes } = makeClient(echoResponder, () => { spawn() })
-    fakes[0]!.emit('message', { event: 'init-error', error: 'cannot open ledger.db' })
+    const { client, fakes } = makeClient(echoResponder, () => {
+      spawn()
+    })
+    const fake = fakes[0]
+    if (fake === undefined) throw new Error('test invariant violated: expected a fake')
+    fake.emit('message', { event: 'init-error', error: 'cannot open ledger.db' })
     await expect(client.ready).rejects.toThrow('cannot open ledger.db')
     const pending = client.request('overview:query', {})
-    fakes[0]!.emit('exit', 1)
+    fake.emit('exit', 1)
     await expect(pending).rejects.toThrow('cannot open ledger.db')
     // No hot loop: a worker that never lived is not recreated.
     expect(spawn).toHaveBeenCalledTimes(1)
@@ -252,10 +278,14 @@ describe('DbWorkerClient request/response correlation', () => {
 
   it('settles ready on a pre-boot thread error without respawning', async () => {
     const spawn = vi.fn()
-    const { client, fakes } = makeClient(echoResponder, () => { spawn() })
-    fakes[0]!.emit('error', new Error('thread blew up during init'))
+    const { client, fakes } = makeClient(echoResponder, () => {
+      spawn()
+    })
+    const fake = fakes[0]
+    if (fake === undefined) throw new Error('test invariant violated: expected a fake')
+    fake.emit('error', new Error('thread blew up during init'))
     await expect(client.ready).rejects.toThrow('thread blew up during init')
-    fakes[0]!.emit('exit', 1)
+    fake.emit('exit', 1)
     // The exit that follows a failed boot must not recreate the worker.
     expect(spawn).toHaveBeenCalledTimes(1)
     await client.terminate()
@@ -267,7 +297,7 @@ describe('DbWorkerClient request/response correlation', () => {
       client.request('overview:query', { period: 'today' }),
       client.request('overview:query', { period: 'today' }),
     ])
-    expect(fakes[0]!.posted).toHaveLength(1)
+    expect(fakes[0]?.posted).toHaveLength(1)
     expect(a).toEqual(b)
     await client.terminate()
   })
@@ -280,16 +310,18 @@ describe('DbWorkerClient request/response correlation', () => {
       client.request('scan:start'),
       client.request('scan:start'),
     ])
-    expect(fakes[0]!.posted).toHaveLength(4)
+    expect(fakes[0]?.posted).toHaveLength(4)
     await client.terminate()
   })
 
   it('shutdown asks the worker to close and terminates the thread', async () => {
     const { client, fakes } = makeClient()
-    fakes[0]!.emit('message', { event: 'ready' })
+    const fake = fakes[0]
+    if (fake === undefined) throw new Error('test invariant violated: expected a fake')
+    fake.emit('message', { event: 'ready' })
     await client.shutdown()
     // The first post is the graceful close op; the thread is then gone.
-    expect(fakes[0]!.posted[0]).toMatchObject({ op: 'shutdown', args: [] })
+    expect(fakes[0]?.posted[0]).toMatchObject({ op: 'shutdown', args: [] })
     await expect(client.request('currency:get')).rejects.toThrow(/shut down|unavailable/)
   })
 })

@@ -2,7 +2,9 @@ import { mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+
 import { afterEach, describe, expect, it } from 'vitest'
+
 import { LedgerStore } from '../src/main/store/ledger.js'
 import {
   currencyRateRowSchema,
@@ -86,9 +88,8 @@ function jsonIsNonEmpty(raw: string): boolean {
 }
 
 afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    // temp dirs are left to the OS; only the store handle is closed by tests
-  }
+  // temp dirs are left to the OS; only the store handle is closed by tests
+  tempDirs.splice(0)
 })
 
 const baseInput = {
@@ -113,20 +114,21 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     expect(tables).not.toContain('ratio_metrics')
 
     const indexes = store.getIndexNames('ledger_call')
-    expect(indexes.sort()).toEqual([
-      'idx_ledger_call_timestamp',
-      'idx_ledger_call_session',
-      'idx_ledger_call_model',
-      'idx_ledger_call_project',
-      'idx_ledger_call_provider',
-      'idx_ledger_call_provider_timestamp',
-      'idx_ledger_call_source_timestamp',
-    ].sort())
+    expect(indexes.sort()).toEqual(
+      [
+        'idx_ledger_call_timestamp',
+        'idx_ledger_call_session',
+        'idx_ledger_call_model',
+        'idx_ledger_call_project',
+        'idx_ledger_call_provider',
+        'idx_ledger_call_provider_timestamp',
+        'idx_ledger_call_source_timestamp',
+      ].sort(),
+    )
     // The scoped turn reads filter on `timestamp` and `(source_id, timestamp)`.
-    expect(store.getIndexNames('ledger_turn').sort()).toEqual([
-      'idx_ledger_turn_timestamp',
-      'idx_ledger_turn_source_timestamp',
-    ].sort())
+    expect(store.getIndexNames('ledger_turn').sort()).toEqual(
+      ['idx_ledger_turn_timestamp', 'idx_ledger_turn_source_timestamp'].sort(),
+    )
 
     store.close()
   })
@@ -229,7 +231,10 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
 
     const modified = buildFixtureCachedFile()
-    const call = modified.turns[0]!.calls[0]!
+    const modifiedTurn = modified.turns[0]
+    if (modifiedTurn === undefined) throw new Error('test invariant violated: expected a turn')
+    const call = modifiedTurn.calls[0]
+    if (call === undefined) throw new Error('test invariant violated: expected a call')
     call.costUSD = 0.99
     call.usage = { ...call.usage, inputTokens: 500 }
     const result = store.portIn({ ...baseInput, verdict: 'modified', cachedFile: modified })
@@ -237,8 +242,8 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     expect(result.inserted).toEqual({ sessions: 1, turns: 1, calls: 1 })
     const calls = store.getCalls()
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.baseCostUSD).toBeCloseTo(0.99, 6)
-    expect(calls[0]!.inputTokens).toBe(500)
+    expect(calls[0]?.baseCostUSD).toBeCloseTo(0.99, 6)
+    expect(calls[0]?.inputTokens).toBe(500)
 
     store.close()
   })
@@ -288,7 +293,9 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     delete (file as { canonicalProjectName?: string }).canonicalProjectName
     delete (file as { canonicalCwd?: string }).canonicalCwd
     delete (file as { workingDirectory?: string }).workingDirectory
-    file.turns[0]!.sessionId = '9b702997-3777-4470-8cbb-961e462d9f29'
+    const copilotTurn = file.turns[0]
+    if (copilotTurn === undefined) throw new Error('test invariant violated: expected a turn')
+    copilotTurn.sessionId = '9b702997-3777-4470-8cbb-961e462d9f29'
 
     store.portIn({
       provider: 'copilot',
@@ -311,7 +318,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       canonicalCwd: null,
     })
     expect(store.getSources()[0]).toMatchObject({ provider: 'copilot', project: 'my-repo' })
-    expect(store.getCalls()[0]!.project).toBe('my-repo')
+    expect(store.getCalls()[0]?.project).toBe('my-repo')
 
     store.close()
   })
@@ -327,10 +334,10 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
 
     const sources = store.getSources()
     expect(sources).toHaveLength(1)
-    expect(sources[0]!.fingerprint.dev).toBe(String(2 ** 53))
-    expect(sources[0]!.fingerprint.ino).toBe(String(2 ** 53 + 2))
-    expect(sources[0]!.fingerprint.mtimeMs).toBe(1_751_300_000_000)
-    expect(sources[0]!.fingerprint.sizeBytes).toBe(4096)
+    expect(sources[0]?.fingerprint.dev).toBe(String(2 ** 53))
+    expect(sources[0]?.fingerprint.ino).toBe(String(2 ** 53 + 2))
+    expect(sources[0]?.fingerprint.mtimeMs).toBe(1_751_300_000_000)
+    expect(sources[0]?.fingerprint.sizeBytes).toBe(4096)
 
     store.close()
   })
@@ -420,7 +427,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     const store = makeStore()
     store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
 
-    expect(store.getSources()[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
+    expect(store.getSources()[0]?.repoUrl).toBe('https://github.com/acme/demo-project')
 
     store.close()
   })
@@ -428,19 +435,21 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
   it('carries the git branch forward and persists classification + PR refs per turn', () => {
     const store = makeStore()
     const file = buildFixtureCachedFile()
-    file.turns[0]!.prRefs = ['https://github.com/acme/demo-project/pull/7']
+    const prTurn = file.turns[0]
+    if (prTurn === undefined) throw new Error('test invariant violated: expected a turn')
+    prTurn.prRefs = ['https://github.com/acme/demo-project/pull/7']
     file.turns.push({ ...buildFixtureCachedTurn(1, 'Add the new endpoint'), gitBranch: 'feature/auth' })
 
     store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
 
     const turns = store.getTurns()
     expect(turns).toHaveLength(2)
-    expect(turns[0]!.gitBranch).toBeNull()
-    expect(turns[1]!.gitBranch).toBe('feature/auth')
-    expect(turns[0]!.prRefs).toEqual(['https://github.com/acme/demo-project/pull/7'])
-    expect(turns[1]!.category).toBe('feature')
-    expect(store.getSessions()[0]!.prLinks).toEqual(['https://github.com/acme/demo-project/pull/7'])
-    expect(store.getSessions()[0]!.everHadBranch).toBe(1)
+    expect(turns[0]?.gitBranch).toBeNull()
+    expect(turns[1]?.gitBranch).toBe('feature/auth')
+    expect(turns[0]?.prRefs).toEqual(['https://github.com/acme/demo-project/pull/7'])
+    expect(turns[1]?.category).toBe('feature')
+    expect(store.getSessions()[0]?.prLinks).toEqual(['https://github.com/acme/demo-project/pull/7'])
+    expect(store.getSessions()[0]?.everHadBranch).toBe(1)
 
     store.close()
   })
@@ -450,17 +459,21 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     const file = buildFixtureCachedFile({
       ambiguousSpawnAgentIds: ['spawn-ambiguous-1'],
     })
-    file.turns[0]!.calls[0]!.bashCommands = ['npm test', 'git status']
+    const bashTurn = file.turns[0]
+    if (bashTurn === undefined) throw new Error('test invariant violated: expected a turn')
+    const bashCall = bashTurn.calls[0]
+    if (bashCall === undefined) throw new Error('test invariant violated: expected a call')
+    bashCall.bashCommands = ['npm test', 'git status']
 
     store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
 
     const calls = store.getCalls()
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.bashCommands).toEqual(['npm test', 'git status'])
+    expect(calls[0]?.bashCommands).toEqual(['npm test', 'git status'])
 
     const sessions = store.getSessions()
     expect(sessions).toHaveLength(1)
-    expect(sessions[0]!.ambiguousSpawnAgentIds).toEqual(['spawn-ambiguous-1'])
+    expect(sessions[0]?.ambiguousSpawnAgentIds).toEqual(['spawn-ambiguous-1'])
 
     store.close()
   })
@@ -468,8 +481,15 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
   it('round-trips per-call tool sequence bytes (overview/optimize need it)', () => {
     const store = makeStore()
     const file = buildFixtureCachedFile()
-    file.turns[0]!.calls[0]!.toolSequence = [
-      [{ tool: 'Edit', file: 'src/auth.ts' }, { tool: 'Bash', command: 'npm test' }],
+    const toolTurn = file.turns[0]
+    if (toolTurn === undefined) throw new Error('test invariant violated: expected a turn')
+    const toolCall = toolTurn.calls[0]
+    if (toolCall === undefined) throw new Error('test invariant violated: expected a call')
+    toolCall.toolSequence = [
+      [
+        { tool: 'Edit', file: 'src/auth.ts' },
+        { tool: 'Bash', command: 'npm test' },
+      ],
       [{ tool: 'Read', file: 'src/auth.ts' }],
     ]
 
@@ -477,8 +497,11 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
 
     const calls = store.getCalls()
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.toolSequence).toEqual([
-      [{ tool: 'Edit', file: 'src/auth.ts' }, { tool: 'Bash', command: 'npm test' }],
+    expect(calls[0]?.toolSequence).toEqual([
+      [
+        { tool: 'Edit', file: 'src/auth.ts' },
+        { tool: 'Bash', command: 'npm test' },
+      ],
       [{ tool: 'Read', file: 'src/auth.ts' }],
     ])
 
@@ -495,26 +518,39 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.dismissSkill('bash', 'git commit', 'not-a-skill')
 
     expect(store.getModelAliases()).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
-    expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 3, outputPricePerMillion: 15 }])
-    expect(store.getCurrencyRate('EUR')).toEqual({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
+    expect(store.getPriceOverrides()).toEqual([
+      { model: 'demo-model', inputPricePerMillion: 3, outputPricePerMillion: 15 },
+    ])
+    expect(store.getCurrencyRate('EUR')).toEqual({
+      code: 'EUR',
+      symbol: '€',
+      rate: 0.92,
+      updatedAt: '2026-07-01T00:00:00.000Z',
+    })
     expect(store.getDisplayCurrency()).toBe('EUR')
     expect(store.getRefreshCadence()).toBe('5m')
     expect(store.getSkillDismissals()).toHaveLength(1)
 
     // a second upsert overwrites, never appends
     store.setPriceOverride('demo-model', { inputPricePerMillion: 4, outputPricePerMillion: 16 })
-    expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 }])
+    expect(store.getPriceOverrides()).toEqual([
+      { model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 },
+    ])
 
     store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
     store.clear()
 
     expect(store.getSources()).toEqual([])
     expect(store.getModelAliases()).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
-    expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 }])
+    expect(store.getPriceOverrides()).toEqual([
+      { model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 },
+    ])
     expect(store.getCurrencyRate('EUR')).not.toBeNull()
     expect(store.getDisplayCurrency()).toBe('EUR')
     expect(store.getRefreshCadence()).toBe('5m')
-    expect(store.getSkillDismissals()).toEqual([{ source: 'bash', name: 'git commit', reason: 'not-a-skill', created: expect.any(String) }])
+    expect(store.getSkillDismissals()).toEqual([
+      { source: 'bash', name: 'git commit', reason: 'not-a-skill', created: expect.any(String) },
+    ])
 
     store.close()
   })
@@ -539,7 +575,6 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
 
     store.close()
   })
-
 })
 
 describe('LedgerStore scoped reads (query-scaling #139)', () => {
@@ -560,9 +595,24 @@ describe('LedgerStore scoped reads (query-scaling #139)', () => {
   }
 
   function portScopedFixtures(store: LedgerStore): void {
-    portDatedSession(store, { provider: 'claude', filePath: '/cache/claude/old.jsonl', sessionId: 'sess-old', date: '2026-06-01' })
-    portDatedSession(store, { provider: 'claude', filePath: '/cache/claude/new.jsonl', sessionId: 'sess-new', date: '2026-07-20' })
-    portDatedSession(store, { provider: 'opencode', filePath: '/cache/opencode/other.jsonl', sessionId: 'sess-other', date: '2026-07-20' })
+    portDatedSession(store, {
+      provider: 'claude',
+      filePath: '/cache/claude/old.jsonl',
+      sessionId: 'sess-old',
+      date: '2026-06-01',
+    })
+    portDatedSession(store, {
+      provider: 'claude',
+      filePath: '/cache/claude/new.jsonl',
+      sessionId: 'sess-new',
+      date: '2026-07-20',
+    })
+    portDatedSession(store, {
+      provider: 'opencode',
+      filePath: '/cache/opencode/other.jsonl',
+      sessionId: 'sess-other',
+      date: '2026-07-20',
+    })
   }
 
   it('filters calls and turns by provider at the SQL read', () => {
@@ -601,8 +651,13 @@ describe('LedgerStore scoped reads (query-scaling #139)', () => {
     // Parity: the scoped read returns exactly what filtering the full read
     // in memory would produce (same rows, same order).
     const claudeSources = new Set(store.getSourceIdsForProvider('claude'))
-    const expected = store.getCalls().filter(c =>
-      claudeSources.has(c.sourceId) && c.timestamp >= filter.start! && c.timestamp <= filter.end!)
+    const filterStart = filter.start
+    if (filterStart === undefined) throw new Error('test invariant violated: expected a start')
+    const filterEnd = filter.end
+    if (filterEnd === undefined) throw new Error('test invariant violated: expected an end')
+    const expected = store
+      .getCalls()
+      .filter(c => claudeSources.has(c.sourceId) && c.timestamp >= filterStart && c.timestamp <= filterEnd)
     expect(scoped).toEqual(expected)
 
     store.close()
@@ -634,7 +689,11 @@ describe('LedgerStore scoped reads (query-scaling #139)', () => {
       ['2026-07-01T00:00:00.000Z', '2026-07-31T23:59:59.999Z'],
     )
     const details = plan.map(row => String(row['detail'] ?? ''))
-    expect(details.some(d => d.includes('idx_ledger_call_timestamp') || d.includes('USING INDEX') || d.includes('USING COVERING INDEX'))).toBe(true)
+    expect(
+      details.some(
+        d => d.includes('idx_ledger_call_timestamp') || d.includes('USING INDEX') || d.includes('USING COVERING INDEX'),
+      ),
+    ).toBe(true)
     expect(details.some(d => d.includes('SCAN ledger_call'))).toBe(false)
 
     store.close()
@@ -811,9 +870,9 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
   }
 
   function readTableNames(ro: DatabaseSync): string[] {
-    const rows = ro.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC",
-    ).all() as Array<{ name: string }>
+    const rows = ro
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC")
+      .all() as Array<{ name: string }>
     return rows.map(r => r.name)
   }
 
@@ -832,7 +891,8 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     withTempLedgerReadOnly(ro => {
       for (const table of EXPECTED_TABLES) {
         const actual = readColumns(ro, table)
-        const expected = EXPECTED_COLUMNS[table]!
+        const expected = EXPECTED_COLUMNS[table]
+        if (expected === undefined) throw new Error(`test invariant violated: expected columns for table ${table}`)
         expect(
           actual.map(c => c.name),
           `[${table}] column names`,
@@ -888,7 +948,9 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
       currency_rate: currencyRateRowSchema,
     }
     for (const [table, schema] of Object.entries(linked)) {
-      const dbColumns = EXPECTED_COLUMNS[table]!.map(c => c.name).sort()
+      const expectedColumns = EXPECTED_COLUMNS[table]
+      if (expectedColumns === undefined) throw new Error(`test invariant violated: expected columns for table ${table}`)
+      const dbColumns = expectedColumns.map(c => c.name).sort()
       expect(zodInputKeys(schema), `[${table}] Zod input keys match DDL columns`).toEqual(dbColumns)
       const dbJson = dbColumns.filter(name => name.endsWith('_json'))
       expect(zodJsonKeys(schema), `[${table}] JSON columns use JSON helpers`).toEqual(dbJson)
@@ -962,13 +1024,15 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
     return rows
       .filter(r => r.key === 1)
       .sort((a, b) => a.seqno - b.seqno)
-      .map(r => r.name!)
+      .map(r => {
+        if (r.name === null) throw new Error('test invariant violated: expected an index column name')
+        return r.name
+      })
   }
 
   function readTableSql(ro: DatabaseSync, table: string): string {
-    const row = ro.prepare(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-    ).get(table) as { sql: string | null } | undefined
+    const row = ro.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as
+      { sql: string | null } | undefined
     return row?.sql ?? ''
   }
 
@@ -976,10 +1040,9 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
     withTempLedgerReadOnly(ro => {
       const list = readIndexList(ro, 'ledger_call')
       const named = list.filter(i => i.origin === 'c')
-      expect(
-        named.map(i => i.name).sort(),
-        '[ledger_call] named indexes',
-      ).toEqual(Object.keys(EXPECTED_NAMED_CALL_INDEXES).sort())
+      expect(named.map(i => i.name).sort(), '[ledger_call] named indexes').toEqual(
+        Object.keys(EXPECTED_NAMED_CALL_INDEXES).sort(),
+      )
       for (const [index, columns] of Object.entries(EXPECTED_NAMED_CALL_INDEXES)) {
         const entry = named.find(i => i.name === index)
         expect(entry, `[ledger_call.${index}] present`).toBeDefined()
@@ -995,10 +1058,9 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
     withTempLedgerReadOnly(ro => {
       const list = readIndexList(ro, 'ledger_turn')
       const named = list.filter(i => i.origin === 'c')
-      expect(
-        named.map(i => i.name).sort(),
-        '[ledger_turn] named indexes',
-      ).toEqual(Object.keys(EXPECTED_NAMED_TURN_INDEXES).sort())
+      expect(named.map(i => i.name).sort(), '[ledger_turn] named indexes').toEqual(
+        Object.keys(EXPECTED_NAMED_TURN_INDEXES).sort(),
+      )
       for (const [index, columns] of Object.entries(EXPECTED_NAMED_TURN_INDEXES)) {
         const entry = named.find(i => i.name === index)
         expect(entry, `[ledger_turn.${index}] present`).toBeDefined()
@@ -1025,7 +1087,8 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
       }
       // The idempotency guarantee is database-enforced: the call uniqueness
       // spans the generated call_key (COALESCE over dedup_key).
-      const callUnique = readIndexList(ro, 'ledger_call').find(i => i.origin === 'u')!
+      const callUnique = readIndexList(ro, 'ledger_call').find(i => i.origin === 'u')
+      if (callUnique === undefined) throw new Error('test invariant violated: expected a unique index on ledger_call')
       expect(
         readIndexColumns(ro, callUnique.name),
         '[ledger_call.UNIQUE(source_id, session_id, call_key)] columns',
@@ -1129,7 +1192,9 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
       const result = store.portIn({ ...baseInput, verdict: 'new', cachedFile: file, project: 'demo-project' })
       expect(result.inserted).toEqual({ sessions: 1, turns: 2, calls: 2 })
 
-      const sourceId = store.getSources()[0]!.id
+      const firstSource = store.getSources()[0]
+      if (firstSource === undefined) throw new Error('test invariant violated: expected a source')
+      const sourceId = firstSource.id
       expect(store.getSources()).toMatchObject([
         {
           provider: 'opencode',
@@ -1154,10 +1219,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
           canonicalCwd: '/workspace/demo-project',
           agentType: 'parity-harness',
           title: 'Parity adversarial round trip',
-          prLinks: [
-            'https://github.com/acme/demo-project/pull/7',
-            'https://github.com/acme/demo-project/pull/8',
-          ],
+          prLinks: ['https://github.com/acme/demo-project/pull/7', 'https://github.com/acme/demo-project/pull/8'],
           isSidechain: 1,
           parentSessionId: 'sess-parent-parity',
           agentSpawnLinks: { 'spawn-parity-1': 'sess-side-parity' },
@@ -1330,9 +1392,8 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         verdict: 'new',
         cachedFile: buildFixtureCachedFile(),
       })
-      const unshaped = store
-        .getSources()
-        .find(s => s.filePath.endsWith('sess-unshaped.jsonl'))!
+      const unshaped = store.getSources().find(s => s.filePath.endsWith('sess-unshaped.jsonl'))
+      if (unshaped === undefined) throw new Error('test invariant violated: expected an unshaped source')
       expect(unshaped.repoUrl).toBeUndefined()
       expect(unshaped.project).toBeUndefined()
     } finally {
@@ -1356,9 +1417,9 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
       store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
       const sources = store.getSources()
       expect(sources).toHaveLength(1)
-      expect(typeof sources[0]!.fingerprint.dev).toBe('string')
-      expect(typeof sources[0]!.fingerprint.ino).toBe('string')
-      expect(sources[0]!.fingerprint).toEqual({
+      expect(typeof sources[0]?.fingerprint.dev).toBe('string')
+      expect(typeof sources[0]?.fingerprint.ino).toBe('string')
+      expect(sources[0]?.fingerprint).toEqual({
         dev: '42',
         ino: '4242',
         mtimeMs: 1_751_300_000_000,
@@ -1373,7 +1434,8 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
         verdict: 'new',
         cachedFile: oversized,
       })
-      const anchor = store.getSources().find(s => s.filePath.endsWith('sess-oversized.jsonl'))!
+      const anchor = store.getSources().find(s => s.filePath.endsWith('sess-oversized.jsonl'))
+      if (anchor === undefined) throw new Error('test invariant violated: expected an oversized source')
       expect(anchor.fingerprint.dev).toBe(String(2 ** 53))
       expect(anchor.fingerprint.ino).toBe(String(2 ** 53 + 100))
     } finally {
@@ -1462,7 +1524,9 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
       }
       store.portIn({ ...baseInput, verdict: 'new', cachedFile: file, project: 'demo-project' })
 
-      const sourceId = store.getSources()[0]!.id
+      const firstSource = store.getSources()[0]
+      if (firstSource === undefined) throw new Error('test invariant violated: expected a source')
+      const sourceId = firstSource.id
       expect(store.getSources()).toMatchObject([
         {
           id: expect.any(Number),
@@ -1486,10 +1550,7 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
           canonicalCwd: '/workspace/demo-project',
           agentType: 'coverage-harness',
           title: 'Coverage probe',
-          prLinks: [
-            'https://github.com/acme/demo-project/pull/10',
-            'https://github.com/acme/demo-project/pull/9',
-          ],
+          prLinks: ['https://github.com/acme/demo-project/pull/10', 'https://github.com/acme/demo-project/pull/9'],
           isSidechain: 1,
           parentSessionId: 'sess-parent-cov',
           agentSpawnLinks: { 'spawn-cov-1': 'sess-cov-side' },

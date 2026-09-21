@@ -1,19 +1,18 @@
-import { describe, expect, it } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
+
+import { describe, expect, it } from 'vitest'
+
 import { normalizeProjectPathKey } from '../src/main/pipeline/parser.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
-import {
-  formatDayLabel, providerLabel, sankeyData, stackedRows,
-} from '../src/renderer/src/features/spend/lib.js'
+import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
+import { LedgerStore } from '../src/main/store/ledger.js'
+import { formatDayLabel, providerLabel, sankeyData, stackedRows } from '../src/renderer/src/features/spend/lib.js'
 import { isOtherNode, seriesColorForModel, seriesKeyForModel } from '../src/renderer/src/shared/lib/modelSeries.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 const NOW = new Date(2026, 6, 15)
-
 
 // ── Ledger-backed Spend view (map 03) ──────────────────────────────────────
 // Same scope semantics as the report-based builder above, but facts come from
@@ -25,7 +24,14 @@ function makeLedger(): LedgerStore {
   return new LedgerStore(join(dir, 'data.db'))
 }
 
-type SpendSessionSpec = { sessionId: string; provider: string; model: string; project: string; cost: number; date: string }
+type SpendSessionSpec = {
+  sessionId: string
+  provider: string
+  model: string
+  project: string
+  cost: number
+  date: string
+}
 
 // Distinct native checkouts per project label: the canonical key (not the
 // display name) is the grouping identity, so fixtures must not share one
@@ -71,10 +77,14 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
       { sessionId: 's-1', provider: 'claude', model: 'claude-sonnet-4', project: 'alpha', cost: 4, date: '2026-07-11' },
       { sessionId: 's-2', provider: 'claude', model: 'claude-opus-4', project: 'beta', cost: 6, date: '2026-07-10' },
     ])
-    const payload = buildSpendViewFromLedger(store, {
-      period: 'lifetime',
-      range: { since: '2026-07-10', until: '2026-07-12' },
-    }, NOW)
+    const payload = buildSpendViewFromLedger(
+      store,
+      {
+        period: 'lifetime',
+        range: { since: '2026-07-10', until: '2026-07-12' },
+      },
+      NOW,
+    )
 
     expect(payload.byModel).toEqual([
       { date: '2026-07-10', cost: 16, segments: [{ name: 'Opus 4', cost: 16 }] },
@@ -82,7 +92,14 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
       { date: '2026-07-12', cost: 0, segments: [] },
     ])
     expect(payload.byProject).toEqual([
-      { date: '2026-07-10', cost: 16, segments: [{ name: 'alpha', cost: 10 }, { name: 'beta', cost: 6 }] },
+      {
+        date: '2026-07-10',
+        cost: 16,
+        segments: [
+          { name: 'alpha', cost: 10 },
+          { name: 'beta', cost: 6 },
+        ],
+      },
       { date: '2026-07-11', cost: 4, segments: [{ name: 'alpha', cost: 4 }] },
       { date: '2026-07-12', cost: 0, segments: [] },
     ])
@@ -114,7 +131,7 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
     const payload = buildSpendViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 6, 20))
 
     expect(payload.byModel).toHaveLength(15)
-    expect(payload.byModel[0]!.date).toBe('2026-07-06')
+    expect(payload.byModel[0]?.date).toBe('2026-07-06')
     expect(payload.byModel[4]).toEqual({
       date: '2026-07-10',
       cost: 8,
@@ -134,11 +151,15 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
       { sessionId: 's-0', provider: 'claude', model: 'claude-opus-4', project: 'alpha', cost: 10, date: '2026-07-10' },
       { sessionId: 's-1', provider: 'opencode', model: 'claude-haiku-4', project: 'beta', cost: 7, date: '2026-07-10' },
     ])
-    const payload = buildSpendViewFromLedger(store, {
-      period: 'lifetime',
-      provider: 'claude',
-      range: { since: '2026-07-10', until: '2026-07-10' },
-    }, NOW)
+    const payload = buildSpendViewFromLedger(
+      store,
+      {
+        period: 'lifetime',
+        provider: 'claude',
+        range: { since: '2026-07-10', until: '2026-07-10' },
+      },
+      NOW,
+    )
 
     expect(payload.byModel[0]).toEqual({ date: '2026-07-10', cost: 10, segments: [{ name: 'Opus 4', cost: 10 }] })
     expect(payload.byProject[0]).toEqual({ date: '2026-07-10', cost: 10, segments: [{ name: 'alpha', cost: 10 }] })
@@ -157,15 +178,26 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
       date: `2026-07-${String(i + 1).padStart(2, '0')}`,
     }))
     portSpendSessions(store, specs)
-    const payload = buildSpendViewFromLedger(store, {
-      period: 'lifetime',
-      range: { since: '2026-07-01', until: '2026-07-10' },
-    }, NOW)
+    const payload = buildSpendViewFromLedger(
+      store,
+      {
+        period: 'lifetime',
+        range: { since: '2026-07-01', until: '2026-07-10' },
+      },
+      NOW,
+    )
 
     expect(payload.flow.models).toHaveLength(9)
     expect(payload.flow.models.map(m => m.id)).toEqual([
-      'model-0', 'model-1', 'model-2', 'model-3', 'model-4',
-      'model-5', 'model-6', 'model-7', '__other__',
+      'model-0',
+      'model-1',
+      'model-2',
+      'model-3',
+      'model-4',
+      'model-5',
+      'model-6',
+      'model-7',
+      '__other__',
     ])
     expect(payload.flow.models[8]).toEqual({ id: '__other__', label: 'Other', cost: 3 })
     expect(payload.flow.projects).toEqual([{ id: spendKeyFor('alpha'), label: 'alpha', cost: 55 }])
@@ -204,7 +236,6 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
     expect(fallback.flow.models).toHaveLength(9)
     store.close()
   })
-
 })
 
 describe('spend lib helpers', () => {
@@ -231,7 +262,7 @@ describe('spend lib helpers', () => {
     // Series ordered by total cost descending.
     expect(series).toEqual(['Opus 4', 'Sonnet 4', 'GPT-5.2'])
     expect(rows[0]).toEqual({ date: '2026-07-10', 'Opus 4': 16 })
-    expect(rows[2]!['GPT-5.2']).toBe(2)
+    expect(rows[2]?.['GPT-5.2']).toBe(2)
     expect(rows[3]).toEqual({ date: '2026-07-13' })
   })
 
