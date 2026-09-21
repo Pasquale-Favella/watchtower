@@ -4,7 +4,7 @@ import * as React from 'react'
 import { Button } from '@/shared/components/ui/button'
 import { cn } from '@/shared/lib/utils'
 
-function Pagination({ className, ...props }: React.ComponentProps<'nav'>) {
+function Pagination({ className, ...props }: React.ComponentProps<'nav'>): React.JSX.Element {
   return (
     <nav
       role="navigation"
@@ -16,11 +16,11 @@ function Pagination({ className, ...props }: React.ComponentProps<'nav'>) {
   )
 }
 
-function PaginationContent({ className, ...props }: React.ComponentProps<'ul'>) {
+function PaginationContent({ className, ...props }: React.ComponentProps<'ul'>): React.JSX.Element {
   return <ul data-slot="pagination-content" className={cn('flex items-center gap-0.5', className)} {...props} />
 }
 
-function PaginationItem({ ...props }: React.ComponentProps<'li'>) {
+function PaginationItem({ ...props }: React.ComponentProps<'li'>): React.JSX.Element {
   return <li data-slot="pagination-item" {...props} />
 }
 
@@ -29,7 +29,7 @@ type PaginationLinkProps = {
 } & Pick<React.ComponentProps<typeof Button>, 'size'> &
   React.ComponentProps<'a'>
 
-function PaginationLink({ className, isActive, size = 'icon', ...props }: PaginationLinkProps) {
+function PaginationLink({ className, isActive, size = 'icon', ...props }: PaginationLinkProps): React.JSX.Element {
   return (
     <Button
       variant={isActive ? 'outline' : 'ghost'}
@@ -43,11 +43,11 @@ function PaginationLink({ className, isActive, size = 'icon', ...props }: Pagina
   )
 }
 
-function PaginationPrevious({
-  className,
-  text = 'Previous',
-  ...props
-}: React.ComponentProps<typeof PaginationLink> & { text?: string }) {
+type PaginationNavLinkProps = React.ComponentProps<typeof PaginationLink> & {
+  text?: string
+}
+
+function PaginationPrevious({ className, text = 'Previous', ...props }: PaginationNavLinkProps): React.JSX.Element {
   return (
     <PaginationLink aria-label="Go to previous page" size="default" className={cn('pl-1.5!', className)} {...props}>
       <ChevronLeftIcon data-icon="inline-start" />
@@ -56,11 +56,7 @@ function PaginationPrevious({
   )
 }
 
-function PaginationNext({
-  className,
-  text = 'Next',
-  ...props
-}: React.ComponentProps<typeof PaginationLink> & { text?: string }) {
+function PaginationNext({ className, text = 'Next', ...props }: PaginationNavLinkProps): React.JSX.Element {
   return (
     <PaginationLink aria-label="Go to next page" size="default" className={cn('pr-1.5!', className)} {...props}>
       <span className="hidden sm:block">{text}</span>
@@ -69,7 +65,7 @@ function PaginationNext({
   )
 }
 
-function PaginationEllipsis({ className, ...props }: React.ComponentProps<'span'>) {
+function PaginationEllipsis({ className, ...props }: React.ComponentProps<'span'>): React.JSX.Element {
   return (
     <span
       aria-hidden

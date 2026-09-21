@@ -85,9 +85,21 @@ function chunkArray<T>(items: T[], size: number): T[][] {
   return out
 }
 
-/** Shared column lists for the turn/call readers: the unfiltered, filtered,
- * and keyed variants all project the same columns, so the lists live here
- * instead of drifting across three query strings each. */
+/** Binary `session_id` ordering, mirroring SQLite `ORDER BY session_id ASC`
+ * for rows merged from several keyed chunk reads. */
+function compareSessionIds(a: Pick<LedgerSessionRow, 'sessionId'>, b: Pick<LedgerSessionRow, 'sessionId'>): number {
+  if (a.sessionId < b.sessionId) return -1
+  if (a.sessionId > b.sessionId) return 1
+  return 0
+}
+
+/** Shared column lists for the session/turn/call readers: the unfiltered,
+ * filtered, and keyed variants all project the same columns, so the lists
+ * live here instead of drifting across three query strings each. */
+const LEDGER_SESSION_COLUMNS = `source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
+       agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
+       mcp_inventory_json, ambiguous_spawn_agent_ids_json, ever_had_branch`
+
 const LEDGER_TURN_COLUMNS = `source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
        spawn_tool_use_ids_json, category, sub_category, retries, has_edits`
 
@@ -563,13 +575,14 @@ export class LedgerStore {
     return this.getCallsScoped()
   }
 
-  /** Source ids for one provider (the `ledger_source` table is tiny — one row
-   * per scanned file — so this lookup stays in memory and the big tables
-   * filter on the indexed `source_id`). Empty when the provider never scanned. */
+  /** Source ids for one provider, ascending. Empty when the provider never
+   * scanned. A direct `WHERE provider = ?` read (the `ledger_source` table
+   * holds one row per scanned file) instead of parsing every source row. */
   getSourceIdsForProvider(provider: string): number[] {
-    return this.getSources()
-      .filter(s => s.provider === provider)
-      .map(s => s.id)
+    const rows = this.db
+      .prepare('SELECT id FROM ledger_source WHERE provider = ? ORDER BY id ASC')
+      .all(provider) as Array<{ id: number }>
+    return rows.map(r => Number(r.id))
   }
 
   private sourceIdsFor(provider: string | undefined): number[] | undefined {
@@ -603,9 +616,7 @@ export class LedgerStore {
     const rows = this.db
       .prepare(
         `
-      SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
-             agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
-             mcp_inventory_json, ambiguous_spawn_agent_ids_json, ever_had_branch
+      SELECT ${LEDGER_SESSION_COLUMNS}
       FROM ledger_session WHERE 1 = 1 ${clause} ORDER BY session_id ASC
     `,
       )
@@ -662,13 +673,29 @@ export class LedgerStore {
 
   /** Full history for an explicit session-key set (the second phase of the
    * range pushdown). Empty input short-circuits to no rows without querying.
-   * The optional provider narrows the sessions-table read to that provider's
-   * sources (the table itself carries no timestamp to filter on). */
+   * The optional provider narrows to that provider's sources. Keyed
+   * `source_id + session_id` reads like the turn/call variants — never a
+   * full sessions-table scan — in `session_id` order like `getSessionsScoped`. */
   getSessionsForKeys(keys: SessionKey[], provider?: string): LedgerSessionRow[] {
     if (keys.length === 0) return []
-    const all = this.getSessionsScoped(provider !== undefined ? { provider } : {})
-    const wanted = new Set(keys.map(k => `${k.sourceId}\0${k.sessionId}`))
-    return all.filter(s => wanted.has(`${s.sourceId}\0${s.sessionId}`))
+    const allowed = provider === undefined ? undefined : new Set(this.getSourceIdsForProvider(provider))
+    const wanted = keys.filter(k => allowed === undefined || allowed.has(k.sourceId))
+    if (wanted.length === 0) return []
+    const out: LedgerSessionRow[] = []
+    this.forEachSessionKeyGroup(wanted, (sourceId, chunk) => {
+      const placeholders = chunk.map(() => '?').join(', ')
+      const rows = this.db
+        .prepare(
+          `
+        SELECT ${LEDGER_SESSION_COLUMNS}
+        FROM ledger_session WHERE source_id = ? AND session_id IN (${placeholders})
+        ORDER BY session_id ASC
+      `,
+        )
+        .all(sourceId, ...chunk) as Array<Record<string, unknown>>
+      out.push(...z.array(ledgerSessionRowSchema).parse(rows))
+    })
+    return out.sort(compareSessionIds)
   }
 
   /** Groups session keys by source and fans each source's ids out in
@@ -728,13 +755,15 @@ export class LedgerStore {
     )
   }
 
-  /** Runs `EXPLAIN QUERY PLAN` for an arbitrary ledger query (query-plan
-   * evidence for #139: before/after traces live in the PR, not in prod). */
+  // ── Schema introspection (green-field verification) ───────────────────
+
+  /** Query-plan evidence for the scoped reads (#139): runs `EXPLAIN QUERY
+   * PLAN` for one ledger query so tests can assert a range-filtered scan
+   * uses an index instead of a full-table scan. Introspection only — no
+   * production read path calls it. */
   explainQueryPlan(query: string, params: Array<string | number> = []): Array<Record<string, unknown>> {
     return this.db.prepare(`EXPLAIN QUERY PLAN ${query}`).all(...params) as Array<Record<string, unknown>>
   }
-
-  // ── Schema introspection (green-field verification) ───────────────────
 
   getTableNames(): string[] {
     const rows = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>

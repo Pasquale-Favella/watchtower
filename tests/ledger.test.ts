@@ -680,6 +680,29 @@ describe('LedgerStore scoped reads (query-scaling #139)', () => {
     store.close()
   })
 
+  it('loads keyed sessions with keyed reads, honoring the provider', () => {
+    const store = makeStore()
+    portScopedFixtures(store)
+
+    const sourceByFile = new Map(store.getSources().map(s => [s.filePath, s.id]))
+    const claudeNew = sourceByFile.get('/cache/claude/new.jsonl')
+    const opencodeOther = sourceByFile.get('/cache/opencode/other.jsonl')
+    if (claudeNew === undefined || opencodeOther === undefined) {
+      throw new Error('test invariant violated: expected scoped fixture sources')
+    }
+    const keys = [
+      { sourceId: opencodeOther, sessionId: 'sess-other' },
+      { sourceId: claudeNew, sessionId: 'sess-new' },
+    ]
+
+    expect(store.getSessionsForKeys(keys).map(s => s.sessionId)).toEqual(['sess-new', 'sess-other'])
+    expect(store.getSessionsForKeys(keys, 'claude').map(s => s.sessionId)).toEqual(['sess-new'])
+    expect(store.getSessionsForKeys(keys, 'nope')).toEqual([])
+    expect(store.getSessionsForKeys([])).toEqual([])
+
+    store.close()
+  })
+
   it('the range-filtered call scan uses an index (no full-table scan)', () => {
     const store = makeStore()
     portScopedFixtures(store)

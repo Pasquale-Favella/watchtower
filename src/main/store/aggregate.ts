@@ -152,13 +152,11 @@ export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerSco
     }
   }
 
-  const allowedSources =
-    scope.provider === undefined ? undefined : new Set(store.getSourceIdsForProvider(scope.provider))
-  const keepSource = (sourceId: number): boolean => allowedSources === undefined || allowedSources.has(sourceId)
+  const providerFilter = scope.provider === undefined ? {} : { provider: scope.provider }
   return {
-    sessions: store.getSessionsScoped().filter(s => keepSource(s.sourceId)),
-    turns: store.getTurnsScoped().filter(t => keepSource(t.sourceId)),
-    calls: resolveScopedCalls(store.getCallsScoped().filter(c => keepSource(c.sourceId))),
+    sessions: store.getSessionsScoped(providerFilter),
+    turns: store.getTurnsScoped(providerFilter),
+    calls: resolveScopedCalls(store.getCallsScoped(providerFilter)),
   }
 }
 
