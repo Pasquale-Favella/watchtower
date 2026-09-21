@@ -6,13 +6,8 @@ import { useScanStore } from '@/app/stores/scan-store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import type { SessionRow } from '@/features/sessions/drilldown'
 import {
-  filterSessions,
   groupSessionsByProvider,
-  paginateSessions,
-  SESSIONS_PAGE_SIZE,
   type SessionSort,
-  sortSessions,
-  summarizeSessions,
   visiblePageNumbers,
 } from '@/features/sessions/sessions-lib'
 import { useSessionsStore } from '@/features/sessions/store'
@@ -33,6 +28,8 @@ import { formatUsd } from '@/shared/lib/models'
 import { motionClass } from '@/shared/lib/motion'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { cn } from '@/shared/lib/utils'
+
+import { SESSIONS_PAGE_SIZE } from '../../../../shared/lib/sessions-query.js'
 
 const SORT_OPTIONS: SegOption[] = [
   { value: 'cost', label: 'Cost' },
@@ -133,16 +130,18 @@ interface SessionsPagerProps {
   total: number
   rangeStart: number
   rangeEnd: number
-  onChange: (page: number) => void
+  onGoto: (page: number) => void
+  onNext: () => void
+  onPrev: () => void
 }
 
 interface PageNumberLinkProps {
   page: number
   isActive: boolean
-  onChange: (page: number) => void
+  onGoto: (page: number) => void
 }
 
-function PageNumberLink({ page, isActive, onChange }: PageNumberLinkProps): React.JSX.Element {
+function PageNumberLink({ page, isActive, onGoto }: PageNumberLinkProps): React.JSX.Element {
   return (
     <PaginationLink
       href="#"
@@ -150,7 +149,7 @@ function PageNumberLink({ page, isActive, onChange }: PageNumberLinkProps): Reac
       aria-label={`Go to page ${page + 1}`}
       onClick={event => {
         event.preventDefault()
-        onChange(page)
+        onGoto(page)
       }}
     >
       {page + 1}
@@ -159,15 +158,19 @@ function PageNumberLink({ page, isActive, onChange }: PageNumberLinkProps): Reac
 }
 
 /** The shadcn pager for the Sessions list: previous/next plus numbered slots
- * with ellipsis gaps, over the `paginateSessions` window. Links drive local
- * page state (no navigation), so every click cancels the anchor default. */
+ * with ellipsis gaps. Numbered slots jump by offset; previous/next walk the
+ * server's keyset cursors, so a background refresh cannot shift the window
+ * mid-walk. Links drive page state (no navigation), so every click cancels
+ * the anchor default. */
 function SessionsPager({
   page,
   pageCount,
   total,
   rangeStart,
   rangeEnd,
-  onChange,
+  onGoto,
+  onNext,
+  onPrev,
 }: SessionsPagerProps): React.JSX.Element {
   const firstPage = page === 0
   const lastPage = page >= pageCount - 1
@@ -186,7 +189,7 @@ function SessionsPager({
               className={firstPage ? 'pointer-events-none opacity-50' : undefined}
               onClick={event => {
                 event.preventDefault()
-                onChange(page - 1)
+                onPrev()
               }}
             />
           </PaginationItem>
@@ -195,7 +198,7 @@ function SessionsPager({
               {entry === 'ellipsis' ? (
                 <PaginationEllipsis />
               ) : (
-                <PageNumberLink page={entry} isActive={entry === page} onChange={onChange} />
+                <PageNumberLink page={entry} isActive={entry === page} onGoto={onGoto} />
               )}
             </PaginationItem>
           ))}
@@ -207,7 +210,7 @@ function SessionsPager({
               className={lastPage ? 'pointer-events-none opacity-50' : undefined}
               onClick={event => {
                 event.preventDefault()
-                onChange(page + 1)
+                onNext()
               }}
             />
           </PaginationItem>
@@ -219,55 +222,58 @@ function SessionsPager({
 
 export function SessionsView(): React.JSX.Element {
   const scope = useScopeStore(useShallow(selectScope))
-  const rows = useSessionsStore(s => s.data)
+  const data = useSessionsStore(s => s.data)
   const error = useSessionsStore(s => s.error)
-  const load = useSessionsStore(s => s.load)
+  const page = useSessionsStore(s => s.page)
+  const gotoPage = useSessionsStore(s => s.gotoPage)
+  const nextPage = useSessionsStore(s => s.nextPage)
+  const prevPage = useSessionsStore(s => s.prevPage)
   const provider = useScopeStore(s => s.provider)
   const setProvider = useScopeStore(s => s.setProvider)
   const detectedProviders = useScanStore(s => s.detectedProviders)
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SessionSort>('cost')
   const [grouped, setGrouped] = useState(true)
-  const [page, setPage] = useState(0)
 
+  // Search/sort/scope fetch server-side (#141 item 2): a new triple always
+  // restarts at the first page (reset alongside the state change, not in an
+  // effect, so no cascading render). Background refreshes keep the page via
+  // the store's reload (the server clamps a shrunken range to the last page).
   useEffect(() => {
-    void load(scope)
-  }, [load, scope])
+    void gotoPage(scope, { query, sort }, 0)
+  }, [gotoPage, scope, query, sort])
 
-  // A new search/sort/grouping restarts at the first page (reset alongside
-  // the state change, not in an effect, so no cascading render); scope
-  // reloads clamp through `paginateSessions` so a background refresh keeps
-  // the page.
-  function handleQueryChange(value: string): void {
-    setQuery(value)
-    setPage(0)
-  }
-
-  function handleSortChange(value: string): void {
-    setSort(value as SessionSort)
-    setPage(0)
-  }
-
-  function handleGroupedToggle(): void {
-    setGrouped(v => !v)
-    setPage(0)
-  }
-
-  const filtered = useMemo(() => filterSessions(rows ?? [], query), [rows, query])
-  const summary = useMemo(() => summarizeSessions(filtered), [filtered])
-  // Paginate the globally sorted rows, then group the page slice: at most one
-  // page (100 rows) ever mounts, while search/sort/summary stay global over
-  // the range-bounded scoped set (#139).
-  const sorted = useMemo(() => sortSessions(filtered, sort), [filtered, sort])
-  const { page: safePage, pageCount, pageRows } = useMemo(() => paginateSessions(sorted, page), [sorted, page])
+  // Group the fetched page slice: at most one page (100 rows) ever arrives
+  // over IPC, while search/sort/summary stay global over the range-bounded
+  // scoped set on the server (#139).
+  const pageRows = useMemo(() => data?.rows ?? [], [data])
+  const total = data?.total ?? 0
+  const summary = useMemo(
+    () => data?.summary ?? { count: 0, costUSD: 0, tokens: 0 },
+    [data],
+  )
+  const start = data?.start ?? 0
+  const pageCount = Math.max(1, Math.ceil(total / SESSIONS_PAGE_SIZE))
   const groups = useMemo(() => (grouped ? groupSessionsByProvider(pageRows, sort) : []), [pageRows, sort, grouped])
   const flat = useMemo(() => (grouped ? [] : pageRows), [grouped, pageRows])
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
-  const rangeStart = sorted.length === 0 ? 0 : safePage * SESSIONS_PAGE_SIZE + 1
-  const rangeEnd = safePage * SESSIONS_PAGE_SIZE + pageRows.length
+  const rangeStart = total === 0 ? 0 : start + 1
+  const rangeEnd = start + pageRows.length
+
+  function handleGoto(target: number): void {
+    void gotoPage(scope, { query, sort }, target)
+  }
+
+  function handleNext(): void {
+    void nextPage(scope, { query, sort })
+  }
+
+  function handlePrev(): void {
+    void prevPage(scope, { query, sort })
+  }
 
   function renderBody(): React.JSX.Element {
-    if (rows === null) {
+    if (data === null) {
       if (error) return <ErrorPanel message={error} />
       return (
         <LoadingRegion label="Loading sessions…" className="border-border bg-card overflow-hidden rounded-lg border">
@@ -280,20 +286,20 @@ export function SessionsView(): React.JSX.Element {
         </LoadingRegion>
       )
     }
-    if (rows.length === 0) {
+    if (total === 0 && query.trim() === '') {
       return (
         <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-[12px]">
           No sessions in this range yet.
         </div>
       )
     }
-    if (filtered.length === 0) {
+    if (total === 0) {
       return (
         <div className="border-border bg-card rounded-lg border px-3.5 py-6 text-center">
           <p className="text-muted-foreground text-[12px]">No sessions match “{query}”.</p>
           <button
             type="button"
-            onClick={() => handleQueryChange('')}
+            onClick={() => setQuery('')}
             className="text-brand-text mt-2 text-[11px] font-medium hover:underline"
           >
             Clear search
@@ -324,12 +330,14 @@ export function SessionsView(): React.JSX.Element {
         </div>
         {pageCount > 1 && (
           <SessionsPager
-            page={safePage}
+            page={page}
             pageCount={pageCount}
-            total={sorted.length}
+            total={total}
             rangeStart={rangeStart}
             rangeEnd={rangeEnd}
-            onChange={setPage}
+            onGoto={handleGoto}
+            onNext={handleNext}
+            onPrev={handlePrev}
           />
         )}
       </>
@@ -337,7 +345,7 @@ export function SessionsView(): React.JSX.Element {
   }
 
   function renderControls(): React.JSX.Element | null {
-    if (rows === null || rows.length === 0) return null
+    if (data === null || total === 0) return null
     return (
       <>
         <div className="flex flex-wrap items-center gap-2.5">
@@ -345,14 +353,14 @@ export function SessionsView(): React.JSX.Element {
             aria-label="Search sessions"
             placeholder="Search project, model, or id…"
             value={query}
-            onChange={e => handleQueryChange(e.target.value)}
+            onChange={e => setQuery(e.target.value)}
             className="border-border bg-card text-foreground placeholder:text-muted-foreground focus:border-brand h-[25px] w-full max-w-xs rounded-md border px-2 text-[11px] outline-none"
           />
-          <SegTabs options={SORT_OPTIONS} value={sort} onChange={handleSortChange} />
+          <SegTabs options={SORT_OPTIONS} value={sort} onChange={value => setSort(value as SessionSort)} />
           <button
             type="button"
             aria-pressed={grouped}
-            onClick={handleGroupedToggle}
+            onClick={() => setGrouped(v => !v)}
             className={cn(
               'rounded-md border px-2.5 py-[3px] text-[11px] transition-colors',
               grouped

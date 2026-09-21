@@ -34,6 +34,7 @@ import {
 } from '../pipeline/scan.js'
 import type { DateRange } from '../pipeline/types.js'
 import { buildPullRequestsViewFromLedger, type PullRequestsPayload } from '../pull-requests-view.js'
+import { buildSessionsPageFromLedger, type SessionPageResult, type SessionQuery } from '../sessions-page.js'
 import { buildSessionsViewFromLedger, type SessionPage } from '../sessions-view.js'
 import { buildSkillsViewFromLedger, type SkillsPayload } from '../skills-view.js'
 import { buildSpendViewFromLedger, type SpendFlowPage, type SpendPayload } from '../spend-view.js'
@@ -412,6 +413,12 @@ export class DbWorkerContext {
         const scope = args[0] as OverviewScope
         const page = args[1] as SessionPage | undefined
         return buildSessionsViewFromLedger(ledger, scope, undefined, page) satisfies SessionRow[]
+      }
+
+      case 'sessions:page': {
+        const scope = args[0] as OverviewScope
+        const query = args[1] as SessionQuery | undefined
+        return buildSessionsPageFromLedger(ledger, scope, undefined, query) satisfies SessionPageResult
       }
 
       case 'pullRequests:view': {

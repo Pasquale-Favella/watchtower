@@ -74,6 +74,7 @@ export const DEDUPABLE_OPS: ReadonlySet<string> = new Set([
   'store:search',
   'overview:query',
   'sessions:view',
+  'sessions:page',
   'pullRequests:view',
   'spend:view',
   'models:view',

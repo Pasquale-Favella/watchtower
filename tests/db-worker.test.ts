@@ -85,6 +85,13 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     const c = open()
     expect(await c.dispatch('sessions:view', [{ period: 'lifetime' }])).toEqual([])
     expect(await c.dispatch('sessions:view', [{ period: 'lifetime' }, { limit: 2, offset: 0 }])).toEqual([])
+    expect(await c.dispatch('sessions:page', [{ period: 'lifetime' }])).toEqual({
+      rows: [],
+      total: 0,
+      summary: { count: 0, costUSD: 0, tokens: 0 },
+      start: 0,
+      nextCursor: null,
+    })
     const spend = (await c.dispatch('spend:view', [{ period: 'lifetime' }, { flowLimit: 3 }])) as { flow: unknown }
     expect(spend.flow).toEqual({ models: [], projects: [], links: [] })
   })

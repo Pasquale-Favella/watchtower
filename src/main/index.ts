@@ -30,6 +30,7 @@ import {
   safeLogOperationalEvent,
 } from './operational-log.js'
 import type { OverviewScope } from './overview.js'
+import type { SessionQuery } from './sessions-page.js'
 import type { SessionPage } from './sessions-view.js'
 import type { SpendFlowPage } from './spend-view.js'
 import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
@@ -199,6 +200,10 @@ function registerIpc(db: DbWorkerClient): void {
 
   handleLogged('sessions:view', (_event, scope: OverviewScope, page?: SessionPage) =>
     db.request('sessions:view', scope, page),
+  )
+
+  handleLogged('sessions:page', (_event, scope: OverviewScope, query?: SessionQuery) =>
+    db.request('sessions:page', scope, query),
   )
 
   handleLogged('pullRequests:view', (_event, scope: OverviewScope) => db.request('pullRequests:view', scope))

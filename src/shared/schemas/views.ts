@@ -63,6 +63,26 @@ export const sessionRowSchema = z.object({
 })
 export type SessionRow = z.infer<typeof sessionRowSchema>
 
+export const sessionPageSummarySchema = z.object({
+  count: z.number(),
+  costUSD: z.number(),
+  tokens: z.number(),
+})
+export type SessionPageSummary = z.infer<typeof sessionPageSummarySchema>
+
+/** One server-computed Sessions page (#139 scope 3, #141 item 2): the rows
+ * that mount plus the filtered totals the summary line and the pager render
+ * from. Served on the `sessions:page` channel; the `sessions:view` full-list
+ * shape is unchanged (frozen wire, ADR 0005). */
+export const sessionPageResultSchema = z.object({
+  rows: z.array(sessionRowSchema),
+  total: z.number(),
+  summary: sessionPageSummarySchema,
+  start: z.number(),
+  nextCursor: z.string().nullable(),
+})
+export type SessionPageResult = z.infer<typeof sessionPageResultSchema>
+
 export const skillRowSchema = z.object({
   name: z.string(),
   turns: z.number(),

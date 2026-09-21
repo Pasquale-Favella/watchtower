@@ -185,15 +185,20 @@ describe('feature data stores wire the frozen wire contract (ADR 0005)', () => {
     expect(getOverview).toHaveBeenCalledTimes(2)
   })
 
-  it('sessions store loads rows by scope and detail by id', async () => {
-    const getSessionRows = vi.fn(() => Promise.resolve([]))
+  it('sessions store loads server pages by scope and detail by id', async () => {
+    const page = { rows: [], total: 0, summary: { count: 0, costUSD: 0, tokens: 0 }, start: 0, nextCursor: null }
+    const getSessionPage = vi.fn(() => Promise.resolve(page))
     const getSession = vi.fn(() => Promise.resolve(null))
-    mockWindow({ getSessionRows, getSession })
+    mockWindow({ getSessionPage, getSession })
 
-    await useSessionsStore.getState().load({ period: 'today' })
-    expect(useSessionsStore.getState().data).toEqual([])
+    await useSessionsStore.getState().gotoPage({ period: 'today' }, { query: '', sort: 'cost' }, 0)
+    expect(useSessionsStore.getState().data).toEqual(page)
     expect(useSessionsStore.getState().status).toBe('ready')
-    expect(getSessionRows).toHaveBeenCalledWith({ period: 'today' })
+    expect(useSessionsStore.getState().page).toBe(0)
+    expect(getSessionPage).toHaveBeenCalledWith(
+      { period: 'today' },
+      { query: '', sort: 'cost', limit: 100, offset: 0, cursor: null },
+    )
 
     await useSessionsStore.getState().loadSession('abc')
     expect(useSessionsStore.getState().sessionStatus).toBe('ready')

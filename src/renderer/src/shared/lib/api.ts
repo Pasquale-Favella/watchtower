@@ -84,6 +84,8 @@ import {
   searchHitSchema,
   type SessionDetail,
   sessionDetailSchema,
+  type SessionPageResult,
+  sessionPageResultSchema,
   type SessionRow,
   sessionRowSchema,
 } from '../../../../shared/schemas/views.js'
@@ -187,6 +189,18 @@ export function fetchSessionRows(
   // arg — the page rides only when explicitly requested.
   return fetchPayload('session rows', z.array(sessionRowSchema), () =>
     page === undefined ? window.api.getSessionRows(scope) : window.api.getSessionRows(scope, page),
+  )
+}
+
+export function fetchSessionPage(
+  scope: OverviewScope,
+  query?: { query?: string; sort?: string; limit?: number; offset?: number; cursor?: string | null },
+): Promise<ApiResult<SessionPageResult>> {
+  // The wire contract is frozen (ADR 0005): this is a NEW channel, so the
+  // `sessions:view` full-list shape stays untouched. The query rides only
+  // when explicitly requested.
+  return fetchPayload('session page', sessionPageResultSchema, () =>
+    query === undefined ? window.api.getSessionPage(scope) : window.api.getSessionPage(scope, query),
   )
 }
 

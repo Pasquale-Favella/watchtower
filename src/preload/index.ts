@@ -8,6 +8,7 @@ import type { ModelsPayload } from '../main/models-view.js'
 import type { OptimizePayload } from '../main/optimize-view.js'
 import type { OverviewPayload, OverviewScope } from '../main/overview.js'
 import type { PullRequestsPayload } from '../main/pull-requests-view.js'
+import type { SessionPageResult, SessionQuery } from '../main/sessions-page.js'
 import type { SessionPage } from '../main/sessions-view.js'
 import type { SpendFlowPage, SpendPayload } from '../main/spend-view.js'
 import type { UpdateStatus } from '../main/updates.js'
@@ -117,6 +118,8 @@ const api = {
   getOverview: (scope: OverviewScope): Promise<OverviewPayload | null> => ipcRenderer.invoke('overview:query', scope),
   getSessionRows: (scope: OverviewScope, page?: SessionPage): Promise<SessionRow[]> =>
     ipcRenderer.invoke('sessions:view', scope, page),
+  getSessionPage: (scope: OverviewScope, query?: SessionQuery): Promise<SessionPageResult> =>
+    ipcRenderer.invoke('sessions:page', scope, query),
   getPullRequests: (scope: OverviewScope): Promise<PullRequestsPayload | null> =>
     ipcRenderer.invoke('pullRequests:view', scope),
   getSpend: (scope: OverviewScope, page?: SpendFlowPage): Promise<SpendPayload | null> =>

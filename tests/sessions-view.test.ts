@@ -9,11 +9,7 @@ import { buildSessionsViewFromLedger } from '../src/main/sessions-view.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import type { SessionRow } from '../src/renderer/src/features/sessions/drilldown.js'
 import {
-  filterSessions,
   groupSessionsByProvider,
-  paginateSessions,
-  sortSessions,
-  summarizeSessions,
   visiblePageNumbers,
 } from '../src/renderer/src/features/sessions/sessions-lib.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
@@ -257,57 +253,9 @@ const ROWS: SessionRow[] = [
   }),
 ]
 
-describe('filterSessions (search over title/project/session-id/model)', () => {
-  it('returns all rows for an empty or whitespace query', () => {
-    expect(filterSessions(ROWS, '')).toEqual(ROWS)
-    expect(filterSessions(ROWS, '   ')).toEqual(ROWS)
-  })
-
-  it('matches a session title, case-insensitively', () => {
-    expect(filterSessions(ROWS, 'REFACTOR')).toEqual([ROWS[0]])
-    expect(filterSessions(ROWS, 'bump deps')).toEqual([ROWS[2]])
-  })
-
-  it('matches a project name', () => {
-    expect(filterSessions(ROWS, 'web')).toEqual([ROWS[1]])
-  })
-
-  it('matches a session id fragment', () => {
-    expect(filterSessions(ROWS, 'sess-a')).toEqual([ROWS[0]])
-  })
-
-  it('matches a model name from the models list', () => {
-    expect(filterSessions(ROWS, 'claude-sonnet')).toEqual([ROWS[0], ROWS[2]])
-  })
-
-  it('returns an empty list when nothing matches', () => {
-    expect(filterSessions(ROWS, 'zzz-none')).toEqual([])
-  })
-})
-
-describe('sortSessions (cost / recent / turns / tokens)', () => {
-  it('sorts by cost descending', () => {
-    expect(sortSessions(ROWS, 'cost').map(r => r.sessionId)).toEqual(['sess-aa', 'sess-cc', 'sess-bb'])
-  })
-
-  it('sorts by turns descending', () => {
-    expect(sortSessions(ROWS, 'turns').map(r => r.sessionId)).toEqual(['sess-bb', 'sess-aa', 'sess-cc'])
-  })
-
-  it('sorts by input+output tokens descending', () => {
-    expect(sortSessions(ROWS, 'tokens').map(r => r.sessionId)).toEqual(['sess-aa', 'sess-bb', 'sess-cc'])
-  })
-
-  it('sorts by ended-at, most recent first', () => {
-    expect(sortSessions(ROWS, 'recent').map(r => r.sessionId)).toEqual(['sess-cc', 'sess-bb', 'sess-aa'])
-  })
-
-  it('does not mutate the input rows', () => {
-    const before = ROWS.map(r => r.sessionId)
-    sortSessions(ROWS, 'cost')
-    expect(ROWS.map(r => r.sessionId)).toEqual(before)
-  })
-})
+// Search, sort, summarize, and slicing now live in
+// `src/shared/lib/sessions-query.ts` and run server-side — their specs moved
+// to `tests/sessions-query.test.ts` alongside the implementation.
 
 describe('groupSessionsByProvider (group-by-provider toggle)', () => {
   it('groups rows under their provider with count and cost', () => {
@@ -348,44 +296,6 @@ describe('groupSessionsByProvider (group-by-provider toggle)', () => {
 
   it('returns an empty list for no rows', () => {
     expect(groupSessionsByProvider([], 'cost')).toEqual([])
-  })
-})
-
-describe('summarizeSessions (the summary line numbers)', () => {
-  it('totals count, cost, and input+output tokens', () => {
-    expect(summarizeSessions(ROWS)).toEqual({ count: 3, costUSD: 23, tokens: 2150 })
-  })
-
-  it('returns zeroed totals for no rows', () => {
-    expect(summarizeSessions([])).toEqual({ count: 0, costUSD: 0, tokens: 0 })
-  })
-})
-
-describe('paginateSessions (one mounted page, #139)', () => {
-  const many = Array.from({ length: 250 }, (_, i) =>
-    makeRow({ sessionId: `sess-${String(i).padStart(3, '0')}`, cost: 250 - i }),
-  )
-
-  it('slices the sorted rows into bounded pages', () => {
-    const first = paginateSessions(many, 0, 100)
-    expect(first.page).toBe(0)
-    expect(first.pageCount).toBe(3)
-    expect(first.pageRows).toHaveLength(100)
-    expect(first.pageRows[0]?.sessionId).toBe('sess-000')
-    const last = paginateSessions(many, 2, 100)
-    expect(last.pageRows).toHaveLength(50)
-    expect(last.pageRows[49]?.sessionId).toBe('sess-249')
-  })
-
-  it('clamps out-of-range pages to the nearest valid page', () => {
-    expect(paginateSessions(many, 99, 100).page).toBe(2)
-    expect(paginateSessions(many, -4, 100).page).toBe(0)
-    expect(paginateSessions(ROWS, 5, 100).pageRows).toEqual(ROWS)
-  })
-
-  it('renders a single page for an empty or short list', () => {
-    expect(paginateSessions([], 0, 100)).toEqual({ page: 0, pageCount: 1, pageRows: [] })
-    expect(paginateSessions(ROWS, 0, 100).pageCount).toBe(1)
   })
 })
 
