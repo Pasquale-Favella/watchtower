@@ -99,7 +99,7 @@ const baseInput = {
 }
 
 describe('LedgerStore (the store seam: port-in → read back)', () => {
-  it('opens green field: four ledger tables + five call indexes, no report/metrics tables', () => {
+  it('opens green field: four ledger tables + scoped-read indexes, no report/metrics tables', () => {
     const store = makeStore()
 
     const tables = store.getTableNames()
@@ -119,6 +119,13 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       'idx_ledger_call_model',
       'idx_ledger_call_project',
       'idx_ledger_call_provider',
+      'idx_ledger_call_provider_timestamp',
+      'idx_ledger_call_source_timestamp',
+    ].sort())
+    // The scoped turn reads filter on `timestamp` and `(source_id, timestamp)`.
+    expect(store.getIndexNames('ledger_turn').sort()).toEqual([
+      'idx_ledger_turn_timestamp',
+      'idx_ledger_turn_source_timestamp',
     ].sort())
 
     store.close()
@@ -535,6 +542,105 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
 
 })
 
+describe('LedgerStore scoped reads (query-scaling #139)', () => {
+  function portDatedSession(
+    store: LedgerStore,
+    spec: { provider: string; filePath: string; sessionId: string; date: string },
+  ): void {
+    const ts = new Date(`${spec.date}T12:00:00`).toISOString()
+    const call = { ...buildFixtureCachedCall(0), provider: spec.provider, timestamp: ts }
+    const turn = buildFixtureCachedTurn(0, 'task', { sessionId: spec.sessionId, timestamp: ts, calls: [call] })
+    store.portIn({
+      provider: spec.provider,
+      envFingerprint: 'env-demo',
+      filePath: spec.filePath,
+      verdict: 'new',
+      cachedFile: buildFixtureCachedFile({ turns: [turn] }),
+    })
+  }
+
+  function portScopedFixtures(store: LedgerStore): void {
+    portDatedSession(store, { provider: 'claude', filePath: '/cache/claude/old.jsonl', sessionId: 'sess-old', date: '2026-06-01' })
+    portDatedSession(store, { provider: 'claude', filePath: '/cache/claude/new.jsonl', sessionId: 'sess-new', date: '2026-07-20' })
+    portDatedSession(store, { provider: 'opencode', filePath: '/cache/opencode/other.jsonl', sessionId: 'sess-other', date: '2026-07-20' })
+  }
+
+  it('filters calls and turns by provider at the SQL read', () => {
+    const store = makeStore()
+    portScopedFixtures(store)
+
+    expect(store.getCallsScoped({ provider: 'claude' })).toHaveLength(2)
+    expect(store.getTurnsScoped({ provider: 'claude' })).toHaveLength(2)
+    expect(store.getSessionsScoped({ provider: 'claude' })).toHaveLength(2)
+    expect(store.getCallsScoped({ provider: 'opencode' })).toHaveLength(1)
+    expect(store.getCallsScoped({ provider: 'nope' })).toEqual([])
+
+    store.close()
+  })
+
+  it('filters calls and turns by timestamp range at the SQL read', () => {
+    const store = makeStore()
+    portScopedFixtures(store)
+
+    const july = store.getCallsScoped({ start: '2026-07-01T00:00:00.000Z', end: '2026-07-31T23:59:59.999Z' })
+    expect(july.map(c => c.sessionId).sort()).toEqual(['sess-new', 'sess-other'])
+    const turns = store.getTurnsScoped({ start: '2026-07-01T00:00:00.000Z', end: '2026-07-31T23:59:59.999Z' })
+    expect(turns.map(t => t.sessionId).sort()).toEqual(['sess-new', 'sess-other'])
+
+    store.close()
+  })
+
+  it('combines provider and range, matching the in-memory filter exactly', () => {
+    const store = makeStore()
+    portScopedFixtures(store)
+
+    const filter = { provider: 'claude', start: '2026-07-01T00:00:00.000Z', end: '2026-07-31T23:59:59.999Z' }
+    const scoped = store.getCallsScoped(filter)
+    expect(scoped.map(c => c.sessionId)).toEqual(['sess-new'])
+
+    // Parity: the scoped read returns exactly what filtering the full read
+    // in memory would produce (same rows, same order).
+    const claudeSources = new Set(store.getSourceIdsForProvider('claude'))
+    const expected = store.getCalls().filter(c =>
+      claudeSources.has(c.sourceId) && c.timestamp >= filter.start! && c.timestamp <= filter.end!)
+    expect(scoped).toEqual(expected)
+
+    store.close()
+  })
+
+  it('discovers in-range session keys, then loads those sessions full history', () => {
+    const store = makeStore()
+    portScopedFixtures(store)
+
+    const keys = store.getCallSessionKeysInRange('2026-07-01T00:00:00.000Z', '2026-07-31T23:59:59.999Z', 'claude')
+    expect(keys).toHaveLength(1)
+    // Full history for the touched session (here one turn); untouched
+    // sessions never load.
+    expect(store.getTurnsForSessionKeys(keys)).toHaveLength(1)
+    expect(store.getCallsForSessionKeys(keys)).toHaveLength(1)
+    expect(store.getSessionsForKeys(keys).map(s => s.sessionId)).toEqual(['sess-new'])
+    expect(store.getTurnsForSessionKeys([])).toEqual([])
+    expect(store.getCallsForSessionKeys([])).toEqual([])
+
+    store.close()
+  })
+
+  it('the range-filtered call scan uses an index (no full-table scan)', () => {
+    const store = makeStore()
+    portScopedFixtures(store)
+
+    const plan = store.explainQueryPlan(
+      'SELECT source_id, session_id FROM ledger_call WHERE timestamp >= ? AND timestamp <= ?',
+      ['2026-07-01T00:00:00.000Z', '2026-07-31T23:59:59.999Z'],
+    )
+    const details = plan.map(row => String(row['detail'] ?? ''))
+    expect(details.some(d => d.includes('idx_ledger_call_timestamp') || d.includes('USING INDEX') || d.includes('USING COVERING INDEX'))).toBe(true)
+    expect(details.some(d => d.includes('SCAN ledger_call'))).toBe(false)
+
+    store.close()
+  })
+})
+
 describe('DDL-Zod parity: table and column shape (#97)', () => {
   // The ledger's database shape is defined twice by hand: the DDL in
   // LedgerStore and the validation schemas in shared/schemas/ledger. This
@@ -815,12 +921,20 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
     key: number
   }
 
-  const EXPECTED_NAMED_CALL_INDEXES: Record<string, string> = {
-    idx_ledger_call_timestamp: 'timestamp',
-    idx_ledger_call_session: 'session_id',
-    idx_ledger_call_model: 'model',
-    idx_ledger_call_project: 'project',
-    idx_ledger_call_provider: 'provider',
+  const EXPECTED_NAMED_CALL_INDEXES: Record<string, string[]> = {
+    idx_ledger_call_timestamp: ['timestamp'],
+    idx_ledger_call_session: ['session_id'],
+    idx_ledger_call_model: ['model'],
+    idx_ledger_call_project: ['project'],
+    idx_ledger_call_provider: ['provider'],
+    // Query-scaling (#139): the scoped reads filter on these composites.
+    idx_ledger_call_provider_timestamp: ['provider', 'timestamp'],
+    idx_ledger_call_source_timestamp: ['source_id', 'timestamp'],
+  }
+
+  const EXPECTED_NAMED_TURN_INDEXES: Record<string, string[]> = {
+    idx_ledger_turn_timestamp: ['timestamp'],
+    idx_ledger_turn_source_timestamp: ['source_id', 'timestamp'],
   }
 
   const EXPECTED_IMPLICIT: Record<string, Array<{ origin: string; columns: string[] }>> = {
@@ -858,7 +972,7 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
     return row?.sql ?? ''
   }
 
-  it('locks the five named call-table indexes with their exact single columns', () => {
+  it('locks the named call-table indexes with their exact columns', () => {
     withTempLedgerReadOnly(ro => {
       const list = readIndexList(ro, 'ledger_call')
       const named = list.filter(i => i.origin === 'c')
@@ -866,13 +980,32 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
         named.map(i => i.name).sort(),
         '[ledger_call] named indexes',
       ).toEqual(Object.keys(EXPECTED_NAMED_CALL_INDEXES).sort())
-      for (const [index, column] of Object.entries(EXPECTED_NAMED_CALL_INDEXES)) {
+      for (const [index, columns] of Object.entries(EXPECTED_NAMED_CALL_INDEXES)) {
         const entry = named.find(i => i.name === index)
         expect(entry, `[ledger_call.${index}] present`).toBeDefined()
         if (!entry) continue
         expect(entry.origin, `[ledger_call.${index}] origin`).toBe('c')
         expect(entry.unique, `[ledger_call.${index}] unique`).toBe(0)
-        expect(readIndexColumns(ro, index), `[ledger_call.${index}] columns`).toEqual([column])
+        expect(readIndexColumns(ro, index), `[ledger_call.${index}] columns`).toEqual(columns)
+      }
+    })
+  })
+
+  it('locks the named turn-table indexes for the scoped reads', () => {
+    withTempLedgerReadOnly(ro => {
+      const list = readIndexList(ro, 'ledger_turn')
+      const named = list.filter(i => i.origin === 'c')
+      expect(
+        named.map(i => i.name).sort(),
+        '[ledger_turn] named indexes',
+      ).toEqual(Object.keys(EXPECTED_NAMED_TURN_INDEXES).sort())
+      for (const [index, columns] of Object.entries(EXPECTED_NAMED_TURN_INDEXES)) {
+        const entry = named.find(i => i.name === index)
+        expect(entry, `[ledger_turn.${index}] present`).toBeDefined()
+        if (!entry) continue
+        expect(entry.origin, `[ledger_turn.${index}] origin`).toBe('c')
+        expect(entry.unique, `[ledger_turn.${index}] unique`).toBe(0)
+        expect(readIndexColumns(ro, index), `[ledger_turn.${index}] columns`).toEqual(columns)
       }
     })
   })

@@ -7,7 +7,7 @@ import { LedgerStore } from '../src/main/store/ledger.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
 import {
-  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions,
+  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions, paginateSessions,
   type SessionSort
 } from '../src/renderer/src/features/sessions/sessions-lib.js'
 import type { SessionRow } from '../src/renderer/src/features/sessions/drilldown.js'
@@ -111,6 +111,30 @@ describe('buildSessionsViewFromLedger (aggregation seam scope)', () => {
   it('returns an empty list for an empty ledger', () => {
     const store = makeLedger()
     expect(buildSessionsViewFromLedger(store, { period: 'lifetime' })).toEqual([])
+    store.close()
+  })
+
+  it('pages newest-first rows with limit/offset', () => {
+    const store = makeLedger()
+    portThreeSessions(store)
+    // Newest-first order is sess-2, sess-1, sess-0.
+    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 2, offset: 0 }).map(r => r.sessionId))
+      .toEqual(['sess-2', 'sess-1'])
+    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 2, offset: 2 }).map(r => r.sessionId))
+      .toEqual(['sess-0'])
+    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 2, offset: 10 }))
+      .toEqual([])
+    store.close()
+  })
+
+  it('normalizes garbage pages instead of throwing', () => {
+    const store = makeLedger()
+    portThreeSessions(store)
+    // Negative limits clamp to one row; huge limits cap instead of exploding.
+    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: -5, offset: 0 })).toHaveLength(1)
+    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 100_000, offset: 0 })).toHaveLength(3)
+    expect(buildSessionsViewFromLedger(store, { period: 'lifetime' }, undefined, { limit: 'all', offset: -3 }).map(r => r.sessionId))
+      .toEqual(['sess-2', 'sess-1', 'sess-0'])
     store.close()
   })
 
@@ -240,5 +264,32 @@ describe('summarizeSessions (the summary line numbers)', () => {
 
   it('returns zeroed totals for no rows', () => {
     expect(summarizeSessions([])).toEqual({ count: 0, costUSD: 0, tokens: 0 })
+  })
+})
+
+describe('paginateSessions (one mounted page, #139)', () => {
+  const many = Array.from({ length: 250 }, (_, i) =>
+    makeRow({ sessionId: `sess-${String(i).padStart(3, '0')}`, cost: 250 - i }))
+
+  it('slices the sorted rows into bounded pages', () => {
+    const first = paginateSessions(many, 0, 100)
+    expect(first.page).toBe(0)
+    expect(first.pageCount).toBe(3)
+    expect(first.pageRows).toHaveLength(100)
+    expect(first.pageRows[0]!.sessionId).toBe('sess-000')
+    const last = paginateSessions(many, 2, 100)
+    expect(last.pageRows).toHaveLength(50)
+    expect(last.pageRows[49]!.sessionId).toBe('sess-249')
+  })
+
+  it('clamps out-of-range pages to the nearest valid page', () => {
+    expect(paginateSessions(many, 99, 100).page).toBe(2)
+    expect(paginateSessions(many, -4, 100).page).toBe(0)
+    expect(paginateSessions(ROWS, 5, 100).pageRows).toEqual(ROWS)
+  })
+
+  it('renders a single page for an empty or short list', () => {
+    expect(paginateSessions([], 0, 100)).toEqual({ page: 0, pageCount: 1, pageRows: [] })
+    expect(paginateSessions(ROWS, 0, 100).pageCount).toBe(1)
   })
 })

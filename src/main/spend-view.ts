@@ -1,3 +1,4 @@
+import { clampInt } from '../shared/lib/clamp.js'
 import { getShortModelName } from './pipeline/models.js'
 import type { SessionSummary } from './pipeline/types.js'
 import { buildSessionSummaries, sessionProjectKey } from './store/aggregate.js'
@@ -23,8 +24,22 @@ export type {
 } from '../shared/schemas/spend.js'
 
 const SPEND_CHART_DAYS = 15
-const TOP_NODE_LIMIT = 8
 const OTHER_ID = '__other__'
+
+/** Top-N paging for the Spend flow (#139): how many model/project nodes stay
+ * outside the "Other" rollup. Request-typed like the Sessions page (ADR 0008)
+ * — garbage normalizes to the default instead of throwing. */
+export interface SpendFlowPage {
+  flowLimit?: unknown
+}
+
+export const SPEND_FLOW_DEFAULT_LIMIT = 8
+
+export const SPEND_FLOW_MAX_LIMIT = 50
+
+export function normalizeSpendFlowLimit(page: SpendFlowPage | undefined): number {
+  return clampInt(page?.flowLimit, SPEND_FLOW_DEFAULT_LIMIT, 1, SPEND_FLOW_MAX_LIMIT)
+}
 
 function addToMap<K>(map: Map<K, number>, key: K, cost: number): void {
   map.set(key, (map.get(key) ?? 0) + cost)
@@ -54,12 +69,12 @@ function displayProjectSegments(
     .sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name))
 }
 
-/** The top `TOP_NODE_LIMIT`
+/** The top `limit`
  * nodes by cost plus an "Other" rollup node for the rest (when non-zero). */
-function buildNodes(totals: Map<string, number>): { nodes: SpendFlowNode[]; keep: Set<string> } {
+function buildNodes(totals: Map<string, number>, limit: number): { nodes: SpendFlowNode[]; keep: Set<string> } {
   const sorted = sortedEntries(totals)
-  const top = sorted.slice(0, TOP_NODE_LIMIT)
-  const rest = sorted.slice(TOP_NODE_LIMIT)
+  const top = sorted.slice(0, limit)
+  const rest = sorted.slice(limit)
   const keep = new Set(top.map(([id]) => id))
   const nodes = top.map(([id, cost]) => ({ id, label: id, cost }))
   const otherCost = rest.reduce((sum, [, cost]) => sum + cost, 0)
@@ -132,23 +147,31 @@ function rollLinks(
  * - buckets each in-scope call by its local date into stacked daily segments
  *   by model and by project (a contiguous window: the custom range, or the
  *   last `SPEND_CHART_DAYS` days ending today);
- * - runs the `computeSpendFlow` aggregation (top-8 + "Other") over
- *   the full scoped set for the recharts-native Sankey.
+ * - runs the `computeSpendFlow` aggregation (top-N + "Other", N from the
+ *   flow page, default 8) over the full scoped set for the recharts-native
+ *   Sankey. A pre-aggregated Sankey (paging the inputs before aggregation) is
+ *   a follow-up — the range-filtered SQL read already bounds the input set.
  * Kept in the main process so the sandboxed renderer only receives
  * serializable rows over IPC.
  */
-export function buildSpendViewFromLedger(store: LedgerStore, scope: OverviewScope, now = new Date()): SpendPayload {
+export function buildSpendViewFromLedger(
+  store: LedgerStore,
+  scope: OverviewScope,
+  now = new Date(),
+  page?: SpendFlowPage,
+): SpendPayload {
   const scoped = buildSessionSummaries(store, { range: overviewDateRange(scope, now), provider: scope.provider })
     // Key spend buckets on the canonical project key so same-leaf checkouts
     // (/a/src, /b/src) never collapse; the leaf rides along for display only.
     .map(summary => ({ projectKey: sessionProjectKey(summary), project: summary.project, session: summary }))
-  return spendPayloadSchema.parse(buildSpendPayload(scoped, scope, now))
+  return spendPayloadSchema.parse(buildSpendPayload(scoped, scope, now, normalizeSpendFlowLimit(page)))
 }
 
 function buildSpendPayload(
   scoped: Array<{ projectKey: string; project: string; session: SessionSummary }>,
   scope: OverviewScope,
   now: Date,
+  flowLimit: number,
 ): SpendPayload {
   const todayKey = localDateKey(now)
   let winStart: string
@@ -233,9 +256,9 @@ function buildSpendPayload(
   }))
   const dataStart = earliestKey(byModelDay, byProjectDay)
 
-  const { nodes: rawModels, keep: keptModels } = buildNodes(modelTotals)
+  const { nodes: rawModels, keep: keptModels } = buildNodes(modelTotals, flowLimit)
   const models = rawModels.map(node => ({ ...node, ...provenanceFor(node.id) }))
-  const { nodes: rawProjects, keep: keptProjects } = buildNodes(projectTotals)
+  const { nodes: rawProjects, keep: keptProjects } = buildNodes(projectTotals, flowLimit)
   // Flow node ids stay canonical keys (link-stable); labels show the leaf.
   // The "__other__" rollup node keeps its own label — it has no project key.
   const projects = rawProjects.map(node => ({

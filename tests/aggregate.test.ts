@@ -351,6 +351,41 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     store.close()
   })
 
+  it('pushes provider + range into SQL: untouched sessions never load, seeding survives', () => {
+    const store = makeStore()
+    // An old claude session (out of range), a recent claude session with a
+    // pre-range PR turn, and a recent opencode session.
+    const oldFile = buildFixtureCachedFile()
+    oldFile.turns[0]!.calls[0]!.timestamp = '2026-06-01T09:00:00.000Z'
+    oldFile.turns[0]!.timestamp = '2026-06-01T09:00:00.000Z'
+    store.portIn({ ...baseInput, provider: 'claude', envFingerprint: 'env-demo', filePath: '/cache/claude/old.jsonl', verdict: 'new', cachedFile: oldFile })
+
+    const recentFile = buildFixtureCachedFile()
+    recentFile.turns[0]!.calls[0]!.timestamp = '2026-06-28T09:00:00.000Z'
+    recentFile.turns[0]!.timestamp = '2026-06-28T09:00:00.000Z'
+    recentFile.turns[0]!.prRefs = ['https://github.com/acme/demo-project/pull/6']
+    const inRangeTurn = buildFixtureCachedTurn(1, 'Follow-up')
+    recentFile.turns.push(inRangeTurn)
+    store.portIn({ ...baseInput, provider: 'claude', envFingerprint: 'env-demo', filePath: '/cache/claude/recent.jsonl', verdict: 'new', cachedFile: recentFile })
+
+    const otherFile = buildFixtureCachedFile()
+    store.portIn({ ...baseInput, provider: 'opencode', envFingerprint: 'env-demo', filePath: '/cache/opencode/other.jsonl', verdict: 'new', cachedFile: otherFile })
+
+    const july = { range: defaultRange(new Date('2026-07-06T00:00:00.000Z'), 7), provider: 'claude' }
+    const scope = queryScope(store, july)
+    // The old session has no in-range calls: its rows never load, while the
+    // recent session loads with its FULL history (pre-range PR turn intact).
+    expect(new Set(scope.sessions.map(s => s.sessionId))).toEqual(new Set(['sess-0']))
+    expect(scope.turns.filter(t => t.timestamp.startsWith('2026-06-01'))).toEqual([])
+
+    const summaries = buildSessionSummaries(store, july)
+    expect(summaries).toHaveLength(1)
+    expect(summaries[0]!.turns).toHaveLength(1)
+    expect(summaries[0]!.prRefsAtRangeStart).toEqual(['https://github.com/acme/demo-project/pull/6'])
+
+    store.close()
+  })
+
   it('the Sessions payload (`SessionRow[]`) is byte-identical to the old `aggregateSessions` rows', () => {
     const store = makeStore()
     const file = buildFixtureCachedFile()

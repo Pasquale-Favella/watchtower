@@ -1,5 +1,6 @@
 import type { SessionRow } from './drilldown'
 
+import { clampInt } from '../../../../shared/lib/clamp.js'
 import type { SessionGroup, SessionSort } from '../../../../shared/schemas/renderer.js'
 export type { SessionGroup, SessionSort }
 
@@ -68,4 +69,29 @@ export function summarizeSessions(rows: SessionRow[]): { count: number; costUSD:
     costUSD: rows.reduce((sum, row) => sum + row.cost, 0),
     tokens: rows.reduce((sum, row) => sum + totalTokens(row), 0),
   }
+}
+
+/** One rendered page through the Sessions list (#139). The scoped fetch is
+ * already range-bounded in SQL; this bounds what MOUNTS (at most one page of
+ * rows) while search/sort/group stay global over the scoped set. A full
+ * virtualizer (@tanstack/react-virtual, React 19 compatible) is the follow-up
+ * if page sizes ever grow — at 100 rows a pager already keeps the DOM small
+ * with no new dependency. */
+export const SESSIONS_PAGE_SIZE = 100
+
+export interface SessionsPage {
+  /** The clamped zero-based page that actually renders. */
+  page: number
+  pageCount: number
+  /** The slice that mounts — at most `pageSize` rows. */
+  pageRows: SessionRow[]
+}
+
+/** Slices already-sorted rows into one page, clamping out-of-range pages
+ * (scope reloads, narrowed searches) to the nearest valid page. */
+export function paginateSessions(rows: SessionRow[], page: number, pageSize: number = SESSIONS_PAGE_SIZE): SessionsPage {
+  const size = clampInt(pageSize, SESSIONS_PAGE_SIZE, 1, Number.MAX_SAFE_INTEGER)
+  const pageCount = Math.max(1, Math.ceil(rows.length / size))
+  const clamped = clampInt(page, 0, 0, pageCount - 1)
+  return { page: clamped, pageCount, pageRows: rows.slice(clamped * size, clamped * size + size) }
 }

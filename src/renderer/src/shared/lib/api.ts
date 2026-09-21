@@ -173,16 +173,26 @@ export function fetchOverview(scope: OverviewScope): Promise<ApiResult<OverviewP
   return fetchPayload('overview', overviewPayloadSchema.nullable(), () => window.api.getOverview(scope))
 }
 
-export function fetchSessionRows(scope: OverviewScope): Promise<ApiResult<SessionRow[]>> {
-  return fetchPayload('session rows', z.array(sessionRowSchema), () => window.api.getSessionRows(scope))
+export function fetchSessionRows(
+  scope: OverviewScope,
+  page?: { limit?: number; offset?: number },
+): Promise<ApiResult<SessionRow[]>> {
+  // The wire contract is frozen (ADR 0005): existing callers send exactly one
+  // arg — the page rides only when explicitly requested.
+  return fetchPayload('session rows', z.array(sessionRowSchema), () =>
+    page === undefined ? window.api.getSessionRows(scope) : window.api.getSessionRows(scope, page))
 }
 
 export function fetchPullRequests(scope: OverviewScope): Promise<ApiResult<PullRequestsPayload | null>> {
   return fetchPayload('pull requests', pullRequestsPayloadSchema.nullable(), () => window.api.getPullRequests(scope))
 }
 
-export function fetchSpend(scope: OverviewScope): Promise<ApiResult<SpendPayload | null>> {
-  return fetchPayload('spend', spendPayloadSchema.nullable(), () => window.api.getSpend(scope))
+export function fetchSpend(
+  scope: OverviewScope,
+  page?: { flowLimit?: number },
+): Promise<ApiResult<SpendPayload | null>> {
+  return fetchPayload('spend', spendPayloadSchema.nullable(), () =>
+    page === undefined ? window.api.getSpend(scope) : window.api.getSpend(scope, page))
 }
 
 export function fetchModels(scope: OverviewScope): Promise<ApiResult<ModelsPayload | null>> {

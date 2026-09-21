@@ -178,11 +178,13 @@ function registerIpc(db: DbWorkerClient): void {
   handleLogged('store:sessions', (_event, filter?: { project?: string; since?: string; until?: string }) =>
     db.request('store:sessions', filter))
 
-  handleLogged('sessions:view', (_event, scope: OverviewScope) => db.request('sessions:view', scope))
+  handleLogged('sessions:view', (_event, scope: OverviewScope, page?: { limit?: number; offset?: number }) =>
+    db.request('sessions:view', scope, page))
 
   handleLogged('pullRequests:view', (_event, scope: OverviewScope) => db.request('pullRequests:view', scope))
 
-  handleLogged('spend:view', (_event, scope: OverviewScope) => db.request('spend:view', scope))
+  handleLogged('spend:view', (_event, scope: OverviewScope, page?: { flowLimit?: number }) =>
+    db.request('spend:view', scope, page))
 
   handleLogged('models:view', (_event, scope: OverviewScope) => db.request('models:view', scope))
 

@@ -62,6 +62,28 @@ export interface LedgerStoreOptions {
   readOnly?: boolean
 }
 
+/** Filter for the scoped ledger reads (#139): provider narrows to that
+ * provider's sources, `start`/`end` are inclusive ISO timestamp bounds on the
+ * row's own `timestamp` column. */
+export interface LedgerReadFilter {
+  provider?: string
+  start?: string
+  end?: string
+}
+
+/** One session's store identity: sessions key on `(source_id, session_id)`,
+ * so the same raw id under two providers stays distinct. */
+export interface SessionKey {
+  sourceId: number
+  sessionId: string
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
+
 export class LedgerStore {
   readonly dbPath: string
   private db: DatabaseSync
@@ -173,6 +195,15 @@ export class LedgerStore {
       CREATE INDEX IF NOT EXISTS idx_ledger_call_model ON ledger_call(model);
       CREATE INDEX IF NOT EXISTS idx_ledger_call_project ON ledger_call(project);
       CREATE INDEX IF NOT EXISTS idx_ledger_call_provider ON ledger_call(provider);
+      -- Query-scaling (#139): composite + turn indexes for the scoped reads.
+      -- queryScope filters calls/turns by provider (via source_id) and by
+      -- timestamp range, so the leading column matches the equality predicate
+      -- and the second column the range predicate. The (provider, timestamp)
+      -- pair is kept as well for direct provider-column reads.
+      CREATE INDEX IF NOT EXISTS idx_ledger_call_provider_timestamp ON ledger_call(provider, timestamp);
+      CREATE INDEX IF NOT EXISTS idx_ledger_call_source_timestamp ON ledger_call(source_id, timestamp);
+      CREATE INDEX IF NOT EXISTS idx_ledger_turn_timestamp ON ledger_turn(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_ledger_turn_source_timestamp ON ledger_turn(source_id, timestamp);
 
       CREATE TABLE IF NOT EXISTS model_alias (
         model TEXT PRIMARY KEY,
@@ -391,6 +422,14 @@ export class LedgerStore {
   }
 
   // ── Read-back (the aggregation layer's input) ─────────────────────────
+  //
+  // Scoped reads (#139): `queryScope` filters by provider (via `source_id`,
+  // the per-source identity the aggregation seam keys on — NOT the
+  // denormalized `ledger_call.provider` column) and by timestamp range, so a
+  // 30-day view issues `WHERE`-filtered SQL instead of loading lifetime rows.
+  // The unfiltered `getSessions`/`getTurns`/`getCalls` stay as the
+  // all-time path (export, search, dashboard) and delegate to the scoped
+  // variants with an empty filter.
 
   getSources(): LedgerSourceRow[] {
     // CAST dev/ino to TEXT before node:sqlite ever touches the integers: an
@@ -408,25 +447,81 @@ export class LedgerStore {
   }
 
   getSessions(): LedgerSessionRow[] {
+    return this.getSessionsScoped()
+  }
+
+  getTurns(): LedgerTurnRow[] {
+    return this.getTurnsScoped()
+  }
+
+  getCalls(): LedgerCallRow[] {
+    return this.getCallsScoped()
+  }
+
+  /** Source ids for one provider (the `ledger_source` table is tiny — one row
+   * per scanned file — so this lookup stays in memory and the big tables
+   * filter on the indexed `source_id`). Empty when the provider never scanned. */
+  getSourceIdsForProvider(provider: string): number[] {
+    return this.getSources()
+      .filter(s => s.provider === provider)
+      .map(s => s.id)
+  }
+
+  private sourceIdClause(sourceIds: number[] | undefined, column: string): { clause: string; params: number[] } {
+    if (sourceIds === undefined) return { clause: '', params: [] }
+    if (sourceIds.length === 0) return { clause: 'AND 1 = 0', params: [] }
+    const placeholders = sourceIds.map(() => '?').join(', ')
+    return { clause: `AND ${column} IN (${placeholders})`, params: [...sourceIds] }
+  }
+
+  getSessionsScoped(filter: Pick<LedgerReadFilter, 'provider'> = {}): LedgerSessionRow[] {
+    const sourceIds = filter.provider !== undefined ? this.getSourceIdsForProvider(filter.provider) : undefined
+    const { clause, params } = this.sourceIdClause(sourceIds, 'source_id')
     const rows = this.db.prepare(`
       SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
              agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
              mcp_inventory_json, ambiguous_spawn_agent_ids_json, ever_had_branch
-      FROM ledger_session ORDER BY session_id ASC
-    `).all() as Array<Record<string, unknown>>
+      FROM ledger_session WHERE 1 = 1 ${clause} ORDER BY session_id ASC
+    `).all(...params) as Array<Record<string, unknown>>
     return z.array(ledgerSessionRowSchema).parse(rows)
   }
 
-  getTurns(): LedgerTurnRow[] {
+  getTurnsScoped(filter: LedgerReadFilter = {}): LedgerTurnRow[] {
+    const sourceIds = filter.provider !== undefined ? this.getSourceIdsForProvider(filter.provider) : undefined
+    const { clause, params } = this.sourceIdClause(sourceIds, 'source_id')
+    const conditions: string[] = []
+    const values: Array<string | number> = [...params]
+    if (filter.start !== undefined) {
+      conditions.push('timestamp >= ?')
+      values.push(filter.start)
+    }
+    if (filter.end !== undefined) {
+      conditions.push('timestamp <= ?')
+      values.push(filter.end)
+    }
+    const range = conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : ''
     const rows = this.db.prepare(`
       SELECT source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
              spawn_tool_use_ids_json, category, sub_category, retries, has_edits
-      FROM ledger_turn ORDER BY session_id ASC, turn_index ASC
-    `).all() as Array<Record<string, unknown>>
+      FROM ledger_turn WHERE 1 = 1 ${clause} ${range} ORDER BY session_id ASC, turn_index ASC
+    `).all(...values) as Array<Record<string, unknown>>
     return z.array(ledgerTurnRowSchema).parse(rows)
   }
 
-  getCalls(): LedgerCallRow[] {
+  getCallsScoped(filter: LedgerReadFilter = {}): LedgerCallRow[] {
+    const sourceIds = filter.provider !== undefined ? this.getSourceIdsForProvider(filter.provider) : undefined
+    const { clause, params } = this.sourceIdClause(sourceIds, 'source_id')
+    const conditions: string[] = []
+    const values: Array<string | number> = [...params]
+    if (filter.start !== undefined) {
+      conditions.push('timestamp >= ?')
+      values.push(filter.start)
+    }
+    if (filter.end !== undefined) {
+      conditions.push('timestamp <= ?')
+      values.push(filter.end)
+    }
+    const range = conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : ''
     const rows = this.db.prepare(`
       SELECT source_id, session_id, turn_index, call_index, call_key, dedup_key, provider, model, timestamp, speed,
              project, project_path, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
@@ -435,9 +530,94 @@ export class LedgerStore {
              tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
              tool_sequence_json,
              loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
-      FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
-    `).all() as Array<Record<string, unknown>>
+      FROM ledger_call WHERE 1 = 1 ${clause} ${range} ORDER BY session_id ASC, turn_index ASC, call_index ASC
+    `).all(...values) as Array<Record<string, unknown>>
     return z.array(ledgerCallRowSchema).parse(rows)
+  }
+
+  /** Session keys with at least one call in `[start, end]` (inclusive ISO
+   * bounds), optionally restricted to one provider's sources. The
+   * aggregation seam uses this to discover the sessions a range view touches
+   * with one range-filtered `SELECT DISTINCT`, then loads those sessions'
+   * FULL history (pre-range turns stay for PR seeding + spawn sets). */
+  getCallSessionKeysInRange(start: string, end: string, provider?: string): SessionKey[] {
+    const sourceIds = provider !== undefined ? this.getSourceIdsForProvider(provider) : undefined
+    const { clause, params } = this.sourceIdClause(sourceIds, 'source_id')
+    const rows = this.db.prepare(`
+      SELECT DISTINCT source_id, session_id FROM ledger_call
+      WHERE timestamp >= ? AND timestamp <= ? ${clause}
+      ORDER BY source_id ASC, session_id ASC
+    `).all(start, end, ...params) as Array<{ source_id: number; session_id: string }>
+    return rows.map(r => ({ sourceId: Number(r.source_id), sessionId: r.session_id }))
+  }
+
+  /** Full history for an explicit session-key set (the second phase of the
+   * range pushdown). Empty input short-circuits to no rows without querying.
+   * The optional provider narrows the sessions-table read to that provider's
+   * sources (the table itself carries no timestamp to filter on). */
+  getSessionsForKeys(keys: SessionKey[], provider?: string): LedgerSessionRow[] {
+    if (keys.length === 0) return []
+    const all = this.getSessionsScoped(provider !== undefined ? { provider } : {})
+    const wanted = new Set(keys.map(k => `${k.sourceId}\0${k.sessionId}`))
+    return all.filter(s => wanted.has(`${s.sourceId}\0${s.sessionId}`))
+  }
+
+  /** Groups session keys by source and fans each source's ids out in
+   * variable-count-safe chunks (the shared shape behind the keyed readers). */
+  private forEachSessionKeyGroup(keys: SessionKey[], fn: (sourceId: number, sessionIds: string[]) => void): void {
+    const bySource = new Map<number, string[]>()
+    for (const key of keys) {
+      const list = bySource.get(key.sourceId) ?? []
+      list.push(key.sessionId)
+      bySource.set(key.sourceId, list)
+    }
+    for (const [sourceId, sessionIds] of bySource) {
+      for (const chunk of chunkArray([...new Set(sessionIds)], 200)) fn(sourceId, chunk)
+    }
+  }
+
+  getTurnsForSessionKeys(keys: SessionKey[]): LedgerTurnRow[] {
+    if (keys.length === 0) return []
+    const out: LedgerTurnRow[] = []
+    this.forEachSessionKeyGroup(keys, (sourceId, chunk) => {
+      const placeholders = chunk.map(() => '?').join(', ')
+      const rows = this.db.prepare(`
+        SELECT source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
+               spawn_tool_use_ids_json, category, sub_category, retries, has_edits
+        FROM ledger_turn WHERE source_id = ? AND session_id IN (${placeholders})
+        ORDER BY session_id ASC, turn_index ASC
+      `).all(sourceId, ...chunk) as Array<Record<string, unknown>>
+      out.push(...z.array(ledgerTurnRowSchema).parse(rows))
+    })
+    return out.sort((a, b) => a.sessionId.localeCompare(b.sessionId) || a.turnIndex - b.turnIndex)
+  }
+
+  getCallsForSessionKeys(keys: SessionKey[]): LedgerCallRow[] {
+    if (keys.length === 0) return []
+    const out: LedgerCallRow[] = []
+    this.forEachSessionKeyGroup(keys, (sourceId, chunk) => {
+      const placeholders = chunk.map(() => '?').join(', ')
+      const rows = this.db.prepare(`
+        SELECT source_id, session_id, turn_index, call_index, call_key, dedup_key, provider, model, timestamp, speed,
+               project, project_path, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
+               input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
+               reasoning_tokens, web_search_requests, cache_creation_one_hour_tokens, agent_type,
+               tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
+               tool_sequence_json,
+               loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
+        FROM ledger_call WHERE source_id = ? AND session_id IN (${placeholders})
+        ORDER BY session_id ASC, turn_index ASC, call_index ASC
+      `).all(sourceId, ...chunk) as Array<Record<string, unknown>>
+      out.push(...z.array(ledgerCallRowSchema).parse(rows))
+    })
+    return out.sort((a, b) =>
+      a.sessionId.localeCompare(b.sessionId) || a.turnIndex - b.turnIndex || a.callIndex - b.callIndex)
+  }
+
+  /** Runs `EXPLAIN QUERY PLAN` for an arbitrary ledger query (query-plan
+   * evidence for #139: before/after traces live in the PR, not in prod). */
+  explainQueryPlan(query: string, params: Array<string | number> = []): Array<Record<string, unknown>> {
+    return this.db.prepare(`EXPLAIN QUERY PLAN ${query}`).all(...params) as Array<Record<string, unknown>>
   }
 
   // ── Schema introspection (green-field verification) ───────────────────

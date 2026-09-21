@@ -108,9 +108,11 @@ const api = {
   getSession: (sessionId: string): Promise<SessionDetail | null> => ipcRenderer.invoke('store:session', sessionId),
   getAnalytics: (): Promise<AnalyticalViews | null> => ipcRenderer.invoke('store:analytics'),
   getOverview: (scope: OverviewScope): Promise<OverviewPayload | null> => ipcRenderer.invoke('overview:query', scope),
-  getSessionRows: (scope: OverviewScope): Promise<SessionRow[]> => ipcRenderer.invoke('sessions:view', scope),
+  getSessionRows: (scope: OverviewScope, page?: { limit?: number; offset?: number }): Promise<SessionRow[]> =>
+    ipcRenderer.invoke('sessions:view', scope, page),
   getPullRequests: (scope: OverviewScope): Promise<PullRequestsPayload | null> => ipcRenderer.invoke('pullRequests:view', scope),
-  getSpend: (scope: OverviewScope): Promise<SpendPayload | null> => ipcRenderer.invoke('spend:view', scope),
+  getSpend: (scope: OverviewScope, page?: { flowLimit?: number }): Promise<SpendPayload | null> =>
+    ipcRenderer.invoke('spend:view', scope, page),
   getModels: (scope: OverviewScope): Promise<ModelsPayload | null> => ipcRenderer.invoke('models:view', scope),
   getCompare: (scope: OverviewScope, pair?: ComparePair): Promise<ComparePayload | null> =>
     ipcRenderer.invoke('compare:view', scope, pair),

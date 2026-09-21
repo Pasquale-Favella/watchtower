@@ -88,29 +88,60 @@ function resolveDisplayCost(call: LedgerCallRow, resolvedModel: string): number 
   return call.baseCostUSD
 }
 
-/** SQL read seam: flat rows for the scope, provider-filtered, priced/aliased on read. */
+/** True when a range bound formats as a fixed-width `YYYY-…` UTC instant, the
+ * only shape whose TEXT comparison matches chronological order. The all-time
+ * scopes (`views.ts` `ALL_TIME_RANGE` at ±8.64e15) format with `-271821` /
+ * `+275760` year prefixes that sort outside every real row, so they must not
+ * reach a `WHERE timestamp` clause — those scopes take the provider-only path
+ * below instead. */
+function isRangeFilterable(date: Date): boolean {
+  const ms = date.getTime()
+  if (!Number.isFinite(ms)) return false
+  const iso = date.toISOString()
+  return iso >= '1000-01-01T00:00:00.000Z' && iso <= '9999-12-31T23:59:59.999Z'
+}
+
+/** SQL read seam (#139): flat rows for the scope, provider- and range-filtered
+ * in SQL, priced/aliased on read. Two phases: a range-filtered
+ * `SELECT DISTINCT` over `ledger_call` discovers the sessions a view touches,
+ * then those sessions' FULL history loads (pre-range turns stay for PR
+ * seeding at the range start and for spawn-set attribution) while sessions
+ * with no in-range calls never load at all — a 30-day view no longer reads
+ * lifetime rows. All-time scopes skip the range prefilter (provider-only SQL
+ * reads). The in-memory `turnInRange` gate in `assembleSession` stays the
+ * exact filter either way, so both paths are byte-compatible with the old
+ * full-scan read. */
 export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerScope {
   loadConfig(store)
 
+  const resolve = (rows: LedgerCallRow[]): ScopedCall[] =>
+    rows.map(call => {
+      const resolvedModel = pricingConfig.resolveAlias(call.model)
+      return { ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel) }
+    })
+
+  if (isRangeFilterable(scope.range.start) && isRangeFilterable(scope.range.end)) {
+    const keys = store.getCallSessionKeysInRange(
+      scope.range.start.toISOString(),
+      scope.range.end.toISOString(),
+      scope.provider,
+    )
+    return {
+      sessions: store.getSessionsForKeys(keys, scope.provider),
+      turns: store.getTurnsForSessionKeys(keys),
+      calls: resolve(store.getCallsForSessionKeys(keys)),
+    }
+  }
+
   const providerBySource = new Map<number, string>()
   for (const source of store.getSources()) providerBySource.set(source.id, source.provider)
-
-  const providerFilter = scope.provider
-  const keepSource = (sourceId: number): boolean => {
-    if (!providerFilter) return true
-    return providerBySource.get(sourceId) === providerFilter
+  const keepSource = (sourceId: number): boolean =>
+    scope.provider === undefined || providerBySource.get(sourceId) === scope.provider
+  return {
+    sessions: store.getSessionsScoped().filter(s => keepSource(s.sourceId)),
+    turns: store.getTurnsScoped().filter(t => keepSource(t.sourceId)),
+    calls: resolve(store.getCallsScoped().filter(c => keepSource(c.sourceId))),
   }
-
-  const sessions = store.getSessions().filter(s => keepSource(s.sourceId))
-  const turns = store.getTurns().filter(t => keepSource(t.sourceId))
-  const calls: ScopedCall[] = []
-  for (const call of store.getCalls()) {
-    if (!keepSource(call.sourceId)) continue
-    const resolvedModel = pricingConfig.resolveAlias(call.model)
-    calls.push({ ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel) })
-  }
-
-  return { sessions, turns, calls }
 }
 
 function turnInRange(firstCallTs: string | undefined, range: DateRange): boolean {

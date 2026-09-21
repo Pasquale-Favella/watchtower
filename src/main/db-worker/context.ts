@@ -11,9 +11,9 @@ import {
 import { runScan, ScanAbortedError, buildScanSummaryRecords, type ScanMetadata, type ScanProgress } from '../pipeline/scan.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
 import { buildOverviewFromLedger, type OverviewScope } from '../overview.js'
-import { buildSessionsViewFromLedger } from '../sessions-view.js'
+import { buildSessionsViewFromLedger, type SessionPage } from '../sessions-view.js'
 import { buildPullRequestsViewFromLedger, type PullRequestsPayload } from '../pull-requests-view.js'
-import { buildSpendViewFromLedger, type SpendPayload } from '../spend-view.js'
+import { buildSpendViewFromLedger, type SpendFlowPage, type SpendPayload } from '../spend-view.js'
 import { buildModelsViewFromLedger, type ModelsPayload } from '../models-view.js'
 import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from '../compare-view.js'
 import { buildOptimizeViewFromLedger, type OptimizePayload } from '../optimize-view.js'
@@ -365,7 +365,8 @@ export class DbWorkerContext {
 
       case 'sessions:view': {
         const scope = args[0] as OverviewScope
-        return buildSessionsViewFromLedger(ledger, scope) satisfies SessionRow[]
+        const page = args[1] as SessionPage | undefined
+        return buildSessionsViewFromLedger(ledger, scope, undefined, page) satisfies SessionRow[]
       }
 
       case 'pullRequests:view': {
@@ -375,7 +376,8 @@ export class DbWorkerContext {
 
       case 'spend:view': {
         const scope = args[0] as OverviewScope
-        return buildSpendViewFromLedger(ledger, scope) satisfies SpendPayload | null
+        const page = args[1] as SpendFlowPage | undefined
+        return buildSpendViewFromLedger(ledger, scope, undefined, page) satisfies SpendPayload | null
       }
 
       /** The Models section's scoped payload (ADR 0008): by-model / by-task /

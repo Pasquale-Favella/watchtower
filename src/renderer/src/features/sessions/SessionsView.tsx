@@ -6,7 +6,7 @@ import { SegTabs, type SegOption } from '@/shared/components/SegTabs'
 import { motionClass } from '@/shared/lib/motion'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import {
-  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions,
+  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions, paginateSessions, SESSIONS_PAGE_SIZE,
   type SessionSort
 } from '@/features/sessions/sessions-lib'
 import { formatUsd } from '@/shared/lib/models'
@@ -102,16 +102,30 @@ export function SessionsView(): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SessionSort>('cost')
   const [grouped, setGrouped] = useState(true)
+  const [page, setPage] = useState(0)
 
   useEffect(() => {
     void load(scope)
   }, [load, scope])
 
+  // A new search/sort/grouping restarts at the first page; scope reloads
+  // clamp through `paginateSessions` so a background refresh keeps the page.
+  useEffect(() => {
+    setPage(0)
+  }, [query, sort, grouped])
+
   const filtered = useMemo(() => filterSessions(rows ?? [], query), [rows, query])
   const summary = useMemo(() => summarizeSessions(filtered), [filtered])
-  const groups = useMemo(() => (grouped ? groupSessionsByProvider(filtered, sort) : []), [filtered, sort, grouped])
-  const flat = useMemo(() => (grouped ? [] : sortSessions(filtered, sort)), [filtered, sort, grouped])
+  // Paginate the globally sorted rows, then group the page slice: at most one
+  // page (100 rows) ever mounts, while search/sort/summary stay global over
+  // the range-bounded scoped set (#139).
+  const sorted = useMemo(() => sortSessions(filtered, sort), [filtered, sort])
+  const { page: safePage, pageCount, pageRows } = useMemo(() => paginateSessions(sorted, page), [sorted, page])
+  const groups = useMemo(() => (grouped ? groupSessionsByProvider(pageRows, sort) : []), [pageRows, sort, grouped])
+  const flat = grouped ? [] : pageRows
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
+  const rangeStart = sorted.length === 0 ? 0 : safePage * SESSIONS_PAGE_SIZE + 1
+  const rangeEnd = safePage * SESSIONS_PAGE_SIZE + pageRows.length
 
   return (
     <div className={cn('w-full max-w-[1180px]', motionClass('flex flex-col gap-3', 'section-fade'))}>
@@ -170,21 +184,46 @@ export function SessionsView(): React.JSX.Element {
               </button>
             </div>
           ) : (
-            <div className="overflow-hidden rounded-lg border border-border bg-card">
-              <ColumnHeaders />
-              {grouped
-                ? groups.map(group => (
-                  <div key={group.provider}>
-                    <div className="flex items-center gap-2 border-t border-border bg-muted/30 px-3 py-1 text-[11px] text-muted-foreground">
-                      <span className="font-medium text-foreground">{titleCase(group.provider)}</span>
-                      <span>{group.count} {group.count === 1 ? 'session' : 'sessions'}</span>
-                      <span className="ml-auto font-mono tabular-nums">{formatUsd(group.cost)}</span>
+            <>
+              <div className="overflow-hidden rounded-lg border border-border bg-card">
+                <ColumnHeaders />
+                {grouped
+                  ? groups.map(group => (
+                    <div key={group.provider}>
+                      <div className="flex items-center gap-2 border-t border-border bg-muted/30 px-3 py-1 text-[11px] text-muted-foreground">
+                        <span className="font-medium text-foreground">{titleCase(group.provider)}</span>
+                        <span>{group.count} {group.count === 1 ? 'session' : 'sessions'}</span>
+                        <span className="ml-auto font-mono tabular-nums">{formatUsd(group.cost)}</span>
+                      </div>
+                      {group.rows.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
                     </div>
-                    {group.rows.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
-                  </div>
-                ))
-                : flat.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
-            </div>
+                  ))
+                  : flat.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
+              </div>
+              {pageCount > 1 && (
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <button
+                    type="button"
+                    disabled={safePage === 0}
+                    onClick={() => setPage(safePage - 1)}
+                    className="rounded-md border border-border px-2.5 py-[3px] transition-colors hover:text-foreground disabled:opacity-40"
+                  >
+                    Previous
+                  </button>
+                  <span aria-live="polite">
+                    Page {safePage + 1} of {pageCount} · showing {rangeStart}–{rangeEnd} of {sorted.length}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={safePage >= pageCount - 1}
+                    onClick={() => setPage(safePage + 1)}
+                    className="rounded-md border border-border px-2.5 py-[3px] transition-colors hover:text-foreground disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </>
       )}

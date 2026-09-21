@@ -76,6 +76,14 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     expect(payload.dataStart).toBeNull()
   })
 
+  it('pages empty sessions/spend views through the worker IPC (#139)', async () => {
+    const c = open()
+    expect(await c.dispatch('sessions:view', [{ period: 'lifetime' }])).toEqual([])
+    expect(await c.dispatch('sessions:view', [{ period: 'lifetime' }, { limit: 2, offset: 0 }])).toEqual([])
+    const spend = await c.dispatch('spend:view', [{ period: 'lifetime' }, { flowLimit: 3 }]) as { flow: unknown }
+    expect(spend.flow).toEqual({ models: [], projects: [], links: [] })
+  })
+
   it('serves currency reads locally and rejects bogus codes', async () => {
     const c = open()
     expect(await c.dispatch('currency:get', [])).toMatchObject({ code: 'USD', rate: 1 })

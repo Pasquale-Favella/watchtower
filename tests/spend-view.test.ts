@@ -182,6 +182,29 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
     store.close()
   })
 
+  it('pages the flow top-N with flowLimit (default 8 unchanged)', () => {
+    const store = makeLedger()
+    const specs: SpendSessionSpec[] = Array.from({ length: 10 }, (_, i) => ({
+      sessionId: `s-${i}`,
+      provider: 'claude',
+      model: `model-${i}`,
+      project: 'alpha',
+      cost: 10 - i,
+      date: `2026-07-${String(i + 1).padStart(2, '0')}`,
+    }))
+    portSpendSessions(store, specs)
+    const scope = {
+      period: 'lifetime',
+      range: { since: '2026-07-01', until: '2026-07-10' },
+    } as const
+    const paged = buildSpendViewFromLedger(store, scope, NOW, { flowLimit: 3 })
+    expect(paged.flow.models.map(m => m.id)).toEqual(['model-0', 'model-1', 'model-2', '__other__'])
+    // Garbage normalizes to the default instead of throwing.
+    const fallback = buildSpendViewFromLedger(store, scope, NOW, { flowLimit: 'all' })
+    expect(fallback.flow.models).toHaveLength(9)
+    store.close()
+  })
+
 })
 
 describe('spend lib helpers', () => {
