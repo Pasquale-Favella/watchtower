@@ -1,3 +1,4 @@
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { useEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
@@ -6,7 +7,9 @@ import { useScanStore } from '@/app/stores/scan-store'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import type { SessionRow } from '@/features/sessions/drilldown'
 import {
+  flattenSessionListItems,
   groupSessionsByProvider,
+  type SessionListItem,
   type SessionSort,
   visiblePageNumbers,
 } from '@/features/sessions/sessions-lib'
@@ -75,6 +78,13 @@ function ColumnHeaders(): React.JSX.Element {
   )
 }
 
+/** The dashboard layout's scroll region (#141 item 3): section content scrolls
+ * in this nested `overflow-y-auto` strip, not the window — so the Sessions
+ * virtualizer observes this element, not `window`. */
+function getSectionScrollElement(): Element | null {
+  return document.querySelector('[data-section-scroll]')
+}
+
 interface SessionListRowProps {
   row: SessionRow
   onOpen: (sessionId: string) => void
@@ -121,6 +131,71 @@ function SessionListRow({ row, onOpen }: SessionListRowProps): React.JSX.Element
         {formatCompact(row.inputTokens + row.outputTokens)}
       </span>
     </button>
+  )
+}
+
+interface SessionGroupHeaderProps {
+  provider: string
+  count: number
+  cost: number
+}
+
+function SessionGroupHeader({ provider, count, cost }: SessionGroupHeaderProps): React.JSX.Element {
+  return (
+    <div className="border-border bg-muted/30 text-muted-foreground flex items-center gap-2 border-t px-3 py-1 text-[11px]">
+      <span className="text-foreground font-medium">{titleCase(provider)}</span>
+      <span>
+        {count} {count === 1 ? 'session' : 'sessions'}
+      </span>
+      <span className="ml-auto font-mono tabular-nums">{formatUsd(cost)}</span>
+    </div>
+  )
+}
+
+/** One mounted virtual list entry: a group header or a session row. */
+function SessionListItemView({ item }: { item: SessionListItem }): React.JSX.Element {
+  if (item.kind === 'header') {
+    return <SessionGroupHeader provider={item.provider} count={item.count} cost={item.cost} />
+  }
+  return <SessionListRow row={item.row} onOpen={navigateToSession} />
+}
+
+/** The virtualized Sessions row list (#139 scope 4, #141 item 3): only the
+ * visible window (+ overscan) mounts, so a full page never mounts every row.
+ * Group headers stay in-flow items above their rows. Row heights vary (the
+ * merged-models second line), so mounted rows measure themselves and the
+ * estimates only seed unmeasured items. */
+function VirtualSessionList({ items }: { items: SessionListItem[] }): React.JSX.Element {
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: getSectionScrollElement,
+    estimateSize: index => (items[index]?.kind === 'header' ? 30 : 60),
+    overscan: 8,
+    getItemKey: index => items[index]?.key ?? index,
+  })
+  return (
+    <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative', width: '100%' }}>
+      {virtualizer.getVirtualItems().map(virtualRow => {
+        const item = items[virtualRow.index]
+        if (item === undefined) return null
+        return (
+          <div
+            key={virtualRow.key}
+            ref={virtualizer.measureElement}
+            data-index={virtualRow.index}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              transform: `translateY(${virtualRow.start}px)`,
+            }}
+          >
+            <SessionListItemView item={item} />
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -256,6 +331,7 @@ export function SessionsView(): React.JSX.Element {
   const pageCount = Math.max(1, Math.ceil(total / SESSIONS_PAGE_SIZE))
   const groups = useMemo(() => (grouped ? groupSessionsByProvider(pageRows, sort) : []), [pageRows, sort, grouped])
   const flat = useMemo(() => (grouped ? [] : pageRows), [grouped, pageRows])
+  const items = useMemo(() => flattenSessionListItems(groups, flat, grouped), [groups, flat, grouped])
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
   const rangeStart = total === 0 ? 0 : start + 1
   const rangeEnd = start + pageRows.length
@@ -311,22 +387,7 @@ export function SessionsView(): React.JSX.Element {
       <>
         <div className="border-border bg-card overflow-hidden rounded-lg border">
           <ColumnHeaders />
-          {grouped
-            ? groups.map(group => (
-                <div key={group.provider}>
-                  <div className="border-border bg-muted/30 text-muted-foreground flex items-center gap-2 border-t px-3 py-1 text-[11px]">
-                    <span className="text-foreground font-medium">{titleCase(group.provider)}</span>
-                    <span>
-                      {group.count} {group.count === 1 ? 'session' : 'sessions'}
-                    </span>
-                    <span className="ml-auto font-mono tabular-nums">{formatUsd(group.cost)}</span>
-                  </div>
-                  {group.rows.map(row => (
-                    <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />
-                  ))}
-                </div>
-              ))
-            : flat.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
+          <VirtualSessionList items={items} />
         </div>
         {pageCount > 1 && (
           <SessionsPager

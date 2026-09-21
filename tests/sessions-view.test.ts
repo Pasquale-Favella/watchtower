@@ -9,6 +9,7 @@ import { buildSessionsViewFromLedger } from '../src/main/sessions-view.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import type { SessionRow } from '../src/renderer/src/features/sessions/drilldown.js'
 import {
+  flattenSessionListItems,
   groupSessionsByProvider,
   visiblePageNumbers,
 } from '../src/renderer/src/features/sessions/sessions-lib.js'
@@ -296,6 +297,27 @@ describe('groupSessionsByProvider (group-by-provider toggle)', () => {
 
   it('returns an empty list for no rows', () => {
     expect(groupSessionsByProvider([], 'cost')).toEqual([])
+  })
+})
+
+describe('flattenSessionListItems (virtual list model, #141 item 3)', () => {
+  it('flattens grouped pages into header + row items with stable keys', () => {
+    const groups = groupSessionsByProvider(ROWS, 'cost')
+    const items = flattenSessionListItems(groups, [], true)
+    expect(items.map(item => item.kind)).toEqual(['header', 'row', 'row', 'header', 'row'])
+    expect(items[0]).toMatchObject({ kind: 'header', key: 'header:claude', count: 2, cost: 18 })
+    expect(items[1]).toMatchObject({ kind: 'row', key: 'row:sess-aa' })
+  })
+
+  it('flattens ungrouped pages into row items only', () => {
+    const items = flattenSessionListItems([], ROWS, false)
+    expect(items.map(item => item.kind)).toEqual(['row', 'row', 'row'])
+    expect(items.map(item => item.key)).toEqual(['row:sess-aa', 'row:sess-bb', 'row:sess-cc'])
+  })
+
+  it('returns an empty list for an empty page', () => {
+    expect(flattenSessionListItems([], [], true)).toEqual([])
+    expect(flattenSessionListItems([], [], false)).toEqual([])
   })
 })
 

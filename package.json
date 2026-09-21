@@ -38,6 +38,7 @@
     "@shadcn/react": "^0.3.0",
     "@tanstack/react-hotkeys": "^0.10.0",
     "@tanstack/react-router": "^1.170.25",
+    "@tanstack/react-virtual": "^3.14.13",
     "ai": "^6.0.248",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

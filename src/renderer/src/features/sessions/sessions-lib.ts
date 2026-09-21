@@ -49,6 +49,36 @@ export function groupSessionsByProvider(rows: SessionRow[], sort: SessionSort): 
     .sort((a, b) => groupSortValue(b, sort) - groupSortValue(a, sort) || a.provider.localeCompare(b.provider))
 }
 
+/** One virtual list entry (#141 item 3): a provider group header or a session
+ * row. Keys are stable across pages and refreshes (provider / session id). */
+export type SessionListItem =
+  | { kind: 'header'; key: string; provider: string; count: number; cost: number }
+  | { kind: 'row'; key: string; row: SessionRow }
+
+/** Flattens one fetched page into a single virtual item list: group headers
+ * stay in-flow as items (not sticky) with their rows following the header,
+ * or plain rows when ungrouped. Exactly one of `groups`/`flat` is non-empty
+ * (the view computes one or the other); `grouped` picks which. */
+export function flattenSessionListItems(
+  groups: SessionGroup[],
+  flat: SessionRow[],
+  grouped: boolean,
+): SessionListItem[] {
+  if (!grouped) return flat.map(row => ({ kind: 'row', key: `row:${row.sessionId}`, row }))
+  const out: SessionListItem[] = []
+  for (const group of groups) {
+    out.push({
+      kind: 'header',
+      key: `header:${group.provider}`,
+      provider: group.provider,
+      count: group.count,
+      cost: group.cost,
+    })
+    for (const row of group.rows) out.push({ kind: 'row', key: `row:${row.sessionId}`, row })
+  }
+  return out
+}
+
 /** One entry of the pager number row: a zero-based page or a gap marker. */
 export type PageNumberEntry = number | 'ellipsis'
 
