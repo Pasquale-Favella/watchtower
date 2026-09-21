@@ -4,7 +4,8 @@ import { homedir } from 'os'
 import zlib from 'zlib'
 
 import { calculateCost } from '../models.js'
-import { getSqliteLoadError, isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../file-errors.js'
 import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
 
 // Zed's built-in agent stores one row per thread in a single SQLite database;
@@ -165,7 +166,11 @@ function parseThreads(db: SqliteDatabase, seenKeys: Set<string>): ParsedProvider
   }
 
   if (skipped > 0) {
-    process.stderr.write(`watchtower: skipped ${skipped} unreadable Zed threads\n`)
+    queueLogRecord({
+      logEvent: 'scan.file-error',
+      level: 'warn',
+      fields: { op: 'scan', provider: 'zed', code: 'entries-unreadable', count: skipped },
+    })
   }
   return calls
 }
@@ -174,11 +179,11 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
-        process.stderr.write(getSqliteLoadError() + '\n')
+        reportProviderIssue('zed', 'sqlite-unavailable')
         return
       }
       if (!zstdDecompress) {
-        process.stderr.write('watchtower: Zed threads need Node >= 22.15 (zstd support); skipping Zed usage.\n')
+        reportProviderIssue('zed', 'zstd-unavailable')
         return
       }
 
@@ -186,7 +191,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       try {
         db = openDatabase(source.path)
       } catch (err) {
-        process.stderr.write(`watchtower: cannot open Zed database: ${err instanceof Error ? err.message : err}\n`)
+        reportProviderIssue('zed', fileErrorCode(err, 'db-open-failed'))
         return
       }
       try {

@@ -6,6 +6,7 @@ import { LedgerStore } from '../../store/ledger.js'
 import { createLedgerMcpHttpHandler } from './http-server.js'
 import { createLedgerMcpServer } from './server.js'
 import { readContext, readHttpContext, type LedgerMcpContext, type LedgerMcpHttpContext } from './spawn-env.js'
+import { reportSidecarBootFailure } from './sidecar-log.js'
 
 /**
  * The `watchtower-ledger` MCP server CLI entry (map 53, ADR 0020). The harness
@@ -30,7 +31,7 @@ function openStoreReadOnly(dbPath: string): LedgerStore {
   try {
     return new LedgerStore(dbPath, { readOnly: true })
   } catch (err) {
-    process.stderr.write(`watchtower-ledger: cannot open ledger read-only: ${err instanceof Error ? err.message : String(err)}\n`)
+    reportSidecarBootFailure((err as NodeJS.ErrnoException | undefined)?.code ?? 'db-open-failed')
     process.exit(1)
   }
 }
@@ -65,8 +66,8 @@ async function serveHttp(): Promise<void> {
   let ctx: LedgerMcpHttpContext
   try {
     ctx = readHttpContext()
-  } catch (err) {
-    process.stderr.write(`watchtower-ledger: bad spawn context: ${err instanceof Error ? err.message : String(err)}\n`)
+  } catch {
+    reportSidecarBootFailure('bad-context')
     process.exit(1)
     return
   }
@@ -99,8 +100,8 @@ async function main(): Promise<void> {
   let ctx: LedgerMcpContext
   try {
     ctx = readContext()
-  } catch (err) {
-    process.stderr.write(`watchtower-ledger: bad spawn context: ${err instanceof Error ? err.message : String(err)}\n`)
+  } catch {
+    reportSidecarBootFailure('bad-context')
     process.exit(1)
     return
   }

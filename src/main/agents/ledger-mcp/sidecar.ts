@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createInterface } from 'node:readline'
 
 import type { AcpMcpServer } from '../harnesses/types.js'
+import { logCodeFor, safeLogOperationalEvent } from '../../operational-log.js'
 import { bearerHeaderValue } from './auth.js'
 import type { LedgerMcpSpawnContext } from './config.js'
 
@@ -105,6 +107,58 @@ export function readReadyPort(child: ChildProcess, stdout: NodeJS.ReadableStream
   })
 }
 
+/** One sidecar stderr record as parsed off the line protocol: method + route +
+ * short code for failed requests, op + code for boot failures — never bodies
+ * or tokens. */
+export interface SidecarRequestRecord {
+  kind: 'request' | 'boot'
+  method?: string
+  route?: string
+  op?: string
+  code: string
+}
+
+function shortField(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+/** Parses one sidecar stderr line (#129 protocol). The sidecar emits a JSON
+ * line per failed request (`{ kind: 'request', method, route, code }`) and
+ * per boot failure (`{ kind: 'boot', op, code }`); anything else (Node
+ * warnings, stacks) is dropped — stdout stays the exclusive READY channel
+ * and only allowlisted fields reach the log. Pure (unit-tested). */
+export function parseSidecarLogLine(line: string): SidecarRequestRecord | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object') return null
+  const fields = parsed as Record<string, unknown>
+  const code = shortField(fields['code'])
+  if (!code) return null
+  const record: SidecarRequestRecord = { kind: fields['kind'] === 'boot' ? 'boot' : 'request', code }
+  const method = shortField(fields['method'])
+  if (method) record.method = method
+  const route = shortField(fields['route'])
+  if (route) record.route = route
+  const op = shortField(fields['op'])
+  if (op) record.op = op
+  return record
+}
+
+/** Files one parsed stderr line via the shared seam (never throws). */
+function recordSidecarLine(line: string): void {
+  const parsed = parseSidecarLogLine(line)
+  if (!parsed) return
+  if (parsed.kind === 'boot') {
+    safeLogOperationalEvent('error', 'sidecar.error', { op: parsed.op ?? 'ledger-mcp-boot', code: parsed.code }, 'sidecar')
+    return
+  }
+  safeLogOperationalEvent('error', 'sidecar.request', { method: parsed.method, route: parsed.route, code: parsed.code }, 'sidecar')
+}
+
 async function probeOnce(port: number, token: string): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
@@ -146,14 +200,13 @@ export async function startLedgerMcpHttp(ctx: LedgerMcpSpawnContext): Promise<St
   const child: ChildProcess = spawn(ctx.execPath, [ctx.entryPath, '--ledger-mcp-http'], {
     env: sidecarEnv({ dbPath: ctx.dbPath, token }),
     // stdout carries the single READY line (consumed below, then drained);
-    // stderr stays piped so a sidecar that fails to boot (bad bundle, locked
-    // DB) leaves a trace in the main-process console instead of dying
-    // silently behind a readiness timeout.
+    // stderr carries one JSON record per failed request (read line-wise
+    // above) — never the READY announcement, never request bodies or tokens.
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  child.stderr?.on('data', (chunk: Buffer) => {
-    process.stderr.write(`watchtower-ledger(http): ${chunk.toString()}`)
-  })
+  if (child.stderr) {
+    createInterface({ input: child.stderr }).on('line', recordSidecarLine)
+  }
   if (!child.stdout) {
     child.kill()
     throw new Error('ledger MCP HTTP server has no stdout for its ready announcement')
@@ -173,6 +226,7 @@ export async function startLedgerMcpHttp(ctx: LedgerMcpSpawnContext): Promise<St
     await Promise.race([waitForHealth(port, token), earlyExit])
   } catch (err) {
     child.kill()
+    safeLogOperationalEvent('error', 'sidecar.error', { op: 'ledger-mcp-spawn', code: logCodeFor(err) }, 'sidecar')
     throw err
   }
   return {

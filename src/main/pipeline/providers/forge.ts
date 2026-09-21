@@ -4,7 +4,8 @@ import { join } from 'path'
 
 import { extractBashCommands } from '../bash-utils.js'
 import { calculateCost } from '../models.js'
-import { getSqliteLoadError, isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { reportProviderIssue } from '../file-errors.js'
 import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
 
 type ConversationRow = {
@@ -141,7 +142,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
-        process.stderr.write(getSqliteLoadError() + '\n')
+        reportProviderIssue('forge', 'sqlite-unavailable')
         return
       }
 

@@ -2,8 +2,9 @@ import { readdir } from 'fs/promises'
 import { join } from 'path'
 
 import { calculateCost } from '../models.js'
-import { isSqliteAvailable, getSqliteLoadError, openDatabase, blobToText, isSqliteBusyError, type SqliteDatabase } from '../sqlite.js'
+import { isSqliteAvailable, openDatabase, blobToText, isSqliteBusyError, type SqliteDatabase } from '../sqlite.js'
 import { buildAssistantCall, parseTimestamp, sanitize, type MessageData, type PartData } from './session-message.js'
+import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import type {
   SessionSource,
   SessionParser,
@@ -104,10 +105,7 @@ function warnUnrecognizedSchemaOnce(providerLabel: string, missing: string[]): v
   if (providerSet.has(key)) return
   providerSet.add(key)
   warnedSchemas.set(providerLabel, providerSet)
-  process.stderr.write(
-    `watchtower: ${providerLabel} database is missing expected tables (${missing.join(', ')}). ` +
-    `Run ${providerLabel} once to apply migrations, or report at https://github.com/Pasquale-Favella/watchtower/issues if this persists.\n`
-  )
+  reportProviderIssue(providerLabel, 'schema-drift')
 }
 
 export type SqliteProviderConfig = {
@@ -125,7 +123,7 @@ export function createSqliteSessionParser(
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
-        process.stderr.write(getSqliteLoadError() + '\n')
+        reportProviderIssue(config.displayName, 'sqlite-unavailable')
         return
       }
 
@@ -137,7 +135,7 @@ export function createSqliteSessionParser(
       try {
         db = openDatabase(dbPath)
       } catch (err) {
-        process.stderr.write(`watchtower: cannot open ${config.displayName} database: ${err instanceof Error ? err.message : err}\n`)
+        reportProviderIssue(config.displayName, fileErrorCode(err, 'db-open-failed'))
         return
       }
 
@@ -281,7 +279,7 @@ export function createSqliteSessionParser(
 
           if (yieldCount === 0 && process.env['WATCHTOWER_VERBOSE'] === '1') {
             process.stderr.write(
-              `watchtower: ${config.displayName} session ${sessionId} has ${messages.length} messages ` +
+              `watchtower: ${config.displayName} session has ${messages.length} messages ` +
               `(${parseFailCount} unparseable, ${roleSkipCount} non-user/assistant roles) ` +
               `but yielded 0 calls. Parts: ${parts.length}.\n`
             )

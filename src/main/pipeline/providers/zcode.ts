@@ -2,7 +2,8 @@ import { join } from 'path'
 import { homedir } from 'os'
 
 import { calculateCost } from '../models.js'
-import { isSqliteAvailable, getSqliteLoadError, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 
 /// ZCode (CLI v0.14.x) records usage in a single SQLite database at
@@ -90,7 +91,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
-        process.stderr.write(getSqliteLoadError() + '\n')
+        reportProviderIssue('zcode', 'sqlite-unavailable')
         return
       }
 
@@ -104,9 +105,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       try {
         db = openDatabase(dbPath)
       } catch (err) {
-        process.stderr.write(
-          `watchtower: cannot open ZCode database: ${err instanceof Error ? err.message : err}\n`,
-        )
+        reportProviderIssue('zcode', fileErrorCode(err, 'db-open-failed'))
         return
       }
 

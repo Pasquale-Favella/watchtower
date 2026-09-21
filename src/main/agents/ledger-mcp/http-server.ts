@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { LedgerStore } from '../../store/ledger.js'
 import { hasBearerAuthorization } from './auth.js'
 import { createLedgerMcpServer } from './server.js'
+import { reportSidecarRequestFailure } from './sidecar-log.js'
 
 /**
  * The loopback-HTTP face of the `watchtower-ledger` MCP server: the SAME
@@ -83,11 +84,7 @@ export function createLedgerMcpHttpHandler(
       await createLedgerMcpServer(store).connect(transport)
       await transport.handleRequest(req, res, body)
     } catch (error) {
-      console.error('Ledger MCP HTTP request failed', {
-        method: req.method,
-        pathname,
-        error,
-      })
+      reportSidecarRequestFailure(req.method, pathname, error)
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' })
     }
   }

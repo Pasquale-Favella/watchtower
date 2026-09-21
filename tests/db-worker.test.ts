@@ -103,6 +103,22 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     await expect(c.dispatch('unknown:op', [])).rejects.toThrow(/unknown db-worker op/)
   })
 
+  it('emits oplog scan lifecycle records over the host channel (#128)', async () => {
+    const c = open()
+    await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: true })
+    const oplogs = events.filter(event => event.event === 'oplog')
+    expect(oplogs[0]).toMatchObject({ level: 'info', logEvent: 'scan.start', fields: { op: 'scan' } })
+    // Discovery reads the real provider dirs, so counts vary per machine —
+    // assert the shape (allowlisted totals), not the values.
+    const finish = oplogs.find(event => event.event === 'oplog' && (event as { logEvent: string }).logEvent === 'scan.finish')
+    expect(finish).toMatchObject({ level: 'info' })
+    const fields = (finish as { fields: Record<string, unknown> }).fields
+    expect(fields['op']).toBe('scan')
+    for (const key of ['ported', 'unparsed', 'failed']) {
+      expect(typeof fields[key]).toBe('number')
+    }
+  })
+
   it('shuts down idempotently for the quit path', async () => {
     const c = open()
     await expect(c.dispatch('shutdown', [])).resolves.toBeNull()

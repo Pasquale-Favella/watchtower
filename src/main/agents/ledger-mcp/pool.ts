@@ -1,5 +1,6 @@
 import type { LedgerMcpAttachment } from '../ipc.js'
 import type { AcpMcpServer } from '../harnesses/types.js'
+import { safeLogOperationalEvent } from '../../operational-log.js'
 import type { LedgerMcpSpawnContext } from './config.js'
 import type { StartedLedgerMcpHttp } from './sidecar.js'
 
@@ -47,6 +48,10 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
   let inflight: Promise<StartedLedgerMcpHttp | null> | null = null
   let generation = 0
 
+  function logHealthFailure(): void {
+    safeLogOperationalEvent('error', 'sidecar.error', { op: 'ledger-mcp-health', code: 'unhealthy' }, 'sidecar')
+  }
+
   async function spawnFresh(ctx: LedgerMcpSpawnContext): Promise<StartedLedgerMcpHttp | null> {
     const gen = generation
     let started: StartedLedgerMcpHttp
@@ -68,13 +73,14 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
     // sidecar is health-gated on every acquire: one that died between
     // conversations is respawned, never handed out.
     if (pooled) {
+      let healthy = false
       try {
-        if (await pooled.checkHealth()) {
-          return { server: pooled.server, release: () => {} }
-        }
-      } catch {
-        // Unhealthy — fall through to respawn.
-      }
+        healthy = await pooled.checkHealth()
+      } catch { /* treat a failed probe as unhealthy */ }
+      if (healthy) return { server: pooled.server, release: () => {} }
+      // A sidecar that died between turns is respawned, never handed out —
+      // and the death is recorded (health failures are log records, #129).
+      logHealthFailure()
       pooled.release()
       pooled = null
     }
@@ -104,12 +110,12 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
 
   async function status(): Promise<AcpMcpServer | null> {
     if (!pooled) return null
+    let healthy = false
     try {
-      if (await pooled.checkHealth()) return pooled.server
-    } catch {
-      // Treat a failed health check as stopped and let the next acquire boot
-      // a fresh sidecar.
-    }
+      healthy = await pooled.checkHealth()
+    } catch { /* treat a failed probe as unhealthy */ }
+    if (healthy) return pooled.server
+    logHealthFailure()
     pooled.release()
     pooled = null
     return null

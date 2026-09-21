@@ -2,6 +2,7 @@ import { existsSync } from 'fs'
 import { lstat, readFile, readdir, stat } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { readSessionLines } from './fs-utils.js'
+import { logFileName, queueLogRecord } from './file-errors.js'
 import { calculateCost, calculateLocalModelSavings, getShortModelName, isProxiedPath, getProxyPathsConfigHash } from './models.js'
 import { resolveSubagentAttribution, sessionIdentity } from './sessions-report.js'
 import { normalizeContentBlocks } from './content-utils.js'
@@ -77,15 +78,18 @@ async function safeEmitDelta(onDelta: DeltaHandler, delta: ScanDelta): Promise<v
 
 const portFailureWarned = new Set<string>()
 
-/** Warn once per provider+file so a systemic port break surfaces, but a
- * per-file failure can't flood stderr across every warm scan. */
+/** Queue once per provider+file so a systemic port break surfaces, but a
+ * per-file failure can't flood the log across every warm scan. Basename +
+ * code only — full paths never leave the worker (#128). */
 function warnProviderPortFailure(providerName: string, sourcePath: string): void {
   const key = `${providerName}:${sourcePath}`
   if (portFailureWarned.has(key)) return
   portFailureWarned.add(key)
-  process.stderr.write(
-    `watchtower: failed to port ${providerName} file ${sourcePath} into the ledger; it will be retried on the next scan.\n`
-  )
+  queueLogRecord({
+    logEvent: 'scan.file-error',
+    level: 'warn',
+    fields: { op: 'scan', provider: providerName, file: logFileName(sourcePath), code: 'port-failed' },
+  })
 }
 
 
@@ -2958,9 +2962,11 @@ function warnProviderReadFailureOnce(providerName: string, err: unknown): void {
   if (warnedProviderReadFailures.has(key)) return
   warnedProviderReadFailures.add(key)
   if (isSqliteBusyError(err)) {
-    process.stderr.write(
-      `watchtower: skipped ${providerName} data because its SQLite database is temporarily locked; will retry on the next refresh.\n`
-    )
+    queueLogRecord({
+      logEvent: 'scan.file-error',
+      level: 'warn',
+      fields: { op: 'scan', provider: providerName, code: 'busy' },
+    })
   }
 }
 
@@ -2975,13 +2981,13 @@ function warnProviderParseFailure(providerName: string, sourcePath: string, err:
   const n = (parseFailureCounts.get(providerName) ?? 0) + 1
   parseFailureCounts.set(providerName, n)
   if (n > PARSE_FAILURE_WARN_CAP) return
-  const msg = err instanceof Error ? err.message : String(err)
-  const tail = n === PARSE_FAILURE_WARN_CAP
-    ? ` (further ${providerName} parse failures this run are suppressed)`
-    : ''
-  process.stderr.write(
-    `watchtower: skipped ${providerName} session that failed to parse: ${sourcePath} (${msg})${tail}\n`
-  )
+  // Code only, never the message — messages embed paths and payloads (#128).
+  const code = (err as NodeJS.ErrnoException | undefined)?.code ?? 'parse-failed'
+  queueLogRecord({
+    logEvent: 'scan.file-error',
+    level: 'warn',
+    fields: { op: 'scan', provider: providerName, file: logFileName(sourcePath), code },
+  })
 }
 
 // A permission error (EPERM/EACCES) on a provider's data — e.g. a directory or
@@ -4029,7 +4035,11 @@ async function runParse(
     if (claudeSources.length > 0) emitScanProgress({ kind: 'provider', provider: 'claude', state: 'done', files: claudeSources.length })
   } catch (err) {
     if (!isPermissionError(err)) throw err
-    process.stderr.write(`watchtower: skipped claude data (permission denied; grant Full Disk Access to include it)\n`)
+    queueLogRecord({
+      logEvent: 'scan.file-error',
+      level: 'warn',
+      fields: { op: 'scan', provider: 'claude', code: 'denied' },
+    })
     emitScanProgress({ kind: 'provider', provider: 'claude', state: 'skipped' })
   }
 
@@ -4044,7 +4054,11 @@ async function runParse(
       // A permission-locked provider skips-and-continues; any other error is a
       // real bug and still aborts (per-file/DB-lock cases are handled deeper).
       if (!isPermissionError(err)) throw err
-      process.stderr.write(`watchtower: skipped ${providerName} data (permission denied; grant Full Disk Access to include it)\n`)
+      queueLogRecord({
+        logEvent: 'scan.file-error',
+        level: 'warn',
+        fields: { op: 'scan', provider: providerName, code: 'denied' },
+      })
       emitScanProgress({ kind: 'provider', provider: providerName, state: 'skipped' })
     }
     await saveProgress()

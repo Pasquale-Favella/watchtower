@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import snapshotData from './data/litellm-snapshot.json'
 import fallbackData from './data/pricing-fallback.json'
 import { fetchWithTimeout } from './fetch-utils.js'
+import { queueLogRecord } from './file-errors.js'
 
 export type ModelCosts = {
   inputCostPerToken: number
@@ -884,13 +885,15 @@ export function calculateCost(
       warnedUnknownModels.add(model)
       // Strip control characters and cap length: model names come from JSONL
       // payloads written by external tools, so a hostile or corrupt file
-      // could embed terminal escape sequences here.
+      // could embed terminal escape sequences here. Queued for the
+      // Operational log (model names are identifiers like providers — the
+      // Models alias workflow needs to know WHICH model is unpriced).
       const safeName = model.replace(/[\x00-\x1F\x7F-\x9F]/g, '?').slice(0, 200)
-      const aliasHint = `Map it with: token-reader model-alias "${safeName}" <known-model>, or track local-model savings with: token-reader model-savings "${safeName}" <baseline-model>`
-      process.stderr.write(
-        `watchtower: no pricing data for model "${safeName}" — costs for this model will show $0. ` +
-        `${aliasHint}, or update with: npx token-reader@latest.\n`
-      )
+      queueLogRecord({
+        logEvent: 'pricing.unpriced',
+        level: 'warn',
+        fields: { op: 'pricing', model: safeName, code: 'unpriced' },
+      })
     }
     return 0
   }
