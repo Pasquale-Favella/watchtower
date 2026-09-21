@@ -41,6 +41,15 @@ export function sanitizeOperationalRecord(
 }
 
 export function errorCodeFor(err: unknown, fallback = 'failed'): string {
+  // Single error-code policy for every context (#138 review): prefer the
+  // errno `code` (EACCES, ENOENT, ...) when present — it is the most precise
+  // stable identifier across main/worker/sidecar paths — then fall back to
+  // the Error-name slug, then the caller fallback. Main and worker must log
+  // the same failure with the same `code`.
+  const errno = err && typeof err === 'object' && 'code' in err
+    ? (err as { code?: unknown }).code
+    : undefined
+  if (typeof errno === 'string' && errno.trim()) return errno.trim()
   if (err instanceof Error && err.name && err.name !== 'Error') {
     const slug = err.name
       .replace(/Error$/, '')
@@ -52,10 +61,7 @@ export function errorCodeFor(err: unknown, fallback = 'failed'): string {
   return fallback
 }
 
+/** Kept for call-site compatibility: same unified policy as `errorCodeFor`. */
 export function errnoCodeFor(err: unknown, fallback = 'failed'): string {
-  const errno = err && typeof err === 'object' && 'code' in err
-    ? (err as { code?: unknown }).code
-    : undefined
-  if (typeof errno === 'string' && errno.trim()) return errno
   return errorCodeFor(err, fallback)
 }

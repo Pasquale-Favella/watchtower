@@ -57,10 +57,12 @@ describe('scan summary records (#128)', () => {
 })
 
 describe('file-error outbox (#128)', () => {
-  it('shares error-code shaping while preserving main and worker precedence', () => {
+  it('shares one error-code policy across main and worker paths (#138 review)', () => {
     const error = Object.assign(new Error('permission denied'), { code: 'EACCES' })
-    expect(logCodeFor(error)).toBe('failed')
+    expect(logCodeFor(error)).toBe('EACCES')
     expect(fileErrorCode(error, 'failed')).toBe('EACCES')
+    expect(logCodeFor(new TypeError('boom'))).toBe('type')
+    expect(logCodeFor(new Error('plain'))).toBe('failed')
   })
 
   it('drains queued records in order and empties the queue', () => {
