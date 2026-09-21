@@ -15,8 +15,12 @@ import { clampInt } from './clamp.js'
 /** The four row orderings the Sessions list offers. */
 const SESSION_SORTS = ['cost', 'recent', 'turns', 'tokens'] as const
 
+function normalizeSortIsMember(sort: unknown): sort is SessionSort {
+  return (SESSION_SORTS as readonly string[]).includes(sort as string)
+}
+
 function normalizeSort(sort: unknown): SessionSort {
-  return (SESSION_SORTS as readonly string[]).includes(sort as string) ? (sort as SessionSort) : 'cost'
+  return normalizeSortIsMember(sort) ? sort : 'cost'
 }
 
 function normalizeSearch(query: unknown): string {
@@ -104,10 +108,6 @@ export function decodeSessionCursor(cursor: unknown): SessionCursor | null {
   } catch {
     return null
   }
-}
-
-function normalizeSortIsMember(sort: unknown): sort is SessionSort {
-  return (SESSION_SORTS as readonly string[]).includes(sort as string)
 }
 
 /** True when row sorts strictly after the cursor position under the cursor's

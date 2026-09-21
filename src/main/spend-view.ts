@@ -355,26 +355,16 @@ export function buildSpendViewFromLedger(
     flushGroup(group, groupKey)
   }
 
-  return spendPayloadSchema.parse(buildSpendPayload(acc, scope, now, normalizeSpendFlowLimit(page)))
+  return spendPayloadSchema.parse(buildSpendPayload(acc, normalizeSpendFlowLimit(page), winStart, winEnd))
 }
 
 function buildSpendPayload(
   acc: SpendAccumulator,
-  scope: OverviewScope,
-  now: Date,
   flowLimit: number,
+  winStart: string,
+  winEnd: string,
 ): SpendPayload {
   const { byModelDay, byProjectDay, matrix, projectTotals, modelTotals, modelProvenance, projectDisplayByKey } = acc
-  const todayKey = localDateKey(now)
-  let winStart: string
-  let winEnd: string
-  if (scope.range) {
-    winStart = scope.range.since
-    winEnd = scope.range.until
-  } else {
-    winEnd = todayKey
-    winStart = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - (SPEND_CHART_DAYS - 1)))
-  }
 
   const byModel = contiguousDayEntries(byModelDay, winStart, winEnd).map(entry => ({
     ...entry,
