@@ -341,7 +341,7 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
           }
         }}
         rows={1}
-        placeholder="Ask anything — or say “craft a skill for …”"
+        placeholder="Ask anything or say “craft a skill for …”"
         className="max-h-[168px] w-full resize-none overflow-y-auto bg-transparent p-3.5 text-[12px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
       />
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
