@@ -12,7 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/shared/components/ui/alert-dialog'
-import { Skeleton } from '@/shared/components/ui/skeleton'
+import { LoadingRegion, SkeletonPills } from '@/shared/components/skeletons'
 import {
   Select,
   SelectContent,
@@ -113,7 +113,11 @@ export function PatternChips({ onCraft, disabled = false }: {
   const drafts = detection.data?.drafts ?? []
 
   if (detection.status === 'loading' && detection.data === null) {
-    return <Skeleton className="h-6 w-64" />
+    return (
+      <LoadingRegion label="Loading detected patterns…" className="flex flex-wrap justify-center gap-2">
+        <SkeletonPills />
+      </LoadingRegion>
+    )
   }
   if (drafts.length === 0) {
     return (
