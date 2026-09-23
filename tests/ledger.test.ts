@@ -218,6 +218,33 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.close()
   })
 
+  it('ports through the Effect runtime at the synchronous db-worker boundary', () => {
+    const store = makeStore()
+    const result = store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+
+    expect(result.inserted).toEqual({ sessions: 1, turns: 1, calls: 1 })
+    expect(store.getCalls()).toHaveLength(1)
+    store.close()
+  })
+
+  it('rolls back earlier inserts when an Effect-managed port-in fails mid-transaction', () => {
+    const store = makeStore()
+    const triggerDb = new DatabaseSync(store.dbPath)
+    triggerDb.exec(`
+      CREATE TRIGGER fail_ledger_turn BEFORE INSERT ON ledger_turn
+      BEGIN SELECT RAISE(ABORT, 'injected port-in failure'); END;
+    `)
+    triggerDb.close()
+
+    expect(() => store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })).toThrow(
+      'Failed to execute statement',
+    )
+    expect(store.getSources()).toEqual([])
+    expect(store.getSessions()).toEqual([])
+    expect(store.getCalls()).toEqual([])
+    store.close()
+  })
+
   it('re-inserting the same file is idempotent: the call_key constraint rejects duplicates', () => {
     const store = makeStore()
     const file = buildFixtureCachedFile()
@@ -563,7 +590,6 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
 
     store.close()
   })
-
 })
 
 describe('DDL-Zod parity: table and column shape (#97)', () => {

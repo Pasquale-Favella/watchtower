@@ -1,8 +1,10 @@
 import * as Sqlite from '@effect/sql-sqlite-node'
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
+import { LedgerRepository } from './ledger-repository.js'
 import { makeSqliteMigrationLoader, type SqliteMigration } from './sqlite-migrations.js'
 
 type RunResult = {
@@ -18,10 +20,18 @@ type SqliteStatement = {
 
 /** Effect SQL-backed SQLite access with the ledger's synchronous store contract. */
 export class NodeSqliteDatabase {
-  private readonly runtime: ManagedRuntime.ManagedRuntime<Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient, never>
+  private readonly runtime: ManagedRuntime.ManagedRuntime<
+    Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient | LedgerRepository,
+    never
+  >
 
   constructor(filename: string, options: { readonly readonly?: boolean } = {}) {
-    this.runtime = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename, readonly: options.readonly }))
+    const sqliteLayer = Sqlite.SqliteClient.layer({ filename, readonly: options.readonly })
+    this.runtime = ManagedRuntime.make(LedgerRepository.layer.pipe(Layer.provideMerge(sqliteLayer)))
+  }
+
+  runSync<A, E>(effect: Effect.Effect<A, E, LedgerRepository>): A {
+    return this.runtime.runSync(effect)
   }
 
   exec(script: string): void {

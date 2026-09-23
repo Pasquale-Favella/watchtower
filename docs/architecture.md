@@ -35,7 +35,7 @@ The store is an **accumulating, normalized ledger** of four tables
 what the transcripts observed: per-call facts with raw token counts and a base
 cost, per-turn classification, session facts, and per-source provenance.
 
-Because scans port *deltas* instead of rewriting snapshots:
+Because scans port _deltas_ instead of rewriting snapshots:
 
 - The **first scan is lifetime** (epoch to now), so no file's history is ever
   stranded; later scans only touch files whose fingerprint changed
@@ -106,3 +106,4 @@ inline in the code. The most relevant ones:
 - [ADR 0025: ledger MCP HTTP fallback for stdio-rejecting harnesses](./adr/0025-ledger-mcp-http-fallback-for-stdio-rejecting-harnesses.md)
 - [ADR 0026: pooled ledger MCP sidecar for stdio-rejecting harnesses](./adr/0026-pooled-ledger-mcp-sidecar.md)
 - [ADR 0027: app-scoped local ledger MCP and startup controls](./adr/0027-app-scoped-local-ledger-mcp.md)
+- [ADR 0032: Effect as the composition model for backend workflows](./adr/0032-effect-first-backend-architecture.md)
