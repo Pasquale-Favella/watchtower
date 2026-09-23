@@ -109,6 +109,7 @@ export class DbWorkerContext {
   private cadenceGeneration = 0
   private activeScan: Promise<ScanMetadata> | null = null
   private readonly backgroundScope = Scope.makeUnsafe()
+  private readonly scanScope = Scope.makeUnsafe()
   private readonly backgroundFxTasks = new Set<Promise<void>>()
   private closePromise: Promise<void> | null = null
   private closed = false
@@ -175,7 +176,14 @@ export class DbWorkerContext {
     options: { provider?: string } | undefined,
     emit: (progress: ScanProgress) => void,
   ): Promise<ScanMetadata> {
-    const scan = this.performScan(options, emit)
+    const scanEffect = Effect.tryPromise({
+      try: () => this.performScan(options, emit),
+      catch: cause => cause,
+    })
+    const fiber = Effect.runSync(
+      Effect.forkIn(scanEffect, this.scanScope, { startImmediately: true }),
+    )
+    const scan = Effect.runPromise(Fiber.join(fiber))
     this.activeScan = scan
     try {
       return await scan
@@ -684,6 +692,7 @@ export class DbWorkerContext {
       await Effect.runPromise(Scope.close(this.backgroundScope, Exit.void))
       await Promise.all(this.backgroundFxTasks)
       await this.activeScan?.catch(() => undefined)
+      await Effect.runPromise(Scope.close(this.scanScope, Exit.void))
       this.ledger.close()
     })()
     return this.closePromise

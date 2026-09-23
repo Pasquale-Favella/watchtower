@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DbWorkerClient, type DbWorkerPort } from '../src/main/db-worker/client.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
+import type { ScanMetadata } from '../src/main/pipeline/scan.js'
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'watchtower-dbworker-'))
@@ -158,6 +159,40 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     const c = open()
     await expect(c.dispatch('shutdown', [])).resolves.toBeNull()
     await expect(c.dispatch('shutdown', [])).resolves.toBeNull()
+  })
+
+  it('waits for the scoped scan before closing the ledger', async () => {
+    const c = open()
+    let resolveScan!: (metadata: ScanMetadata) => void
+    const scanResult = new Promise<ScanMetadata>(resolve => { resolveScan = resolve })
+    const performScan = vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Promise<ScanMetadata> },
+      'performScan',
+    ).mockReturnValue(scanResult)
+    const request = c.dispatch('scan:start', [])
+    await vi.waitFor(() => expect(performScan).toHaveBeenCalledOnce())
+
+    let scanSettled = false
+    void request.then(() => { scanSettled = true }, () => { scanSettled = true })
+    let closed = false
+    const closing = c.close().then(() => { closed = true })
+    await Promise.resolve()
+    expect(scanSettled).toBe(false)
+    expect(closed).toBe(false)
+
+    resolveScan({
+      scanId: 'test',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      portedFiles: 0,
+      unchangedFiles: 0,
+      failedFiles: 0,
+      perProvider: [],
+      aborted: false,
+    })
+    await expect(request).resolves.toEqual({ ok: true })
+    await closing
+    expect(closed).toBe(true)
   })
 
   it('waits for a cancelled FX request before closing the ledger', async () => {
