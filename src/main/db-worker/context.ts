@@ -1,5 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as Schedule from 'effect/Schedule'
 import * as Scope from 'effect/Scope'
 import { mkdirSync, readdirSync, statSync } from 'fs'
 import { dirname, join } from 'path'
@@ -103,7 +105,8 @@ export class DbWorkerContext {
   /** True while the in-flight scan was started manually (⌘R): its progress
    * and error events belong to the requesting window only. */
   private manualScan = false
-  private cadenceTimer: ReturnType<typeof setInterval> | null = null
+  private cadenceFiber: Fiber.Fiber<unknown, never> | null = null
+  private cadenceGeneration = 0
   private activeScan: Promise<ScanMetadata> | null = null
   private readonly backgroundScope = Scope.makeUnsafe()
   private readonly backgroundFxTasks = new Set<Promise<void>>()
@@ -116,7 +119,7 @@ export class DbWorkerContext {
     this.emit = emit
     mkdirSync(dirname(init.dbPath), { recursive: true })
     this.ledger = new LedgerStore(init.dbPath)
-    this.scheduleCadence()
+    void this.scheduleCadence()
     // Prime the FX side-table for the persisted display currency at startup,
     // non-blocking: readers use the cached rate (or USD) meanwhile, and an
     // event lands the fresh rate if the cache was stale.
@@ -266,23 +269,32 @@ export class DbWorkerContext {
     }
   }
 
-  /** (Re)schedules the background-scan timer from the persisted cadence
-   * setting. Called at startup and whenever the cadence config changes. */
-  private scheduleCadence(): void {
-    if (this.cadenceTimer) {
-      clearInterval(this.cadenceTimer)
-      this.cadenceTimer = null
-    }
+  /** (Re)schedules the background scan in the worker scope from the persisted
+   * cadence. Ticks remain delayed and fixed-rate; scan coalescing stays in
+   * triggerBackgroundScan. */
+  private async scheduleCadence(): Promise<void> {
+    const generation = ++this.cadenceGeneration
+    const previous = this.cadenceFiber
+    this.cadenceFiber = null
+    if (previous) await Effect.runPromise(Fiber.interrupt(previous))
+    if (this.closed || generation !== this.cadenceGeneration) return
+
     const ms = resolveCadenceMs(this.ledger.getRefreshCadence())
     if (ms === null) return // Manual: no background timer
     // The FX background job rides the same repurposed cadence as the scan
     // trigger (ADR 0009): each tick also refreshes the selected currency's
     // rate when it is missing or older than 24h. refreshFxRate never throws,
     // so a Frankfurter outage can never disturb the scan itself.
-    this.cadenceTimer = setInterval(() => {
+    const tick = Effect.sync(() => {
       this.startBackgroundFx(signal => this.refreshFxOnCadence(signal))
       void this.triggerBackgroundScan()
-    }, ms)
+    })
+    const cadence = Effect.sleep(ms).pipe(
+      Effect.andThen(Effect.repeat(tick, Schedule.fixed(ms))),
+    )
+    this.cadenceFiber = Effect.runSync(
+      Effect.forkIn(cadence, this.backgroundScope, { startImmediately: true }),
+    )
   }
 
   /** The FX half of the background cadence tick (and the startup prime):
@@ -398,7 +410,7 @@ export class DbWorkerContext {
       case 'cadence:set': {
         const value = args[0] as string
         ledger.setRefreshCadence(value)
-        this.scheduleCadence()
+        await this.scheduleCadence()
         return ledger.getRefreshCadence()
       }
 
@@ -665,10 +677,8 @@ export class DbWorkerContext {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise
     this.closed = true
-    if (this.cadenceTimer) {
-      clearInterval(this.cadenceTimer)
-      this.cadenceTimer = null
-    }
+    this.cadenceGeneration++
+    this.cadenceFiber = null
     this.abortRequested = true
     this.closePromise = (async () => {
       await Effect.runPromise(Scope.close(this.backgroundScope, Exit.void))

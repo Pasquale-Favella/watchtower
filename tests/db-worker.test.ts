@@ -50,6 +50,36 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     expect(await c.dispatch('cadence:get', [])).toBe('5m')
   })
 
+  it('delays cadence ticks and cancels the prior schedule when reconfigured', async () => {
+    vi.useFakeTimers()
+    const c = open()
+    const triggerScan = vi.spyOn(
+      c as unknown as { triggerBackgroundScan: () => Promise<void> },
+      'triggerBackgroundScan',
+    ).mockResolvedValue(undefined)
+
+    try {
+      await c.dispatch('cadence:set', ['30s'])
+      await vi.advanceTimersByTimeAsync(29_999)
+      expect(triggerScan).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(triggerScan).toHaveBeenCalledTimes(1)
+
+      await c.dispatch('cadence:set', ['1m'])
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(triggerScan).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(triggerScan).toHaveBeenCalledTimes(2)
+
+      await c.dispatch('cadence:set', ['manual'])
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(triggerScan).toHaveBeenCalledTimes(2)
+    } finally {
+      await c.close()
+      vi.useRealTimers()
+    }
+  })
+
   it('writes model aliases with a config:changed event and validates input', async () => {
     const c = open()
     expect(await c.dispatch('models:addAlias', ['foo-model', 'gpt-4'])).toEqual({ ok: true })
