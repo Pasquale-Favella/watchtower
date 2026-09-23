@@ -338,7 +338,7 @@ export function onCoachHarnessesChanged(callback: (rows: CoachHarnessRow[]) => v
  *  models/modes without a run, so the pickers render before the first
  *  message. A failed probe is `{ ok: false }` — the pickers stay absent. The
  *  request carries the API-key passthrough flag so the probe spawns the agent
- *  exactly like the run that may resume its warmed session. */
+ *  exactly like a run would (probes never warm a resumable session). */
 export function fetchCoachInspect(request: CoachInspectRequest): Promise<ApiResult<CoachInspectResult>> {
   return fetchPayload('coach inspect', coachInspectResultSchema, () => window.api.inspectCoachHarness(request))
 }

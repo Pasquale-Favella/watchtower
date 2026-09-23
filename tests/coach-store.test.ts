@@ -641,17 +641,18 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
 // `window.api` mock is last-write-wins — a probe mock here must not leak into
 // the earlier tests' expectations.
 describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', () => {
-  it('does NOT probe the AUTO-SELECTED harness until the picker is opened or hovered', async () => {
+  it('warm-starts the AUTO-SELECTED harness so models populate without opening the picker', async () => {
     const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models, modes }))
     mockWindow({ getCoachHarnesses: () => Promise.resolve(harnesses), inspectCoachHarness })
 
     await useCoachSkillsStore.getState().loadHarnesses()
+    expect(useCoachSkillsStore.getState().harnessKind).toBe('claude')
+    // Hybrid warm-start (pre-#145): the auto-pick probes immediately.
+    expect(inspectCoachHarness).toHaveBeenCalledWith({ kind: 'claude' })
+    await vi.waitFor(() => expect(useCoachSkillsStore.getState().sessionModels).toEqual(models))
     const s = useCoachSkillsStore.getState()
-    expect(inspectCoachHarness).not.toHaveBeenCalled()
-    expect(s.harnessKind).toBe('claude')
-    expect(s.sessionModels).toBeNull()
-    expect(s.sessionModes).toBeNull()
-    expect(s.modelId).toBeNull()
+    expect(s.sessionModes).toEqual(modes)
+    expect(s.modelId).toBe('opus')
   })
 
   it('loadHarnesses re-selects a VANISHED harness through the switch contract: cached set restored, conversation reset', async () => {

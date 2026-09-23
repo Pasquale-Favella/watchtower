@@ -267,11 +267,20 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       get().setHarness(next)
       set({ harnessAutoPicked: true })
       if (current && messages.length > 0) get().resetSession()
+      // Hybrid warm-start (pre-#145): probe the auto-picked harness so its
+      // models populate without opening the picker. Guarded/cached inside
+      // inspectHarness, so a repeated snapshot never re-spawns.
+      void get().inspectHarness(next)
     } else {
       set({
         harnessKind: next,
         ...(next ? {} : { sessionModels: null, sessionModes: null, modelId: null, modeId: null }),
       })
+      // Still auto-picked with no conversation (e.g. pending -> ready as
+      // managed probes land): warm-start the unprobed pick.
+      if (next && harnessAutoPicked && messages.length === 0 && !get().modelsByKind[next]) {
+        void get().inspectHarness(next)
+      }
     }
   },
   setHarness: (harnessKind) => {
@@ -287,7 +296,9 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       : s.modelsByKind
     // A previously probed harness restores its declared set + the user's
     // picks INSTANTLY. An uncached harness starts clean; the picker triggers
-    // its lazy inspect when opened or hovered.
+    // its lazy inspect when opened or hovered. The auto-pick warm-start lives
+    // in replaceHarnesses (probes the default pick on load), not here, so a
+    // manual switch stays lazy.
     const cached = modelsByKind[harnessKind] ?? null
     set({
       harnessKind,
@@ -299,10 +310,10 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     })
   },
   inspectHarness: async (kind) => {
-    // Lazy probe (map 47 ticket 50): called when the model picker opens —
-    // and, for the auto-selected harness only, eagerly on load (hybrid warm
-    // start). The probe ALSO warms a session the conversation's first run
-    // can resume (no double cold-start).
+    // Hybrid probe (map 47 ticket 50, pre-#145): lazy when the model picker
+    // opens/hovers, plus a warm-start for the auto-selected harness on load
+    // (fired from replaceHarnesses). The probe declares models/modes only —
+    // it never warms a resumable session (F5).
     // Latest-wins: record the probed kind so the composer can show a loading
     // state and a superseded probe (a harness switched mid-flight) is
     // dropped. A probe for this exact kind is already in flight — its result

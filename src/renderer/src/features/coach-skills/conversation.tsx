@@ -279,10 +279,12 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
       return
     }
     // `setHarness` restores the target harness's cached set + picks (or
-    // clears and probes eagerly when uncached); the explicit model row pick
-    // then wins over the restored value — including null (agent default).
-    // For an uncached harness only the default row is clickable yet, and the
-    // pick survives the probe via the store's live-pick-wins rule.
+    // clears when uncached — the probe follows lazily on next picker open,
+    // except the auto-pick warm-start in replaceHarnesses); the explicit
+    // model row pick then wins over the restored value — including null
+    // (agent default). For an uncached harness only the default row is
+    // clickable yet, and the pick survives the probe via the store's
+    // live-pick-wins rule.
     setHarness(nextKind)
     setModelId(nextModelId)
   }
