@@ -8,7 +8,8 @@ import { createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './run
 import { probeHarness } from './probe.js'
 import { createHarnessSnapshotStore, type HarnessInstance, type HarnessSnapshotStore } from './snapshot.js'
 import { resolveBundledEntry } from './harnesses/bundled.js'
-import { buildCoachPrompt, buildLedgerBriefing } from './prompts.js'
+import { buildCoachPrompt, buildLedgerBriefing, buildScopeUpdate } from './prompts.js'
+import { decodeResumeCursor } from './resume-cursor.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import type { OverviewScope } from '../../shared/schemas/overview.js'
 import {
@@ -113,15 +114,14 @@ export interface CoachRunner {
 }
 
 /** Normalized pre-flight probe input — the registry key plus the env flag
- *  the warmed session must be spawned with (see runProbe). */
+ *  the probe's agent must be spawned with (same as the run's). */
 interface ProbeInput {
   kind: string
   allowApiKeyEnv: boolean
 }
 
 /** Normalizes the `coach:inspect` wire payload (bare registry key or
- *  `{ kind, allowApiKeyEnv }`) so the probe, its warmed session, and the runs
- *  that resume it all agree on the environment. Null when invalid. */
+ *  `{ kind, allowApiKeyEnv }`). Null when invalid. */
 function toProbeInput(request: unknown): ProbeInput | null {
   const parsed = coachInspectRequestSchema.safeParse(request)
   if (!parsed.success) return null
@@ -139,16 +139,6 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   /** The conversation's private temp workspace (map 53 ticket 56): created on
    *  the first run, reused while the session resumes, deleted on reset/quit. */
   let workspace: string | null = null
-  /** The probe-warmed ACP session (optimization): `inspect` runs the agent's
-   *  handshake to read its declared models/modes; the conversation's FIRST
-   *  run resumes that same session (`existingSessionId`) instead of creating
-   *  one, so the agent does not cold-start twice. Keyed to the workspace the
-   *  probe ran in, so a probe that outlives a `reset` (workspace deleted + a
-   *  new one created) can never leak its session into the next conversation.
-   *  Cleared once the first run consumes it. The probed session carries NO
-   *  prompt — `start` still includes the ledger briefing on that first run
-   *  (it keys on the absent renderer sessionId, which holds exactly here). */
-  let probedSession: { kind: string; sessionId: string; workspace: string; allowApiKeyEnv: boolean } | null = null
   /** The single in-flight probe (coalescing, optimization): rapid harness
    *  switching must not spawn one ACP process per switch. One probe runs at a
    *  time; `probedQueued` holds the NEWEST request while an older probe is in
@@ -158,11 +148,9 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
    *  the renderer's stale-guard drops anything it has moved past. */
   let probedChain: Promise<CoachInspectResult> | null = null
   let probedQueued: { input: ProbeInput; resolve: (result: CoachInspectResult | Promise<CoachInspectResult>) => void } | null = null
-  /** Bumped by every `reset`: a probe that started before a reset must not
-   *  remember its session afterwards (it was warmed in a conversation the
-   *  reset just discarded — the workspace-keyed guard alone cannot catch the
-   *  case where the probe CREATES its workspace only after the reset). */
-  let conversationGeneration = 0
+  /** Scope the agent was last briefed with (full briefing or scope update) — a
+   *  resumed turn under a different scope gets a one-line update. */
+  let briefedScopeKey: string | null = null
 
   /** Deletes a conversation workspace with Windows-aware retries, swallowing a
    *  final failure. The ACP child process's CWD holds the dir until it has
@@ -180,12 +168,10 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
     }
   }
 
-  /** ONE ACP probe spawn: detect, warm the session in the conversation
-   *  workspace, remember the session for the first-run resume, and return the
-   *  renderer-facing result (the session id stays main-side — the renderer's
-   *  resume handle comes from the run's session event as usual). */
+  /** ONE catalog probe spawn: resolve the instance, run the handshake in the
+   *  conversation workspace for its declared models/modes, and tear it down —
+   *  the session is never reused by a run. */
   async function runProbe(input: ProbeInput): Promise<CoachInspectResult> {
-    const generation = conversationGeneration
     try {
       const instance = await harnessSource.get(input.kind)
       const harness = instance?.info
@@ -194,25 +180,14 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       }
       const runtime = await deps.getRuntime()
       // The conversation workspace as the probe's cwd — created lazily, the
-      // same way the first run would; a session-less probe must still spawn
-      // the agent somewhere real (reset/quit cleans it up). Snapshot the path
-      // locally: a reset mid-probe must not re-key the remembered session to
-      // the NEW workspace it would otherwise point the closure at.
+      // same way the first run would; a probe must still spawn the agent
+      // somewhere real (reset/quit cleans it up).
       const probeWorkspace = workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-'))
-      // The probe spawns the agent EXACTLY like the run would — including the
-      // API-key passthrough opt-in — so the warmed session the first run
-      // resumes carries the same environment.
       const result = await runtime.inspect({
         harness,
         workspacePath: probeWorkspace,
         ...(input.allowApiKeyEnv ? { allowApiKeyEnv: true as const } : {}),
       })
-      // Only remember the session if no reset happened while probing — a
-      // stale probe belongs to a discarded conversation and must never be
-      // resumed by the next one (generation, not workspace, is the truth).
-      if (result.sessionId && conversationGeneration === generation) {
-        probedSession = { kind: input.kind, sessionId: result.sessionId, workspace: probeWorkspace, allowApiKeyEnv: input.allowApiKeyEnv }
-      }
       return {
         ok: true,
         ...(result.models ? { models: result.models } : {}),
@@ -325,44 +300,21 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         attachment = null
       }
       const ledgerServer = attachment?.server ?? null
-      // The MCP briefing (ADR 0020): what the ledger tools are, that they
-      // serve the full lifetime ledger filtered through an optional `scope`
-      // argument, and the ground-your-answer rule — plus the user's current
-      // window as a suggested default. Only on the FIRST run of a
-      // conversation (no sessionId yet) — the harness resumes its session
-      // with the briefing already in context, so restating it every turn
-      // would just burn tokens. A probe-warmed first run still counts as
-      // first: the probe carried no prompt, so the agent has never seen the
-      // briefing — and this condition holds for it exactly (resumeProbed
-      // below requires !req.sessionId).
-      const briefing = ledgerServer && !req.sessionId ? buildLedgerBriefing(scope) : ''
-
-      // Resume the probe-warmed session on the conversation's first run
-      // (optimization, no double cold-start): the agent skips creating a new
-      // ACP session and picks up where the probe's handshake left it. Only
-      // when the probed harness matches AND the session still lives in THIS
-      // workspace — a stale probe (superseded, or one that outlived a reset)
-      // must never be resumed. The resumed run still attaches the ledger MCP
-      // server (it is in the run config below) and carries the briefing in
-      // its prompt, so it behaves like a fresh first run.
-      const resumeProbed = !req.sessionId
-        && probedSession !== null
-        && probedSession.kind === req.harnessKind
-        && probedSession.workspace === workspace
-        // A probe-warmed session is bound to the environment it was spawned
-        // with: resuming it under a different API-key opt-in would silently
-        // run with the wrong credentials, so a flag mismatch starts fresh.
-        && probedSession.allowApiKeyEnv === (req.allowApiKeyEnv ?? false)
-      // (the re-check narrows probedSession for TS — resumeProbed alone cannot
-      // prove it is non-null)
-      const resumeSessionId = resumeProbed && probedSession ? probedSession.sessionId : req.sessionId
-
-      // The one prompt path (ADR 0017 reshaped): the coach prompt carries the
-      // briefing's TWO-scope role (coaching + skill authoring), so a skill
-      // request needs no separate builder. MCP-aware (ADR 0020): the briefing
-      // tells the agent it can query the user's real usage data through the
-      // ledger tools.
-      const prompt = buildCoachPrompt(req.prompt!, briefing)
+      const instanceId = instance.instanceId
+      const sessionId = req.resumeCursor ? decodeResumeCursor(req.resumeCursor, instanceId) : undefined
+      const firstRun = !sessionId
+      const resumeLost = !!req.resumeCursor && !sessionId
+      const scopeKey = JSON.stringify({
+        period: scope.period,
+        provider: scope.provider ?? null,
+        range: scope.range ? { since: scope.range.since, until: scope.range.until } : null,
+      })
+      const freshPrompt = buildCoachPrompt(req.prompt!, ledgerServer ? buildLedgerBriefing(scope) : '')
+      // Resumed turns already hold the briefing; only a changed scope is restated.
+      const prompt = firstRun
+        ? freshPrompt
+        : buildCoachPrompt(req.prompt!, ledgerServer && briefedScopeKey !== scopeKey ? buildScopeUpdate(scope) : '')
+      if (ledgerServer) briefedScopeKey = scopeKey
 
       try {
         const runtime = await deps.getRuntime()
@@ -386,19 +338,12 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
           ...(req.modelId ? { modelId: req.modelId } : {}),
           ...(req.modeId ? { modeId: req.modeId } : {}),
           ...(req.allowApiKeyEnv ? { allowApiKeyEnv: true as const } : {}),
-          ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
-          // A probe-warmed session is expendable: if its resume fails on this
-          // first run, the seam restarts fresh instead of erroring — nothing
-          // was ever sent to it. Genuine conversation resumes (req.sessionId)
-          // stay strict: restarting would silently drop their context.
-          resumeIsExpendable: resumeProbed,
+          ...(sessionId ? { sessionId } : {}),
+          freshPrompt,
           // Merged after any spec-level servers. Null on a fresh install (no
           // ledger.db yet) — then no data tools.
           mcpServers: [...(ledgerServer ? [ledgerServer] : [])],
         })
-        // The probe's warm session has been handed to this run — the memory is
-        // consumed (a second session-less run must not resume it again).
-        if (resumeProbed) probedSession = null
         activeRuns.set(runId, gen)
 
         // Stream in the background — the ack returns immediately; events land
@@ -409,6 +354,8 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         void (async () => {
           let settled = false
           try {
+            if (resumeLost) emit(runId, { kind: 'notice', message: 'The previous session could not be restored — continuing in a fresh session.' })
+            if (firstRun && !ledgerServer) emit(runId, { kind: 'notice', message: 'Ledger data is not available yet (no scan found) — answers will not be grounded in your usage data.' })
             for await (const event of gen) {
               emit(runId, event)
             }
@@ -469,13 +416,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // deleted) path. Releasing first hands it a fresh dir immediately.
       const target = workspace
       workspace = null
-      // The probe-warmed session lives in the workspace being deleted — it is
-      // meaningless to the next conversation. Clear it AND bump the generation
-      // so any probe still in flight (which may not even have created its
-      // workspace yet) knows not to remember its session for the new
-      // conversation.
-      probedSession = null
-      conversationGeneration++
+      briefedScopeKey = null
       // Stop every active run and AWAIT the teardown before deleting: the ACP
       // child process's CWD is the workspace, and deleting it while the child
       // is still alive fails on Windows with EPERM — as an uncaught exception

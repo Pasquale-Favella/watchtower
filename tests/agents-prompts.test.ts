@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildCoachPrompt,
   buildLedgerBriefing,
+  buildScopeUpdate,
   scopeWindowLabel,
 } from '../src/main/agents/prompts.js'
 
@@ -83,6 +84,12 @@ describe('buildLedgerBriefing — the MCP tool briefing (lifetime-serving)', () 
     expect(briefing).not.toContain('## When to use')
     expect(briefing).not.toContain('## Example')
     expect(briefing).not.toContain('under 40 lines')
+  })
+})
+
+describe('buildScopeUpdate', () => {
+  it('names the new default ledger window', () => {
+    expect(buildScopeUpdate(scope30)).toBe('The user has switched their view to Last 30 days · claude — use it as the default window for ledger queries from now on.')
   })
 })
 

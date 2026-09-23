@@ -99,6 +99,12 @@ export function MessageBubble({ message, canRetry, onRetry }: {
             </div>
           )}
 
+          {message.notices.length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-[10px] leading-relaxed text-muted-foreground">
+              {message.notices.map((notice, index) => <li key={`${notice}-${index}`}>{notice}</li>)}
+            </ul>
+          )}
+
           {message.content ? (
             <div className="typeset typeset-chat mt-3 w-full max-w-none">
               <Markdown>{message.content}</Markdown>

@@ -8,6 +8,7 @@ import { closeOperationalLog, initOperationalLog } from '../src/main/operational
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
 import type { HarnessRuntime } from '../src/main/agents/runtime.js'
+import { encodeResumeCursor } from '../src/main/agents/resume-cursor.js'
 import type { CoachEvent } from '../src/shared/schemas/agents.js'
 
 /** A fake detect result: one configured claude harness (ADR 0016 shape). */
@@ -205,27 +206,62 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect(input.prompt).toContain("The user's question:\nSummarise my spend")
   })
 
-  it('does NOT restate the briefing on a resumed turn (sessionId present — it is already in context)', async () => {
+  it('does NOT restate the briefing on a resumed turn with the same scope', async () => {
     const run = vi.fn(async function* () { /* no-op */ })
     const runner = makeRunner({ run } as unknown as HarnessRuntime)
 
-    await runner.start({ ...request, sessionId: 'sess_prev' }, () => {})
+    const scope = { period: '30days', provider: 'claude' as const }
+    await runner.start({ ...request, scope }, () => {})
+    await runner.start({ ...request, scope, resumeCursor: encodeResumeCursor({ instanceId: 'claude', sessionId: 'sess_prev' }) }, () => {})
 
-    const input = run.mock.calls[0]?.[0] as { prompt: string }
+    const input = run.mock.calls[1]?.[0] as { prompt: string }
     expect(input.prompt).toBe('Summarise my spend')
+  })
+
+  it('rebriefs a resumed turn when its scope differs from the last briefing', async () => {
+    const run = vi.fn(async function* () { /* no-op */ })
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+
+    await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, () => {})
+    await runner.start({
+      ...request,
+      scope: { period: 'today', provider: 'claude' },
+      resumeCursor: encodeResumeCursor({ instanceId: 'claude', sessionId: 'sess_prev' }),
+    }, () => {})
+
+    const input = run.mock.calls[1]?.[0] as { prompt: string }
+    expect(input.prompt).toContain('The user has switched their view to Today · claude')
+    expect(input.prompt).toContain("The user's question:\nSummarise my spend")
+    expect(input.prompt).not.toContain('watchtower-ledger')
+  })
+
+  it('emits a notice before a fresh full-briefing run when the resume cursor is invalid', async () => {
+    const run = vi.fn(async function* () { yield { kind: 'status', state: 'done' } })
+    const events: CoachEvent[] = []
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+
+    await runner.start({ ...request, resumeCursor: 'not-a-valid-cursor' }, (_runId, event) => { events.push(event) })
+    await vi.waitFor(() => expect(events).toHaveLength(2))
+
+    expect(events[0]).toEqual({ kind: 'notice', message: 'The previous session could not be restored — continuing in a fresh session.' })
+    expect((run.mock.calls[0]?.[0] as { sessionId?: string; prompt: string }).sessionId).toBeUndefined()
+    expect((run.mock.calls[0]?.[0] as { prompt: string }).prompt).toContain('watchtower-ledger')
   })
 
   it('runs with NO data tools and NO briefing when the ledger source returns null (fresh install, no ledger.db yet)', async () => {
     ledgerMcpServer.mockResolvedValueOnce(null)
     const run = vi.fn(async function* () { /* no-op */ })
+    const events: CoachEvent[] = []
     const runner = makeRunner({ run } as unknown as HarnessRuntime)
 
-    await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, () => {})
+    await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, (_runId, event) => { events.push(event) })
+    await vi.waitFor(() => expect(events).toHaveLength(1))
 
     const input = run.mock.calls[0]?.[0] as { mcpServers: AcpMcpServer[]; prompt: string }
     expect(input.mcpServers).toHaveLength(0)
     // Claiming tools that do not exist would make the agent hallucinate calls.
     expect(input.prompt).toBe('Summarise my spend')
+    expect(events[0]).toEqual({ kind: 'notice', message: 'Ledger data is not available yet (no scan found) — answers will not be grounded in your usage data.' })
   })
 
   it('injects the ledger MCP server with NO scope when the request carries none (lifetime serving)', async () => {
@@ -272,13 +308,13 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect(input.prompt).toBe('Summarise my spend')
   })
 
-  it('forwards the resume sessionId AND reuses the same temp workspace for the conversation', async () => {
+  it('forwards the decoded resume session id AND reuses the same temp workspace', async () => {
     const run = vi.fn(async function* () { /* no-op */ })
     const runner = makeRunner({ run } as unknown as HarnessRuntime)
 
-    await runner.start({ ...request, sessionId: 'sess_prev' }, () => {})
+    await runner.start({ ...request, resumeCursor: encodeResumeCursor({ instanceId: 'claude', sessionId: 'sess_prev' }) }, () => {})
     const firstPath = (run.mock.calls[0]![0] as { workspacePath: string }).workspacePath
-    await runner.start({ ...request, sessionId: 'sess_prev' }, () => {})
+    await runner.start({ ...request, resumeCursor: encodeResumeCursor({ instanceId: 'claude', sessionId: 'sess_prev' }) }, () => {})
     const secondPath = (run.mock.calls[1]![0] as { workspacePath: string }).workspacePath
 
     expect(firstPath).toBe(secondPath)
@@ -402,7 +438,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect(run).toHaveBeenCalledWith(expect.not.objectContaining({ sessionId: expect.anything() }))
   })
 
-  it('resumes a probe-warmed session when the API-key opt-in matches', async () => {
+  it('does NOT resume a probe-warmed session even when the API-key opt-in matches', async () => {
     const run = vi.fn(async function* () { /* no-op */ })
     const inspect = vi.fn(async () => ({ sessionId: 'sess_warm' }))
     const runner = makeRunner({ run, inspect } as unknown as HarnessRuntime)
@@ -410,7 +446,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     await runner.inspect({ kind: 'claude', allowApiKeyEnv: true })
     await runner.start({ ...request, allowApiKeyEnv: true }, () => {})
 
-    expect(run).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'sess_warm' }))
+    expect(run).toHaveBeenCalledWith(expect.not.objectContaining({ sessionId: expect.anything() }))
   })
 
   it('rejects a malformed request against the frozen wire schema', async () => {
@@ -550,14 +586,14 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
   })
 })
 
-describe('Coach IPC inspect — probe-warmed session resume (no double cold-start)', () => {
+describe('Coach IPC inspect — probes never create reusable sessions', () => {
   const runProbe = (inspect: ReturnType<typeof vi.fn>): { run: ReturnType<typeof vi.fn>; runner: CoachRunner } => {
     const run = vi.fn(async function* () { yield { kind: 'status', state: 'done' } })
     return { run, runner: makeRunner({ run, inspect } as unknown as HarnessRuntime) }
   }
   const lastRunInput = (run: ReturnType<typeof vi.fn>, index = 0): { sessionId?: string; prompt: string } => run.mock.calls[index]![0]
 
-  it('the conversation FIRST run resumes the probe-warmed session (existingSessionId)', async () => {
+  it('the conversation FIRST run starts without a probe session', async () => {
     const { run, runner } = runProbe(vi.fn(async () => ({
       sessionId: 'sess_probe',
       models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' },
@@ -566,30 +602,27 @@ describe('Coach IPC inspect — probe-warmed session resume (no double cold-star
     await runner.inspect('claude')
     await runner.start(request, () => {})
 
-    expect(lastRunInput(run).sessionId).toBe('sess_probe')
+    expect(lastRunInput(run).sessionId).toBeUndefined()
   })
 
-  it('the resumed probe session still gets the ledger briefing (the probe carried no prompt)', async () => {
+  it('the first run still gets the ledger briefing after inspect', async () => {
     const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
 
     await runner.inspect('claude')
     await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, () => {})
 
     const input = lastRunInput(run)
-    expect(input.sessionId).toBe('sess_probe')
-    // A resumed session is normally never re-briefed — but this one never saw
-    // the ledger briefing (probes send no prompt), so it must be included.
     expect(input.prompt).toContain('watchtower-ledger')
   })
 
-  it('the probe-warmed session is consumed once', async () => {
+  it('successive session-less runs remain session-less', async () => {
     const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
 
     await runner.inspect('claude')
     await runner.start(request, () => {})
     await runner.start(request, () => {})
 
-    expect(lastRunInput(run, 0).sessionId).toBe('sess_probe')
+    expect(lastRunInput(run, 0).sessionId).toBeUndefined()
     expect(lastRunInput(run, 1).sessionId).toBeUndefined()
   })
 
@@ -608,7 +641,7 @@ describe('Coach IPC inspect — probe-warmed session resume (no double cold-star
     detect.mockImplementation(async () => harnesses)
   })
 
-  it('reset clears the probe-warmed session', async () => {
+  it('reset keeps probes from affecting the next conversation', async () => {
     const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
 
     await runner.inspect('claude')
@@ -618,7 +651,7 @@ describe('Coach IPC inspect — probe-warmed session resume (no double cold-star
     expect(lastRunInput(run).sessionId).toBeUndefined()
   })
 
-  it('a probe that outlives a reset does not leak into the next conversation', async () => {
+  it('a probe that outlives a reset does not affect the next conversation', async () => {
     let resolveProbe!: (value: { sessionId: string }) => void
     const inspect = vi.fn(() => new Promise(resolve => { resolveProbe = resolve }))
     const { run, runner } = runProbe(inspect)
@@ -634,25 +667,44 @@ describe('Coach IPC inspect — probe-warmed session resume (no double cold-star
     expect(lastRunInput(run).sessionId).toBeUndefined()
   })
 
-  it('flags the probe-warmed resume as EXPENDABLE so the seam can restart fresh on failure', async () => {
+  it('always passes freshPrompt for resume recovery', async () => {
     const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
 
     await runner.inspect('claude')
     await runner.start(request, () => {})
 
-    const input = lastRunInput(run) as { sessionId?: string; resumeIsExpendable?: boolean }
-    expect(input.sessionId).toBe('sess_probe')
-    expect(input.resumeIsExpendable).toBe(true)
+    const input = lastRunInput(run) as { sessionId?: string; freshPrompt: string }
+    expect(input.sessionId).toBeUndefined()
+    expect(input.freshPrompt).toContain('watchtower-ledger')
   })
 
-  it('does NOT flag genuine conversation resumes as expendable', async () => {
+  it('reset clears the briefed scope before the next resumed run', async () => {
+    const run = vi.fn(async function* () { /* no-op */ })
+    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const scope = { period: '30days', provider: 'claude' as const }
+
+    await runner.start({ ...request, scope }, () => {})
+    await runner.reset()
+    await runner.start({
+      ...request,
+      scope,
+      resumeCursor: encodeResumeCursor({ instanceId: 'claude', sessionId: 'sess_prev' }),
+    }, () => {})
+
+    const input = run.mock.calls[1]?.[0] as { prompt: string }
+    expect(input.prompt).toContain('The user has switched their view to Last 30 days · claude')
+    expect(input.prompt).toContain("The user's question:\nSummarise my spend")
+  })
+
+  it('forwards a genuine resume cursor as a session id without expendable plumbing', async () => {
     const run = vi.fn(async function* () { yield { kind: 'status', state: 'done' } })
     const runner = makeRunner({ run } as unknown as HarnessRuntime)
 
-    await runner.start({ ...request, sessionId: 'sess_prev' }, () => {})
+    await runner.start({ ...request, resumeCursor: encodeResumeCursor({ instanceId: 'claude', sessionId: 'sess_prev' }) }, () => {})
 
-    const input = run.mock.calls[0]![0] as { resumeIsExpendable?: boolean }
-    expect(input.resumeIsExpendable).toBe(false)
+    const input = run.mock.calls[0]![0] as { sessionId?: string; resumeIsExpendable?: boolean }
+    expect(input.sessionId).toBe('sess_prev')
+    expect(input.resumeIsExpendable).toBeUndefined()
   })
 })
 

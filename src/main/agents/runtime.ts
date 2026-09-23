@@ -8,6 +8,7 @@ import type { AcpAdapter, AcpMcpServer } from './harnesses/types.js'
 import { createCoachEventNormalizer, type CoachStreamPart } from './events.js'
 import { harnessSpecs } from './harnesses/index.js'
 import { killProcessTreeSync } from './process-tree.js'
+import { encodeResumeCursor } from './resume-cursor.js'
 import {
   describeCatalog,
   executeSelectionPlan,
@@ -107,13 +108,9 @@ export interface HarnessRunInput extends HarnessProviderInput {
   /** Agent-declared session mode id (from a previous session event's modes). */
   modeId?: string
   prompt: string
-  /** The offered `sessionId` resume is EXPENDABLE — if loading it fails, the
-   *  seam silently restarts the provider without the resume handle instead of
-   *  erroring the turn. Set by the runner ONLY for a probe-warmed session
-   *  (nothing was ever sent to it, so nothing is lost by restarting fresh);
-   *  genuine conversation resumes stay strict — silently restarting would
-   *  drop the conversation context the user expects to continue. */
-  resumeIsExpendable?: boolean
+  /** Prompt to use when a resume handle cannot be loaded and the run restarts
+   *  with a fresh provider session. */
+  freshPrompt?: string
 }
 
 /** The handshake probe result — from a pre-flight `initSession` with no
@@ -122,7 +119,6 @@ export interface HarnessRunInput extends HarnessProviderInput {
  *  absent `models`/`modes` mean the agent declared no such set (progressive:
  *  the pickers render only when present). */
 export interface HarnessInspectResult {
-  sessionId?: string
   models?: CoachSessionModels
   modes?: CoachSessionModes
 }
@@ -160,14 +156,14 @@ function asString(value: unknown): string | undefined {
 
 /** Runs one initSession on a provider and derives the session CoachEvent
  *  payload it implies (the resume handle + any handshake-declared
- *  models/modes). Shared by the main warm-up and the expendable-resume
- *  fallback so both emit the session event identically. */
-async function warmSession(provider: AcpProvider): Promise<{ sessionId?: string; event?: CoachEvent; catalog: HarnessCatalog }> {
+ *  models/modes). Shared by the main warm-up and the stale-resume fallback so
+ *  both emit the session event identically. */
+async function warmSession(provider: AcpProvider, instanceId: string): Promise<{ sessionId?: string; event?: CoachEvent; catalog: HarnessCatalog }> {
   const session = (await provider.initSession()) as unknown
   const catalog = describeCatalog(session)
   const sessionId = isRecord(session) ? asString(session.sessionId) : undefined
   if (!sessionId) return { catalog }
-  const event: CoachEvent = { kind: 'session', sessionId }
+  const event: CoachEvent = { kind: 'session', resumeCursor: encodeResumeCursor({ instanceId, sessionId }) }
   if (catalog.models) event.models = catalog.models
   if (catalog.modes) event.modes = catalog.modes
   return { sessionId, event, catalog }
@@ -335,6 +331,7 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
   return {
     async *run(input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       let provider = createProvider(input)
+      const instanceId = input.harness.instanceId ?? input.harness.kind
 
       try {
         yield { kind: 'status', state: 'starting' }
@@ -348,35 +345,28 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         // can show a progressive picker (ticket 50).
         let sessionId: string | undefined = input.sessionId
         let warmCatalog: HarnessCatalog | undefined
+        let restartedFresh = false
         try {
-          const warm = await warmSession(provider)
+          const warm = await warmSession(provider, instanceId)
           sessionId = warm.sessionId ?? sessionId
           warmCatalog = warm.catalog
           if (warm.event) yield warm.event
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
-          // A failed RESUME of an EXPENDABLE session (a probe-warmed session
-          // that never received any prompt) falls back to a fresh session
-          // instead of failing the turn — nothing is lost, the agent just
-          // cold-starts once. Genuine resumed turns stay strict: silently
-          // restarting would drop the conversation context the user expects
-          // to continue, so their failure remains an error event.
-          if (!input.sessionId || !input.resumeIsExpendable) {
+          if (!input.sessionId) {
             yield toHarnessError(input.harness, message)
             return
           }
-          // Tear the failed resume provider down, then rebuild the provider
-          // WITHOUT the resume handle and warm a fresh session (the retry
-          // config keeps everything else — model/mode picks, the ledger MCP
-          // server — so the fresh session behaves like a normal first run).
-          // The provider creation sits INSIDE the try: a throw there becomes
-          // a graceful error event, never an uncaught generator rejection.
+          // A stale resume is recoverable: discard the failed provider, create
+          // a fresh session, and explicitly tell the user that context reset.
           teardownProvider(provider)
           try {
             provider = createProvider({ ...input, sessionId: undefined })
-            const warm = await warmSession(provider)
+            const warm = await warmSession(provider, instanceId)
             sessionId = warm.sessionId
             warmCatalog = warm.catalog
+            restartedFresh = true
+            yield { kind: 'notice', message: 'The previous session could not be resumed — continuing in a fresh session.' }
             if (warm.event) yield warm.event
           } catch (err2) {
             yield toHarnessError(input.harness, err2 instanceof Error ? err2.message : String(err2))
@@ -418,7 +408,7 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         const controller = new AbortController()
         const stream = sdk.streamText({
           model: provider.languageModel(languageModelId, input.modeId),
-          prompt: input.prompt,
+          prompt: restartedFresh ? (input.freshPrompt ?? input.prompt) : input.prompt,
           tools: provider.tools,
           abortSignal: controller.signal,
         })
@@ -491,10 +481,7 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         // (opencode and claude-agent-acp advertise models only there).
         const session = (await provider.initSession()) as unknown
         const catalog = describeCatalog(session)
-        const sessionRecord = isRecord(session) ? session : {}
-        const sessionId = asString(sessionRecord.sessionId)
         return {
-          ...(sessionId ? { sessionId } : {}),
           ...(catalog.models ? { models: catalog.models } : {}),
           ...(catalog.modes ? { modes: catalog.modes } : {}),
         }

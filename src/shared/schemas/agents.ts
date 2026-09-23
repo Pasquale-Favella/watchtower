@@ -84,13 +84,16 @@ export const coachEventSchema = z.discriminatedUnion('kind', [
   }),
   z.object({
     kind: z.literal('session'),
-    /** Harness session id (claude-code.session-id / opencode.session-id /
-     *  codex.session-id) — the resume handle for follow-up turns. */
-    sessionId: z.string(),
+    /** Opaque, instance-bound resume handle for follow-up turns. */
+    resumeCursor: z.string(),
     /** Progressive model/mode selection (map 47 ticket 50): present ONLY when
      *  the agent's handshake reported selectable options. */
     models: coachSessionModelsSchema.optional(),
     modes: coachSessionModesSchema.optional(),
+  }),
+  z.object({
+    kind: z.literal('notice'),
+    message: z.string(),
   }),
   z.object({
     kind: z.literal('error'),
@@ -111,7 +114,7 @@ export type CoachEventEnvelope = z.infer<typeof coachEventEnvelopeSchema>
 /** `coach:run` request — the renderer's ask to drive one harness run through
  *  the seam. There is NO workspace picker (map 53): the main process runs
  *  each conversation in a private temp directory it owns and cleans up;
- *  `sessionId` resumes a previous run's session (ACP `existingSessionId`, and
+ *  `resumeCursor` resumes a previous run's session (ACP `existingSessionId`, and
  *  with it the conversation's temp workspace).
  *
  * The harness reads the platform's own data through the in-app ledger MCP
@@ -142,8 +145,8 @@ export const coachRunRequestSchema = z.object({
    *  prompt is present (the schema keeps it optional so the channel stays
    *  uniform). */
   prompt: z.string().optional(),
-  /** Resume handle from a previous run's session event. */
-  sessionId: z.string().optional(),
+  /** Opaque resume handle from a previous run's session event. */
+  resumeCursor: z.string().optional(),
   /** Opt-in API-key passthrough: when true the main process does NOT scrub
    *  the harness's API-key env vars (e.g. ANTHROPIC_API_KEY) before spawning
    *  the agent, so a harness authenticates the same way the user's terminal
