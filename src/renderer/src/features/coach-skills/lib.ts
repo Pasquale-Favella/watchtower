@@ -15,10 +15,6 @@ export function harnessBadge(row: CoachHarnessRow): string | null {
   return row.status === 'warning' ? 'Sign-in?' : row.status === 'error' ? 'Unavailable' : row.status === 'pending' ? 'Checking…' : null
 }
 
-export function needsHarnessSetup(rows: CoachHarnessRow[]): boolean {
-  return rows.length > 0 && !rows.some(row => row.status === 'ready')
-}
-
 /** Composite candidate key: the same name can come from different sources
  *  (skill vs bash), so the chip key must be source\0name. */
 export function candidateKey(d: SkillCandidate): string {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CoachEventEnvelope, CoachSessionModels, CoachSessionModes } from '../src/shared/schemas/agents.js'
-import { harnessBadge, needsHarnessSetup, statusLabel } from '../src/renderer/src/features/coach-skills/lib.js'
+import { harnessBadge, statusLabel } from '../src/renderer/src/features/coach-skills/lib.js'
 
 function createMemoryStorage(): Storage {
   const store = new Map<string, string>()
@@ -55,7 +55,6 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     expect(harnessBadge(warning)).toBe('Sign-in?')
     expect(harnessBadge(error)).toBe('Unavailable')
     expect(harnessBadge(pending)).toBe('Checking…')
-    expect(needsHarnessSetup([warning, error, pending])).toBe(true)
   })
   it('starts idle with no harness and an empty thread', () => {
     const s = useCoachSkillsStore.getState()

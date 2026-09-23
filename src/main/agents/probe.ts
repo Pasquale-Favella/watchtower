@@ -7,10 +7,15 @@ import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import type { HarnessInfo } from './detect.js'
 import { probeClaudeAuthStatus } from './auth-probe.js'
+import { harnessSpecs } from './harnesses/index.js'
 import { killProcessTree } from './process-tree.js'
 import { createHarnessSpawn, type HarnessSpawn } from './runtime.js'
 
-export const HARNESS_PROBE_TIMEOUT_MS = 6000
+export const HARNESS_PROBE_TIMEOUT_MS = 15_000
+
+export function probeTimeoutFor(kind: string): number {
+  return harnessSpecs.find(spec => spec.kind === kind)?.probeTimeoutMs ?? HARNESS_PROBE_TIMEOUT_MS
+}
 
 export type ProbeStatus = 'pending' | 'ready' | 'warning' | 'error' | 'disabled'
 export type ProbeAuthStatus = 'configured' | 'unauthenticated' | 'unknown'
@@ -109,7 +114,7 @@ function authFromInitialize(info: HarnessInfo, response: InitializeResponse, dep
 }
 
 function initializeProbe(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<ProbeResult, unknown> {
-  const timeoutMs = deps.timeoutMs ?? HARNESS_PROBE_TIMEOUT_MS
+  const timeoutMs = deps.timeoutMs ?? probeTimeoutFor(info.kind)
   const platform = deps.platform ?? process.platform
   return Effect.scoped(
     Effect.acquireRelease(
