@@ -26,6 +26,8 @@ export interface HarnessSnapshotStore {
   list: () => Promise<CoachHarnessRow[]>
   refresh: () => Promise<CoachHarnessRow[]>
   get: (instanceId: string) => Promise<HarnessInstance | undefined>
+  /** Records the sign-in state a real run proved (finished turn / auth wall). */
+  reportAuth: (instanceId: string, status: 'configured' | 'unauthenticated') => void
   start: () => void
   dispose: () => Promise<void>
 }
@@ -147,6 +149,17 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
     async get(instanceId) {
       await list()
       return instances.get(instanceId)
+    },
+    reportAuth(instanceId, status) {
+      const current = instances.get(instanceId)
+      if (!current || current.status === 'error' || current.status === 'pending' || current.auth.status === status) return
+      instances.set(instanceId, {
+        ...current,
+        status: status === 'configured' ? 'ready' : 'warning',
+        auth: { ...current.auth, status },
+        message: status === 'unauthenticated' ? `${current.info.displayName} is not signed in` : undefined,
+      })
+      publish()
     },
     start() {
       void list()

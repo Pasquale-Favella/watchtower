@@ -89,28 +89,26 @@ function errorResult(info: HarnessInfo, detail: string): ProbeResult {
   }
 }
 
-function warningResult(info: HarnessInfo, auth: ProbeAuthStatus, version?: string): ProbeResult {
-  const message = auth === 'unauthenticated'
-    ? `${info.displayName} is not signed in`
-    : auth === 'unknown'
-      ? 'Sign-in not verified'
-      : undefined
+function handshakeResult(info: HarnessInfo, auth: ProbeAuthStatus, version?: string): ProbeResult {
+  // Only a probe that can actually tell (Claude) marks a harness signed out; an unverifiable
+  // sign-in stays ready and is learned from the first run (snapshot `reportAuth`).
   return {
-    status: auth === 'configured' ? 'ready' : 'warning',
+    status: auth === 'unauthenticated' ? 'warning' : 'ready',
     auth: { status: auth },
     ...(version ? { version } : {}),
-    ...(message ? { message } : {}),
+    ...(auth === 'unauthenticated' ? { message: `${info.displayName} is not signed in` } : {}),
   }
 }
 
-function authFromInitialize(info: HarnessInfo, response: InitializeResponse, deps: ProbeDeps): Effect.Effect<ProbeAuthStatus, unknown> {
+function authFromInitialize(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<ProbeAuthStatus, unknown> {
   if (info.kind === 'claude') {
     return Effect.tryPromise({
       try: () => (deps.claudeAuthProbe ?? probeClaudeAuthStatus)(),
       catch: error => error,
     })
   }
-  return Effect.succeed(response.authMethods && response.authMethods.length > 0 ? 'unknown' : 'configured')
+  // ACP agents advertise `authMethods` whether or not the user is signed in, so it proves nothing.
+  return Effect.succeed('unknown')
 }
 
 function initializeProbe(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<ProbeResult, unknown> {
@@ -153,8 +151,8 @@ function initializeProbe(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<Prob
             }), childFailure]),
             catch: error => error,
           }).pipe(Effect.tap(() => Effect.sync(() => { settled = true })))),
-          Effect.flatMap(response => authFromInitialize(info, response, deps).pipe(
-            Effect.map(auth => warningResult(info, auth, response.agentInfo?.version ?? undefined)),
+          Effect.flatMap(response => authFromInitialize(info, deps).pipe(
+            Effect.map(auth => handshakeResult(info, auth, response.agentInfo?.version ?? undefined)),
           )),
           Effect.timeoutOption(Duration.millis(timeoutMs)),
           Effect.flatMap(outcome => Option.match(outcome, {

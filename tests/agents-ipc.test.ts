@@ -136,6 +136,26 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     ])
   })
 
+  it('reports the sign-in state a run proved back to the harness source', async () => {
+    const reportAuth = vi.fn()
+    const source: HarnessSource = { ...harnessSource, reportAuth }
+    const run = async (events: CoachEvent[]): Promise<void> => {
+      const runner = createCoachRunner({ getRuntime: async () => scriptedRuntime(events), harnesses: source, ledgerMcpServer })
+      await runner.start(request, () => {})
+      await flush()
+    }
+
+    await run([{ kind: 'status', state: 'done' }])
+    await vi.waitFor(() => expect(reportAuth).toHaveBeenLastCalledWith('claude', 'configured'))
+
+    await run([{ kind: 'error', message: 'Claude Code sign-in required (detail: OAuth session expired and could not be refreshed)' }])
+    await vi.waitFor(() => expect(reportAuth).toHaveBeenLastCalledWith('claude', 'unauthenticated'))
+
+    reportAuth.mockClear()
+    await run([{ kind: 'error', message: 'network down' }])
+    expect(reportAuth).not.toHaveBeenCalled()
+  })
+
   it('acks immediately with a runId, then streams the run\'s events to emit', async () => {
     const runner = makeRunner(scriptedRuntime([
       { kind: 'status', state: 'starting' },

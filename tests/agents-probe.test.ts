@@ -52,7 +52,7 @@ afterEach(() => {
 })
 
 describe('probeHarness', () => {
-  it('runs only initialize and maps an empty authMethods response to ready', async () => {
+  it('runs only initialize and reports a handshaking agent as ready with unverified sign-in', async () => {
     const child = new FakeChild()
     const calls: string[] = []
     const connection: ProbeConnection = {
@@ -70,20 +70,20 @@ describe('probeHarness', () => {
       kill: () => { child.killed += 1 },
     })
 
-    expect(result).toMatchObject({ status: 'ready', auth: { status: 'configured' }, version: '1.2.3' })
+    expect(result).toMatchObject({ status: 'ready', auth: { status: 'unknown' }, version: '1.2.3' })
     expect(calls).toEqual(['initialize'])
     expect(child.killed).toBe(1)
   })
 
-  it('maps authMethods to warning and never claims readiness', async () => {
+  it('does not treat advertised authMethods as a signed-out signal', async () => {
     const child = new FakeChild()
     const result = await runProbe(codex, {
       spawn: spawnWith(child),
       connectionFactory: () => ({ initialize: async () => ({ ...initialized, authMethods: [{ id: 'login' }] }) as never }),
     })
-    expect(result.status).toBe('warning')
+    expect(result.status).toBe('ready')
     expect(result.auth.status).toBe('unknown')
-    expect(result.message).toBe('Sign-in not verified')
+    expect(result.message).toBeUndefined()
   })
 
   it('maps Claude auth status unauthenticated to warning, never ready', async () => {

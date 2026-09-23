@@ -126,6 +126,23 @@ describe('createHarnessSnapshotStore', () => {
     expect((await store.get('opencode'))?.version).toBeUndefined()
   })
 
+  it('learns the sign-in state from runs and publishes it', async () => {
+    const changes: string[] = []
+    const store = makeStore(
+      async () => infos.slice(1, 2),
+      () => Effect.succeed({ status: 'ready', auth: { status: 'unknown' } }),
+      rows => changes.push(rows.map(row => `${row.status}:${row.auth.status}`).join()),
+    )
+    await store.list()
+    await vi.waitFor(async () => expect((await store.get('claude'))?.status).toBe('ready'))
+
+    store.reportAuth('claude', 'unauthenticated')
+    expect(await store.get('claude')).toMatchObject({ status: 'warning', auth: { status: 'unauthenticated' }, message: 'Claude Code is not signed in' })
+    store.reportAuth('claude', 'configured')
+    expect(await store.get('claude')).toMatchObject({ status: 'ready', auth: { status: 'configured' }, message: undefined })
+    expect(changes.slice(-2)).toEqual(['warning:unauthenticated', 'ready:configured'])
+  })
+
   it('sorts rows by harness spec preference, then display name', async () => {
     const store = makeStore(async () => infos, () => Effect.never)
     const rows = await store.list()

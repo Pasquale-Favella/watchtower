@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserWindow, ipcMain } from 'electron'
 import { detectHarnesses, type HarnessInfo } from './detect.js'
-import { createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
+import { createHarnessRuntime, isAuthFailureMessage, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
 import { probeHarness } from './probe.js'
 import { createHarnessSnapshotStore, type HarnessInstance, type HarnessSnapshotStore } from './snapshot.js'
 import { resolveBundledEntry } from './harnesses/bundled.js'
@@ -89,6 +89,7 @@ export interface HarnessSource {
   list: () => Promise<CoachHarnessRow[]>
   refresh: () => Promise<CoachHarnessRow[]>
   get: (instanceId: string) => Promise<HarnessInstance | undefined>
+  reportAuth?: (instanceId: string, status: 'configured' | 'unauthenticated') => void
 }
 
 export interface CoachRunner {
@@ -361,6 +362,8 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
             if (resumeLost) emit(runId, { kind: 'notice', message: 'The previous session could not be restored — continuing in a fresh session.' })
             if (firstRun && !ledgerServer) emit(runId, { kind: 'notice', message: 'Ledger data is not available yet (no scan found) — answers will not be grounded in your usage data.' })
             for await (const event of gen) {
+              if (event.kind === 'status' && event.state === 'done') harnessSource.reportAuth?.(instance.instanceId, 'configured')
+              if (event.kind === 'error' && isAuthFailureMessage(event.message)) harnessSource.reportAuth?.(instance.instanceId, 'unauthenticated')
               emit(runId, event)
             }
             settled = true
