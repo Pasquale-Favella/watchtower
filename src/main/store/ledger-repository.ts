@@ -3,10 +3,20 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { SqlError } from 'effect/unstable/sql/SqlError'
+import { z } from 'zod'
 
-import type { CurrencyRate, PortResult, PriceOverride } from '../../shared/schemas/ledger.js'
-import type { LedgerMcpStartupMode } from '../../shared/schemas/ledger-mcp.js'
+import {
+  type CurrencyRate,
+  currencyRateRowSchema,
+  type ModelAlias,
+  modelAliasRowSchema,
+  type PortResult,
+  type PriceOverride,
+  priceOverrideRowSchema,
+} from '../../shared/schemas/ledger.js'
+import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../shared/schemas/ledger-mcp.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
+import { DEFAULT_CADENCE } from '../cadence.js'
 import { mapFileToLedgerRows, type PortInput } from './port.js'
 
 type SourceInput = ReturnType<typeof mapFileToLedgerRows>['source']
@@ -22,6 +32,13 @@ export class LedgerRepository extends Context.Service<
     removeModelAlias(model: string): Effect.Effect<void, SqlError>
     setPriceOverride(model: string, override: Omit<PriceOverride, 'model'>): Effect.Effect<void, SqlError>
     removePriceOverride(model: string): Effect.Effect<void, SqlError>
+    getModelAliases(): Effect.Effect<ModelAlias[], SqlError>
+    getPriceOverrides(): Effect.Effect<PriceOverride[], SqlError>
+    getCurrencyRate(code: string): Effect.Effect<CurrencyRate | null, SqlError>
+    getDisplayCurrency(): Effect.Effect<string, SqlError>
+    getRefreshCadence(): Effect.Effect<string, SqlError>
+    getLedgerMcpStartupMode(): Effect.Effect<LedgerMcpStartupMode, SqlError>
+    getSkillDismissals(): Effect.Effect<SkillsDismissal[], SqlError>
     setCurrencyRate(rate: CurrencyRate): Effect.Effect<void, SqlError>
     setDisplayCurrency(code: string): Effect.Effect<void, SqlError>
     setRefreshCadence(value: string): Effect.Effect<void, SqlError>
@@ -50,6 +67,11 @@ export class LedgerRepository extends Context.Service<
         yield* sql.unsafe('DELETE FROM model_alias WHERE model = ?', [model])
       })
 
+      const getModelAliases = Effect.fn('LedgerRepository.getModelAliases')(function* () {
+        const rows = yield* sql.unsafe('SELECT model, alias_of FROM model_alias')
+        return z.array(modelAliasRowSchema).parse(rows)
+      })
+
       const setPriceOverride = Effect.fn('LedgerRepository.setPriceOverride')(function* (
         model: string,
         override: Omit<PriceOverride, 'model'>,
@@ -65,6 +87,45 @@ export class LedgerRepository extends Context.Service<
 
       const removePriceOverride = Effect.fn('LedgerRepository.removePriceOverride')(function* (model: string) {
         yield* sql.unsafe('DELETE FROM price_override WHERE model = ?', [model])
+      })
+
+      const getPriceOverrides = Effect.fn('LedgerRepository.getPriceOverrides')(function* () {
+        const rows = yield* sql.unsafe(
+          'SELECT model, input_price_per_million, output_price_per_million FROM price_override',
+        )
+        return z.array(priceOverrideRowSchema).parse(rows)
+      })
+
+      const getCurrencyRate = Effect.fn('LedgerRepository.getCurrencyRate')(function* (code: string) {
+        const rows = yield* sql.unsafe('SELECT code, symbol, rate, updated_at FROM currency_rate WHERE code = ?', [
+          code,
+        ])
+        const row = rows[0]
+        return row ? currencyRateRowSchema.parse(row) : null
+      })
+
+      const getDisplayCurrency = Effect.fn('LedgerRepository.getDisplayCurrency')(function* () {
+        const rows = yield* sql.unsafe('SELECT code FROM display_currency_config WHERE id = 1')
+        const row = rows[0] as { code: string } | undefined
+        return row?.code ?? 'USD'
+      })
+
+      const getRefreshCadence = Effect.fn('LedgerRepository.getRefreshCadence')(function* () {
+        const rows = yield* sql.unsafe('SELECT value FROM refresh_cadence_config WHERE id = 1')
+        const row = rows[0] as { value: string } | undefined
+        return row?.value ?? DEFAULT_CADENCE
+      })
+
+      const getLedgerMcpStartupMode = Effect.fn('LedgerRepository.getLedgerMcpStartupMode')(function* () {
+        const rows = yield* sql.unsafe('SELECT startup_mode FROM ledger_mcp_config WHERE id = 1')
+        const row = rows[0] as { startup_mode: unknown } | undefined
+        const parsed = ledgerMcpStartupModeSchema.safeParse(row?.startup_mode)
+        return parsed.success ? parsed.data : 'on-demand'
+      })
+
+      const getSkillDismissals = Effect.fn('LedgerRepository.getSkillDismissals')(function* () {
+        const rows = yield* sql.unsafe('SELECT source, name, reason, created FROM skills_dismissal_config')
+        return [...rows] as SkillsDismissal[]
       })
 
       const setCurrencyRate = Effect.fn('LedgerRepository.setCurrencyRate')(function* (rate: CurrencyRate) {
@@ -387,8 +448,15 @@ export class LedgerRepository extends Context.Service<
         deleteSource,
         setModelAlias,
         removeModelAlias,
+        getModelAliases,
         setPriceOverride,
         removePriceOverride,
+        getPriceOverrides,
+        getCurrencyRate,
+        getDisplayCurrency,
+        getRefreshCadence,
+        getLedgerMcpStartupMode,
+        getSkillDismissals,
         setCurrencyRate,
         setDisplayCurrency,
         setRefreshCadence,

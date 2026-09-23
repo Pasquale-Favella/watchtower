@@ -7,7 +7,6 @@ import { SqlError } from 'effect/unstable/sql/SqlError'
 
 import {
   type CurrencyRate,
-  currencyRateRowSchema,
   type LedgerCallRow,
   ledgerCallRowSchema,
   type LedgerSessionRow,
@@ -17,10 +16,8 @@ import {
   type LedgerTurnRow,
   ledgerTurnRowSchema,
   type ModelAlias,
-  modelAliasRowSchema,
   type PortResult,
   type PriceOverride,
-  priceOverrideRowSchema,
 } from '../../shared/schemas/ledger.js'
 import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../shared/schemas/ledger-mcp.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
@@ -333,8 +330,7 @@ export class LedgerStore {
   }
 
   getModelAliases(): ModelAlias[] {
-    const rows = this.db.prepare('SELECT model, alias_of FROM model_alias').all() as Array<Record<string, unknown>>
-    return z.array(modelAliasRowSchema).parse(rows)
+    return this.runRepositorySync(repository => repository.getModelAliases())
   }
 
   /** Pure config write: the display cost is computed query-time from tokens
@@ -349,10 +345,7 @@ export class LedgerStore {
   }
 
   getPriceOverrides(): PriceOverride[] {
-    const rows = this.db
-      .prepare('SELECT model, input_price_per_million, output_price_per_million FROM price_override')
-      .all() as Array<Record<string, unknown>>
-    return z.array(priceOverrideRowSchema).parse(rows)
+    return this.runRepositorySync(repository => repository.getPriceOverrides())
   }
 
   setCurrencyRate(rate: CurrencyRate): void {
@@ -360,16 +353,11 @@ export class LedgerStore {
   }
 
   getCurrencyRate(code: string): CurrencyRate | null {
-    const row = this.db.prepare('SELECT code, symbol, rate, updated_at FROM currency_rate WHERE code = ?').get(code) as
-      Record<string, unknown> | undefined
-    if (!row) return null
-    return currencyRateRowSchema.parse(row)
+    return this.runRepositorySync(repository => repository.getCurrencyRate(code))
   }
 
   getDisplayCurrency(): string {
-    const row = this.db.prepare('SELECT code FROM display_currency_config WHERE id = 1').get() as
-      { code: string } | undefined
-    return row?.code ?? 'USD'
+    return this.runRepositorySync(repository => repository.getDisplayCurrency())
   }
 
   setDisplayCurrency(code: string): void {
@@ -378,9 +366,7 @@ export class LedgerStore {
   }
 
   getRefreshCadence(): string {
-    const row = this.db.prepare('SELECT value FROM refresh_cadence_config WHERE id = 1').get() as
-      { value: string } | undefined
-    return row?.value ?? DEFAULT_CADENCE
+    return this.runRepositorySync(repository => repository.getRefreshCadence())
   }
 
   setRefreshCadence(value: string): void {
@@ -389,10 +375,7 @@ export class LedgerStore {
   }
 
   getLedgerMcpStartupMode(): LedgerMcpStartupMode {
-    const row = this.db.prepare('SELECT startup_mode FROM ledger_mcp_config WHERE id = 1').get() as
-      { startup_mode: unknown } | undefined
-    const parsed = ledgerMcpStartupModeSchema.safeParse(row?.startup_mode)
-    return parsed.success ? parsed.data : 'on-demand'
+    return this.runRepositorySync(repository => repository.getLedgerMcpStartupMode())
   }
 
   setLedgerMcpStartupMode(value: unknown): LedgerMcpStartupMode {
@@ -406,9 +389,7 @@ export class LedgerStore {
    *  filtered out of the Skills payload on every fetch. A config table (user
    *  setting), so dismissals survive `clear()`. */
   getSkillDismissals(): SkillsDismissal[] {
-    return this.db
-      .prepare('SELECT source, name, reason, created FROM skills_dismissal_config')
-      .all() as SkillsDismissal[]
+    return this.runRepositorySync(repository => repository.getSkillDismissals())
   }
 
   dismissSkill(source: SkillsDismissal['source'], name: string, reason: string): void {
