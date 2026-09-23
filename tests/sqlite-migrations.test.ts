@@ -1,51 +1,82 @@
-import { DatabaseSync } from 'node:sqlite'
-
 import { describe, expect, it } from 'vitest'
 
-import { runSqliteMigrations } from '../src/main/store/sqlite-migrations.js'
+import { NodeSqliteDatabase } from '../src/main/store/node-sqlite-client.js'
+import { executeSqliteScript } from '../src/main/store/sqlite-migrations.js'
 
 describe('SQLite migrations', () => {
   it('applies migrations in order once and records the latest version', () => {
-    const db = new DatabaseSync(':memory:')
+    const database = new NodeSqliteDatabase(':memory:')
     try {
       const migrations = [
-        { version: 1, up: (connection: DatabaseSync) => connection.exec('CREATE TABLE item (value TEXT NOT NULL)') },
-        { version: 2, up: (connection: DatabaseSync) => connection.exec("INSERT INTO item (value) VALUES ('kept')") },
+        {
+          version: 1,
+          name: 'create_item',
+          up: executeSqliteScript('CREATE TABLE item (value TEXT NOT NULL)'),
+        },
+        {
+          version: 2,
+          name: 'seed_item',
+          up: executeSqliteScript("INSERT INTO item (value) VALUES ('kept')"),
+        },
       ]
 
-      runSqliteMigrations(db, migrations)
-      runSqliteMigrations(db, migrations)
+      database.migrate(migrations)
+      database.migrate(migrations)
 
-      expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2)
-      expect(db.prepare('SELECT value FROM item').get()).toEqual({ value: 'kept' })
+      expect(
+        database.prepare('SELECT migration_id, name FROM watchtower_sql_migrations ORDER BY migration_id').all(),
+      ).toEqual([
+        { migration_id: 1, name: 'create_item' },
+        { migration_id: 2, name: 'seed_item' },
+      ])
+      expect(database.prepare('SELECT value FROM item').get()).toEqual({ value: 'kept' })
     } finally {
-      db.close()
+      database.close()
     }
   })
 
-  it('rolls back partial DDL and does not advance the version when a migration fails', () => {
-    const db = new DatabaseSync(':memory:')
+  it('rolls back migration DDL and journal entries when a migration fails', () => {
+    const database = new NodeSqliteDatabase(':memory:')
     try {
-      expect(() => runSqliteMigrations(db, [{
-        version: 1,
-        up: connection => connection.exec('CREATE TABLE partial (value TEXT); INVALID SQL'),
-      }])).toThrow()
+      expect(() =>
+        database.migrate([
+          {
+            version: 1,
+            name: 'create_partial',
+            up: executeSqliteScript('CREATE TABLE partial (value TEXT)'),
+          },
+          {
+            version: 2,
+            name: 'fail',
+            up: executeSqliteScript('INVALID SQL'),
+          },
+        ]),
+      ).toThrow()
 
-      expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(0)
-      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'partial'").get()).toBeUndefined()
+      expect(database.prepare('SELECT migration_id FROM watchtower_sql_migrations').all()).toEqual([])
+      expect(
+        database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'partial'").get(),
+      ).toBeUndefined()
     } finally {
-      db.close()
+      database.close()
     }
   })
 
   it('rejects non-contiguous migration sequences and databases newer than the app', () => {
-    const db = new DatabaseSync(':memory:')
+    const database = new NodeSqliteDatabase(':memory:')
     try {
-      expect(() => runSqliteMigrations(db, [{ version: 2, up: () => {} }])).toThrow(/contiguous/)
-      db.exec('PRAGMA user_version = 2')
-      expect(() => runSqliteMigrations(db, [{ version: 1, up: () => {} }])).toThrow(/newer than this application/)
+      expect(() => database.migrate([{ version: 2, name: 'gap', up: executeSqliteScript('SELECT 1') }])).toThrow(
+        /contiguous/,
+      )
+      database.migrate([
+        { version: 1, name: 'one', up: executeSqliteScript('SELECT 1') },
+        { version: 2, name: 'two', up: executeSqliteScript('SELECT 1') },
+      ])
+      expect(() => database.migrate([{ version: 1, name: 'one', up: executeSqliteScript('SELECT 1') }])).toThrow(
+        /newer than this application/,
+      )
     } finally {
-      db.close()
+      database.close()
     }
   })
 })

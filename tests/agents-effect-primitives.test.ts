@@ -8,7 +8,8 @@
  *  3. Scope-based instance teardown (deterministic, LIFO, isolated scopes);
  *  4. run interrupt with a drain barrier and an always-reaped child.
  */
-import { Deferred, Effect, Exit, Fiber, Option, Ref, Schedule, Scope, Stream, TestClock, TestContext } from 'effect'
+import { Deferred, Effect, Exit, Fiber, Option, Ref, Schedule, Scope, Stream } from 'effect'
+import * as TestClock from 'effect/testing/TestClock'
 import { describe, expect, it } from 'vitest'
 
 // ---------------------------------------------------------------------------
@@ -62,7 +63,11 @@ describe('effect: probe with timeout (pain 1 — inspect() hangs forever today)'
   it('canonical deterministic timeout form: fork clock-advance alongside the probe', async () => {
     const probe = fakeHandshake(5000).pipe(Effect.timeoutOption(100))
     const result = await Effect.runPromise(
-      Effect.provide(Effect.zipRight(Effect.fork(TestClock.adjust(200)), probe), TestContext.TestContext),
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(probe)
+        yield* TestClock.adjust(200)
+        return yield* Fiber.join(fiber)
+      }).pipe(Effect.provide(TestClock.layer())),
     )
     expect(Option.isNone(result)).toBe(true)
   })
@@ -108,11 +113,11 @@ describe('effect: Scope-based instance registry (pain 3 — manual cleanup() tod
             ),
             () => Effect.sync(() => events.push('release slot')),
           ).pipe(
-            Scope.extend(scope),
-            Effect.zipRight(Effect.fail('boom')),
+            Scope.provide(scope),
+            Effect.andThen(Effect.fail('boom')),
             Effect.exit,
-            Effect.zipRight(Scope.close(scope, Exit.succeed('done'))),
-            Effect.zipRight(Effect.sync(() => [...events])),
+            Effect.andThen(Scope.close(scope, Exit.succeed('done'))),
+            Effect.andThen(Effect.sync(() => [...events])),
           ),
         ),
       ),
@@ -126,7 +131,7 @@ describe('effect: Scope-based instance registry (pain 3 — manual cleanup() tod
       Effect.acquireRelease(
         Effect.sync(() => events.push(`spawn ${id}`)),
         () => Effect.sync(() => events.push(`kill ${id}`)),
-      ).pipe(Scope.extend(scope))
+      ).pipe(Scope.provide(scope))
     // Two independent scopes = two CODEX_HOME-style isolated instances.
     const { scopeA, scopeB } = await Effect.runPromise(Effect.all({ scopeA: Scope.make(), scopeB: Scope.make() }))
     await Effect.runPromise(acquire('codex_personal', scopeA))
@@ -150,7 +155,7 @@ describe('effect: interrupt + drain barrier (pain 4 — iterator.return() juggli
           const drained: string[] = []
           const killCount = yield* Ref.make(0)
           const drain = yield* Deferred.make<undefined>()
-          const fiber = yield* Effect.fork(
+          const fiber = yield* Effect.forkChild(
             Stream.range(0, 10).pipe(
               Stream.mapEffect(i =>
                 Effect.delay(
@@ -162,7 +167,7 @@ describe('effect: interrupt + drain barrier (pain 4 — iterator.return() juggli
               Stream.runDrain,
               Effect.ensuring(
                 // Drain barrier: buffered/derived events flush BEFORE the child dies.
-                Deferred.succeed(drain, undefined).pipe(Effect.zipRight(Ref.update(killCount, n => n + 1))),
+                Deferred.succeed(drain, undefined).pipe(Effect.andThen(Ref.update(killCount, n => n + 1))),
               ),
             ),
           )

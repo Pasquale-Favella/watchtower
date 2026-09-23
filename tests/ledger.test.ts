@@ -123,7 +123,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       'idx_ledger_call_provider',
     ].sort())
     const version = new DatabaseSync(store.dbPath, { readOnly: true })
-    expect((version.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(1)
+    expect(version.prepare('SELECT migration_id FROM watchtower_sql_migrations').get()).toEqual({ migration_id: 1 })
     version.close()
 
     store.close()
@@ -137,7 +137,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     original.close()
 
     const legacy = new DatabaseSync(dbPath)
-    legacy.exec('PRAGMA user_version = 0')
+    legacy.exec('DROP TABLE watchtower_sql_migrations')
     legacy.close()
 
     const upgraded = new LedgerStore(dbPath)
@@ -146,7 +146,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       expect(upgraded.getModelAliases()).toEqual([{ model: 'old-model', aliasOf: 'new-model' }])
       const version = new DatabaseSync(dbPath, { readOnly: true })
       try {
-        expect((version.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(1)
+        expect(version.prepare('SELECT migration_id FROM watchtower_sql_migrations').get()).toEqual({ migration_id: 1 })
       } finally {
         version.close()
       }
@@ -737,7 +737,7 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
 
   function readTableNames(ro: DatabaseSync): string[] {
     const rows = ro.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC",
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'watchtower_sql_migrations' ORDER BY name ASC",
     ).all() as Array<{ name: string }>
     return rows.map(r => r.name)
   }

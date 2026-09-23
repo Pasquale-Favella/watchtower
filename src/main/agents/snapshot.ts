@@ -1,5 +1,6 @@
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+
 import type { CoachHarnessRow } from '../../shared/schemas/agents.js'
 import { safeLogOperationalEvent } from '../operational-log.js'
 import type { HarnessInfo } from './detect.js'
@@ -70,12 +71,20 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
 
   function rows(): CoachHarnessRow[] {
     return [...instances.values()]
-      .sort((left, right) => preferenceFor(left.info) - preferenceFor(right.info) || left.info.displayName.localeCompare(right.info.displayName))
+      .sort(
+        (left, right) =>
+          preferenceFor(left.info) - preferenceFor(right.info) ||
+          left.info.displayName.localeCompare(right.info.displayName),
+      )
       .map(toRow)
   }
 
   function publish(): void {
-    try { deps.onChange(rows()) } catch { /* UI notification must not stop probes */ }
+    try {
+      deps.onChange(rows())
+    } catch {
+      /* UI notification must not stop probes */
+    }
   }
 
   async function interruptProbes(): Promise<void> {
@@ -104,10 +113,10 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
   }
 
   function launchProbes(infos: HarnessInfo[], probeGeneration: number): void {
-    const effects = infos.map(info => deps.probe(info).pipe(
-      Effect.tap(result => Effect.sync(() => settle(info, result, probeGeneration))),
-    ))
-    probeFiber = Effect.runFork(Effect.zipRight(Effect.yieldNow(), Effect.all(effects, { concurrency })))
+    const effects = infos.map(info =>
+      deps.probe(info).pipe(Effect.tap(result => Effect.sync(() => settle(info, result, probeGeneration)))),
+    )
+    probeFiber = Effect.runFork(Effect.yieldNow.pipe(Effect.andThen(Effect.all(effects, { concurrency }))))
   }
 
   async function detectAndProbe(): Promise<void> {
@@ -131,7 +140,9 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
       }
       publish()
       launchProbes(infos, generation)
-    })().finally(() => { detectionPromise = null })
+    })().finally(() => {
+      detectionPromise = null
+    })
     return detectionPromise
   }
 
@@ -152,7 +163,8 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
     },
     reportAuth(instanceId, status) {
       const current = instances.get(instanceId)
-      if (!current || current.status === 'error' || current.status === 'pending' || current.auth.status === status) return
+      if (!current || current.status === 'error' || current.status === 'pending' || current.auth.status === status)
+        return
       instances.set(instanceId, {
         ...current,
         status: status === 'configured' ? 'ready' : 'warning',

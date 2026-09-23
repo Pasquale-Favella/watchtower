@@ -1,6 +1,5 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 
 import { z } from 'zod'
 
@@ -24,6 +23,7 @@ import {
 import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../shared/schemas/ledger-mcp.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { DEFAULT_CADENCE, isValidCadence } from '../cadence.js'
+import { NodeSqliteDatabase } from './node-sqlite-client.js'
 import {
   type FileVerdict,
   mapFileToLedgerRows,
@@ -33,7 +33,7 @@ import {
   type MappedTurn,
   type PortInput,
 } from './port.js'
-import { runSqliteMigrations } from './sqlite-migrations.js'
+import { executeSqliteScript } from './sqlite-migrations.js'
 
 export type {
   CurrencyRate,
@@ -67,18 +67,20 @@ export interface LedgerStoreOptions {
 
 export class LedgerStore {
   readonly dbPath: string
-  private db: DatabaseSync
+  private db: NodeSqliteDatabase
 
   constructor(dbPath: string, options: LedgerStoreOptions = {}) {
     const { readOnly = false } = options
     if (!readOnly) mkdirSync(dirname(dbPath), { recursive: true })
     this.dbPath = dbPath
-    this.db = readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath)
+    this.db = new NodeSqliteDatabase(dbPath, { readonly: readOnly })
     if (readOnly) return
     this.db.exec('PRAGMA journal_mode = WAL')
-    runSqliteMigrations(this.db, [{
-      version: 1,
-      up: db => db.exec(`
+    this.db.migrate([
+      {
+        version: 1,
+        name: 'initial_ledger_schema',
+        up: executeSqliteScript(`
       CREATE TABLE IF NOT EXISTS ledger_source (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         provider TEXT NOT NULL,
@@ -219,7 +221,8 @@ export class LedgerStore {
         startup_mode TEXT NOT NULL DEFAULT 'on-demand'
       );
       `),
-    }])
+      },
+    ])
   }
 
   // ── Port-in write path ────────────────────────────────────────────────
@@ -252,8 +255,7 @@ export class LedgerStore {
     const mapped = mapFileToLedgerRows(input)
     const now = new Date().toISOString()
 
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
+    return this.db.transactionSync(() => {
       const sourceId = this.upsertSource(mapped.source, now, repoUrl, input.project)
       // Durable sources union-merge instead of replace: a `modified` verdict must
       // NOT drop already-ported rows (the cache only ever appends unioned turns,
@@ -267,12 +269,8 @@ export class LedgerStore {
         turns: this.insertTurns(sourceId, mapped.turns),
         calls: this.insertCalls(sourceId, mapped.calls),
       }
-      this.db.exec('COMMIT')
       return { verdict, sourceId, inserted }
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    })
   }
 
   private findSourceId(provider: string, envFingerprint: string, filePath: string): number | null {
@@ -282,29 +280,58 @@ export class LedgerStore {
     return row ? Number(row.id) : null
   }
 
-  private upsertSource(source: { provider: string; envFingerprint: string; filePath: string; fingerprint: MappedFingerprint }, now: string, repoUrl?: string, project?: string): number {
+  private upsertSource(
+    source: { provider: string; envFingerprint: string; filePath: string; fingerprint: MappedFingerprint },
+    now: string,
+    repoUrl?: string,
+    project?: string,
+  ): number {
     const existing = this.findSourceId(source.provider, source.envFingerprint, source.filePath)
     if (existing !== null) {
-      this.db.prepare(`
+      this.db
+        .prepare(
+          `
         UPDATE ledger_source SET
           fingerprint_dev = ?, fingerprint_ino = ?, fingerprint_mtime_ms = ?, fingerprint_size_bytes = ?,
           repo_url = CASE WHEN ? IS NOT NULL THEN ? ELSE repo_url END,
           project = CASE WHEN ? IS NOT NULL THEN ? ELSE project END,
           last_ported_at = ?
         WHERE id = ?
-      `).run(
-        source.fingerprint.dev, source.fingerprint.ino, source.fingerprint.mtimeMs, source.fingerprint.sizeBytes,
-        repoUrl ?? null, repoUrl ?? null, project ?? null, project ?? null, now, existing
-      )
+      `,
+        )
+        .run(
+          source.fingerprint.dev,
+          source.fingerprint.ino,
+          source.fingerprint.mtimeMs,
+          source.fingerprint.sizeBytes,
+          repoUrl ?? null,
+          repoUrl ?? null,
+          project ?? null,
+          project ?? null,
+          now,
+          existing,
+        )
       return existing
     }
-    const result = this.db.prepare(`
+    const result = this.db
+      .prepare(
+        `
       INSERT INTO ledger_source (provider, env_fingerprint, file_path, repo_url, project, fingerprint_dev, fingerprint_ino, fingerprint_mtime_ms, fingerprint_size_bytes, last_ported_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      source.provider, source.envFingerprint, source.filePath, repoUrl ?? null, project ?? null,
-      source.fingerprint.dev, source.fingerprint.ino, source.fingerprint.mtimeMs, source.fingerprint.sizeBytes, now
-    )
+    `,
+      )
+      .run(
+        source.provider,
+        source.envFingerprint,
+        source.filePath,
+        repoUrl ?? null,
+        project ?? null,
+        source.fingerprint.dev,
+        source.fingerprint.ino,
+        source.fingerprint.mtimeMs,
+        source.fingerprint.sizeBytes,
+        now,
+      )
     return Number(result.lastInsertRowid)
   }
 
@@ -316,13 +343,26 @@ export class LedgerStore {
         ambiguous_spawn_agent_ids_json, ever_had_branch
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    return Number(stmt.run(
-      sourceId, session.sessionId, session.project, session.projectPath, session.workingDirectory,
-      session.canonicalProject, session.canonicalCwd, session.agentType, session.title,
-      JSON.stringify(session.prLinks), session.isSidechain ? 1 : 0, session.parentSessionId,
-      JSON.stringify(session.agentSpawnLinks), JSON.stringify(session.mcpInventory),
-      JSON.stringify(session.ambiguousSpawnAgentIds), session.everHadBranch ? 1 : 0
-    ).changes)
+    return Number(
+      stmt.run(
+        sourceId,
+        session.sessionId,
+        session.project,
+        session.projectPath,
+        session.workingDirectory,
+        session.canonicalProject,
+        session.canonicalCwd,
+        session.agentType,
+        session.title,
+        JSON.stringify(session.prLinks),
+        session.isSidechain ? 1 : 0,
+        session.parentSessionId,
+        JSON.stringify(session.agentSpawnLinks),
+        JSON.stringify(session.mcpInventory),
+        JSON.stringify(session.ambiguousSpawnAgentIds),
+        session.everHadBranch ? 1 : 0,
+      ).changes,
+    )
   }
 
   private insertTurns(sourceId: number, turns: MappedTurn[]): number {
@@ -334,10 +374,22 @@ export class LedgerStore {
     `)
     let inserted = 0
     for (const turn of turns) {
-      inserted += Number(stmt.run(
-        sourceId, turn.sessionId, turn.turnIndex, turn.timestamp, turn.userMessage, turn.gitBranch,
-        JSON.stringify(turn.prRefs), JSON.stringify(turn.spawnToolUseIds), turn.category, turn.subCategory, turn.retries, turn.hasEdits ? 1 : 0
-      ).changes)
+      inserted += Number(
+        stmt.run(
+          sourceId,
+          turn.sessionId,
+          turn.turnIndex,
+          turn.timestamp,
+          turn.userMessage,
+          turn.gitBranch,
+          JSON.stringify(turn.prRefs),
+          JSON.stringify(turn.spawnToolUseIds),
+          turn.category,
+          turn.subCategory,
+          turn.retries,
+          turn.hasEdits ? 1 : 0,
+        ).changes,
+      )
     }
     return inserted
   }
@@ -356,15 +408,47 @@ export class LedgerStore {
     `)
     let inserted = 0
     for (const call of calls) {
-      inserted += Number(stmt.run(
-        sourceId, call.sessionId, call.turnIndex, call.callIndex, call.dedupKey, call.provider, call.model, call.timestamp, call.speed,
-        call.project, call.projectPath, call.workingDirectory, call.baseCostUSD, call.isEstimated ? 1 : 0, call.savingsUSD, call.savingsBaselineModel,
-        call.inputTokens, call.outputTokens, call.cacheCreationInputTokens, call.cacheReadInputTokens, call.cachedInputTokens,
-        call.reasoningTokens, call.webSearchRequests, call.cacheCreationOneHourTokens, call.agentType,
-        JSON.stringify(call.tools), JSON.stringify(call.mcpTools), JSON.stringify(call.skills), JSON.stringify(call.subagentTypes),
-        JSON.stringify(call.bashCommands), JSON.stringify(call.toolSequence),
-        call.locAdded, call.locRemoved, call.interrupted ? 1 : 0, call.userModified ? 1 : 0, call.toolErrors, call.editFailed
-      ).changes)
+      inserted += Number(
+        stmt.run(
+          sourceId,
+          call.sessionId,
+          call.turnIndex,
+          call.callIndex,
+          call.dedupKey,
+          call.provider,
+          call.model,
+          call.timestamp,
+          call.speed,
+          call.project,
+          call.projectPath,
+          call.workingDirectory,
+          call.baseCostUSD,
+          call.isEstimated ? 1 : 0,
+          call.savingsUSD,
+          call.savingsBaselineModel,
+          call.inputTokens,
+          call.outputTokens,
+          call.cacheCreationInputTokens,
+          call.cacheReadInputTokens,
+          call.cachedInputTokens,
+          call.reasoningTokens,
+          call.webSearchRequests,
+          call.cacheCreationOneHourTokens,
+          call.agentType,
+          JSON.stringify(call.tools),
+          JSON.stringify(call.mcpTools),
+          JSON.stringify(call.skills),
+          JSON.stringify(call.subagentTypes),
+          JSON.stringify(call.bashCommands),
+          JSON.stringify(call.toolSequence),
+          call.locAdded,
+          call.locRemoved,
+          call.interrupted ? 1 : 0,
+          call.userModified ? 1 : 0,
+          call.toolErrors,
+          call.editFailed,
+        ).changes,
+      )
     }
     return inserted
   }
@@ -374,15 +458,10 @@ export class LedgerStore {
   deleteSource(provider: string, envFingerprint: string, filePath: string): void {
     const sourceId = this.findSourceId(provider, envFingerprint, filePath)
     if (sourceId === null) return
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
+    this.db.transactionSync(() => {
       this.deleteSourceRows(sourceId)
       this.db.prepare('DELETE FROM ledger_source WHERE id = ?').run(sourceId)
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
+    })
   }
 
   private deleteSourceRows(sourceId: number): void {
@@ -398,37 +477,51 @@ export class LedgerStore {
     // NTFS inode above 2^53 would otherwise throw ERR_OUT_OF_RANGE instead of
     // reading back. mtimeMs/sizeBytes stay numeric (REAL / small int). The
     // schema's transform performs the column mapping + null→undefined shaping.
-    const rows = this.db.prepare(`
+    const rows = this.db
+      .prepare(
+        `
       SELECT id, provider, env_fingerprint, file_path, repo_url, project,
              CAST(fingerprint_dev AS TEXT) AS fingerprint_dev,
              CAST(fingerprint_ino AS TEXT) AS fingerprint_ino,
              fingerprint_mtime_ms, fingerprint_size_bytes, last_ported_at
       FROM ledger_source ORDER BY id ASC
-    `).all() as Array<Record<string, unknown>>
+    `,
+      )
+      .all() as Array<Record<string, unknown>>
     return z.array(ledgerSourceRowSchema).parse(rows)
   }
 
   getSessions(): LedgerSessionRow[] {
-    const rows = this.db.prepare(`
+    const rows = this.db
+      .prepare(
+        `
       SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
              agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
              mcp_inventory_json, ambiguous_spawn_agent_ids_json, ever_had_branch
       FROM ledger_session ORDER BY session_id ASC
-    `).all() as Array<Record<string, unknown>>
+    `,
+      )
+      .all() as Array<Record<string, unknown>>
     return z.array(ledgerSessionRowSchema).parse(rows)
   }
 
   getTurns(): LedgerTurnRow[] {
-    const rows = this.db.prepare(`
+    const rows = this.db
+      .prepare(
+        `
       SELECT source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
              spawn_tool_use_ids_json, category, sub_category, retries, has_edits
       FROM ledger_turn ORDER BY session_id ASC, turn_index ASC
-    `).all() as Array<Record<string, unknown>>
+    `,
+      )
+      .all() as Array<Record<string, unknown>>
     return z.array(ledgerTurnRowSchema).parse(rows)
   }
 
   getCalls(): LedgerCallRow[] {
-    const rows = this.db.prepare(`
+    const rows = this.db
+      .prepare(
+        `
       SELECT source_id, session_id, turn_index, call_index, call_key, dedup_key, provider, model, timestamp, speed,
              project, project_path, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
              input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
@@ -437,7 +530,9 @@ export class LedgerStore {
              tool_sequence_json,
              loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
       FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
-    `).all() as Array<Record<string, unknown>>
+    `,
+      )
+      .all() as Array<Record<string, unknown>>
     return z.array(ledgerCallRowSchema).parse(rows)
   }
 
@@ -449,14 +544,19 @@ export class LedgerStore {
   }
 
   getIndexNames(table: string): string[] {
-    const rows = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?").all(table) as Array<{ name: string }>
+    const rows = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?")
+      .all(table) as Array<{ name: string }>
     return rows.map(r => r.name).filter(name => !name.startsWith('sqlite_autoindex_'))
   }
 
   // ── Config tables: not scan data, survive clear() ─────────────────────
 
   setModelAlias(model: string, aliasOf: string): void {
-    this.db.prepare('INSERT INTO model_alias (model, alias_of) VALUES (?, ?) ON CONFLICT(model) DO UPDATE SET alias_of = excluded.alias_of')
+    this.db
+      .prepare(
+        'INSERT INTO model_alias (model, alias_of) VALUES (?, ?) ON CONFLICT(model) DO UPDATE SET alias_of = excluded.alias_of',
+      )
       .run(model, aliasOf)
   }
 
@@ -473,10 +573,14 @@ export class LedgerStore {
    * via a LEFT JOIN onto `price_override`, so changing an override needs no
    * row updates, no `rebuildDailySpend`, and no rescan. */
   setPriceOverride(model: string, override: Omit<PriceOverride, 'model'>): void {
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO price_override (model, input_price_per_million, output_price_per_million) VALUES (?, ?, ?)
       ON CONFLICT(model) DO UPDATE SET input_price_per_million = excluded.input_price_per_million, output_price_per_million = excluded.output_price_per_million
-    `).run(model, override.inputPricePerMillion, override.outputPricePerMillion)
+    `,
+      )
+      .run(model, override.inputPricePerMillion, override.outputPricePerMillion)
   }
 
   removePriceOverride(model: string): void {
@@ -491,52 +595,62 @@ export class LedgerStore {
   }
 
   setCurrencyRate(rate: CurrencyRate): void {
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO currency_rate (code, symbol, rate, updated_at) VALUES (?, ?, ?, ?)
       ON CONFLICT(code) DO UPDATE SET symbol = excluded.symbol, rate = excluded.rate, updated_at = excluded.updated_at
-    `).run(rate.code, rate.symbol, rate.rate, rate.updatedAt)
+    `,
+      )
+      .run(rate.code, rate.symbol, rate.rate, rate.updatedAt)
   }
 
   getCurrencyRate(code: string): CurrencyRate | null {
-    const row = this.db.prepare('SELECT code, symbol, rate, updated_at FROM currency_rate WHERE code = ?').get(code) as Record<string, unknown> | undefined
+    const row = this.db.prepare('SELECT code, symbol, rate, updated_at FROM currency_rate WHERE code = ?').get(code) as
+      Record<string, unknown> | undefined
     if (!row) return null
     return currencyRateRowSchema.parse(row)
   }
 
   getDisplayCurrency(): string {
     const row = this.db.prepare('SELECT code FROM display_currency_config WHERE id = 1').get() as
-      | { code: string }
-      | undefined
+      { code: string } | undefined
     return row?.code ?? 'USD'
   }
 
   setDisplayCurrency(code: string): void {
     const safe = /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO display_currency_config (id, code) VALUES (1, ?)
       ON CONFLICT(id) DO UPDATE SET code = excluded.code
-    `).run(safe)
+    `,
+      )
+      .run(safe)
   }
 
   getRefreshCadence(): string {
     const row = this.db.prepare('SELECT value FROM refresh_cadence_config WHERE id = 1').get() as
-      | { value: string }
-      | undefined
+      { value: string } | undefined
     return row?.value ?? DEFAULT_CADENCE
   }
 
   setRefreshCadence(value: string): void {
     const cadence = isValidCadence(value) ? value : DEFAULT_CADENCE
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO refresh_cadence_config (id, value) VALUES (1, ?)
       ON CONFLICT(id) DO UPDATE SET value = excluded.value
-    `).run(cadence)
+    `,
+      )
+      .run(cadence)
   }
 
   getLedgerMcpStartupMode(): LedgerMcpStartupMode {
     const row = this.db.prepare('SELECT startup_mode FROM ledger_mcp_config WHERE id = 1').get() as
-      | { startup_mode: unknown }
-      | undefined
+      { startup_mode: unknown } | undefined
     const parsed = ledgerMcpStartupModeSchema.safeParse(row?.startup_mode)
     return parsed.success ? parsed.data : 'on-demand'
   }
@@ -544,10 +658,14 @@ export class LedgerStore {
   setLedgerMcpStartupMode(value: unknown): LedgerMcpStartupMode {
     const parsed = ledgerMcpStartupModeSchema.safeParse(value)
     const startupMode = parsed.success ? parsed.data : 'on-demand'
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO ledger_mcp_config (id, startup_mode) VALUES (1, ?)
       ON CONFLICT(id) DO UPDATE SET startup_mode = excluded.startup_mode
-    `).run(startupMode)
+    `,
+      )
+      .run(startupMode)
     return startupMode
   }
 
@@ -555,15 +673,21 @@ export class LedgerStore {
    *  filtered out of the Skills payload on every fetch. A config table (user
    *  setting), so dismissals survive `clear()`. */
   getSkillDismissals(): SkillsDismissal[] {
-    return this.db.prepare('SELECT source, name, reason, created FROM skills_dismissal_config').all() as SkillsDismissal[]
+    return this.db
+      .prepare('SELECT source, name, reason, created FROM skills_dismissal_config')
+      .all() as SkillsDismissal[]
   }
 
   dismissSkill(source: SkillsDismissal['source'], name: string, reason: string): void {
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO skills_dismissal_config (source, name, reason, created)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(source, name) DO UPDATE SET reason = excluded.reason, created = excluded.created
-    `).run(source, name, reason, new Date().toISOString())
+    `,
+      )
+      .run(source, name, reason, new Date().toISOString())
   }
 
   /** Clears all scan-derived ledger data. Config tables are user settings and

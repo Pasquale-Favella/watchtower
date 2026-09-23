@@ -1,13 +1,20 @@
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createHarnessSnapshotStore, type HarnessSnapshotStore } from '../src/main/agents/snapshot.js'
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { ProbeResult } from '../src/main/agents/probe.js'
+import { createHarnessSnapshotStore, type HarnessSnapshotStore } from '../src/main/agents/snapshot.js'
 import type { CoachHarnessRow } from '../src/shared/schemas/agents.js'
 
 const infos: HarnessInfo[] = [
-  { instanceId: 'opencode', name: 'opencode', kind: 'opencode', displayName: 'OpenCode', bin: 'opencode', scrubEnv: [] },
+  {
+    instanceId: 'opencode',
+    name: 'opencode',
+    kind: 'opencode',
+    displayName: 'OpenCode',
+    bin: 'opencode',
+    scrubEnv: [],
+  },
   { instanceId: 'claude', name: 'claude', kind: 'claude', displayName: 'Claude Code', bin: 'claude', scrubEnv: [] },
   { instanceId: 'codex', name: 'codex', kind: 'codex', displayName: 'Codex', bin: 'codex', scrubEnv: [] },
 ]
@@ -56,7 +63,7 @@ describe('createHarnessSnapshotStore', () => {
   it('does not let a hung probe block siblings', async () => {
     const store = makeStore(
       async () => infos.slice(0, 2),
-      info => info.kind === 'opencode' ? Effect.never : Effect.succeed(ready),
+      info => (info.kind === 'opencode' ? Effect.never : Effect.succeed(ready)),
     )
     await store.list()
     await vi.waitFor(async () => expect((await store.get('claude'))?.status).toBe('ready'))
@@ -65,9 +72,12 @@ describe('createHarnessSnapshotStore', () => {
 
   it('coalesces concurrent refresh calls into one detection', async () => {
     let release: (() => void) | undefined
-    const detect = vi.fn(() => new Promise<HarnessInfo[]>(resolve => {
-      release = () => resolve(infos.slice(0, 1))
-    }))
+    const detect = vi.fn(
+      () =>
+        new Promise<HarnessInfo[]>(resolve => {
+          release = () => resolve(infos.slice(0, 1))
+        }),
+    )
     const store = makeStore(detect, () => Effect.never)
     const first = store.refresh()
     const second = store.refresh()
@@ -96,12 +106,21 @@ describe('createHarnessSnapshotStore', () => {
     let started = false
     const store = makeStore(
       async () => infos.slice(0, 1),
-      () => Effect.scoped(
-        Effect.sync(() => { started = true }).pipe(
-          Effect.zipRight(Effect.acquireRelease(Effect.succeed(undefined), () => Effect.sync(() => { finalized += 1 }))),
-          Effect.flatMap(() => Effect.never),
+      () =>
+        Effect.scoped(
+          Effect.sync(() => {
+            started = true
+          }).pipe(
+            Effect.andThen(
+              Effect.acquireRelease(Effect.succeed(undefined), () =>
+                Effect.sync(() => {
+                  finalized += 1
+                }),
+              ),
+            ),
+            Effect.andThen(Effect.never),
+          ),
         ),
-      ),
     )
     await store.list()
     await vi.waitFor(() => expect(started).toBe(true))
@@ -137,20 +156,34 @@ describe('createHarnessSnapshotStore', () => {
     await vi.waitFor(async () => expect((await store.get('claude'))?.status).toBe('ready'))
 
     store.reportAuth('claude', 'unauthenticated')
-    expect(await store.get('claude')).toMatchObject({ status: 'warning', auth: { status: 'unauthenticated' }, message: 'Claude Code is not signed in' })
+    expect(await store.get('claude')).toMatchObject({
+      status: 'warning',
+      auth: { status: 'unauthenticated' },
+      message: 'Claude Code is not signed in',
+    })
     store.reportAuth('claude', 'configured')
-    expect(await store.get('claude')).toMatchObject({ status: 'ready', auth: { status: 'configured' }, message: undefined })
+    expect(await store.get('claude')).toMatchObject({
+      status: 'ready',
+      auth: { status: 'configured' },
+      message: undefined,
+    })
     expect(changes.slice(-2)).toEqual(['warning:unauthenticated', 'ready:configured'])
   })
 
   it('sorts rows by harness spec preference, then display name', async () => {
-    const store = makeStore(async () => infos, () => Effect.never)
+    const store = makeStore(
+      async () => infos,
+      () => Effect.never,
+    )
     const rows = await store.list()
     expect(rows.map(row => row.kind)).toEqual(['claude', 'codex', 'opencode'])
   })
 
   it('carries the spec login command on each managed row', async () => {
-    const store = makeStore(async () => infos.filter(info => info.kind === 'claude'), () => Effect.never)
+    const store = makeStore(
+      async () => infos.filter(info => info.kind === 'claude'),
+      () => Effect.never,
+    )
     const row = (await store.list())[0]
     expect(row?.auth.loginCommand).toBe('claude auth login')
   })

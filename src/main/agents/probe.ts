@@ -1,12 +1,20 @@
-import { execFile, spawn as spawnProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { Readable, Writable } from 'node:stream'
+import { type ChildProcessWithoutNullStreams, execFile, spawn as spawnProcess } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION, type Client, type InitializeResponse } from '@agentclientprotocol/sdk'
+import { Readable, Writable } from 'node:stream'
+
+import {
+  type Client,
+  ClientSideConnection,
+  type InitializeResponse,
+  ndJsonStream,
+  PROTOCOL_VERSION,
+} from '@agentclientprotocol/sdk'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
-import type { HarnessInfo } from './detect.js'
+
 import { probeClaudeAuthStatus } from './auth-probe.js'
+import type { HarnessInfo } from './detect.js'
 import { harnessSpecs } from './harnesses/index.js'
 import { killProcessTree } from './process-tree.js'
 import { createHarnessSpawn, type HarnessSpawn } from './runtime.js'
@@ -45,7 +53,11 @@ export interface ProbeConnection {
   }) => Promise<InitializeResponse>
 }
 
-export type ProbeSpawn = (command: string, args: readonly string[], options: HarnessSpawn & { stdio: ['pipe', 'pipe', 'pipe'] }) => ProbeChild
+export type ProbeSpawn = (
+  command: string,
+  args: readonly string[],
+  options: HarnessSpawn & { stdio: ['pipe', 'pipe', 'pipe'] },
+) => ProbeChild
 export type ProbeConnectionFactory = (child: ProbeChild) => ProbeConnection
 
 export interface ProbeDeps {
@@ -59,14 +71,20 @@ export interface ProbeDeps {
   platform?: NodeJS.Platform
 }
 
-function defaultSpawn(command: string, args: readonly string[], options: HarnessSpawn & { stdio: ['pipe', 'pipe', 'pipe'] }): ChildProcessWithoutNullStreams {
+function defaultSpawn(
+  command: string,
+  args: readonly string[],
+  options: HarnessSpawn & { stdio: ['pipe', 'pipe', 'pipe'] },
+): ChildProcessWithoutNullStreams {
   return spawnProcess(command, [...args], options)
 }
 
 function defaultConnectionFactory(child: ProbeChild): ProbeConnection {
   if (!child.stdin || !child.stdout) throw new Error('ACP child did not expose stdio pipes')
   const client: Client = {
-    requestPermission: async () => { throw new Error('permissions are unavailable during a harness probe') },
+    requestPermission: async () => {
+      throw new Error('permissions are unavailable during a harness probe')
+    },
     sessionUpdate: async () => {},
   }
   const stream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout))
@@ -119,13 +137,20 @@ function initializeProbe(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<Prob
       Effect.try({
         try: () => {
           const descriptor = createHarnessSpawn(info, tmpdir(), platform)
-          return (deps.spawn ?? defaultSpawn)(descriptor.command, descriptor.args, { ...descriptor, stdio: ['pipe', 'pipe', 'pipe'] })
+          return (deps.spawn ?? defaultSpawn)(descriptor.command, descriptor.args, {
+            ...descriptor,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          })
         },
         catch: error => error,
       }),
-      child => Effect.sync(() => {
-        (deps.kill ?? ((target, targetPlatform) => killProbeChild(target, targetPlatform, deps.execFile)))(child, platform)
-      }),
+      child =>
+        Effect.sync(() => {
+          ;(deps.kill ?? ((target, targetPlatform) => killProbeChild(target, targetPlatform, deps.execFile)))(
+            child,
+            platform,
+          )
+        }),
     ).pipe(
       Effect.flatMap(child => {
         child.stderr?.resume()
@@ -143,22 +168,38 @@ function initializeProbe(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<Prob
           try: () => (deps.connectionFactory ?? defaultConnectionFactory)(child),
           catch: error => error,
         }).pipe(
-          Effect.flatMap(connection => Effect.tryPromise({
-            try: () => Promise.race([connection.initialize({
-              protocolVersion: PROTOCOL_VERSION,
-              clientInfo: { name: 'watchtower', version: deps.clientVersion ?? '0.0.0' },
-              clientCapabilities: {},
-            }), childFailure]),
-            catch: error => error,
-          }).pipe(Effect.tap(() => Effect.sync(() => { settled = true })))),
-          Effect.flatMap(response => authFromInitialize(info, deps).pipe(
-            Effect.map(auth => handshakeResult(info, auth, response.agentInfo?.version ?? undefined)),
-          )),
+          Effect.flatMap(connection =>
+            Effect.tryPromise({
+              try: () =>
+                Promise.race([
+                  connection.initialize({
+                    protocolVersion: PROTOCOL_VERSION,
+                    clientInfo: { name: 'watchtower', version: deps.clientVersion ?? '0.0.0' },
+                    clientCapabilities: {},
+                  }),
+                  childFailure,
+                ]),
+              catch: error => error,
+            }).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  settled = true
+                }),
+              ),
+            ),
+          ),
+          Effect.flatMap(response =>
+            authFromInitialize(info, deps).pipe(
+              Effect.map(auth => handshakeResult(info, auth, response.agentInfo?.version ?? undefined)),
+            ),
+          ),
           Effect.timeoutOption(Duration.millis(timeoutMs)),
-          Effect.flatMap(outcome => Option.match(outcome, {
-            onNone: () => Effect.fail(new Error(`did not answer the ACP handshake within ${timeoutMs / 1000}s`)),
-            onSome: Effect.succeed,
-          })),
+          Effect.flatMap(outcome =>
+            Option.match(outcome, {
+              onNone: () => Effect.fail(new Error(`did not answer the ACP handshake within ${timeoutMs / 1000}s`)),
+              onSome: Effect.succeed,
+            }),
+          ),
         )
       }),
     ),
@@ -168,6 +209,10 @@ function initializeProbe(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<Prob
 /** Runs only ACP initialize and always degrades failures to an honest row. */
 export function probeHarness(info: HarnessInfo, deps: ProbeDeps = {}): Effect.Effect<ProbeResult, never> {
   return initializeProbe(info, deps).pipe(
-    Effect.catchAll(error => Effect.succeed(errorResult(info, error instanceof Error ? error.message : String(error)))),
+    Effect.catchIf(
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the type predicate exhausts the unknown error channel
+      (_error): _error is unknown => true,
+      error => Effect.succeed(errorResult(info, error instanceof Error ? error.message : String(error))),
+    ),
   )
 }
