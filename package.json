@@ -31,6 +31,7 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.77.0",
     "@agentclientprotocol/codex-acp": "^1.1.14",
+    "@agentclientprotocol/sdk": "0.14.1",
     "@base-ui/react": "^1.6.0",
     "@gsap/react": "^2.1.2",
     "@mcpc-tech/acp-ai-provider": "^0.3.8",

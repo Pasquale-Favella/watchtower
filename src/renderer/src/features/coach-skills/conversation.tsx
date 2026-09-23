@@ -44,8 +44,9 @@ function ClaudeAuthHint() {
   const claudeRow = useCoachSkillsStore(s => s.harnesses.find(h => h.kind === 'claude'))
   const allowApiKeyEnv = useSettingsStore(s => s.allowHarnessApiKeyEnv)
   const setAllowHarnessApiKeyEnv = useSettingsStore(s => s.setAllowHarnessApiKeyEnv)
-  if (harnessKind !== 'claude' || !claudeRow) return null
-  const signedOut = claudeRow.authStatus !== 'configured'
+  const active = useCoachSkillsStore(s => s.harnesses.find(h => h.instanceId === harnessKind))
+  if (active?.kind !== 'claude' || !claudeRow) return null
+  const signedOut = claudeRow.auth.status !== 'configured'
   const infoText = allowApiKeyEnv
     ? 'Passthrough is On: Coach runs inherit ANTHROPIC_API_KEY from the app environment instead of Claude Code’s stored login. Make sure you launched the app from a terminal where ANTHROPIC_API_KEY is set, or runs will fail authentication.'
     : 'Passthrough is Off: Coach runs use Claude Code’s stored login. Make sure sign-in is detected — otherwise run `claude auth login` in a terminal and retry. Turn passthrough On only if you sign in via ANTHROPIC_API_KEY in your terminal.'
@@ -302,7 +303,7 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   }
 
   const pendingName = pendingSwitch
-    ? harnesses.find(h => h.kind === pendingSwitch.kind)?.displayName ?? pendingSwitch.kind
+    ? harnesses.find(h => h.instanceId === pendingSwitch.kind)?.displayName ?? pendingSwitch.kind
     : null
 
   /** Auto-grow the textarea with its content, capped so the input never

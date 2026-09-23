@@ -148,12 +148,16 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
 
   it('parses a harness picker row (no static model list — map 47 ticket 49)', () => {
     expect(coachHarnessRowSchema.safeParse({
+      instanceId: 'claude',
       kind: 'claude',
       displayName: 'Claude Code',
-      authStatus: 'configured',
+      status: 'ready',
+      auth: { status: 'configured' },
     }).success).toBe(true)
     expect(coachHarnessRowSchema.safeParse({ kind: 'claude' }).success).toBe(false)
-    expect(coachHarnessRowSchema.safeParse({ kind: 'claude', displayName: 'x', authStatus: 'nope' }).success).toBe(false)
+    expect(coachHarnessRowSchema.safeParse({
+      instanceId: 'claude', kind: 'claude', displayName: 'x', status: 'ready', auth: { status: 'nope' },
+    }).success).toBe(false)
   })
 
   it('parses the pre-flight inspect result — models/modes optional, probe failure as ok:false (map 47 ticket 50)', () => {

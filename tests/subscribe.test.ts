@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
 import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
 import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
+import { useCoachSkillsStore } from '../src/renderer/src/features/coach-skills/store.js'
 
 /** Stub the preload surface: capture each on* callback for manual firing,
  * merging any extra (fetch) methods onto the same `window.api`. */
@@ -16,6 +17,7 @@ function captureApi(extra?: Record<string, unknown>): Record<string, (payload?: 
     onCurrencyChanged: (cb: (p: unknown) => void) => { listeners.onCurrencyChanged = cb; return () => {} },
     onConfigChanged: (cb: () => void) => { listeners.onConfigChanged = cb; return () => {} },
     onCoachEvent: (cb: (p: unknown) => void) => { listeners.onCoachEvent = cb; return () => {} },
+    onCoachHarnessesChanged: (cb: (p: unknown) => void) => { listeners.onCoachHarnessesChanged = cb; return () => {} },
     ...extra,
   })
   return listeners
@@ -61,6 +63,7 @@ const analytics = {
 beforeEach(() => {
   useScanStore.setState(useScanStore.getInitialState(), true)
   useSettingsStore.setState(useSettingsStore.getInitialState(), true)
+  useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
 })
 
 describe('subscribeToIpc (ADR 0011)', () => {
@@ -157,9 +160,24 @@ describe('subscribeToIpc (ADR 0011)', () => {
       onCurrencyChanged: (cb: (p: unknown) => void) => { listeners.onCurrencyChanged = cb; return unsub },
       onConfigChanged: (cb: () => void) => { listeners.onConfigChanged = cb; return unsub },
       onCoachEvent: (cb: (p: unknown) => void) => { listeners.onCoachEvent = cb; return unsub },
+      onCoachHarnessesChanged: (cb: (p: unknown) => void) => { listeners.onCoachHarnessesChanged = cb; return unsub },
     })
     const teardown = subscribeToIpc()
     teardown()
-    expect(unsub).toHaveBeenCalledTimes(7)
+    expect(unsub).toHaveBeenCalledTimes(8)
+  })
+
+  it('feeds a coach:harnesses-changed broadcast into the coach store, dropping malformed ones', () => {
+    const listeners = captureApi()
+    const teardown = subscribeToIpc()
+    const row = { instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'ready', auth: { status: 'configured' } }
+
+    listeners.onCoachHarnessesChanged!([{ bogus: 1 }])
+    expect(useCoachSkillsStore.getState().harnesses).toEqual([])
+
+    listeners.onCoachHarnessesChanged!([row])
+    expect(useCoachSkillsStore.getState().harnesses).toEqual([row])
+
+    teardown()
   })
 })

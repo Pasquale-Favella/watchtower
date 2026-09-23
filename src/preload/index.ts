@@ -32,6 +32,7 @@ import type {
 } from '../shared/schemas/ipc.js'
 import type {
   CoachEventEnvelope,
+  CoachHarnessRow,
   CoachHarnessesResult,
   CoachInspectRequest,
   CoachInspectResult,
@@ -51,6 +52,7 @@ export type {
 } from '../shared/schemas/ipc.js'
 export type {
   CoachEventEnvelope,
+  CoachHarnessRow,
   CoachHarnessesResult,
   CoachInspectResult,
   CoachRunRequest,
@@ -174,6 +176,12 @@ const api = {
    * owned by the main process, and the harness reads platform data through the
    * in-app ledger MCP server. */
   getCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses'),
+  refreshCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses-refresh'),
+  onCoachHarnessesChanged: (callback: (rows: CoachHarnessRow[]) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, rows: CoachHarnessRow[]): void => callback(rows)
+    ipcRenderer.on('coach:harnesses-changed', listener)
+    return () => ipcRenderer.removeListener('coach:harnesses-changed', listener)
+  },
   /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
    * models/modes without a run, so the model/mode pickers render before the
    * first message. A failed probe is `{ ok: false }` — the pickers stay

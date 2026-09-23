@@ -84,6 +84,7 @@ import {
   coachHarnessesResultSchema,
   coachInspectResultSchema,
   coachRunResultSchema,
+  type CoachHarnessRow,
   type CoachHarnessesResult,
   type CoachInspectRequest,
   type CoachInspectResult,
@@ -314,6 +315,17 @@ export function fetchRemovePriceOverride(model: string): Promise<ApiResult<OkEnv
 
 export function fetchCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>> {
   return fetchPayload('coach harnesses', coachHarnessesResultSchema, () => window.api.getCoachHarnesses())
+}
+
+export function refreshCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>> {
+  return fetchPayload('coach harnesses refresh', coachHarnessesResultSchema, () => window.api.refreshCoachHarnesses())
+}
+
+export function onCoachHarnessesChanged(callback: (rows: CoachHarnessRow[]) => void): () => void {
+  return window.api.onCoachHarnessesChanged(rows => {
+    const parsed = parseEvent(coachHarnessesResultSchema, 'coach harnesses changed', rows)
+    if (parsed) callback(parsed)
+  })
 }
 
 /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared

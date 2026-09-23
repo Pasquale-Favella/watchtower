@@ -1,0 +1,171 @@
+import { execFile, spawn as spawnProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { Readable, Writable } from 'node:stream'
+import { tmpdir } from 'node:os'
+import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION, type Client, type InitializeResponse } from '@agentclientprotocol/sdk'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import type { HarnessInfo } from './detect.js'
+import { probeClaudeAuthStatus } from './auth-probe.js'
+import { createHarnessSpawn, type HarnessSpawn } from './runtime.js'
+
+export const HARNESS_PROBE_TIMEOUT_MS = 6000
+
+export type ProbeStatus = 'pending' | 'ready' | 'warning' | 'error' | 'disabled'
+export type ProbeAuthStatus = 'configured' | 'unauthenticated' | 'unknown'
+
+export interface ProbeResult {
+  status: Exclude<ProbeStatus, 'pending'>
+  auth: { status: ProbeAuthStatus; label?: string }
+  version?: string
+  message?: string
+}
+
+export interface ProbeChild {
+  pid?: number
+  stdin?: Writable
+  stdout?: Readable
+  stderr?: Readable
+  on(event: 'error', listener: (error: Error) => void): ProbeChild
+  on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): ProbeChild
+  kill: (signal?: NodeJS.Signals) => boolean
+}
+
+export interface ProbeConnection {
+  initialize: (params: {
+    protocolVersion: number
+    clientInfo: { name: string; version: string }
+    clientCapabilities: Record<string, never>
+  }) => Promise<InitializeResponse>
+}
+
+export type ProbeSpawn = (command: string, args: readonly string[], options: HarnessSpawn & { stdio: ['pipe', 'pipe', 'pipe'] }) => ProbeChild
+export type ProbeConnectionFactory = (child: ProbeChild) => ProbeConnection
+
+export interface ProbeDeps {
+  spawn?: ProbeSpawn
+  connectionFactory?: ProbeConnectionFactory
+  claudeAuthProbe?: () => Promise<ProbeAuthStatus>
+  kill?: (child: ProbeChild, platform: NodeJS.Platform) => void
+  execFile?: typeof execFile
+  clientVersion?: string
+  timeoutMs?: number
+  platform?: NodeJS.Platform
+}
+
+function defaultSpawn(command: string, args: readonly string[], options: HarnessSpawn & { stdio: ['pipe', 'pipe', 'pipe'] }): ChildProcessWithoutNullStreams {
+  return spawnProcess(command, [...args], options)
+}
+
+function defaultConnectionFactory(child: ProbeChild): ProbeConnection {
+  if (!child.stdin || !child.stdout) throw new Error('ACP child did not expose stdio pipes')
+  const client: Client = {
+    requestPermission: async () => { throw new Error('permissions are unavailable during a harness probe') },
+    sessionUpdate: async () => {},
+  }
+  const stream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout))
+  return new ClientSideConnection(() => client, stream)
+}
+
+function killProbeChild(child: ProbeChild, platform: NodeJS.Platform, runExecFile: typeof execFile = execFile): void {
+  if (platform === 'win32' && child.pid !== undefined) {
+    try {
+      runExecFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {})
+    } catch { /* best effort: the process may already be gone */ }
+    return
+  }
+  child.kill('SIGTERM')
+}
+
+function errorResult(info: HarnessInfo, detail: string): ProbeResult {
+  return {
+    status: 'error',
+    auth: { status: 'unknown' },
+    message: `${info.displayName} ${detail} (${info.bin})`,
+  }
+}
+
+function warningResult(info: HarnessInfo, auth: ProbeAuthStatus, version?: string): ProbeResult {
+  const message = auth === 'unauthenticated'
+    ? `${info.displayName} is not signed in`
+    : auth === 'unknown'
+      ? 'Sign-in not verified'
+      : undefined
+  return {
+    status: auth === 'configured' ? 'ready' : 'warning',
+    auth: { status: auth },
+    ...(version ? { version } : {}),
+    ...(message ? { message } : {}),
+  }
+}
+
+function authFromInitialize(info: HarnessInfo, response: InitializeResponse, deps: ProbeDeps): Effect.Effect<ProbeAuthStatus, unknown> {
+  if (info.kind === 'claude') {
+    return Effect.tryPromise({
+      try: () => (deps.claudeAuthProbe ?? probeClaudeAuthStatus)(),
+      catch: error => error,
+    })
+  }
+  return Effect.succeed(response.authMethods && response.authMethods.length > 0 ? 'unknown' : 'configured')
+}
+
+function initializeProbe(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<ProbeResult, unknown> {
+  const timeoutMs = deps.timeoutMs ?? HARNESS_PROBE_TIMEOUT_MS
+  const platform = deps.platform ?? process.platform
+  return Effect.scoped(
+    Effect.acquireRelease(
+      Effect.try({
+        try: () => {
+          const descriptor = createHarnessSpawn(info, tmpdir(), platform)
+          return (deps.spawn ?? defaultSpawn)(descriptor.command, descriptor.args, { ...descriptor, stdio: ['pipe', 'pipe', 'pipe'] })
+        },
+        catch: error => error,
+      }),
+      child => Effect.sync(() => {
+        (deps.kill ?? ((target, targetPlatform) => killProbeChild(target, targetPlatform, deps.execFile)))(child, platform)
+      }),
+    ).pipe(
+      Effect.flatMap(child => {
+        child.stderr?.resume()
+        child.stdin?.on('error', () => {})
+        let settled = false
+        const childFailure = new Promise<never>((_, reject) => {
+          child.on('error', error => reject(error))
+          child.on('exit', (code, signal) => {
+            if (!settled) reject(new Error(`ACP child exited before handshake (${code ?? signal ?? 'unknown'})`))
+          })
+        })
+        // Late child errors (after success, timeout, or teardown) must never surface as unhandled rejections.
+        childFailure.catch(() => {})
+        return Effect.try({
+          try: () => (deps.connectionFactory ?? defaultConnectionFactory)(child),
+          catch: error => error,
+        }).pipe(
+          Effect.flatMap(connection => Effect.tryPromise({
+            try: () => Promise.race([connection.initialize({
+              protocolVersion: PROTOCOL_VERSION,
+              clientInfo: { name: 'watchtower', version: deps.clientVersion ?? '0.0.0' },
+              clientCapabilities: {},
+            }), childFailure]),
+            catch: error => error,
+          }).pipe(Effect.tap(() => Effect.sync(() => { settled = true })))),
+          Effect.flatMap(response => authFromInitialize(info, response, deps).pipe(
+            Effect.map(auth => warningResult(info, auth, response.agentInfo?.version ?? undefined)),
+          )),
+          Effect.timeoutOption(Duration.millis(timeoutMs)),
+          Effect.flatMap(outcome => Option.match(outcome, {
+            onNone: () => Effect.fail(new Error(`did not answer the ACP handshake within ${timeoutMs / 1000}s`)),
+            onSome: Effect.succeed,
+          })),
+        )
+      }),
+    ),
+  )
+}
+
+/** Runs only ACP initialize and always degrades failures to an honest row. */
+export function probeHarness(info: HarnessInfo, deps: ProbeDeps = {}): Effect.Effect<ProbeResult, never> {
+  return initializeProbe(info, deps).pipe(
+    Effect.catchAll(error => Effect.succeed(errorResult(info, error instanceof Error ? error.message : String(error)))),
+  )
+}

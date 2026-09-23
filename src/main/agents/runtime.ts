@@ -2,7 +2,7 @@ import { existsSync, statSync } from 'node:fs'
 import type { ACPProvider, ACPProviderSettings } from '@mcpc-tech/acp-ai-provider'
 import type { CoachEvent, CoachSessionModels, CoachSessionModes } from '../../shared/schemas/agents.js'
 import type { HarnessInfo } from './detect.js'
-import type { AcpMcpServer } from './harnesses/types.js'
+import type { AcpAdapter, AcpMcpServer } from './harnesses/types.js'
 import { deriveCoachEvents, type CoachStreamPart } from './events.js'
 import { harnessSpecs } from './harnesses/index.js'
 
@@ -81,6 +81,14 @@ export interface HarnessProviderInput {
   /** Extra MCP servers to attach to the agent session (the injected in-app
    *  ledger server — map 53). Merged AFTER the spec's own servers. */
   mcpServers?: AcpMcpServer[]
+}
+
+export interface HarnessSpawn {
+  command: string
+  args: string[]
+  env: Record<string, string>
+  cwd: string
+  windowsHide: boolean
 }
 
 export interface HarnessRunInput extends HarnessProviderInput {
@@ -731,6 +739,34 @@ export function acpSpawnCommand(
   return { command: 'cmd.exe', args: ['/c', command, ...args] }
 }
 
+function acpConfigFor(kind: string): AcpAdapter['acpConfig'] {
+  const spec = harnessSpecs.find(s => s.kind === kind)
+  if (!spec || spec.adapter.kind !== 'acp') {
+    throw new Error(`harness ${kind} has no ACP adapter`)
+  }
+  return spec.adapter.acpConfig
+}
+
+/** Builds the exact scrubbed ACP process descriptor shared by runs and probes.
+ *  A BUNDLED ACP server runs through the app's own Node (`process.execPath` +
+ *  ELECTRON_RUN_AS_NODE, the ledger-mcp pattern); PATH-resolved harnesses
+ *  spawn the spec command through the win32 shim handling. */
+export function createHarnessSpawn(
+  harness: HarnessInfo,
+  cwd: string,
+  platform: NodeJS.Platform = process.platform,
+  allowApiKeyEnv = false,
+): HarnessSpawn {
+  const acp = acpConfigFor(harness.kind)
+  const spawn = harness.bundledEntry
+    ? { command: process.execPath, args: [harness.bundledEntry, ...(acp.args ?? [])] }
+    : acpSpawnCommand(acp.command, acp.args ?? [], platform)
+  const env = scrubbedEnv(harness.scrubEnv, allowApiKeyEnv)
+  // Inert under real Node, so tests are unaffected.
+  if (harness.bundledEntry) env.ELECTRON_RUN_AS_NODE = '1'
+  return { command: spawn.command, args: spawn.args, env, cwd, windowsHide: true }
+}
+
 export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOptions = {}): HarnessRuntime {
   const platform = options.platform ?? process.platform
 
@@ -743,32 +779,13 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
   function createProvider(input: HarnessProviderInput): AcpProvider {
     assertRealWorkspacePath(input.workspacePath)
 
-    const spec = harnessSpecs.find(s => s.kind === input.harness.kind)
-    if (!spec || spec.adapter.kind !== 'acp') {
-      throw new Error(`harness ${input.harness.kind} has no ACP adapter`)
-    }
-    const acp = spec.adapter.acpConfig
-
-    // The ACP provider has no `shell` option — it spawns the command
-    // verbatim. A BUNDLED ACP server (resolved from the app's own
-    // node_modules, no global install) is run through the app's own Node
-    // (`process.execPath` + ELECTRON_RUN_AS_NODE, the ledger-mcp pattern) —
-    // no cmd.exe shim, no PATH lookup. PATH-resolved harnesses keep the
-    // win32 shim handling below.
-    const spawn = input.harness.bundledEntry
-      ? { command: process.execPath, args: [input.harness.bundledEntry, ...(acp.args ?? [])] }
-      : acpSpawnCommand(acp.command, acp.args ?? [], platform)
-
-    const env = scrubbedEnv(input.harness.scrubEnv, input.allowApiKeyEnv)
-    // Bundled JS entries run as plain Node inside the app's binary (dev:
-    // electron.exe; packaged: the app exe) — the flag is inert under real
-    // Node, so tests are unaffected.
-    if (input.harness.bundledEntry) env.ELECTRON_RUN_AS_NODE = '1'
+    const acp = acpConfigFor(input.harness.kind)
+    const spawn = createHarnessSpawn(input.harness, input.workspacePath, platform, input.allowApiKeyEnv)
 
     return sdk.createACPProvider({
       command: spawn.command,
       args: spawn.args,
-      env,
+      env: spawn.env,
       session: {
         cwd: input.workspacePath,
         mcpServers: [...(acp.mcpServers ?? []), ...(input.mcpServers ?? [])],

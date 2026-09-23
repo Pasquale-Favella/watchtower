@@ -126,7 +126,7 @@ export type CoachEventEnvelope = z.infer<typeof coachEventEnvelopeSchema>
  *  coaching question (the suggested-skill chips send a natural-language
  *  authoring prompt); the separate `build-skill` mode was deleted. */
 export const coachRunRequestSchema = z.object({
-  /** Registry key of the harness to drive (claude, codex, gemini, …). */
+  /** Instance id to drive; the wire field retains its legacy name. */
   harnessKind: z.string(),
   /** Agent-declared model id (from the session event's models), optional. */
   modelId: z.string().optional(),
@@ -167,11 +167,20 @@ export type CoachRunResult = z.infer<typeof coachRunResultSchema>
  *  no static model list rides the row — selectable models/modes arrive only
  *  via the live handshake (`session` event models/modes, ticket 50). */
 export const coachHarnessRowSchema = z.object({
+  /** Stable instance key. For the default registry this equals `kind`. */
+  instanceId: z.string(),
   /** Canonical tool name — the registry key (claude, gemini, …). */
   kind: z.string(),
   /** Human-readable label shown in the picker. */
   displayName: z.string(),
-  authStatus: z.enum(['configured', 'unknown']),
+  status: z.enum(['pending', 'ready', 'warning', 'error', 'disabled']),
+  auth: z.object({
+    status: z.enum(['configured', 'unauthenticated', 'unknown']),
+    label: z.string().optional(),
+  }),
+  version: z.string().optional(),
+  binaryPath: z.string().optional(),
+  message: z.string().optional(),
 })
 export type CoachHarnessRow = z.infer<typeof coachHarnessRowSchema>
 

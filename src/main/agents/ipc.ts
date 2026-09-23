@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserWindow, ipcMain } from 'electron'
 import { detectHarnesses, type HarnessInfo } from './detect.js'
-import { probeClaudeAuthStatus } from './auth-probe.js'
 import { createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
+import { probeHarness } from './probe.js'
+import { createHarnessSnapshotStore, type HarnessInstance, type HarnessSnapshotStore } from './snapshot.js'
 import { resolveBundledEntry } from './harnesses/bundled.js'
 import { buildCoachPrompt, buildLedgerBriefing } from './prompts.js'
 import type { AcpMcpServer } from './harnesses/types.js'
@@ -63,9 +64,9 @@ export interface LedgerMcpAttachment {
 export interface CoachRunnerDeps {
   /** Lazily-provided seam — the SDK loads on the first run, not at boot. */
   getRuntime: () => Promise<HarnessRuntime>
-  /** Detection for the picker AND the run's HarnessInfo (scrubEnv, bin). The
-   *  runner never trusts the renderer's kind string beyond a registry key. */
-  detect: () => Promise<HarnessInfo[]>
+  /** Managed harness snapshot: picker rows and instance lookup — never spawns
+   *  per call. The runner never trusts the renderer's id beyond a lookup key. */
+  harnesses: HarnessSource
   /** Acquires the in-app ledger MCP server for a harness registry key
    *  (map 53, reshaped for per-harness transports). App-specific (execPath,
    *  asar entry path, dbPath, sidecar spawn) — injected so the runner stays
@@ -79,8 +80,15 @@ export interface CoachRunnerDeps {
   ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
 }
 
+export interface HarnessSource {
+  list: () => Promise<CoachHarnessRow[]>
+  refresh: () => Promise<CoachHarnessRow[]>
+  get: (instanceId: string) => Promise<HarnessInstance | undefined>
+}
+
 export interface CoachRunner {
   harnesses(): Promise<CoachHarnessRow[]>
+  refreshHarnesses(): Promise<CoachHarnessRow[]>
   /** Pre-flight probe (map 47 ticket 50): asks the agent's handshake for its
    *  declared models/modes WITHOUT running a prompt, so the pickers render
    *  before the first message. Reuses the conversation workspace as the
@@ -122,6 +130,7 @@ function toProbeInput(request: unknown): ProbeInput | null {
 }
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
+  const harnessSource = deps.harnesses
   const activeRuns = new Map<string, AsyncGenerator<CoachEvent>>()
   /** Runs cancelled by the user before their stream settled — the settle path
    * logs `harness.cancel` instead of `harness.finish` for these (#130). */
@@ -177,8 +186,8 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   async function runProbe(input: ProbeInput): Promise<CoachInspectResult> {
     const generation = conversationGeneration
     try {
-      const found = await deps.detect()
-      const harness = found.find(h => h.kind === input.kind)
+      const instance = await harnessSource.get(input.kind)
+      const harness = instance?.info
       if (!harness) {
         return { ok: false, error: `harness not detected: ${input.kind}` }
       }
@@ -249,12 +258,11 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
 
   return {
     async harnesses() {
-      const found = await deps.detect()
-      return found.map(h => ({
-        kind: h.kind,
-        displayName: h.displayName,
-        authStatus: h.authStatus,
-      }))
+      return harnessSource.list()
+    },
+
+    async refreshHarnesses() {
+      return harnessSource.refresh()
     },
 
     async inspect(request: unknown): Promise<CoachInspectResult> {
@@ -296,8 +304,8 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         return { ok: false, error: 'coach run requires a prompt' }
       }
 
-      const found = await deps.detect()
-      const harness = found.find(h => h.kind === req.harnessKind)
+      const instance = await harnessSource.get(req.harnessKind)
+      const harness = instance?.info
       if (!harness) {
         return { ok: false, error: `harness not detected: ${req.harnessKind}` }
       }
@@ -491,6 +499,7 @@ export interface AgentsIpcSources {
    *  are resolved from `<appPath>/node_modules`, so no global install is
    *  needed (ADR 0016 map 47 ticket 49). */
   appPath: string
+  clientVersion: string
   /** Acquires the in-app ledger MCP server for a harness registry key
    *  (map 53) — the runner's app-specific dep, supplied by the composition
    *  root (main/index.ts). Takes no scope: the server serves the full
@@ -503,9 +512,20 @@ export interface AgentsIpcSources {
 /** Wire the Coach & Skills IPC surface onto ipcMain. Call once from
  *  registerIpc(); returns the runner cleanup handle (temp workspace teardown)
  *  for the app's quit path. `dismissals` bridges the not-a-skill store. */
-export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Promise<void> } {
-  const { dismissals, appPath, ledgerMcpServer } = sources
+export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Promise<void>; dispose: () => Promise<void> } {
+  const { dismissals, appPath, clientVersion, ledgerMcpServer } = sources
   let runtimePromise: Promise<HarnessRuntime> | null = null
+  const harnessStore: HarnessSnapshotStore = createHarnessSnapshotStore({
+    detect: () => detectHarnesses({
+      resolveBundled: spec => resolveBundledEntry(spec, appPath),
+    }),
+    probe: info => probeHarness(info, { clientVersion }),
+    onChange: rows => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('coach:harnesses-changed', rows)
+      }
+    },
+  })
   const runner = createCoachRunner({
     // The SDK is ESM and heavy; boot stays independent of it (the seam's
     // lazy-wire design). First run pays the load once.
@@ -513,20 +533,12 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
       runtimePromise ??= loadHarnessSdk().then(createHarnessRuntime)
       return runtimePromise
     },
-    detect: () => detectHarnesses({
-      resolveBundled: spec => resolveBundledEntry(spec, appPath),
-      // Claude Code sign-in probe (auth wall early signal): the ACP
-      // handshake reports models/modes WITHOUT authenticating, so without
-      // this the picker would offer a harness that cannot run. The probe
-      // reads only the CLI's logged-in boolean and never throws (see
-      // auth-probe.ts). Other harnesses have no probe yet and stay
-      // 'unknown' — informative only, never blocking.
-      authProbe: kind => (kind === 'claude' ? probeClaudeAuthStatus() : Promise.resolve('unknown')),
-    }),
+    harnesses: harnessStore,
     ledgerMcpServer,
   })
 
   ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> => runner.harnesses())
+  ipcMain.handle('coach:harnesses-refresh', async (): Promise<CoachHarnessRow[]> => runner.refreshHarnesses())
 
   /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
    *  models/modes without a run, so the pickers render before the first
@@ -581,5 +593,15 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
     return { ok: true }
   })
 
-  return { reset: () => runner.reset() }
+  const startup = setTimeout(() => harnessStore.start(), 1500)
+  startup.unref?.()
+  return {
+    reset: async () => {
+      await runner.reset()
+    },
+    dispose: async () => {
+      await runner.reset()
+      await harnessStore.dispose()
+    },
+  }
 }

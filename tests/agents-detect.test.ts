@@ -155,9 +155,9 @@ describe('detectHarnesses — registry detection (seam: pure logic)', () => {
     expect(harnesses[0]?.authStatus).toBe('configured')
   })
 
-  it('degrades auth status to unknown when the probe is unavailable', async () => {
+  it('leaves auth status to the managed probe when no detection auth probe is given', async () => {
     const harnesses = await detectHarnesses({ commandExists: lookup(['claude-agent-acp']) })
-    expect(harnesses[0]?.authStatus).toBe('unknown')
+    expect(harnesses[0]?.authStatus).toBeUndefined()
   })
 })
 

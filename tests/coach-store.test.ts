@@ -32,8 +32,8 @@ function mockWindow(api: unknown): void {
 }
 
 const harnesses = [
-  { kind: 'claude', displayName: 'Claude Code', authStatus: 'configured' },
-  { kind: 'gemini', displayName: 'Gemini CLI', authStatus: 'unknown' },
+  { instanceId: 'claude', kind: 'claude', displayName: 'Claude Code', status: 'ready', auth: { status: 'configured' } },
+  { instanceId: 'gemini', kind: 'gemini', displayName: 'Gemini CLI', status: 'warning', auth: { status: 'unknown' } },
 ]
 
 const envelope = (event: CoachEventEnvelope['event']): CoachEventEnvelope => ({ runId: 'run-1', event })
@@ -75,6 +75,44 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     expect(s.hydrated).toBe(false)
     expect(s.harnesses).toEqual([])
     expect(s.harnessKind).toBeNull()
+  })
+
+  it('selects ready before warning/pending and never selects an error row', async () => {
+    const errorRow = { instanceId: 'broken', kind: 'broken', displayName: 'Broken', status: 'error' as const, auth: { status: 'unknown' as const } }
+    const warningRow = { instanceId: 'needs-login', kind: 'needs-login', displayName: 'Needs login', status: 'warning' as const, auth: { status: 'unauthenticated' as const } }
+    mockWindow({ getCoachHarnesses: () => Promise.resolve([errorRow, warningRow]) })
+    await useCoachSkillsStore.getState().loadHarnesses()
+    expect(useCoachSkillsStore.getState().harnessKind).toBe('needs-login')
+
+    useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
+    useCoachSkillsStore.getState().replaceHarnesses([errorRow])
+    expect(useCoachSkillsStore.getState().harnessKind).toBeNull()
+  })
+
+  it('moves an auto-pick to a ready instance as probes land, but keeps a user pick', () => {
+    const pending = (id: string) => ({ instanceId: id, kind: id, displayName: id, status: 'pending' as const, auth: { status: 'unknown' as const } })
+    const store = useCoachSkillsStore.getState()
+    store.replaceHarnesses([pending('claude'), pending('codex')])
+    expect(useCoachSkillsStore.getState().harnessKind).toBe('claude')
+
+    useCoachSkillsStore.getState().replaceHarnesses([
+      { ...pending('claude'), status: 'error' },
+      { ...pending('codex'), status: 'ready', auth: { status: 'configured' } },
+    ])
+    expect(useCoachSkillsStore.getState().harnessKind).toBe('codex')
+
+    useCoachSkillsStore.getState().setHarness('claude')
+    useCoachSkillsStore.getState().replaceHarnesses([
+      { ...pending('claude'), status: 'error' },
+      { ...pending('codex'), status: 'ready', auth: { status: 'configured' } },
+    ])
+    expect(useCoachSkillsStore.getState().harnessKind).toBe('claude')
+  })
+
+  it('applies a harnesses-changed snapshot before initial load', () => {
+    const changed = { instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'ready' as const, auth: { status: 'configured' as const } }
+    useCoachSkillsStore.getState().replaceHarnesses([changed])
+    expect(useCoachSkillsStore.getState()).toMatchObject({ hydrated: true, harnessKind: 'codex', harnesses: [changed] })
   })
 
   it('sendCoach pushes user + assistant turns and acks the run', async () => {

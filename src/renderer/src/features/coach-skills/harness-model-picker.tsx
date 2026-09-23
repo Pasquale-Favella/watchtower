@@ -93,7 +93,7 @@ export function HarnessModelPicker({
   const [draftKind, setDraftKind] = useState<string | null>(null)
   const [query, setQuery] = useState('')
 
-  const activeHarness = harnesses.find(h => h.kind === harnessKind) ?? null
+  const activeHarness = harnesses.find(h => h.instanceId === harnessKind) ?? null
   const previewKind = draftKind ?? harnessKind
   const previewModels = modelsForKind(previewKind, harnessKind, sessionModels, modelsByKind)
   const loading = !!previewKind && inspectingKind === previewKind && previewModels.length === 0
@@ -193,12 +193,12 @@ export function HarnessModelPicker({
           <div className="w-11 shrink-0 overflow-y-auto bg-muted/30 p-1">
             <div className="relative flex min-h-full flex-col gap-1">
               {harnesses.map(harness => {
-                const selected = previewKind === harness.kind
-                const tooltip = harness.authStatus === 'configured'
+                const selected = previewKind === harness.instanceId
+                const tooltip = harness.auth.status === 'configured'
                   ? `${harness.displayName} — configured`
                   : harness.displayName
                 return (
-                  <div key={harness.kind} className="h-9 w-full shrink-0">
+                  <div key={harness.instanceId} className="h-9 w-full shrink-0">
                     <Tooltip>
                       <TooltipTrigger
                         render={
@@ -207,7 +207,7 @@ export function HarnessModelPicker({
                             variant="ghost"
                             size="icon-lg"
                             aria-label={tooltip}
-                            onClick={() => previewRail(harness.kind)}
+                            onClick={() => previewRail(harness.instanceId)}
                             className={cn(
                               'relative isolate w-full rounded-md text-muted-foreground hover:bg-primary/10 hover:text-foreground focus-visible:bg-primary/10',
                               selected && 'bg-primary/15 text-primary hover:bg-primary/20',

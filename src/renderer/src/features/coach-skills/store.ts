@@ -91,6 +91,8 @@ export interface CoachSkillsState {
   harnesses: CoachHarnessRow[]
   /** The selected harness registry key (null until the user picks one). */
   harnessKind: string | null
+  /** The selection is the store's default pick, not the user's. */
+  harnessAutoPicked: boolean
   /** Agent-declared selectable models, from the last session event or the
    *  pre-flight probe (map 47 ticket 50). Absent until a harness reports them
    *  — the progressive picker only renders when this exists. */
@@ -133,6 +135,8 @@ export interface CoachSkillsState {
   detection: ScopedDataSlice<SkillsPayload>
   /** Loads the detected harnesses for the picker (idempotent refresh). */
   loadHarnesses: () => Promise<void>
+  /** Applies a live managed snapshot broadcast without spawning a probe. */
+  replaceHarnesses: (harnesses: CoachHarnessRow[]) => void
   /** Persists the picker choice. Restores the target harness's cached set
    *  (and picks) instantly when it has been probed before; otherwise clears
    *  the live set and probes the new harness eagerly. */
@@ -172,6 +176,13 @@ function nextMessageId(): string {
   return `m${messageSeq}`
 }
 
+/** Default instance: first ready, else first warning/pending — never an errored one. */
+function defaultHarnessId(harnesses: CoachHarnessRow[]): string | null {
+  return harnesses.find(h => h.status === 'ready')?.instanceId
+    ?? harnesses.find(h => h.status === 'warning' || h.status === 'pending')?.instanceId
+    ?? null
+}
+
 /** The FIRST started notice for a tool name — the default completion target
  *  when the harness attached no id (older seams). Streams arrive in call
  *  order, so the first open call is the one being closed; LIFO would pair
@@ -191,7 +202,7 @@ function emptyAssistant(): ChatMessage {
   // Runtime snapshot: only ever called from startRun, long after the store
   // below is created — never during module init (avoids the TDZ).
   const s = useCoachSkillsStore.getState()
-  const harness = s.harnesses.find(h => h.kind === s.harnessKind)
+  const harness = s.harnesses.find(h => h.instanceId === s.harnessKind)
   const model = s.sessionModels?.availableModels.find(m => m.modelId === s.modelId)
   const smode = s.sessionModes?.availableModes.find(m => m.id === s.modeId)
   const meta: ChatMessage['meta'] = {
@@ -214,6 +225,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   hydrated: false,
   harnesses: [],
   harnessKind: null,
+  harnessAutoPicked: false,
   sessionModels: null,
   sessionModes: null,
   inspectingKind: null,
@@ -237,29 +249,26 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   loadHarnesses: async () => {
     const result = await fetchCoachHarnesses()
     if (!result.ok) return
-    const harnesses = result.data
+    get().replaceHarnesses(result.data)
+  },
+  replaceHarnesses: (harnesses) => {
+    const { harnessKind: current, harnessAutoPicked, messages } = get()
+    const currentRow = current ? harnesses.find(h => h.instanceId === current) : undefined
+    // An auto-pick is re-evaluated as probes land, until the user picks or chats.
+    const keep = !!currentRow && !(harnessAutoPicked && messages.length === 0 && currentRow.status !== 'ready')
+    const next = keep ? current : defaultHarnessId(harnesses)
     set({ harnesses, hydrated: true })
-    // Auto-select the first configured harness — the picker still lets the
-    // user change it, but the first run should never sit behind a "pick a
-    // harness" wall.
-    const current = get().harnessKind
-    const next = current && harnesses.some(h => h.kind === current) ? current : harnesses[0]?.kind ?? null
     if (next && next !== current) {
-      // A re-selection away from the current harness (it vanished from
-      // detection) is a SWITCH — route it through setHarness so the new
-      // harness's cached set restores properly (never leave the old harness's
-      // live set on the picker) and the hybrid warm start still probes an
-      // uncached harness. `setHarness` runs FIRST so it snapshots the outgoing
-      // harness's LIVE picks before any reset clobbers them (same contract as
-      // the picker's confirmed switch). When a conversation exists, reset it —
-      // `resetSession` stops any in-flight run main-side (coach:reset cancels
-      // all active runs and awaits their teardown, then deletes the old
-      // workspace — the Windows EPERM fix), so no explicit cancel() is needed.
-      // A fresh mount (current null) has nothing to clear, so no reset fires.
+      // setHarness first so it snapshots the outgoing harness's live picks;
+      // resetSession then stops any in-flight run of the vanished harness.
       get().setHarness(next)
-      if (current && get().messages.length > 0) get().resetSession()
+      set({ harnessAutoPicked: true })
+      if (current && messages.length > 0) get().resetSession()
     } else {
-      set({ harnessKind: next })
+      set({
+        harnessKind: next,
+        ...(next ? {} : { sessionModels: null, sessionModes: null, modelId: null, modeId: null }),
+      })
     }
   },
   setHarness: (harnessKind) => {
@@ -280,6 +289,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     const cached = modelsByKind[harnessKind] ?? null
     set({
       harnessKind,
+      harnessAutoPicked: false,
       modelsByKind,
       ...(cached
         ? { sessionModels: cached.models, sessionModes: cached.modes, modelId: cached.modelId, modeId: cached.modeId }

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createCoachRunner, type CoachRunner, type LedgerMcpAttachment } from '../src/main/agents/ipc.js'
+import { createCoachRunner, type CoachRunner, type HarnessSource, type LedgerMcpAttachment } from '../src/main/agents/ipc.js'
 import { closeOperationalLog, initOperationalLog } from '../src/main/operational-log.js'
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
@@ -23,6 +23,27 @@ const harnesses: HarnessInfo[] = [
 ]
 
 const detect = vi.fn(async () => harnesses)
+
+/** Uncached harness source over `detect` — tests swap detection per case. */
+const harnessSource: HarnessSource = {
+  async list() {
+    return (await detect()).map(h => ({
+      instanceId: h.instanceId ?? h.kind,
+      kind: h.kind,
+      displayName: h.displayName,
+      status: 'ready' as const,
+      auth: { status: 'configured' as const },
+      binaryPath: h.bin,
+    }))
+  },
+  async refresh() {
+    return harnessSource.list()
+  },
+  async get(instanceId) {
+    const info = (await detect()).find(h => (h.instanceId ?? h.kind) === instanceId)
+    return info ? { instanceId, info, status: 'ready', auth: { status: 'configured' } } : undefined
+  },
+}
 
 /** A fake ledger MCP attachment builder: takes the harness registry key (the
  *  composition root picks the transport per harness) and NO scope — the
@@ -76,7 +97,7 @@ function streamingRuntime(): { runtime: HarnessRuntime; interrupted: () => boole
 }
 
 function makeRunner(runtime: HarnessRuntime): CoachRunner {
-  return createCoachRunner({ getRuntime: async () => runtime, detect, ledgerMcpServer })
+  return createCoachRunner({ getRuntime: async () => runtime, harnesses: harnessSource, ledgerMcpServer })
 }
 
 /** Yields to the event loop so the fire-and-forget stream pump lands. */
@@ -103,7 +124,14 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     const runner = makeRunner(scriptedRuntime([]))
     const rows = await runner.harnesses()
     expect(rows).toEqual([
-      { kind: 'claude', displayName: 'Claude Code', authStatus: 'configured' },
+      {
+        instanceId: 'claude',
+        kind: 'claude',
+        displayName: 'Claude Code',
+        status: 'ready',
+        auth: { status: 'configured' },
+        binaryPath: 'C:\\bin\\claude-agent-acp.exe',
+      },
     ])
   })
 
@@ -222,7 +250,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     releaseLedgerMcp.mockClear()
     const runner = createCoachRunner({
       getRuntime: async () => { throw new Error('no sdk') },
-      detect,
+      harnesses: harnessSource,
       ledgerMcpServer,
     })
 

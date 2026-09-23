@@ -63,6 +63,7 @@ export async function probeClaudeAuthStatus(exec: AuthProbeExec = defaultExec): 
     const { stdout } = await exec('claude', ['auth', 'status', '--json'])
     const parsed: unknown = JSON.parse(stdout)
     if (isRecord(parsed) && parsed.loggedIn === true) return 'configured'
+    if (isRecord(parsed) && parsed.loggedIn === false) return 'unauthenticated'
     return 'unknown'
   } catch {
     return 'unknown'
