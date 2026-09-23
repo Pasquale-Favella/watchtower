@@ -8,6 +8,14 @@ import { z } from 'zod'
 import {
   type CurrencyRate,
   currencyRateRowSchema,
+  type LedgerCallRow,
+  ledgerCallRowSchema,
+  type LedgerSessionRow,
+  ledgerSessionRowSchema,
+  type LedgerSourceRow,
+  ledgerSourceRowSchema,
+  type LedgerTurnRow,
+  ledgerTurnRowSchema,
   type ModelAlias,
   modelAliasRowSchema,
   type PortResult,
@@ -34,6 +42,10 @@ export class LedgerRepository extends Context.Service<
     removePriceOverride(model: string): Effect.Effect<void, SqlError>
     getModelAliases(): Effect.Effect<ModelAlias[], SqlError>
     getPriceOverrides(): Effect.Effect<PriceOverride[], SqlError>
+    getSources(): Effect.Effect<LedgerSourceRow[], SqlError>
+    getSessions(): Effect.Effect<LedgerSessionRow[], SqlError>
+    getTurns(): Effect.Effect<LedgerTurnRow[], SqlError>
+    getCalls(): Effect.Effect<LedgerCallRow[], SqlError>
     getCurrencyRate(code: string): Effect.Effect<CurrencyRate | null, SqlError>
     getDisplayCurrency(): Effect.Effect<string, SqlError>
     getRefreshCadence(): Effect.Effect<string, SqlError>
@@ -94,6 +106,50 @@ export class LedgerRepository extends Context.Service<
           'SELECT model, input_price_per_million, output_price_per_million FROM price_override',
         )
         return z.array(priceOverrideRowSchema).parse(rows)
+      })
+
+      const getSources = Effect.fn('LedgerRepository.getSources')(function* () {
+        const rows = yield* sql.unsafe(`
+          SELECT id, provider, env_fingerprint, file_path, repo_url, project,
+                 CAST(fingerprint_dev AS TEXT) AS fingerprint_dev,
+                 CAST(fingerprint_ino AS TEXT) AS fingerprint_ino,
+                 fingerprint_mtime_ms, fingerprint_size_bytes, last_ported_at
+          FROM ledger_source ORDER BY id ASC
+        `)
+        return z.array(ledgerSourceRowSchema).parse(rows)
+      })
+
+      const getSessions = Effect.fn('LedgerRepository.getSessions')(function* () {
+        const rows = yield* sql.unsafe(`
+          SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
+                 agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
+                 mcp_inventory_json, ambiguous_spawn_agent_ids_json, ever_had_branch
+          FROM ledger_session ORDER BY session_id ASC
+        `)
+        return z.array(ledgerSessionRowSchema).parse(rows)
+      })
+
+      const getTurns = Effect.fn('LedgerRepository.getTurns')(function* () {
+        const rows = yield* sql.unsafe(`
+          SELECT source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
+                 spawn_tool_use_ids_json, category, sub_category, retries, has_edits
+          FROM ledger_turn ORDER BY session_id ASC, turn_index ASC
+        `)
+        return z.array(ledgerTurnRowSchema).parse(rows)
+      })
+
+      const getCalls = Effect.fn('LedgerRepository.getCalls')(function* () {
+        const rows = yield* sql.unsafe(`
+          SELECT source_id, session_id, turn_index, call_index, call_key, dedup_key, provider, model, timestamp, speed,
+                 project, project_path, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
+                 input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
+                 reasoning_tokens, web_search_requests, cache_creation_one_hour_tokens, agent_type,
+                 tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
+                 tool_sequence_json,
+                 loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
+          FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
+        `)
+        return z.array(ledgerCallRowSchema).parse(rows)
       })
 
       const getCurrencyRate = Effect.fn('LedgerRepository.getCurrencyRate')(function* (code: string) {
@@ -452,6 +508,10 @@ export class LedgerRepository extends Context.Service<
         setPriceOverride,
         removePriceOverride,
         getPriceOverrides,
+        getSources,
+        getSessions,
+        getTurns,
+        getCalls,
         getCurrencyRate,
         getDisplayCurrency,
         getRefreshCadence,

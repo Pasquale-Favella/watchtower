@@ -1,20 +1,15 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 
-import { z } from 'zod'
 import * as Effect from 'effect/Effect'
 import { SqlError } from 'effect/unstable/sql/SqlError'
 
 import {
   type CurrencyRate,
   type LedgerCallRow,
-  ledgerCallRowSchema,
   type LedgerSessionRow,
-  ledgerSessionRowSchema,
   type LedgerSourceRow,
-  ledgerSourceRowSchema,
   type LedgerTurnRow,
-  ledgerTurnRowSchema,
   type ModelAlias,
   type PortResult,
   type PriceOverride,
@@ -242,67 +237,19 @@ export class LedgerStore {
   // ── Read-back (the aggregation layer's input) ─────────────────────────
 
   getSources(): LedgerSourceRow[] {
-    // CAST dev/ino to TEXT before node:sqlite ever touches the integers: an
-    // NTFS inode above 2^53 would otherwise throw ERR_OUT_OF_RANGE instead of
-    // reading back. mtimeMs/sizeBytes stay numeric (REAL / small int). The
-    // schema's transform performs the column mapping + null→undefined shaping.
-    const rows = this.db
-      .prepare(
-        `
-      SELECT id, provider, env_fingerprint, file_path, repo_url, project,
-             CAST(fingerprint_dev AS TEXT) AS fingerprint_dev,
-             CAST(fingerprint_ino AS TEXT) AS fingerprint_ino,
-             fingerprint_mtime_ms, fingerprint_size_bytes, last_ported_at
-      FROM ledger_source ORDER BY id ASC
-    `,
-      )
-      .all() as Array<Record<string, unknown>>
-    return z.array(ledgerSourceRowSchema).parse(rows)
+    return this.runRepositorySync(repository => repository.getSources())
   }
 
   getSessions(): LedgerSessionRow[] {
-    const rows = this.db
-      .prepare(
-        `
-      SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
-             agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
-             mcp_inventory_json, ambiguous_spawn_agent_ids_json, ever_had_branch
-      FROM ledger_session ORDER BY session_id ASC
-    `,
-      )
-      .all() as Array<Record<string, unknown>>
-    return z.array(ledgerSessionRowSchema).parse(rows)
+    return this.runRepositorySync(repository => repository.getSessions())
   }
 
   getTurns(): LedgerTurnRow[] {
-    const rows = this.db
-      .prepare(
-        `
-      SELECT source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
-             spawn_tool_use_ids_json, category, sub_category, retries, has_edits
-      FROM ledger_turn ORDER BY session_id ASC, turn_index ASC
-    `,
-      )
-      .all() as Array<Record<string, unknown>>
-    return z.array(ledgerTurnRowSchema).parse(rows)
+    return this.runRepositorySync(repository => repository.getTurns())
   }
 
   getCalls(): LedgerCallRow[] {
-    const rows = this.db
-      .prepare(
-        `
-      SELECT source_id, session_id, turn_index, call_index, call_key, dedup_key, provider, model, timestamp, speed,
-             project, project_path, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
-             input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
-             reasoning_tokens, web_search_requests, cache_creation_one_hour_tokens, agent_type,
-             tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
-             tool_sequence_json,
-             loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
-      FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
-    `,
-      )
-      .all() as Array<Record<string, unknown>>
-    return z.array(ledgerCallRowSchema).parse(rows)
+    return this.runRepositorySync(repository => repository.getCalls())
   }
 
   // ── Schema introspection (green-field verification) ───────────────────
