@@ -25,28 +25,33 @@ import { InfoTip } from '@/shared/components/InfoTip'
 import { formatUsd } from '@/shared/lib/models'
 import { useCoachSkillsStore } from '@/features/coach-skills/store'
 import { useSettingsStore } from '@/features/settings/store'
-import { candidateKey, craftSkillPrompt } from '@/features/coach-skills/lib'
+import { candidateKey, craftSkillPrompt, needsHarnessSetup } from '@/features/coach-skills/lib'
 import type { SkillCandidate } from '../../../../shared/schemas/skills.js'
 import { HarnessModelPicker } from './harness-model-picker'
+import { HarnessSetup } from './harness-setup'
+import { HarnessStatusDot } from './harness-status'
+import { HarnessIcon } from './harness-icon'
 import { Thread } from './thread'
 
-/** Claude sign-in hint + API-key passthrough toggle, shown as a floating pill
- *  above the composer, almost as wide as the textarea card (slightly inset
- *  on both sides so it still reads as a floating element) and slightly
- *  tucked behind it (the card overlaps its bottom edge), only while Claude
- *  Code is the selected harness. The detection probe reports the CLI's own
- *  login state, but an env-key sign-in (ANTHROPIC_API_KEY in the user's
- *  terminal) is invisible to it — the toggle covers that case by letting
- *  harness runs inherit the app environment's keys instead of the default
- *  stored-login scrub. Off by default (ADR 0012). */
-function ClaudeAuthHint() {
+/** Sign-in hint for the selected harness, shown as a floating pill above the
+ *  composer, almost as wide as the textarea card (slightly inset on both
+ *  sides so it still reads as a floating element) and slightly tucked behind
+ *  it (the card overlaps its bottom edge). Shown when the harness is
+ *  unavailable or known to be signed out — an unverified sign-in stays a rail
+ *  badge only, or most ACP harnesses would carry a permanent pill. Claude Code
+ *  always gets the pill: its API-key passthrough toggle lives here (an
+ *  env-key sign-in is invisible to the CLI's login probe). Off by default
+ *  (ADR 0012). */
+function HarnessAuthHint() {
   const harnessKind = useCoachSkillsStore(s => s.harnessKind)
-  const claudeRow = useCoachSkillsStore(s => s.harnesses.find(h => h.kind === 'claude'))
+  const active = useCoachSkillsStore(s => s.harnesses.find(h => h.instanceId === harnessKind))
   const allowApiKeyEnv = useSettingsStore(s => s.allowHarnessApiKeyEnv)
   const setAllowHarnessApiKeyEnv = useSettingsStore(s => s.setAllowHarnessApiKeyEnv)
-  const active = useCoachSkillsStore(s => s.harnesses.find(h => h.instanceId === harnessKind))
-  if (active?.kind !== 'claude' || !claudeRow) return null
-  const signedOut = claudeRow.auth.status !== 'configured'
+  if (!active) return null
+  const needsSetup = active.status === 'error' || active.auth.status === 'unauthenticated'
+  const isClaude = active.kind === 'claude'
+  if (!needsSetup && !isClaude) return null
+  const signedOut = active.auth.status !== 'configured'
   const infoText = allowApiKeyEnv
     ? 'Passthrough is On: Coach runs inherit ANTHROPIC_API_KEY from the app environment instead of Claude Code’s stored login. Make sure you launched the app from a terminal where ANTHROPIC_API_KEY is set, or runs will fail authentication.'
     : 'Passthrough is Off: Coach runs use Claude Code’s stored login. Make sure sign-in is detected — otherwise run `claude auth login` in a terminal and retry. Turn passthrough On only if you sign in via ANTHROPIC_API_KEY in your terminal.'
@@ -65,25 +70,23 @@ function ClaudeAuthHint() {
   return (
     <div className="-mb-2 px-5">
       <div className="flex w-full flex-wrap items-center justify-center gap-x-2 gap-y-0.5 rounded-t-[19px] border border-border bg-card px-4 pb-3 pt-1 text-center text-[11px] leading-relaxed text-muted-foreground shadow-sm">
-        <InfoTip label="How Claude authentication works" text={infoText} />
-        {signedOut && (
-          <span>
-            Claude Code sign-in not detected — run{' '}
-            <code className="rounded bg-muted px-1 font-mono text-[10.5px]">claude auth login</code>{' '}
-            in a terminal, then retry.
-          </span>
+        {(needsSetup || (isClaude && signedOut)) && <HarnessSetup row={active} compact />}
+        {isClaude && (
+          <>
+            <InfoTip label="How Claude authentication works" text={infoText} />
+            <span>{promptText}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={togglePassthrough}
+              title="When on, Coach runs inherit API keys (e.g. ANTHROPIC_API_KEY) from the app's environment instead of using each harness's stored login. The key itself is never stored by the app."
+              className="h-6 px-1.5 text-[11px] font-medium text-primary hover:text-primary"
+            >
+              {toggleLabel}
+            </Button>
+          </>
         )}
-        <span>{promptText}</span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={togglePassthrough}
-          title="When on, Coach runs inherit API keys (e.g. ANTHROPIC_API_KEY) from the app's environment instead of using each harness's stored login. The key itself is never stored by the app."
-          className="h-6 px-1.5 text-[11px] font-medium text-primary hover:text-primary"
-        >
-          {toggleLabel}
-        </Button>
       </div>
     </div>
   )
@@ -170,7 +173,9 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
   onSend: (text: string) => void
   canSend: boolean
 }) {
-  const harnessKind = useCoachSkillsStore(s => s.harnessKind)
+  const hydrated = useCoachSkillsStore(s => s.hydrated)
+  const harnesses = useCoachSkillsStore(s => s.harnesses)
+  const showSetup = hydrated && needsHarnessSetup(harnesses)
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 overflow-y-auto px-6 py-12">
       <div className="flex flex-col items-center gap-3 text-center">
@@ -203,7 +208,27 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
         <PatternChips onCraft={onCraft} disabled={!canSend} />
       </div>
 
-      {!harnessKind && (
+      {showSetup && (
+        <div className="w-full max-w-2xl rounded-lg border border-border bg-card p-4 text-left">
+          <h2 className="mb-3 text-[13px] font-semibold text-foreground">Get a harness ready</h2>
+          <div className="flex flex-col gap-3">
+            {harnesses.map(row => (
+              <div key={row.instanceId} className="flex gap-2.5">
+                <div className="relative mt-0.5 shrink-0">
+                  <HarnessIcon kind={row.kind} className="size-5" />
+                  <HarnessStatusDot status={row.status} className="absolute -right-1 -top-1" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[12px] font-medium text-foreground">{row.displayName}</p>
+                  <HarnessSetup row={row} compact />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {hydrated && harnesses.length === 0 && (
         <p className="text-[12px] text-muted-foreground">
           No coding-agent harness detected — install Claude Code, OpenCode or Codex to get started.
         </p>
@@ -502,7 +527,7 @@ export function ConversationView() {
           hint (when present) floats centered above it as a pill slightly
           tucked behind the textarea card. */}
       <div>
-        <ClaudeAuthHint />
+        <HarnessAuthHint />
         <ConversationComposer
           running={running}
           canSend={!!harnessKind}

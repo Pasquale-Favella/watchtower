@@ -11,6 +11,7 @@ const goose: HarnessSpec = {
   displayName: 'Goose',
   commands: ['goose'],
   scrubEnv: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+  auth: { loginCommand: ['goose', 'configure'] },
   preference: 6,
   adapter: {
     kind: 'acp',

@@ -8,17 +8,21 @@ import { createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './run
 import { probeHarness } from './probe.js'
 import { createHarnessSnapshotStore, type HarnessInstance, type HarnessSnapshotStore } from './snapshot.js'
 import { resolveBundledEntry } from './harnesses/bundled.js'
+import { harnessSpecs } from './harnesses/index.js'
+import { openLoginTerminal } from './login-terminal.js'
 import { buildCoachPrompt, buildLedgerBriefing, buildScopeUpdate } from './prompts.js'
 import { decodeResumeCursor } from './resume-cursor.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import type { OverviewScope } from '../../shared/schemas/overview.js'
 import {
   coachInspectRequestSchema,
+  coachOpenLoginTerminalRequestSchema,
   coachRunRequestSchema,
   type CoachEvent,
   type CoachEventEnvelope,
   type CoachHarnessRow,
   type CoachInspectResult,
+  type CoachLoginTerminalResult,
   type CoachRunRequest,
   type CoachRunResult,
 } from '../../shared/schemas/agents.js'
@@ -487,6 +491,15 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
 
   ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> => runner.harnesses())
   ipcMain.handle('coach:harnesses-refresh', async (): Promise<CoachHarnessRow[]> => runner.refreshHarnesses())
+  ipcMain.handle('coach:open-login-terminal', async (_event, request: unknown): Promise<CoachLoginTerminalResult> => {
+    const parsed = coachOpenLoginTerminalRequestSchema.safeParse(request)
+    if (!parsed.success) return { ok: false, error: 'invalid harness instance id' }
+    const instance = await harnessStore.get(parsed.data)
+    const loginCommand = instance
+      ? harnessSpecs.find(spec => spec.kind === instance.info.kind)?.auth?.loginCommand
+      : undefined
+    return openLoginTerminal(parsed.data, instanceId => instanceId === parsed.data ? loginCommand : undefined)
+  })
 
   /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
    *  models/modes without a run, so the pickers render before the first

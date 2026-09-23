@@ -180,6 +180,7 @@ export const coachHarnessRowSchema = z.object({
   auth: z.object({
     status: z.enum(['configured', 'unauthenticated', 'unknown']),
     label: z.string().optional(),
+    loginCommand: z.string().optional(),
   }),
   version: z.string().optional(),
   binaryPath: z.string().optional(),
@@ -190,6 +191,15 @@ export type CoachHarnessRow = z.infer<typeof coachHarnessRowSchema>
 /** `coach:harnesses` response — the detected harnesses for the picker. */
 export const coachHarnessesResultSchema = z.array(coachHarnessRowSchema)
 export type CoachHarnessesResult = z.infer<typeof coachHarnessesResultSchema>
+
+export const coachOpenLoginTerminalRequestSchema = z.string().min(1)
+export type CoachOpenLoginTerminalRequest = z.infer<typeof coachOpenLoginTerminalRequestSchema>
+
+export const coachLoginTerminalResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+])
+export type CoachLoginTerminalResult = z.infer<typeof coachLoginTerminalResultSchema>
 
 /** `coach:inspect` request — a bare registry key (legacy) or the key plus the
  *  API-key passthrough opt-in. The probe spawns the agent exactly like a run

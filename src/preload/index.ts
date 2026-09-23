@@ -34,6 +34,7 @@ import type {
   CoachEventEnvelope,
   CoachHarnessRow,
   CoachHarnessesResult,
+  CoachLoginTerminalResult,
   CoachInspectRequest,
   CoachInspectResult,
   CoachRunRequest,
@@ -54,6 +55,7 @@ export type {
   CoachEventEnvelope,
   CoachHarnessRow,
   CoachHarnessesResult,
+  CoachLoginTerminalResult,
   CoachInspectResult,
   CoachRunRequest,
   CoachRunResult,
@@ -176,6 +178,8 @@ const api = {
    * owned by the main process, and the harness reads platform data through the
    * in-app ledger MCP server. */
   getCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses'),
+    openCoachLoginTerminal: (instanceId: string): Promise<CoachLoginTerminalResult> =>
+      ipcRenderer.invoke('coach:open-login-terminal', instanceId),
   refreshCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses-refresh'),
   onCoachHarnessesChanged: (callback: (rows: CoachHarnessRow[]) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, rows: CoachHarnessRow[]): void => callback(rows)

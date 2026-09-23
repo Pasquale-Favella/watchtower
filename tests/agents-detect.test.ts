@@ -194,6 +194,14 @@ describe('harness spec invariants — registry shape (ADR 0016)', () => {
     const preferences = harnessSpecs.map(s => s.preference).filter((p): p is number => p !== undefined)
     expect(new Set(preferences).size).toBe(preferences.length)
   })
+
+  it('uses token-only login commands when a spec declares one', () => {
+    for (const spec of harnessSpecs) {
+      for (const token of spec.auth?.loginCommand ?? []) {
+        expect(token, `${spec.kind}: ${token}`).toMatch(/^[A-Za-z0-9._:/-]+$/u)
+      }
+    }
+  })
 })
 
 describe('pickPreferredHarness — most-compatible selection', () => {

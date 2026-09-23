@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CoachEventEnvelope, CoachSessionModels, CoachSessionModes } from '../src/shared/schemas/agents.js'
+import { harnessBadge, needsHarnessSetup, statusLabel } from '../src/renderer/src/features/coach-skills/lib.js'
 
 function createMemoryStorage(): Storage {
   const store = new Map<string, string>()
@@ -46,6 +47,16 @@ beforeEach(() => {
 })
 
 describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
+  it('derives honest harness status labels and setup badges without a DOM', () => {
+    const warning = { instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'warning' as const, auth: { status: 'unknown' as const } }
+    const error = { ...warning, status: 'error' as const }
+    const pending = { ...warning, status: 'pending' as const }
+    expect(statusLabel(warning.status)).toBe('Needs attention')
+    expect(harnessBadge(warning)).toBe('Sign-in?')
+    expect(harnessBadge(error)).toBe('Unavailable')
+    expect(harnessBadge(pending)).toBe('Checking…')
+    expect(needsHarnessSetup([warning, error, pending])).toBe(true)
+  })
   it('starts idle with no harness and an empty thread', () => {
     const s = useCoachSkillsStore.getState()
     expect(s.hydrated).toBe(false)
@@ -113,6 +124,17 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     const changed = { instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'ready' as const, auth: { status: 'configured' as const } }
     useCoachSkillsStore.getState().replaceHarnesses([changed])
     expect(useCoachSkillsStore.getState()).toMatchObject({ hydrated: true, harnessKind: 'codex', harnesses: [changed] })
+  })
+
+  it('refreshHarnesses applies the refreshed rows through replaceHarnesses', async () => {
+    const refreshed = [{ instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'ready' as const, auth: { status: 'configured' as const } }]
+    const refreshCoachHarnesses = vi.fn(() => Promise.resolve(refreshed))
+    mockWindow({ refreshCoachHarnesses })
+
+    await useCoachSkillsStore.getState().refreshHarnesses()
+
+    expect(refreshCoachHarnesses).toHaveBeenCalledOnce()
+    expect(useCoachSkillsStore.getState()).toMatchObject({ hydrated: true, harnesses: refreshed, harnessKind: 'codex' })
   })
 
   it('sendCoach pushes user + assistant turns and acks the run', async () => {

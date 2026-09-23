@@ -210,14 +210,18 @@ export function isAuthFailureMessage(message: string): boolean {
  *  this fires the picker already looked healthy — the message must say what
  *  to do, not just what broke. */
 function authHintForHarness(kind: string, displayName: string): string {
+  const loginCommand = harnessSpecs.find(spec => spec.kind === kind)?.auth?.loginCommand?.join(' ')
+  const signInHint = loginCommand
+    ? `${displayName} sign-in required — run '${loginCommand}' in a terminal, then retry.`
+    : `${displayName} sign-in required — sign in with the harness's own CLI, then retry.`
   if (kind === 'claude') {
     return (
-      `${displayName} sign-in required — run 'claude auth login' in a terminal, then retry. ` +
+      `${signInHint} ` +
       `If you sign in with ANTHROPIC_API_KEY in your terminal instead, turn on ` +
       `'Use API keys from environment' in Coach and retry.`
     )
   }
-  return `${displayName} sign-in required — sign in with the harness's own CLI, then retry.`
+  return signInHint
 }
 
 /** Raw auth-wall detail is truncated for the hint — the full message stays in

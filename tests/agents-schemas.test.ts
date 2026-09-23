@@ -4,6 +4,8 @@ import {
   coachEventEnvelopeSchema,
   coachEventSchema,
   coachHarnessRowSchema,
+  coachLoginTerminalResultSchema,
+  coachOpenLoginTerminalRequestSchema,
   coachInspectRequestSchema,
   coachInspectResultSchema,
   coachRunRequestSchema,
@@ -159,6 +161,18 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     expect(coachHarnessRowSchema.safeParse({
       instanceId: 'claude', kind: 'claude', displayName: 'x', status: 'ready', auth: { status: 'nope' },
     }).success).toBe(false)
+    expect(coachHarnessRowSchema.safeParse({
+      instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'warning',
+      auth: { status: 'unauthenticated', loginCommand: 'codex login' }, message: 'Sign in',
+    }).success).toBe(true)
+  })
+
+  it('parses the login-terminal request and result arms', () => {
+    expect(coachOpenLoginTerminalRequestSchema.safeParse('codex').success).toBe(true)
+    expect(coachOpenLoginTerminalRequestSchema.safeParse('').success).toBe(false)
+    expect(coachLoginTerminalResultSchema.safeParse({ ok: true }).success).toBe(true)
+    expect(coachLoginTerminalResultSchema.safeParse({ ok: false, error: 'not found' }).success).toBe(true)
+    expect(coachLoginTerminalResultSchema.safeParse({ ok: false }).success).toBe(false)
   })
 
   it('parses the pre-flight inspect result — models/modes optional, probe failure as ok:false (map 47 ticket 50)', () => {

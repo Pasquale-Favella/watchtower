@@ -82,10 +82,12 @@ import {
 } from '../../../../shared/schemas/ledger-mcp.js'
 import {
   coachHarnessesResultSchema,
+    coachLoginTerminalResultSchema,
   coachInspectResultSchema,
   coachRunResultSchema,
   type CoachHarnessRow,
   type CoachHarnessesResult,
+    type CoachLoginTerminalResult,
   type CoachInspectRequest,
   type CoachInspectResult,
   type CoachRunRequest,
@@ -319,6 +321,10 @@ export function fetchCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>> 
 
 export function refreshCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>> {
   return fetchPayload('coach harnesses refresh', coachHarnessesResultSchema, () => window.api.refreshCoachHarnesses())
+}
+
+export function openCoachLoginTerminal(instanceId: string): Promise<ApiResult<CoachLoginTerminalResult>> {
+  return fetchPayload('coach login terminal', coachLoginTerminalResultSchema, () => window.api.openCoachLoginTerminal(instanceId))
 }
 
 export function onCoachHarnessesChanged(callback: (rows: CoachHarnessRow[]) => void): () => void {

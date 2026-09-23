@@ -335,7 +335,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
 
     expect(events[1]).toEqual({
       kind: 'error',
-      message: expect.stringContaining('Codex sign-in required'),
+      message: expect.stringContaining("run 'codex login' in a terminal"),
     })
     expect((events[1] as { message: string }).message).not.toContain('claude auth login')
   })

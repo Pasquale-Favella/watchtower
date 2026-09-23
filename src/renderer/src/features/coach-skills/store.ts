@@ -4,6 +4,7 @@ import {
   fetchCoachInspect,
   fetchCoachRun,
   fetchSkills,
+  refreshCoachHarnesses,
 } from '@/shared/lib/api'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { scopedDataSlice, type ScopedDataSlice } from '../../app/stores/data-store'
@@ -139,6 +140,8 @@ export interface CoachSkillsState {
   detection: ScopedDataSlice<SkillsPayload>
   /** Loads the detected harnesses for the picker (idempotent refresh). */
   loadHarnesses: () => Promise<void>
+  /** Re-checks detected harnesses and applies the returned managed snapshot. */
+  refreshHarnesses: () => Promise<void>
   /** Applies a live managed snapshot broadcast without spawning a probe. */
   replaceHarnesses: (harnesses: CoachHarnessRow[]) => void
   /** Persists the picker choice. Restores the target harness's cached set
@@ -243,6 +246,11 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   ),
   loadHarnesses: async () => {
     const result = await fetchCoachHarnesses()
+    if (!result.ok) return
+    get().replaceHarnesses(result.data)
+  },
+  refreshHarnesses: async () => {
+    const result = await refreshCoachHarnesses()
     if (!result.ok) return
     get().replaceHarnesses(result.data)
   },

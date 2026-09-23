@@ -10,6 +10,7 @@ const opencode: HarnessSpec = {
   displayName: 'OpenCode',
   commands: ['opencode', 'opencode-ai'],
   scrubEnv: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
+  auth: { loginCommand: ['opencode', 'auth', 'login'] },
   preference: 3,
   adapter: {
     kind: 'acp',

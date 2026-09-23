@@ -39,12 +39,17 @@ function preferenceFor(info: HarnessInfo): number {
 }
 
 function toRow(instance: HarnessInstance): CoachHarnessRow {
+  const spec = harnessSpecs.find(candidate => candidate.kind === instance.info.kind)
+  const loginCommand = spec?.auth?.loginCommand
   return {
     instanceId: instance.instanceId,
     kind: instance.info.kind,
     displayName: instance.info.displayName,
     status: instance.status,
-    auth: instance.auth,
+    auth: {
+      ...instance.auth,
+      ...(loginCommand ? { loginCommand: loginCommand.join(' ') } : {}),
+    },
     ...(instance.version ? { version: instance.version } : {}),
     binaryPath: instance.info.bin,
     ...(instance.message ? { message: instance.message } : {}),

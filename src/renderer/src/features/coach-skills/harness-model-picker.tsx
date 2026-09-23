@@ -3,10 +3,14 @@ import { useMemo, useState } from 'react'
 import { Check, ChevronDown, Loader2 } from 'lucide-react'
 import { cn } from '@/shared/lib/utils'
 import { Button } from '@/shared/components/ui/button'
+import { Badge } from '@/shared/components/ui/badge'
 import { Input } from '@/shared/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/shared/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip'
 import { HarnessIcon } from './harness-icon'
+import { HarnessSetup } from './harness-setup'
+import { HarnessStatusDot, harnessTooltip } from './harness-status'
+import { harnessBadge } from './lib'
 import type { CoachHarnessRow, CoachModelInfo } from '../../../../shared/schemas/agents.js'
 import type { CoachKindCache } from './store'
 
@@ -95,6 +99,7 @@ export function HarnessModelPicker({
 
   const activeHarness = harnesses.find(h => h.instanceId === harnessKind) ?? null
   const previewKind = draftKind ?? harnessKind
+  const previewHarness = harnesses.find(h => h.instanceId === previewKind) ?? null
   const previewModels = modelsForKind(previewKind, harnessKind, sessionModels, modelsByKind)
   const loading = !!previewKind && inspectingKind === previewKind && previewModels.length === 0
 
@@ -112,6 +117,7 @@ export function HarnessModelPicker({
     : harnesses.length === 0
       ? 'No harness detected'
       : 'Pick a harness'
+  const activeBadge = activeHarness ? harnessBadge(activeHarness) : null
 
   const options = useMemo<ModelOption[]>(
     () => [
@@ -146,7 +152,7 @@ export function HarnessModelPicker({
       // start the old standalone model picker had).
       setDraftKind(harnessKind)
       setQuery('')
-      if (harnessKind) onInspect(harnessKind)
+      if (harnessKind && activeHarness?.status !== 'error') onInspect(harnessKind)
     } else {
       setDraftKind(null)
     }
@@ -155,7 +161,7 @@ export function HarnessModelPicker({
   const previewRail = (kind: string): void => {
     setDraftKind(kind)
     setQuery('')
-    onInspect(kind)
+    if (harnesses.find(harness => harness.instanceId === kind)?.status !== 'error') onInspect(kind)
   }
 
   const commit = (kind: string, value: string | null): void => {
@@ -181,6 +187,7 @@ export function HarnessModelPicker({
               <HarnessIcon kind={activeHarness.kind} className="size-4 shrink-0" />
             )}
             <span className="min-w-0 flex-1 truncate text-left">{triggerLabel}</span>
+            {activeBadge && <Badge variant="secondary" className="shrink-0 px-1 text-[9px] font-medium">{activeBadge}</Badge>}
             <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
           </Button>
         }
@@ -194,9 +201,7 @@ export function HarnessModelPicker({
             <div className="relative flex min-h-full flex-col gap-1">
               {harnesses.map(harness => {
                 const selected = previewKind === harness.instanceId
-                const tooltip = harness.auth.status === 'configured'
-                  ? `${harness.displayName} — configured`
-                  : harness.displayName
+                const tooltip = harnessTooltip(harness)
                 return (
                   <div key={harness.instanceId} className="h-9 w-full shrink-0">
                     <Tooltip>
@@ -214,6 +219,7 @@ export function HarnessModelPicker({
                             )}
                           >
                             <HarnessIcon kind={harness.kind} className="size-5" />
+                            <HarnessStatusDot status={harness.status} className="absolute right-0.5 top-0.5" />
                           </Button>
                         }
                       />
@@ -252,45 +258,58 @@ export function HarnessModelPicker({
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
-              {loading ? (
-                <p className="flex items-center justify-center gap-1.5 py-6 text-[12px] text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" />
-                  Loading models…
-                </p>
-              ) : filtered.length === 0 ? (
-                <p className="py-6 text-center text-[12px] text-muted-foreground">
-                  {query.trim() ? 'No matching models' : 'No models available'}
-                </p>
+              {previewHarness?.status === 'error' ? (
+                <div className="flex flex-col gap-2 p-2">
+                  <div className="flex items-center gap-1.5 text-[12px] font-medium text-muted-foreground">
+                    <HarnessStatusDot status="error" />
+                    Unavailable
+                  </div>
+                  <HarnessSetup row={previewHarness} compact />
+                </div>
               ) : (
-                filtered.map(option => {
-                  const checked = option.value === checkedValue
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onClick={() => { if (previewKind) commit(previewKind, option.value) }}
-                      className={cn(
-                        'relative flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent',
-                        checked && 'bg-accent/60',
-                      )}
-                    >
-                      <span className="flex min-w-0 flex-1 flex-col">
-                        <span
+                <>
+                  {previewHarness?.status === 'warning' && <HarnessSetup row={previewHarness} compact />}
+                  {loading ? (
+                    <p className="flex items-center justify-center gap-1.5 py-6 text-[12px] text-muted-foreground">
+                      <Loader2 className="size-3.5 animate-spin" />
+                      Loading models…
+                    </p>
+                  ) : filtered.length === 0 ? (
+                    <p className="py-6 text-center text-[12px] text-muted-foreground">
+                      {query.trim() ? 'No matching models' : 'No models available'}
+                    </p>
+                  ) : (
+                    filtered.map(option => {
+                      const checked = option.value === checkedValue
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => { if (previewKind) commit(previewKind, option.value) }}
                           className={cn(
-                            'truncate text-[12px] font-medium',
-                            option.value === null && 'font-normal text-muted-foreground',
+                            'relative flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent',
+                            checked && 'bg-accent/60',
                           )}
                         >
-                          {option.label}
-                        </span>
-                        {option.description && (
-                          <span className="truncate text-[9.5px] text-muted-foreground">{option.description}</span>
-                        )}
-                      </span>
-                      {checked && <Check className="size-4 shrink-0 text-primary" />}
-                    </button>
-                  )
-                })
+                          <span className="flex min-w-0 flex-1 flex-col">
+                            <span
+                              className={cn(
+                                'truncate text-[12px] font-medium',
+                                option.value === null && 'font-normal text-muted-foreground',
+                              )}
+                            >
+                              {option.label}
+                            </span>
+                            {option.description && (
+                              <span className="truncate text-[9.5px] text-muted-foreground">{option.description}</span>
+                            )}
+                          </span>
+                          {checked && <Check className="size-4 shrink-0 text-primary" />}
+                        </button>
+                      )
+                    })
+                  )}
+                </>
               )}
             </div>
           </div>

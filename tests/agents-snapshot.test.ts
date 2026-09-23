@@ -131,4 +131,10 @@ describe('createHarnessSnapshotStore', () => {
     const rows = await store.list()
     expect(rows.map(row => row.kind)).toEqual(['claude', 'codex', 'opencode'])
   })
+
+  it('carries the spec login command on each managed row', async () => {
+    const store = makeStore(async () => infos.filter(info => info.kind === 'claude'), () => Effect.never)
+    const row = (await store.list())[0]
+    expect(row?.auth.loginCommand).toBe('claude auth login')
+  })
 })
