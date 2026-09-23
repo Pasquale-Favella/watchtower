@@ -233,51 +233,13 @@ export class LedgerStore {
    * `unchanged` file falls through to the full port below and the `call_key`
    * constraint keeps any partial re-port idempotent. */
   portIn(input: PortInput): PortResult {
-    return this.db.runSync(this.portInEffect(input))
-  }
-
-  private portInEffect(input: PortInput): Effect.Effect<PortResult, SqlError, LedgerRepository> {
-    return Effect.gen(function* () {
-      const repository = yield* LedgerRepository
-      return yield* repository.portIn(input)
-    })
-  }
-
-  private clearEffect(): Effect.Effect<void, SqlError, LedgerRepository> {
-    return Effect.gen(function* () {
-      const repository = yield* LedgerRepository
-      yield* repository.clear()
-    })
-  }
-
-  private deleteSourceEffect(
-    provider: string,
-    envFingerprint: string,
-    filePath: string,
-  ): Effect.Effect<void, SqlError, LedgerRepository> {
-    return Effect.gen(function* () {
-      const repository = yield* LedgerRepository
-      yield* repository.deleteSource(provider, envFingerprint, filePath)
-    })
-  }
-
-  private findSourceId(provider: string, envFingerprint: string, filePath: string): number | null {
-    const row = this.db
-      .prepare('SELECT id FROM ledger_source WHERE provider = ? AND env_fingerprint = ? AND file_path = ?')
-      .get(provider, envFingerprint, filePath) as { id: number } | undefined
-    return row ? Number(row.id) : null
+    return this.runRepositorySync(repository => repository.portIn(input))
   }
 
   /** Removes a source and all of its ledger rows (per-file provenance is the
    * `modified`-replace and eviction deletion unit). */
   deleteSource(provider: string, envFingerprint: string, filePath: string): void {
-    this.db.runSync(this.deleteSourceEffect(provider, envFingerprint, filePath))
-  }
-
-  private deleteSourceRows(sourceId: number): void {
-    this.db.prepare('DELETE FROM ledger_call WHERE source_id = ?').run(sourceId)
-    this.db.prepare('DELETE FROM ledger_turn WHERE source_id = ?').run(sourceId)
-    this.db.prepare('DELETE FROM ledger_session WHERE source_id = ?').run(sourceId)
+    this.runRepositorySync(repository => repository.deleteSource(provider, envFingerprint, filePath))
   }
 
   // ── Read-back (the aggregation layer's input) ─────────────────────────
@@ -363,15 +325,11 @@ export class LedgerStore {
   // ── Config tables: not scan data, survive clear() ─────────────────────
 
   setModelAlias(model: string, aliasOf: string): void {
-    this.db
-      .prepare(
-        'INSERT INTO model_alias (model, alias_of) VALUES (?, ?) ON CONFLICT(model) DO UPDATE SET alias_of = excluded.alias_of',
-      )
-      .run(model, aliasOf)
+    this.runRepositorySync(repository => repository.setModelAlias(model, aliasOf))
   }
 
   removeModelAlias(model: string): void {
-    this.db.prepare('DELETE FROM model_alias WHERE model = ?').run(model)
+    this.runRepositorySync(repository => repository.removeModelAlias(model))
   }
 
   getModelAliases(): ModelAlias[] {
@@ -383,18 +341,11 @@ export class LedgerStore {
    * via a LEFT JOIN onto `price_override`, so changing an override needs no
    * row updates, no `rebuildDailySpend`, and no rescan. */
   setPriceOverride(model: string, override: Omit<PriceOverride, 'model'>): void {
-    this.db
-      .prepare(
-        `
-      INSERT INTO price_override (model, input_price_per_million, output_price_per_million) VALUES (?, ?, ?)
-      ON CONFLICT(model) DO UPDATE SET input_price_per_million = excluded.input_price_per_million, output_price_per_million = excluded.output_price_per_million
-    `,
-      )
-      .run(model, override.inputPricePerMillion, override.outputPricePerMillion)
+    this.runRepositorySync(repository => repository.setPriceOverride(model, override))
   }
 
   removePriceOverride(model: string): void {
-    this.db.prepare('DELETE FROM price_override WHERE model = ?').run(model)
+    this.runRepositorySync(repository => repository.removePriceOverride(model))
   }
 
   getPriceOverrides(): PriceOverride[] {
@@ -405,14 +356,7 @@ export class LedgerStore {
   }
 
   setCurrencyRate(rate: CurrencyRate): void {
-    this.db
-      .prepare(
-        `
-      INSERT INTO currency_rate (code, symbol, rate, updated_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT(code) DO UPDATE SET symbol = excluded.symbol, rate = excluded.rate, updated_at = excluded.updated_at
-    `,
-      )
-      .run(rate.code, rate.symbol, rate.rate, rate.updatedAt)
+    this.runRepositorySync(repository => repository.setCurrencyRate(rate))
   }
 
   getCurrencyRate(code: string): CurrencyRate | null {
@@ -430,14 +374,7 @@ export class LedgerStore {
 
   setDisplayCurrency(code: string): void {
     const safe = /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'
-    this.db
-      .prepare(
-        `
-      INSERT INTO display_currency_config (id, code) VALUES (1, ?)
-      ON CONFLICT(id) DO UPDATE SET code = excluded.code
-    `,
-      )
-      .run(safe)
+    this.runRepositorySync(repository => repository.setDisplayCurrency(safe))
   }
 
   getRefreshCadence(): string {
@@ -448,14 +385,7 @@ export class LedgerStore {
 
   setRefreshCadence(value: string): void {
     const cadence = isValidCadence(value) ? value : DEFAULT_CADENCE
-    this.db
-      .prepare(
-        `
-      INSERT INTO refresh_cadence_config (id, value) VALUES (1, ?)
-      ON CONFLICT(id) DO UPDATE SET value = excluded.value
-    `,
-      )
-      .run(cadence)
+    this.runRepositorySync(repository => repository.setRefreshCadence(cadence))
   }
 
   getLedgerMcpStartupMode(): LedgerMcpStartupMode {
@@ -468,14 +398,7 @@ export class LedgerStore {
   setLedgerMcpStartupMode(value: unknown): LedgerMcpStartupMode {
     const parsed = ledgerMcpStartupModeSchema.safeParse(value)
     const startupMode = parsed.success ? parsed.data : 'on-demand'
-    this.db
-      .prepare(
-        `
-      INSERT INTO ledger_mcp_config (id, startup_mode) VALUES (1, ?)
-      ON CONFLICT(id) DO UPDATE SET startup_mode = excluded.startup_mode
-    `,
-      )
-      .run(startupMode)
+    this.runRepositorySync(repository => repository.setLedgerMcpStartupMode(startupMode))
     return startupMode
   }
 
@@ -489,15 +412,7 @@ export class LedgerStore {
   }
 
   dismissSkill(source: SkillsDismissal['source'], name: string, reason: string): void {
-    this.db
-      .prepare(
-        `
-      INSERT INTO skills_dismissal_config (source, name, reason, created)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(source, name) DO UPDATE SET reason = excluded.reason, created = excluded.created
-    `,
-      )
-      .run(source, name, reason, new Date().toISOString())
+    this.runRepositorySync(repository => repository.dismissSkill(source, name, reason, new Date().toISOString()))
   }
 
   /** Clears all scan-derived ledger data. Config tables are user settings and
@@ -512,7 +427,7 @@ export class LedgerStore {
    * committed, so the data is gone regardless and only the size display lags
    * until the next successful reclaim. */
   clear(): void {
-    this.db.runSync(this.clearEffect())
+    this.runRepositorySync(repository => repository.clear())
     try {
       this.db.exec(`VACUUM;`)
       this.db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`)
@@ -523,5 +438,14 @@ export class LedgerStore {
 
   close(): void {
     this.db.close()
+  }
+
+  private runRepositorySync<A>(operation: (repository: LedgerRepository['Service']) => Effect.Effect<A, SqlError>): A {
+    return this.db.runSync(
+      Effect.gen(function* () {
+        const repository = yield* LedgerRepository
+        return yield* operation(repository)
+      }),
+    )
   }
 }

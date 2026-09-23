@@ -4,7 +4,9 @@ import * as Layer from 'effect/Layer'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { SqlError } from 'effect/unstable/sql/SqlError'
 
-import type { PortResult } from '../../shared/schemas/ledger.js'
+import type { CurrencyRate, PortResult, PriceOverride } from '../../shared/schemas/ledger.js'
+import type { LedgerMcpStartupMode } from '../../shared/schemas/ledger-mcp.js'
+import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { mapFileToLedgerRows, type PortInput } from './port.js'
 
 type SourceInput = ReturnType<typeof mapFileToLedgerRows>['source']
@@ -16,12 +18,112 @@ export class LedgerRepository extends Context.Service<
     portIn(input: PortInput): Effect.Effect<PortResult, SqlError>
     clear(): Effect.Effect<void, SqlError>
     deleteSource(provider: string, envFingerprint: string, filePath: string): Effect.Effect<void, SqlError>
+    setModelAlias(model: string, aliasOf: string): Effect.Effect<void, SqlError>
+    removeModelAlias(model: string): Effect.Effect<void, SqlError>
+    setPriceOverride(model: string, override: Omit<PriceOverride, 'model'>): Effect.Effect<void, SqlError>
+    removePriceOverride(model: string): Effect.Effect<void, SqlError>
+    setCurrencyRate(rate: CurrencyRate): Effect.Effect<void, SqlError>
+    setDisplayCurrency(code: string): Effect.Effect<void, SqlError>
+    setRefreshCadence(value: string): Effect.Effect<void, SqlError>
+    setLedgerMcpStartupMode(mode: LedgerMcpStartupMode): Effect.Effect<void, SqlError>
+    dismissSkill(
+      source: SkillsDismissal['source'],
+      name: string,
+      reason: string,
+      created: string,
+    ): Effect.Effect<void, SqlError>
   }
 >()('watchtower/store/LedgerRepository') {
   static readonly layer = Layer.effect(
     LedgerRepository,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
+
+      const setModelAlias = Effect.fn('LedgerRepository.setModelAlias')(function* (model: string, aliasOf: string) {
+        yield* sql.unsafe(
+          'INSERT INTO model_alias (model, alias_of) VALUES (?, ?) ON CONFLICT(model) DO UPDATE SET alias_of = excluded.alias_of',
+          [model, aliasOf],
+        )
+      })
+
+      const removeModelAlias = Effect.fn('LedgerRepository.removeModelAlias')(function* (model: string) {
+        yield* sql.unsafe('DELETE FROM model_alias WHERE model = ?', [model])
+      })
+
+      const setPriceOverride = Effect.fn('LedgerRepository.setPriceOverride')(function* (
+        model: string,
+        override: Omit<PriceOverride, 'model'>,
+      ) {
+        yield* sql.unsafe(
+          `
+          INSERT INTO price_override (model, input_price_per_million, output_price_per_million) VALUES (?, ?, ?)
+          ON CONFLICT(model) DO UPDATE SET input_price_per_million = excluded.input_price_per_million, output_price_per_million = excluded.output_price_per_million
+        `,
+          [model, override.inputPricePerMillion, override.outputPricePerMillion],
+        )
+      })
+
+      const removePriceOverride = Effect.fn('LedgerRepository.removePriceOverride')(function* (model: string) {
+        yield* sql.unsafe('DELETE FROM price_override WHERE model = ?', [model])
+      })
+
+      const setCurrencyRate = Effect.fn('LedgerRepository.setCurrencyRate')(function* (rate: CurrencyRate) {
+        yield* sql.unsafe(
+          `
+          INSERT INTO currency_rate (code, symbol, rate, updated_at) VALUES (?, ?, ?, ?)
+          ON CONFLICT(code) DO UPDATE SET symbol = excluded.symbol, rate = excluded.rate, updated_at = excluded.updated_at
+        `,
+          [rate.code, rate.symbol, rate.rate, rate.updatedAt],
+        )
+      })
+
+      const setDisplayCurrency = Effect.fn('LedgerRepository.setDisplayCurrency')(function* (code: string) {
+        yield* sql.unsafe(
+          `
+          INSERT INTO display_currency_config (id, code) VALUES (1, ?)
+          ON CONFLICT(id) DO UPDATE SET code = excluded.code
+        `,
+          [code],
+        )
+      })
+
+      const setRefreshCadence = Effect.fn('LedgerRepository.setRefreshCadence')(function* (value: string) {
+        yield* sql.unsafe(
+          `
+          INSERT INTO refresh_cadence_config (id, value) VALUES (1, ?)
+          ON CONFLICT(id) DO UPDATE SET value = excluded.value
+        `,
+          [value],
+        )
+      })
+
+      const setLedgerMcpStartupMode = Effect.fn('LedgerRepository.setLedgerMcpStartupMode')(function* (
+        mode: LedgerMcpStartupMode,
+      ) {
+        yield* sql.unsafe(
+          `
+          INSERT INTO ledger_mcp_config (id, startup_mode) VALUES (1, ?)
+          ON CONFLICT(id) DO UPDATE SET startup_mode = excluded.startup_mode
+        `,
+          [mode],
+        )
+      })
+
+      const dismissSkill = Effect.fn('LedgerRepository.dismissSkill')(function* (
+        source: SkillsDismissal['source'],
+        name: string,
+        reason: string,
+        created: string,
+      ) {
+        yield* sql.unsafe(
+          `
+          INSERT INTO skills_dismissal_config (source, name, reason, created)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(source, name) DO UPDATE SET reason = excluded.reason, created = excluded.created
+        `,
+          [source, name, reason, created],
+        )
+      })
 
       const findSourceId = Effect.fnUntraced(function* (provider: string, envFingerprint: string, filePath: string) {
         const rows = yield* sql.unsafe(
@@ -279,7 +381,20 @@ export class LedgerRepository extends Context.Service<
         )
       })
 
-      return LedgerRepository.of({ portIn, clear, deleteSource })
+      return LedgerRepository.of({
+        portIn,
+        clear,
+        deleteSource,
+        setModelAlias,
+        removeModelAlias,
+        setPriceOverride,
+        removePriceOverride,
+        setCurrencyRate,
+        setDisplayCurrency,
+        setRefreshCadence,
+        setLedgerMcpStartupMode,
+        dismissSkill,
+      })
     }),
   )
 }
