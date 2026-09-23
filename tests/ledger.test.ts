@@ -2,7 +2,9 @@ import { mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+
 import { afterEach, describe, expect, it } from 'vitest'
+
 import { LedgerStore } from '../src/main/store/ledger.js'
 import {
   currencyRateRowSchema,
@@ -120,8 +122,37 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       'idx_ledger_call_project',
       'idx_ledger_call_provider',
     ].sort())
+    const version = new DatabaseSync(store.dbPath, { readOnly: true })
+    expect((version.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(1)
+    version.close()
 
     store.close()
+  })
+
+  it('upgrades a pre-version ledger without losing ledger rows or user config', () => {
+    const original = makeStore()
+    const dbPath = original.dbPath
+    original.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    original.setModelAlias('old-model', 'new-model')
+    original.close()
+
+    const legacy = new DatabaseSync(dbPath)
+    legacy.exec('PRAGMA user_version = 0')
+    legacy.close()
+
+    const upgraded = new LedgerStore(dbPath)
+    try {
+      expect(upgraded.getCalls()).toHaveLength(1)
+      expect(upgraded.getModelAliases()).toEqual([{ model: 'old-model', aliasOf: 'new-model' }])
+      const version = new DatabaseSync(dbPath, { readOnly: true })
+      try {
+        expect((version.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(1)
+      } finally {
+        version.close()
+      }
+    } finally {
+      upgraded.close()
+    }
   })
 
   it('ports a new file: source/session/turn/call rows land and read back faithfully', () => {

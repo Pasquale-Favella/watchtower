@@ -1,36 +1,39 @@
-import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+
 import { z } from 'zod'
+
+import {
+  type CurrencyRate,
+  currencyRateRowSchema,
+  type LedgerCallRow,
+  ledgerCallRowSchema,
+  type LedgerSessionRow,
+  ledgerSessionRowSchema,
+  type LedgerSourceRow,
+  ledgerSourceRowSchema,
+  type LedgerTurnRow,
+  ledgerTurnRowSchema,
+  type ModelAlias,
+  modelAliasRowSchema,
+  type PortResult,
+  type PriceOverride,
+  priceOverrideRowSchema,
+} from '../../shared/schemas/ledger.js'
+import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../shared/schemas/ledger-mcp.js'
+import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { DEFAULT_CADENCE, isValidCadence } from '../cadence.js'
 import {
-  mapFileToLedgerRows,
   type FileVerdict,
+  mapFileToLedgerRows,
   type MappedCall,
   type MappedFingerprint,
   type MappedSession,
   type MappedTurn,
   type PortInput,
 } from './port.js'
-import {
-  currencyRateRowSchema,
-  ledgerCallRowSchema,
-  ledgerSessionRowSchema,
-  ledgerSourceRowSchema,
-  ledgerTurnRowSchema,
-  modelAliasRowSchema,
-  priceOverrideRowSchema,
-  type CurrencyRate,
-  type LedgerCallRow,
-  type LedgerSessionRow,
-  type LedgerSourceRow,
-  type LedgerTurnRow,
-  type ModelAlias,
-  type PortResult,
-  type PriceOverride,
-} from '../../shared/schemas/ledger.js'
-import type { SkillsDismissal } from '../../shared/schemas/skills.js'
-import { ledgerMcpStartupModeSchema, type LedgerMcpStartupMode } from '../../shared/schemas/ledger-mcp.js'
+import { runSqliteMigrations } from './sqlite-migrations.js'
 
 export type {
   CurrencyRate,
@@ -72,9 +75,10 @@ export class LedgerStore {
     this.dbPath = dbPath
     this.db = readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath)
     if (readOnly) return
-    this.db.exec(`
-      PRAGMA journal_mode = WAL;
-
+    this.db.exec('PRAGMA journal_mode = WAL')
+    runSqliteMigrations(this.db, [{
+      version: 1,
+      up: db => db.exec(`
       CREATE TABLE IF NOT EXISTS ledger_source (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         provider TEXT NOT NULL,
@@ -214,11 +218,8 @@ export class LedgerStore {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         startup_mode TEXT NOT NULL DEFAULT 'on-demand'
       );
-    `)
-    // Greenfield: no migration path exists — the app is not yet distributed, so
-    // a pre-ledger install is reset by deleting the dev ledger (the session
-    // cache stays, and the first scan's lifetime port-in backfills it). Schema
-    // evolution here is CREATE TABLE IF NOT EXISTS only.
+      `),
+    }])
   }
 
   // ── Port-in write path ────────────────────────────────────────────────
