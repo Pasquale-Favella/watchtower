@@ -243,6 +243,24 @@ export class LedgerStore {
     })
   }
 
+  private clearEffect(): Effect.Effect<void, SqlError, LedgerRepository> {
+    return Effect.gen(function* () {
+      const repository = yield* LedgerRepository
+      yield* repository.clear()
+    })
+  }
+
+  private deleteSourceEffect(
+    provider: string,
+    envFingerprint: string,
+    filePath: string,
+  ): Effect.Effect<void, SqlError, LedgerRepository> {
+    return Effect.gen(function* () {
+      const repository = yield* LedgerRepository
+      yield* repository.deleteSource(provider, envFingerprint, filePath)
+    })
+  }
+
   private findSourceId(provider: string, envFingerprint: string, filePath: string): number | null {
     const row = this.db
       .prepare('SELECT id FROM ledger_source WHERE provider = ? AND env_fingerprint = ? AND file_path = ?')
@@ -253,12 +271,7 @@ export class LedgerStore {
   /** Removes a source and all of its ledger rows (per-file provenance is the
    * `modified`-replace and eviction deletion unit). */
   deleteSource(provider: string, envFingerprint: string, filePath: string): void {
-    const sourceId = this.findSourceId(provider, envFingerprint, filePath)
-    if (sourceId === null) return
-    this.db.transactionSync(() => {
-      this.deleteSourceRows(sourceId)
-      this.db.prepare('DELETE FROM ledger_source WHERE id = ?').run(sourceId)
-    })
+    this.db.runSync(this.deleteSourceEffect(provider, envFingerprint, filePath))
   }
 
   private deleteSourceRows(sourceId: number): void {
@@ -499,12 +512,7 @@ export class LedgerStore {
    * committed, so the data is gone regardless and only the size display lags
    * until the next successful reclaim. */
   clear(): void {
-    this.db.exec(`
-      DELETE FROM ledger_call;
-      DELETE FROM ledger_turn;
-      DELETE FROM ledger_session;
-      DELETE FROM ledger_source;
-    `)
+    this.db.runSync(this.clearEffect())
     try {
       this.db.exec(`VACUUM;`)
       this.db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`)

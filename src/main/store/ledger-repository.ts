@@ -14,6 +14,8 @@ export class LedgerRepository extends Context.Service<
   LedgerRepository,
   {
     portIn(input: PortInput): Effect.Effect<PortResult, SqlError>
+    clear(): Effect.Effect<void, SqlError>
+    deleteSource(provider: string, envFingerprint: string, filePath: string): Effect.Effect<void, SqlError>
   }
 >()('watchtower/store/LedgerRepository') {
   static readonly layer = Layer.effect(
@@ -90,6 +92,21 @@ export class LedgerRepository extends Context.Service<
         yield* sql.unsafe('DELETE FROM ledger_call WHERE source_id = ?', [sourceId])
         yield* sql.unsafe('DELETE FROM ledger_turn WHERE source_id = ?', [sourceId])
         yield* sql.unsafe('DELETE FROM ledger_session WHERE source_id = ?', [sourceId])
+      })
+
+      const deleteSource = Effect.fn('LedgerRepository.deleteSource')(function* (
+        provider: string,
+        envFingerprint: string,
+        filePath: string,
+      ): Effect.fn.Return<void, SqlError> {
+        const sourceId = yield* findSourceId(provider, envFingerprint, filePath)
+        if (sourceId === null) return
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* deleteSourceRows(sourceId)
+            yield* sql.unsafe('DELETE FROM ledger_source WHERE id = ?', [sourceId])
+          }),
+        )
       })
 
       const insertSessions = Effect.fnUntraced(function* (
@@ -222,6 +239,17 @@ export class LedgerRepository extends Context.Service<
         return inserted
       })
 
+      const clear = Effect.fn('LedgerRepository.clear')(function* (): Effect.fn.Return<void, SqlError> {
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql.unsafe('DELETE FROM ledger_call')
+            yield* sql.unsafe('DELETE FROM ledger_turn')
+            yield* sql.unsafe('DELETE FROM ledger_session')
+            yield* sql.unsafe('DELETE FROM ledger_source')
+          }),
+        )
+      })
+
       const portIn = Effect.fn('LedgerRepository.portIn')(function* (
         input: PortInput,
       ): Effect.fn.Return<PortResult, SqlError> {
@@ -251,7 +279,7 @@ export class LedgerRepository extends Context.Service<
         )
       })
 
-      return LedgerRepository.of({ portIn })
+      return LedgerRepository.of({ portIn, clear, deleteSource })
     }),
   )
 }

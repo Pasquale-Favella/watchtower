@@ -413,6 +413,46 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.close()
   })
 
+  it('deleteSource() rolls back child-row deletes when one table delete fails', () => {
+    const store = makeStore()
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+
+    const triggerDb = new DatabaseSync(store.dbPath)
+    triggerDb.exec(`
+      CREATE TRIGGER fail_source_delete BEFORE DELETE ON ledger_session
+      BEGIN SELECT RAISE(ABORT, 'injected source deletion failure'); END;
+    `)
+    triggerDb.close()
+
+    expect(() => store.deleteSource(baseInput.provider, baseInput.envFingerprint, baseInput.filePath)).toThrow()
+    expect(store.getSources()).toHaveLength(1)
+    expect(store.getSessions()).toHaveLength(1)
+    expect(store.getTurns()).toHaveLength(1)
+    expect(store.getCalls()).toHaveLength(1)
+
+    store.close()
+  })
+
+  it('clear() rolls back all deletes when one table delete fails', () => {
+    const store = makeStore()
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+
+    const triggerDb = new DatabaseSync(store.dbPath)
+    triggerDb.exec(`
+      CREATE TRIGGER fail_clear_session BEFORE DELETE ON ledger_session
+      BEGIN SELECT RAISE(ABORT, 'injected clear failure'); END;
+    `)
+    triggerDb.close()
+
+    expect(() => store.clear()).toThrow()
+    expect(store.getSources()).toHaveLength(1)
+    expect(store.getSessions()).toHaveLength(1)
+    expect(store.getTurns()).toHaveLength(1)
+    expect(store.getCalls()).toHaveLength(1)
+
+    store.close()
+  })
+
   it('clear() reclaims disk space, so the Settings sizes visibly drop', () => {
     const store = makeStore()
     for (let i = 0; i < 200; i++) {
