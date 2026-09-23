@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DbWorkerClient, type DbWorkerPort } from '../src/main/db-worker/client.js'
@@ -25,9 +26,13 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     return ctx
   }
 
-  afterEach(() => {
+  afterEach(async () => {
     events.length = 0
-    try { ctx?.close() } catch { /* already closed */ }
+    try {
+      await ctx?.close()
+    } catch {
+      /* already closed */
+    }
     ctx = null
     if (dir) rmSync(dir, { recursive: true, force: true })
     dir = ''
@@ -123,6 +128,46 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     const c = open()
     await expect(c.dispatch('shutdown', [])).resolves.toBeNull()
     await expect(c.dispatch('shutdown', [])).resolves.toBeNull()
+  })
+
+  it('waits for a cancelled FX request before closing the ledger', async () => {
+    let resolveResponse!: (response: Response) => void
+    let requestSignal: AbortSignal | undefined
+    const originalFetch = globalThis.fetch
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        requestSignal = init?.signal as AbortSignal | undefined
+        return new Promise<Response>(resolve => {
+          resolveResponse = resolve
+        })
+      }),
+    )
+    const completeResponse = (): void =>
+      resolveResponse?.({
+        ok: true,
+        status: 200,
+        json: async () => ({ rates: { EUR: 0.9 } }),
+      } as Response)
+
+    try {
+      const c = open()
+      await c.dispatch('currency:set', ['EUR'])
+      await vi.waitFor(() => expect(requestSignal).toBeDefined())
+
+      let closed = false
+      const closing = c.close().then(() => { closed = true })
+      await vi.waitFor(() => expect(requestSignal?.aborted).toBe(true))
+      expect(closed).toBe(false)
+
+      completeResponse()
+      await closing
+      expect(closed).toBe(true)
+      await expect(c.dispatch('currency:get', [])).rejects.toThrow(/shutting down/)
+    } finally {
+      completeResponse()
+      vi.stubGlobal('fetch', originalFetch)
+    }
   })
 })
 

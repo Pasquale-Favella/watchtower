@@ -1,40 +1,58 @@
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
+import { mkdirSync, readdirSync, statSync } from 'fs'
 import { dirname, join } from 'path'
-import { mkdirSync, statSync, readdirSync } from 'fs'
-import { writeFile } from 'node:fs/promises'
-import { refreshPricingNow } from '../pipeline/models.js'
-import { resolveCadenceMs } from '../cadence.js'
-import {
-  buildDashboardViewsFromLedger, buildProjectRowsFromLedger, querySessionRowsFromLedger, getSessionDetailFromLedger,
-  buildAnalyticalViewsFromLedger, searchSessionsFromLedger, buildProjectsFromLedger,
-  type SessionRow,
-} from '../views.js'
-import { runScan, ScanAbortedError, buildScanSummaryRecords, type ScanMetadata, type ScanProgress } from '../pipeline/scan.js'
-import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
-import { buildOverviewFromLedger, type OverviewScope } from '../overview.js'
-import { buildSessionsViewFromLedger } from '../sessions-view.js'
-import { buildPullRequestsViewFromLedger, type PullRequestsPayload } from '../pull-requests-view.js'
-import { buildSpendViewFromLedger, type SpendPayload } from '../spend-view.js'
-import { buildModelsViewFromLedger, type ModelsPayload } from '../models-view.js'
-import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from '../compare-view.js'
-import { buildOptimizeViewFromLedger, type OptimizePayload } from '../optimize-view.js'
-import { buildYieldViewFromLedger, type YieldPayload } from '../yield-view.js'
-import { buildSkillsViewFromLedger, type SkillsPayload } from '../skills-view.js'
+
 import {
   DEFAULT_SKILLS_THRESHOLDS,
-  skillsThresholdsSchema,
   type SkillsThresholds,
+  skillsThresholdsSchema,
 } from '../../shared/schemas/skills.js'
-import { exportCsv, exportJson } from '../export.js'
-import { getClaudeConfigDirs } from '../pipeline/providers/claude.js'
-import { getRepoUrl } from '../pipeline/git-remote.js'
-import {
-  getActiveCurrency, isValidCurrencyCode, listCurrencies, refreshFxRate,
-  type ActiveCurrency, type CurrencyOption,
-} from '../fx.js'
+import { resolveCadenceMs } from '../cadence.js'
+import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from '../compare-view.js'
 import type { ExportResult } from '../export.js'
+import { exportCsv, exportJson } from '../export.js'
+import {
+  type ActiveCurrency,
+  type CurrencyOption,
+  getActiveCurrency,
+  isValidCurrencyCode,
+  listCurrencies,
+  refreshFxRate,
+} from '../fx.js'
+import { buildModelsViewFromLedger, type ModelsPayload } from '../models-view.js'
+import { buildOptimizeViewFromLedger, type OptimizePayload } from '../optimize-view.js'
+import { buildOverviewFromLedger, type OverviewScope } from '../overview.js'
+import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
+import { getRepoUrl } from '../pipeline/git-remote.js'
+import { refreshPricingNow } from '../pipeline/models.js'
+import { getClaudeConfigDirs } from '../pipeline/providers/claude.js'
+import {
+  buildScanSummaryRecords,
+  runScan,
+  ScanAbortedError,
+  type ScanMetadata,
+  type ScanProgress,
+} from '../pipeline/scan.js'
 import type { DateRange } from '../pipeline/types.js'
+import { buildPullRequestsViewFromLedger, type PullRequestsPayload } from '../pull-requests-view.js'
+import { buildSessionsViewFromLedger } from '../sessions-view.js'
+import { buildSkillsViewFromLedger, type SkillsPayload } from '../skills-view.js'
+import { buildSpendViewFromLedger, type SpendPayload } from '../spend-view.js'
 import { LedgerStore } from '../store/ledger.js'
 import type { PortInput } from '../store/port.js'
+import {
+  buildAnalyticalViewsFromLedger,
+  buildDashboardViewsFromLedger,
+  buildProjectRowsFromLedger,
+  buildProjectsFromLedger,
+  getSessionDetailFromLedger,
+  querySessionRowsFromLedger,
+  searchSessionsFromLedger,
+  type SessionRow,
+} from '../views.js'
+import { buildYieldViewFromLedger, type YieldPayload } from '../yield-view.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 
 export type DbWorkerEmit = (event: DbWorkerEvent) => void
@@ -86,6 +104,10 @@ export class DbWorkerContext {
    * and error events belong to the requesting window only. */
   private manualScan = false
   private cadenceTimer: ReturnType<typeof setInterval> | null = null
+  private activeScan: Promise<ScanMetadata> | null = null
+  private readonly backgroundScope = Scope.makeUnsafe()
+  private readonly backgroundFxTasks = new Set<Promise<void>>()
+  private closePromise: Promise<void> | null = null
   private closed = false
 
   constructor(init: DbWorkerData, emit: DbWorkerEmit) {
@@ -98,7 +120,7 @@ export class DbWorkerContext {
     // Prime the FX side-table for the persisted display currency at startup,
     // non-blocking: readers use the cached rate (or USD) meanwhile, and an
     // event lands the fresh rate if the cache was stale.
-    void this.refreshFxOnCadence()
+    this.startBackgroundFx(signal => this.refreshFxOnCadence(signal))
   }
 
   // ── Scan pipeline ───────────────────────────────────────────────────
@@ -146,6 +168,41 @@ export class DbWorkerContext {
     )
   }
 
+  private async runTrackedScan(
+    options: { provider?: string } | undefined,
+    emit: (progress: ScanProgress) => void,
+  ): Promise<ScanMetadata> {
+    const scan = this.performScan(options, emit)
+    this.activeScan = scan
+    try {
+      return await scan
+    } finally {
+      if (this.activeScan === scan) this.activeScan = null
+    }
+  }
+
+  private startBackgroundFx(work: (signal: AbortSignal) => Promise<void>): void {
+    if (this.closed) return
+    const effect = Effect.tryPromise({
+      try: signal => {
+        let promise: Promise<void>
+        try {
+          promise = work(signal).then(
+            () => undefined,
+            () => undefined,
+          )
+        } catch {
+          promise = Promise.resolve()
+        }
+        this.backgroundFxTasks.add(promise)
+        void promise.finally(() => this.backgroundFxTasks.delete(promise))
+        return promise
+      },
+      catch: () => undefined,
+    })
+    Effect.runFork(Effect.forkIn(effect, this.backgroundScope, { startImmediately: true }))
+  }
+
   /** Operational-log forwards (#128): scan lifecycle over the existing host
    * event channel. Main files each `oplog` via the shared seam with
    * `context: 'worker'` — allowlisted fields only. */
@@ -188,14 +245,15 @@ export class DbWorkerContext {
    * as intrusively as a user-initiated one would. Coalesces with any
    * already-running scan rather than overlapping it. */
   private async triggerBackgroundScan(): Promise<void> {
-    if (this.scanActive) return
+    if (this.closed || this.scanActive) return
     this.scanActive = true
     this.manualScan = false
     this.abortRequested = false
     this.emitScanStart()
     try {
-      const metadata = await this.performScan(undefined, progress =>
-        this.emit({ event: 'scan:progress', manual: false, progress }))
+      const metadata = await this.runTrackedScan(undefined, progress =>
+        this.emit({ event: 'scan:progress', manual: false, progress }),
+      )
       this.lastScanMetadata = metadata
       this.emit({ event: 'store:changed', metadata })
       this.emitScanFinish(metadata)
@@ -222,7 +280,7 @@ export class DbWorkerContext {
     // rate when it is missing or older than 24h. refreshFxRate never throws,
     // so a Frankfurter outage can never disturb the scan itself.
     this.cadenceTimer = setInterval(() => {
-      void this.refreshFxOnCadence()
+      this.startBackgroundFx(signal => this.refreshFxOnCadence(signal))
       void this.triggerBackgroundScan()
     }, ms)
   }
@@ -231,10 +289,10 @@ export class DbWorkerContext {
    * refresh the selected currency's cached rate when stale, and emit the
    * result only when the rate actually changed — so a minute cadence doesn't
    * spam re-renders while the 24h cache is still fresh. */
-  private async refreshFxOnCadence(): Promise<void> {
+  private async refreshFxOnCadence(signal: AbortSignal): Promise<void> {
     const before = getActiveCurrency(this.ledger)
-    const after = await refreshFxRate(this.ledger, this.ledger.getDisplayCurrency())
-    if (after.rate !== before.rate || after.updatedAt !== before.updatedAt) {
+    const after = await refreshFxRate(this.ledger, this.ledger.getDisplayCurrency(), { signal })
+    if (!this.closed && (after.rate !== before.rate || after.updatedAt !== before.updatedAt)) {
       this.emit({ event: 'currency:changed', currency: after })
     }
   }
@@ -287,6 +345,7 @@ export class DbWorkerContext {
   // ── Op dispatch (one arm per renderer IPC channel that touches data) ──
 
   async dispatch(op: string, args: unknown[]): Promise<unknown> {
+    if (this.closed && op !== 'shutdown') throw new Error('db-worker is shutting down')
     const ledger = this.ledger
     switch (op) {
       case 'scan:start': {
@@ -301,8 +360,9 @@ export class DbWorkerContext {
         this.abortRequested = false
         this.emitScanStart(options?.provider)
         try {
-          const metadata = await this.performScan(options, progress =>
-            this.emit({ event: 'scan:progress', manual: true, progress }))
+          const metadata = await this.runTrackedScan(options, progress =>
+            this.emit({ event: 'scan:progress', manual: true, progress }),
+          )
           this.lastScanMetadata = metadata
           this.emit({ event: 'store:changed', metadata })
           this.emitScanFinish(metadata)
@@ -326,10 +386,10 @@ export class DbWorkerContext {
         this.abortRequested = true
         return null
 
-      /** Graceful shutdown (quit path): stop the cadence and checkpoint +
-       * close the ledger. Best-effort — quitting never blocks on it. */
+      /** Graceful shutdown (quit path): stop background work and close the
+       * ledger after its outstanding scan and FX requests have settled. */
       case 'shutdown':
-        this.close()
+        await this.close()
         return null
 
       case 'cadence:get':
@@ -575,7 +635,10 @@ export class DbWorkerContext {
           throw new Error('invalid ISO 4217 currency code')
         }
         ledger.setDisplayCurrency(code)
-        void refreshFxRate(ledger, code).then(currency => this.emit({ event: 'currency:changed', currency }))
+        this.startBackgroundFx(async signal => {
+          const currency = await refreshFxRate(ledger, code, { signal })
+          if (!this.closed) this.emit({ event: 'currency:changed', currency })
+        })
         return getActiveCurrency(ledger) satisfies ActiveCurrency
       }
 
@@ -598,15 +661,21 @@ export class DbWorkerContext {
     }
   }
 
-  /** Test + shutdown seam: stop the cadence and close the store (lets
-   * temp-dir fixtures clean up on Windows). Idempotent. */
-  close(): void {
-    if (this.closed) return
+  /** Stop background work and close the store after scans/FX settle. Idempotent. */
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise
     this.closed = true
     if (this.cadenceTimer) {
       clearInterval(this.cadenceTimer)
       this.cadenceTimer = null
     }
-    this.ledger.close()
+    this.abortRequested = true
+    this.closePromise = (async () => {
+      await Effect.runPromise(Scope.close(this.backgroundScope, Exit.void))
+      await Promise.all(this.backgroundFxTasks)
+      await this.activeScan?.catch(() => undefined)
+      this.ledger.close()
+    })()
+    return this.closePromise
   }
 }

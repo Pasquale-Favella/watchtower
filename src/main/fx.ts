@@ -1,6 +1,6 @@
+import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 import { fetchWithTimeout } from './pipeline/fetch-utils.js'
 import type { LedgerStore } from './store/ledger.js'
-import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 
 export type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 
@@ -135,6 +135,8 @@ interface RefreshFxOptions {
   fetchImpl?: typeof fetch
   /** Injectable clock for staleness tests. */
   now?: () => number
+  /** Aborts the in-flight request when its owning worker scope closes. */
+  signal?: AbortSignal
 }
 
 /** Fetches the USD→code rate from Frankfurter and caches it into the FX
@@ -155,17 +157,31 @@ export async function refreshFxRate(
   if (cached && !isRateStale(cached.updatedAt, now)) {
     return { code: safe, symbol: cached.symbol, rate: cached.rate, updatedAt: cached.updatedAt }
   }
+  const fallback = (): ActiveCurrency => ({
+    code: safe,
+    symbol: cached?.symbol ?? resolveSymbol(safe),
+    rate: cached?.rate ?? 1,
+    updatedAt: cached?.updatedAt,
+  })
+  if (options.signal?.aborted) return fallback()
 
   const fetchImpl = options.fetchImpl ?? fetch
   try {
-    const response = await fetchWithTimeout(`${FRANKFURTER_URL}${safe}`, {}, undefined, fetchImpl)
+    const response = await fetchWithTimeout(
+      `${FRANKFURTER_URL}${safe}`,
+      { signal: options.signal },
+      undefined,
+      fetchImpl,
+    )
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const data = await response.json() as { rates?: Record<string, unknown> }
+    const data = (await response.json()) as { rates?: Record<string, unknown> }
     const rate = data.rates?.[safe]
     if (!isValidRate(rate)) throw new Error(`Invalid rate returned for ${safe}`)
+    if (options.signal?.aborted) return fallback()
     store.setCurrencyRate({ code: safe, symbol: resolveSymbol(safe), rate, updatedAt: new Date(now).toISOString() })
   } catch {
     // Offline / blocked / malformed — keep the last cached rate (or USD).
+    if (options.signal?.aborted) return fallback()
   }
 
   const latest = store.getCurrencyRate(safe)

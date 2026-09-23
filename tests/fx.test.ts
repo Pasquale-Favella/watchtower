@@ -1,14 +1,16 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
-import { LedgerStore } from '../src/main/store/ledger.js'
+
 import {
-  convertCost, formatCost, getActiveCurrency, getFractionDigits,
-  isRateStale, isValidCurrencyCode, listCurrencies, refreshFxRate,
-  roundForActiveCurrency, FX_CACHE_TTL_MS,
   type ActiveCurrency,
-} from '../src/main/fx.js'
+  convertCost, formatCost, FX_CACHE_TTL_MS,
+getActiveCurrency, getFractionDigits,
+  isRateStale, isValidCurrencyCode, listCurrencies, refreshFxRate,
+  roundForActiveCurrency, } from '../src/main/fx.js'
+import { LedgerStore } from '../src/main/store/ledger.js'
 
 function makeStore(): LedgerStore {
   const dir = mkdtempSync(join(tmpdir(), 'tr-fx-'))
@@ -147,6 +149,28 @@ describe('refreshFxRate (the main-process Frankfurter background job)', () => {
     const active = await refreshFxRate(store, 'EUR', { fetchImpl: throwing })
     expect(active.rate).toBe(1)
     expect(getActiveCurrency(store).rate).toBe(1)
+    store.close()
+  })
+
+  it('does not persist a response that arrives after the caller aborts', async () => {
+    const store = makeStore()
+    const controller = new AbortController()
+    let resolveResponse!: (response: Response) => void
+    const fetchImpl = (() =>
+      new Promise<Response>(resolve => {
+        resolveResponse = resolve
+      })) as typeof fetch
+
+    const refresh = refreshFxRate(store, 'EUR', { fetchImpl, signal: controller.signal })
+    controller.abort()
+    resolveResponse({
+      ok: true,
+      status: 200,
+      json: async () => ({ rates: { EUR: 0.9 } }),
+    } as Response)
+
+    await expect(refresh).resolves.toMatchObject({ code: 'EUR', rate: 1 })
+    expect(store.getCurrencyRate('EUR')).toBeNull()
     store.close()
   })
 
