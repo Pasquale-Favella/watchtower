@@ -1,12 +1,13 @@
-import { loadPricing } from './models.js'
-import { parseAllSessions } from './parser.js'
-import type { DeltaHandler } from './parser.js'
-import type { DateRange } from './types.js'
+import * as Effect from 'effect/Effect'
+
 import type {
   ScanMetadata,
   ScanOptions,
   ScanProgress,
 } from '../../shared/schemas/scan.js'
+import { loadPricing } from './models.js'
+import type { DeltaHandler } from './parser.js'
+import { parseAllSessions } from './parser.js'
 
 export type {
   PerProviderPort,
@@ -33,17 +34,20 @@ export class ScanAbortedError extends Error {
  * commits per file and overlaps the tail of parse. A `port-in` stage tick
  * marks the streaming window; the `aggregate` stage no longer exists.
  */
-export async function runScan(
+export const runScan = Effect.fnUntraced(function* (
   options: ScanOptions,
   onProgress?: (progress: ScanProgress) => void,
   abort?: { isAborted(): boolean },
   onDelta?: DeltaHandler
-): Promise<ScanMetadata> {
+): Effect.fn.Return<ScanMetadata, unknown> {
   const scanId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const startedAt = new Date().toISOString()
 
   onProgress?.({ stage: 'pricing' })
-  await loadPricing()
+  yield* Effect.tryPromise({
+    try: () => loadPricing(),
+    catch: cause => cause,
+  })
 
   onProgress?.({ stage: 'parse' })
   if (onDelta) onProgress?.({ stage: 'port-in' })
@@ -86,7 +90,10 @@ export async function runScan(
     ensureProvider(provider).unparsed += count
   }
 
-  await parseAllSessions(options.range, options.provider, countingDelta, onUnparsed)
+  yield* Effect.tryPromise({
+    try: () => parseAllSessions(options.range, options.provider, countingDelta, onUnparsed),
+    catch: cause => cause,
+  })
 
   if (onDelta && abort?.isAborted()) {
     aborted = true
@@ -109,7 +116,7 @@ export async function runScan(
     perProvider: providerRows,
     aborted,
   }
-}
+})
 
 /** Operational-log record shape for a finished scan (#128): one `scan.finish`
  * totals record plus one `scan.provider` record per provider that has

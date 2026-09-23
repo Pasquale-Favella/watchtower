@@ -135,10 +135,10 @@ export class DbWorkerContext {
    * background-cadence timer, so both go through identical port-in + broadcast
    * semantics. Repo URLs are resolved per unique project cwd (memoized) so the
    * ledger's per-source `repo_url` is captured at port-in without a rescan. */
-  private async performScan(
+  private performScan(
     options: { provider?: string } | undefined,
     emit: (progress: ScanProgress) => void,
-  ): Promise<ScanMetadata> {
+  ): Effect.Effect<ScanMetadata, unknown> {
     const range = lifetimeRange()
     const repoUrlCache = new Map<string, Promise<string | undefined>>()
     const portIn = async (delta: PortInput): Promise<void> => {
@@ -176,12 +176,8 @@ export class DbWorkerContext {
     options: { provider?: string } | undefined,
     emit: (progress: ScanProgress) => void,
   ): Promise<ScanMetadata> {
-    const scanEffect = Effect.tryPromise({
-      try: () => this.performScan(options, emit),
-      catch: cause => cause,
-    })
     const fiber = Effect.runSync(
-      Effect.forkIn(scanEffect, this.scanScope, { startImmediately: true }),
+      Effect.forkIn(this.performScan(options, emit), this.scanScope, { startImmediately: true }),
     )
     const scan = Effect.runPromise(Fiber.join(fiber))
     this.activeScan = scan

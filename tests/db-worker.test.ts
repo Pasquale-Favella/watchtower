@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DbWorkerClient, type DbWorkerPort } from '../src/main/db-worker/client.js'
@@ -165,10 +166,11 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     const c = open()
     let resolveScan!: (metadata: ScanMetadata) => void
     const scanResult = new Promise<ScanMetadata>(resolve => { resolveScan = resolve })
+    const scanEffect = Effect.tryPromise({ try: () => scanResult, catch: cause => cause })
     const performScan = vi.spyOn(
-      c as unknown as { performScan: (...args: never[]) => Promise<ScanMetadata> },
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
       'performScan',
-    ).mockReturnValue(scanResult)
+    ).mockReturnValue(scanEffect)
     const request = c.dispatch('scan:start', [])
     await vi.waitFor(() => expect(performScan).toHaveBeenCalledOnce())
 
