@@ -462,6 +462,19 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect(events).toHaveLength(frozen)
   })
 
+  it('coalesces rapid cancellation requests for the same run', async () => {
+    const { runtime } = streamingRuntime()
+    const runner = makeRunner(runtime)
+    const result = await runner.start(request, () => {})
+    const runId = (result as { ok: true; runId: string }).runId
+
+    const first = runner.cancel(runId)
+    const second = runner.cancel(runId)
+
+    expect(second).toBe(first)
+    await Promise.all([first, second])
+  })
+
   it('cancel on an unknown runId is a silent no-op', async () => {
     const runner = makeRunner(scriptedRuntime([]))
     await expect(runner.cancel('does-not-exist')).resolves.toBeUndefined()

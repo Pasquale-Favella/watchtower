@@ -1,10 +1,13 @@
 import { existsSync, statSync } from 'node:fs'
 import type { ACPProvider, ACPProviderSettings } from '@mcpc-tech/acp-ai-provider'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
 import type { CoachEvent, CoachSessionModes, CoachSessionModels } from '../../shared/schemas/agents.js'
 import type { HarnessInfo } from './detect.js'
 import type { AcpAdapter, AcpMcpServer } from './harnesses/types.js'
-import { deriveCoachEvents, type CoachStreamPart } from './events.js'
+import { createCoachEventNormalizer, type CoachStreamPart } from './events.js'
 import { harnessSpecs } from './harnesses/index.js'
+import { killProcessTreeSync } from './process-tree.js'
 import {
   describeCatalog,
   executeSelectionPlan,
@@ -65,6 +68,7 @@ export interface HarnessSdk {
     model: unknown
     prompt: string
     tools?: unknown
+    abortSignal?: AbortSignal
   }): AsyncIterable<CoachStreamPart>
 }
 
@@ -237,7 +241,10 @@ export interface HarnessRuntimeOptions {
   /** Platform used for spawn-command wrapping (defaults to process.platform).
    *  Injectable so the win32 shim handling is unit-testable on any host. */
   platform?: NodeJS.Platform
+  cancelDrainMs?: number
 }
+
+export const CANCEL_DRAIN_MS = 1500
 
 /** npm-global CLIs on Windows are `.cmd` shims (with a POSIX-script alias)
  *  that Node's shell-less `spawn` cannot execute — spawning the bare name
@@ -291,6 +298,14 @@ export function createHarnessSpawn(
 export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOptions = {}): HarnessRuntime {
   const platform = options.platform ?? process.platform
 
+  function teardownProvider(provider: AcpProvider): void {
+    try {
+      provider.cleanup()
+    } catch {
+      // Teardown must not turn a completed or cancelled run into a rejection.
+    }
+  }
+
   /** Builds the ACP provider for a harness run — the ONE place the seam maps
    *  a HarnessInfo + workspace + resume handle onto `createACPProvider`
    *  (ADR 0016), shared by `run` and the `inspect` probe so both spawn the
@@ -321,9 +336,8 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
     async *run(input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       let provider = createProvider(input)
 
-      yield { kind: 'status', state: 'starting' }
-
       try {
+        yield { kind: 'status', state: 'starting' }
         // Warm the ACP session up front (cuts time-to-first-token) and grab
         // the resume handle. An unavailable agent (binary missing, auth wall)
         // surfaces here as a cheap error event — never an inscrutable spawn
@@ -357,7 +371,7 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           // server — so the fresh session behaves like a normal first run).
           // The provider creation sits INSIDE the try: a throw there becomes
           // a graceful error event, never an uncaught generator rejection.
-          provider.cleanup()
+          teardownProvider(provider)
           try {
             provider = createProvider({ ...input, sessionId: undefined })
             const warm = await warmSession(provider)
@@ -401,10 +415,12 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           }
         }
 
+        const controller = new AbortController()
         const stream = sdk.streamText({
           model: provider.languageModel(languageModelId, input.modeId),
           prompt: input.prompt,
           tools: provider.tools,
+          abortSignal: controller.signal,
         })
 
         // ONE iterator, used for both the loop and cancellation. Holding a
@@ -416,28 +432,46 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         // over the held iterator throws 'not async iterable' (the fake SDK's
         // async-generator mask hides this; the real stream does not).
         const iterator = stream[Symbol.asyncIterator]()
+        const normalize = createCoachEventNormalizer()
+        let endedNormally = false
         try {
           for (;;) {
             const { done, value } = await iterator.next()
-            if (done) break
+            if (done) {
+              endedNormally = true
+              break
+            }
             // Stream-time failures (e.g. the first prompt turn hitting an
             // expired stored login) ride `error` parts — map auth walls to
             // the actionable hint here too, at the point the harness is
             // still known (events.ts stays harness-agnostic).
-            for (const event of deriveCoachEvents(value as CoachStreamPart)) {
+            for (const event of normalize(value as CoachStreamPart)) {
               yield event.kind === 'error' ? toHarnessError(input.harness, event.message) : event
             }
           }
         } finally {
           if (typeof iterator.return === 'function') {
-            await iterator.return()
+            if (endedNormally) {
+              await iterator.return()
+            } else {
+              controller.abort()
+              await Effect.runPromise(
+                Effect.tryPromise({
+                  try: () => iterator.return!(),
+                  catch: error => error,
+                }).pipe(
+                  Effect.timeoutOption(Duration.millis(options.cancelDrainMs ?? CANCEL_DRAIN_MS)),
+                  Effect.ignore,
+                ),
+              )
+            }
           }
         }
       } finally {
         // ACP providers spawn a child process per provider; we never persist
         // sessions, so every run tears its agent process down (normal end,
         // error, or consumer-side cancellation).
-        provider.cleanup()
+        teardownProvider(provider)
       }
     },
 
@@ -465,9 +499,31 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           ...(catalog.modes ? { modes: catalog.modes } : {}),
         }
       } finally {
-        provider.cleanup()
+        teardownProvider(provider)
       }
     },
+  }
+}
+
+/** The slice of the provider's private `ACPLanguageModel` the win32 hook touches. */
+interface ProviderModelInternals {
+  agentProcess?: { pid?: number } | null
+  forceCleanup?: () => void
+}
+
+/** win32: the provider's `forceCleanup` kills only the `cmd.exe` shim wrapper,
+ *  orphaning the real agent — kill the whole tree first, synchronously, so the
+ *  root is still alive when taskkill walks it. */
+export function killTreeBeforeForceCleanup(
+  model: ProviderModelInternals,
+  killTree: (pid: number) => void = killProcessTreeSync,
+): void {
+  const original = model.forceCleanup
+  if (!original) return
+  model.forceCleanup = () => {
+    const pid = model.agentProcess?.pid
+    if (pid !== undefined) killTree(pid)
+    original.call(model)
   }
 }
 
@@ -491,7 +547,14 @@ export async function loadHarnessSdk(): Promise<HarnessSdk> {
     // except for the additive setConfigOption augmentation below.
     createACPProvider: ((config: AcpProviderConfig): AcpProvider => {
       const provider = createACPProvider(config) as unknown as AcpProvider & {
-        model?: { connection?: { setSessionConfigOption?: (args: { sessionId: string; configId: string; value: string }) => Promise<unknown> } }
+        model?: ProviderModelInternals & {
+          connection?: { setSessionConfigOption?: (args: { sessionId: string; configId: string; value: string }) => Promise<unknown> }
+        }
+      }
+      if (process.platform === 'win32') {
+        // The model is created lazily by initSession anyway; create it now to hook its teardown.
+        provider.languageModel()
+        if (provider.model) killTreeBeforeForceCleanup(provider.model)
       }
       provider.setConfigOption = async (args: { sessionId: string; configId: string; value: string }) => {
         const connection = provider.model?.connection
@@ -506,6 +569,7 @@ export async function loadHarnessSdk(): Promise<HarnessSdk> {
       model: unknown
       prompt: string
       tools?: unknown
+      abortSignal?: AbortSignal
     }) => streamText(options as unknown as Parameters<typeof streamText>[0]).fullStream as unknown as AsyncIterable<CoachStreamPart>,
   }
 }

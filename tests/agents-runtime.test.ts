@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { CoachStreamPart } from '../src/main/agents/events.js'
-import { acpSpawnCommand, createHarnessRuntime, isAuthFailureMessage, type HarnessSdk } from '../src/main/agents/runtime.js'
+import { acpSpawnCommand, createHarnessRuntime, isAuthFailureMessage, killTreeBeforeForceCleanup, type HarnessSdk } from '../src/main/agents/runtime.js'
 import { harnessSpecs } from '../src/main/agents/harnesses/index.js'
 
 const claudeHarness: HarnessInfo = {
@@ -90,7 +90,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
       { kind: 'status', state: 'starting' },
       { kind: 'session', sessionId: 'sess_9' },
       { kind: 'text', delta: 'Hello' },
-      { kind: 'tool', tool: 'Bash', state: 'started' },
+      { kind: 'tool', tool: 'Bash', state: 'started', id: 'tool-1' },
       { kind: 'status', state: 'done' },
     ])
     expect(createACPProvider).toHaveBeenCalledOnce()
@@ -99,6 +99,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const streamCall = streamText.mock.calls[0]![0]
     expect(streamCall.prompt).toBe('List the files')
     expect(streamCall.tools).toBeDefined()
+    expect(streamCall.abortSignal?.aborted).toBe(false)
     expect(provider.languageModel).toHaveBeenCalledWith('claude-opus-4-8', undefined)
   })
 
@@ -367,6 +368,56 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const exhausted = await gen.next()
     expect(exhausted.done).toBe(true)
     expect(provider.cleanup).toHaveBeenCalledOnce()
+  })
+
+  it('aborts the stream signal when the consumer cancels mid-stream', async () => {
+    const { sdk, streamText } = fakeSdk([{ type: 'text-delta', text: 'slow text' }])
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const gen = runtime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+
+    await gen.next()
+    await gen.next()
+    await gen.next()
+    const signal = streamText.mock.calls[0]![0].abortSignal as AbortSignal
+    expect(signal.aborted).toBe(false)
+
+    await gen.return()
+
+    expect(signal.aborted).toBe(true)
+  })
+
+  it('bounds a stalled iterator return during cancellation', async () => {
+    const { sdk, provider } = fakeSdk([])
+    const iterator = {
+      next: vi.fn(async () => ({ done: false as const, value: { type: 'text-delta' as const, text: 'live' } })),
+      return: vi.fn(() => new Promise<never>(() => {})),
+    }
+    sdk.streamText = vi.fn(() => ({ [Symbol.asyncIterator]: () => iterator }))
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux', cancelDrainMs: 20 })
+    const gen = runtime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+
+    await gen.next()
+    await gen.next()
+    await gen.next()
+    await expect(gen.return()).resolves.toMatchObject({ done: true })
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+  })
+
+  it('kills the Windows agent tree before the provider kills its shim', () => {
+    const order: string[] = []
+    const model = {
+      agentProcess: { pid: 9876 } as { pid?: number } | null,
+      forceCleanup(this: { agentProcess: unknown }) {
+        order.push('forceCleanup')
+        this.agentProcess = null
+      },
+    }
+    killTreeBeforeForceCleanup(model, pid => { order.push(`kill:${pid}`) })
+
+    model.forceCleanup()
+    model.forceCleanup()
+
+    expect(order).toEqual(['kill:9876', 'forceCleanup', 'forceCleanup'])
   })
 })
 

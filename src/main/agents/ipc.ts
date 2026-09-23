@@ -132,6 +132,7 @@ function toProbeInput(request: unknown): ProbeInput | null {
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   const harnessSource = deps.harnesses
   const activeRuns = new Map<string, AsyncGenerator<CoachEvent>>()
+  const cancelPromises = new Map<string, Promise<void>>()
   /** Runs cancelled by the user before their stream settled — the settle path
    * logs `harness.cancel` instead of `harness.finish` for these (#130). */
   const cancelledRuns = new Set<string>()
@@ -437,6 +438,8 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
     },
 
     cancel(runId) {
+      const existing = cancelPromises.get(runId)
+      if (existing) return existing
       const gen = activeRuns.get(runId)
       if (gen && typeof gen.return === 'function') {
         // Marked so the stream settle path logs `harness.cancel` instead of
@@ -450,7 +453,11 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         // return() can reject if the generator's finally (provider cleanup)
         // throws — that must not become an unhandled rejection; the stream is
         // already being torn down by the caller's intent.
-        return gen.return(undefined).catch(() => { /* teardown already in flight */ }) as Promise<void>
+        const cancelPromise = gen.return(undefined)
+          .catch(() => { /* teardown already in flight */ })
+          .finally(() => cancelPromises.delete(runId)) as Promise<void>
+        cancelPromises.set(runId, cancelPromise)
+        return cancelPromise
       }
       return Promise.resolve()
     },

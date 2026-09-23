@@ -7,6 +7,7 @@ import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import type { HarnessInfo } from './detect.js'
 import { probeClaudeAuthStatus } from './auth-probe.js'
+import { killProcessTree } from './process-tree.js'
 import { createHarnessSpawn, type HarnessSpawn } from './runtime.js'
 
 export const HARNESS_PROBE_TIMEOUT_MS = 6000
@@ -69,9 +70,7 @@ function defaultConnectionFactory(child: ProbeChild): ProbeConnection {
 
 function killProbeChild(child: ProbeChild, platform: NodeJS.Platform, runExecFile: typeof execFile = execFile): void {
   if (platform === 'win32' && child.pid !== undefined) {
-    try {
-      runExecFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {})
-    } catch { /* best effort: the process may already be gone */ }
+    void killProcessTree(child.pid, platform, runExecFile)
     return
   }
   child.kill('SIGTERM')
