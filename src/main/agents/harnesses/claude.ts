@@ -25,6 +25,7 @@ const claude: HarnessSpec = {
     bin: 'claude-agent-acp',
   },
   scrubEnv: ['ANTHROPIC_API_KEY'],
+  auth: { loginCommand: ['claude', 'auth', 'login'] },
   preference: 1,
   adapter: {
     kind: 'acp',

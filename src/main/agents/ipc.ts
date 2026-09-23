@@ -4,19 +4,25 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BrowserWindow, ipcMain } from 'electron'
 import { detectHarnesses, type HarnessInfo } from './detect.js'
-import { probeClaudeAuthStatus } from './auth-probe.js'
-import { createHarnessRuntime, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
+import { createHarnessRuntime, isAuthFailureMessage, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
+import { probeHarness } from './probe.js'
+import { createHarnessSnapshotStore, type HarnessInstance, type HarnessSnapshotStore } from './snapshot.js'
 import { resolveBundledEntry } from './harnesses/bundled.js'
-import { buildCoachPrompt, buildLedgerBriefing } from './prompts.js'
+import { harnessSpecs } from './harnesses/index.js'
+import { openLoginTerminal } from './login-terminal.js'
+import { buildCoachPrompt, buildLedgerBriefing, buildScopeUpdate } from './prompts.js'
+import { decodeResumeCursor } from './resume-cursor.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import type { OverviewScope } from '../../shared/schemas/overview.js'
 import {
   coachInspectRequestSchema,
+  coachOpenLoginTerminalRequestSchema,
   coachRunRequestSchema,
   type CoachEvent,
   type CoachEventEnvelope,
   type CoachHarnessRow,
   type CoachInspectResult,
+  type CoachLoginTerminalResult,
   type CoachRunRequest,
   type CoachRunResult,
 } from '../../shared/schemas/agents.js'
@@ -63,9 +69,9 @@ export interface LedgerMcpAttachment {
 export interface CoachRunnerDeps {
   /** Lazily-provided seam — the SDK loads on the first run, not at boot. */
   getRuntime: () => Promise<HarnessRuntime>
-  /** Detection for the picker AND the run's HarnessInfo (scrubEnv, bin). The
-   *  runner never trusts the renderer's kind string beyond a registry key. */
-  detect: () => Promise<HarnessInfo[]>
+  /** Managed harness snapshot: picker rows and instance lookup — never spawns
+   *  per call. The runner never trusts the renderer's id beyond a lookup key. */
+  harnesses: HarnessSource
   /** Acquires the in-app ledger MCP server for a harness registry key
    *  (map 53, reshaped for per-harness transports). App-specific (execPath,
    *  asar entry path, dbPath, sidecar spawn) — injected so the runner stays
@@ -79,8 +85,16 @@ export interface CoachRunnerDeps {
   ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
 }
 
+export interface HarnessSource {
+  list: () => Promise<CoachHarnessRow[]>
+  refresh: () => Promise<CoachHarnessRow[]>
+  get: (instanceId: string) => Promise<HarnessInstance | undefined>
+  reportAuth?: (instanceId: string, status: 'configured' | 'unauthenticated') => void
+}
+
 export interface CoachRunner {
   harnesses(): Promise<CoachHarnessRow[]>
+  refreshHarnesses(): Promise<CoachHarnessRow[]>
   /** Pre-flight probe (map 47 ticket 50): asks the agent's handshake for its
    *  declared models/modes WITHOUT running a prompt, so the pickers render
    *  before the first message. Reuses the conversation workspace as the
@@ -105,15 +119,14 @@ export interface CoachRunner {
 }
 
 /** Normalized pre-flight probe input — the registry key plus the env flag
- *  the warmed session must be spawned with (see runProbe). */
+ *  the probe's agent must be spawned with (same as the run's). */
 interface ProbeInput {
   kind: string
   allowApiKeyEnv: boolean
 }
 
 /** Normalizes the `coach:inspect` wire payload (bare registry key or
- *  `{ kind, allowApiKeyEnv }`) so the probe, its warmed session, and the runs
- *  that resume it all agree on the environment. Null when invalid. */
+ *  `{ kind, allowApiKeyEnv }`). Null when invalid. */
 function toProbeInput(request: unknown): ProbeInput | null {
   const parsed = coachInspectRequestSchema.safeParse(request)
   if (!parsed.success) return null
@@ -122,23 +135,15 @@ function toProbeInput(request: unknown): ProbeInput | null {
 }
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
+  const harnessSource = deps.harnesses
   const activeRuns = new Map<string, AsyncGenerator<CoachEvent>>()
+  const cancelPromises = new Map<string, Promise<void>>()
   /** Runs cancelled by the user before their stream settled — the settle path
    * logs `harness.cancel` instead of `harness.finish` for these (#130). */
   const cancelledRuns = new Set<string>()
   /** The conversation's private temp workspace (map 53 ticket 56): created on
    *  the first run, reused while the session resumes, deleted on reset/quit. */
   let workspace: string | null = null
-  /** The probe-warmed ACP session (optimization): `inspect` runs the agent's
-   *  handshake to read its declared models/modes; the conversation's FIRST
-   *  run resumes that same session (`existingSessionId`) instead of creating
-   *  one, so the agent does not cold-start twice. Keyed to the workspace the
-   *  probe ran in, so a probe that outlives a `reset` (workspace deleted + a
-   *  new one created) can never leak its session into the next conversation.
-   *  Cleared once the first run consumes it. The probed session carries NO
-   *  prompt — `start` still includes the ledger briefing on that first run
-   *  (it keys on the absent renderer sessionId, which holds exactly here). */
-  let probedSession: { kind: string; sessionId: string; workspace: string; allowApiKeyEnv: boolean } | null = null
   /** The single in-flight probe (coalescing, optimization): rapid harness
    *  switching must not spawn one ACP process per switch. One probe runs at a
    *  time; `probedQueued` holds the NEWEST request while an older probe is in
@@ -148,11 +153,9 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
    *  the renderer's stale-guard drops anything it has moved past. */
   let probedChain: Promise<CoachInspectResult> | null = null
   let probedQueued: { input: ProbeInput; resolve: (result: CoachInspectResult | Promise<CoachInspectResult>) => void } | null = null
-  /** Bumped by every `reset`: a probe that started before a reset must not
-   *  remember its session afterwards (it was warmed in a conversation the
-   *  reset just discarded — the workspace-keyed guard alone cannot catch the
-   *  case where the probe CREATES its workspace only after the reset). */
-  let conversationGeneration = 0
+  /** Scope the agent was last briefed with (full briefing or scope update) — a
+   *  resumed turn under a different scope gets a one-line update. */
+  let briefedScopeKey: string | null = null
 
   /** Deletes a conversation workspace with Windows-aware retries, swallowing a
    *  final failure. The ACP child process's CWD holds the dir until it has
@@ -170,39 +173,26 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
     }
   }
 
-  /** ONE ACP probe spawn: detect, warm the session in the conversation
-   *  workspace, remember the session for the first-run resume, and return the
-   *  renderer-facing result (the session id stays main-side — the renderer's
-   *  resume handle comes from the run's session event as usual). */
+  /** ONE catalog probe spawn: resolve the instance, run the handshake in the
+   *  conversation workspace for its declared models/modes, and tear it down —
+   *  the session is never reused by a run. */
   async function runProbe(input: ProbeInput): Promise<CoachInspectResult> {
-    const generation = conversationGeneration
     try {
-      const found = await deps.detect()
-      const harness = found.find(h => h.kind === input.kind)
+      const instance = await harnessSource.get(input.kind)
+      const harness = instance?.info
       if (!harness) {
         return { ok: false, error: `harness not detected: ${input.kind}` }
       }
       const runtime = await deps.getRuntime()
       // The conversation workspace as the probe's cwd — created lazily, the
-      // same way the first run would; a session-less probe must still spawn
-      // the agent somewhere real (reset/quit cleans it up). Snapshot the path
-      // locally: a reset mid-probe must not re-key the remembered session to
-      // the NEW workspace it would otherwise point the closure at.
+      // same way the first run would; a probe must still spawn the agent
+      // somewhere real (reset/quit cleans it up).
       const probeWorkspace = workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-'))
-      // The probe spawns the agent EXACTLY like the run would — including the
-      // API-key passthrough opt-in — so the warmed session the first run
-      // resumes carries the same environment.
       const result = await runtime.inspect({
         harness,
         workspacePath: probeWorkspace,
         ...(input.allowApiKeyEnv ? { allowApiKeyEnv: true as const } : {}),
       })
-      // Only remember the session if no reset happened while probing — a
-      // stale probe belongs to a discarded conversation and must never be
-      // resumed by the next one (generation, not workspace, is the truth).
-      if (result.sessionId && conversationGeneration === generation) {
-        probedSession = { kind: input.kind, sessionId: result.sessionId, workspace: probeWorkspace, allowApiKeyEnv: input.allowApiKeyEnv }
-      }
       return {
         ok: true,
         ...(result.models ? { models: result.models } : {}),
@@ -249,12 +239,11 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
 
   return {
     async harnesses() {
-      const found = await deps.detect()
-      return found.map(h => ({
-        kind: h.kind,
-        displayName: h.displayName,
-        authStatus: h.authStatus,
-      }))
+      return harnessSource.list()
+    },
+
+    async refreshHarnesses() {
+      return harnessSource.refresh()
     },
 
     async inspect(request: unknown): Promise<CoachInspectResult> {
@@ -296,8 +285,8 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         return { ok: false, error: 'coach run requires a prompt' }
       }
 
-      const found = await deps.detect()
-      const harness = found.find(h => h.kind === req.harnessKind)
+      const instance = await harnessSource.get(req.harnessKind)
+      const harness = instance?.info
       if (!harness) {
         return { ok: false, error: `harness not detected: ${req.harnessKind}` }
       }
@@ -316,44 +305,21 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         attachment = null
       }
       const ledgerServer = attachment?.server ?? null
-      // The MCP briefing (ADR 0020): what the ledger tools are, that they
-      // serve the full lifetime ledger filtered through an optional `scope`
-      // argument, and the ground-your-answer rule — plus the user's current
-      // window as a suggested default. Only on the FIRST run of a
-      // conversation (no sessionId yet) — the harness resumes its session
-      // with the briefing already in context, so restating it every turn
-      // would just burn tokens. A probe-warmed first run still counts as
-      // first: the probe carried no prompt, so the agent has never seen the
-      // briefing — and this condition holds for it exactly (resumeProbed
-      // below requires !req.sessionId).
-      const briefing = ledgerServer && !req.sessionId ? buildLedgerBriefing(scope) : ''
-
-      // Resume the probe-warmed session on the conversation's first run
-      // (optimization, no double cold-start): the agent skips creating a new
-      // ACP session and picks up where the probe's handshake left it. Only
-      // when the probed harness matches AND the session still lives in THIS
-      // workspace — a stale probe (superseded, or one that outlived a reset)
-      // must never be resumed. The resumed run still attaches the ledger MCP
-      // server (it is in the run config below) and carries the briefing in
-      // its prompt, so it behaves like a fresh first run.
-      const resumeProbed = !req.sessionId
-        && probedSession !== null
-        && probedSession.kind === req.harnessKind
-        && probedSession.workspace === workspace
-        // A probe-warmed session is bound to the environment it was spawned
-        // with: resuming it under a different API-key opt-in would silently
-        // run with the wrong credentials, so a flag mismatch starts fresh.
-        && probedSession.allowApiKeyEnv === (req.allowApiKeyEnv ?? false)
-      // (the re-check narrows probedSession for TS — resumeProbed alone cannot
-      // prove it is non-null)
-      const resumeSessionId = resumeProbed && probedSession ? probedSession.sessionId : req.sessionId
-
-      // The one prompt path (ADR 0017 reshaped): the coach prompt carries the
-      // briefing's TWO-scope role (coaching + skill authoring), so a skill
-      // request needs no separate builder. MCP-aware (ADR 0020): the briefing
-      // tells the agent it can query the user's real usage data through the
-      // ledger tools.
-      const prompt = buildCoachPrompt(req.prompt!, briefing)
+      const instanceId = instance.instanceId
+      const sessionId = req.resumeCursor ? decodeResumeCursor(req.resumeCursor, instanceId) : undefined
+      const firstRun = !sessionId
+      const resumeLost = !!req.resumeCursor && !sessionId
+      const scopeKey = JSON.stringify({
+        period: scope.period,
+        provider: scope.provider ?? null,
+        range: scope.range ? { since: scope.range.since, until: scope.range.until } : null,
+      })
+      const freshPrompt = buildCoachPrompt(req.prompt!, ledgerServer ? buildLedgerBriefing(scope) : '')
+      // Resumed turns already hold the briefing; only a changed scope is restated.
+      const prompt = firstRun
+        ? freshPrompt
+        : buildCoachPrompt(req.prompt!, ledgerServer && briefedScopeKey !== scopeKey ? buildScopeUpdate(scope) : '')
+      if (ledgerServer) briefedScopeKey = scopeKey
 
       try {
         const runtime = await deps.getRuntime()
@@ -377,19 +343,12 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
           ...(req.modelId ? { modelId: req.modelId } : {}),
           ...(req.modeId ? { modeId: req.modeId } : {}),
           ...(req.allowApiKeyEnv ? { allowApiKeyEnv: true as const } : {}),
-          ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
-          // A probe-warmed session is expendable: if its resume fails on this
-          // first run, the seam restarts fresh instead of erroring — nothing
-          // was ever sent to it. Genuine conversation resumes (req.sessionId)
-          // stay strict: restarting would silently drop their context.
-          resumeIsExpendable: resumeProbed,
+          ...(sessionId ? { sessionId } : {}),
+          freshPrompt,
           // Merged after any spec-level servers. Null on a fresh install (no
           // ledger.db yet) — then no data tools.
           mcpServers: [...(ledgerServer ? [ledgerServer] : [])],
         })
-        // The probe's warm session has been handed to this run — the memory is
-        // consumed (a second session-less run must not resume it again).
-        if (resumeProbed) probedSession = null
         activeRuns.set(runId, gen)
 
         // Stream in the background — the ack returns immediately; events land
@@ -400,7 +359,11 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         void (async () => {
           let settled = false
           try {
+            if (resumeLost) emit(runId, { kind: 'notice', message: 'The previous session could not be restored — continuing in a fresh session.' })
+            if (firstRun && !ledgerServer) emit(runId, { kind: 'notice', message: 'Ledger data is not available yet (no scan found) — answers will not be grounded in your usage data.' })
             for await (const event of gen) {
+              if (event.kind === 'status' && event.state === 'done') harnessSource.reportAuth?.(instance.instanceId, 'configured')
+              if (event.kind === 'error' && isAuthFailureMessage(event.message)) harnessSource.reportAuth?.(instance.instanceId, 'unauthenticated')
               emit(runId, event)
             }
             settled = true
@@ -429,6 +392,8 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
     },
 
     cancel(runId) {
+      const existing = cancelPromises.get(runId)
+      if (existing) return existing
       const gen = activeRuns.get(runId)
       if (gen && typeof gen.return === 'function') {
         // Marked so the stream settle path logs `harness.cancel` instead of
@@ -442,7 +407,11 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         // return() can reject if the generator's finally (provider cleanup)
         // throws — that must not become an unhandled rejection; the stream is
         // already being torn down by the caller's intent.
-        return gen.return(undefined).catch(() => { /* teardown already in flight */ }) as Promise<void>
+        const cancelPromise = gen.return(undefined)
+          .catch(() => { /* teardown already in flight */ })
+          .finally(() => cancelPromises.delete(runId)) as Promise<void>
+        cancelPromises.set(runId, cancelPromise)
+        return cancelPromise
       }
       return Promise.resolve()
     },
@@ -454,13 +423,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // deleted) path. Releasing first hands it a fresh dir immediately.
       const target = workspace
       workspace = null
-      // The probe-warmed session lives in the workspace being deleted — it is
-      // meaningless to the next conversation. Clear it AND bump the generation
-      // so any probe still in flight (which may not even have created its
-      // workspace yet) knows not to remember its session for the new
-      // conversation.
-      probedSession = null
-      conversationGeneration++
+      briefedScopeKey = null
       // Stop every active run and AWAIT the teardown before deleting: the ACP
       // child process's CWD is the workspace, and deleting it while the child
       // is still alive fails on Windows with EPERM — as an uncaught exception
@@ -491,6 +454,7 @@ export interface AgentsIpcSources {
    *  are resolved from `<appPath>/node_modules`, so no global install is
    *  needed (ADR 0016 map 47 ticket 49). */
   appPath: string
+  clientVersion: string
   /** Acquires the in-app ledger MCP server for a harness registry key
    *  (map 53) — the runner's app-specific dep, supplied by the composition
    *  root (main/index.ts). Takes no scope: the server serves the full
@@ -503,9 +467,20 @@ export interface AgentsIpcSources {
 /** Wire the Coach & Skills IPC surface onto ipcMain. Call once from
  *  registerIpc(); returns the runner cleanup handle (temp workspace teardown)
  *  for the app's quit path. `dismissals` bridges the not-a-skill store. */
-export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Promise<void> } {
-  const { dismissals, appPath, ledgerMcpServer } = sources
+export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Promise<void>; dispose: () => Promise<void> } {
+  const { dismissals, appPath, clientVersion, ledgerMcpServer } = sources
   let runtimePromise: Promise<HarnessRuntime> | null = null
+  const harnessStore: HarnessSnapshotStore = createHarnessSnapshotStore({
+    detect: () => detectHarnesses({
+      resolveBundled: spec => resolveBundledEntry(spec, appPath),
+    }),
+    probe: info => probeHarness(info, { clientVersion }),
+    onChange: rows => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('coach:harnesses-changed', rows)
+      }
+    },
+  })
   const runner = createCoachRunner({
     // The SDK is ESM and heavy; boot stays independent of it (the seam's
     // lazy-wire design). First run pays the load once.
@@ -513,20 +488,21 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
       runtimePromise ??= loadHarnessSdk().then(createHarnessRuntime)
       return runtimePromise
     },
-    detect: () => detectHarnesses({
-      resolveBundled: spec => resolveBundledEntry(spec, appPath),
-      // Claude Code sign-in probe (auth wall early signal): the ACP
-      // handshake reports models/modes WITHOUT authenticating, so without
-      // this the picker would offer a harness that cannot run. The probe
-      // reads only the CLI's logged-in boolean and never throws (see
-      // auth-probe.ts). Other harnesses have no probe yet and stay
-      // 'unknown' — informative only, never blocking.
-      authProbe: kind => (kind === 'claude' ? probeClaudeAuthStatus() : Promise.resolve('unknown')),
-    }),
+    harnesses: harnessStore,
     ledgerMcpServer,
   })
 
   ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> => runner.harnesses())
+  ipcMain.handle('coach:harnesses-refresh', async (): Promise<CoachHarnessRow[]> => runner.refreshHarnesses())
+  ipcMain.handle('coach:open-login-terminal', async (_event, request: unknown): Promise<CoachLoginTerminalResult> => {
+    const parsed = coachOpenLoginTerminalRequestSchema.safeParse(request)
+    if (!parsed.success) return { ok: false, error: 'invalid harness instance id' }
+    const instance = await harnessStore.get(parsed.data)
+    const loginCommand = instance
+      ? harnessSpecs.find(spec => spec.kind === instance.info.kind)?.auth?.loginCommand
+      : undefined
+    return openLoginTerminal(parsed.data, instanceId => instanceId === parsed.data ? loginCommand : undefined)
+  })
 
   /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
    *  models/modes without a run, so the pickers render before the first
@@ -581,5 +557,15 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
     return { ok: true }
   })
 
-  return { reset: () => runner.reset() }
+  const startup = setTimeout(() => harnessStore.start(), 1500)
+  startup.unref?.()
+  return {
+    reset: async () => {
+      await runner.reset()
+    },
+    dispose: async () => {
+      await runner.reset()
+      await harnessStore.dispose()
+    },
+  }
 }

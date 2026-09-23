@@ -39,7 +39,7 @@ import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
 
 let updateChecker: UpdateChecker | null = null
 /** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
-let agentsCleanup: { reset: () => Promise<void> } | null = null
+let agentsCleanup: { reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
 let dbClient: DbWorkerClient | null = null
 /** App-level loopback-HTTP ledger sidecar: shared by Copilot, local external
@@ -369,6 +369,7 @@ function registerIpc(db: DbWorkerClient): void {
     },
     // The app root: bundled ACP servers (codex) resolve from its node_modules.
     appPath: app.getAppPath(),
+    clientVersion: app.getVersion(),
     // The in-app ledger MCP server (map 53): the harness agent spawns the app
     // itself as plain node (ELECTRON_RUN_AS_NODE=1) and reads the FULL
     // lifetime ledger read-only — no scope is baked at spawn (the harness
@@ -498,7 +499,7 @@ app.on('before-quit', () => {
   // process exits). Belt-and-braces with the child's own parent-liveness
   // watch so a main-process crash cannot leave a local sidecar behind.
   sidecarPool.releaseAll()
-  void agentsCleanup?.reset()
+  void agentsCleanup?.dispose()
   void dbClient?.shutdown().catch(() => {})
   try { closeOperationalLog() } catch { /* best effort */ }
 })

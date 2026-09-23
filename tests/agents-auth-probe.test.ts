@@ -17,12 +17,12 @@ describe('probeClaudeAuthStatus — Claude Code sign-in probe (loggedIn boolean 
     expect(exec).toHaveBeenCalledWith('claude', ['auth', 'status', '--json'])
   })
 
-  it('reports unknown when logged out (the CLI exits 1 but still prints JSON)', async () => {
+  it('reports unauthenticated when logged out (the CLI exits 1 but still prints JSON)', async () => {
     const exec = vi.fn(async () => ({
       stdout: JSON.stringify({ loggedIn: false, authMethod: 'none', apiProvider: 'firstParty' }),
     }))
 
-    await expect(probeClaudeAuthStatus(exec)).resolves.toBe('unknown')
+    await expect(probeClaudeAuthStatus(exec)).resolves.toBe('unauthenticated')
   })
 
   it('reports unknown on unparseable output', async () => {

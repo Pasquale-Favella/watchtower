@@ -92,6 +92,13 @@ export interface HarnessSpec {
   requires?: string[]
   /** Env vars dropped before spawn (host CLI login, no API keys — ADR 0012) */
   scrubEnv: string[]
+  /** The harness-owned interactive sign-in command, when one is known. */
+  auth?: {
+    loginCommand?: string[]
+    label?: string
+  }
+  /** ACP `initialize` deadline for the health probe, for agents that boot slowly (default 15s). */
+  probeTimeoutMs?: number
   /** Client-provided MCP transport the harness accepts in `session/new`
    *  params. Most ACP agents spawn stdio servers from the session config; the
    *  Copilot CLI rejects non-http/sse client servers outright (its own logs:

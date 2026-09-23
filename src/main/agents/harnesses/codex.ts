@@ -22,6 +22,7 @@ const codex: HarnessSpec = {
     bin: 'codex-acp',
   },
   scrubEnv: ['OPENAI_API_KEY'],
+  auth: { loginCommand: ['codex', 'login'] },
   preference: 2,
   adapter: {
     kind: 'acp',

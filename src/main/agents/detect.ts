@@ -16,9 +16,11 @@ import type { HarnessSpec } from './harnesses/types.js'
  * harness is a new spec file, never an edit to this core module.
  */
 
-export type HarnessAuthStatus = 'configured' | 'unknown'
+export type HarnessAuthStatus = 'configured' | 'unauthenticated' | 'unknown'
 
 export interface HarnessInfo {
+  /** Stable managed-instance key; omitted only by legacy test fixtures. */
+  instanceId?: string
   /** The CLI command name — also the Provider-registry key when both exist. */
   name: string
   /** Canonical tool name — the registry key (claude, opencode, gemini, …). */
@@ -32,7 +34,8 @@ export interface HarnessInfo {
   bundledEntry?: string
   /** Env vars scrubbed before spawn so the CLI falls back to its own login. */
   scrubEnv: readonly string[]
-  authStatus: HarnessAuthStatus
+  /** Legacy detection-only auth result. IPC probes do not populate it. */
+  authStatus?: HarnessAuthStatus
 }
 
 /** Cross-platform PATH lookup: probe every dir with the platform's executable
@@ -100,13 +103,14 @@ export async function detectHarnesses(options: DetectOptions = {}): Promise<Harn
     if (bin && spec.requires?.some(cmd => !commandExists(cmd))) continue
     if (bin) {
       found.push({
+        instanceId: spec.kind,
         name: spec.kind,
         kind: spec.kind,
         displayName: spec.displayName,
         bin,
         ...(bundledEntry ? { bundledEntry } : {}),
         scrubEnv: spec.scrubEnv,
-        authStatus: authProbe ? await authProbe(spec.kind) : 'unknown',
+        ...(authProbe ? { authStatus: await authProbe(spec.kind) } : {}),
       })
     }
   }

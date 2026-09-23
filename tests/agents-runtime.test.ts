@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { CoachStreamPart } from '../src/main/agents/events.js'
-import { acpSpawnCommand, createHarnessRuntime, isAuthFailureMessage, type HarnessSdk } from '../src/main/agents/runtime.js'
+import { acpSpawnCommand, createHarnessRuntime, isAuthFailureMessage, killTreeBeforeForceCleanup, type HarnessSdk } from '../src/main/agents/runtime.js'
 import { harnessSpecs } from '../src/main/agents/harnesses/index.js'
+import { decodeResumeCursor } from '../src/main/agents/resume-cursor.js'
 
 const claudeHarness: HarnessInfo = {
   name: 'claude',
@@ -88,9 +89,9 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
 
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'session', sessionId: 'sess_9' },
+      { kind: 'session', resumeCursor: expect.any(String) },
       { kind: 'text', delta: 'Hello' },
-      { kind: 'tool', tool: 'Bash', state: 'started' },
+      { kind: 'tool', tool: 'Bash', state: 'started', id: 'tool-1' },
       { kind: 'status', state: 'done' },
     ])
     expect(createACPProvider).toHaveBeenCalledOnce()
@@ -99,6 +100,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const streamCall = streamText.mock.calls[0]![0]
     expect(streamCall.prompt).toBe('List the files')
     expect(streamCall.tools).toBeDefined()
+    expect(streamCall.abortSignal?.aborted).toBe(false)
     expect(provider.languageModel).toHaveBeenCalledWith('claude-opus-4-8', undefined)
   })
 
@@ -175,7 +177,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
 
     expect(events[1]).toEqual({
       kind: 'session',
-      sessionId: 'sess_9',
+      resumeCursor: expect.any(String),
       models: {
         availableModels: [
           { modelId: 'opus', name: 'Claude Opus' },
@@ -267,7 +269,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     }
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'session', sessionId: 'sess_9' },
+      { kind: 'session', resumeCursor: expect.any(String) },
       { kind: 'error', message: 'credential wall' },
     ])
   })
@@ -315,7 +317,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
 
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'session', sessionId: 'sess_9' },
+      { kind: 'session', resumeCursor: expect.any(String) },
       { kind: 'error', message: expect.stringContaining('claude auth login') },
     ])
   })
@@ -333,7 +335,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
 
     expect(events[1]).toEqual({
       kind: 'error',
-      message: expect.stringContaining('Codex sign-in required'),
+      message: expect.stringContaining("run 'codex login' in a terminal"),
     })
     expect((events[1] as { message: string }).message).not.toContain('claude auth login')
   })
@@ -358,7 +360,9 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const gen = runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })
     // starting → session, then the first streamed text delta (streamText now live).
     expect((await gen.next()).value).toEqual({ kind: 'status', state: 'starting' })
-    expect((await gen.next()).value).toEqual({ kind: 'session', sessionId: 'sess_9' })
+    const sessionEvent = (await gen.next()).value
+    expect(sessionEvent).toEqual({ kind: 'session', resumeCursor: expect.any(String) })
+    expect(decodeResumeCursor((sessionEvent as { resumeCursor: string }).resumeCursor, 'claude')).toBe('sess_9')
     expect((await gen.next()).value).toEqual({ kind: 'text', delta: 'slow text' })
     expect(streamText).toHaveBeenCalledOnce()
 
@@ -367,6 +371,56 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const exhausted = await gen.next()
     expect(exhausted.done).toBe(true)
     expect(provider.cleanup).toHaveBeenCalledOnce()
+  })
+
+  it('aborts the stream signal when the consumer cancels mid-stream', async () => {
+    const { sdk, streamText } = fakeSdk([{ type: 'text-delta', text: 'slow text' }])
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const gen = runtime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+
+    await gen.next()
+    await gen.next()
+    await gen.next()
+    const signal = streamText.mock.calls[0]![0].abortSignal as AbortSignal
+    expect(signal.aborted).toBe(false)
+
+    await gen.return()
+
+    expect(signal.aborted).toBe(true)
+  })
+
+  it('bounds a stalled iterator return during cancellation', async () => {
+    const { sdk, provider } = fakeSdk([])
+    const iterator = {
+      next: vi.fn(async () => ({ done: false as const, value: { type: 'text-delta' as const, text: 'live' } })),
+      return: vi.fn(() => new Promise<never>(() => {})),
+    }
+    sdk.streamText = vi.fn(() => ({ [Symbol.asyncIterator]: () => iterator }))
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux', cancelDrainMs: 20 })
+    const gen = runtime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+
+    await gen.next()
+    await gen.next()
+    await gen.next()
+    await expect(gen.return()).resolves.toMatchObject({ done: true })
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+  })
+
+  it('kills the Windows agent tree before the provider kills its shim', () => {
+    const order: string[] = []
+    const model = {
+      agentProcess: { pid: 9876 } as { pid?: number } | null,
+      forceCleanup(this: { agentProcess: unknown }) {
+        order.push('forceCleanup')
+        this.agentProcess = null
+      },
+    }
+    killTreeBeforeForceCleanup(model, pid => { order.push(`kill:${pid}`) })
+
+    model.forceCleanup()
+    model.forceCleanup()
+
+    expect(order).toEqual(['kill:9876', 'forceCleanup', 'forceCleanup'])
   })
 })
 
@@ -388,10 +442,7 @@ describe('createHarnessRuntime — inspect (the pre-flight handshake probe, map 
 
     const result = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() })
 
-    // The probed session id rides the result so the runner can resume this
-    // warm session on the conversation's first run (no double cold-start).
     expect(result).toEqual({
-      sessionId: 'sess_9',
       models: {
         availableModels: [
           { modelId: 'opus', name: 'Claude Opus' },
@@ -409,15 +460,13 @@ describe('createHarnessRuntime — inspect (the pre-flight handshake probe, map 
     expect(streamText).not.toHaveBeenCalled()
   })
 
-  it('returns the session id but no selectable set when the agent declares none', async () => {
+  it('returns no selectable set when the agent declares none', async () => {
     const { sdk } = fakeSdk([])
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     const result = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() })
 
-    // The session is still warmed and resumable — only the pickers stay
-    // absent (progressive: nothing declared).
-    expect(result).toEqual({ sessionId: 'sess_9' })
+    expect(result).toEqual({})
   })
 
   it('builds the provider from the harness spec — the same spawn path as a run', async () => {
@@ -487,7 +536,7 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
     }
   }
 
-  it('maps configOptions model/mode selects to models/modes on inspect', async () => {
+  it('maps configOptions model/mode selects to models/modes on inspect without a session id', async () => {
     const { sdk, provider, sessionResponse } = fakeSdk([])
     Object.assign(sessionResponse, configOptionsSession())
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
@@ -495,7 +544,6 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
     const result = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() })
 
     expect(result).toEqual({
-      sessionId: 'sess_9',
       models: {
         availableModels: [
           { modelId: 'default', name: 'Default (recommended)', description: 'Opus 5' },
@@ -546,7 +594,7 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
 
     expect(events[1]).toMatchObject({
       kind: 'session',
-      sessionId: 'sess_9',
+      resumeCursor: expect.any(String),
       models: { currentModelId: 'sonnet' },
       modes: { currentModeId: 'build' },
     })
@@ -625,7 +673,7 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
 
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'session', sessionId: 'sess_9', models: expect.anything(), modes: expect.anything() },
+      { kind: 'session', resumeCursor: expect.any(String), models: expect.anything(), modes: expect.anything() },
       { kind: 'error', message: 'Invalid params' },
     ])
     expect(streamText).not.toHaveBeenCalled()
@@ -651,8 +699,25 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
   })
 })
 
-describe('createHarnessRuntime — expendable-resume fallback (probe-warmed first run)', () => {
-  it('falls back to a FRESH session when an expendable resume fails — nothing is lost', async () => {
+describe('createHarnessRuntime — stale resume fallback', () => {
+  it('uses the normal prompt on a successful resumed run, not freshPrompt', async () => {
+    const { sdk, streamText } = fakeSdk([])
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+
+    for await (const _event of runtime.run({
+      harness: claudeHarness,
+      workspacePath: realWorkspace(),
+      prompt: 'normal resumed prompt',
+      freshPrompt: 'full briefing prompt',
+      sessionId: 'sess_prev',
+    })) {
+      // no-op
+    }
+
+    expect(streamText.mock.calls[0]?.[0].prompt).toBe('normal resumed prompt')
+  })
+
+  it('falls back to a FRESH session when a resume fails and uses freshPrompt', async () => {
     const { sdk, provider, createACPProvider } = fakeSdk([])
     provider.initSession.mockRejectedValueOnce(new Error('loadSession failed'))
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
@@ -665,7 +730,7 @@ describe('createHarnessRuntime — expendable-resume fallback (probe-warmed firs
       workspacePath: realWorkspace(),
       prompt: 'p',
       sessionId: 'sess_probe',
-      resumeIsExpendable: true,
+      freshPrompt: 'full briefing\n\nThe user\'s question:\np',
       mcpServers,
     })) {
       events.push(event)
@@ -675,7 +740,8 @@ describe('createHarnessRuntime — expendable-resume fallback (probe-warmed firs
     // the run proceeds on a fresh session.
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'session', sessionId: 'sess_9' },
+      { kind: 'notice', message: 'The previous session could not be resumed — continuing in a fresh session.' },
+      { kind: 'session', resumeCursor: expect.any(String) },
     ])
     expect(createACPProvider).toHaveBeenCalledTimes(2)
     expect(provider.cleanup).toHaveBeenCalledTimes(2)
@@ -686,7 +752,7 @@ describe('createHarnessRuntime — expendable-resume fallback (probe-warmed firs
     expect(retryConfig.session.mcpServers).toEqual(mcpServers)
   })
 
-  it('surfaces an error when BOTH the expendable resume and its fresh retry fail', async () => {
+  it('surfaces an error when BOTH the resume and its fresh retry fail', async () => {
     const { sdk, provider, createACPProvider, streamText } = fakeSdk([])
     provider.initSession.mockRejectedValue(new Error('agent down'))
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
@@ -698,7 +764,7 @@ describe('createHarnessRuntime — expendable-resume fallback (probe-warmed firs
       workspacePath: realWorkspace(),
       prompt: 'p',
       sessionId: 'sess_probe',
-      resumeIsExpendable: true,
+      freshPrompt: 'fresh',
     })) {
       events.push(event)
     }
@@ -713,7 +779,7 @@ describe('createHarnessRuntime — expendable-resume fallback (probe-warmed firs
     expect(provider.cleanup).toHaveBeenCalledTimes(2)
   })
 
-  it('does NOT fall back for a genuine (non-expendable) resume — its context must not silently vanish', async () => {
+  it('falls back for every genuine resume rather than losing the turn', async () => {
     const { sdk, provider, streamText } = fakeSdk([])
     provider.initSession.mockRejectedValueOnce(new Error('loadSession failed'))
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
@@ -731,9 +797,10 @@ describe('createHarnessRuntime — expendable-resume fallback (probe-warmed firs
 
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'error', message: 'loadSession failed' },
+      { kind: 'notice', message: 'The previous session could not be resumed — continuing in a fresh session.' },
+      { kind: 'session', resumeCursor: expect.any(String) },
     ])
-    expect(streamText).not.toHaveBeenCalled()
+    expect(streamText).toHaveBeenCalledOnce()
   })
 })
 
@@ -780,7 +847,7 @@ describe('registry → seam integration — every ACP spec maps to a provider co
       }
       // Events still flow end-to-end for every spec.
       expect(events[0]).toEqual({ kind: 'status', state: 'starting' })
-      expect(events[1]).toEqual({ kind: 'session', sessionId: 'sess_9' })
+      expect(events[1]).toEqual({ kind: 'session', resumeCursor: expect.any(String) })
     }
   })
 })

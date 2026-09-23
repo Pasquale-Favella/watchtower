@@ -87,6 +87,22 @@ export function SkeletonBars({ className }: { className?: string }) {
   )
 }
 
+/** Pill-chip skeleton: mirrors the rounded-full suggestion chips (Coach &
+ *  Skills detected-pattern pills, sample prompts) — a fragment of
+ *  varying-width pill skeletons, so the caller's LoadingRegion flex
+ *  (justify-center, gap-2) applies directly to each pill through the
+ *  contents flattening. Height matches the real pill (px-4 py-2 text-[12px]
+ *  + border ≈ h-8); rounded-full matches the pill radius. */
+export function SkeletonPills() {
+  return (
+    <>
+      <Skeleton className="h-8 w-36 rounded-full" />
+      <Skeleton className="h-8 w-44 rounded-full" />
+      <Skeleton className="h-8 w-28 rounded-full" />
+    </>
+  )
+}
+
 /** Table/list-row skeleton: varied-width cells across rows. */
 export function SkeletonRows({ rows = 7, className }: { rows?: number; className?: string }) {
   return (

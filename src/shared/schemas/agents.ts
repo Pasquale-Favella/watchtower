@@ -84,13 +84,16 @@ export const coachEventSchema = z.discriminatedUnion('kind', [
   }),
   z.object({
     kind: z.literal('session'),
-    /** Harness session id (claude-code.session-id / opencode.session-id /
-     *  codex.session-id) — the resume handle for follow-up turns. */
-    sessionId: z.string(),
+    /** Opaque, instance-bound resume handle for follow-up turns. */
+    resumeCursor: z.string(),
     /** Progressive model/mode selection (map 47 ticket 50): present ONLY when
      *  the agent's handshake reported selectable options. */
     models: coachSessionModelsSchema.optional(),
     modes: coachSessionModesSchema.optional(),
+  }),
+  z.object({
+    kind: z.literal('notice'),
+    message: z.string(),
   }),
   z.object({
     kind: z.literal('error'),
@@ -111,7 +114,7 @@ export type CoachEventEnvelope = z.infer<typeof coachEventEnvelopeSchema>
 /** `coach:run` request — the renderer's ask to drive one harness run through
  *  the seam. There is NO workspace picker (map 53): the main process runs
  *  each conversation in a private temp directory it owns and cleans up;
- *  `sessionId` resumes a previous run's session (ACP `existingSessionId`, and
+ *  `resumeCursor` resumes a previous run's session (ACP `existingSessionId`, and
  *  with it the conversation's temp workspace).
  *
  * The harness reads the platform's own data through the in-app ledger MCP
@@ -126,7 +129,7 @@ export type CoachEventEnvelope = z.infer<typeof coachEventEnvelopeSchema>
  *  coaching question (the suggested-skill chips send a natural-language
  *  authoring prompt); the separate `build-skill` mode was deleted. */
 export const coachRunRequestSchema = z.object({
-  /** Registry key of the harness to drive (claude, codex, gemini, …). */
+  /** Instance id to drive; the wire field retains its legacy name. */
   harnessKind: z.string(),
   /** Agent-declared model id (from the session event's models), optional. */
   modelId: z.string().optional(),
@@ -142,8 +145,8 @@ export const coachRunRequestSchema = z.object({
    *  prompt is present (the schema keeps it optional so the channel stays
    *  uniform). */
   prompt: z.string().optional(),
-  /** Resume handle from a previous run's session event. */
-  sessionId: z.string().optional(),
+  /** Opaque resume handle from a previous run's session event. */
+  resumeCursor: z.string().optional(),
   /** Opt-in API-key passthrough: when true the main process does NOT scrub
    *  the harness's API-key env vars (e.g. ANTHROPIC_API_KEY) before spawning
    *  the agent, so a harness authenticates the same way the user's terminal
@@ -167,17 +170,36 @@ export type CoachRunResult = z.infer<typeof coachRunResultSchema>
  *  no static model list rides the row — selectable models/modes arrive only
  *  via the live handshake (`session` event models/modes, ticket 50). */
 export const coachHarnessRowSchema = z.object({
+  /** Stable instance key. For the default registry this equals `kind`. */
+  instanceId: z.string(),
   /** Canonical tool name — the registry key (claude, gemini, …). */
   kind: z.string(),
   /** Human-readable label shown in the picker. */
   displayName: z.string(),
-  authStatus: z.enum(['configured', 'unknown']),
+  status: z.enum(['pending', 'ready', 'warning', 'error', 'disabled']),
+  auth: z.object({
+    status: z.enum(['configured', 'unauthenticated', 'unknown']),
+    label: z.string().optional(),
+    loginCommand: z.string().optional(),
+  }),
+  version: z.string().optional(),
+  binaryPath: z.string().optional(),
+  message: z.string().optional(),
 })
 export type CoachHarnessRow = z.infer<typeof coachHarnessRowSchema>
 
 /** `coach:harnesses` response — the detected harnesses for the picker. */
 export const coachHarnessesResultSchema = z.array(coachHarnessRowSchema)
 export type CoachHarnessesResult = z.infer<typeof coachHarnessesResultSchema>
+
+export const coachOpenLoginTerminalRequestSchema = z.string().min(1)
+export type CoachOpenLoginTerminalRequest = z.infer<typeof coachOpenLoginTerminalRequestSchema>
+
+export const coachLoginTerminalResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+])
+export type CoachLoginTerminalResult = z.infer<typeof coachLoginTerminalResultSchema>
 
 /** `coach:inspect` request — a bare registry key (legacy) or the key plus the
  *  API-key passthrough opt-in. The probe spawns the agent exactly like a run

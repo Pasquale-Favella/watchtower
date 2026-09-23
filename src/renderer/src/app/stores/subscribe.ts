@@ -8,6 +8,7 @@ import { useScanStore } from './scan-store'
 import { useCoachSkillsStore } from '../../features/coach-skills/store'
 import { useSettingsStore } from '../../features/settings/store'
 import { coachEventEnvelopeSchema } from '../../../../shared/schemas/agents.js'
+import { onCoachHarnessesChanged } from '@/shared/lib/api'
 
 /** The central IPC wiring (ADR 0011): all six `window.api.on*`
  * subscriptions feed store actions, never component state. Call once from the
@@ -57,6 +58,10 @@ export function subscribeToIpc(): () => void {
     const parsed = parseEvent(coachEventEnvelopeSchema, 'coach event', message)
     if (!parsed) return
     useCoachSkillsStore.getState().onEvent(parsed)
+  }))
+
+  unsubs.push(onCoachHarnessesChanged(rows => {
+    useCoachSkillsStore.getState().replaceHarnesses(rows)
   }))
 
   return () => { for (const unsub of unsubs) unsub() }

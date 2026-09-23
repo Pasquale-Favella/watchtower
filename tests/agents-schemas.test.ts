@@ -4,6 +4,8 @@ import {
   coachEventEnvelopeSchema,
   coachEventSchema,
   coachHarnessRowSchema,
+  coachLoginTerminalResultSchema,
+  coachOpenLoginTerminalRequestSchema,
   coachInspectRequestSchema,
   coachInspectResultSchema,
   coachRunRequestSchema,
@@ -23,8 +25,9 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
       { kind: 'tool', tool: 'Bash', id: 'call-1', state: 'started' },
       { kind: 'tool', tool: 'Bash', id: 'call-1', state: 'completed', input: '{"command":"ls"}', output: 'total 0' },
       { kind: 'tool', tool: 'Bash', id: 'call-1', state: 'error', error: 'timeout' },
-      { kind: 'session', sessionId: 'sess_1' },
-      { kind: 'session', sessionId: 'sess_1', models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' } },
+      { kind: 'session', resumeCursor: 'cursor_1' },
+      { kind: 'session', resumeCursor: 'cursor_1', models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' } },
+      { kind: 'notice', message: 'continuing in a fresh session' },
       { kind: 'error', message: 'CLI not logged in' },
     ]
     for (const event of ok) {
@@ -35,7 +38,7 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
   it('accepts agent-declared models/modes on the session event (progressive selection)', () => {
     expect(coachEventSchema.safeParse({
       kind: 'session',
-      sessionId: 'sess_1',
+      resumeCursor: 'cursor_1',
       models: {
         availableModels: [
           { modelId: 'opus', name: 'Claude Opus' },
@@ -51,7 +54,7 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     // A malformed models payload (missing currentModelId) is rejected.
     expect(coachEventSchema.safeParse({
       kind: 'session',
-      sessionId: 'sess_1',
+      resumeCursor: 'cursor_1',
       models: { availableModels: [{ modelId: 'opus', name: 'x' }] },
     }).success).toBe(false)
   })
@@ -76,7 +79,7 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
       modeId: 'plan',
       scope: { period: '30days', provider: 'claude' },
       prompt: 'Summarise my spend',
-      sessionId: 'sess_1',
+      resumeCursor: 'cursor_1',
     }
     expect(coachRunRequestSchema.safeParse(full).success).toBe(true)
     // There is no workspacePath field anymore — a stray one is stripped, never
@@ -148,12 +151,28 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
 
   it('parses a harness picker row (no static model list — map 47 ticket 49)', () => {
     expect(coachHarnessRowSchema.safeParse({
+      instanceId: 'claude',
       kind: 'claude',
       displayName: 'Claude Code',
-      authStatus: 'configured',
+      status: 'ready',
+      auth: { status: 'configured' },
     }).success).toBe(true)
     expect(coachHarnessRowSchema.safeParse({ kind: 'claude' }).success).toBe(false)
-    expect(coachHarnessRowSchema.safeParse({ kind: 'claude', displayName: 'x', authStatus: 'nope' }).success).toBe(false)
+    expect(coachHarnessRowSchema.safeParse({
+      instanceId: 'claude', kind: 'claude', displayName: 'x', status: 'ready', auth: { status: 'nope' },
+    }).success).toBe(false)
+    expect(coachHarnessRowSchema.safeParse({
+      instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'warning',
+      auth: { status: 'unauthenticated', loginCommand: 'codex login' }, message: 'Sign in',
+    }).success).toBe(true)
+  })
+
+  it('parses the login-terminal request and result arms', () => {
+    expect(coachOpenLoginTerminalRequestSchema.safeParse('codex').success).toBe(true)
+    expect(coachOpenLoginTerminalRequestSchema.safeParse('').success).toBe(false)
+    expect(coachLoginTerminalResultSchema.safeParse({ ok: true }).success).toBe(true)
+    expect(coachLoginTerminalResultSchema.safeParse({ ok: false, error: 'not found' }).success).toBe(true)
+    expect(coachLoginTerminalResultSchema.safeParse({ ok: false }).success).toBe(false)
   })
 
   it('parses the pre-flight inspect result — models/modes optional, probe failure as ok:false (map 47 ticket 50)', () => {

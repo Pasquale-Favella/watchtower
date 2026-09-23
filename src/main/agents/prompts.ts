@@ -36,6 +36,10 @@ export function scopeWindowLabel(scope: OverviewScope): string {
   return `${period} · ${scope.provider ?? 'all providers'}`
 }
 
+export function buildScopeUpdate(scope: OverviewScope): string {
+  return `The user has switched their view to ${scopeWindowLabel(scope)} — use it as the default window for ledger queries from now on.`
+}
+
 /** The shared MCP briefing: who the agent is (role, posture, and the TWO
  *  scopes — coaching and skill authoring), read-only lifetime access, how to
  *  filter it (the tools' optional `scope` argument), PER-TOOL SELECTION

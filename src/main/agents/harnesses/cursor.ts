@@ -12,6 +12,7 @@ const cursor: HarnessSpec = {
   displayName: 'Cursor Agent',
   commands: ['cursor-agent'],
   scrubEnv: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
+  auth: { loginCommand: ['cursor-agent', 'login'] },
   preference: 12,
   adapter: {
     kind: 'acp',

@@ -4,6 +4,7 @@ import {
   fetchCoachInspect,
   fetchCoachRun,
   fetchSkills,
+  refreshCoachHarnesses,
 } from '@/shared/lib/api'
 import { selectScope, useScopeStore } from '@/app/stores/scope-store'
 import { scopedDataSlice, type ScopedDataSlice } from '../../app/stores/data-store'
@@ -54,6 +55,8 @@ export interface ChatMessage {
   thinking: string
   /** Assistant tool-call notices, in order, with their lifecycle state. */
   tools: ToolNotice[]
+  /** Informational notices emitted during this run. */
+  notices: string[]
   /** Run context captured at spawn: harness/model/mode labels the bubble can
    *  show. `model`/`mode` are the agent-declared picks sent with the run. */
   meta?: { harness?: string; model?: string; mode?: string }
@@ -82,7 +85,7 @@ export interface CoachKindCache {
 
 /** The unified Coach state (ADR 0017, conversation prototype map 58): the
  *  message-model chat surface. Every run is part of ONE conversation that
- *  resumes (sessionId). There is ONE kind of run — a free-form prompt the
+ *  resumes (resumeCursor). There is ONE kind of run — a free-form prompt the
  *  harness answers in either of its two scopes (coaching analysis or skill
  *  authoring); the separate build-skill mode was deleted. */
 export interface CoachSkillsState {
@@ -91,6 +94,8 @@ export interface CoachSkillsState {
   harnesses: CoachHarnessRow[]
   /** The selected harness registry key (null until the user picks one). */
   harnessKind: string | null
+  /** The selection is the store's default pick, not the user's. */
+  harnessAutoPicked: boolean
   /** Agent-declared selectable models, from the last session event or the
    *  pre-flight probe (map 47 ticket 50). Absent until a harness reports them
    *  — the progressive picker only renders when this exists. */
@@ -122,8 +127,10 @@ export interface CoachSkillsState {
    *  by runId and replayed when the ack sets the active id, so a fast error
    *  surfaces instead of silently leaving the turn hanging. */
   pendingEvents: Record<string, CoachEventEnvelope[]>
-  /** Resume handle from the last run's session event. */
-  sessionId: string | null
+  /** Opaque resume handle from the last run's session event. */
+  resumeCursor: string | null
+  /** The assistant message owned by each run, retained for late events. */
+  runMessageIds: Record<string, string>
   error: string | null
   /** The scoped detection payload — the pattern pool behind the WELCOME
    *  SCREEN's suggested-skill chips only. The chips are chat-starters: each
@@ -133,6 +140,10 @@ export interface CoachSkillsState {
   detection: ScopedDataSlice<SkillsPayload>
   /** Loads the detected harnesses for the picker (idempotent refresh). */
   loadHarnesses: () => Promise<void>
+  /** Re-checks detected harnesses and applies the returned managed snapshot. */
+  refreshHarnesses: () => Promise<void>
+  /** Applies a live managed snapshot broadcast without spawning a probe. */
+  replaceHarnesses: (harnesses: CoachHarnessRow[]) => void
   /** Persists the picker choice. Restores the target harness's cached set
    *  (and picks) instantly when it has been probed before; otherwise clears
    *  the live set and probes the new harness eagerly. */
@@ -172,15 +183,11 @@ function nextMessageId(): string {
   return `m${messageSeq}`
 }
 
-/** The FIRST started notice for a tool name — the default completion target
- *  when the harness attached no id (older seams). Streams arrive in call
- *  order, so the first open call is the one being closed; LIFO would pair
- *  an interleaved error with the wrong call. */
-function findFirstStartedIndex(tools: ToolNotice[], tool: string): number {
-  for (let i = 0; i < tools.length; i += 1) {
-    if (tools[i]!.tool === tool && tools[i]!.state === 'started') return i
-  }
-  return -1
+/** Default instance: first ready, else first warning/pending — never an errored one. */
+function defaultHarnessId(harnesses: CoachHarnessRow[]): string | null {
+  return harnesses.find(h => h.status === 'ready')?.instanceId
+    ?? harnesses.find(h => h.status === 'warning' || h.status === 'pending')?.instanceId
+    ?? null
 }
 
 /** A ready-to-spread empty assistant turn for the thread. The run context
@@ -191,7 +198,7 @@ function emptyAssistant(): ChatMessage {
   // Runtime snapshot: only ever called from startRun, long after the store
   // below is created — never during module init (avoids the TDZ).
   const s = useCoachSkillsStore.getState()
-  const harness = s.harnesses.find(h => h.kind === s.harnessKind)
+  const harness = s.harnesses.find(h => h.instanceId === s.harnessKind)
   const model = s.sessionModels?.availableModels.find(m => m.modelId === s.modelId)
   const smode = s.sessionModes?.availableModes.find(m => m.id === s.modeId)
   const meta: ChatMessage['meta'] = {
@@ -205,6 +212,7 @@ function emptyAssistant(): ChatMessage {
     content: '',
     thinking: '',
     tools: [],
+    notices: [],
     meta: Object.keys(meta).length > 0 ? meta : undefined,
     streaming: true,
   }
@@ -214,6 +222,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   hydrated: false,
   harnesses: [],
   harnessKind: null,
+  harnessAutoPicked: false,
   sessionModels: null,
   sessionModes: null,
   inspectingKind: null,
@@ -224,7 +233,8 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   running: false,
   activeRunId: null,
   pendingEvents: {},
-  sessionId: null,
+  resumeCursor: null,
+  runMessageIds: {},
   error: null,
   detection: scopedDataSlice<SkillsPayload>(
     scope => fetchSkills(scope, {
@@ -237,29 +247,31 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   loadHarnesses: async () => {
     const result = await fetchCoachHarnesses()
     if (!result.ok) return
-    const harnesses = result.data
+    get().replaceHarnesses(result.data)
+  },
+  refreshHarnesses: async () => {
+    const result = await refreshCoachHarnesses()
+    if (!result.ok) return
+    get().replaceHarnesses(result.data)
+  },
+  replaceHarnesses: (harnesses) => {
+    const { harnessKind: current, harnessAutoPicked, messages } = get()
+    const currentRow = current ? harnesses.find(h => h.instanceId === current) : undefined
+    // An auto-pick is re-evaluated as probes land, until the user picks or chats.
+    const keep = !!currentRow && !(harnessAutoPicked && messages.length === 0 && currentRow.status !== 'ready')
+    const next = keep ? current : defaultHarnessId(harnesses)
     set({ harnesses, hydrated: true })
-    // Auto-select the first configured harness — the picker still lets the
-    // user change it, but the first run should never sit behind a "pick a
-    // harness" wall.
-    const current = get().harnessKind
-    const next = current && harnesses.some(h => h.kind === current) ? current : harnesses[0]?.kind ?? null
     if (next && next !== current) {
-      // A re-selection away from the current harness (it vanished from
-      // detection) is a SWITCH — route it through setHarness so the new
-      // harness's cached set restores properly (never leave the old harness's
-      // live set on the picker) and the hybrid warm start still probes an
-      // uncached harness. `setHarness` runs FIRST so it snapshots the outgoing
-      // harness's LIVE picks before any reset clobbers them (same contract as
-      // the picker's confirmed switch). When a conversation exists, reset it —
-      // `resetSession` stops any in-flight run main-side (coach:reset cancels
-      // all active runs and awaits their teardown, then deletes the old
-      // workspace — the Windows EPERM fix), so no explicit cancel() is needed.
-      // A fresh mount (current null) has nothing to clear, so no reset fires.
+      // setHarness first so it snapshots the outgoing harness's live picks;
+      // resetSession then stops any in-flight run of the vanished harness.
       get().setHarness(next)
-      if (current && get().messages.length > 0) get().resetSession()
+      set({ harnessAutoPicked: true })
+      if (current && messages.length > 0) get().resetSession()
     } else {
-      set({ harnessKind: next })
+      set({
+        harnessKind: next,
+        ...(next ? {} : { sessionModels: null, sessionModes: null, modelId: null, modeId: null }),
+      })
     }
   },
   setHarness: (harnessKind) => {
@@ -274,18 +286,17 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       ? { ...s.modelsByKind, [previous]: { ...s.modelsByKind[previous], modelId: s.modelId, modeId: s.modeId } }
       : s.modelsByKind
     // A previously probed harness restores its declared set + the user's
-    // picks INSTANTLY — no IPC, no agent spawn. An uncached harness starts
-    // clean and is probed eagerly (the same warm start the auto-selected
-    // harness gets on load).
+    // picks INSTANTLY. An uncached harness starts clean; the picker triggers
+    // its lazy inspect when opened or hovered.
     const cached = modelsByKind[harnessKind] ?? null
     set({
       harnessKind,
+      harnessAutoPicked: false,
       modelsByKind,
       ...(cached
         ? { sessionModels: cached.models, sessionModes: cached.modes, modelId: cached.modelId, modeId: cached.modeId }
         : { sessionModels: null, sessionModes: null, modelId: null, modeId: null }),
     })
-    if (harnessKind && harnessKind !== previous && !cached) void get().inspectHarness(harnessKind)
   },
   inspectHarness: async (kind) => {
     // Lazy probe (map 47 ticket 50): called when the model picker opens —
@@ -399,22 +410,16 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   cancel: () => {
     const runId = get().activeRunId
     if (runId) window.api.cancelCoachRun(runId)
-    // No done event follows a cancel — the main's pump just stops. Mark the
-    // streaming turn as errored/cancelled so the thread never hangs.
     set(state => ({
       running: false,
       activeRunId: null,
-      pendingEvents: {},
       messages: state.messages.map(message =>
         message.streaming ? { ...message, streaming: false, error: 'cancelled' } : message),
     }))
   },
   resetSession: () => {
     // A brand-new conversation: the main process cancels active runs and
-    // deletes the old conversation's temp workspace (map 53). The LOCAL run
-    // state is cleared too — the conversation is gone, and a cancelled run's
-    // late events park under their own runId, never touching the fresh thread
-    // (pendingEvents is cleared, so a straggler cannot pollute it).
+    // deletes the old conversation's temp workspace (map 53).
     window.api.resetCoachWorkspace()
     set(state => {
       // The thread is conversation state — cleared. Agent capabilities are
@@ -423,11 +428,12 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       const cached = state.harnessKind ? state.modelsByKind[state.harnessKind] ?? null : null
       return {
         messages: [],
-        sessionId: null,
+        resumeCursor: null,
         error: null,
         running: false,
         activeRunId: null,
         pendingEvents: {},
+        runMessageIds: {},
         sessionModels: cached?.models ?? null,
         sessionModes: cached?.modes ?? null,
         modelId: cached?.modelId ?? null,
@@ -436,109 +442,67 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     })
   },
   onEvent: (envelope) => {
-    const activeRunId = get().activeRunId
-    // A run is pending (ack in flight): the main acks, THEN pumps — but a
-    // fast failure (spawn error, auth wall) can emit before the ack's
-    // round-trip lands here. Buffer by runId and replay on ack; a straggler
-    // from a cancelled run parks under its OWN runId and never matches the
-    // next ack, so it can't pollute the fresh turn.
-    if (activeRunId === null) {
-      const parked = get().pendingEvents[envelope.runId] ?? []
-      set({ pendingEvents: { ...get().pendingEvents, [envelope.runId]: [...parked, envelope] } })
+    const state = get()
+    const messageId = state.runMessageIds[envelope.runId]
+    if (!messageId) {
+      if (state.running && state.activeRunId === null) {
+        const parked = state.pendingEvents[envelope.runId] ?? []
+        set({ pendingEvents: { ...state.pendingEvents, [envelope.runId]: [...parked, envelope] } })
+      }
       return
     }
-    // Stale-run guard: only the ACTIVE run's events may touch the thread.
-    if (envelope.runId !== activeRunId) return
     const event = envelope.event
+    const active = state.activeRunId === envelope.runId
+    const updateMessage = (update: (message: ChatMessage) => ChatMessage): void => {
+      set(current => ({ messages: current.messages.map(message => message.id === messageId ? update(message) : message) }))
+    }
     switch (event.kind) {
       case 'status':
         if (event.state === 'done') {
-          // Finalize the active turn — the accumulated text IS the answer.
-          set(state => ({
-            running: false,
-            activeRunId: null,
-            messages: state.messages.map(message =>
-              message.streaming ? { ...message, streaming: false } : message,
-            ),
-          }))
-        } else {
-          // 'starting' | 'running' — the run is in flight.
+          updateMessage(message => ({ ...message, streaming: false }))
+          if (active) set({ running: false, activeRunId: null })
+        } else if (active) {
           set({ running: true })
         }
         break
       case 'text':
-        set(state => ({
-          messages: state.messages.map(message =>
-            message.streaming ? { ...message, content: message.content + event.delta } : message,
-          ),
-        }))
+        updateMessage(message => ({ ...message, content: message.content + event.delta }))
         break
       case 'reasoning':
-        // Thinking deltas accumulate on the running turn's thinking block —
-        // the thread renders it as a live, collapsible Reasoning-style panel.
-        set(state => ({
-          messages: state.messages.map(message =>
-            message.streaming ? { ...message, thinking: message.thinking + event.delta } : message,
-          ),
-        }))
+        updateMessage(message => ({ ...message, thinking: message.thinking + event.delta }))
+        break
+      case 'notice':
+        updateMessage(message => ({ ...message, notices: [...message.notices, event.message] }))
         break
       case 'tool': {
-        // Tool lifecycle: `started` opens (or enriches, id-matched) a notice;
-        // `completed`/`error` closes it. A bare notice with no state (older
-        // seam) is treated as a started call.
-        set(state => ({
-          messages: state.messages.map(message => {
-            if (!message.streaming) return message
-            const tools = [...message.tools]
-            const notice: ToolNotice = { tool: event.tool, state: event.state ?? 'started' }
-            if (event.id) notice.id = event.id
-            if (event.title) notice.title = event.title
-            if (event.input) notice.input = event.input
-            if (event.output) notice.output = event.output
-            if (event.error) notice.error = event.error
-            if (notice.state === 'started') {
-              // Re-announcement of the SAME call (tool-input-start then the
-              // dynamic tool-call carrying args) merges by id; else append.
-              const existing = notice.id ? tools.findIndex(t => t.id === notice.id) : -1
-              if (existing !== -1) {
-                tools[existing] = {
-                  ...tools[existing],
-                  ...(notice.title ? { title: notice.title } : {}),
-                  ...(notice.input ? { input: notice.input } : {}),
-                }
-              } else {
-                tools.push(notice)
-              }
-            } else {
-              // Close the id-matched started notice; fall back to the LAST
-              // started notice with the same tool name when no id is present.
-              const existing = notice.id
-                ? tools.findIndex(t => t.id === notice.id)
-                : findFirstStartedIndex(tools, notice.tool)
-              if (existing !== -1) {
-                tools[existing] = {
-                  ...tools[existing],
-                  state: notice.state,
-                  ...(notice.output ? { output: notice.output } : {}),
-                  ...(notice.error ? { error: notice.error } : {}),
-                }
-              } else {
-                tools.push(notice)
-              }
+        updateMessage(message => {
+          const tools = [...message.tools]
+          const notice: ToolNotice = { tool: event.tool, state: event.state ?? 'started' }
+          if (event.id) notice.id = event.id
+          if (event.title) notice.title = event.title
+          if (event.input) notice.input = event.input
+          if (event.output) notice.output = event.output
+          if (event.error) notice.error = event.error
+          const existing = notice.id ? tools.findIndex(tool => tool.id === notice.id) : -1
+          if (existing !== -1) {
+            // A `started` re-announcement (tool-call carrying args) only enriches — it never reopens a closed call.
+            tools[existing] = {
+              ...tools[existing],
+              ...(notice.state === 'started' ? {} : { state: notice.state }),
+              ...(notice.title ? { title: notice.title } : {}),
+              ...(notice.input ? { input: notice.input } : {}),
+              ...(notice.output ? { output: notice.output } : {}),
+              ...(notice.error ? { error: notice.error } : {}),
             }
-            return { ...message, tools }
-          }),
-        }))
+          } else {
+            tools.push(notice)
+          }
+          return { ...message, tools }
+        })
         break
       }
       case 'session': {
-        // The handshake may carry agent-declared models/modes — that is the
-        // ONLY source for the progressive picker (map 47 ticket 50). The
-        // session event lands on EVERY run, so an absent field just means the
-        // agent did not re-declare it this run — the previous declaration
-        // stays valid (a harness switch or reset clears it explicitly). The
-        // per-kind cache is kept in step so a later switch-back restores the
-        // freshest declaration.
+        if (!active) break
         set(state => {
           const modelsByKind = { ...state.modelsByKind }
           if (state.harnessKind && (event.models || event.modes || state.modelsByKind[state.harnessKind])) {
@@ -557,7 +521,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
             }
           }
           return {
-            sessionId: event.sessionId,
+            resumeCursor: event.resumeCursor,
             sessionModels: event.models ?? state.sessionModels,
             sessionModes: event.modes ?? state.sessionModes,
             modelId: state.modelId ?? (event.models?.currentModelId ?? null),
@@ -568,13 +532,10 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
         break
       }
       case 'error':
-        set(state => ({
-          running: false,
-          activeRunId: null,
-          messages: state.messages.map(message =>
-            message.streaming ? { ...message, streaming: false, error: event.message } : message,
-          ),
-        }))
+        updateMessage(message => message.error === 'cancelled'
+          ? { ...message, streaming: false }
+          : { ...message, streaming: false, error: event.message })
+        if (active) set({ running: false, activeRunId: null })
         break
     }
   },
@@ -594,11 +555,11 @@ async function startRun(input: {
     setRunFailed('select a harness first')
     return
   }
-  const userMessage: ChatMessage = { id: nextMessageId(), role: 'user', content: input.userContent, thinking: '', tools: [], streaming: false }
+  const userMessage: ChatMessage = { id: nextMessageId(), role: 'user', content: input.userContent, thinking: '', tools: [], notices: [], streaming: false }
   const assistantMessage = emptyAssistant()
   setRunPending(userMessage, assistantMessage, options.replaceAssistantId)
 
-  const sessionId = input.resume ? s.sessionId : undefined
+  const resumeCursor = input.resume ? s.resumeCursor : undefined
   // API-key passthrough opt-in (persisted Coach setting): lets key-based
   // terminal sign-ins work inside harness runs. Sent per run (never stored
   // with the conversation) so toggling applies immediately.
@@ -614,7 +575,7 @@ async function startRun(input: {
     // choices ONLY when the agent declared that set (null = agent default).
     ...(s.sessionModels ? { modelId: s.modelId ?? undefined } : {}),
     ...(s.sessionModes ? { modeId: s.modeId ?? undefined } : {}),
-    ...(sessionId ? { sessionId } : {}),
+    ...(resumeCursor ? { resumeCursor } : {}),
     ...(allowApiKeyEnv ? { allowApiKeyEnv: true as const } : {}),
   })
   if (!result.ok) {
@@ -626,20 +587,16 @@ async function startRun(input: {
     return
   }
   const runId = result.data.runId
-  useCoachSkillsStore.setState({ activeRunId: runId })
+  useCoachSkillsStore.setState(state => ({
+    activeRunId: runId,
+    runMessageIds: { ...state.runMessageIds, [runId]: assistantMessage.id },
+  }))
   // Replay any events that streamed before the ack round-trip landed (a fast
   // failure must surface, not hang the turn). Only this run's parked events
-  // replay; stragglers under other runIds stay parked and are cleared on the
-  // next run.
+  // replay; parked events for other runIds are stale and are dropped here.
   const parked = useCoachSkillsStore.getState().pendingEvents[runId]
-  if (parked) {
-    useCoachSkillsStore.setState(state => ({
-      pendingEvents: Object.fromEntries(
-        Object.entries(state.pendingEvents).filter(([id]) => id !== runId),
-      ),
-    }))
-    for (const envelope of parked) useCoachSkillsStore.getState().onEvent(envelope)
-  }
+  useCoachSkillsStore.setState({ pendingEvents: {} })
+  if (parked) for (const envelope of parked) useCoachSkillsStore.getState().onEvent(envelope)
 }
 
 function setRunPending(userMessage: ChatMessage, assistantMessage: ChatMessage, replaceAssistantId?: string): void {
@@ -647,9 +604,6 @@ function setRunPending(userMessage: ChatMessage, assistantMessage: ChatMessage, 
     running: true,
     error: null,
     activeRunId: null,
-    // A new run's pending window starts clean: parked stragglers from a
-    // cancelled/previous run must not replay into the fresh turn.
-    pendingEvents: {},
     // A retry swaps the OLD assistant turn for the fresh streaming one (the
     // user message stays); a fresh run appends both turns.
     messages: replaceAssistantId

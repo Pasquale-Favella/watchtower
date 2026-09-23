@@ -12,7 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/shared/components/ui/alert-dialog'
-import { Skeleton } from '@/shared/components/ui/skeleton'
+import { LoadingRegion, SkeletonPills } from '@/shared/components/skeletons'
 import {
   Select,
   SelectContent,
@@ -34,18 +34,17 @@ import { Thread } from './thread'
  *  above the composer, almost as wide as the textarea card (slightly inset
  *  on both sides so it still reads as a floating element) and slightly
  *  tucked behind it (the card overlaps its bottom edge), only while Claude
- *  Code is the selected harness. The detection probe reports the CLI's own
- *  login state, but an env-key sign-in (ANTHROPIC_API_KEY in the user's
- *  terminal) is invisible to it — the toggle covers that case by letting
- *  harness runs inherit the app environment's keys instead of the default
- *  stored-login scrub. Off by default (ADR 0012). */
+ *  Code is the selected harness. Setup/re-check for every harness lives in
+ *  the model picker; this pill only carries the passthrough toggle (an
+ *  env-key sign-in is invisible to the CLI's login probe). Off by default
+ *  (ADR 0012). */
 function ClaudeAuthHint() {
   const harnessKind = useCoachSkillsStore(s => s.harnessKind)
-  const claudeRow = useCoachSkillsStore(s => s.harnesses.find(h => h.kind === 'claude'))
+  const active = useCoachSkillsStore(s => s.harnesses.find(h => h.instanceId === harnessKind))
   const allowApiKeyEnv = useSettingsStore(s => s.allowHarnessApiKeyEnv)
   const setAllowHarnessApiKeyEnv = useSettingsStore(s => s.setAllowHarnessApiKeyEnv)
-  if (harnessKind !== 'claude' || !claudeRow) return null
-  const signedOut = claudeRow.authStatus !== 'configured'
+  if (active?.kind !== 'claude') return null
+  const signedOut = active.auth.status !== 'configured'
   const infoText = allowApiKeyEnv
     ? 'Passthrough is On: Coach runs inherit ANTHROPIC_API_KEY from the app environment instead of Claude Code’s stored login. Make sure you launched the app from a terminal where ANTHROPIC_API_KEY is set, or runs will fail authentication.'
     : 'Passthrough is Off: Coach runs use Claude Code’s stored login. Make sure sign-in is detected — otherwise run `claude auth login` in a terminal and retry. Turn passthrough On only if you sign in via ANTHROPIC_API_KEY in your terminal.'
@@ -114,7 +113,11 @@ export function PatternChips({ onCraft, disabled = false }: {
   const drafts = detection.data?.drafts ?? []
 
   if (detection.status === 'loading' && detection.data === null) {
-    return <Skeleton className="h-6 w-64" />
+    return (
+      <LoadingRegion label="Loading detected patterns…" className="flex flex-wrap justify-center gap-2">
+        <SkeletonPills />
+      </LoadingRegion>
+    )
   }
   if (drafts.length === 0) {
     return (
@@ -169,7 +172,8 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
   onSend: (text: string) => void
   canSend: boolean
 }) {
-  const harnessKind = useCoachSkillsStore(s => s.harnessKind)
+  const hydrated = useCoachSkillsStore(s => s.hydrated)
+  const harnessCount = useCoachSkillsStore(s => s.harnesses.length)
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 overflow-y-auto px-6 py-12">
       <div className="flex flex-col items-center gap-3 text-center">
@@ -202,7 +206,7 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
         <PatternChips onCraft={onCraft} disabled={!canSend} />
       </div>
 
-      {!harnessKind && (
+      {hydrated && harnessCount === 0 && (
         <p className="text-[12px] text-muted-foreground">
           No coding-agent harness detected — install Claude Code, OpenCode or Codex to get started.
         </p>
@@ -302,7 +306,7 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   }
 
   const pendingName = pendingSwitch
-    ? harnesses.find(h => h.kind === pendingSwitch.kind)?.displayName ?? pendingSwitch.kind
+    ? harnesses.find(h => h.instanceId === pendingSwitch.kind)?.displayName ?? pendingSwitch.kind
     : null
 
   /** Auto-grow the textarea with its content, capped so the input never

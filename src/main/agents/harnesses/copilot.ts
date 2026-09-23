@@ -19,6 +19,8 @@ const copilot: HarnessSpec = {
   // verbatim: `Rejecting non-http/sse MCP server ... from client`), so the
   // runner injects the ledger over loopback HTTP for this harness.
   clientMcpTransport: 'http',
+  // Cold `copilot --acp` start routinely exceeds the default probe deadline.
+  probeTimeoutMs: 30_000,
   adapter: {
     kind: 'acp',
     acpConfig: {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { CoachStreamPart } from '../src/main/agents/events.js'
-import { deriveCoachEvents } from '../src/main/agents/events.js'
+import { createCoachEventNormalizer, deriveCoachEvents } from '../src/main/agents/events.js'
 
 describe('deriveCoachEvents — AI SDK stream part → CoachEvent (seam: pure logic)', () => {
   it('maps a text-delta part to a text event', () => {
@@ -134,5 +134,44 @@ describe('deriveCoachEvents — AI SDK stream part → CoachEvent (seam: pure lo
     expect(deriveCoachEvents({ type: 'raw', rawValue: '{"type":"diff"}' } as CoachStreamPart)).toEqual([])
     expect(deriveCoachEvents({ type: 'abort' } as CoachStreamPart)).toEqual([])
     expect(deriveCoachEvents({ type: 'text-start' } as CoachStreamPart)).toEqual([])
+  })
+})
+
+describe('createCoachEventNormalizer — stable per-run tool ids', () => {
+  it('assigns generated ids and pairs id-less completions FIFO per tool', () => {
+    const normalize = createCoachEventNormalizer()
+
+    expect(normalize({ type: 'tool-input-start', toolName: 'Read' })).toEqual([
+      { kind: 'tool', tool: 'Read', state: 'started', id: 'tool-1' },
+    ])
+    expect(normalize({ type: 'tool-input-start', toolName: 'Read' })).toEqual([
+      { kind: 'tool', tool: 'Read', state: 'started', id: 'tool-2' },
+    ])
+    expect(normalize({ type: 'tool-result', toolName: 'Read' })).toEqual([
+      { kind: 'tool', tool: 'Read', state: 'completed', id: 'tool-1' },
+    ])
+    expect(normalize({ type: 'tool-error', toolName: 'Read', error: 'failed' })).toEqual([
+      { kind: 'tool', tool: 'Read', state: 'error', id: 'tool-2', error: 'failed' },
+    ])
+  })
+
+  it('keeps tool queues independent when different tools interleave', () => {
+    const normalize = createCoachEventNormalizer()
+
+    normalize({ type: 'tool-input-start', toolName: 'Read' })
+    normalize({ type: 'tool-input-start', toolName: 'Bash' })
+    normalize({ type: 'tool-input-start', toolName: 'Read' })
+
+    expect(normalize({ type: 'tool-result', toolName: 'Bash' })[0]).toMatchObject({ tool: 'Bash', id: 'tool-2' })
+    expect(normalize({ type: 'tool-result', toolName: 'Read' })[0]).toMatchObject({ tool: 'Read', id: 'tool-1' })
+    expect(normalize({ type: 'tool-result', toolName: 'Read' })[0]).toMatchObject({ tool: 'Read', id: 'tool-3' })
+  })
+
+  it('preserves upstream ids and generates a fresh id for an orphan completion', () => {
+    const normalize = createCoachEventNormalizer()
+
+    expect(normalize({ type: 'tool-input-start', id: 'upstream-1', toolName: 'Edit' })[0]).toMatchObject({ id: 'upstream-1' })
+    expect(normalize({ type: 'tool-result', toolCallId: 'upstream-1', toolName: 'Edit' })[0]).toMatchObject({ id: 'upstream-1' })
+    expect(normalize({ type: 'tool-result', toolName: 'Edit' })[0]).toMatchObject({ id: 'tool-1' })
   })
 })

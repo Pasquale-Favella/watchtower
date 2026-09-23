@@ -11,6 +11,7 @@ const gemini: HarnessSpec = {
   displayName: 'Gemini CLI',
   commands: ['gemini'],
   scrubEnv: ['GOOGLE_API_KEY', 'GEMINI_API_KEY'],
+  auth: { loginCommand: ['gemini'] },
   preference: 5,
   adapter: {
     kind: 'acp',

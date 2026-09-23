@@ -87,6 +87,41 @@ export type CoachStreamPart =
   | { type: 'finish'; finishReason?: unknown }
   | { type: 'error'; error: unknown }
 
+/** Adds a per-run id to every derived tool event and pairs id-less lifecycle
+ * notices in arrival order for each tool name. */
+export function createCoachEventNormalizer(): (part: CoachStreamPart) => CoachEvent[] {
+  let nextGeneratedId = 1
+  const openIds = new Map<string, string[]>()
+
+  function generatedId(): string {
+    return `tool-${nextGeneratedId++}`
+  }
+
+  function removeOpenId(id: string): void {
+    for (const [tool, ids] of openIds) {
+      const remaining = ids.filter(openId => openId !== id)
+      if (remaining.length > 0) openIds.set(tool, remaining)
+      else openIds.delete(tool)
+    }
+  }
+
+  return part => deriveCoachEvents(part).map(event => {
+    if (event.kind !== 'tool') return event
+
+    if (event.state === 'started') {
+      const id = event.id ?? generatedId()
+      const ids = openIds.get(event.tool) ?? []
+      if (!ids.includes(id)) ids.push(id)
+      openIds.set(event.tool, ids)
+      return { ...event, id }
+    }
+
+    const id = event.id ?? openIds.get(event.tool)?.shift() ?? generatedId()
+    if (event.id) removeOpenId(event.id)
+    return { ...event, id }
+  })
+}
+
 export function deriveCoachEvents(part: CoachStreamPart): CoachEvent[] {
   switch (part.type) {
     // The seam emits the starting/session lifecycle itself before streaming
