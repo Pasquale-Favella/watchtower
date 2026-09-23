@@ -11,10 +11,10 @@ Provider SQLite databases are external, read-only inputs and are not
 application schemas.
 
 ADR 0030 scoped Effect adoption to the Coach harness layer and required a
-separate decision for other areas. t3code uses Effect 4's SQL client and
-migrator APIs over Node's built-in `node:sqlite`. Watchtower will use the same
-Effect release (`4.0.0-rc.115`) and the official `@effect/sql-sqlite-node`
-client rather than maintaining a custom driver port or adopting an ORM.
+separate decision for other areas. Effect 4 provides SQL client and migrator
+APIs over Node's built-in `node:sqlite`. Watchtower uses Effect
+`4.0.0-rc.115` and the official `@effect/sql-sqlite-node` client rather than
+maintaining a custom driver port or adopting an ORM.
 
 ## Decision
 

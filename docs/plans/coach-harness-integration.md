@@ -1,6 +1,6 @@
-# Piano: migliorare Coach & Skills e integrazione harness (lezioni da t3code)
+# Piano: migliorare Coach & Skills e integrazione harness
 
-> Solo piano, nessuna implementazione. Confronto Watchtower vs [pingdotgg/t3code](https://github.com/pingdotgg/t3code) (`main` al 23/09/2026) e proposte concrete d'evoluzione.
+> Solo piano, nessuna implementazione. Valutazione dell'architettura attuale e proposte concrete d'evoluzione.
 
 ## 1. Obiettivo
 
@@ -50,44 +50,35 @@ Frizioni osservate:
 9. Workspace temp invisibile, switch harness = new conversation obbligata e distruttiva.
 10. `ClaudeAuthHint` solo per Claude; icone `goose/kilo-code/futuri → Bot`; `inspect fail → pickers absent` senza errore visibile.
 
-## 3. Come fa t3code (sintesi ispezione)
+## 3. Principi architetturali per l'evoluzione
 
-t3code non è un agent, è una **control-surface sopra CLI già installate**. Ownership netta (`docs/internals/overview.md`): processi, terminali, Git, file appartengono al **server** (`apps/server`, Node 24 + Effect-TS); client (web/desktop/mobile) parla solo via **RPC versionato** (`packages/contracts/src/rpc.ts`). Engine serializza comandi, `decider.ts` puro senza I/O, `projector.ts` proietta, reactors fanno side-effect.
+- **Lifecycle esplicito** — raggruppare stato, processi e probe per `instanceId`; chiudere o interrompere un'istanza deve rilasciare le sue risorse.
+- **Probe senza setup** — una verifica di salute non deve avviare login, MCP o sessioni conversazionali; deve avere un timeout e produrre uno stato leggibile.
+- **Stato osservabile** — rappresentare `pending`, `ready`, `warning`, `error` e `disabled` senza trasformare l'assenza di verifica in uno stato `ready`.
+- **Capability normalizzate** — convertire modelli e modalità in descrittori condivisi prima di passarli alla UI, mantenendo gli adattamenti specifici per harness nel main process.
+- **Eventi e cancellazione deterministici** — assegnare ID stabili agli eventi e attendere un drain breve prima di chiudere un run cancellato.
+- **Privacy prima della persistenza** — mantenere spawn-per-run; valutare processi persistenti solo dopo metriche e una decisione esplicita rispetto all'ADR 0012.
 
-Pattern rilevanti (file reali su `main`):
+## 4. Stato e direzione
 
-- **Driver SPI, non registry statico** — `apps/server/src/provider/ProviderDriver.ts`: `interface ProviderDriver<Config> { driverKind, metadata, configSchema, defaultConfig, create(input:{instanceId, displayName, environment, enabled, config}) => Effect<ProviderInstance> }`. `builtInDrivers.ts` ne lista 6 (`Codex, Claude, Cursor, Grok, OpenCode, Antigravity`). `ProviderInstanceRegistry` = `Map<instanceId, Instance>` in scope proprio: chiudere scope = kill child + fibre + watcher. Due istanze stesso driver (personal/work) = `CODEX_HOME` diversi, zero stato condiviso.
-- **Snapshot managed con probe sicura** — `makeManagedServerProvider.ts`: `pending → checkProvider (probe reale con timeout, mai throw) → enrichSnapshot (version advisory + maintenance) → streamChanges (SubscriptionRef/Stream per UI live)`. Wire `ServerProvider {instanceId, driver, enabled, installed, version, status: ready|warning|error|disabled, auth:{status,email,label,type}, models[], skills[], slashCommands[], usageLimits, continuation:{groupKey}, workspaceSnapshots[]}`.
-- **Probe che non fa setup** — esplicito in `docs/internals/providers.md`: "Setup must not happen as health-check side effect". Claude: `claude --version` + `query({prompt: never-yield})` leggendo solo `initializationResult()` poi `abort()`, con `disableAllHooks, strictMcpConfig, mcpServers:{}`. Codex: short-lived `codex app-server` + `initialize {clientInfo}` poi parallelo `account/read + model/list (paginato) + skills/list + rateLimits (timeout 3s, enrichment-only)`. Cursor/Grok/Antigravity via ACP: solo `initialize`, mai auth/session nel probe. OpenCode: `--version` + inventory via server owned, solo modelli `connected`.
-- **Trasporto eterogeneo dietro adapter unico** — `Services/ProviderAdapter.ts`: `startSession/sendTurn/interruptTurn/stopSession/listSessions/readThread/rollbackThread/streamEvents`. Claude via `@anthropic-ai/claude-agent-sdk`, Codex via client `codex app-server` tipato, Cursor/Grok/Antigravity via `effect-acp/client`, OpenCode via `@opencode-ai/sdk` HTTP verso server owned (un server per thread). `AcpSessionRuntime.ts` è il riferimento: `spawn → stderr drain → initialize → authenticate → new|load|resume → prompt (semaforo + fiber) → cancel (Fiber.interrupt + agent.cancel + drain barrier) → Stream.fromQueue(eventQueue)` con `ToolCallUpdated` coalesced.
-- **Modelli/mode come capability descriptors** — `model-manifest.json` bundled + fetch, `optionDescriptors[] (reasoningEffort, serviceTier, variant, agent, fastMode…)` con `isDefault/currentValue`. `RuntimeMode: approval-required|auto-accept-edits|auto|full-access` + `interactionMode: default|plan`. ACP: `set_config_option(mode/model)`. Custom models con fallback capabilities.
-- **Chiave = `instanceId`, mai `driverKind`** — `resolveSelectableProviderInstanceEntry(storedId)`: esatto se enabled+available, else `ready → non-error`, mai errored come default new-user. Cambio istanza resetta modello al default di quella istanza. `lockedProvider` / `lockedContinuationGroupKey` per edit/thread esistenti.
-- **Resume cursor opaco versionato** — `resumeCursor: unknown` con `CURSOR_RESUME_VERSION=1`, decode tollerante → `undefined = no resume`, mai errore.
-- **Cancel a due fasi** — signal + drain barrier (`session/cancel` + interrupt fiber + `drainEvents` prima di settle turno). Rollback rifiutato pre-filesystem se `supportsConversationRollback=false`.
-- **MCP/thread-scoped** — al `session/new|load`: `mcpServers[], additionalDirectories[]`. `snapshotForCwd(cwd)`: catalogo macchina + inventario workspace separati, cache 16 cwd, timeout 10–20s con fallback.
-- **UX: wizard + picker onesto** — `WelcomeWizard` (skip se workspace esiste): 1) target env preselezionato, 2) `providerReadiness` solo `claude/codex` (altri in Settings) con stati `checking|install|signIn|attention|ready|disabled` e bottone che apre **terminale con comando già pronto** usando `binaryPath` dell'istanza, 3) import progetti da history Claude/Codex (Git prima, default `git + attivi 30gg + ≥3 conv`, best-effort 100 file/64MiB). `ModelPicker`: sidebar per istanza, search fuzzy, favorites, virtualized list, riga `isUnavailable`, CTA inline `Setup` se non installato/unauth/zero modelli, trigger che conserva label + badge `Unavailable`.
+| Area             | Stato attuale                                                                         | Direzione proposta                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Registry         | 14 spec statiche, chiave `kind`, una istanza per tool                                 | Introdurre `instanceId`, retrocompatibile con `instanceId = kind`                       |
+| Discovery/probe  | `which()` + fallback bundled; ACP probe all'apertura; auth verificata solo per Claude | Snapshot gestito, timeout per probe, stato visibile e refresh esplicito                 |
+| Auth             | `unknown` per la maggior parte degli harness; hint solo Claude                        | Stato e comando d'accesso dichiarati per harness, senza setup automatico                |
+| Modelli/mode     | Branching tra `models/modes`, `configOptions` e casi specifici                        | Descrittori capability normalizzati e mapping concentrato in `model-routing.ts`         |
+| Sessioni         | Spawn-per-run; resume tramite `existingSessionId` persistito dal CLI                  | Cursor opaco/versionato; mantenere spawn-per-run salvo metriche che giustifichino altro |
+| Streaming/eventi | `deriveCoachEvents` da AI SDK; merge FIFO quando manca `id`                           | Eventi canonici nel main e identificatori stabili per i tool                            |
+| Cancel           | `gen.return()` senza barriera di drain                                                | Interruzione strutturata, drain limitato e finalizzazione esplicita                     |
+| MCP attach       | Ledger MCP stdio per default; sidecar HTTP per harness compatibili                    | Mantenere il pool app-scoped (ADR 0027), isolare probe e run                            |
+| Picker UX        | Rail e lista searchable; lazy inspect; default sintetico                              | Stati di disponibilità onesti, selezione coerente e azioni di recupero                  |
+| Boundary         | Tipi reali `ACPProviderSettings`; cast limitati al flusso SDK                         | Conservare i contratti tipizzati e Zod come fonte wire                                  |
 
-## 4. Tabella comparativa
+Vincoli da preservare:
 
-| Dimensione | Watchtower oggi | t3code | Giudizio |
-|---|---|---|---|
-| Registry | 14 spec statiche, chiave `kind: string`, un'istanza per tool | Driver SPI + `configSchema`, chiave `instanceId`, N istanze per driver in scope separati | t3code superiore; Watchtower non modella personal/work, `CODEX_HOME` separati, profili Antigravity |
-| Discovery/probe | `which()` PATH + bundled fallback a ogni `detect()`/`inspect()`; spawn ACP per probe; solo Claude ha auth-probe | `pending → probe con timeout → enrich → stream`; probe mai con side-effect (no MCP/hooks/login); una probe per istanza, UI live via subscription | t3code superiore: elimina handshake bugiardi e spawn a raffica |
-| Auth | `unknown` per 13/14 harness; hint solo Claude; passthrough via env ereditato poco scopribile | `auth:{status,email,label,type}` per istanza + `ProviderAuthFlow` dedicato, installer con lease atomiche, shadow home, terminale precompilato | t3code superiore |
-| Modelli/mode | Branching `legacy/config/thought_level` + casi speciali (Codex bracketed); `minimal resume` che indovina | `optionDescriptors[]` uniformi + `RuntimeMode`; ACP sempre `set_config_option` | t3code superiore per manutenibilità; Watchtower più fedele al wire instabile ma fragile |
-| Sessioni | Spawn-per-run + `cleanup()` in `finally`; resume via `existingSessionId` on-disk | Sessioni persistenti owned dal server, `resumeCursor` opaco versionato, rollback esplicito | t3code superiore per fluidità; Watchtower più semplice e più privacy-safe (niente long-lived) — tradeoff da decidere |
-| Streaming/eventi | `deriveCoachEvents` da `fullStream` AI SDK, merge tool FIFO se manca `id` | Adapter normalizza a eventi canonici (`streamEvents`), `ToolCallUpdated` coalesced, un solo formato per UI/log/event-store | t3code superiore |
-| Cancel | `gen.return()` una fase, fire-forget | signal + drain barrier, cancel nativo per driver | t3code superiore |
-| MCP attach | ledger MCP stdio di default, HTTP sidecar pooled solo per spec `clientMcpTransport:'http'`; briefing solo primo run | MCP thread-scoped a `session/new\|load` + `snapshotForCwd`; probe con `mcpServers:{}` | t3code superiore per isolamento; Watchtower ha già il pool app-scoped (ADR 0027) da riusare |
-| Picker UX | Rail + lista searchable, lazy inspect su open/hover, `Model: default` sintetico; auto-select primo harness | Sidebar per istanza, fuzzy+favorites+virtualized, CTA `Setup` inline, mai default errored, reset modello su cambio istanza | t3code superiore; la rail Watchtower è già vicina, mancano stati onesti e CTA |
-| Onboarding | `ConversationWelcome` + chips + nota no-harness | `WelcomeWizard` 3 step + import history + terminale precompilato | t3code superiore per first-run |
-| Tipizzazione boundary | Seam = tipi reali del package (`ACPProviderSettings`), cast solo su `fullStream` | Contracts versionati + client ACP/Codex generati da schema | Pari intento; t3code più spinto sul boundary versionato |
-
-Cosa tenere di Watchtower (non copiare alla cieca):
-
-- Spawn-per-run è una scelta privacy coerente (ADR 0012): nessun long-lived agent oltre il run. t3code tiene server/thread persistenti — più fluido ma più superficie.
-- Ledger MCP read-only con `scope` arg + briefing dual-scope è già un buon grounding; t3code non ha questo pezzo.
-- Tipizzare `acpConfig` come slice statico di `ACPProviderSettings` evita drift — tenere.
+- Spawn-per-run è coerente con la privacy dell'ADR 0012: nessun agent long-lived oltre il run.
+- Il ledger MCP read-only con argomento `scope` e briefing dual-scope resta un elemento centrale del grounding.
+- Tipizzare `acpConfig` come slice statico di `ACPProviderSettings` evita drift.
 
 ## 5. Piano di miglioramento (evolutivo, non rewrite)
 
@@ -103,13 +94,13 @@ Principio: **non cambiare SDK né protocollo** (restano `ai` v6 + ACP). Si intro
 
 - Regola: **health-check ≠ setup**. La probe fa solo `initialize` ACP (mai `authenticate`/`session/new`, mai MCP nostri, mai hooks) con timeout 5–8s, mai throw: ritorna `warning/error` con messaggio azionabile + `binaryPath` reale.
 - Per Claude tenere `auth status --json`; aggiungere probe leggere dove l'upstreams lo consente senza login (versione CLI / `initialize` ACP); per le altre restare `unknown → attention` invece di fingere `ready`.
-- Il picker non propone mai come default una istanza `error`; propone `ready → attention/unknown → mai error`. Riga con badge `Unavailable` + tooltip, come t3code.
+- Il picker non propone mai come default una istanza `error`; propone `ready → attention/unknown → mai error`. Riga con badge `Unavailable` + tooltip.
 - Accettazione: harness non loggata non appare più "pronta"; nessun browser/login si apre durante la probe.
 
 ### Fase 2 — Auth flow per harness (non solo Claude)
 
 - Estendere `auth:{status: configured|unknown|error, label?, hintCommand?}` a ogni spec: comando di login canonico per harness (es. `claude auth login`, `codex login`, …) + `binaryPath` risolto.
-- UI: pill contestuale per harness corrente (generalizzare `ClaudeAuthHint`), con comando copiabile e — dove sicuro — bottone "apri terminale con comando pronto" (pattern t3code). Toggle passthrough resta in Settings, ma la probe invalida la warm session con messaggio esplicito invece di fallback silenzioso.
+- UI: pill contestuale per harness corrente (generalizzare `ClaudeAuthHint`), con comando copiabile e — dove sicuro — bottone "apri terminale con comando pronto". Toggle passthrough resta in Settings, ma la probe invalida la warm session con messaggio esplicito invece di fallback silenzioso.
 - Accettazione: ogni harness `error/unknown` mostra cosa fare in 1 click; niente hint hardcoded solo-Claude.
 
 ### Fase 3 — Semplificare routing model/mode (capability descriptors)
@@ -130,11 +121,11 @@ Principio: **non cambiare SDK né protocollo** (restano `ai` v6 + ACP). Si intro
 - Facoltativo (se la fluidità resta insufficiente): sessione persistente per conversazione attiva (un child per `conversationId`, kill su `reset`/cambio harness/quit). Solo dopo metriche: se p95 handshake >2s, rivalutare. In ogni caso il resume resta opaco/versionato.
 - Accettazione: riaprire la app non corrompe mai il thread; sessione stale → fresh con notice, mai eccezione.
 
-### Fase 6 — Picker e composer più fluidi (pattern t3code, stesso stack)
+### Fase 6 — Picker e composer più fluidi
 
 - Picker: tenere la rail, aggiungere (a) sezione per istanza quando `instanceId != kind` (oggi 1:1, predisporre), (b) search fuzzy + riga `isUnavailable` + CTA inline `Setup` che apre hint auth, (c) cambio istanza → reset modello al default di quella istanza (no coppie cross-harness), (d) trigger che conserva label anche a catalogo assente + badge.
 - Composer: `TraitsPicker` leggero solo per harness che espongono `optionDescriptors` (reasoning effort, tier, variant) invece di infilarli nei nomi modello bracketed; limite invio come `composerSubmission` (120k char) con messaggio chiaro.
-- Welcome: restare su `ConversationWelcome`, aggiungere step "pronto all'uso" solo se zero harness `ready`: lista con stato + comando copiabile (mini-wizard, non full `WelcomeWizard` t3code che qui sarebbe sovradimensionato).
+- Welcome: restare su `ConversationWelcome`, aggiungere step "pronto all'uso" solo se zero harness `ready`: lista con stato + comando copiabile, mantenendo il flusso leggero.
 - Accettazione: da zero harness a primo run riuscito in ≤3 click guidati; mai default su harness rotta.
 
 ### Fase 7 — MCP attach e briefing più robusti
@@ -143,9 +134,9 @@ Principio: **non cambiare SDK né protocollo** (restano `ai` v6 + ACP). Si intro
 - Briefing: oltre al primo run, re-inviare un mini-briefing quando lo `scope` cambia mid-conversation (oggi perso) e quando il run parte senza MCP (fresh-install): invece di silenzio, una notice "senza dati ledger — la risposta sarà generica".
 - Accettazione: cambio periodo a conversazione avviata → l'agent riceve il nuovo window label; fresh-install → l'utente capisce perché.
 
-## 6. Cambio di approccio: sì o no?
+## 6. Scelta d'approccio
 
-**No al rewrite "alla t3code".** Il modello t3code (Effect-TS, server owned con thread persistenti, RPC versionato, driver multistanza, catalog manifest) è superiore per un prodotto multi-client, ma per Watchtower (Electron single-user, local-first, privacy stretta) sarebbe sovradimensionato e aprirebbe superficie long-lived contro ADR 0012.
+**No a un rewrite.** Watchtower è un'app Electron single-user, local-first e con vincoli di privacy stretti; un server esterno o sessioni persistenti per default aumenterebbero la superficie operativa e contrasterebbero con l'ADR 0012.
 
 **Sì a un cambio di approccio mirato**, in 3 punti:
 
@@ -153,7 +144,7 @@ Principio: **non cambiare SDK né protocollo** (restano `ai` v6 + ACP). Si intro
 2. **Da "chiave kind" a "chiave instanceId"** (Fase 0, default `instanceId=kind`). Abilita personal/work, `CODEX_HOME` separati, profili — senza rompere nulla oggi.
 3. **Da "branching model/mode sparso" a "capability descriptors normalizzati"** (Fase 3) + **eventi canonici** (Fase 4). Riduce il costo di ogni nuova harness da "patch in 3 file" a "riga di tabella + test".
 
-Cosa NON copiare: thread/server persistenti di default, Effect-TS, manifest modelli bundled con fetch, import history progetti, `WelcomeWizard` completo. Rivalutare solo se le metriche (p95 handshake, tasso run-KO su picker popolato) restano rosse dopo Fasi 0–4.
+Non introdurre server esterni, sessioni persistenti per default, manifest remoti o un onboarding completo senza una necessità misurata. Rivalutare dopo le Fasi 0–4 usando p95 handshake e tasso di run falliti dopo una probe positiva.
 
 ## 7. Ordine di build consigliato e verifiche
 
@@ -172,7 +163,6 @@ Cosa NON copiare: thread/server persistenti di default, Effect-TS, manifest mode
 - Telemetry run resta zero da ACP (protocollo ritorna 0): costi sempre dal parse session-file, non dal seam.
 - Non in scope: multi-run paralleli, rollback thread, server HTTP esterno, login automatico, scrittura skill su disco senza conferma utente.
 
-## 9. Fonti
+## 9. Riferimenti interni
 
 - Watchtower: `src/main/agents/{runtime,ipc,events,detect,auth-probe,prompts}.ts`, `src/main/agents/harnesses/*`, `src/main/agents/ledger-mcp/*`, `src/shared/schemas/agents.ts`, `src/renderer/src/features/coach-skills/*`, ADR 0016–0022, 0025–0027, `docs/architecture.md`.
-- t3code (`main` 23/09/2026): `docs/internals/overview.md`, `docs/internals/providers.md`, `packages/contracts/src/rpc.ts`, `packages/contracts/src/providerInstance.ts`, `apps/server/src/provider/{ProviderDriver,builtInDrivers,makeManagedServerProvider}.ts`, `apps/server/src/provider/Layers/{ClaudeProvider,CodexProvider,CursorProvider,OpenCodeProvider,GrokProvider}.ts`, `apps/server/src/provider/acp/AcpSessionRuntime.ts`, `apps/server/src/orchestration/{decider,projector}.ts`, `apps/server/src/provider/{ModelManifest,ProviderAuthFlow,model-manifest.json}`, `components/onboarding/WelcomeWizard.tsx`, `ProviderModelPicker.tsx`, `composerProviderState.tsx`.

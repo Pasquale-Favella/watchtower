@@ -232,9 +232,8 @@ export function ConversationThread() {
 
 /** The prompt bar — an elements.ai-sdk.dev PromptInput-inspired input that
  *  stays pinned at the bottom of the chat surface: an auto-growing textarea up
- *  top, a footer with the unified harness + model picker (t3code
- *  ProviderModelPicker shape: one trigger, harness rail + searchable
- *  agent-declared model list), the agent-declared mode picker, and a round
+ *  top, a footer with the unified harness + model picker (one trigger,
+ *  harness rail + searchable agent-declared model list), the mode picker, and a round
  *  send/stop action pinned to the end of the footer.
  *  The coach reads the full lifetime ledger (no data-window chip — the agent
  *  filters per question). */
@@ -351,8 +350,8 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
         className="max-h-[168px] w-full resize-none overflow-y-auto bg-transparent p-3.5 text-[12px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
       />
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
-          {/* The unified harness + model picker (t3code ProviderModelPicker
-              shape): one trigger opens the harness rail + searchable
+        {/* The unified harness + model picker: one trigger opens the harness
+              rail + searchable
               agent-declared model list. LAZY: opening probes the active
               harness's handshake (which also warms a session the first run
               resumes); browsing the rail probes each previewed harness.
@@ -428,8 +427,8 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
           <AlertDialogHeader>
             <AlertDialogTitle>Switch harness?</AlertDialogTitle>
             <AlertDialogDescription>
-              Chatting with <span className="font-medium text-foreground">{pendingName}</span> starts a new
-              conversation — the current thread and its session will be cleared.
+              Chatting with <span className="font-medium text-foreground">{pendingName}</span> starts a new conversation
+              the current thread and its session will be cleared.
               {running && ' Any run in progress will be stopped.'}
             </AlertDialogDescription>
           </AlertDialogHeader>

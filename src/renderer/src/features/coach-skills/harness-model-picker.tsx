@@ -53,8 +53,8 @@ function checkedModelForKind(
   return modelsByKind[kind]?.modelId ?? null
 }
 
-/** The unified harness + model picker — the t3code ProviderModelPicker
- *  shape adapted to this app's Coach & Skills rules: ONE trigger (harness
+/** The unified harness + model picker follows this app's Coach & Skills
+ *  rules: ONE trigger (harness
  *  badge + model label) opens a popover with a harness rail on the left and
  *  a searchable agent-declared model list on the right. Browsing the rail
  *  only previews; clicking a model row commits harness + model atomically
@@ -67,8 +67,7 @@ function checkedModelForKind(
  *  rail item fires `onInspect` (the store's probe, guarded against
  *  re-spawns), and `inspectingKind` drives the loading row. The lists are a
  *  handful of agent-declared models, so filtering is a plain substring
- *  match — none of t3code's fuzzy ranking, favorites, jump shortcuts, or
- *  virtualization. Built on the app's shared Popover/Input/Button, the same
+ *  match. Built on the app's shared Popover/Input/Button, the same
  *  primitives as the rest of the composer. */
 export function HarnessModelPicker({
   harnesses,
@@ -194,7 +193,7 @@ export function HarnessModelPicker({
       />
       <PopoverContent className="w-[380px] p-0" align="start" side="top" sideOffset={8}>
         <div className="flex h-[320px] overflow-hidden">
-          {/* Harness rail (t3code ModelPickerSidebar): one icon per detected
+          {/* Harness rail: one icon per detected
               harness; browsing previews its models, committing happens only
               through a model-row click. */}
           <div className="w-11 shrink-0 overflow-y-auto bg-muted/30 p-1">
