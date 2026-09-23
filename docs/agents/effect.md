@@ -1,7 +1,5 @@
 # Effect
 
-This repository uses the Effect Typescript library.
-
 Before writing any Effect code, first read `node_modules/effect/AGENTS.md`
 **completely**, and follow the links in the file when required.
 

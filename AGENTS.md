@@ -16,4 +16,4 @@ Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/do
 
 ### Effect
 
-This repo uses Effect in a targeted scope. See `docs/agents/effect.md`.
+This repository uses the Effect Typescript library. See `docs/agents/effect.md`.
