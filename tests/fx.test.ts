@@ -2,14 +2,26 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
 import { describe, expect, it } from 'vitest'
 
 import {
   type ActiveCurrency,
-  convertCost, formatCost, FX_CACHE_TTL_MS,
-getActiveCurrency, getFractionDigits,
-  isRateStale, isValidCurrencyCode, listCurrencies, refreshFxRate,
-  roundForActiveCurrency, } from '../src/main/fx.js'
+  convertCost,
+  formatCost,
+  FX_CACHE_TTL_MS,
+  getActiveCurrency,
+  getFractionDigits,
+  isRateStale,
+  isValidCurrencyCode,
+  listCurrencies,
+  refreshFxRateEffect,
+  type RefreshFxRateEffectOptions,
+  roundForActiveCurrency,
+} from '../src/main/fx.js'
+import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 
 function makeStore(): LedgerStore {
@@ -17,16 +29,39 @@ function makeStore(): LedgerStore {
   return new LedgerStore(join(dir, 'data.db'))
 }
 
-/** Minimal fetch stub standing in for Frankfurter. */
-function fakeFetch(status: number, rates: Record<string, unknown> | null, calls: { count: number } = { count: 0 }) {
+function fakeFetchOk(rates: Record<string, unknown>): typeof fetch {
+  return (async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ rates }),
+  })) as unknown as typeof fetch
+}
+
+function throwingFetch(message = 'offline'): typeof fetch {
   return (async () => {
-    calls.count += 1
-    return {
-      ok: status >= 200 && status < 300,
-      status,
-      json: async () => (rates === null ? {} : { rates }),
-    }
+    throw new Error(message)
   }) as unknown as typeof fetch
+}
+
+function fakeCountingFetch(rates: Record<string, unknown>): { fetch: typeof fetch; getCalls: () => number } {
+  let calls = 0
+  const inner = fakeFetchOk(rates)
+  const fetch = (async (...args: Parameters<typeof fetch>) => {
+    calls += 1
+    return inner(...args)
+  }) as typeof fetch
+  return { fetch, getCalls: () => calls }
+}
+
+function runFx(
+  store: LedgerStore,
+  code: string,
+  fetchImpl: typeof fetch,
+  options: RefreshFxRateEffectOptions = {},
+): Promise<ActiveCurrency> {
+  return Effect.runPromise(
+    refreshFxRateEffect(store, code, options).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))),
+  )
 }
 
 const EUR: ActiveCurrency = { code: 'EUR', symbol: '€', rate: 0.9 }
@@ -93,14 +128,14 @@ describe('getActiveCurrency (the renderer-only read path, never fetches)', () =>
   })
 })
 
-describe('refreshFxRate (the main-process Frankfurter background job)', () => {
+describe('refreshFxRateEffect (the main-process Frankfurter background job)', () => {
   it('fetches a missing rate and caches it into the FX side-table', async () => {
     const store = makeStore()
     store.setDisplayCurrency('EUR')
-    const calls = { count: 0 }
-    const active = await refreshFxRate(store, 'EUR', { fetchImpl: fakeFetch(200, { EUR: 0.9 }, calls) })
+    const { fetch: counting, getCalls } = fakeCountingFetch({ EUR: 0.9 })
+    const active = await runFx(store, 'EUR', counting)
 
-    expect(calls.count).toBe(1)
+    expect(getCalls()).toBe(1)
     expect(active).toMatchObject({ code: 'EUR', symbol: '€', rate: 0.9 })
     expect(store.getCurrencyRate('EUR')).toMatchObject({ code: 'EUR', rate: 0.9 })
     expect(getActiveCurrency(store).rate).toBe(0.9)
@@ -111,10 +146,10 @@ describe('refreshFxRate (the main-process Frankfurter background job)', () => {
     const store = makeStore()
     store.setDisplayCurrency('EUR')
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: new Date().toISOString() })
-    const calls = { count: 0 }
-    await refreshFxRate(store, 'EUR', { fetchImpl: fakeFetch(200, { EUR: 1.5 }, calls) })
+    const { fetch: counting, getCalls } = fakeCountingFetch({ EUR: 1.5 })
+    await runFx(store, 'EUR', counting)
 
-    expect(calls.count).toBe(0)
+    expect(getCalls()).toBe(0)
     expect(getActiveCurrency(store).rate).toBe(0.9)
     store.close()
   })
@@ -124,7 +159,7 @@ describe('refreshFxRate (the main-process Frankfurter background job)', () => {
     store.setDisplayCurrency('EUR')
     const stale = new Date(Date.now() - (FX_CACHE_TTL_MS + 60_000)).toISOString()
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: stale })
-    await refreshFxRate(store, 'EUR', { fetchImpl: fakeFetch(200, { EUR: 0.85 }) })
+    await runFx(store, 'EUR', fakeFetchOk({ EUR: 0.85 }))
 
     expect(store.getCurrencyRate('EUR')?.rate).toBe(0.85)
     store.close()
@@ -136,8 +171,7 @@ describe('refreshFxRate (the main-process Frankfurter background job)', () => {
     const stale = new Date(Date.now() - (FX_CACHE_TTL_MS + 60_000)).toISOString()
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: stale })
 
-    const throwing = (async () => { throw new Error('offline') }) as unknown as typeof fetch
-    await expect(refreshFxRate(store, 'EUR', { fetchImpl: throwing })).resolves.toMatchObject({ rate: 0.9 })
+    await expect(runFx(store, 'EUR', throwingFetch())).resolves.toMatchObject({ rate: 0.9 })
     expect(getActiveCurrency(store).rate).toBe(0.9)
     store.close()
   })
@@ -145,31 +179,36 @@ describe('refreshFxRate (the main-process Frankfurter background job)', () => {
   it('falls back to USD (rate 1) when nothing was ever cached and the fetch fails', async () => {
     const store = makeStore()
     store.setDisplayCurrency('EUR')
-    const throwing = (async () => { throw new Error('offline') }) as unknown as typeof fetch
-    const active = await refreshFxRate(store, 'EUR', { fetchImpl: throwing })
+    const active = await runFx(store, 'EUR', throwingFetch())
     expect(active.rate).toBe(1)
     expect(getActiveCurrency(store).rate).toBe(1)
     store.close()
   })
 
-  it('does not persist a response that arrives after the caller aborts', async () => {
+  it('fiber interruption does not persist a partial rate', async () => {
     const store = makeStore()
-    const controller = new AbortController()
-    let resolveResponse!: (response: Response) => void
-    const fetchImpl = (() =>
-      new Promise<Response>(resolve => {
-        resolveResponse = resolve
-      })) as typeof fetch
+    let observedSignal: AbortSignal | undefined
+    const hangingFetch = ((_: string, init: RequestInit = {}) => {
+      observedSignal = init.signal ?? undefined
+      return new Promise<Response>((_, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+      })
+    }) as typeof fetch
 
-    const refresh = refreshFxRate(store, 'EUR', { fetchImpl, signal: controller.signal })
-    controller.abort()
-    resolveResponse({
-      ok: true,
-      status: 200,
-      json: async () => ({ rates: { EUR: 0.9 } }),
-    } as Response)
-
-    await expect(refresh).resolves.toMatchObject({ code: 'EUR', rate: 1 })
+    const exit = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          refreshFxRateEffect(store, 'EUR', { timeoutMs: 8000 }).pipe(
+            Effect.provide(HttpFetch.layerWithFetch(hangingFetch)),
+          ),
+        )
+        yield* Effect.yieldNow
+        yield* Fiber.interrupt(fiber)
+        return yield* Fiber.await(fiber)
+      }),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(observedSignal?.aborted).toBe(true)
     expect(store.getCurrencyRate('EUR')).toBeNull()
     store.close()
   })
@@ -177,29 +216,29 @@ describe('refreshFxRate (the main-process Frankfurter background job)', () => {
   it('rejects out-of-bounds rates (parser bug / tampered response) and keeps the cached rate', async () => {
     const store = makeStore()
     store.setDisplayCurrency('EUR')
-    await refreshFxRate(store, 'EUR', { fetchImpl: fakeFetch(200, { EUR: 9_999_999 }) })
+    await runFx(store, 'EUR', fakeFetchOk({ EUR: 9_999_999 }))
     expect(getActiveCurrency(store).rate).toBe(1)
 
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: new Date().toISOString() })
-    await refreshFxRate(store, 'EUR', { fetchImpl: fakeFetch(200, { EUR: 0 }) })
+    await runFx(store, 'EUR', fakeFetchOk({ EUR: 0 }))
     expect(getActiveCurrency(store).rate).toBe(0.9)
     store.close()
   })
 
   it('is a no-op for USD — no fetch, rate always 1', async () => {
     const store = makeStore()
-    const calls = { count: 0 }
-    await refreshFxRate(store, 'USD', { fetchImpl: fakeFetch(200, { USD: 1 }, calls) })
-    expect(calls.count).toBe(0)
+    const { fetch: counting, getCalls } = fakeCountingFetch({ USD: 1 })
+    await runFx(store, 'USD', counting)
+    expect(getCalls()).toBe(0)
     expect(getActiveCurrency(store)).toEqual({ code: 'USD', symbol: '$', rate: 1 })
     store.close()
   })
 
   it('sanitizes an invalid code to USD', async () => {
     const store = makeStore()
-    const calls = { count: 0 }
-    await refreshFxRate(store, 'ZZZ', { fetchImpl: fakeFetch(200, { ZZZ: 1 }, calls) })
-    expect(calls.count).toBe(0)
+    const { fetch: counting, getCalls } = fakeCountingFetch({ ZZZ: 1 })
+    await runFx(store, 'ZZZ', counting)
+    expect(getCalls()).toBe(0)
     store.close()
   })
 })

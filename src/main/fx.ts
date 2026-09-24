@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
 
 import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
-import { fetchWithTimeout, HttpFetch } from './pipeline/fetch-utils.js'
+import { HttpFetch } from './pipeline/fetch-utils.js'
 import type { LedgerStore } from './store/ledger.js'
 
 export type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
@@ -129,69 +129,6 @@ export function isRateStale(updatedAt: string | undefined, now = Date.now()): bo
   return now - t > FX_CACHE_TTL_MS
 }
 
-interface RefreshFxOptions {
-  /** Injectable fetch for tests; defaults to the global fetch. */
-  fetchImpl?: typeof fetch
-  /** Injectable clock for staleness tests. */
-  now?: () => number
-  /** Aborts the in-flight request when its owning worker scope closes. */
-  signal?: AbortSignal
-}
-
-/** Fetches the USD→code rate from Frankfurter and caches it into the FX
- * side-table when the cached rate is missing or older than the 24h TTL.
- * Never throws: every failure (offline, blocked, non-2xx, invalid rate)
- * silently keeps the last successfully cached rate, or the USD fallback.
- * Returns the resulting active currency for the caller. */
-export async function refreshFxRate(
-  store: LedgerStore,
-  code: string,
-  options: RefreshFxOptions = {},
-): Promise<ActiveCurrency> {
-  const safe = isValidCurrencyCode(code) ? code : 'USD'
-  if (safe === 'USD') return { ...USD_CURRENCY }
-
-  const cached = store.getCurrencyRate(safe)
-  const now = options.now?.() ?? Date.now()
-  if (cached && !isRateStale(cached.updatedAt, now)) {
-    return { code: safe, symbol: cached.symbol, rate: cached.rate, updatedAt: cached.updatedAt }
-  }
-  const fallback = (): ActiveCurrency => ({
-    code: safe,
-    symbol: cached?.symbol ?? resolveSymbol(safe),
-    rate: cached?.rate ?? 1,
-    updatedAt: cached?.updatedAt,
-  })
-  if (options.signal?.aborted) return fallback()
-
-  const fetchImpl = options.fetchImpl ?? fetch
-  try {
-    const response = await fetchWithTimeout(
-      `${FRANKFURTER_URL}${safe}`,
-      { signal: options.signal },
-      undefined,
-      fetchImpl,
-    )
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const data = (await response.json()) as { rates?: Record<string, unknown> }
-    const rate = data.rates?.[safe]
-    if (!isValidRate(rate)) throw new Error(`Invalid rate returned for ${safe}`)
-    if (options.signal?.aborted) return fallback()
-    store.setCurrencyRate({ code: safe, symbol: resolveSymbol(safe), rate, updatedAt: new Date(now).toISOString() })
-  } catch {
-    // Offline / blocked / malformed — keep the last cached rate (or USD).
-    if (options.signal?.aborted) return fallback()
-  }
-
-  const latest = store.getCurrencyRate(safe)
-  return {
-    code: safe,
-    symbol: latest?.symbol ?? resolveSymbol(safe),
-    rate: latest?.rate ?? 1,
-    updatedAt: latest?.updatedAt,
-  }
-}
-
 export interface RefreshFxRateEffectOptions {
   /** Injectable clock for staleness tests; defaults to Date.now. */
   now?: () => number
@@ -201,16 +138,15 @@ export interface RefreshFxRateEffectOptions {
 
 /** Effect-native USD→code refresh (ADR 0032 slice 1).
  *
- * Same contract as `refreshFxRate`: never fails, falls back to the last cached
- * rate (or USD rate 1) on offline/blocked/non-2xx/invalid-rate. The network
- * enters through the `HttpFetch` service — timeout via the Effect Clock
- * (TestClock-controllable) and fiber interruption aborts the underlying fetch,
- * replacing the manual `signal` plumbing. Pure helpers stay plain functions.
+ * Never fails, falls back to the last cached rate (or USD rate 1) on
+ * offline/blocked/non-2xx/invalid-rate. The network enters through the
+ * `HttpFetch` service — timeout via the Effect Clock (TestClock-controllable)
+ * and fiber interruption aborts the underlying fetch, replacing the manual
+ * `signal` plumbing. Pure helpers stay plain functions.
  *
- * Compatibility: additive alongside the Promise `refreshFxRate`. Production
- * callers (`DbWorkerContext.refreshFxOnCadence`, `currency:set`) already use
- * this effect; the Promise adapter is kept only for `tests/fx.test.ts`.
- * Remove with it once those tests migrate to `refreshFxRateEffect`.
+ * Replaces the removed Promise `refreshFxRate` adapter. Production callers
+ * (`DbWorkerContext.refreshFxOnCadence`, `currency:set`) and `tests/fx.test.ts`
+ * already use this effect.
  */
 export const refreshFxRateEffect = Effect.fnUntraced(function* (
   store: LedgerStore,
