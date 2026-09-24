@@ -1,14 +1,21 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   closeOperationalLog,
+  FETCH_TIMEOUT_COUNTER,
   initOperationalLog,
   logIpcError,
   logOperationalEvent,
+  OperationalLog,
+  OperationalLogLoggerLayer,
+  PROBE_OUTCOME_COUNTER,
   safeLogOperationalEvent,
+  SCAN_DURATION_COUNTER,
+  type OperationalLogSink,
 } from '../src/main/operational-log.js'
 
 let dir = ''
@@ -177,5 +184,155 @@ describe('Operational log main sink (pino, slice 1)', () => {
     // No truncation: every surviving line is complete JSON — and rotation
     // kept the newest generations (early events rotated out, late ones kept).
     expect(events.has('event.119')).toBe(true)
+  })
+})
+
+describe('OperationalLog Effect bridge (Wave 2 §4.4/§5.4)', () => {
+  type SinkRecord = { level: string; event: string; fields: Record<string, unknown>; context: string }
+
+  function makeFakeSink(): { sink: OperationalLogSink; records: SinkRecord[] } {
+    const records: SinkRecord[] = []
+    const sink: OperationalLogSink = {
+      emit: (level, event, fields, context) => {
+        records.push({ level, event, fields: { ...fields }, context })
+      },
+    }
+    return { sink, records }
+  }
+
+  it('defines the three counter keys for the later call-site wiring slice', () => {
+    expect(SCAN_DURATION_COUNTER).toBe('scan.duration')
+    expect(FETCH_TIMEOUT_COUNTER).toBe('fetch.timeout')
+    expect(PROBE_OUTCOME_COUNTER).toBe('probe.outcome')
+    expect(new Set([SCAN_DURATION_COUNTER, FETCH_TIMEOUT_COUNTER, PROBE_OUTCOME_COUNTER]).size).toBe(3)
+  })
+
+  it('service log forwards level/event/fields/context through the fake sink layer', async () => {
+    const { sink, records } = makeFakeSink()
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const oplog = yield* OperationalLog
+        yield* oplog.log('warn', 'test.event', { op: 'scan' }, 'worker')
+      }).pipe(Effect.provide(OperationalLog.layerWithSink(sink))),
+    )
+    expect(records).toHaveLength(1)
+    expect(records[0]).toEqual({ level: 'warn', event: 'test.event', fields: { op: 'scan' }, context: 'worker' })
+  })
+
+  it('service counters file records with the counter key as event and count field', async () => {
+    const { sink, records } = makeFakeSink()
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const oplog = yield* OperationalLog
+        yield* oplog.incrementCounter(SCAN_DURATION_COUNTER, 123, { op: 'scan' })
+        yield* oplog.incrementCounter(FETCH_TIMEOUT_COUNTER)
+        yield* oplog.recordGauge(PROBE_OUTCOME_COUNTER, 2, { op: 'probe' })
+      }).pipe(Effect.provide(OperationalLog.layerWithSink(sink))),
+    )
+    expect(records).toHaveLength(3)
+    expect(records[0]).toMatchObject({ level: 'info', event: SCAN_DURATION_COUNTER, context: 'main' })
+    expect(records[0]!.fields).toMatchObject({ op: 'scan', count: 123 })
+    expect(records[1]).toMatchObject({ level: 'info', event: FETCH_TIMEOUT_COUNTER })
+    expect(records[1]!.fields).toMatchObject({ count: 1 })
+    expect(records[2]).toMatchObject({ level: 'info', event: PROBE_OUTCOME_COUNTER })
+    expect(records[2]!.fields).toMatchObject({ op: 'probe', count: 2 })
+  })
+
+  it('service never throws when the sink throws (never-throws preserved)', async () => {
+    const throwing: OperationalLogSink = {
+      emit: () => {
+        throw new Error('sink boom')
+      },
+    }
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const oplog = yield* OperationalLog
+          yield* oplog.log('info', 'test', { op: 'x' })
+          yield* oplog.incrementCounter(SCAN_DURATION_COUNTER, 1)
+          yield* oplog.recordGauge('gauge.x', 1)
+        }).pipe(Effect.provide(OperationalLog.layerWithSink(throwing))),
+      ),
+    ).resolves.toBeUndefined()
+  })
+
+  it('service live layer drops non-allowlisted fields through the file sink', async () => {
+    const logDir = tempLogDir()
+    await initOperationalLog({ logDir, isPackaged: true })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const oplog = yield* OperationalLog
+        yield* oplog.log('info', 'test', {
+          op: 'test',
+          prompt: 'secret prompt body',
+          filePath: '/Users/alice/secret.txt',
+          ledgerFact: 'total spend $456.78',
+        })
+      }).pipe(Effect.provide(OperationalLog.layer)),
+    )
+    closeOperationalLog()
+    const lines = readLines(logDir)
+    expect(lines).toHaveLength(1)
+    const text = lines[0]!
+    expect(text).not.toContain('secret prompt body')
+    expect(text).not.toContain('alice')
+    expect(text).not.toContain('456.78')
+  })
+
+  it('Logger maps Effect levels into the file sink', async () => {
+    const logDir = tempLogDir()
+    await initOperationalLog({ logDir, isPackaged: false })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* Effect.logDebug('debug message')
+        yield* Effect.logInfo('info message')
+        yield* Effect.logWarning('warn message')
+        yield* Effect.logError('error message')
+      }).pipe(Effect.provide(OperationalLogLoggerLayer)),
+    )
+    closeOperationalLog()
+    const parsed = readLines(logDir).map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(parsed).toHaveLength(4)
+    expect(parsed.map(record => record['level'])).toEqual(['debug', 'info', 'warn', 'error'])
+    for (const record of parsed) expect(record['event']).toBe('effect.log')
+    expect(parsed[0]!['label']).toContain('debug message')
+    expect(parsed[3]!['label']).toContain('error message')
+  })
+
+  it('Logger drops non-allowlisted annotation fields but keeps allowlisted ones', async () => {
+    const logDir = tempLogDir()
+    await initOperationalLog({ logDir, isPackaged: true })
+    await Effect.runPromise(
+      Effect.logInfo('hello').pipe(
+        Effect.annotateLogs({ op: 'scan', prompt: 'secret-body', ledgerFact: 'spend $1' }),
+        Effect.provide(OperationalLogLoggerLayer),
+      ),
+    )
+    closeOperationalLog()
+    const lines = readLines(logDir)
+    expect(lines).toHaveLength(1)
+    const text = lines[0]!
+    expect(text).not.toContain('secret-body')
+    expect(text).not.toContain('spend $1')
+    const parsed = JSON.parse(text) as Record<string, unknown>
+    expect(parsed['op']).toBe('scan')
+    expect(parsed['label']).toContain('hello')
+    expect(parsed).not.toHaveProperty('prompt')
+    expect(parsed).not.toHaveProperty('ledgerFact')
+  })
+
+  it('Logger never throws without init (mirrors if (!active) return)', async () => {
+    closeOperationalLog()
+    await expect(
+      Effect.runPromise(Effect.logInfo('no sink yet').pipe(Effect.provide(OperationalLogLoggerLayer))),
+    ).resolves.toBeUndefined()
+    await expect(
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const oplog = yield* OperationalLog
+          yield* oplog.log('info', 'test', { op: 'x' })
+        }).pipe(Effect.provide(OperationalLog.layer)),
+      ),
+    ).resolves.toBeUndefined()
   })
 })
