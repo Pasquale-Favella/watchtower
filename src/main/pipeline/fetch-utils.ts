@@ -5,7 +5,7 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
-// Default ceiling for outbound HTTP. Every CLI command awaits loadPricing(),
+// Default ceiling for outbound HTTP. Every CLI command awaits loadPricingEffect(),
 // and the macOS menubar shells out to the CLI and blocks on its exit — so an
 // unbounded fetch() on a half-open network (e.g. Wi-Fi/DNS not yet up after
 // wake-from-sleep) wedges the menubar on its loading spinner indefinitely.

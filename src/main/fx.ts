@@ -207,9 +207,10 @@ export interface RefreshFxRateEffectOptions {
  * (TestClock-controllable) and fiber interruption aborts the underlying fetch,
  * replacing the manual `signal` plumbing. Pure helpers stay plain functions.
  *
- * Compatibility: additive alongside the Promise `refreshFxRate`. Removal
- * condition for the Promise adapter: `DbWorkerContext.refreshFxOnCadence` and
- * `currency:set` consume this effect directly.
+ * Compatibility: additive alongside the Promise `refreshFxRate`. Production
+ * callers (`DbWorkerContext.refreshFxOnCadence`, `currency:set`) already use
+ * this effect; the Promise adapter is kept only for `tests/fx.test.ts`.
+ * Remove with it once those tests migrate to `refreshFxRateEffect`.
  */
 export const refreshFxRateEffect = Effect.fnUntraced(function* (
   store: LedgerStore,

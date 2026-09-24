@@ -6,7 +6,7 @@ import { join } from 'path'
 
 import snapshotData from './data/litellm-snapshot.json'
 import fallbackData from './data/pricing-fallback.json'
-import { DEFAULT_FETCH_TIMEOUT_MS, fetchWithTimeout, HttpFetch } from './fetch-utils.js'
+import { DEFAULT_FETCH_TIMEOUT_MS, HttpFetch } from './fetch-utils.js'
 import { queueLogRecord } from './file-errors.js'
 
 export type ModelCosts = {
@@ -39,7 +39,6 @@ type LiteLLMEntry = {
 type SnapshotEntry = [number, number, number | null, number | null, (number | null)?]
 
 const LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const WEB_SEARCH_COST = 0.01
 const ONE_HOUR_CACHE_WRITE_MULTIPLIER_FROM_FIVE_MINUTE_RATE = 1.6
 
@@ -55,21 +54,6 @@ function getPricingCacheTtlMs(): number {
   const hours = Number(raw)
   if (!Number.isFinite(hours) || hours <= 0) return Infinity
   return hours * 60 * 60 * 1000
-}
-
-/**
- * Forza un fetch live della tabella prezzi (per `--refresh-pricing`).
- * Se il fetch fallisce, propaga l'errore al chiamante che deciderà come
- * comunicarlo (di solito: warning + fallback a snapshot bundled).
- *
- * Compatibility adapter (ADR 0032 slice): stays until `scan.ts` +
- * `pricing:refresh` IPC consume `refreshPricingNowEffect` directly.
- * Removal condition: no callers of this Promise API remain.
- */
-export async function refreshPricingNow(): Promise<void> {
-  pricingCache = mergeSnapshotFallbacks(await fetchAndCachePricing())
-  sortedPricingKeys = null
-  lowercasePricingIndex = null
 }
 
 // Explicit USD/token prices that must override LiteLLM/cache data. Cursor
@@ -210,78 +194,11 @@ function parseLiteLLMEntry(entry: LiteLLMEntry): ModelCosts | null {
   )
 }
 
-async function fetchAndCachePricing(): Promise<Map<string, ModelCosts>> {
-  // Bounded: runs on every CLI invocation (the menubar shells out and blocks on
-  // it). Without a timeout a half-open network after wake-from-sleep makes
-  // fetch() hang forever, wedging the menubar's loading spinner. On timeout the
-  // caller's catch falls back to the bundled price snapshot.
-  const response = await fetchWithTimeout(LITELLM_URL)
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const data = (await response.json()) as Record<string, LiteLLMEntry>
-  const pricing = new Map<string, ModelCosts>()
-
-  for (const [name, entry] of Object.entries(data)) {
-    const costs = parseLiteLLMEntry(entry)
-    if (!costs) continue
-    pricing.set(name, costs)
-    // Also index by stripped name so lookups work without provider prefix:
-    // 'anthropic/claude-opus-4-6' is also queryable as 'claude-opus-4-6'.
-    // First write wins so direct-provider entries take precedence over re-hosters.
-    const stripped = name.replace(/^[^/]+\//, '')
-    if (stripped !== name && !pricing.has(stripped)) pricing.set(stripped, costs)
-  }
-
-  await mkdir(getCacheDir(), { recursive: true })
-  await writeFile(
-    getCachePath(),
-    JSON.stringify({
-      timestamp: Date.now(),
-      data: Object.fromEntries(pricing),
-    }),
-  )
-
-  return pricing
-}
-
-async function loadCachedPricing(): Promise<Map<string, ModelCosts> | null> {
-  try {
-    const raw = await readFile(getCachePath(), 'utf-8')
-    const cached = JSON.parse(raw) as { timestamp: number; data: Record<string, ModelCosts> }
-    if (Date.now() - cached.timestamp > getPricingCacheTtlMs()) return null
-    return new Map(Object.entries(cached.data))
-  } catch {
-    return null
-  }
-}
-
 function mergeSnapshotFallbacks(pricing: Map<string, ModelCosts>): Map<string, ModelCosts> {
   for (const [name, costs] of loadSnapshot()) {
     if (!pricing.has(name)) pricing.set(name, costs)
   }
   return applyBuiltinPriceOverrides(pricing)
-}
-
-/**
- * Compatibility adapter (ADR 0032 slice): stays until `scan.ts` +
- * `pricing:refresh` IPC consume `loadPricingEffect` directly.
- * Removal condition: no callers of this Promise API remain.
- */
-export async function loadPricing(): Promise<void> {
-  const cached = await loadCachedPricing()
-  if (cached) {
-    pricingCache = mergeSnapshotFallbacks(cached)
-    sortedPricingKeys = null
-    lowercasePricingIndex = null
-    return
-  }
-
-  try {
-    pricingCache = mergeSnapshotFallbacks(await fetchAndCachePricing())
-    sortedPricingKeys = null
-    lowercasePricingIndex = null
-  } catch {
-    // snapshot already loaded at init; nothing more to do
-  }
 }
 
 // Known model name variants that providers emit but LiteLLM/fallback don't index under.
@@ -1176,11 +1093,10 @@ const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(funct
   return pricing
 })
 
-/** Effect-native `loadPricing`: never fails — falls back to the bundled snapshot.
+/** Pricing load: never fails — falls back to the bundled snapshot.
  *
- * Same contract as the Promise `loadPricing`: fresh disk cache wins, else a
- * live fetch, else the snapshot already loaded at init. Interruption still
- * propagates (only failures are caught).
+ * Fresh disk cache wins, else a live fetch, else the snapshot already loaded
+ * at init. Interruption still propagates (only failures are caught).
  */
 export const loadPricingEffect = Effect.fn('loadPricingEffect')(function* (
   options: PricingEffectOptions = {},
@@ -1198,10 +1114,9 @@ export const loadPricingEffect = Effect.fn('loadPricingEffect')(function* (
   yield* Effect.sync(() => writeThroughPricingCache(fetched))
 })
 
-/** Effect-native `refreshPricingNow`: fails with `PricingRefreshError`.
+/** Pricing live refresh: fails with `PricingRefreshError`.
  *
- * Same contract as the Promise `refreshPricingNow`: a live fetch or a typed
- * failure. Interruption still propagates.
+ * A live fetch or a typed failure. Interruption still propagates.
  */
 export const refreshPricingNowEffect = Effect.fn('refreshPricingNowEffect')(function* (
   options: PricingEffectOptions = {},

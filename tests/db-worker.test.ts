@@ -14,6 +14,20 @@ function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'watchtower-dbworker-'))
 }
 
+function okFetch(body: unknown): typeof fetch {
+  return (async () => ({
+    ok: true,
+    status: 200,
+    json: async () => body,
+  })) as unknown as typeof fetch
+}
+
+function throwingFetch(message = 'offline'): typeof fetch {
+  return (async () => {
+    throw new Error(message)
+  }) as unknown as typeof fetch
+}
+
 describe('DbWorkerContext ops (ADR 0023)', () => {
   let dir = ''
   let ctx: DbWorkerContext | null = null
@@ -21,10 +35,9 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
 
   function open(): DbWorkerContext {
     dir = tempDataDir()
-    ctx = new DbWorkerContext(
-      { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') },
-      event => { events.push(event) },
-    )
+    ctx = new DbWorkerContext({ dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }, event => {
+      events.push(event)
+    })
     return ctx
   }
 
@@ -41,7 +54,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   })
 
   it('reports an unscanned status on a fresh ledger', async () => {
-    const status = await open().dispatch('store:status', []) as { scanned: boolean }
+    const status = (await open().dispatch('store:status', [])) as { scanned: boolean }
     expect(status.scanned).toBe(false)
   })
 
@@ -55,10 +68,9 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   it('delays cadence ticks and cancels the prior schedule when reconfigured', async () => {
     vi.useFakeTimers()
     const c = open()
-    const triggerScan = vi.spyOn(
-      c as unknown as { triggerBackgroundScan: () => Promise<void> },
-      'triggerBackgroundScan',
-    ).mockResolvedValue(undefined)
+    const triggerScan = vi
+      .spyOn(c as unknown as { triggerBackgroundScan: () => Promise<void> }, 'triggerBackgroundScan')
+      .mockResolvedValue(undefined)
 
     try {
       await c.dispatch('cadence:set', ['30s'])
@@ -104,12 +116,13 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
 
   it('records skill dismissals', async () => {
     const c = open()
-    expect(await c.dispatch('skills:dismiss', [{ source: 'bash', name: 'git commit', reason: 'one-off' }]))
-      .toEqual({ ok: true })
+    expect(await c.dispatch('skills:dismiss', [{ source: 'bash', name: 'git commit', reason: 'one-off' }])).toEqual({
+      ok: true,
+    })
   })
 
   it('answers an empty overview with a null dataStart', async () => {
-    const payload = await open().dispatch('overview:query', [{ period: 'today' }]) as { dataStart: null }
+    const payload = (await open().dispatch('overview:query', [{ period: 'today' }])) as { dataStart: null }
     expect(payload.dataStart).toBeNull()
   })
 
@@ -129,7 +142,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   })
 
   it('reports settings sizes for the temp data dir', async () => {
-    const info = await open().dispatch('settings:info', []) as { dataDir: string; dbSize: number }
+    const info = (await open().dispatch('settings:info', [])) as { dataDir: string; dbSize: number }
     expect(info.dataDir).toBe(dir)
     expect(info.dbSize).toBeGreaterThan(0)
   })
@@ -147,7 +160,9 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     expect(oplogs[0]).toMatchObject({ level: 'info', logEvent: 'scan.start', fields: { op: 'scan' } })
     // Discovery reads the real provider dirs, so counts vary per machine —
     // assert the shape (allowlisted totals), not the values.
-    const finish = oplogs.find(event => event.event === 'oplog' && (event as { logEvent: string }).logEvent === 'scan.finish')
+    const finish = oplogs.find(
+      event => event.event === 'oplog' && (event as { logEvent: string }).logEvent === 'scan.finish',
+    )
     expect(finish).toMatchObject({ level: 'info' })
     const fields = (finish as { fields: Record<string, unknown> }).fields
     expect(fields['op']).toBe('scan')
@@ -165,19 +180,29 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   it('waits for the scoped scan before closing the ledger', async () => {
     const c = open()
     let resolveScan!: (metadata: ScanMetadata) => void
-    const scanResult = new Promise<ScanMetadata>(resolve => { resolveScan = resolve })
+    const scanResult = new Promise<ScanMetadata>(resolve => {
+      resolveScan = resolve
+    })
     const scanEffect = Effect.tryPromise({ try: () => scanResult, catch: cause => cause })
-    const performScan = vi.spyOn(
-      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
-      'performScan',
-    ).mockReturnValue(scanEffect)
+    const performScan = vi
+      .spyOn(c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> }, 'performScan')
+      .mockReturnValue(scanEffect)
     const request = c.dispatch('scan:start', [])
     await vi.waitFor(() => expect(performScan).toHaveBeenCalledOnce())
 
     let scanSettled = false
-    void request.then(() => { scanSettled = true }, () => { scanSettled = true })
+    void request.then(
+      () => {
+        scanSettled = true
+      },
+      () => {
+        scanSettled = true
+      },
+    )
     let closed = false
-    const closing = c.close().then(() => { closed = true })
+    const closing = c.close().then(() => {
+      closed = true
+    })
     await Promise.resolve()
     expect(scanSettled).toBe(false)
     expect(closed).toBe(false)
@@ -223,7 +248,9 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
       await vi.waitFor(() => expect(requestSignal).toBeDefined())
 
       let closed = false
-      const closing = c.close().then(() => { closed = true })
+      const closing = c.close().then(() => {
+        closed = true
+      })
       await vi.waitFor(() => expect(requestSignal?.aborted).toBe(true))
       expect(closed).toBe(false)
 
@@ -233,6 +260,63 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
       await expect(c.dispatch('currency:get', [])).rejects.toThrow(/shutting down/)
     } finally {
       completeResponse()
+      vi.stubGlobal('fetch', originalFetch)
+    }
+  })
+
+  it('pricing:refresh runs the Effect path and maps typed errors to {ok:false}', async () => {
+    const pricingCacheDir = mkdtempSync(join(tmpdir(), 'watchtower-pricing-wiring-'))
+    process.env['WATCHTOWER_CACHE_DIR'] = pricingCacheDir
+    const originalFetch = globalThis.fetch
+    try {
+      const c = open()
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          okFetch({
+            'wiring-test-model': { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+          }),
+        ),
+      )
+      await expect(c.dispatch('pricing:refresh', [])).resolves.toEqual({ ok: true })
+
+      vi.stubGlobal('fetch', vi.fn(throwingFetch()))
+      const failed = (await c.dispatch('pricing:refresh', [])) as { ok: boolean; error?: string }
+      expect(failed.ok).toBe(false)
+      expect(typeof failed.error).toBe('string')
+      expect(failed.error).toContain('offline')
+    } finally {
+      vi.stubGlobal('fetch', originalFetch)
+      delete process.env['WATCHTOWER_CACHE_DIR']
+      rmSync(pricingCacheDir, { recursive: true, force: true })
+    }
+  })
+
+  it('currency:set refreshes via the Effect FX path and emits currency:changed', async () => {
+    const originalFetch = globalThis.fetch
+    const seenUrls: string[] = []
+    const eurRates = okFetch({ rates: { EUR: 0.9 } })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        seenUrls.push(String(input))
+        return eurRates(input, {})
+      }) as unknown as typeof fetch,
+    )
+    try {
+      const c = open()
+      const immediate = (await c.dispatch('currency:set', ['EUR'])) as { code: string }
+      expect(immediate.code).toBe('EUR')
+      await vi.waitFor(() => {
+        expect(seenUrls.some(url => url.includes('frankfurter') && url.includes('EUR'))).toBe(true)
+        expect(events.some(event => event.event === 'currency:changed')).toBe(true)
+      })
+      const changed = events.find(event => event.event === 'currency:changed') as {
+        event: string
+        currency: { rate: number }
+      }
+      expect(changed.currency.rate).toBe(0.9)
+    } finally {
       vi.stubGlobal('fetch', originalFetch)
     }
   })
@@ -274,7 +358,10 @@ const echoResponder: Responder = (fake, req) => {
   fake.emit('message', { id: req.id, ok: true, data: { op: req.op, args: req.args } })
 }
 
-function makeClient(responder: Responder = echoResponder, onFake?: (fake: FakeWorker) => void): { client: DbWorkerClient; fakes: FakeWorker[] } {
+function makeClient(
+  responder: Responder = echoResponder,
+  onFake?: (fake: FakeWorker) => void,
+): { client: DbWorkerClient; fakes: FakeWorker[] } {
   const fakes: FakeWorker[] = []
   const client = new DbWorkerClient(
     { dbPath: ':memory:', dataDir: ':memory:', cacheDir: ':memory:' },
@@ -312,7 +399,9 @@ describe('DbWorkerClient request/response correlation', () => {
   it('routes worker broadcasts to event listeners', async () => {
     const { client, fakes } = makeClient()
     const seen: DbWorkerEvent[] = []
-    client.onEvent(event => { seen.push(event) })
+    client.onEvent(event => {
+      seen.push(event)
+    })
     fakes[0]!.emit('message', { event: 'store:changed', metadata: { portedFiles: 1 } })
     expect(seen).toEqual([{ event: 'store:changed', metadata: { portedFiles: 1 } }])
     await client.terminate()
@@ -320,7 +409,9 @@ describe('DbWorkerClient request/response correlation', () => {
 
   it('rejects in-flight requests and respawns after a live worker exits', async () => {
     const spawn = vi.fn()
-    const { client, fakes } = makeClient(echoResponder, () => { spawn() })
+    const { client, fakes } = makeClient(echoResponder, () => {
+      spawn()
+    })
     expect(spawn).toHaveBeenCalledTimes(1)
     fakes[0]!.emit('message', { event: 'ready' })
     await expect(client.ready).resolves.toBeUndefined()
@@ -343,7 +434,9 @@ describe('DbWorkerClient request/response correlation', () => {
 
   it('never respawns a worker that failed to boot and rejects with its error', async () => {
     const spawn = vi.fn()
-    const { client, fakes } = makeClient(echoResponder, () => { spawn() })
+    const { client, fakes } = makeClient(echoResponder, () => {
+      spawn()
+    })
     fakes[0]!.emit('message', { event: 'init-error', error: 'cannot open ledger.db' })
     await expect(client.ready).rejects.toThrow('cannot open ledger.db')
     const pending = client.request('overview:query', {})
@@ -356,7 +449,9 @@ describe('DbWorkerClient request/response correlation', () => {
 
   it('settles ready on a pre-boot thread error without respawning', async () => {
     const spawn = vi.fn()
-    const { client, fakes } = makeClient(echoResponder, () => { spawn() })
+    const { client, fakes } = makeClient(echoResponder, () => {
+      spawn()
+    })
     fakes[0]!.emit('error', new Error('thread blew up during init'))
     await expect(client.ready).rejects.toThrow('thread blew up during init')
     fakes[0]!.emit('exit', 1)

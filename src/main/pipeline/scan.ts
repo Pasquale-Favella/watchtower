@@ -1,21 +1,12 @@
 import * as Effect from 'effect/Effect'
 
-import type {
-  ScanMetadata,
-  ScanOptions,
-  ScanProgress,
-} from '../../shared/schemas/scan.js'
-import { loadPricing } from './models.js'
+import type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress } from '../../shared/schemas/scan.js'
+import { HttpFetch } from './fetch-utils.js'
+import { loadPricingEffect } from './models.js'
 import type { DeltaHandler } from './parser.js'
 import { parseAllSessions } from './parser.js'
 
-export type {
-  PerProviderPort,
-  ScanMetadata,
-  ScanOptions,
-  ScanProgress,
-  ScanStage,
-} from '../../shared/schemas/scan.js'
+export type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress, ScanStage } from '../../shared/schemas/scan.js'
 
 export class ScanAbortedError extends Error {
   constructor() {
@@ -38,22 +29,19 @@ export const runScan = Effect.fnUntraced(function* (
   options: ScanOptions,
   onProgress?: (progress: ScanProgress) => void,
   abort?: { isAborted(): boolean },
-  onDelta?: DeltaHandler
-): Effect.fn.Return<ScanMetadata, unknown> {
+  onDelta?: DeltaHandler,
+): Effect.fn.Return<ScanMetadata, unknown, HttpFetch> {
   const scanId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const startedAt = new Date().toISOString()
 
   onProgress?.({ stage: 'pricing' })
-  yield* Effect.tryPromise({
-    try: () => loadPricing(),
-    catch: cause => cause,
-  })
+  yield* loadPricingEffect()
 
   onProgress?.({ stage: 'parse' })
   if (onDelta) onProgress?.({ stage: 'port-in' })
 
-  const perProvider = new Map<string, { provider: string; ported: number; unchanged: number; failed: number; unparsed: number }>()
-  const ensureProvider = (provider: string): { provider: string; ported: number; unchanged: number; failed: number; unparsed: number } => {
+  const perProvider = new Map<string, PerProviderPort>()
+  const ensureProvider = (provider: string): PerProviderPort => {
     let row = perProvider.get(provider)
     if (!row) {
       row = { provider, ported: 0, unchanged: 0, failed: 0, unparsed: 0 }
@@ -90,6 +78,15 @@ export const runScan = Effect.fnUntraced(function* (
     ensureProvider(provider).unparsed += count
   }
 
+  // parseAllSessions decision (ADR 0032): kept as the documented Promise
+  // boundary. Evaluation: one-shot filesystem reads own no lifecycle worth
+  // managing (no background ownership, no retry schedule, abort is a
+  // caller-owned flag, not fiber cancellation); parsers stay pure
+  // mapping/aggregation; substitution has no value (tests already drive the
+  // onDelta/onUnparsed seams, no fake filesystem service needed). Promoting
+  // to a focused service would add a layer without lifecycle or substitution
+  // benefit, so the call stays in tryPromise with identical abort, progress,
+  // metadata, and port-in semantics.
   yield* Effect.tryPromise({
     try: () => parseAllSessions(options.range, options.provider, countingDelta, onUnparsed),
     catch: cause => cause,

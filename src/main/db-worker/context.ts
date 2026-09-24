@@ -1,6 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import type * as Layer from 'effect/Layer'
 import * as Schedule from 'effect/Schedule'
 import * as Scope from 'effect/Scope'
 import { mkdirSync, readdirSync, statSync } from 'fs'
@@ -21,14 +22,15 @@ import {
   getActiveCurrency,
   isValidCurrencyCode,
   listCurrencies,
-  refreshFxRate,
+  refreshFxRateEffect,
 } from '../fx.js'
 import { buildModelsViewFromLedger, type ModelsPayload } from '../models-view.js'
 import { buildOptimizeViewFromLedger, type OptimizePayload } from '../optimize-view.js'
 import { buildOverviewFromLedger, type OverviewScope } from '../overview.js'
+import { HttpFetch } from '../pipeline/fetch-utils.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
 import { getRepoUrl } from '../pipeline/git-remote.js'
-import { refreshPricingNow } from '../pipeline/models.js'
+import { refreshPricingNowEffect } from '../pipeline/models.js'
 import { getClaudeConfigDirs } from '../pipeline/providers/claude.js'
 import {
   buildScanSummaryRecords,
@@ -85,6 +87,12 @@ function lifetimeRange(): DateRange {
   return { start: new Date(0), end: new Date() }
 }
 
+/** Live HttpFetch, resolved at run time so tests stubbing global fetch drive
+ * the same path as production (layer is stateless, safe per-effect). */
+function liveFetchLayer(): Layer.Layer<HttpFetch> {
+  return HttpFetch.layerWithFetch(globalThis.fetch)
+}
+
 /**
  * Everything the old main process owned around the ledger, now running on the
  * db-worker thread: the store itself, the scan lifecycle, the background
@@ -124,7 +132,7 @@ export class DbWorkerContext {
     // Prime the FX side-table for the persisted display currency at startup,
     // non-blocking: readers use the cached rate (or USD) meanwhile, and an
     // event lands the fresh rate if the cache was stale.
-    this.startBackgroundFx(signal => this.refreshFxOnCadence(signal))
+    this.startBackgroundFx(this.refreshFxOnCadence())
   }
 
   // ── Scan pipeline ───────────────────────────────────────────────────
@@ -147,9 +155,7 @@ export class DbWorkerContext {
       // every provider — the worktree-folded cwd when the parser derived one,
       // else the provider's exact working directory. Same memoized-per-scan,
       // silent-when-absent semantics as before; never an identity key.
-      const cwd = delta.cachedFile.canonicalCwd
-        ?? delta.workingDirectory
-        ?? delta.cachedFile.workingDirectory
+      const cwd = delta.cachedFile.canonicalCwd ?? delta.workingDirectory ?? delta.cachedFile.workingDirectory
       let repoUrl: string | undefined
       if (cwd) {
         let lookup = repoUrlCache.get(cwd)
@@ -169,7 +175,7 @@ export class DbWorkerContext {
       // to the ledger while the parse runs. The scan's delta wrapper already
       // gates out failed parses; `unchanged` is a no-op inside portIn.
       portIn,
-    )
+    ).pipe(Effect.provide(liveFetchLayer()))
   }
 
   private async runTrackedScan(
@@ -188,26 +194,16 @@ export class DbWorkerContext {
     }
   }
 
-  private startBackgroundFx(work: (signal: AbortSignal) => Promise<void>): void {
+  private startBackgroundFx(work: Effect.Effect<void, never, HttpFetch>): void {
     if (this.closed) return
-    const effect = Effect.tryPromise({
-      try: signal => {
-        let promise: Promise<void>
-        try {
-          promise = work(signal).then(
-            () => undefined,
-            () => undefined,
-          )
-        } catch {
-          promise = Promise.resolve()
-        }
-        this.backgroundFxTasks.add(promise)
-        void promise.finally(() => this.backgroundFxTasks.delete(promise))
-        return promise
-      },
-      catch: () => undefined,
-    })
-    Effect.runFork(Effect.forkIn(effect, this.backgroundScope, { startImmediately: true }))
+    const provided = Effect.provide(work, liveFetchLayer())
+    const fiber = Effect.runSync(Effect.forkIn(provided, this.backgroundScope, { startImmediately: true }))
+    const promise = Effect.runPromise(Fiber.join(fiber)).then(
+      () => undefined,
+      () => undefined,
+    )
+    this.backgroundFxTasks.add(promise)
+    void promise.finally(() => this.backgroundFxTasks.delete(promise))
   }
 
   /** Operational-log forwards (#128): scan lifecycle over the existing host
@@ -233,7 +229,12 @@ export class DbWorkerContext {
     if (err instanceof ScanAbortedError) {
       this.emit({ event: 'oplog', level: 'warn', logEvent: 'scan.abort', fields: { op: 'scan', code: 'aborted' } })
     } else {
-      this.emit({ event: 'oplog', level: 'error', logEvent: 'scan.error', fields: { op: 'scan', code: fileErrorCode(err, 'failed') } })
+      this.emit({
+        event: 'oplog',
+        level: 'error',
+        logEvent: 'scan.error',
+        fields: { op: 'scan', code: fileErrorCode(err, 'failed') },
+      })
     }
     this.drainQueuedLogs()
   }
@@ -287,38 +288,52 @@ export class DbWorkerContext {
     if (ms === null) return // Manual: no background timer
     // The FX background job rides the same repurposed cadence as the scan
     // trigger (ADR 0009): each tick also refreshes the selected currency's
-    // rate when it is missing or older than 24h. refreshFxRate never throws,
-    // so a Frankfurter outage can never disturb the scan itself.
+    // rate when it is missing or older than 24h. refreshFxRateEffect never
+    // throws, so a Frankfurter outage can never disturb the scan itself.
     const tick = Effect.sync(() => {
-      this.startBackgroundFx(signal => this.refreshFxOnCadence(signal))
+      this.startBackgroundFx(this.refreshFxOnCadence())
       void this.triggerBackgroundScan()
     })
-    const cadence = Effect.sleep(ms).pipe(
-      Effect.andThen(Effect.repeat(tick, Schedule.fixed(ms))),
-    )
-    this.cadenceFiber = Effect.runSync(
-      Effect.forkIn(cadence, this.backgroundScope, { startImmediately: true }),
-    )
+    const cadence = Effect.sleep(ms).pipe(Effect.andThen(Effect.repeat(tick, Schedule.fixed(ms))))
+    this.cadenceFiber = Effect.runSync(Effect.forkIn(cadence, this.backgroundScope, { startImmediately: true }))
   }
 
   /** The FX half of the background cadence tick (and the startup prime):
    * refresh the selected currency's cached rate when stale, and emit the
    * result only when the rate actually changed — so a minute cadence doesn't
-   * spam re-renders while the 24h cache is still fresh. */
-  private async refreshFxOnCadence(signal: AbortSignal): Promise<void> {
-    const before = getActiveCurrency(this.ledger)
-    const after = await refreshFxRate(this.ledger, this.ledger.getDisplayCurrency(), { signal })
-    if (!this.closed && (after.rate !== before.rate || after.updatedAt !== before.updatedAt)) {
-      this.emit({ event: 'currency:changed', currency: after })
-    }
+   * spam re-renders while the 24h cache is still fresh. Fiber interruption
+   * (backgroundScope close) aborts the underlying fetch via HttpFetch —
+   * no manual AbortSignal plumbing. */
+  private refreshFxOnCadence(): Effect.Effect<void, never, HttpFetch> {
+    const ledger = this.ledger
+    const emit = this.emit
+    const isClosed = (): boolean => this.closed
+    return Effect.gen(function* () {
+      const before = yield* Effect.sync(() => getActiveCurrency(ledger))
+      const code = yield* Effect.sync(() => ledger.getDisplayCurrency())
+      const after = yield* refreshFxRateEffect(ledger, code)
+      if (!isClosed() && (after.rate !== before.rate || after.updatedAt !== before.updatedAt)) {
+        yield* Effect.sync(() => emit({ event: 'currency:changed', currency: after }))
+      }
+    })
   }
 
   // ── Settings helpers ────────────────────────────────────────────────
 
-  private userDataPaths(): { dataDir: string; dbSize: number; dataDirSize: number; cacheDir: string; cacheSize: number } {
+  private userDataPaths(): {
+    dataDir: string
+    dbSize: number
+    dataDirSize: number
+    cacheDir: string
+    cacheSize: number
+  } {
     const dbPath = join(this.dataDir, 'ledger.db')
     let dbSize = 0
-    try { dbSize = statSync(dbPath).size } catch { /* no db yet */ }
+    try {
+      dbSize = statSync(dbPath).size
+    } catch {
+      /* no db yet */
+    }
     return {
       dataDir: this.dataDir,
       dbSize,
@@ -328,11 +343,22 @@ export class DbWorkerContext {
     }
   }
 
-  private async settingsInfo(): Promise<{ dataDir: string; dbSize: number; dataDirSize: number; cacheDir: string; cacheSize: number; claudeConfigDirs?: string[] }> {
+  private async settingsInfo(): Promise<{
+    dataDir: string
+    dbSize: number
+    dataDirSize: number
+    cacheDir: string
+    cacheSize: number
+    claudeConfigDirs?: string[]
+  }> {
     // The Claude-config row in General is nullable: when the config dirs cannot
     // be resolved we omit the field entirely so the renderer just hides the row.
     let claudeConfigDirs: string[] | undefined
-    try { claudeConfigDirs = await getClaudeConfigDirs() } catch { /* absent */ }
+    try {
+      claudeConfigDirs = await getClaudeConfigDirs()
+    } catch {
+      /* absent */
+    }
     return { ...this.userDataPaths(), claudeConfigDirs }
   }
 
@@ -349,9 +375,10 @@ export class DbWorkerContext {
       return { ok: false, error: 'no data to export yet — scan first' }
     }
     try {
-      const path = kind === 'csv'
-        ? await exportCsv(projects, target, this.ledger)
-        : await exportJson(projects, target, this.ledger)
+      const path =
+        kind === 'csv'
+          ? await exportCsv(projects, target, this.ledger)
+          : await exportJson(projects, target, this.ledger)
       return { ok: true, path }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -387,12 +414,15 @@ export class DbWorkerContext {
           // wire stays byte-faithful to the shared schema.
           return { ok: true }
         } catch (err) {
-          const message = err instanceof ScanAbortedError
-            ? 'scan aborted'
-            : err instanceof Error ? err.message : String(err)
+          const message =
+            err instanceof ScanAbortedError ? 'scan aborted' : err instanceof Error ? err.message : String(err)
           this.emit({ event: 'scan:error', manual: true, message })
           this.emitScanFailure(err)
-          return { ok: false, aborted: err instanceof ScanAbortedError, error: err instanceof Error ? err.message : String(err) }
+          return {
+            ok: false,
+            aborted: err instanceof ScanAbortedError,
+            error: err instanceof Error ? err.message : String(err),
+          }
         } finally {
           this.scanActive = false
         }
@@ -480,7 +510,7 @@ export class DbWorkerContext {
        * other sections this is async (ghost detectors walk ~/.claude on disk). */
       case 'optimize:view': {
         const scope = args[0] as OverviewScope
-        return await buildOptimizeViewFromLedger(ledger, scope) satisfies OptimizePayload | null
+        return (await buildOptimizeViewFromLedger(ledger, scope)) satisfies OptimizePayload | null
       }
 
       /** The Skills section's detection payload (ticket 24): pure local mining
@@ -497,12 +527,12 @@ export class DbWorkerContext {
         const parsed = skillsThresholdsSchema.safeParse(thresholds)
         // Dismissals ride every fetch (ticket 25): the not-a-skill store filters
         // rejected patterns out of drafts AND opportunities before the gate.
-        return await buildSkillsViewFromLedger(
+        return (await buildSkillsViewFromLedger(
           ledger,
           scope,
           parsed.success ? parsed.data : DEFAULT_SKILLS_THRESHOLDS,
           { dismissals: ledger.getSkillDismissals() },
-        ) satisfies SkillsPayload | null
+        )) satisfies SkillsPayload | null
       }
 
       /** Not-a-skill dismissal write (ticket 25): a ledger config-table upsert,
@@ -520,7 +550,7 @@ export class DbWorkerContext {
        * nothing rather than erroring the section. */
       case 'optimize:yield': {
         const scope = args[0] as OverviewScope
-        return await buildYieldViewFromLedger(ledger, scope) satisfies YieldPayload | null
+        return (await buildYieldViewFromLedger(ledger, scope)) satisfies YieldPayload | null
       }
 
       /** Quick-add alias (ADR 0010): map an unpriced model to a priced one,
@@ -580,8 +610,12 @@ export class DbWorkerContext {
         if (typeof model !== 'string' || !model.trim()) {
           throw new Error('model must be a non-empty string')
         }
-        if (!Number.isFinite(inputPricePerMillion) || inputPricePerMillion < 0
-          || !Number.isFinite(outputPricePerMillion) || outputPricePerMillion < 0) {
+        if (
+          !Number.isFinite(inputPricePerMillion) ||
+          inputPricePerMillion < 0 ||
+          !Number.isFinite(outputPricePerMillion) ||
+          outputPricePerMillion < 0
+        ) {
           throw new Error('prices must be non-negative numbers')
         }
         ledger.setPriceOverride(model.trim(), { inputPricePerMillion, outputPricePerMillion })
@@ -627,12 +661,13 @@ export class DbWorkerContext {
        * thread that scans — this worker — or it would update a copy nothing
        * reads. */
       case 'pricing:refresh': {
-        try {
-          await refreshPricingNow()
-          return { ok: true }
-        } catch (err) {
-          return { ok: false, error: err instanceof Error ? err.message : String(err) }
-        }
+        return Effect.runPromise(
+          refreshPricingNowEffect().pipe(
+            Effect.provide(liveFetchLayer()),
+            Effect.map(() => ({ ok: true as const })),
+            Effect.catch(err => Effect.succeed({ ok: false as const, error: err.message })),
+          ),
+        )
       }
 
       /** The active display currency (ADR 0009): the persisted code plus its
@@ -651,10 +686,14 @@ export class DbWorkerContext {
           throw new Error('invalid ISO 4217 currency code')
         }
         ledger.setDisplayCurrency(code)
-        this.startBackgroundFx(async signal => {
-          const currency = await refreshFxRate(ledger, code, { signal })
-          if (!this.closed) this.emit({ event: 'currency:changed', currency })
-        })
+        const emit = this.emit
+        const isClosed = (): boolean => this.closed
+        this.startBackgroundFx(
+          Effect.gen(function* () {
+            const currency = yield* refreshFxRateEffect(ledger, code)
+            if (!isClosed()) yield* Effect.sync(() => emit({ event: 'currency:changed', currency }))
+          }),
+        )
         return getActiveCurrency(ledger) satisfies ActiveCurrency
       }
 
