@@ -14,6 +14,15 @@ function okResponse(body: unknown = {}): Response {
   } as Response
 }
 
+function fetchError(fetchImpl: typeof fetch, url = 'https://example.test/x'): Promise<HttpFetchError> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const http = yield* HttpFetch
+      return yield* http.fetch(url)
+    }).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl)), Effect.flip),
+  )
+}
+
 describe('HttpFetch (Effect-native fetch boundary)', () => {
   it('returns the Response on 200', async () => {
     const fetchImpl = (async () => okResponse({ rates: { EUR: 0.9 } })) as typeof fetch
@@ -31,12 +40,7 @@ describe('HttpFetch (Effect-native fetch boundary)', () => {
     const fetchImpl = (async () => {
       throw new Error('offline')
     }) as unknown as typeof fetch
-    const error = await Effect.runPromise(
-      Effect.gen(function* () {
-        const http = yield* HttpFetch
-        return yield* http.fetch('https://example.test/x')
-      }).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl)), Effect.flip),
-    )
+    const error = await fetchError(fetchImpl)
     expect(error).toBeInstanceOf(HttpFetchError)
     expect(error.reason).toBe('network')
     expect(error.url).toBe('https://example.test/x')
@@ -46,12 +50,7 @@ describe('HttpFetch (Effect-native fetch boundary)', () => {
     const fetchImpl = (async () => {
       throw new DOMException('aborted', 'AbortError')
     }) as unknown as typeof fetch
-    const error = await Effect.runPromise(
-      Effect.gen(function* () {
-        const http = yield* HttpFetch
-        return yield* http.fetch('https://example.test/x')
-      }).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl)), Effect.flip),
-    )
+    const error = await fetchError(fetchImpl)
     expect(error).toBeInstanceOf(HttpFetchError)
     expect(error.reason).toBe('abort')
   })

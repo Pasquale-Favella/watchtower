@@ -8,7 +8,7 @@ import * as Fiber from 'effect/Fiber'
 import * as TestClock from 'effect/testing/TestClock'
 import { describe, expect, it } from 'vitest'
 
-import { FX_CACHE_TTL_MS, refreshFxRateEffect } from '../src/main/fx.js'
+import { type ActiveCurrency, FX_CACHE_TTL_MS, refreshFxRateEffect } from '../src/main/fx.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 
@@ -17,7 +17,7 @@ function makeStore(): LedgerStore {
   return new LedgerStore(join(dir, 'data.db'))
 }
 
-function fakeFetchOk(rates: Record<string, unknown>) {
+function fakeFetchOk(rates: Record<string, unknown>): typeof fetch {
   return (async () => ({
     ok: true,
     status: 200,
@@ -25,19 +25,22 @@ function fakeFetchOk(rates: Record<string, unknown>) {
   })) as unknown as typeof fetch
 }
 
-function throwingFetch(message = 'offline') {
+function throwingFetch(message = 'offline'): typeof fetch {
   return (async () => {
     throw new Error(message)
   }) as unknown as typeof fetch
 }
 
-const runFx = (
+function runFx(
   store: LedgerStore,
   code: string,
   fetchImpl: typeof fetch,
   options: { now?: () => number; timeoutMs?: number } = {},
-) =>
-  Effect.runPromise(refreshFxRateEffect(store, code, options).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))))
+): Promise<ActiveCurrency> {
+  return Effect.runPromise(
+    refreshFxRateEffect(store, code, options).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))),
+  )
+}
 
 describe('refreshFxRateEffect (Effect-native FX boundary)', () => {
   it('fetches a missing rate and caches it', async () => {

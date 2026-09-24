@@ -41,39 +41,44 @@ export class HttpFetchError extends Schema.TaggedError<HttpFetchError>()('HttpFe
 }) {}
 
 function isAbortError(cause: unknown): boolean {
-  return cause instanceof DOMException
-    ? cause.name === 'AbortError'
-    : cause instanceof Error && cause.name === 'AbortError'
+  if (cause instanceof DOMException) return cause.name === 'AbortError'
+  if (cause instanceof Error) return cause.name === 'AbortError'
+  return false
 }
 
-const makeFetch =
-  (fetchImpl: typeof fetch) =>
-  (url: string, init: RequestInit = {}, timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS) =>
-    Effect.fn('HttpFetch.fetch')(function* (): Effect.fn.Return<Response, HttpFetchError> {
-      const attempt = Effect.tryPromise({
-        try: signal => {
-          const combined = init.signal ? AbortSignal.any([init.signal, signal]) : signal
-          return fetchImpl(url, { ...init, signal: combined })
-        },
-        catch: cause => {
-          const message = cause instanceof Error ? cause.message : String(cause)
-          return new HttpFetchError({
-            reason: isAbortError(cause) ? 'abort' : 'network',
-            message,
-            url,
-          })
-        },
-      })
-      const outcome = yield* attempt.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)))
-      if (Option.isNone(outcome)) {
-        return yield* new HttpFetchError({
-          reason: 'timeout',
-          message: `fetch timed out after ${timeoutMs}ms`,
+function makeFetch(
+  fetchImpl: typeof fetch,
+): (url: string, init?: RequestInit, timeoutMs?: number) => Effect.Effect<Response, HttpFetchError> {
+  return Effect.fn('HttpFetch.fetch')(function* (
+    url: string,
+    init: RequestInit = {},
+    timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
+  ): Effect.fn.Return<Response, HttpFetchError> {
+    const attempt = Effect.tryPromise({
+      try: signal => {
+        const combined = init.signal ? AbortSignal.any([init.signal, signal]) : signal
+        return fetchImpl(url, { ...init, signal: combined })
+      },
+      catch: cause => {
+        const message = cause instanceof Error ? cause.message : String(cause)
+        return new HttpFetchError({
+          reason: isAbortError(cause) ? 'abort' : 'network',
+          message,
           url,
         })
-      }
-      return outcome.value
-    })()
+      },
+    })
+    const outcome = yield* attempt.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)))
+    if (Option.isNone(outcome)) {
+      return yield* new HttpFetchError({
+        reason: 'timeout',
+        message: `fetch timed out after ${timeoutMs}ms`,
+        url,
+      })
+    }
+    return outcome.value
+  })
+}
 
 /** Effect-native fetch with explicit timeout and typed failures. Timeout uses
  * the Effect Clock (TestClock-controllable); fiber interruption aborts the

@@ -238,7 +238,7 @@ export const refreshFxRateEffect = Effect.fnUntraced(function* (
     const data = yield* Effect.tryPromise({
       try: () => response.json() as Promise<{ rates?: Record<string, unknown> }>,
       catch: cause => cause,
-    }).pipe(Effect.catch(() => Effect.succeed(null as { rates?: Record<string, unknown> } | null)))
+    }).pipe(Effect.orElseSucceed(() => null))
     const rate = data?.rates?.[safe]
     if (!isValidRate(rate)) return fallback()
     yield* Effect.sync(() =>
