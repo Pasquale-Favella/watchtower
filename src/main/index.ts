@@ -9,7 +9,8 @@ import {
   type SkillsSaveResult,
   type SkillsThresholds,
 } from '../shared/schemas/skills.js'
-import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
+import { mainRuntime } from './main-runtime.js'
+import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
 import { closeOperationalLog, initOperationalLog, logCodeFor, logIpcError, safeLogOperationalEvent } from './operational-log.js'
 import type { ExportResult } from './export.js'
 import type { OverviewScope } from './overview.js'
@@ -37,7 +38,7 @@ import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
  * unchanged: same channels, same payloads.
  */
 
-let updateChecker: UpdateChecker | null = null
+let updateChecker: UpdateCheckerEffect | null = null
 /** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
 let agentsCleanup: { reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
@@ -315,7 +316,7 @@ function registerIpc(db: DbWorkerClient): void {
    * check" status rather than an error. */
   handleLogged('updates:check', async (): Promise<UpdateStatus> => {
     if (!updateChecker) throw new Error('update checker not initialised')
-    return updateChecker.check()
+    return mainRuntime.runPromise(updateChecker.check())
   })
 
   handleLogged('currency:get', () => db.request('currency:get'))
@@ -444,7 +445,9 @@ app.whenReady().then(async () => {
   )
   relayWorkerEvents(db)
   dbClient = db
-  updateChecker = createUpdateChecker({ currentVersion: app.getVersion() })
+  // Built through the main runtime (ADR 0032): the checker's HttpFetch
+  // dependency is provided there, so the IPC handler just runs check().
+  updateChecker = await mainRuntime.runPromise(createUpdateCheckerEffect({ currentVersion: app.getVersion() }))
   registerIpc(db)
   createWindow()
 
@@ -501,5 +504,8 @@ app.on('before-quit', () => {
   sidecarPool.releaseAll()
   void agentsCleanup?.dispose()
   void dbClient?.shutdown().catch(() => {})
+  // Release main-runtime layers (resourceless today; harness capabilities
+  // join MainLive later) — best-effort like the shutdowns above.
+  void mainRuntime.dispose()
   try { closeOperationalLog() } catch { /* best effort */ }
 })

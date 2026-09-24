@@ -13,7 +13,7 @@
 // Privacy: a plain, unauthenticated GitHub read that carries no identifiers.
 // We deliberately send no app-identifying headers and no auth token — only the
 // runtime's default User-Agent (Node/Electron's "node") goes out. GitHub only
-// requires *some* User-Agent, which the default satisfies. See fetchReleases.
+// requires *some* User-Agent, which the default satisfies.
 
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -67,82 +67,10 @@ export function pickLatestDesktopVersion(releases: GitHubRelease[]): { version: 
   return best
 }
 
-/** Fetch + parse the releases feed. No auth, no app-identifying headers (see
- * the file header). Aborts after 15s. Throws on a non-2xx response (a private
- * or unknown repo 404s, which the caller turns into "unable to check").
- *
- * Compatibility: Promise adapter alongside `fetchReleasesEffect`. Removal
- * condition: remove when the main-process update IPC consumes the effects
- * directly — main-process runtime consolidation is a LATER slice. */
-export async function fetchReleases(
-  signal: AbortSignal,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<GitHubRelease[]> {
-  const response = await fetchImpl(RELEASES_URL, { signal })
-  if (!response.ok) throw new Error(`GitHub HTTP ${response.status}`)
-  const data = await response.json()
-  return Array.isArray(data) ? (data as GitHubRelease[]) : []
-}
-
-export type UpdateChecker = {
-  /** Force a fresh check now. Every button click calls this; there is no
-   * background schedule, so this is the only entry point. */
-  check(): Promise<UpdateStatus>
-}
-
-export function createUpdateChecker(opts: {
-  currentVersion: string
-  /** Injected in tests; defaults to the real GitHub read. */
-  fetchReleasesImpl?: (signal: AbortSignal) => Promise<GitHubRelease[]>
-}): UpdateChecker {
-  // Compatibility: Promise adapter alongside `createUpdateCheckerEffect`.
-  // Removal condition: remove when the main-process update IPC consumes the
-  // effects directly — main-process runtime consolidation is a LATER slice.
-  const fetchReleasesImpl = opts.fetchReleasesImpl ?? ((signal: AbortSignal) => fetchReleases(signal))
-
-  let cached = baselineStatus(opts.currentVersion)
-  let inflight: Promise<UpdateStatus> | null = null
-
-  const check = (): Promise<UpdateStatus> => {
-    if (inflight) return inflight
-    inflight = (async () => {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-      try {
-        const releases = await fetchReleasesImpl(controller.signal)
-        const latest = pickLatestDesktopVersion(releases)
-        if (!latest) {
-          cached = baselineStatus(opts.currentVersion)
-        } else {
-          const updateAvailable = compareSemver(latest.version, opts.currentVersion) > 0
-          cached = {
-            currentVersion: opts.currentVersion,
-            latestVersion: latest.version,
-            updateAvailable,
-            tag: updateAvailable ? latest.tag : null,
-          }
-        }
-      } catch {
-        // Offline / GitHub error / private repo / timeout: silent no-op. Keep
-        // the last known status so the next click retries cleanly. Recorded as
-        // an informational note, never an error — being offline is not
-        // breakage (#130).
-        safeLogOperationalEvent('info', 'update.offline', { op: 'updates:check', code: 'unavailable' })
-      } finally {
-        clearTimeout(timer)
-        inflight = null
-      }
-      return cached
-    })()
-    return inflight
-  }
-
-  return { check }
-}
-
-// --- Effect-native updates boundary (ADR 0032 slice). Additive alongside the
-// Promise API above; no caller migrates here — main-process runtime
-// consolidation is a LATER slice. ---
+// --- Effect-native updates boundary (ADR 0032). The Promise adapters
+// (`fetchReleases`/`createUpdateChecker`) were removed once the main-process
+// update IPC consumed these effects through the main runtime; pure helpers
+// (`compareSemver`, `pickLatestDesktopVersion`) stay plain functions. ---
 
 /** Typed fetch failure for the Effect boundary: non-2xx (`http` with status),
  * network/abort (`network`), or Clock timeout (`timeout`). */
@@ -187,12 +115,11 @@ interface UpdateCheckDecision {
   prevCached: UpdateStatus
 }
 
-/** Effect-native releases read.
- *
- * Same feed as `fetchReleases`, but the network enters through the `HttpFetch`
- * service — timeout via the Effect Clock (`FETCH_TIMEOUT_MS`, TestClock
- * controllable) and fiber interruption aborts the underlying fetch, replacing
- * the manual `AbortController`+`setTimeout` plumbing. Non-array JSON still
+/** Effect-native releases read: the public GitHub releases feed over the
+ * `HttpFetch` service — timeout via the Effect Clock (`FETCH_TIMEOUT_MS`,
+ * TestClock controllable) and fiber interruption aborts the underlying
+ * fetch, replacing manual `AbortController`+`setTimeout` plumbing. No auth,
+ * no app-identifying headers (see the file header). Non-array JSON still
  * yields `[]`. */
 export const fetchReleasesEffect = Effect.fn('fetchReleasesEffect')(function* (): Effect.fn.Return<
   GitHubRelease[],
@@ -239,13 +166,12 @@ export interface UpdateCheckerEffect {
   readonly check: () => Effect.Effect<UpdateStatus, never, HttpFetch>
 }
 
-/** Effect-native update checker factory. Same observable contract as
- * `createUpdateChecker`: concurrent `check()` calls share one flight via a
- * shared `Deferred`, the last-known status is cached in a `Ref`, and any
- * fetch failure degrades to the cached status with the `update.offline`
- * informational operational-log note (via `safeLogOperationalEvent` wrapped in
- * `Effect.sync`). Pure helpers (`compareSemver`, `pickLatestDesktopVersion`)
- * stay plain functions. */
+/** Effect-native update checker factory. Observable contract: concurrent
+ * `check()` calls share one flight via a shared `Deferred`, the last-known
+ * status is cached in a `Ref`, and any fetch failure degrades to the cached
+ * status with the `update.offline` informational operational-log note (via
+ * `safeLogOperationalEvent` wrapped in `Effect.sync`). Pure helpers
+ * (`compareSemver`, `pickLatestDesktopVersion`) stay plain functions. */
 export const createUpdateCheckerEffect = Effect.fn('createUpdateCheckerEffect')(function* (opts: {
   currentVersion: string
 }): Effect.fn.Return<UpdateCheckerEffect> {
