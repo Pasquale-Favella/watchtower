@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DbWorkerClient, type DbWorkerPort } from '../src/main/db-worker/client.js'
@@ -506,5 +508,59 @@ describe('DbWorkerClient request/response correlation', () => {
     // The first post is the graceful close op; the thread is then gone.
     expect(fakes[0]!.posted[0]).toMatchObject({ op: 'shutdown', args: [] })
     await expect(client.request('currency:get')).rejects.toThrow(/shut down|unavailable/)
+  })
+})
+
+describe('DbWorkerClient shutdown deadline (Effect Clock, §5.1)', () => {
+  it('a hanging graceful ack resolves after the Clock deadline and terminates exactly once', async () => {
+    const timeoutMs = 2000
+    // Hanging responder: the graceful `shutdown` ack never arrives.
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    worker.emit('message', { event: 'ready' })
+    await client.ready
+    const terminateSpy = vi.spyOn(worker, 'terminate')
+    const pending = client.request('currency:get')
+    const rejected = expect(pending).rejects.toThrow('data worker shut down')
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(client.shutdownEffect(timeoutMs))
+        yield* TestClock.adjust(timeoutMs)
+        yield* Fiber.join(fiber)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+    await rejected
+    // The in-flight read went out first; the graceful close op follows it.
+    expect(worker.posted).toContainEqual(expect.objectContaining({ op: 'shutdown', args: [] }))
+    expect(terminateSpy).toHaveBeenCalledTimes(1)
+    // The Promise entry point stays idempotent on top: no second terminate.
+    await client.shutdown()
+    expect(terminateSpy).toHaveBeenCalledTimes(1)
+    await expect(client.request('currency:get')).rejects.toThrow(/shut down|unavailable/)
+  })
+
+  it('a graceful ack wins the deadline without advancing the clock', async () => {
+    const { client, fakes } = makeClient()
+    const worker = fakes[0]!
+    worker.emit('message', { event: 'ready' })
+    await client.ready
+    const terminateSpy = vi.spyOn(worker, 'terminate')
+    await Effect.runPromise(client.shutdownEffect(2000).pipe(Effect.provide(TestClock.layer())))
+    expect(worker.posted[0]).toMatchObject({ op: 'shutdown', args: [] })
+    expect(terminateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('still resolves when the graceful send itself fails (no live worker)', async () => {
+    const { client, fakes } = makeClient()
+    const worker = fakes[0]!
+    // Boot failure, never lived: the exit leaves no worker behind.
+    worker.emit('message', { event: 'init-error', error: 'cannot open ledger.db' })
+    await expect(client.ready).rejects.toThrow('cannot open ledger.db')
+    worker.emit('exit', 1)
+    const terminateSpy = vi.spyOn(worker, 'terminate')
+    // `send('shutdown')` rejects (no worker) — teardown still runs, shutdown still resolves.
+    await expect(client.shutdown()).resolves.toBeUndefined()
+    expect(terminateSpy).not.toHaveBeenCalled()
+    await expect(client.shutdown()).resolves.toBeUndefined()
   })
 })

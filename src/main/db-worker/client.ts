@@ -1,12 +1,16 @@
 import { Worker } from 'node:worker_threads'
+
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+
+import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
 import {
+  type DbWorkerData,
+  type DbWorkerEvent,
   DEDUPABLE_OPS,
   isDbWorkerEvent,
   isDbWorkerResponse,
-  type DbWorkerData,
-  type DbWorkerEvent,
 } from './protocol.js'
-import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
 
 /**
  * Main-side handle to the db-worker thread (ADR 0023). `request(op, ...args)`
@@ -39,6 +43,24 @@ export type DbWorkerFactory = (scriptPath: string, workerData: DbWorkerData) => 
 const defaultFactory: DbWorkerFactory = (scriptPath, workerData) =>
   new Worker(scriptPath, { workerData }) as unknown as DbWorkerPort
 
+/**
+ * Bounded graceful-close send — the drain-barrier shape from
+ * `drainIteratorEffect` (`src/main/agents/runtime.ts`): the worker's shutdown
+ * ack is awaited under an Effect Clock deadline instead of a raw
+ * `setTimeout`, so `TestClock` governs the timeout in tests. Graceful ack,
+ * deadline expiry, and send failure all collapse to void — termination rides
+ * `Effect.ensuring` at the call site, so every path terminates exactly once.
+ */
+const awaitGracefulShutdown = Effect.fn('awaitGracefulShutdown')(function* (
+  sendShutdown: () => Promise<unknown>,
+  timeoutMs: number,
+) {
+  yield* Effect.tryPromise({
+    try: sendShutdown,
+    catch: cause => cause,
+  }).pipe(Effect.timeoutOption(Duration.millis(timeoutMs)), Effect.ignore)
+})
+
 export class DbWorkerClient {
   private worker: DbWorkerPort | null = null
   private nextId = 1
@@ -55,7 +77,11 @@ export class DbWorkerClient {
   /** Resolves when the worker owns the ledger; rejects on boot failure. */
   readonly ready: Promise<void>
 
-  constructor(private init: DbWorkerData, private scriptPath: string, private spawnWorker: DbWorkerFactory = defaultFactory) {
+  constructor(
+    private init: DbWorkerData,
+    private scriptPath: string,
+    private spawnWorker: DbWorkerFactory = defaultFactory,
+  ) {
     this.ready = new Promise<void>((resolve, reject) => {
       this.readyResolve = resolve
       this.readyReject = reject
@@ -113,7 +139,12 @@ export class DbWorkerClient {
       try {
         this.spawn()
       } catch (spawnErr) {
-        safeLogOperationalEvent('error', 'worker.error', { op: 'worker-restart', code: logCodeFor(spawnErr, 'restart-failed') }, 'worker')
+        safeLogOperationalEvent(
+          'error',
+          'worker.error',
+          { op: 'worker-restart', code: logCodeFor(spawnErr, 'restart-failed') },
+          'worker',
+        )
       }
     })
   }
@@ -177,36 +208,66 @@ export class DbWorkerClient {
 
   onEvent(listener: (event: DbWorkerEvent) => void): () => void {
     this.eventListeners.add(listener)
-    return () => { this.eventListeners.delete(listener) }
+    return () => {
+      this.eventListeners.delete(listener)
+    }
+  }
+
+  /**
+   * Effect orchestration behind `shutdown()` (ADR 0032): the graceful-close
+   * send rides `awaitGracefulShutdown` (Effect Clock deadline) and thread
+   * termination rides `Effect.ensuring`, so graceful ack, deadline expiry,
+   * and send failure all terminate exactly once. Exposed (additive) so tests
+   * run it under `TestClock`; production runs it via `shutdown()` with the
+   * live Clock. `shutdown()` stays the single `run*` composition root for
+   * this deadline — no second runtime, no shared SQLite state.
+   */
+  shutdownEffect(timeoutMs = 2000): Effect.Effect<void> {
+    return awaitGracefulShutdown(() => this.send('shutdown'), timeoutMs).pipe(
+      Effect.ensuring(this.terminateWorkerEffect()),
+    )
+  }
+
+  /** Termination finalizer for `shutdownEffect`: captures the live worker,
+   * rejects every in-flight call with the legacy 'data worker shut down'
+   * error, and terminates the thread. Never fails — teardown must not turn
+   * a completed shutdown into a rejection. */
+  private terminateWorkerEffect(): Effect.Effect<void> {
+    const takeWorker = (): DbWorkerPort | null => this.takeWorkerForTeardown()
+    return Effect.gen(function* () {
+      const worker: DbWorkerPort | null = yield* Effect.sync(takeWorker)
+      if (worker) {
+        yield* Effect.tryPromise({
+          try: () => worker.terminate(),
+          catch: cause => cause,
+        }).pipe(Effect.ignore)
+      }
+    })
+  }
+
+  /** Captures the live worker for teardown (the legacy `finally` semantics):
+   * the worker ref is cleared, every pending call is rejected, and read
+   * coalescing is dropped, so a late graceful ack finds no slot and is
+   * ignored. A second call captures null and is a safe no-op. */
+  private takeWorkerForTeardown(): DbWorkerPort | null {
+    const worker = this.worker
+    this.worker = null
+    for (const { reject } of this.pending.values()) reject(new Error('data worker shut down'))
+    this.pending.clear()
+    this.inflightReads.clear()
+    return worker
   }
 
   /**
    * Best-effort graceful shutdown: asks the worker to checkpoint and close
    * the ledger, then terminates the thread. Resolves once the thread is gone
-   * (or the timeout elapses first). Idempotent. The app's quit path calls
+   * (or the Clock deadline elapses first). Idempotent. The app's quit path calls
    * this fire-and-forget — quitting must never block on it.
    */
   async shutdown(timeoutMs = 2000): Promise<void> {
     if (this.intentionalTeardown) return
     this.intentionalTeardown = true
-    try {
-      await Promise.race([
-        this.send('shutdown').then(
-          () => undefined,
-          () => undefined,
-        ),
-        new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
-      ])
-    } finally {
-      const worker = this.worker
-      this.worker = null
-      for (const { reject } of this.pending.values()) reject(new Error('data worker shut down'))
-      this.pending.clear()
-      this.inflightReads.clear()
-      try {
-        await worker?.terminate()
-      } catch { /* already gone */ }
-    }
+    await Effect.runPromise(this.shutdownEffect(timeoutMs))
   }
 
   /** Permanently shut the worker down (tests). The app itself uses
