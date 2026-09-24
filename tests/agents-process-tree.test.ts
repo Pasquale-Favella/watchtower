@@ -1,7 +1,11 @@
 import { execFile, type execFileSync } from 'node:child_process'
+
 import { describe, expect, it, vi } from 'vitest'
 
 import { killProcessTree, killProcessTreeSync } from '../src/main/agents/process-tree.js'
+
+const TASKKILL_COMMAND = 'taskkill'
+const TASKKILL_ARGS = ['/pid', '4321', '/T', '/F']
 
 describe('killProcessTree', () => {
   it('uses taskkill tree termination on win32 and resolves callback errors', async () => {
@@ -11,7 +15,16 @@ describe('killProcessTree', () => {
     }) as typeof execFile)
 
     await expect(killProcessTree(4321, 'win32', run)).resolves.toBeUndefined()
-    expect(run).toHaveBeenCalledWith('taskkill', ['/pid', '4321', '/T', '/F'], { windowsHide: true }, expect.any(Function))
+    expect(run).toHaveBeenCalledWith(TASKKILL_COMMAND, TASKKILL_ARGS, { windowsHide: true }, expect.any(Function))
+  })
+
+  it('swallows a synchronous throw from taskkill and still resolves (never-fails Effect)', async () => {
+    const run = vi.fn(() => {
+      throw new Error('taskkill missing')
+    }) as unknown as typeof execFile
+
+    await expect(killProcessTree(4321, 'win32', run)).resolves.toBeUndefined()
+    expect(run).toHaveBeenCalledWith(TASKKILL_COMMAND, TASKKILL_ARGS, { windowsHide: true }, expect.any(Function))
   })
 
   it('swallows an already-exited process on posix', async () => {
@@ -27,8 +40,10 @@ describe('killProcessTree', () => {
 
 describe('killProcessTreeSync', () => {
   it('runs taskkill /T /F synchronously and swallows its failure', () => {
-    const run = vi.fn(() => { throw new Error('not found') }) as unknown as typeof execFileSync
+    const run = vi.fn(() => {
+      throw new Error('not found')
+    }) as unknown as typeof execFileSync
     expect(() => killProcessTreeSync(4321, run)).not.toThrow()
-    expect(run).toHaveBeenCalledWith('taskkill', ['/pid', '4321', '/T', '/F'], expect.objectContaining({ windowsHide: true }))
+    expect(run).toHaveBeenCalledWith(TASKKILL_COMMAND, TASKKILL_ARGS, expect.objectContaining({ windowsHide: true }))
   })
 })
