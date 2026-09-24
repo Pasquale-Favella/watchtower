@@ -98,10 +98,6 @@ export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
   )
 })
 
-export async function fetchVercelGatewayReport(dateRange: DateRange): Promise<ReportRow[]> {
-  return Effect.runPromise(fetchVercelGatewayReportEffect(dateRange).pipe(Effect.provide(HttpFetch.layer)))
-}
-
 function createParser(
   source: SessionSource,
   seenKeys: Set<string>,
@@ -111,7 +107,9 @@ function createParser(
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!dateRange) return
 
-      const rows = await fetchVercelGatewayReport(dateRange)
+      const rows = await Effect.runPromise(
+        fetchVercelGatewayReportEffect(dateRange).pipe(Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch))),
+      )
       for (const row of rows) {
         const day = row.day ?? ''
         const model = row.model ?? 'unknown'

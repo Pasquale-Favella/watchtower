@@ -5,11 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
-import {
-  fetchVercelGatewayReport,
-  fetchVercelGatewayReportEffect,
-  type ReportRow,
-} from '../src/main/pipeline/providers/vercel-gateway.js'
+import { fetchVercelGatewayReportEffect, type ReportRow } from '../src/main/pipeline/providers/vercel-gateway.js'
 import type { DateRange } from '../src/main/pipeline/types.js'
 
 const RANGE: DateRange = {
@@ -79,8 +75,6 @@ describe('fetchVercelGatewayReportEffect (Effect-native gateway boundary)', () =
     const rows = await runEffect(RANGE, counting)
     expect(rows).toEqual([])
     expect(getCalls()).toBe(0)
-    // The Promise adapter keeps the same fast path (no network, live layer untouched).
-    await expect(fetchVercelGatewayReport(RANGE)).resolves.toEqual([])
   })
 
   it('200 with results passes rows through', async () => {
