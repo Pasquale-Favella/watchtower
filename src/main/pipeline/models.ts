@@ -1,9 +1,12 @@
-import { readFile, writeFile, mkdir } from 'fs/promises'
-import { join } from 'path'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import { mkdir, readFile, writeFile } from 'fs/promises'
 import { homedir } from 'os'
+import { join } from 'path'
+
 import snapshotData from './data/litellm-snapshot.json'
 import fallbackData from './data/pricing-fallback.json'
-import { fetchWithTimeout } from './fetch-utils.js'
+import { DEFAULT_FETCH_TIMEOUT_MS, fetchWithTimeout, HttpFetch } from './fetch-utils.js'
 import { queueLogRecord } from './file-errors.js'
 
 export type ModelCosts = {
@@ -58,6 +61,10 @@ function getPricingCacheTtlMs(): number {
  * Forza un fetch live della tabella prezzi (per `--refresh-pricing`).
  * Se il fetch fallisce, propaga l'errore al chiamante che deciderà come
  * comunicarlo (di solito: warning + fallback a snapshot bundled).
+ *
+ * Compatibility adapter (ADR 0032 slice): stays until `scan.ts` +
+ * `pricing:refresh` IPC consume `refreshPricingNowEffect` directly.
+ * Removal condition: no callers of this Promise API remain.
  */
 export async function refreshPricingNow(): Promise<void> {
   pricingCache = mergeSnapshotFallbacks(await fetchAndCachePricing())
@@ -210,7 +217,7 @@ async function fetchAndCachePricing(): Promise<Map<string, ModelCosts>> {
   // caller's catch falls back to the bundled price snapshot.
   const response = await fetchWithTimeout(LITELLM_URL)
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const data = await response.json() as Record<string, LiteLLMEntry>
+  const data = (await response.json()) as Record<string, LiteLLMEntry>
   const pricing = new Map<string, ModelCosts>()
 
   for (const [name, entry] of Object.entries(data)) {
@@ -225,10 +232,13 @@ async function fetchAndCachePricing(): Promise<Map<string, ModelCosts>> {
   }
 
   await mkdir(getCacheDir(), { recursive: true })
-  await writeFile(getCachePath(), JSON.stringify({
-    timestamp: Date.now(),
-    data: Object.fromEntries(pricing),
-  }))
+  await writeFile(
+    getCachePath(),
+    JSON.stringify({
+      timestamp: Date.now(),
+      data: Object.fromEntries(pricing),
+    }),
+  )
 
   return pricing
 }
@@ -251,6 +261,11 @@ function mergeSnapshotFallbacks(pricing: Map<string, ModelCosts>): Map<string, M
   return applyBuiltinPriceOverrides(pricing)
 }
 
+/**
+ * Compatibility adapter (ADR 0032 slice): stays until `scan.ts` +
+ * `pricing:refresh` IPC consume `loadPricingEffect` directly.
+ * Removal condition: no callers of this Promise API remain.
+ */
 export async function loadPricing(): Promise<void> {
   const cached = await loadCachedPricing()
   if (cached) {
@@ -274,56 +289,56 @@ export async function loadPricing(): Promise<void> {
 // getCanonicalName strips any 'provider/' prefix first, so only the post-strip
 // forms need to be listed here.
 const BUILTIN_ALIASES: Record<string, string> = {
-  'anthropic--claude-4.6-opus':    'claude-opus-4-6',
-  'anthropic--claude-4.6-sonnet':  'claude-sonnet-4-6',
-  'anthropic--claude-4.5-opus':    'claude-opus-4-5',
-  'anthropic--claude-4.5-sonnet':  'claude-sonnet-4-5',
-  'anthropic--claude-4.5-haiku':   'claude-haiku-4-5',
-  'claude-sonnet-4.6':             'claude-sonnet-4-6',
-  'claude-sonnet-4.5':             'claude-sonnet-4-5',
-  'claude-opus-4.7':               'claude-opus-4-7',
-  'claude-opus-4.6':               'claude-opus-4-6',
-  'claude-opus-4.5':               'claude-opus-4-5',
-  'cursor-auto':                    'claude-sonnet-4-5',
-  'cursor-agent-auto':             'claude-sonnet-4-5',
-  'copilot-auto':                  'claude-sonnet-4-5',
-  'copilot-openai-auto':           'gpt-5.3-codex',
-  'copilot-anthropic-auto':        'claude-sonnet-4-5',
-  'openai-codex:gpt-5.5':          'gpt-5.5',
-  'ibm-bob-auto':                  'claude-sonnet-4-5',
-  'kiro-auto':                     'claude-sonnet-4-5',
-  'quickdesk-auto':                'claude-sonnet-4-5',
-  'cline-auto':                    'claude-sonnet-4-5',
-  'openclaw-auto':                 'claude-sonnet-4-5',
-  'warp-auto-efficient':           'gpt-5.3-codex',
-  'warp-auto-powerful':            'claude-opus-4-6',
-  'grok-build':                    'grok-build-0.1',
+  'anthropic--claude-4.6-opus': 'claude-opus-4-6',
+  'anthropic--claude-4.6-sonnet': 'claude-sonnet-4-6',
+  'anthropic--claude-4.5-opus': 'claude-opus-4-5',
+  'anthropic--claude-4.5-sonnet': 'claude-sonnet-4-5',
+  'anthropic--claude-4.5-haiku': 'claude-haiku-4-5',
+  'claude-sonnet-4.6': 'claude-sonnet-4-6',
+  'claude-sonnet-4.5': 'claude-sonnet-4-5',
+  'claude-opus-4.7': 'claude-opus-4-7',
+  'claude-opus-4.6': 'claude-opus-4-6',
+  'claude-opus-4.5': 'claude-opus-4-5',
+  'cursor-auto': 'claude-sonnet-4-5',
+  'cursor-agent-auto': 'claude-sonnet-4-5',
+  'copilot-auto': 'claude-sonnet-4-5',
+  'copilot-openai-auto': 'gpt-5.3-codex',
+  'copilot-anthropic-auto': 'claude-sonnet-4-5',
+  'openai-codex:gpt-5.5': 'gpt-5.5',
+  'ibm-bob-auto': 'claude-sonnet-4-5',
+  'kiro-auto': 'claude-sonnet-4-5',
+  'quickdesk-auto': 'claude-sonnet-4-5',
+  'cline-auto': 'claude-sonnet-4-5',
+  'openclaw-auto': 'claude-sonnet-4-5',
+  'warp-auto-efficient': 'gpt-5.3-codex',
+  'warp-auto-powerful': 'claude-opus-4-6',
+  'grok-build': 'grok-build-0.1',
   'GPT-5.3 Codex (low reasoning)': 'gpt-5.3-codex',
   'GPT-5.3 Codex (medium reasoning)': 'gpt-5.3-codex',
   'GPT-5.3 Codex (high reasoning)': 'gpt-5.3-codex',
   'GPT-5.3 Codex (extra high reasoning)': 'gpt-5.3-codex',
-  'Claude Sonnet 4.6':             'claude-sonnet-4-6',
-  'Claude Sonnet 4.5':             'claude-sonnet-4-5',
-  'Claude Haiku 4.5':              'claude-haiku-4-5',
-  'Claude Opus 4.6':               'claude-opus-4-6',
-  'claude-4-6-sonnet-high':        'claude-sonnet-4-6',
-  'claude-4-6-sonnet-low':         'claude-sonnet-4-6',
-  'claude-4-6-sonnet-medium':      'claude-sonnet-4-6',
-  'claude-4-6-sonnet-high-fast':   'claude-sonnet-4-6',
-  'claude-4-7-opus-xhigh':         'claude-opus-4-7',
-  'claude-4-7-opus-xhigh-fast':    'claude-opus-4-7',
-  'qwen-auto':                     'claude-sonnet-4-5',
-  'kimi-auto':                     'kimi-k2-thinking',
-  'kimi-code':                     'kimi-k2-thinking',
-  'kimi-for-coding':               'kimi-k2-thinking',
+  'Claude Sonnet 4.6': 'claude-sonnet-4-6',
+  'Claude Sonnet 4.5': 'claude-sonnet-4-5',
+  'Claude Haiku 4.5': 'claude-haiku-4-5',
+  'Claude Opus 4.6': 'claude-opus-4-6',
+  'claude-4-6-sonnet-high': 'claude-sonnet-4-6',
+  'claude-4-6-sonnet-low': 'claude-sonnet-4-6',
+  'claude-4-6-sonnet-medium': 'claude-sonnet-4-6',
+  'claude-4-6-sonnet-high-fast': 'claude-sonnet-4-6',
+  'claude-4-7-opus-xhigh': 'claude-opus-4-7',
+  'claude-4-7-opus-xhigh-fast': 'claude-opus-4-7',
+  'qwen-auto': 'claude-sonnet-4-5',
+  'kimi-auto': 'kimi-k2-thinking',
+  'kimi-code': 'kimi-k2-thinking',
+  'kimi-for-coding': 'kimi-k2-thinking',
   // Kimi Code wires report the bare `k3` id in llm.request.model; without an
   // alias those calls priced at $0 and the provider looked absent in the UI.
-  'k3':                            'kimi-k3',
+  k3: 'kimi-k3',
   // Kimi desktop/IDE embedded runtime serves `k3-agent` / `k2d6-agent`.
-  'k3-agent':                      'kimi-k3',
-  'k2d6-agent':                    'kimi-k2p6',
-  'mimo-v2-flash':                 'xiaomi/mimo-v2-flash',
-  'kat-coder-pro-v1':              'kwaipilot/kat-coder-pro',
+  'k3-agent': 'kimi-k3',
+  'k2d6-agent': 'kimi-k2p6',
+  'mimo-v2-flash': 'xiaomi/mimo-v2-flash',
+  'kat-coder-pro-v1': 'kwaipilot/kat-coder-pro',
   // Cursor emits dot-version tier-last names plus tier/reasoning suffixes
   // that LiteLLM does not index (`-high`, `-low`, `-medium`, `-thinking`,
   // `-high-thinking`, `-fast-mode`). Missing aliases here surface as $0 in
@@ -331,64 +346,64 @@ const BUILTIN_ALIASES: Record<string, string> = {
   // display map at `src/providers/cursor.ts:modelDisplayNames`, Cursor's
   // public model docs at https://cursor.com/docs/models, and forum bug
   // reports that quote literal slugs (e.g. forum.cursor.com/t/154933).
-  'claude-4-sonnet':                'claude-sonnet-4',
-  'claude-4-sonnet-1m':             'claude-sonnet-4',
-  'claude-4-sonnet-thinking':       'claude-sonnet-4-5',
-  'claude-4.5-sonnet':              'claude-sonnet-4-5',
-  'claude-4.5-sonnet-thinking':     'claude-sonnet-4-5',
-  'claude-4.6-sonnet':              'claude-sonnet-4-6',
-  'claude-4.6-sonnet-high':         'claude-sonnet-4-6',
-  'claude-4.6-sonnet-low':          'claude-sonnet-4-6',
-  'claude-4.6-sonnet-thinking':     'claude-sonnet-4-6',
-  'claude-4.6-sonnet-high-thinking':'claude-sonnet-4-6',
-  'claude-4-opus':                  'claude-opus-4',
-  'claude-4.5-opus':                'claude-opus-4-5',
-  'claude-4.5-opus-high':           'claude-opus-4-5',
-  'claude-4.5-opus-low':            'claude-opus-4-5',
-  'claude-4.5-opus-medium':         'claude-opus-4-5',
-  'claude-4.5-opus-high-thinking':  'claude-opus-4-5',
-  'claude-4.6-opus':                'claude-opus-4-6',
-  'claude-4.6-opus-fast-mode':      'claude-opus-4-6',
-  'claude-4.6-opus-high':           'claude-opus-4-6',
-  'claude-4.6-opus-low':            'claude-opus-4-6',
-  'claude-4.6-opus-medium':         'claude-opus-4-6',
-  'claude-4.6-opus-high-thinking':  'claude-opus-4-6',
-  'claude-4.7-opus':                'claude-opus-4-7',
+  'claude-4-sonnet': 'claude-sonnet-4',
+  'claude-4-sonnet-1m': 'claude-sonnet-4',
+  'claude-4-sonnet-thinking': 'claude-sonnet-4-5',
+  'claude-4.5-sonnet': 'claude-sonnet-4-5',
+  'claude-4.5-sonnet-thinking': 'claude-sonnet-4-5',
+  'claude-4.6-sonnet': 'claude-sonnet-4-6',
+  'claude-4.6-sonnet-high': 'claude-sonnet-4-6',
+  'claude-4.6-sonnet-low': 'claude-sonnet-4-6',
+  'claude-4.6-sonnet-thinking': 'claude-sonnet-4-6',
+  'claude-4.6-sonnet-high-thinking': 'claude-sonnet-4-6',
+  'claude-4-opus': 'claude-opus-4',
+  'claude-4.5-opus': 'claude-opus-4-5',
+  'claude-4.5-opus-high': 'claude-opus-4-5',
+  'claude-4.5-opus-low': 'claude-opus-4-5',
+  'claude-4.5-opus-medium': 'claude-opus-4-5',
+  'claude-4.5-opus-high-thinking': 'claude-opus-4-5',
+  'claude-4.6-opus': 'claude-opus-4-6',
+  'claude-4.6-opus-fast-mode': 'claude-opus-4-6',
+  'claude-4.6-opus-high': 'claude-opus-4-6',
+  'claude-4.6-opus-low': 'claude-opus-4-6',
+  'claude-4.6-opus-medium': 'claude-opus-4-6',
+  'claude-4.6-opus-high-thinking': 'claude-opus-4-6',
+  'claude-4.7-opus': 'claude-opus-4-7',
   // Dash form (NOT dot) seen in forum.cursor.com/t/158597.
-  'claude-opus-4-7-thinking-high':  'claude-opus-4-7',
-  'claude-4.5-haiku':               'claude-haiku-4-5',
-  'claude-4.6-haiku':               'claude-haiku-4-5',
+  'claude-opus-4-7-thinking-high': 'claude-opus-4-7',
+  'claude-4.5-haiku': 'claude-haiku-4-5',
+  'claude-4.6-haiku': 'claude-haiku-4-5',
   // Cursor house composer models use Cursor-published rates in
   // BUILTIN_PRICE_OVERRIDES; keep them out of this alias map so they do not
   // inherit Claude Sonnet proxy pricing.
   // Cursor's "fast" routing variant of GPT-5 is the same model behind a
   // lower-latency endpoint; price as base GPT-5 until LiteLLM tracks it.
-  'gpt-5-fast':                     'gpt-5',
-  'gpt-4.1':                        'gpt-4.1',
-  'gpt-5.2-low':                    'gpt-5',
-  'gpt-5.1-codex-high':             'gpt-5.3-codex',
+  'gpt-5-fast': 'gpt-5',
+  'gpt-4.1': 'gpt-4.1',
+  'gpt-5.2-low': 'gpt-5',
+  'gpt-5.1-codex-high': 'gpt-5.3-codex',
   // Antigravity Gemini model IDs resolve to preview-priced entries.
-  'gemini-3.1-pro':                 'gemini-3.1-pro-preview',
-  'gemini-3-flash':                 'gemini-3-flash-preview',
-  'gemini-3.1-pro-high':            'gemini-3.1-pro-preview',
-  'gemini-3.1-pro-low':             'gemini-3.1-pro-preview',
-  'gemini-3-flash-agent':           'gemini-3-flash-preview',
-  'gemini-3.5-flash-high':          'gemini-3.5-flash',
-  'gemini-3.5-flash-medium':        'gemini-3.5-flash',
-  'gemini-3.5-flash-low':           'gemini-3.5-flash',
-  'Gemini 3.5 Flash (High)':        'gemini-3.5-flash',
-  'Gemini 3.5 Flash (Medium)':      'gemini-3.5-flash',
-  'Gemini 3.5 Flash (Low)':         'gemini-3.5-flash',
-  'gemini-3-pro':                   'gemini-3-pro-preview',
-  'gemini-3.1-flash-image':         'gemini-3.1-flash-image-preview',
-  'gemini-3.1-flash-lite':          'gemini-3.1-flash-lite-preview',
+  'gemini-3.1-pro': 'gemini-3.1-pro-preview',
+  'gemini-3-flash': 'gemini-3-flash-preview',
+  'gemini-3.1-pro-high': 'gemini-3.1-pro-preview',
+  'gemini-3.1-pro-low': 'gemini-3.1-pro-preview',
+  'gemini-3-flash-agent': 'gemini-3-flash-preview',
+  'gemini-3.5-flash-high': 'gemini-3.5-flash',
+  'gemini-3.5-flash-medium': 'gemini-3.5-flash',
+  'gemini-3.5-flash-low': 'gemini-3.5-flash',
+  'Gemini 3.5 Flash (High)': 'gemini-3.5-flash',
+  'Gemini 3.5 Flash (Medium)': 'gemini-3.5-flash',
+  'Gemini 3.5 Flash (Low)': 'gemini-3.5-flash',
+  'gemini-3-pro': 'gemini-3-pro-preview',
+  'gemini-3.1-flash-image': 'gemini-3.1-flash-image-preview',
+  'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite-preview',
   // ZCode runs GLM-5.2 through z.ai's start-plan subscription; it isn't in
   // LiteLLM yet. Price as the nearest released sibling (GLM-5.1) until it is.
-  'GLM-5.2':                        'glm-5p1',
+  'GLM-5.2': 'glm-5p1',
   // Hermes Agent stores the same model id lowercased (`glm-5.2`) in its
   // sessions table, so it misses the capitalized alias above and goes
   // unpriced. Map the lowercase spelling to the same sibling.
-  'glm-5.2':                        'glm-5p1',
+  'glm-5.2': 'glm-5p1',
 }
 
 let userAliases: Record<string, string> = {}
@@ -419,13 +434,16 @@ export function setPriceOverrides(overrides: Record<string, PriceOverrideRates>)
     const input = priceOverrideRatePerToken(rates.input)
     const output = priceOverrideRatePerToken(rates.output)
     if (input === null || output === null) continue
-    next.set(model, buildCosts(
-      input,
-      output,
-      priceOverrideRatePerToken(rates.cacheCreation),
-      priceOverrideRatePerToken(rates.cacheRead),
-      undefined,
-    ))
+    next.set(
+      model,
+      buildCosts(
+        input,
+        output,
+        priceOverrideRatePerToken(rates.cacheCreation),
+        priceOverrideRatePerToken(rates.cacheRead),
+        undefined,
+      ),
+    )
   }
   userPriceOverrides = next
   userPriceOverridesConfig = nextConfig
@@ -544,13 +562,7 @@ export function getPriceOverridesConfigHash(): string {
   if (keys.length === 0) return builtin
   const parts = keys.map(k => {
     const rates = userPriceOverridesConfig[k]
-    return [
-      k,
-      rates.input,
-      rates.output,
-      rates.cacheRead ?? '',
-      rates.cacheCreation ?? '',
-    ].join('\u0001')
+    return [k, rates.input, rates.output, rates.cacheRead ?? '', rates.cacheCreation ?? ''].join('\u0001')
   })
   return [builtin, ...parts].join('\u0002')
 }
@@ -576,7 +588,7 @@ let userProxyPaths: string[] = []
 /// dedupes with the same rule.
 export function normalizeProxyPath(p: string): string {
   const s = p.trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
-  return (process.platform === 'darwin' || process.platform === 'win32') ? s.toLowerCase() : s
+  return process.platform === 'darwin' || process.platform === 'win32' ? s.toLowerCase() : s
 }
 
 export function setProxyPaths(paths: string[]): void {
@@ -616,8 +628,8 @@ function resolveAlias(model: string): string {
 }
 function getCanonicalName(model: string): string {
   return model
-    .replace(/@.*$/, '')       // strip pin: claude-sonnet-4-6@20250929 -> claude-sonnet-4-6
-    .replace(/-\d{8}$/, '')   // strip date: claude-sonnet-4-20250514 -> claude-sonnet-4
+    .replace(/@.*$/, '') // strip pin: claude-sonnet-4-6@20250929 -> claude-sonnet-4-6
+    .replace(/-\d{8}$/, '') // strip date: claude-sonnet-4-20250514 -> claude-sonnet-4
     .replace(/^[^/]+\//, '') // strip provider prefix: anthropic/foo -> foo
 }
 
@@ -633,8 +645,8 @@ export function normalizeModelKey(model: string): string {
   return model
     .replace(/:(thinking|cloud)$/i, '')
     .replace(/-TEE$/i, '')
-    .replace(/@.*$/, '')       // strip pin: claude-sonnet-4-6@20250929 -> claude-sonnet-4-6
-    .replace(/-\d{8}$/, '')   // strip date: claude-sonnet-4-20250514 -> claude-sonnet-4
+    .replace(/@.*$/, '') // strip pin: claude-sonnet-4-6@20250929 -> claude-sonnet-4-6
+    .replace(/-\d{8}$/, '') // strip date: claude-sonnet-4-20250514 -> claude-sonnet-4
     .replace(/^([^/]+\/)+/, '') // strip provider prefixes: a/b/foo -> foo
     .toLowerCase()
 }
@@ -781,10 +793,12 @@ export interface UnpricedModelUsage {
 }
 
 function hasBillableRate(costs: ModelCosts): boolean {
-  return costs.inputCostPerToken > 0
-    || costs.outputCostPerToken > 0
-    || costs.cacheWriteCostPerToken > 0
-    || costs.cacheReadCostPerToken > 0
+  return (
+    costs.inputCostPerToken > 0 ||
+    costs.outputCostPerToken > 0 ||
+    costs.cacheWriteCostPerToken > 0 ||
+    costs.cacheReadCostPerToken > 0
+  )
 }
 
 // Exact-override lookup with the same key derivation getModelCosts uses. Lets
@@ -849,8 +863,9 @@ export function findUnpricedModels(
     if (costs && exactPriceOverrideFor(model)) continue
     out.push({ model, calls: row.calls, tokens })
   }
-  return out.sort((a, b) => (b.tokens - a.tokens) || (b.calls - a.calls)
-    || (a.model < b.model ? -1 : a.model > b.model ? 1 : 0))
+  return out.sort(
+    (a, b) => b.tokens - a.tokens || b.calls - a.calls || (a.model < b.model ? -1 : a.model > b.model ? 1 : 0),
+  )
 }
 
 function shouldWarnAboutUnknownModel(name: string): boolean {
@@ -909,13 +924,14 @@ export function calculateCost(
   const safeCacheCreation = Math.max(safe(cacheCreationTokens), safeOneHourCacheCreation)
   const safeFiveMinuteCacheCreation = Math.max(0, safeCacheCreation - safeOneHourCacheCreation)
 
-  return multiplier * (
-    safe(inputTokens) * costs.inputCostPerToken +
-    safe(outputTokens) * costs.outputCostPerToken +
-    safeFiveMinuteCacheCreation * costs.cacheWriteCostPerToken +
-    safeOneHourCacheCreation * costs.cacheWriteCostPerToken * ONE_HOUR_CACHE_WRITE_MULTIPLIER_FROM_FIVE_MINUTE_RATE +
-    safe(cacheReadTokens) * costs.cacheReadCostPerToken +
-    safe(webSearchRequests) * costs.webSearchCostPerRequest
+  return (
+    multiplier *
+    (safe(inputTokens) * costs.inputCostPerToken +
+      safe(outputTokens) * costs.outputCostPerToken +
+      safeFiveMinuteCacheCreation * costs.cacheWriteCostPerToken +
+      safeOneHourCacheCreation * costs.cacheWriteCostPerToken * ONE_HOUR_CACHE_WRITE_MULTIPLIER_FROM_FIVE_MINUTE_RATE +
+      safe(cacheReadTokens) * costs.cacheReadCostPerToken +
+      safe(webSearchRequests) * costs.webSearchCostPerRequest)
   )
 }
 
@@ -992,7 +1008,7 @@ const SHORT_NAMES: Record<string, string> = {
   'deepseek-coder': 'DeepSeek Coder',
   'deepseek-r1': 'DeepSeek R1',
   'o4-mini': 'o4-mini',
-  'o3': 'o3',
+  o3: 'o3',
   'MiniMax-M2.7-highspeed': 'MiniMax M2.7 Highspeed',
   'MiniMax-M2.7': 'MiniMax M2.7',
   // Grok (xAI) and GLM ids that otherwise surface raw or as a pricing key in
@@ -1000,8 +1016,8 @@ const SHORT_NAMES: Record<string, string> = {
   // getShortModelName resolves to the pricing key before this lookup; map each
   // back to the real model name. grok-composer has no alias, it just lacked an
   // entry.
-  'glm-5p1': 'GLM-5.2',                               // ZCode/Hermes run GLM-5.2 (priced as the GLM-5.1 sibling)
-  'grok-build-0.1': 'Grok Build',                     // Grok Build prices through the 0.1 sibling
+  'glm-5p1': 'GLM-5.2', // ZCode/Hermes run GLM-5.2 (priced as the GLM-5.1 sibling)
+  'grok-build-0.1': 'Grok Build', // Grok Build prices through the 0.1 sibling
   'grok-composer-2.5-fast': 'Grok Composer 2.5 Fast',
   // Fireworks-hosted fleet models arrive as `accounts/fireworks/models/<slug>`;
   // getShortModelName's path fallback strips to the bare slug and re-resolves it
@@ -1017,8 +1033,7 @@ const SHORT_NAMES: Record<string, string> = {
 // Without this, `gpt-5-mini` could resolve to "GPT-5" (the entry for `gpt-5`)
 // if it happened to be iterated before `gpt-5-mini`, hiding a distinct model
 // behind the wrong display name and pricing tier.
-const SORTED_SHORT_NAMES: [string, string][] = Object.entries(SHORT_NAMES)
-  .sort((a, b) => b[0].length - a[0].length)
+const SORTED_SHORT_NAMES: [string, string][] = Object.entries(SHORT_NAMES).sort((a, b) => b[0].length - a[0].length)
 
 // Anthropic's id scheme is `claude-<family>-<major>[-<minor>]`, so every new
 // version is derivable — no hand-maintained entry per release. (Legacy 3.x ids
@@ -1054,3 +1069,143 @@ export function getShortModelName(model: string): string {
   }
   return canonical
 }
+
+// --- Effect-native pricing boundary (ADR 0032 slice) ---
+//
+// Same contracts as the Promise adapters above, with the network entering
+// through the `HttpFetch` service (Effect Clock timeout, fiber interruption
+// aborts the underlying fetch). Filesystem cache reads/writes stay via
+// `Effect.tryPromise` + the existing `WATCHTOWER_CACHE_DIR` override.
+// Pure pricing math stays plain TypeScript. Both effects write through to the
+// SAME module-level cache (`pricingCache`, `sortedPricingKeys`,
+// `lowercasePricingIndex`) so current callers keep working.
+
+/** Typed failure for `refreshPricingNowEffect`: fetch, non-2xx, decode, or cache write. */
+export class PricingRefreshError extends Schema.TaggedError<PricingRefreshError>()('PricingRefreshError', {
+  reason: Schema.Literals(['fetch', 'http', 'decode', 'cache']),
+  message: Schema.String,
+}) {}
+
+export interface PricingEffectOptions {
+  /** Fetch timeout override; defaults to the shared HTTP ceiling. */
+  timeoutMs?: number
+}
+
+function describeErrorCause(cause: unknown): string {
+  if (cause instanceof Error) {
+    return cause.message
+  }
+  return String(cause)
+}
+
+function parseCachedPricingPayload(raw: string): Map<string, ModelCosts> | null {
+  let parsed: { timestamp: number; data: Record<string, ModelCosts> } | null = null
+  try {
+    parsed = JSON.parse(raw) as { timestamp: number; data: Record<string, ModelCosts> }
+  } catch {
+    return null
+  }
+  if (parsed === null || typeof parsed.timestamp !== 'number' || !parsed.data || typeof parsed.data !== 'object') {
+    return null
+  }
+  if (Date.now() - parsed.timestamp > getPricingCacheTtlMs()) {
+    return null
+  }
+  return new Map(Object.entries(parsed.data))
+}
+
+function writeThroughPricingCache(pricing: Map<string, ModelCosts>): void {
+  pricingCache = mergeSnapshotFallbacks(pricing)
+  sortedPricingKeys = null
+  lowercasePricingIndex = null
+}
+
+const loadCachedPricingEffect = Effect.fn('loadCachedPricingEffect')(function* (): Effect.fn.Return<
+  Map<string, ModelCosts> | null,
+  never
+> {
+  const raw = yield* Effect.tryPromise({
+    try: () => readFile(getCachePath(), 'utf-8'),
+    catch: cause => cause,
+  }).pipe(Effect.orElseSucceed(() => null))
+  if (raw === null) {
+    return null
+  }
+  return parseCachedPricingPayload(raw)
+})
+
+const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(function* (
+  timeoutMs?: number,
+): Effect.fn.Return<Map<string, ModelCosts>, PricingRefreshError, HttpFetch> {
+  const http = yield* HttpFetch
+  const response = yield* http
+    .fetch(LITELLM_URL, {}, timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS)
+    .pipe(Effect.mapError(cause => new PricingRefreshError({ reason: 'fetch', message: cause.message })))
+  if (!response.ok) {
+    return yield* new PricingRefreshError({ reason: 'http', message: `HTTP ${response.status}` })
+  }
+  const data = yield* Effect.tryPromise({
+    try: () => response.json() as Promise<Record<string, LiteLLMEntry>>,
+    catch: cause =>
+      new PricingRefreshError({
+        reason: 'decode',
+        message: describeErrorCause(cause),
+      }),
+  })
+  const pricing = new Map<string, ModelCosts>()
+  for (const [name, entry] of Object.entries(data)) {
+    const costs = parseLiteLLMEntry(entry)
+    if (!costs) continue
+    pricing.set(name, costs)
+    // Also index by stripped name so lookups work without provider prefix.
+    // First write wins so direct-provider entries take precedence over re-hosters.
+    const stripped = name.replace(/^[^/]+\//, '')
+    if (stripped !== name && !pricing.has(stripped)) pricing.set(stripped, costs)
+  }
+  yield* Effect.tryPromise({
+    try: async () => {
+      await mkdir(getCacheDir(), { recursive: true })
+      await writeFile(getCachePath(), JSON.stringify({ timestamp: Date.now(), data: Object.fromEntries(pricing) }))
+    },
+    catch: cause =>
+      new PricingRefreshError({
+        reason: 'cache',
+        message: describeErrorCause(cause),
+      }),
+  })
+  return pricing
+})
+
+/** Effect-native `loadPricing`: never fails — falls back to the bundled snapshot.
+ *
+ * Same contract as the Promise `loadPricing`: fresh disk cache wins, else a
+ * live fetch, else the snapshot already loaded at init. Interruption still
+ * propagates (only failures are caught).
+ */
+export const loadPricingEffect = Effect.fn('loadPricingEffect')(function* (
+  options: PricingEffectOptions = {},
+): Effect.fn.Return<void, never, HttpFetch> {
+  const cached = yield* loadCachedPricingEffect()
+  if (cached) {
+    yield* Effect.sync(() => writeThroughPricingCache(cached))
+    return
+  }
+  const fetched = yield* fetchAndCachePricingEffect(options.timeoutMs).pipe(Effect.catch(() => Effect.succeed(null)))
+  if (fetched === null) {
+    // snapshot already loaded at init; nothing more to do
+    return
+  }
+  yield* Effect.sync(() => writeThroughPricingCache(fetched))
+})
+
+/** Effect-native `refreshPricingNow`: fails with `PricingRefreshError`.
+ *
+ * Same contract as the Promise `refreshPricingNow`: a live fetch or a typed
+ * failure. Interruption still propagates.
+ */
+export const refreshPricingNowEffect = Effect.fn('refreshPricingNowEffect')(function* (
+  options: PricingEffectOptions = {},
+): Effect.fn.Return<void, PricingRefreshError, HttpFetch> {
+  const pricing = yield* fetchAndCachePricingEffect(options.timeoutMs)
+  yield* Effect.sync(() => writeThroughPricingCache(pricing))
+})
