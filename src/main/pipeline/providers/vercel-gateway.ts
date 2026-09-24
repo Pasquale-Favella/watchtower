@@ -1,11 +1,13 @@
-import type { DateRange } from '../types.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
-import { fetchWithTimeout } from '../fetch-utils.js'
+import * as Effect from 'effect/Effect'
+
+import { HttpFetch, HttpFetchError } from '../fetch-utils.js'
 import { fileErrorCode, queueLogRecord } from '../file-errors.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
 
 const REPORT_URL = 'https://ai-gateway.vercel.sh/v1/report'
 
-type ReportRow = {
+export type ReportRow = {
   day?: string
   model?: string
   total_cost?: number
@@ -29,10 +31,23 @@ function formatUtcDate(d: Date): string {
   return `${y}-${m}-${day}`
 }
 
-export async function fetchVercelGatewayReport(
+/** Legacy failure code for the gateway warn log. The old `fetchWithTimeout`
+ * path logged the raw error's name slug (`abort`, `timeout`, else the
+ * `unreachable` fallback); `HttpFetchError` carries a `reason` instead, so map
+ * it back to preserve the exact codes. */
+function gatewayFailureCode(err: unknown): string {
+  if (err instanceof HttpFetchError) {
+    if (err.reason === 'timeout') return 'timeout'
+    if (err.reason === 'abort') return 'abort'
+    return 'unreachable'
+  }
+  return fileErrorCode(err, 'unreachable')
+}
+
+export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
   dateRange: DateRange,
-): Promise<ReportRow[]> {
-  const key = getVercelGatewayApiKey()
+): Effect.fn.Return<ReportRow[], never, HttpFetch> {
+  const key = yield* Effect.sync(() => getVercelGatewayApiKey())
   if (!key) return []
 
   const params = new URLSearchParams({
@@ -42,8 +57,9 @@ export async function fetchVercelGatewayReport(
     group_by: 'model',
   })
 
-  try {
-    const res = await fetchWithTimeout(`${REPORT_URL}?${params}`, {
+  const http = yield* HttpFetch
+  return yield* Effect.gen(function* () {
+    const res = yield* http.fetch(`${REPORT_URL}?${params}`, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${key}`,
@@ -53,24 +69,37 @@ export async function fetchVercelGatewayReport(
 
     if (!res.ok) {
       // The gateway error body can carry request echoes — status only.
-      queueLogRecord({
-        logEvent: 'scan.file-error',
-        level: 'warn',
-        fields: { op: 'scan', provider: 'vercel-gateway', code: `http-${res.status}` },
-      })
+      yield* Effect.sync(() =>
+        queueLogRecord({
+          logEvent: 'scan.file-error',
+          level: 'warn',
+          fields: { op: 'scan', provider: 'vercel-gateway', code: `http-${res.status}` },
+        }),
+      )
       return []
     }
 
-    const body = (await res.json()) as { results?: ReportRow[] }
-    return body.results ?? []
-  } catch (err) {
-    queueLogRecord({
-      logEvent: 'scan.file-error',
-      level: 'warn',
-      fields: { op: 'scan', provider: 'vercel-gateway', code: fileErrorCode(err, 'unreachable') },
+    const body = yield* Effect.tryPromise({
+      try: () => res.json() as Promise<{ results?: ReportRow[] }>,
+      catch: cause => cause,
     })
-    return []
-  }
+    return body.results ?? []
+  }).pipe(
+    Effect.catch(err =>
+      Effect.sync(() => {
+        queueLogRecord({
+          logEvent: 'scan.file-error',
+          level: 'warn',
+          fields: { op: 'scan', provider: 'vercel-gateway', code: gatewayFailureCode(err) },
+        })
+        return []
+      }),
+    ),
+  )
+})
+
+export async function fetchVercelGatewayReport(dateRange: DateRange): Promise<ReportRow[]> {
+  return Effect.runPromise(fetchVercelGatewayReportEffect(dateRange).pipe(Effect.provide(HttpFetch.layer)))
 }
 
 function createParser(
