@@ -15,15 +15,20 @@ import * as Option from 'effect/Option'
 
 import { probeClaudeAuthStatus } from './auth-probe.js'
 import type { HarnessInfo } from './detect.js'
-import { harnessSpecs } from './harnesses/index.js'
+import { HARNESS_HANDSHAKE_TIMEOUT_MS, probeTimeoutFor } from './harness-timeouts.js'
 import { killProcessTree } from './process-tree.js'
 import { createHarnessSpawn, type HarnessSpawn } from './runtime.js'
 
-export const HARNESS_PROBE_TIMEOUT_MS = 15_000
+/**
+ * Compat alias for the shared handshake deadline — same value, single source.
+ * @deprecated Use `HARNESS_HANDSHAKE_TIMEOUT_MS` from `./harness-timeouts.js`.
+ * Removal: when every importer reads the canonical module (later slice).
+ */
+export const HARNESS_PROBE_TIMEOUT_MS = HARNESS_HANDSHAKE_TIMEOUT_MS
 
-export function probeTimeoutFor(kind: string): number {
-  return harnessSpecs.find(spec => spec.kind === kind)?.probeTimeoutMs ?? HARNESS_PROBE_TIMEOUT_MS
-}
+/** Re-exported so existing `probe.js` importers compile untouched; the
+ *  canonical home is `./harness-timeouts.js`. */
+export { probeTimeoutFor }
 
 export type ProbeStatus = 'pending' | 'ready' | 'warning' | 'error' | 'disabled'
 export type ProbeAuthStatus = 'configured' | 'unauthenticated' | 'unknown'

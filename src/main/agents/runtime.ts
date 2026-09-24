@@ -9,8 +9,9 @@ import * as Scope from 'effect/Scope'
 import type { CoachEvent, CoachSessionModels, CoachSessionModes } from '../../shared/schemas/agents.js'
 import type { HarnessInfo } from './detect.js'
 import { type CoachStreamPart, createCoachEventNormalizer } from './events.js'
+import { HARNESS_HANDSHAKE_TIMEOUT_MS } from './harness-timeouts.js'
 import { harnessSpecs } from './harnesses/index.js'
-import type { AcpAdapter, AcpMcpServer } from './harnesses/types.js'
+import type { AcpAdapter, AcpMcpServer, HarnessSpec } from './harnesses/types.js'
 import {
   describeCatalog,
   executeSelectionPlan,
@@ -216,8 +217,14 @@ export function isAuthFailureMessage(message: string): boolean {
  *  handshake reports models/modes WITHOUT authenticating, so by the time
  *  this fires the picker already looked healthy — the message must say what
  *  to do, not just what broke. */
+/** Single lookup for the harness spec registry — shared by spawn config and
+ *  auth-hint projection so the `kind` match lives in one place. */
+function specFor(kind: string): HarnessSpec | undefined {
+  return harnessSpecs.find(spec => spec.kind === kind)
+}
+
 function authHintForHarness(kind: string, displayName: string): string {
-  const loginCommand = harnessSpecs.find(spec => spec.kind === kind)?.auth?.loginCommand?.join(' ')
+  const loginCommand = specFor(kind)?.auth?.loginCommand?.join(' ')
   const signInHint = loginCommand
     ? `${displayName} sign-in required — run '${loginCommand}' in a terminal, then retry.`
     : `${displayName} sign-in required — sign in with the harness's own CLI, then retry.`
@@ -255,11 +262,14 @@ export interface HarnessRuntimeOptions {
 export const CANCEL_DRAIN_MS = 1500
 
 /** Handshake deadline for the `inspect()` pre-flight probe (map 47 ticket 50):
- *  mirrors `HARNESS_PROBE_TIMEOUT_MS` in `probe.ts` so a hung agent degrades
- *  to the `{ ok: false }` inspect arm instead of hanging the picker forever.
- *  Unifying the two constants is a follow-up; `runtime.ts` cannot import from
- *  `probe.ts` (probe already imports `createHarnessSpawn` from here). */
-export const HARNESS_INSPECT_TIMEOUT_MS = 15_000
+ *  the single source is `HARNESS_HANDSHAKE_TIMEOUT_MS` in
+ *  `./harness-timeouts.js`, shared with the `probe.ts` health probe, so a hung
+ *  agent degrades to the `{ ok: false }` inspect arm instead of hanging the
+ *  picker forever.
+ *  Compat alias — same value, single source.
+ *  @deprecated Use `HARNESS_HANDSHAKE_TIMEOUT_MS` from `./harness-timeouts.js`.
+ *  Removal: when every importer reads the canonical module (later slice). */
+export const HARNESS_INSPECT_TIMEOUT_MS = HARNESS_HANDSHAKE_TIMEOUT_MS
 
 /** Provider teardown as a never-fails Effect (the drain-barrier exemplar
  *  extended to teardown): `provider.cleanup()` must never turn a completed
@@ -323,7 +333,7 @@ export function acpSpawnCommand(
 }
 
 function acpConfigFor(kind: string): AcpAdapter['acpConfig'] {
-  const spec = harnessSpecs.find(s => s.kind === kind)
+  const spec = specFor(kind)
   if (!spec || spec.adapter.kind !== 'acp') {
     throw new Error(`harness ${kind} has no ACP adapter`)
   }
@@ -553,8 +563,8 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
       // (opencode and claude-agent-acp advertise models only there).
       //
       // Scoped acquisition (mirrors `probe.ts`): the provider is
-      // `acquireRelease`-owned, so a hung handshake (now bounded by
-      // `HARNESS_INSPECT_TIMEOUT_MS`) still reaps the child; a timeout fails
+      // `acquireRelease`-owned, so a hung handshake (bounded by the shared
+      // `HARNESS_HANDSHAKE_TIMEOUT_MS`) still reaps the child; a timeout fails
       // so the runner maps it to the `{ ok: false }` inspect arm.
       return Effect.runPromise(
         Effect.scoped(
@@ -568,11 +578,11 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
                 catch: error => error,
               }).pipe(
                 Effect.map(session => describeCatalog(session)),
-                Effect.timeoutOption(Duration.millis(HARNESS_INSPECT_TIMEOUT_MS)),
+                Effect.timeoutOption(Duration.millis(HARNESS_HANDSHAKE_TIMEOUT_MS)),
                 Effect.flatMap(outcome =>
                   outcome._tag === 'None'
                     ? Effect.fail(
-                        new Error(`harness did not answer initSession within ${HARNESS_INSPECT_TIMEOUT_MS / 1000}s`),
+                        new Error(`harness did not answer initSession within ${HARNESS_HANDSHAKE_TIMEOUT_MS / 1000}s`),
                       )
                     : Effect.succeed(outcome.value),
                 ),

@@ -3,8 +3,9 @@ import { Readable, Writable } from 'node:stream'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { HARNESS_PROBE_TIMEOUT_MS, probeHarness, probeTimeoutFor, type ProbeChild, type ProbeConnection, type ProbeResult, type ProbeSpawn } from '../src/main/agents/probe.js'
 import type { HarnessInfo } from '../src/main/agents/detect.js'
+import { HARNESS_HANDSHAKE_TIMEOUT_MS, probeTimeoutFor } from '../src/main/agents/harness-timeouts.js'
+import { probeHarness, type ProbeChild, type ProbeConnection, type ProbeResult, type ProbeSpawn } from '../src/main/agents/probe.js'
 
 class FakeChild extends EventEmitter implements ProbeChild {
   pid = 4321
@@ -159,7 +160,7 @@ describe('probeHarness', () => {
 
   it('gives slow-booting harnesses a longer per-spec deadline', () => {
     expect(probeTimeoutFor('copilot')).toBe(30_000)
-    expect(probeTimeoutFor('codex')).toBe(HARNESS_PROBE_TIMEOUT_MS)
+    expect(probeTimeoutFor('codex')).toBe(HARNESS_HANDSHAKE_TIMEOUT_MS)
   })
 
   it('uses taskkill tree termination on win32 when a PID is available', async () => {
