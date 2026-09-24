@@ -1,5 +1,6 @@
 import * as Effect from 'effect/Effect'
 
+import { Env, resolveGatewayKey } from '../../env.js'
 import { HttpFetch, HttpFetchError } from '../fetch-utils.js'
 import { fileErrorCode, queueLogRecord } from '../file-errors.js'
 import type { DateRange } from '../types.js'
@@ -19,9 +20,16 @@ export type ReportRow = {
   request_count?: number
 }
 
+/** Sync boundary adapter for `discoverSessions` (Promise interface — NOT Effect-ified).
+ *
+ * Unchanged behavior: no key → `[]`. The gateway effect no longer calls this
+ * (removal condition 1, done this slice: the `Effect.sync` env read inside
+ * the effect was removed when the key arrived via the `Env` service).
+ *
+ * Named removal condition: deletes when discovery runs through the env layer
+ * (later slice — NOT this one). */
 export function getVercelGatewayApiKey(): string | null {
-  const key = process.env['AI_GATEWAY_API_KEY'] ?? process.env['VERCEL_OIDC_TOKEN']
-  return key?.trim() ? key.trim() : null
+  return resolveGatewayKey(process.env['AI_GATEWAY_API_KEY'], process.env['VERCEL_OIDC_TOKEN'])
 }
 
 function formatUtcDate(d: Date): string {
@@ -46,8 +54,8 @@ function gatewayFailureCode(err: unknown): string {
 
 export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
   dateRange: DateRange,
-): Effect.fn.Return<ReportRow[], never, HttpFetch> {
-  const key = yield* Effect.sync(() => getVercelGatewayApiKey())
+): Effect.fn.Return<ReportRow[], never, HttpFetch | Env> {
+  const { vercelGatewayApiKey: key } = yield* Env
   if (!key) return []
 
   const params = new URLSearchParams({
@@ -108,7 +116,10 @@ function createParser(
       if (!dateRange) return
 
       const rows = await Effect.runPromise(
-        fetchVercelGatewayReportEffect(dateRange).pipe(Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch))),
+        fetchVercelGatewayReportEffect(dateRange).pipe(
+          Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
+          Effect.provide(Env.layer),
+        ),
       )
       for (const row of rows) {
         const day = row.day ?? ''
