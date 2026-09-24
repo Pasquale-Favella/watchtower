@@ -85,6 +85,53 @@ skill request are the same mode-less coach run; the suggested-skill chips on
 the welcome screen are plain chat-starters that ask the agent to author a
 SKILL.md grounded in the ledger.
 
+## The Effect-first backend
+
+Effect is the composition model for effectful backend workflows in the main
+process, the db-worker, and the Harness integration (ADR 0032, accepted and
+authoritative). Adoption moves one vertical slice at a time: each migrated
+workflow uses Effect end to end for orchestration and effectful dependencies,
+while behavior and IPC contracts stay stable. Pure parsing, mapping,
+aggregation, and formatting stay ordinary functions.
+
+Each isolate owns one application runtime with its own lifecycle and
+resources: the main process composes its services into one runtime, and the
+db-worker composes its own. The two runtimes never share SQLite state by
+design — the db-worker owns the single SQLite connection and the
+single-writer data plane on its dedicated thread, keeping database work off
+the main thread. External callbacks and Promise APIs enter or leave Effect at
+these composition roots rather than spreading through domain code.
+
+Per-slice adoption status:
+
+| Slice                           | Status                                                                                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Ledger and db-worker store      | Migrations accepted (ADR 0031); the store surface and worker orchestration migrate slice by slice behind the synchronous worker boundary. |
+| Fetch, FX, pricing, and updates | Migrating on the reference service shape; fallbacks preserved so Sections never block on a failed fetch.                                  |
+| Scan orchestration              | Migrating; provider parsers and the session cache stay pure behind their existing seams.                                                  |
+| Harness lifecycle               | Migrating behind the existing Harness seams, gaining deadlines, bounded concurrency, and deterministic teardown.                          |
+| Main runtime and IPC            | Migrating; one composition root fronts the IPC surface and the remaining channels move over per slice.                                    |
+| Renderer                        | 0% by design: no Effect in the renderer, which consumes the Promise-based, Zod-validated IPC facade.                                      |
+
+Contracts stay stable through the migration. Zod remains the single wire and
+contract truth: there are never parallel Zod and Effect Schema definitions
+for one contract, and a future schema migration is a separate, explicit
+decision. Compatibility adapters are temporary by rule — each carries a named
+removal condition, ordered gateway adapter first, store facade per slice, and
+db-worker client last.
+
+Locked decisions carried over from the adoption follow-up:
+
+- Configuration is env-only through Effect Config. Persisted settings —
+  Aliases, Price overrides, and other user settings changed at runtime —
+  stay in the ledger repository. There is no unified app config.
+- Any platform-layer adoption is sequenced HttpClient, then FileSystem, then
+  Command, each step pinned to the `effect` release line and proven inside
+  the packaged artifact the way `effect` itself was.
+- Observability is a bridge, not a second pipeline: Effect logs, metrics,
+  and spans feed the existing pino-backed Operational log. There is no
+  separate exporter.
+
 ## Architecture decisions
 
 Key decisions are recorded as ADRs in [`docs/adr`](./adr) and referenced
@@ -106,4 +153,6 @@ inline in the code. The most relevant ones:
 - [ADR 0025: ledger MCP HTTP fallback for stdio-rejecting harnesses](./adr/0025-ledger-mcp-http-fallback-for-stdio-rejecting-harnesses.md)
 - [ADR 0026: pooled ledger MCP sidecar for stdio-rejecting harnesses](./adr/0026-pooled-ledger-mcp-sidecar.md)
 - [ADR 0027: app-scoped local ledger MCP and startup controls](./adr/0027-app-scoped-local-ledger-mcp.md)
+- [ADR 0030: targeted Effect adoption for the Coach harness layer](./adr/0030-effect-for-harness-management.md)
+- [ADR 0031: version the local ledger schema with SQLite migrations](./adr/0031-versioned-ledger-migrations.md)
 - [ADR 0032: Effect as the composition model for backend workflows](./adr/0032-effect-first-backend-architecture.md)

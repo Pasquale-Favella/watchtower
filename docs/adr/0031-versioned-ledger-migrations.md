@@ -1,6 +1,6 @@
 # Version the local ledger schema with SQLite migrations
 
-Status: proposed
+Status: accepted
 
 ## Context
 
@@ -56,9 +56,13 @@ or general worker orchestration.
 - Migration DDL remains explicit SQL and Zod remains the application schema
   contract; the Effect migration journal is infrastructure, not a second domain
   schema representation.
-- Any broader Effect adoption still requires a separate ADR.
+- ADR 0032 supersedes the narrow adoption limit in ADR 0030 and the
+  "separate ADR required" limitation above: broader Effect adoption is now
+  governed by ADR 0032 and no longer needs a per-area ADR. This ADR remains
+  the historical record of the ledger migration decision; the migration
+  mechanics above stand as merged.
 - Migration tests cover fresh sequencing, repeat invocation, legacy adoption,
   rollback, and forward-version rejection. Existing ledger tests continue to
   lock DDL, constraints, and Zod parity.
 
-Related: #146, #123, ADR 0023, ADR 0030.
+Related: #146, #123, ADR 0023, ADR 0030, ADR 0032.
