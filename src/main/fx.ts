@@ -198,7 +198,7 @@ export const refreshFxRateWithRates = Effect.fnUntraced(function* (
   })
 
   const http = yield* HttpFetch
-  const refreshed = yield* Effect.gen(function* () {
+  return yield* Effect.gen(function* () {
     const response = yield* http.fetch(`${FRANKFURTER_URL}${safe}`, {}, options.timeoutMs)
     if (!response.ok) return fallback()
     const data = yield* Effect.tryPromise({
@@ -221,29 +221,6 @@ export const refreshFxRateWithRates = Effect.fnUntraced(function* (
       updatedAt: latest?.updatedAt,
     } satisfies ActiveCurrency
   }).pipe(Effect.catch(() => Effect.succeed(fallback())))
-
-  return refreshed
-})
-
-/** Compatibility adapter over {@link refreshFxRateWithRates} (ADR 0032 slice 1
- * shape preserved).
- *
- * Production callers (`DbWorkerContext.refreshFxOnCadence`, `currency:set`)
- * and `tests/fx.test.ts` keep calling `refreshFxRateEffect(store, code,
- * options)` with zero edits: the store-backed `FxRates` layer is provided at
- * this boundary, so the core no longer touches the concrete `LedgerStore`.
- *
- * Named removal condition: delete this adapter when the db-worker callers
- * inject the repository layer directly (a later slice — NOT this one). The
- * `Effect.sync(() => store.get…)` concretion is already gone from the core,
- * which depends on the `FxRates` port.
- */
-export const refreshFxRateEffect = Effect.fnUntraced(function* (
-  store: LedgerStore,
-  code: string,
-  options: RefreshFxRateEffectOptions = {},
-): Effect.fn.Return<ActiveCurrency, never, HttpFetch> {
-  return yield* refreshFxRateWithRates(code, options).pipe(Effect.provide(FxRates.layerWithStore(store)))
 })
 
 // --- Display/export-boundary conversion. Costs in the store are always USD;

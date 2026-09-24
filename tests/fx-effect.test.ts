@@ -13,7 +13,6 @@ import {
   type ActiveCurrency,
   FX_CACHE_TTL_MS,
   FxRates,
-  refreshFxRateEffect,
   refreshFxRateWithRates,
 } from '../src/main/fx.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
@@ -39,15 +38,25 @@ function throwingFetch(message = 'offline'): typeof fetch {
   }) as unknown as typeof fetch
 }
 
+function fxEffect(
+  store: LedgerStore,
+  code: string,
+  fetchImpl: typeof fetch,
+  options: { now?: () => number; timeoutMs?: number } = {},
+): Effect.Effect<ActiveCurrency, never, never> {
+  return refreshFxRateWithRates(code, options).pipe(
+    Effect.provide(FxRates.layerWithStore(store)),
+    Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+  )
+}
+
 function runFx(
   store: LedgerStore,
   code: string,
   fetchImpl: typeof fetch,
   options: { now?: () => number; timeoutMs?: number } = {},
 ): Promise<ActiveCurrency> {
-  return Effect.runPromise(
-    refreshFxRateEffect(store, code, options).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))),
-  )
+  return Effect.runPromise(fxEffect(store, code, fetchImpl, options))
 }
 
 function makeFakeRates(): { saved: Map<string, CurrencyRate>; ratesLayer: Layer.Layer<FxRates> } {
@@ -63,7 +72,7 @@ function makeFakeRates(): { saved: Map<string, CurrencyRate>; ratesLayer: Layer.
   return { saved, ratesLayer }
 }
 
-describe('refreshFxRateEffect (Effect-native FX boundary)', () => {
+describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
   it('fetches a missing rate and caches it', async () => {
     const store = makeStore()
     store.setDisplayCurrency('EUR')
@@ -137,11 +146,7 @@ describe('refreshFxRateEffect (Effect-native FX boundary)', () => {
     const neverFetch = (() => new Promise<Response>(() => {})) as typeof fetch
     const active = await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
-          refreshFxRateEffect(store, 'EUR', { timeoutMs: 100 }).pipe(
-            Effect.provide(HttpFetch.layerWithFetch(neverFetch)),
-          ),
-        )
+        const fiber = yield* Effect.forkChild(fxEffect(store, 'EUR', neverFetch, { timeoutMs: 100 }))
         yield* TestClock.adjust(500)
         return yield* Fiber.join(fiber)
       }).pipe(Effect.provide(TestClock.layer())),
@@ -211,11 +216,7 @@ describe('refreshFxRateEffect (Effect-native FX boundary)', () => {
 
     const exit = await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
-          refreshFxRateEffect(store, 'EUR', { timeoutMs: 8000 }).pipe(
-            Effect.provide(HttpFetch.layerWithFetch(hangingFetch)),
-          ),
-        )
+        const fiber = yield* Effect.forkChild(fxEffect(store, 'EUR', hangingFetch, { timeoutMs: 8000 }))
         yield* Effect.yieldNow
         yield* Fiber.interrupt(fiber)
         return yield* Fiber.await(fiber)

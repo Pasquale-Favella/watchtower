@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
-import type * as Layer from 'effect/Layer'
+import * as Layer from 'effect/Layer'
 import * as Schedule from 'effect/Schedule'
 import * as Scope from 'effect/Scope'
 import { mkdirSync, readdirSync, statSync } from 'fs'
@@ -19,10 +19,11 @@ import { exportCsv, exportJson } from '../export.js'
 import {
   type ActiveCurrency,
   type CurrencyOption,
+  FxRates,
   getActiveCurrency,
   isValidCurrencyCode,
   listCurrencies,
-  refreshFxRateEffect,
+  refreshFxRateWithRates,
 } from '../fx.js'
 import { buildModelsViewFromLedger, type ModelsPayload } from '../models-view.js'
 import { buildOptimizeViewFromLedger, type OptimizePayload } from '../optimize-view.js'
@@ -91,6 +92,14 @@ function lifetimeRange(): DateRange {
  * the same path as production (layer is stateless, safe per-effect). */
 function liveFetchLayer(): Layer.Layer<HttpFetch> {
   return HttpFetch.layerWithFetch(globalThis.fetch)
+}
+
+/** Worker-local live layer (ADR 0032): flat `HttpFetch` + store-backed
+ * `FxRates` composition, mirroring `MainLive`'s `Layer.mergeAll` shape at
+ * worker scope. Provided once at the `run*` boundary in `startBackgroundFx`,
+ * so FX call sites depend on the ports, never the concrete `LedgerStore`. */
+function liveFxLayer(store: LedgerStore): Layer.Layer<HttpFetch | FxRates> {
+  return Layer.mergeAll(liveFetchLayer(), FxRates.layerWithStore(store))
 }
 
 /**
@@ -202,9 +211,9 @@ export class DbWorkerContext {
     }
   }
 
-  private startBackgroundFx(work: Effect.Effect<void, never, HttpFetch>): void {
+  private startBackgroundFx(work: Effect.Effect<void, never, HttpFetch | FxRates>): void {
     if (this.closed) return
-    const provided = Effect.provide(work, liveFetchLayer())
+    const provided = Effect.provide(work, liveFxLayer(this.ledger))
     Effect.runSync(Effect.forkIn(provided, this.backgroundScope, { startImmediately: true }))
   }
 
@@ -305,7 +314,7 @@ export class DbWorkerContext {
       if (ms === null) return // Manual: no background timer
       // The FX background job rides the same repurposed cadence as the scan
       // trigger (ADR 0009): each tick also refreshes the selected currency's
-      // rate when it is missing or older than 24h. refreshFxRateEffect never
+      // rate when it is missing or older than 24h. refreshFxRateWithRates never
       // throws, so a Frankfurter outage can never disturb the scan itself.
       const cadence = Effect.sleep(ms).pipe(Effect.andThen(Effect.repeat(tick, Schedule.fixed(ms))))
       const fiber = yield* Effect.forkIn(cadence, backgroundScope, { startImmediately: true })
@@ -323,14 +332,15 @@ export class DbWorkerContext {
    * spam re-renders while the 24h cache is still fresh. Fiber interruption
    * (backgroundScope close) aborts the underlying fetch via HttpFetch —
    * no manual AbortSignal plumbing. */
-  private refreshFxOnCadence(): Effect.Effect<void, never, HttpFetch> {
+  private refreshFxOnCadence(): Effect.Effect<void, never, HttpFetch | FxRates> {
     const ledger = this.ledger
     const emit = this.emit
     const isClosed = (): boolean => this.closed
     return Effect.gen(function* () {
       const before = yield* Effect.sync(() => getActiveCurrency(ledger))
-      const code = yield* Effect.sync(() => ledger.getDisplayCurrency())
-      const after = yield* refreshFxRateEffect(ledger, code)
+      const rates = yield* FxRates
+      const code = yield* rates.getDisplayCurrency()
+      const after = yield* refreshFxRateWithRates(code)
       if (!isClosed() && (after.rate !== before.rate || after.updatedAt !== before.updatedAt)) {
         yield* Effect.sync(() => emit({ event: 'currency:changed', currency: after }))
       }
@@ -723,7 +733,7 @@ export class DbWorkerContext {
         const isClosed = (): boolean => this.closed
         this.startBackgroundFx(
           Effect.gen(function* () {
-            const currency = yield* refreshFxRateEffect(ledger, code)
+            const currency = yield* refreshFxRateWithRates(code)
             if (!isClosed()) yield* Effect.sync(() => emit({ event: 'currency:changed', currency }))
           }),
         )

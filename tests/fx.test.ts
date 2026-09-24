@@ -12,13 +12,14 @@ import {
   convertCost,
   formatCost,
   FX_CACHE_TTL_MS,
+  FxRates,
   getActiveCurrency,
   getFractionDigits,
   isRateStale,
   isValidCurrencyCode,
   listCurrencies,
-  refreshFxRateEffect,
   type RefreshFxRateEffectOptions,
+  refreshFxRateWithRates,
   roundForActiveCurrency,
 } from '../src/main/fx.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
@@ -53,15 +54,25 @@ function fakeCountingFetch(rates: Record<string, unknown>): { fetch: typeof fetc
   return { fetch, getCalls: () => calls }
 }
 
+function fxEffect(
+  store: LedgerStore,
+  code: string,
+  fetchImpl: typeof fetch,
+  options: RefreshFxRateEffectOptions = {},
+): Effect.Effect<ActiveCurrency, never, never> {
+  return refreshFxRateWithRates(code, options).pipe(
+    Effect.provide(FxRates.layerWithStore(store)),
+    Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+  )
+}
+
 function runFx(
   store: LedgerStore,
   code: string,
   fetchImpl: typeof fetch,
   options: RefreshFxRateEffectOptions = {},
 ): Promise<ActiveCurrency> {
-  return Effect.runPromise(
-    refreshFxRateEffect(store, code, options).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))),
-  )
+  return Effect.runPromise(fxEffect(store, code, fetchImpl, options))
 }
 
 const EUR: ActiveCurrency = { code: 'EUR', symbol: '€', rate: 0.9 }
@@ -128,7 +139,7 @@ describe('getActiveCurrency (the renderer-only read path, never fetches)', () =>
   })
 })
 
-describe('refreshFxRateEffect (the main-process Frankfurter background job)', () => {
+describe('refreshFxRateWithRates (the main-process Frankfurter background job)', () => {
   it('fetches a missing rate and caches it into the FX side-table', async () => {
     const store = makeStore()
     store.setDisplayCurrency('EUR')
@@ -197,11 +208,7 @@ describe('refreshFxRateEffect (the main-process Frankfurter background job)', ()
 
     const exit = await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
-          refreshFxRateEffect(store, 'EUR', { timeoutMs: 8000 }).pipe(
-            Effect.provide(HttpFetch.layerWithFetch(hangingFetch)),
-          ),
-        )
+        const fiber = yield* Effect.forkChild(fxEffect(store, 'EUR', hangingFetch, { timeoutMs: 8000 }))
         yield* Effect.yieldNow
         yield* Fiber.interrupt(fiber)
         return yield* Fiber.await(fiber)
