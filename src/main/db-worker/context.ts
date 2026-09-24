@@ -108,18 +108,27 @@ export class DbWorkerContext {
   /** The most recent completed scan's metadata — the `getScanStatus()` answer
    * and the `store:changed` payload (ADR 0004). In-memory only. */
   private lastScanMetadata: ScanMetadata | null = null
-  private scanActive = false
-  private abortRequested = false
+  /** Single-flight scan fiber in `scanScope`: null = idle. Coalescing checks
+   * this ref synchronously — check and install happen with no await in
+   * between, so concurrent `scan:start`/background ticks cannot double-fork. */
+  private scanFiber: Fiber.Fiber<ScanMetadata, unknown> | null = null
+  /** Cooperative abort flag ONLY for `runScan`'s Promise-boundary seam
+   * (`scan.ts` requires `isAborted()`; its `parseAllSessions` Promise cannot
+   * observe fiber interruption). Set alongside fiber interruption in
+   * `scan:abort`/`close`, cleared on scan start. Removal condition: delete
+   * when `runScan` accepts fiber interruption / AbortSignal instead of the
+   * callback (requires `scan.ts` change, out of this slice). */
+  private scanAbortFlag = false
   /** True while the in-flight scan was started manually (⌘R): its progress
    * and error events belong to the requesting window only. */
   private manualScan = false
   private cadenceFiber: Fiber.Fiber<unknown, never> | null = null
   private cadenceGeneration = 0
-  private activeScan: Promise<ScanMetadata> | null = null
   private readonly backgroundScope = Scope.makeUnsafe()
   private readonly scanScope = Scope.makeUnsafe()
-  private readonly backgroundFxTasks = new Set<Promise<void>>()
-  private closePromise: Promise<void> | null = null
+  /** Idempotent shutdown: first `close()` forks the shutdown Effect into
+   * `closeFiber`; concurrent/second closes join the same fiber. */
+  private closeFiber: Fiber.Fiber<void> | null = null
   private closed = false
 
   constructor(init: DbWorkerData, emit: DbWorkerEmit) {
@@ -170,7 +179,7 @@ export class DbWorkerContext {
     return runScan(
       { range, provider: options?.provider },
       emit,
-      { isAborted: () => this.abortRequested },
+      { isAborted: () => this.scanAbortFlag },
       // Ledger port-in seam (ADR 0002): every settled session file is streamed
       // to the ledger while the parse runs. The scan's delta wrapper already
       // gates out failed parses; `unchanged` is a no-op inside portIn.
@@ -185,25 +194,18 @@ export class DbWorkerContext {
     const fiber = Effect.runSync(
       Effect.forkIn(this.performScan(options, emit), this.scanScope, { startImmediately: true }),
     )
-    const scan = Effect.runPromise(Fiber.join(fiber))
-    this.activeScan = scan
+    this.scanFiber = fiber
     try {
-      return await scan
+      return await Effect.runPromise(Fiber.join(fiber))
     } finally {
-      if (this.activeScan === scan) this.activeScan = null
+      if (this.scanFiber === fiber) this.scanFiber = null
     }
   }
 
   private startBackgroundFx(work: Effect.Effect<void, never, HttpFetch>): void {
     if (this.closed) return
     const provided = Effect.provide(work, liveFetchLayer())
-    const fiber = Effect.runSync(Effect.forkIn(provided, this.backgroundScope, { startImmediately: true }))
-    const promise = Effect.runPromise(Fiber.join(fiber)).then(
-      () => undefined,
-      () => undefined,
-    )
-    this.backgroundFxTasks.add(promise)
-    void promise.finally(() => this.backgroundFxTasks.delete(promise))
+    Effect.runSync(Effect.forkIn(provided, this.backgroundScope, { startImmediately: true }))
   }
 
   /** Operational-log forwards (#128): scan lifecycle over the existing host
@@ -253,10 +255,9 @@ export class DbWorkerContext {
    * as intrusively as a user-initiated one would. Coalesces with any
    * already-running scan rather than overlapping it. */
   private async triggerBackgroundScan(): Promise<void> {
-    if (this.closed || this.scanActive) return
-    this.scanActive = true
+    if (this.closed || this.scanFiber !== null) return
     this.manualScan = false
-    this.abortRequested = false
+    this.scanAbortFlag = false
     this.emitScanStart()
     try {
       const metadata = await this.runTrackedScan(undefined, progress =>
@@ -266,36 +267,54 @@ export class DbWorkerContext {
       this.emit({ event: 'store:changed', metadata })
       this.emitScanFinish(metadata)
     } catch (err) {
-      // background scans fail silently; manual ⌘R remains available
+      // background scans fail silently; manual ⌘R remains available.
+      // Fiber interruption (abort/close) rides the abort flag so the oplog
+      // stays `scan.abort` (warn), not `scan.error`.
       this.emit({ event: 'scan:idle' })
-      this.emitScanFailure(err)
-    } finally {
-      this.scanActive = false
+      this.emitScanFailure(this.scanAbortFlag ? new ScanAbortedError() : err)
     }
   }
 
   /** (Re)schedules the background scan in the worker scope from the persisted
    * cadence. Ticks remain delayed and fixed-rate; scan coalescing stays in
    * triggerBackgroundScan. */
-  private async scheduleCadence(): Promise<void> {
-    const generation = ++this.cadenceGeneration
-    const previous = this.cadenceFiber
-    this.cadenceFiber = null
-    if (previous) await Effect.runPromise(Fiber.interrupt(previous))
-    if (this.closed || generation !== this.cadenceGeneration) return
-
-    const ms = resolveCadenceMs(this.ledger.getRefreshCadence())
-    if (ms === null) return // Manual: no background timer
-    // The FX background job rides the same repurposed cadence as the scan
-    // trigger (ADR 0009): each tick also refreshes the selected currency's
-    // rate when it is missing or older than 24h. refreshFxRateEffect never
-    // throws, so a Frankfurter outage can never disturb the scan itself.
-    const tick = Effect.sync(() => {
+  private scheduleCadenceEffect(): Effect.Effect<void> {
+    const ledger = this.ledger
+    const backgroundScope = this.backgroundScope
+    const nextGeneration = (): { generation: number; previous: Fiber.Fiber<unknown, never> | null } => {
+      const generation = ++this.cadenceGeneration
+      const previous = this.cadenceFiber
+      this.cadenceFiber = null
+      return { generation, previous }
+    }
+    const isStale = (generation: number): boolean => this.closed || generation !== this.cadenceGeneration
+    const install = (fiber: Fiber.Fiber<unknown, never>): void => {
+      this.cadenceFiber = fiber
+    }
+    const runTick = (): void => {
       this.startBackgroundFx(this.refreshFxOnCadence())
       void this.triggerBackgroundScan()
+    }
+    const tick = Effect.sync(runTick)
+    return Effect.gen(function* () {
+      const { generation, previous } = yield* Effect.sync(nextGeneration)
+      if (previous) yield* Fiber.interrupt(previous)
+      if (yield* Effect.sync(() => isStale(generation))) return
+
+      const ms = resolveCadenceMs(ledger.getRefreshCadence())
+      if (ms === null) return // Manual: no background timer
+      // The FX background job rides the same repurposed cadence as the scan
+      // trigger (ADR 0009): each tick also refreshes the selected currency's
+      // rate when it is missing or older than 24h. refreshFxRateEffect never
+      // throws, so a Frankfurter outage can never disturb the scan itself.
+      const cadence = Effect.sleep(ms).pipe(Effect.andThen(Effect.repeat(tick, Schedule.fixed(ms))))
+      const fiber = yield* Effect.forkIn(cadence, backgroundScope, { startImmediately: true })
+      yield* Effect.sync(() => install(fiber))
     })
-    const cadence = Effect.sleep(ms).pipe(Effect.andThen(Effect.repeat(tick, Schedule.fixed(ms))))
-    this.cadenceFiber = Effect.runSync(Effect.forkIn(cadence, this.backgroundScope, { startImmediately: true }))
+  }
+
+  private async scheduleCadence(): Promise<void> {
+    await Effect.runPromise(this.scheduleCadenceEffect())
   }
 
   /** The FX half of the background cadence tick (and the startup prime):
@@ -397,10 +416,10 @@ export class DbWorkerContext {
         // This is NOT a failure: its progress and store:changed events will land
         // on their own, so the renderer must not surface an error box or a retry
         // button for it — hence the explicit flag instead of an error string.
-        if (this.scanActive) return { ok: false, alreadyRunning: true }
-        this.scanActive = true
+        // Coalescing reads the single-flight `scanFiber` ref.
+        if (this.scanFiber !== null) return { ok: false, alreadyRunning: true }
         this.manualScan = true
-        this.abortRequested = false
+        this.scanAbortFlag = false
         this.emitScanStart(options?.provider)
         try {
           const metadata = await this.runTrackedScan(options, progress =>
@@ -414,23 +433,31 @@ export class DbWorkerContext {
           // wire stays byte-faithful to the shared schema.
           return { ok: true }
         } catch (err) {
-          const message =
-            err instanceof ScanAbortedError ? 'scan aborted' : err instanceof Error ? err.message : String(err)
+          // Fiber interruption (abort/close) rides the abort flag so the wire
+          // stays `{ok:false, aborted:true}` + `scan:error` even when the
+          // failure is an interruption cause rather than `ScanAbortedError`.
+          const aborted = err instanceof ScanAbortedError || this.scanAbortFlag
+          const normalized = aborted && !(err instanceof ScanAbortedError) ? new ScanAbortedError() : err
+          const message = aborted ? 'scan aborted' : err instanceof Error ? err.message : String(err)
           this.emit({ event: 'scan:error', manual: true, message })
-          this.emitScanFailure(err)
+          this.emitScanFailure(normalized)
           return {
             ok: false,
-            aborted: err instanceof ScanAbortedError,
-            error: err instanceof Error ? err.message : String(err),
+            aborted,
+            error: normalized instanceof Error ? normalized.message : String(normalized),
           }
-        } finally {
-          this.scanActive = false
         }
       }
 
-      case 'scan:abort':
-        this.abortRequested = true
+      case 'scan:abort': {
+        // Fiber interruption is the abort mechanism (not just the flag): the
+        // flag remains ONLY as the `runScan` Promise-boundary seam. No-op
+        // when idle.
+        this.scanAbortFlag = true
+        const fiber = this.scanFiber
+        if (fiber) await Effect.runPromise(Fiber.interrupt(fiber))
         return null
+      }
 
       /** Graceful shutdown (quit path): stop background work and close the
        * ledger after its outstanding scan and FX requests have settled. */
@@ -438,14 +465,20 @@ export class DbWorkerContext {
         await this.close()
         return null
 
-      case 'cadence:get':
-        return ledger.getRefreshCadence()
+      case 'cadence:get': {
+        return Effect.runPromise(Effect.sync(() => ledger.getRefreshCadence()))
+      }
 
       case 'cadence:set': {
         const value = args[0] as string
-        ledger.setRefreshCadence(value)
-        await this.scheduleCadence()
-        return ledger.getRefreshCadence()
+        const reschedule = this.scheduleCadenceEffect()
+        return Effect.runPromise(
+          Effect.gen(function* () {
+            yield* Effect.sync(() => ledger.setRefreshCadence(value))
+            yield* reschedule
+            return yield* Effect.sync(() => ledger.getRefreshCadence())
+          }),
+        )
       }
 
       /** Scan status (ADR 0004): the most recent completed scan's metadata,
@@ -718,18 +751,23 @@ export class DbWorkerContext {
 
   /** Stop background work and close the store after scans/FX settle. Idempotent. */
   close(): Promise<void> {
-    if (this.closePromise) return this.closePromise
+    if (this.closeFiber) return Effect.runPromise(Fiber.join(this.closeFiber))
     this.closed = true
     this.cadenceGeneration++
     this.cadenceFiber = null
-    this.abortRequested = true
-    this.closePromise = (async () => {
-      await Effect.runPromise(Scope.close(this.backgroundScope, Exit.void))
-      await Promise.all(this.backgroundFxTasks)
-      await this.activeScan?.catch(() => undefined)
-      await Effect.runPromise(Scope.close(this.scanScope, Exit.void))
-      this.ledger.close()
-    })()
-    return this.closePromise
+    this.scanAbortFlag = true
+    const backgroundScope = this.backgroundScope
+    const scanScope = this.scanScope
+    const currentScan = (): Fiber.Fiber<ScanMetadata, unknown> | null => this.scanFiber
+    const closeLedger = (): void => this.ledger.close()
+    const shutdown = Effect.gen(function* () {
+      yield* Scope.close(backgroundScope, Exit.void)
+      const scan = yield* Effect.sync(currentScan)
+      if (scan) yield* Fiber.join(scan).pipe(Effect.catch(() => Effect.void))
+      yield* Scope.close(scanScope, Exit.void)
+      yield* Effect.sync(closeLedger)
+    })
+    this.closeFiber = Effect.runFork(shutdown)
+    return Effect.runPromise(Fiber.join(this.closeFiber))
   }
 }

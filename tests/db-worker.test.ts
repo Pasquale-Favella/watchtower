@@ -222,6 +222,22 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     expect(closed).toBe(true)
   })
 
+  it('scan:abort interrupts the running scan fiber and maps to {ok:false, aborted:true}', async () => {
+    const c = open()
+    const scanResult = new Promise<ScanMetadata>(() => {})
+    const scanEffect = Effect.tryPromise({ try: () => scanResult, catch: cause => cause })
+    vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    ).mockReturnValue(scanEffect)
+    const request = c.dispatch('scan:start', [])
+    await vi.waitFor(() => expect((c as unknown as { scanFiber: unknown }).scanFiber).not.toBeNull())
+    await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: false, alreadyRunning: true })
+    await expect(c.dispatch('scan:abort', [])).resolves.toBeNull()
+    await expect(request).resolves.toMatchObject({ ok: false, aborted: true })
+    expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
+  })
+
   it('waits for a cancelled FX request before closing the ledger', async () => {
     let resolveResponse!: (response: Response) => void
     let requestSignal: AbortSignal | undefined
