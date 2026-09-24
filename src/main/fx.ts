@@ -1,5 +1,7 @@
+import * as Effect from 'effect/Effect'
+
 import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
-import { fetchWithTimeout } from './pipeline/fetch-utils.js'
+import { fetchWithTimeout, HttpFetch } from './pipeline/fetch-utils.js'
 import type { LedgerStore } from './store/ledger.js'
 
 export type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
@@ -73,17 +75,16 @@ function resolveSymbol(code: string): string {
 }
 
 export function getFractionDigits(code: string): number {
-  return new Intl.NumberFormat('en', {
-    style: 'currency',
-    currency: code,
-  }).resolvedOptions().maximumFractionDigits ?? 2
+  return (
+    new Intl.NumberFormat('en', {
+      style: 'currency',
+      currency: code,
+    }).resolvedOptions().maximumFractionDigits ?? 2
+  )
 }
 
 function isValidRate(value: unknown): value is number {
-  return typeof value === 'number'
-    && Number.isFinite(value)
-    && value >= MIN_VALID_FX_RATE
-    && value <= MAX_VALID_FX_RATE
+  return typeof value === 'number' && Number.isFinite(value) && value >= MIN_VALID_FX_RATE && value <= MAX_VALID_FX_RATE
 }
 
 /** Every ISO 4217 currency code the runtime supports (162 in this Node/ICU),
@@ -91,9 +92,7 @@ function isValidRate(value: unknown): value is number {
  * Frankfurter/ECB only publishes a ~30-currency subset; codes outside it
  * simply fall back per the graceful-degrade rule until a fetch succeeds. */
 export function listCurrencies(): CurrencyOption[] {
-  const codes = SUPPORTED_CURRENCY_CODES.size > 0
-    ? [...SUPPORTED_CURRENCY_CODES]
-    : Intl.supportedValuesOf('currency')
+  const codes = SUPPORTED_CURRENCY_CODES.size > 0 ? [...SUPPORTED_CURRENCY_CODES] : Intl.supportedValuesOf('currency')
   return codes
     .filter(isValidCurrencyCode)
     .map(code => ({ code, symbol: resolveSymbol(code) }))
@@ -192,6 +191,75 @@ export async function refreshFxRate(
     updatedAt: latest?.updatedAt,
   }
 }
+
+export interface RefreshFxRateEffectOptions {
+  /** Injectable clock for staleness tests; defaults to Date.now. */
+  now?: () => number
+  /** Fetch timeout override; defaults to the shared HTTP ceiling. */
+  timeoutMs?: number
+}
+
+/** Effect-native USD→code refresh (ADR 0032 slice 1).
+ *
+ * Same contract as `refreshFxRate`: never fails, falls back to the last cached
+ * rate (or USD rate 1) on offline/blocked/non-2xx/invalid-rate. The network
+ * enters through the `HttpFetch` service — timeout via the Effect Clock
+ * (TestClock-controllable) and fiber interruption aborts the underlying fetch,
+ * replacing the manual `signal` plumbing. Pure helpers stay plain functions.
+ *
+ * Compatibility: additive alongside the Promise `refreshFxRate`. Removal
+ * condition for the Promise adapter: `DbWorkerContext.refreshFxOnCadence` and
+ * `currency:set` consume this effect directly.
+ */
+export const refreshFxRateEffect = Effect.fnUntraced(function* (
+  store: LedgerStore,
+  code: string,
+  options: RefreshFxRateEffectOptions = {},
+): Effect.fn.Return<ActiveCurrency, never, HttpFetch> {
+  const safe = isValidCurrencyCode(code) ? code : 'USD'
+  if (safe === 'USD') return { ...USD_CURRENCY }
+
+  const cached = yield* Effect.sync(() => store.getCurrencyRate(safe))
+  const now = options.now?.() ?? Date.now()
+  if (cached && !isRateStale(cached.updatedAt, now)) {
+    return { code: safe, symbol: cached.symbol, rate: cached.rate, updatedAt: cached.updatedAt }
+  }
+  const fallback = (): ActiveCurrency => ({
+    code: safe,
+    symbol: cached?.symbol ?? resolveSymbol(safe),
+    rate: cached?.rate ?? 1,
+    updatedAt: cached?.updatedAt,
+  })
+
+  const http = yield* HttpFetch
+  const refreshed = yield* Effect.gen(function* () {
+    const response = yield* http.fetch(`${FRANKFURTER_URL}${safe}`, {}, options.timeoutMs)
+    if (!response.ok) return fallback()
+    const data = yield* Effect.tryPromise({
+      try: () => response.json() as Promise<{ rates?: Record<string, unknown> }>,
+      catch: cause => cause,
+    }).pipe(Effect.catch(() => Effect.succeed(null as { rates?: Record<string, unknown> } | null)))
+    const rate = data?.rates?.[safe]
+    if (!isValidRate(rate)) return fallback()
+    yield* Effect.sync(() =>
+      store.setCurrencyRate({
+        code: safe,
+        symbol: resolveSymbol(safe),
+        rate,
+        updatedAt: new Date(now).toISOString(),
+      }),
+    )
+    const latest = yield* Effect.sync(() => store.getCurrencyRate(safe))
+    return {
+      code: safe,
+      symbol: latest?.symbol ?? resolveSymbol(safe),
+      rate: latest?.rate ?? 1,
+      updatedAt: latest?.updatedAt,
+    } satisfies ActiveCurrency
+  }).pipe(Effect.catch(() => Effect.succeed(fallback())))
+
+  return refreshed
+})
 
 // --- Display/export-boundary conversion. Costs in the store are always USD;
 // these are the only places FX is applied. ---
