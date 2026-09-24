@@ -1,23 +1,27 @@
 import { existsSync, statSync } from 'node:fs'
+
 import type { ACPProvider, ACPProviderSettings } from '@mcpc-tech/acp-ai-provider'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
-import type { CoachEvent, CoachSessionModes, CoachSessionModels } from '../../shared/schemas/agents.js'
+import * as Exit from 'effect/Exit'
+import * as Scope from 'effect/Scope'
+
+import type { CoachEvent, CoachSessionModels, CoachSessionModes } from '../../shared/schemas/agents.js'
 import type { HarnessInfo } from './detect.js'
-import type { AcpAdapter, AcpMcpServer } from './harnesses/types.js'
-import { createCoachEventNormalizer, type CoachStreamPart } from './events.js'
+import { type CoachStreamPart, createCoachEventNormalizer } from './events.js'
 import { harnessSpecs } from './harnesses/index.js'
-import { killProcessTreeSync } from './process-tree.js'
-import { encodeResumeCursor } from './resume-cursor.js'
+import type { AcpAdapter, AcpMcpServer } from './harnesses/types.js'
 import {
   describeCatalog,
   executeSelectionPlan,
-  planModeSelection,
-  planModelSelection,
-  routingPolicyFor,
   type HarnessCatalog,
+  planModelSelection,
+  planModeSelection,
+  routingPolicyFor,
   type SelectionProvider,
 } from './model-routing.js'
+import { killProcessTreeSync } from './process-tree.js'
+import { encodeResumeCursor } from './resume-cursor.js'
 
 /**
  * The HarnessRuntime seam (ticket 18/20): the single main-process module that
@@ -158,7 +162,10 @@ function asString(value: unknown): string | undefined {
  *  payload it implies (the resume handle + any handshake-declared
  *  models/modes). Shared by the main warm-up and the stale-resume fallback so
  *  both emit the session event identically. */
-async function warmSession(provider: AcpProvider, instanceId: string): Promise<{ sessionId?: string; event?: CoachEvent; catalog: HarnessCatalog }> {
+async function warmSession(
+  provider: AcpProvider,
+  instanceId: string,
+): Promise<{ sessionId?: string; event?: CoachEvent; catalog: HarnessCatalog }> {
   const session = (await provider.initSession()) as unknown
   const catalog = describeCatalog(session)
   const sessionId = isRecord(session) ? asString(session.sessionId) : undefined
@@ -233,7 +240,8 @@ const AUTH_DETAIL_MAX_CHARS = 300
  *  debuggability); everything else passes through untouched. */
 function toHarnessError(harness: HarnessInfo, rawMessage: string): CoachEvent {
   if (!isAuthFailureMessage(rawMessage)) return { kind: 'error', message: rawMessage }
-  const detail = rawMessage.length > AUTH_DETAIL_MAX_CHARS ? `${rawMessage.slice(0, AUTH_DETAIL_MAX_CHARS)}…` : rawMessage
+  const detail =
+    rawMessage.length > AUTH_DETAIL_MAX_CHARS ? `${rawMessage.slice(0, AUTH_DETAIL_MAX_CHARS)}…` : rawMessage
   return { kind: 'error', message: `${authHintForHarness(harness.kind, harness.displayName)} (detail: ${detail})` }
 }
 
@@ -245,6 +253,53 @@ export interface HarnessRuntimeOptions {
 }
 
 export const CANCEL_DRAIN_MS = 1500
+
+/** Handshake deadline for the `inspect()` pre-flight probe (map 47 ticket 50):
+ *  mirrors `HARNESS_PROBE_TIMEOUT_MS` in `probe.ts` so a hung agent degrades
+ *  to the `{ ok: false }` inspect arm instead of hanging the picker forever.
+ *  Unifying the two constants is a follow-up; `runtime.ts` cannot import from
+ *  `probe.ts` (probe already imports `createHarnessSpawn` from here). */
+export const HARNESS_INSPECT_TIMEOUT_MS = 15_000
+
+/** Provider teardown as a never-fails Effect (the drain-barrier exemplar
+ *  extended to teardown): `provider.cleanup()` must never turn a completed
+ *  or cancelled run into a rejection, so interruptions/defects are ignored.
+ *  Removal: manual `try { provider.cleanup() } catch {}` juggling removed
+ *  when run-teardown rides this Effect + Scope interruption. */
+export const teardownProviderEffect = Effect.fnUntraced(function* (provider: AcpProvider) {
+  yield* Effect.sync(() => {
+    try {
+      provider.cleanup()
+    } catch {
+      // Teardown must not turn a completed or cancelled run into a rejection.
+    }
+  }).pipe(Effect.ignore)
+})
+
+/** Bounded iterator drain for cancellation (the exemplar call-site, now
+ *  named): `iterator.return()` may hang on a stalled stream, so bound it
+ *  with the Effect Clock and ignore the outcome — late events are already
+ *  flushed, the child is reaped by the provider teardown that follows. */
+export const drainIteratorEffect = Effect.fn('drainIteratorEffect')(function* (
+  onReturn: () => Promise<unknown>,
+  cancelDrainMs: number,
+) {
+  yield* Effect.tryPromise({
+    try: () => onReturn(),
+    catch: error => error,
+  }).pipe(Effect.timeoutOption(Duration.millis(cancelDrainMs)), Effect.ignore)
+})
+
+/** AbortSignal teardown that never fails — `controller.abort()` is void but
+ *  typed as throwable, so isolate the try/catch in one place. Shared by both
+ *  arms of the run-scope finalizer below. */
+function abortControllerQuietly(controller: AbortController): void {
+  try {
+    controller.abort()
+  } catch {
+    // Abort must never fail teardown.
+  }
+}
 
 /** npm-global CLIs on Windows are `.cmd` shims (with a POSIX-script alias)
  *  that Node's shell-less `spawn` cannot execute — spawning the bare name
@@ -297,14 +352,6 @@ export function createHarnessSpawn(
 
 export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOptions = {}): HarnessRuntime {
   const platform = options.platform ?? process.platform
-
-  function teardownProvider(provider: AcpProvider): void {
-    try {
-      provider.cleanup()
-    } catch {
-      // Teardown must not turn a completed or cancelled run into a rejection.
-    }
-  }
 
   /** Builds the ACP provider for a harness run — the ONE place the seam maps
    *  a HarnessInfo + workspace + resume handle onto `createACPProvider`
@@ -363,14 +410,17 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           }
           // A stale resume is recoverable: discard the failed provider, create
           // a fresh session, and explicitly tell the user that context reset.
-          teardownProvider(provider)
+          await Effect.runPromise(teardownProviderEffect(provider))
           try {
             provider = createProvider({ ...input, sessionId: undefined })
             const warm = await warmSession(provider, instanceId)
             sessionId = warm.sessionId
             warmCatalog = warm.catalog
             restartedFresh = true
-            yield { kind: 'notice', message: 'The previous session could not be resumed — continuing in a fresh session.' }
+            yield {
+              kind: 'notice',
+              message: 'The previous session could not be resumed — continuing in a fresh session.',
+            }
             if (warm.event) yield warm.event
           } catch (err2) {
             yield toHarnessError(input.harness, err2 instanceof Error ? err2.message : String(err2))
@@ -398,7 +448,11 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
             const catalog = warmCatalog ?? describeCatalog(undefined)
             const policy = routingPolicyFor(input.harness.kind)
             if (input.modelId) {
-              languageModelId = await executeSelectionPlan(provider, sessionId, planModelSelection(policy, catalog, input.modelId))
+              languageModelId = await executeSelectionPlan(
+                provider,
+                sessionId,
+                planModelSelection(policy, catalog, input.modelId),
+              )
             }
             if (input.modeId) {
               await executeSelectionPlan(provider, sessionId, planModeSelection(policy, catalog, input.modeId))
@@ -409,26 +463,57 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           }
         }
 
+        // Scoped run teardown (replaces AbortController juggling): the
+        // controller abort + iterator drain ride `runScope` (LIFO, even on
+        // failure or consumer-side `gen.return()`); provider teardown rides
+        // `teardownProviderEffect` (never-fails, same timeoutOption+ignore
+        // barrier extended from the iterator exemplar).
+        // Removal: manual `controller.abort()` + `iterator.return` juggling
+        // removed when run-teardown rides scoped acquisition + fiber
+        // interruption via `runScope`.
+        const runScope = Scope.makeUnsafe()
         const controller = new AbortController()
-        const stream = sdk.streamText({
-          model: provider.languageModel(languageModelId, input.modeId),
-          prompt: restartedFresh ? (input.freshPrompt ?? input.prompt) : input.prompt,
-          tools: provider.tools,
-          abortSignal: controller.signal,
-        })
-
-        // ONE iterator, used for both the loop and cancellation. Holding a
-        // single handle means the finally's return() interrupts the SAME
-        // in-flight run (a second stream[Symbol.asyncIterator]() would mint a
-        // fresh iterator and cancel nothing). The AI SDK's AsyncIterableStream
-        // yields a plain AsyncIterator that is NOT itself async-iterable, so
-        // the loop must drive it with explicit next() calls — a `for await`
-        // over the held iterator throws 'not async iterable' (the fake SDK's
-        // async-generator mask hides this; the real stream does not).
-        const iterator = stream[Symbol.asyncIterator]()
-        const normalize = createCoachEventNormalizer()
+        let iterator: AsyncIterator<CoachStreamPart> | undefined
         let endedNormally = false
         try {
+          const stream = sdk.streamText({
+            model: provider.languageModel(languageModelId, input.modeId),
+            prompt: restartedFresh ? (input.freshPrompt ?? input.prompt) : input.prompt,
+            tools: provider.tools,
+            abortSignal: controller.signal,
+          })
+
+          // ONE iterator, used for both the loop and cancellation. Holding a
+          // single handle means the Scope finalizer's return() interrupts the SAME
+          // in-flight run (a second stream[Symbol.asyncIterator]() would mint a
+          // fresh iterator and cancel nothing). The AI SDK's AsyncIterableStream
+          // yields a plain AsyncIterator that is NOT itself async-iterable, so
+          // the loop must drive it with explicit next() calls — a `for await`
+          // over the held iterator throws 'not async iterable' (the fake SDK's
+          // async-generator mask hides this; the real stream does not).
+          iterator = stream[Symbol.asyncIterator]() as AsyncIterator<CoachStreamPart>
+          const normalize = createCoachEventNormalizer()
+          // Abort before drain (both bounded + ignored): runs on Scope.close
+          // in the outer finally, so a throw in the loop cannot skip it.
+          // Abort once when cancelled, then drain when the stream exposes
+          // `return()` — the two concerns are independent, so no else arm.
+          await Effect.runPromise(
+            Scope.addFinalizer(
+              runScope,
+              Effect.gen(function* () {
+                if (!endedNormally) {
+                  yield* Effect.sync(() => abortControllerQuietly(controller)).pipe(Effect.ignore)
+                }
+                const it = iterator as AsyncIterator<CoachStreamPart> & {
+                  return?: () => Promise<unknown>
+                }
+                if (it && typeof it.return === 'function') {
+                  const onReturn = it.return.bind(it)
+                  yield* drainIteratorEffect(() => onReturn(), options.cancelDrainMs ?? CANCEL_DRAIN_MS)
+                }
+              }).pipe(Effect.ignore),
+            ),
+          )
           for (;;) {
             const { done, value } = await iterator.next()
             if (done) {
@@ -444,54 +529,62 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
             }
           }
         } finally {
-          if (typeof iterator.return === 'function') {
-            if (endedNormally) {
-              await iterator.return()
-            } else {
-              controller.abort()
-              await Effect.runPromise(
-                Effect.tryPromise({
-                  try: () => iterator.return!(),
-                  catch: error => error,
-                }).pipe(
-                  Effect.timeoutOption(Duration.millis(options.cancelDrainMs ?? CANCEL_DRAIN_MS)),
-                  Effect.ignore,
-                ),
-              )
-            }
-          }
+          await Effect.runPromise(Scope.close(runScope, Exit.void))
         }
       } finally {
         // ACP providers spawn a child process per provider; we never persist
         // sessions, so every run tears its agent process down (normal end,
-        // error, or consumer-side cancellation).
-        teardownProvider(provider)
+        // error, or consumer-side cancellation) via the never-fails Effect.
+        await Effect.runPromise(teardownProviderEffect(provider))
       }
     },
 
     async inspect(input): Promise<HarnessInspectResult> {
-      const provider = createProvider(input)
-      try {
-        // The same handshake a run performs — spawn + initSession — but with
-        // no prompt streamed after it: read the declared selectable set and
-        // the warmed session id, then tear the process down immediately (the
-        // ACP session itself persists, exactly like a finished turn's). The
-        // models/modes ride the same session response `run` rides on the
-        // `session` CoachEvent (map 47 ticket 50), so what the pickers show
-        // pre-chat is exactly what the first run would have declared anyway;
-        // the session id lets the runner RESUME this warm session on that
-        // first run (no double cold-start). Legacy `models`/`modes` win when
-        // present; otherwise the canonical `configOptions` selects are mapped
-        // (opencode and claude-agent-acp advertise models only there).
-        const session = (await provider.initSession()) as unknown
-        const catalog = describeCatalog(session)
-        return {
-          ...(catalog.models ? { models: catalog.models } : {}),
-          ...(catalog.modes ? { modes: catalog.modes } : {}),
-        }
-      } finally {
-        teardownProvider(provider)
-      }
+      // The same handshake a run performs — spawn + initSession — but with
+      // no prompt streamed after it: read the declared selectable set and
+      // the warmed session id, then tear the process down immediately (the
+      // ACP session itself persists, exactly like a finished turn's). The
+      // models/modes ride the same session response `run` rides on the
+      // `session` CoachEvent (map 47 ticket 50), so what the pickers show
+      // pre-chat is exactly what the first run would have declared anyway;
+      // the session id lets the runner RESUME this warm session on that
+      // first run (no double cold-start). Legacy `models`/`modes` win when
+      // present; otherwise the canonical `configOptions` selects are mapped
+      // (opencode and claude-agent-acp advertise models only there).
+      //
+      // Scoped acquisition (mirrors `probe.ts`): the provider is
+      // `acquireRelease`-owned, so a hung handshake (now bounded by
+      // `HARNESS_INSPECT_TIMEOUT_MS`) still reaps the child; a timeout fails
+      // so the runner maps it to the `{ ok: false }` inspect arm.
+      return Effect.runPromise(
+        Effect.scoped(
+          Effect.acquireRelease(
+            Effect.sync(() => createProvider(input)),
+            provider => teardownProviderEffect(provider),
+          ).pipe(
+            Effect.flatMap(provider =>
+              Effect.tryPromise({
+                try: () => provider.initSession() as Promise<unknown>,
+                catch: error => error,
+              }).pipe(
+                Effect.map(session => describeCatalog(session)),
+                Effect.timeoutOption(Duration.millis(HARNESS_INSPECT_TIMEOUT_MS)),
+                Effect.flatMap(outcome =>
+                  outcome._tag === 'None'
+                    ? Effect.fail(
+                        new Error(`harness did not answer initSession within ${HARNESS_INSPECT_TIMEOUT_MS / 1000}s`),
+                      )
+                    : Effect.succeed(outcome.value),
+                ),
+                Effect.map(catalog => ({
+                  ...(catalog.models ? { models: catalog.models } : {}),
+                  ...(catalog.modes ? { modes: catalog.modes } : {}),
+                })),
+              ),
+            ),
+          ),
+        ),
+      )
     },
   }
 }
@@ -539,7 +632,9 @@ export async function loadHarnessSdk(): Promise<HarnessSdk> {
     createACPProvider: ((config: AcpProviderConfig): AcpProvider => {
       const provider = createACPProvider(config) as unknown as AcpProvider & {
         model?: ProviderModelInternals & {
-          connection?: { setSessionConfigOption?: (args: { sessionId: string; configId: string; value: string }) => Promise<unknown> }
+          connection?: {
+            setSessionConfigOption?: (args: { sessionId: string; configId: string; value: string }) => Promise<unknown>
+          }
         }
       }
       if (process.platform === 'win32') {
@@ -556,11 +651,8 @@ export async function loadHarnessSdk(): Promise<HarnessSdk> {
       }
       return provider
     }) as HarnessSdk['createACPProvider'],
-    streamText: (options: {
-      model: unknown
-      prompt: string
-      tools?: unknown
-      abortSignal?: AbortSignal
-    }) => streamText(options as unknown as Parameters<typeof streamText>[0]).fullStream as unknown as AsyncIterable<CoachStreamPart>,
+    streamText: (options: { model: unknown; prompt: string; tools?: unknown; abortSignal?: AbortSignal }) =>
+      streamText(options as unknown as Parameters<typeof streamText>[0])
+        .fullStream as unknown as AsyncIterable<CoachStreamPart>,
   }
 }

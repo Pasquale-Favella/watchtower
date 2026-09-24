@@ -1,6 +1,7 @@
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 
+import { HarnessProbe } from './agents/snapshot.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 
 /**
@@ -12,13 +13,18 @@ import { HttpFetch } from './pipeline/fetch-utils.js'
  * worker owns the ledger on its own thread behind DbWorkerClient; sharing
  * SQLite state across isolates would break the single-writer invariant).
  *
- * Starts with what the updates wiring needs (`HttpFetch` live). Harness
- * capabilities join later by merging their layers into `MainLive` (e.g.
- * `Layer.mergeAll(HttpFetch.layer, NextCapability.layer)`) — no second
- * runtime, and no `run*` calls spreading through domain code: external
- * callbacks and Promise APIs (IPC handlers) enter Effect here.
+ * Flat composition via `Layer.mergeAll` — no second runtime, no `run*`
+ * spreading through domain code: external callbacks and Promise APIs (IPC
+ * handlers) enter Effect here. `HarnessProbe` is the minimal harness
+ * capability seam (§4.3): the never-fails ACP handshake probe with
+ * test-friendly fakes (`layerWithProbe`), mirroring `HttpFetch.layerWithFetch`.
+ * The snapshot store itself stays Promise-bound (its `deps.detect` Promise
+ * boundary + `onChange` IPC push never cross into Effect), and the run
+ * seam stays injectable via `HarnessSdk` fakes — platform adoption
+ * (`@effect/platform` HttpClient/FileSystem/Command) and env-only Config
+ * are sequenced follow-ups, each pinned + asar-proven like ADR 0030.
  */
-export const MainLive: Layer.Layer<HttpFetch> = HttpFetch.layer
+export const MainLive: Layer.Layer<HttpFetch | HarnessProbe> = Layer.mergeAll(HttpFetch.layer, HarnessProbe.layer)
 
 export const mainRuntime = ManagedRuntime.make(MainLive)
 

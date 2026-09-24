@@ -38,6 +38,17 @@ function makeStore(
   return store
 }
 
+/** A probe that starts, registers a Scope finalizer, then hangs: `dispose()`
+ *  or the next `refresh()` must run the finalizer via handle interruption. */
+function hungProbeEffect(onStart: () => void, onFinalize: () => void): Effect.Effect<never, never, never> {
+  return Effect.scoped(
+    Effect.sync(onStart).pipe(
+      Effect.andThen(Effect.acquireRelease(Effect.succeed(undefined), () => Effect.sync(onFinalize))),
+      Effect.andThen(Effect.never),
+    ),
+  )
+}
+
 describe('createHarnessSnapshotStore', () => {
   it('returns pending rows immediately and probes in the background', async () => {
     const detect = vi.fn(async () => infos.slice(0, 2))
@@ -107,19 +118,13 @@ describe('createHarnessSnapshotStore', () => {
     const store = makeStore(
       async () => infos.slice(0, 1),
       () =>
-        Effect.scoped(
-          Effect.sync(() => {
+        hungProbeEffect(
+          () => {
             started = true
-          }).pipe(
-            Effect.andThen(
-              Effect.acquireRelease(Effect.succeed(undefined), () =>
-                Effect.sync(() => {
-                  finalized += 1
-                }),
-              ),
-            ),
-            Effect.andThen(Effect.never),
-          ),
+          },
+          () => {
+            finalized += 1
+          },
         ),
     )
     await store.list()
@@ -186,5 +191,51 @@ describe('createHarnessSnapshotStore', () => {
     )
     const row = (await store.list())[0]
     expect(row?.auth.loginCommand).toBe('claude auth login')
+  })
+
+  it('interrupts the previous probe batch on refresh (Scope owns staleness, no generation)', async () => {
+    let finalized = 0
+    let startedHung = false
+    let round = 0
+    const store = makeStore(
+      async () => infos.slice(0, 1),
+      () => {
+        round += 1
+        if (round === 1) {
+          return hungProbeEffect(
+            () => {
+              startedHung = true
+            },
+            () => {
+              finalized += 1
+            },
+          )
+        }
+        return Effect.succeed(ready)
+      },
+    )
+    await store.list()
+    await vi.waitFor(() => expect(startedHung).toBe(true))
+    await store.refresh()
+    await vi.waitFor(async () => expect((await store.get('opencode'))?.status).toBe('ready'))
+    expect(finalized).toBe(1)
+  })
+
+  it('coalesces concurrent refresh failures into one detection', async () => {
+    let rejectDetect!: (error: Error) => void
+    const detect = vi.fn(
+      () =>
+        new Promise<HarnessInfo[]>((_, reject) => {
+          rejectDetect = reject as (error: Error) => void
+        }),
+    )
+    const store = makeStore(detect, () => Effect.never)
+    const first = store.refresh()
+    const second = store.refresh()
+    await vi.waitFor(() => expect(detect).toHaveBeenCalledTimes(1))
+    rejectDetect(new Error('scan failed'))
+    await expect(first).rejects.toThrow('scan failed')
+    await expect(second).rejects.toThrow('scan failed')
+    expect(detect).toHaveBeenCalledTimes(1)
   })
 })

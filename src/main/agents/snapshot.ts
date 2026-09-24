@@ -1,5 +1,10 @@
+import * as Context from 'effect/Context'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
-import * as Fiber from 'effect/Fiber'
+import * as Exit from 'effect/Exit'
+import * as FiberHandle from 'effect/FiberHandle'
+import * as Layer from 'effect/Layer'
+import * as Scope from 'effect/Scope'
 
 import type { CoachHarnessRow } from '../../shared/schemas/agents.js'
 import { safeLogOperationalEvent } from '../operational-log.js'
@@ -59,15 +64,51 @@ function toRow(instance: HarnessInstance): CoachHarnessRow {
   }
 }
 
+/**
+ * Minimal harness capability for `MainLive` (ADR 0032 §4.3): the never-fails
+ * ACP handshake probe behind the existing `probeHarness` shape, exposed as a
+ * `Context.Service` + `Layer` so the main runtime owns one copy and tests
+ * substitute fakes via `layerWithProbe` (the `HttpFetch.layerWithFetch`
+ * pattern). The live layer delegates to `probeHarness` with default deps;
+ * `ipc.ts` keeps wiring its richer deps (clientVersion) at the store seam —
+ * unifying that injection is a Config-DI follow-up, not this slice.
+ */
+export class HarnessProbe extends Context.Service<
+  HarnessProbe,
+  {
+    readonly probe: (info: HarnessInfo) => Effect.Effect<ProbeResult, never>
+  }
+>()('watchtower/agents/HarnessProbe') {
+  static readonly layer = Layer.succeed(HarnessProbe, HarnessProbe.of({ probe: info => probeHarness(info) }))
+
+  static readonly layerWithProbe = (
+    probeImpl: (info: HarnessInfo) => Effect.Effect<ProbeResult, never>,
+  ): Layer.Layer<HarnessProbe> => Layer.succeed(HarnessProbe, HarnessProbe.of({ probe: probeImpl }))
+}
+
 export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): HarnessSnapshotStore {
   const instances = new Map<string, HarnessInstance>()
   const concurrency = deps.concurrency ?? 4
   let detected = false
   let lastPath: string | undefined
-  let detectionPromise: Promise<void> | null = null
-  let probeFiber: Fiber.Fiber<unknown, never> | null = null
-  let generation = 0
-  let disposed = false
+
+  // Scope-owned probe lifecycle:
+  // - `storeScope` owns the probe batch; `dispose()` closes it (LIFO), which
+  //   interrupts the handle's fiber even on failure.
+  // - `probeHandle` holds the single in-flight probe batch (`Effect.all` with
+  //   bounded concurrency, `runFork` shape preserved). Installing a new batch
+  //   interrupts the previous one, so stale settles cannot leak after a
+  //   refresh.
+  // - `flight` (a `Deferred` for the in-flight detection) coalesces concurrent
+  //   `refresh()` calls into one `deps.detect()`, bridged to the Promise store
+  //   API.
+  const storeScope = Scope.makeUnsafe()
+  const probeHandle = Effect.runSync(Scope.provide(storeScope)(FiberHandle.make<unknown, never>()))
+  let flight: Deferred.Deferred<undefined, unknown> | null = null
+
+  function isClosed(): boolean {
+    return (storeScope.state._tag as string) === 'Closed'
+  }
 
   function rows(): CoachHarnessRow[] {
     return [...instances.values()]
@@ -87,18 +128,12 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
     }
   }
 
-  async function interruptProbes(): Promise<void> {
-    const fiber = probeFiber
-    probeFiber = null
-    if (fiber) await Effect.runPromise(Fiber.interrupt(fiber))
-  }
-
-  function settle(info: HarnessInfo, result: ProbeResult, probeGeneration: number): void {
+  function settle(info: HarnessInfo, result: ProbeResult): void {
     safeLogOperationalEvent(result.status === 'error' ? 'error' : 'info', 'harness.probe', {
       kind: info.kind,
       status: result.status,
     })
-    if (disposed || probeGeneration !== generation) return
+    if (isClosed()) return
     const instanceId = instanceIdFor(info)
     const current = instances.get(instanceId)
     if (!current) return
@@ -112,21 +147,38 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
     publish()
   }
 
-  function launchProbes(infos: HarnessInfo[], probeGeneration: number): void {
+  function launchProbes(infos: HarnessInfo[]): void {
     const effects = infos.map(info =>
-      deps.probe(info).pipe(Effect.tap(result => Effect.sync(() => settle(info, result, probeGeneration)))),
+      deps.probe(info).pipe(Effect.tap(result => Effect.sync(() => settle(info, result)))),
     )
-    probeFiber = Effect.runFork(Effect.yieldNow.pipe(Effect.andThen(Effect.all(effects, { concurrency }))))
+    // `Effect.all` with bounded concurrency, forked in the background: the
+    // handle interrupts it on the next launch (or `dispose()`). `deps.detect`
+    // stays a Promise boundary; `deps.probe` stays the Effect seam.
+    const fiber = Effect.runFork(Effect.yieldNow.pipe(Effect.andThen(Effect.all(effects, { concurrency }))))
+    FiberHandle.setUnsafe(probeHandle, fiber)
   }
 
   async function detectAndProbe(): Promise<void> {
-    if (detectionPromise) return detectionPromise
-    detectionPromise = (async () => {
-      await interruptProbes()
-      if (disposed) return
+    if (flight) {
+      await Effect.runPromise(Deferred.await(flight))
+      return
+    }
+    const deferred = Deferred.makeUnsafe<undefined, unknown>()
+    flight = deferred
+    const resolveFlight = (): Promise<boolean> => Effect.runPromise(Deferred.succeed(deferred, undefined))
+    try {
+      // Interrupt the previous probe batch before re-detecting; the handle's
+      // interruption owns staleness.
+      await Effect.runPromise(FiberHandle.clear(probeHandle))
+      if (isClosed()) {
+        await resolveFlight()
+        return
+      }
       const infos = await deps.detect()
-      if (disposed) return
-      generation += 1
+      if (isClosed()) {
+        await resolveFlight()
+        return
+      }
       lastPath = process.env.PATH
       detected = true
       instances.clear()
@@ -139,11 +191,14 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
         })
       }
       publish()
-      launchProbes(infos, generation)
-    })().finally(() => {
-      detectionPromise = null
-    })
-    return detectionPromise
+      launchProbes(infos)
+      await resolveFlight()
+    } catch (error) {
+      await Effect.runPromise(Deferred.fail(deferred, error))
+      throw error
+    } finally {
+      if (flight === deferred) flight = null
+    }
   }
 
   async function list(): Promise<CoachHarnessRow[]> {
@@ -177,10 +232,9 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
       void list()
     },
     async dispose() {
-      disposed = true
-      generation += 1
-      await interruptProbes()
+      await Effect.runPromise(FiberHandle.clear(probeHandle))
       instances.clear()
+      await Effect.runPromise(Scope.close(storeScope, Exit.void))
     },
   }
 }

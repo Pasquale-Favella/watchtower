@@ -1,16 +1,22 @@
 /**
- * Effect primitives contract for the Coach harness layer (ADR 0030).
+ * Effect primitives contract for the Coach harness layer (ADR 0030, §4.3 slice).
  *
  * Each test pins a primitive that F0–F4 build on, against fakes mirroring the
- * current seam shapes (runtime.ts / detect.ts):
+ * current seam shapes (runtime.ts / detect.ts / snapshot.ts):
  *  1. probe timeouts that degrade to `{ ok: false }` instead of hanging;
  *  2. parallel detect with per-probe timeout + bounded concurrency;
  *  3. Scope-based instance teardown (deterministic, LIFO, isolated scopes);
- *  4. run interrupt with a drain barrier and an always-reaped child.
+ *  4. run interrupt with a drain barrier and an always-reaped child;
+ *  5. §4.3: snapshot Scope + FiberHandle (probe batch ownership, Deferred
+ *     flight coalescing) and MainLive flat composition (no second runtime).
  */
-import { Deferred, Effect, Exit, Fiber, Option, Ref, Schedule, Scope, Stream } from 'effect'
+import { Deferred, Effect, Exit, Fiber, FiberHandle, Layer, Option, Ref, Schedule, Scope, Stream } from 'effect'
 import * as TestClock from 'effect/testing/TestClock'
 import { describe, expect, it } from 'vitest'
+
+import { HARNESS_INSPECT_TIMEOUT_MS } from '../src/main/agents/runtime.js'
+import { HarnessProbe } from '../src/main/agents/snapshot.js'
+import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 
 // ---------------------------------------------------------------------------
 // Fakes mirroring the current seam shapes (runtime.ts / detect.ts)
@@ -182,4 +188,135 @@ describe('effect: interrupt + drain barrier (pain 4 — iterator.return() juggli
     expect(result.drained.length).toBeLessThan(11) // range(0,10) is inclusive
     expect(result.kills).toBe(1) // child always reaped
   }, 15000)
+})
+
+describe('effect: snapshot Scope + Deferred flight (§4.3 — replaces detectionPromise/generation)', () => {
+  it('closing the store Scope interrupts hung probes and runs their finalizers', async () => {
+    let finalized = 0
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const storeScope = yield* Scope.make()
+        const probeHandle = yield* Scope.provide(storeScope)(FiberHandle.make<unknown, never>())
+        const started = yield* Deferred.make<undefined>()
+        const fiber = yield* FiberHandle.run(
+          probeHandle,
+          Effect.scoped(
+            Effect.acquireRelease(Effect.succeed(undefined), () =>
+              Effect.sync(() => {
+                finalized += 1
+              }),
+            ).pipe(Effect.andThen(Effect.andThen(Deferred.succeed(started, undefined), Effect.never))),
+          ),
+        )
+        yield* Deferred.await(started)
+        yield* Scope.close(storeScope, Exit.succeed('done'))
+        return yield* Fiber.await(fiber)
+      }),
+    )
+    expect(Exit.isFailure(result)).toBe(true)
+    expect(finalized).toBe(1)
+  })
+
+  it('a Deferred flight coalesces concurrent detections and shares failures', async () => {
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        let calls = 0
+        const flight = yield* Deferred.make<string, string>()
+        const detect = Effect.suspend(() => {
+          calls += 1
+          return calls === 1 ? Deferred.fail(flight, 'scan failed') : Deferred.succeed(flight, 'second')
+        })
+        const first = yield* Effect.forkChild(Effect.andThen(detect, Deferred.await(flight)))
+        const second = yield* Effect.forkChild(Deferred.await(flight))
+        const [left, right] = yield* Effect.all([Fiber.await(first), Fiber.await(second)])
+        return { calls, left, right }
+      }),
+    )
+    expect(outcome.calls).toBe(1)
+    expect(Exit.isFailure(outcome.left)).toBe(true)
+    expect(Exit.isFailure(outcome.right)).toBe(true)
+  })
+})
+
+describe('effect: run teardown barrier (§4.3 — acquireRelease + timeoutOption + ignore)', () => {
+  it('acquireRelease reaps the provider even when the handshake fails', async () => {
+    const events: string[] = []
+    const exit = await Effect.runPromise(
+      Effect.scoped(
+        Effect.acquireRelease(
+          Effect.sync(() => events.push('spawn agent')),
+          () => Effect.sync(() => events.push('kill agent')),
+        ).pipe(Effect.andThen(Effect.fail('auth wall')), Effect.exit),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(events).toEqual(['spawn agent', 'kill agent'])
+  })
+
+  it('a hung iterator.return is bounded by the cancel-drain timeout and ignored', async () => {
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          Effect.tryPromise({
+            try: () => new Promise<never>(() => {}),
+            catch: error => error,
+          }).pipe(Effect.timeoutOption(20), Effect.ignore),
+        )
+        yield* TestClock.adjust(50)
+        return yield* Fiber.join(fiber)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+    expect(outcome).toBeUndefined()
+  })
+
+  it('a hung inspect handshake hits the inspect deadline instead of hanging', async () => {
+    expect(HARNESS_INSPECT_TIMEOUT_MS).toBe(15_000)
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          Effect.tryPromise({
+            try: () => new Promise<unknown>(() => {}),
+            catch: error => error,
+          }).pipe(Effect.timeoutOption(HARNESS_INSPECT_TIMEOUT_MS)),
+        )
+        yield* TestClock.adjust(HARNESS_INSPECT_TIMEOUT_MS + 100)
+        return yield* Fiber.join(fiber)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+    expect(Option.isNone(outcome)).toBe(true)
+  })
+})
+
+describe('effect: MainLive flat composition (§4.3 — one runtime, test fakes)', () => {
+  it('merged HttpFetch + HarnessProbe test layers provide both capabilities', async () => {
+    const fakeFetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ rates: { EUR: 0.9 } }),
+    })) as unknown as typeof fetch
+    const probeCalls: string[] = []
+    const testLive = Layer.mergeAll(
+      HttpFetch.layerWithFetch(fakeFetch),
+      HarnessProbe.layerWithProbe(info => {
+        probeCalls.push(info.kind)
+        return Effect.succeed({ status: 'ready' as const, auth: { status: 'unknown' as const } })
+      }),
+    )
+    const rows = await Effect.runPromise(
+      Effect.gen(function* () {
+        const http = yield* HttpFetch
+        const probe = yield* HarnessProbe
+        const response = yield* http.fetch('https://example.invalid/fx', {}, 1000)
+        const result = yield* probe.probe({
+          name: 'codex',
+          kind: 'codex',
+          displayName: 'Codex',
+          bin: 'codex',
+          scrubEnv: [],
+        })
+        return { ok: response.ok, status: result.status, kinds: probeCalls }
+      }).pipe(Effect.provide(testLive)),
+    )
+    expect(rows).toEqual({ ok: true, status: 'ready', kinds: ['codex'] })
+  })
 })
