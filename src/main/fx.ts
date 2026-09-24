@@ -1,6 +1,10 @@
+import * as Clock from 'effect/Clock'
+import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 
 import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
+import type { CurrencyRate } from '../shared/schemas/ledger.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 import type { LedgerStore } from './store/ledger.js'
 
@@ -130,34 +134,59 @@ export function isRateStale(updatedAt: string | undefined, now = Date.now()): bo
 }
 
 export interface RefreshFxRateEffectOptions {
-  /** Injectable clock for staleness tests; defaults to Date.now. */
+  /** Injectable clock for staleness tests; defaults to the Effect Clock. */
   now?: () => number
   /** Fetch timeout override; defaults to the shared HTTP ceiling. */
   timeoutMs?: number
 }
 
-/** Effect-native USD→code refresh (ADR 0032 slice 1).
+/**
+ * Minimal FX persistence port (ADR 0032 §4.2 first half): the exact three
+ * `LedgerStore` members the FX boundary uses, exposed as a `Context.Service`
+ * + layers so the refresh core depends on the port rather than the concrete
+ * store (the `HttpFetch.layerWithFetch` / `HarnessProbe.layerWithProbe`
+ * fake-ability pattern). Persisted settings stay in the ledger per §5.2.
+ */
+export class FxRates extends Context.Service<
+  FxRates,
+  {
+    readonly getCurrencyRate: (code: string) => Effect.Effect<CurrencyRate | null>
+    readonly setCurrencyRate: (rate: CurrencyRate) => Effect.Effect<void>
+    readonly getDisplayCurrency: () => Effect.Effect<string>
+  }
+>()('watchtower/fx/FxRates') {
+  static readonly layerWithStore = (store: LedgerStore): Layer.Layer<FxRates> =>
+    FxRates.layerWithRates({
+      getCurrencyRate: code => Effect.sync(() => store.getCurrencyRate(code)),
+      setCurrencyRate: rate => Effect.sync(() => store.setCurrencyRate(rate)),
+      getDisplayCurrency: () => Effect.sync(() => store.getDisplayCurrency()),
+    })
+
+  static readonly layerWithRates = (rates: FxRates['Service']): Layer.Layer<FxRates> =>
+    Layer.succeed(FxRates, FxRates.of(rates))
+}
+
+/** Port-based USD→code refresh core (ADR 0032 slice 2).
  *
  * Never fails, falls back to the last cached rate (or USD rate 1) on
  * offline/blocked/non-2xx/invalid-rate. The network enters through the
- * `HttpFetch` service — timeout via the Effect Clock (TestClock-controllable)
- * and fiber interruption aborts the underlying fetch, replacing the manual
- * `signal` plumbing. Pure helpers stay plain functions.
- *
- * Replaces the removed Promise `refreshFxRate` adapter. Production callers
- * (`DbWorkerContext.refreshFxOnCadence`, `currency:set`) and `tests/fx.test.ts`
- * already use this effect.
+ * `HttpFetch` service and persistence through the `FxRates` port — timeout
+ * via the Effect Clock (TestClock-controllable) and fiber interruption aborts
+ * the underlying fetch, replacing the manual `signal` plumbing. Staleness
+ * reads the production clock via `Clock.currentTimeMillis` (TestClock-governed;
+ * `options.now` still overrides for existing tests). Pure helpers stay plain
+ * functions; the display boundary is not Effect-ified.
  */
-export const refreshFxRateEffect = Effect.fnUntraced(function* (
-  store: LedgerStore,
+export const refreshFxRateWithRates = Effect.fnUntraced(function* (
   code: string,
   options: RefreshFxRateEffectOptions = {},
-): Effect.fn.Return<ActiveCurrency, never, HttpFetch> {
+): Effect.fn.Return<ActiveCurrency, never, HttpFetch | FxRates> {
   const safe = isValidCurrencyCode(code) ? code : 'USD'
   if (safe === 'USD') return { ...USD_CURRENCY }
 
-  const cached = yield* Effect.sync(() => store.getCurrencyRate(safe))
-  const now = options.now?.() ?? Date.now()
+  const rates = yield* FxRates
+  const cached = yield* rates.getCurrencyRate(safe)
+  const now = options.now ? yield* Effect.sync(options.now) : yield* Clock.currentTimeMillis
   if (cached && !isRateStale(cached.updatedAt, now)) {
     return { code: safe, symbol: cached.symbol, rate: cached.rate, updatedAt: cached.updatedAt }
   }
@@ -178,15 +207,13 @@ export const refreshFxRateEffect = Effect.fnUntraced(function* (
     }).pipe(Effect.orElseSucceed(() => null))
     const rate = data?.rates?.[safe]
     if (!isValidRate(rate)) return fallback()
-    yield* Effect.sync(() =>
-      store.setCurrencyRate({
-        code: safe,
-        symbol: resolveSymbol(safe),
-        rate,
-        updatedAt: new Date(now).toISOString(),
-      }),
-    )
-    const latest = yield* Effect.sync(() => store.getCurrencyRate(safe))
+    yield* rates.setCurrencyRate({
+      code: safe,
+      symbol: resolveSymbol(safe),
+      rate,
+      updatedAt: new Date(now).toISOString(),
+    })
+    const latest = yield* rates.getCurrencyRate(safe)
     return {
       code: safe,
       symbol: latest?.symbol ?? resolveSymbol(safe),
@@ -196,6 +223,27 @@ export const refreshFxRateEffect = Effect.fnUntraced(function* (
   }).pipe(Effect.catch(() => Effect.succeed(fallback())))
 
   return refreshed
+})
+
+/** Compatibility adapter over {@link refreshFxRateWithRates} (ADR 0032 slice 1
+ * shape preserved).
+ *
+ * Production callers (`DbWorkerContext.refreshFxOnCadence`, `currency:set`)
+ * and `tests/fx.test.ts` keep calling `refreshFxRateEffect(store, code,
+ * options)` with zero edits: the store-backed `FxRates` layer is provided at
+ * this boundary, so the core no longer touches the concrete `LedgerStore`.
+ *
+ * Named removal condition: delete this adapter when the db-worker callers
+ * inject the repository layer directly (a later slice — NOT this one). The
+ * `Effect.sync(() => store.get…)` concretion is already gone from the core,
+ * which depends on the `FxRates` port.
+ */
+export const refreshFxRateEffect = Effect.fnUntraced(function* (
+  store: LedgerStore,
+  code: string,
+  options: RefreshFxRateEffectOptions = {},
+): Effect.fn.Return<ActiveCurrency, never, HttpFetch> {
+  return yield* refreshFxRateWithRates(code, options).pipe(Effect.provide(FxRates.layerWithStore(store)))
 })
 
 // --- Display/export-boundary conversion. Costs in the store are always USD;

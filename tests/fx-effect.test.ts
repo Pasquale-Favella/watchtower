@@ -5,12 +5,20 @@ import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as Layer from 'effect/Layer'
 import * as TestClock from 'effect/testing/TestClock'
 import { describe, expect, it } from 'vitest'
 
-import { type ActiveCurrency, FX_CACHE_TTL_MS, refreshFxRateEffect } from '../src/main/fx.js'
+import {
+  type ActiveCurrency,
+  FX_CACHE_TTL_MS,
+  FxRates,
+  refreshFxRateEffect,
+  refreshFxRateWithRates,
+} from '../src/main/fx.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
+import type { CurrencyRate } from '../src/shared/schemas/ledger.js'
 
 function makeStore(): LedgerStore {
   const dir = mkdtempSync(join(tmpdir(), 'tr-fx-effect-'))
@@ -40,6 +48,19 @@ function runFx(
   return Effect.runPromise(
     refreshFxRateEffect(store, code, options).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))),
   )
+}
+
+function makeFakeRates(): { saved: Map<string, CurrencyRate>; ratesLayer: Layer.Layer<FxRates> } {
+  const saved = new Map<string, CurrencyRate>()
+  const ratesLayer = FxRates.layerWithRates({
+    getCurrencyRate: code => Effect.succeed(saved.get(code) ?? null),
+    setCurrencyRate: rate =>
+      Effect.sync(() => {
+        saved.set(rate.code, rate)
+      }),
+    getDisplayCurrency: () => Effect.succeed('EUR'),
+  })
+  return { saved, ratesLayer }
 }
 
 describe('refreshFxRateEffect (Effect-native FX boundary)', () => {
@@ -128,6 +149,54 @@ describe('refreshFxRateEffect (Effect-native FX boundary)', () => {
     expect(active.rate).toBe(1)
     expect(store.getCurrencyRate('EUR')).toBeNull()
     store.close()
+  })
+
+  it('runs against a fake FxRates port with no LedgerStore instance (store concretion removed)', async () => {
+    const { saved, ratesLayer } = makeFakeRates()
+    const active = await Effect.runPromise(
+      refreshFxRateWithRates('EUR').pipe(
+        Effect.provide(ratesLayer),
+        Effect.provide(HttpFetch.layerWithFetch(fakeFetchOk({ EUR: 0.9 }))),
+      ),
+    )
+    expect(active).toMatchObject({ code: 'EUR', rate: 0.9 })
+    // Persist-then-re-read went through the port, not the store.
+    expect(saved.get('EUR')).toMatchObject({ code: 'EUR', rate: 0.9 })
+    expect(saved.get('EUR')?.updatedAt).toBe(active.updatedAt)
+  })
+
+  it('TestClock governs staleness for the port-based core (no options.now, no store)', async () => {
+    const { saved, ratesLayer } = makeFakeRates()
+    const program = Effect.gen(function* () {
+      const first = yield* refreshFxRateWithRates('EUR').pipe(
+        Effect.provide(ratesLayer),
+        Effect.provide(HttpFetch.layerWithFetch(fakeFetchOk({ EUR: 0.9 }))),
+      )
+      expect(first.rate).toBe(0.9)
+
+      // Fresh cache: the network stays untouched.
+      let calls = 0
+      const counting = (async () => {
+        calls += 1
+        return { ok: true, status: 200, json: async () => ({ rates: { EUR: 1.5 } }) }
+      }) as unknown as typeof fetch
+      const second = yield* refreshFxRateWithRates('EUR').pipe(
+        Effect.provide(ratesLayer),
+        Effect.provide(HttpFetch.layerWithFetch(counting)),
+      )
+      expect(calls).toBe(0)
+      expect(second.rate).toBe(0.9)
+
+      // Past the 24h TTL: refetches and replaces through the port.
+      yield* TestClock.adjust(FX_CACHE_TTL_MS + 1)
+      const third = yield* refreshFxRateWithRates('EUR').pipe(
+        Effect.provide(ratesLayer),
+        Effect.provide(HttpFetch.layerWithFetch(fakeFetchOk({ EUR: 0.85 }))),
+      )
+      expect(third.rate).toBe(0.85)
+      expect(saved.get('EUR')?.rate).toBe(0.85)
+    })
+    await Effect.runPromise(program.pipe(Effect.provide(TestClock.layer())))
   })
 
   it('fiber interruption does not persist a partial rate', async () => {
