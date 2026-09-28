@@ -167,6 +167,12 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
       kind: info.kind,
       status: result.status,
     })
+    // `status` is allowlisted BY VALUE in `sanitizeOperationalRecord`
+    // (`ALLOWED_ENUM_FIELDS.status`, transcribed from the
+    // `ProbeResult['status']` union — no `pending`, since a settled probe is
+    // never pending), so the counter breaks down by probe status instead of
+    // losing the dimension. `kind` stays a free-form allowlisted string, and a
+    // status the union cannot produce is still dropped, not filed.
     try {
       Effect.runSync(counters.incrementCounter(PROBE_OUTCOME_COUNTER, 1, { kind: info.kind, status: result.status }))
     } catch {

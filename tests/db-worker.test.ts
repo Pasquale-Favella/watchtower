@@ -442,8 +442,11 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
     // deterministic 0 without concurrent adjust — proves Clock, not Date.now).
     expect(typeof records[0]!.fields['count']).toBe('number')
     expect(Number(records[0]!.fields['count'])).toBeGreaterThanOrEqual(0)
-    // Outcome labels only (no payloads, no paths); `outcome` is dropped by the
-    // file allowlist today (same as probe `status` / fetch `reason` — NOT widened).
+    // Outcome labels only (no payloads, no paths); `outcome` is a
+    // closed-vocabulary allowlisted field, so the label survives the sanitizer —
+    // this test proves the counter SEAM (it uses a fake sink and therefore
+    // bypasses `sanitizeOperationalRecord`); file-level survival is covered in
+    // `tests/operational-log.test.ts`.
     expectDurationFiled(records, 'success')
   })
 

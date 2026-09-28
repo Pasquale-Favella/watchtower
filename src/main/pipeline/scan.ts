@@ -56,12 +56,14 @@ function outcomeForScanExit(exit: Exit.Exit<unknown, unknown>): ScanDurationOutc
 
 /** Files `SCAN_DURATION_COUNTER` for one finished scan (Wave 5 counter
  * wiring). Amount is wall duration in ms; fields are outcome labels only
- * (`op: 'scan'` + `outcome`) — never payloads, never paths. The allowlist
- * (`sanitizeOperationalRecord`) keeps `op` + `count` and drops `outcome`
- * today (same as the probe slice's dropped `status` and the fetch slice's
- * dropped `reason` — allowlist NOT widened here, privacy-reviewed later).
- * Never throws (mirrors the probe/fetch `catchCause` guard) so forked scan
- * fibers are never broken by logging. Clock source is
+ * (`op: 'scan'` + `outcome`) — never payloads, never paths. `outcome` is
+ * allowlisted BY VALUE in `sanitizeOperationalRecord`
+ * (`ALLOWED_ENUM_FIELDS.outcome`, transcribed from the `ScanDurationOutcome`
+ * union above), so the dimension now reaches the file for a real breakdown
+ * while any non-member is still dropped exactly like a free-text field — the
+ * same closed treatment the probe slice's `status` and the fetch slice's
+ * `reason` now have. Never throws (mirrors the probe/fetch `catchCause`
+ * guard) so forked scan fibers are never broken by logging. Clock source is
  * `Clock.currentTimeMillis` so `TestClock` governs duration in tests. */
 const fileScanDuration = Effect.fnUntraced(function* (
   start: number,

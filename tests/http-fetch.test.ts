@@ -9,7 +9,12 @@ import * as TestClock from 'effect/testing/TestClock'
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient'
 import { describe, expect, it, vi } from 'vitest'
 
-import { closeOperationalLog, FETCH_TIMEOUT_COUNTER, initOperationalLog } from '../src/main/operational-log.js'
+import {
+  closeOperationalLog,
+  FETCH_TIMEOUT_COUNTER,
+  initOperationalLog,
+  safeLogOperationalEvent,
+} from '../src/main/operational-log.js'
 import { HttpFetch, type HttpFetchCounters, HttpFetchError } from '../src/main/pipeline/fetch-utils.js'
 
 function okResponse(body: unknown = {}): Response {
@@ -18,6 +23,22 @@ function okResponse(body: unknown = {}): Response {
     status: 200,
     json: async () => body,
   } as Response
+}
+
+/** Every `operational*` file in `logDir`, parsed into records AND kept as raw
+ *  text: a record assertion reads `records`, a leak assertion has to read the
+ *  bytes the sink actually wrote. */
+function readOperationalLog(logDir: string): { records: Array<Record<string, unknown>>; text: string } {
+  const texts = readdirSync(logDir)
+    .filter(f => f.startsWith('operational'))
+    .map(file => readFileSync(join(logDir, file), 'utf8'))
+  const records = texts.flatMap(text =>
+    text
+      .split('\n')
+      .filter(l => l.trim().length > 0)
+      .map(line => JSON.parse(line) as Record<string, unknown>),
+  )
+  return { records, text: texts.join('\n') }
 }
 
 function fetchError(fetchImpl: typeof fetch, url = 'https://example.test/x'): Promise<HttpFetchError> {
@@ -388,7 +409,7 @@ describe('HttpFetch timeout counter (Wave 5, issue #148)', () => {
     expect(error.message).toBe('fetch timed out after 100ms')
   })
 
-  it('files FETCH_TIMEOUT_COUNTER on the platform path via the live singleton (allowlisted, no URL)', async () => {
+  it('files FETCH_TIMEOUT_COUNTER on the platform path via the live singleton (allowlisted reason, no URL)', async () => {
     const base = mkdtempSync(join(tmpdir(), 'watchtower-fetch-counter-'))
     const logDir = join(base, 'logs')
     try {
@@ -399,25 +420,45 @@ describe('HttpFetch timeout counter (Wave 5, issue #148)', () => {
       expect(error).toBeInstanceOf(HttpFetchError)
       expect(error.reason).toBe('timeout')
       await vi.waitFor(() => {
-        const files = readdirSync(logDir).filter(f => f.startsWith('operational'))
-        const records = files
-          .flatMap(file => {
-            const text = readFileSync(join(logDir, file), 'utf8')
-            return text
-              .split('\n')
-              .filter(l => l.trim().length > 0)
-              .map(line => JSON.parse(line) as Record<string, unknown>)
-          })
-          .filter(record => record['event'] === FETCH_TIMEOUT_COUNTER)
-        expect(records).toHaveLength(1)
-        expect(records[0]).toMatchObject({ count: 1 })
-        // Allowlist enforcement (verified, not widened): `reason` is not an
-        // allowlisted key and the URL is never filed, so the file record is
-        // event + count only — the key itself carries the timeout meaning.
-        expect(records[0]).not.toHaveProperty('url')
-        expect(records[0]).not.toHaveProperty('reason')
-        expect(records[0]).not.toHaveProperty('message')
+        const { records, text } = readOperationalLog(logDir)
+        const counter = records.filter(record => record['event'] === FETCH_TIMEOUT_COUNTER)
+        expect(counter).toHaveLength(1)
+        // The `reason` dimension now survives into the file record: one
+        // closed-vocabulary member, never free text (Wave 9 Slice E — the
+        // allowlist is widened by VALUE, `ALLOWED_ENUM_FIELDS.reason`).
+        expect(counter[0]).toMatchObject({ count: 1, reason: 'timeout' })
+        // Allowlist enforcement, unchanged: the URL is not on any list.
+        expect(counter[0]).not.toHaveProperty('url')
+        expect(counter[0]).not.toHaveProperty('message')
+        expect(text).not.toContain('example.test')
+        expect(text).not.toContain('secret=abc')
       })
+    } finally {
+      try {
+        closeOperationalLog()
+      } catch {
+        /* not initialised */
+      }
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('drops a fetch-timeout reason outside the closed vocabulary (never files free text)', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'watchtower-fetch-counter-'))
+    const logDir = join(base, 'logs')
+    try {
+      await initOperationalLog({ logDir, isPackaged: true })
+      // Same seam, hostile reason: the sanitizer is the enforcement point.
+      safeLogOperationalEvent('info', FETCH_TIMEOUT_COUNTER, {
+        reason: 'timeout reading C:\\Users\\alice\\.claude\\token.json',
+        count: 1,
+      })
+      closeOperationalLog()
+      const { records, text } = readOperationalLog(logDir)
+      expect(records).toHaveLength(1)
+      expect(records[0]).toMatchObject({ event: FETCH_TIMEOUT_COUNTER, count: 1 })
+      expect(records[0]).not.toHaveProperty('reason')
+      expect(text).not.toContain('alice')
     } finally {
       try {
         closeOperationalLog()

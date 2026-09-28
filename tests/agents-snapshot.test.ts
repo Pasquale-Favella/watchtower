@@ -1,6 +1,7 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -56,6 +57,22 @@ function hungProbeEffect(onStart: () => void, onFinalize: () => void): Effect.Ef
       Effect.andThen(Effect.never),
     ),
   )
+}
+
+/** Every `operational*` file in `logDir`, parsed into records AND kept as raw
+ *  text: a record assertion reads `records`, a leak assertion has to read the
+ *  bytes the sink actually wrote. */
+function readOperationalLog(logDir: string): { records: Array<Record<string, unknown>>; text: string } {
+  const texts = readdirSync(logDir)
+    .filter(f => f.startsWith('operational'))
+    .map(file => readFileSync(join(logDir, file), 'utf8'))
+  const records = texts.flatMap(text =>
+    text
+      .split('\n')
+      .filter(l => l.trim().length > 0)
+      .map(line => JSON.parse(line) as Record<string, unknown>),
+  )
+  return { records, text: texts.join('\n') }
 }
 
 describe('createHarnessSnapshotStore', () => {
@@ -308,28 +325,57 @@ describe('createHarnessSnapshotStore', () => {
       await store.list()
       await vi.waitFor(async () => expect((await store.get('claude'))?.status).toBe('warning'))
       await vi.waitFor(() => {
-        const files = readdirSync(logDir).filter(f => f.startsWith('operational'))
-        const texts: string[] = []
-        const records = files.flatMap(file => {
-          const text = readFileSync(join(logDir, file), 'utf8')
-          texts.push(text)
-          return text
-            .split('\n')
-            .filter(l => l.trim().length > 0)
-            .map(line => JSON.parse(line) as Record<string, unknown>)
-        })
+        const { records, text } = readOperationalLog(logDir)
         expect(records.filter(r => r['event'] === 'harness.probe')).toHaveLength(1)
         expect(records.filter(r => r['event'] === PROBE_OUTCOME_COUNTER)).toHaveLength(1)
         expect(records.find(r => r['event'] === 'harness.probe')).toMatchObject({ kind: 'claude' })
+        // Wave 9 Slice E: the `status` dimension now survives into both the
+        // counter record and the legacy one — a closed-vocabulary member
+        // (`ALLOWED_ENUM_FIELDS.status` = `ProbeResult['status']`), never text.
+        expect(records.find(r => r['event'] === 'harness.probe')).toMatchObject({ status: 'warning' })
         expect(records.find(r => r['event'] === PROBE_OUTCOME_COUNTER)).toMatchObject({
           kind: 'claude',
+          status: 'warning',
           count: 1,
         })
         for (const record of records) {
           expect(record).not.toHaveProperty('message')
           expect(record).not.toHaveProperty('version')
         }
-        expect(texts.join('\n')).not.toContain('Sign-in not verified')
+        // The probe's free-text message never reaches the file.
+        expect(text).not.toContain('Sign-in not verified')
+      })
+    } finally {
+      try {
+        closeOperationalLog()
+      } catch {
+        /* not initialised */
+      }
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('drops a probe status outside the closed vocabulary (never files free text)', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'watchtower-snapshot-counter-'))
+    const logDir = join(base, 'logs')
+    try {
+      await initOperationalLog({ logDir, isPackaged: true })
+      const store = makeStore(
+        async () => infos.slice(0, 1),
+        // A `ProbeResult` status the union cannot produce (the `pending` row
+        // state is covered by the sanitizer unit tests).
+        () => Effect.succeed({ ...ready, status: 'ready: C:\\Users\\alice\\.claude' } as unknown as ProbeResult),
+      )
+      await store.list()
+      await vi.waitFor(() => {
+        const { records, text } = readOperationalLog(logDir)
+        // The sink still filed the event; only the offending dimension is gone.
+        expect(records.filter(r => r['event'] === PROBE_OUTCOME_COUNTER)).toHaveLength(1)
+        for (const record of records) {
+          expect(record).not.toHaveProperty('status')
+          expect(record).not.toHaveProperty('message')
+        }
+        expect(text).not.toContain('alice')
       })
     } finally {
       try {

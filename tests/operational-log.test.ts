@@ -1,6 +1,7 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -12,11 +13,12 @@ import {
   logOperationalEvent,
   OperationalLog,
   OperationalLogLoggerLayer,
+  type OperationalLogSink,
   PROBE_OUTCOME_COUNTER,
   safeLogOperationalEvent,
   SCAN_DURATION_COUNTER,
-  type OperationalLogSink,
 } from '../src/main/operational-log.js'
+import { sanitizeOperationalRecord } from '../src/shared/logging.js'
 
 let dir = ''
 
@@ -156,6 +158,38 @@ describe('Operational log main sink (pino, slice 1)', () => {
     expect(readLines(logDir).join('\n')).not.toContain('alice')
   })
 
+  it('files closed-vocabulary counter dimensions and drops non-members (prompts, paths, facts)', async () => {
+    const logDir = tempLogDir()
+    await initOperationalLog({ logDir, isPackaged: true })
+    // The three counter dimensions as their call sites actually emit them.
+    logOperationalEvent('info', SCAN_DURATION_COUNTER, { op: 'scan', outcome: 'success', count: 12 })
+    logOperationalEvent('info', PROBE_OUTCOME_COUNTER, { kind: 'claude', status: 'warning', count: 1 })
+    logOperationalEvent('info', FETCH_TIMEOUT_COUNTER, { reason: 'timeout', count: 1 })
+    // Same keys, values outside the vocabulary: each dimension is dropped
+    // whole — a closed vocabulary is not a wider door, it is a shorter list.
+    logOperationalEvent('info', SCAN_DURATION_COUNTER, { op: 'scan', outcome: 'skipped, user pressed stop', count: 1 })
+    logOperationalEvent('info', PROBE_OUTCOME_COUNTER, { kind: 'claude', status: 'ready — total spend $456.78' })
+    logOperationalEvent('info', FETCH_TIMEOUT_COUNTER, {
+      reason: 'timeout reading C:\\Users\\alice\\.claude\\token.json',
+    })
+    closeOperationalLog()
+    const lines = readLines(logDir)
+    const text = lines.join('\n')
+    const parsed = lines.map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(parsed).toHaveLength(6)
+    expect(parsed[0]).toMatchObject({ event: SCAN_DURATION_COUNTER, op: 'scan', outcome: 'success', count: 12 })
+    expect(parsed[1]).toMatchObject({ event: PROBE_OUTCOME_COUNTER, kind: 'claude', status: 'warning', count: 1 })
+    expect(parsed[2]).toMatchObject({ event: FETCH_TIMEOUT_COUNTER, reason: 'timeout', count: 1 })
+    for (const record of parsed.slice(3)) {
+      expect(record).not.toHaveProperty('outcome')
+      expect(record).not.toHaveProperty('status')
+      expect(record).not.toHaveProperty('reason')
+    }
+    expect(text).not.toContain('skipped')
+    expect(text).not.toContain('456.78')
+    expect(text).not.toContain('alice')
+  })
+
   it('keeps interleaved forwarder records parseable across a forced rotation (#131)', async () => {
     const logDir = tempLogDir()
     // pino-roll parses bare numbers as megabytes — test sizes need a unit.
@@ -188,6 +222,82 @@ describe('Operational log main sink (pino, slice 1)', () => {
     // No truncation: every surviving line is complete JSON — and rotation
     // kept the newest generations (early events rotated out, late ones kept).
     expect(events.has('event.119')).toBe(true)
+  })
+})
+
+describe('sanitizeOperationalRecord closed-vocabulary dimensions (#148 Wave 9 Slice E)', () => {
+  function clean(fields: Record<string, unknown>): Record<string, unknown> {
+    return sanitizeOperationalRecord('scan.duration', fields, 'main')
+  }
+
+  it('keeps a dimension value that is a member of its set', () => {
+    expect(clean({ op: 'scan', outcome: 'success', count: 12 })).toEqual({
+      context: 'main',
+      event: 'scan.duration',
+      op: 'scan',
+      outcome: 'success',
+      count: 12,
+    })
+    expect(clean({ outcome: 'aborted' })).toMatchObject({ outcome: 'aborted' })
+    expect(clean({ outcome: 'failed' })).toMatchObject({ outcome: 'failed' })
+    expect(clean({ status: 'ready' })).toMatchObject({ status: 'ready' })
+    expect(clean({ status: 'warning' })).toMatchObject({ status: 'warning' })
+    expect(clean({ status: 'error' })).toMatchObject({ status: 'error' })
+    expect(clean({ status: 'disabled' })).toMatchObject({ status: 'disabled' })
+    expect(clean({ reason: 'timeout' })).toMatchObject({ reason: 'timeout' })
+  })
+
+  it('drops a value outside the set, including near-misses and wrong-set members', () => {
+    // No trim, no case-fold, no cap-then-keep: `' success '` is as foreign as
+    // a prompt, because the set is the entire allowlist.
+    for (const value of ['SUCCESS', ' success ', 'success ', 'succeeded', '', ' pending ', 'timeout ']) {
+      expect(clean({ outcome: value })).not.toHaveProperty('outcome')
+    }
+    // `pending` is a `ProbeStatus` but never a settled `ProbeResult['status']`.
+    expect(clean({ status: 'pending' })).not.toHaveProperty('status')
+    // A member of one set is not a member of another: the sets are per field.
+    expect(clean({ outcome: 'timeout' })).not.toHaveProperty('outcome')
+    expect(clean({ status: 'success' })).not.toHaveProperty('status')
+    expect(clean({ reason: 'abort' })).not.toHaveProperty('reason')
+    expect(clean({ reason: 'network' })).not.toHaveProperty('reason')
+  })
+
+  it('drops non-string dimension values without coercing them', () => {
+    const hostile: unknown[] = [1, 0, -1, Number.NaN, true, false, null, undefined, {}, [], ['ready'], new Date(0)]
+    for (const value of hostile) {
+      // Not `String(value)`-ed, not counted: only context + event survive.
+      expect(clean({ outcome: value, status: value, reason: value })).toEqual({
+        context: 'main',
+        event: 'scan.duration',
+      })
+    }
+  })
+
+  it('never leaks a long, path-shaped, prompt-shaped, or odd-control value', () => {
+    const hostile = [
+      'x'.repeat(500),
+      'C:\\Users\\alice\\sessions.json',
+      '/Users/alice/.config/token.json',
+      'user asked: what did I spend on gpt-5?',
+      'Bearer sk-secret',
+      '\u202E',
+      'success\nskipped',
+    ]
+    for (const value of hostile) {
+      const record = clean({ outcome: value, status: value, reason: value })
+      expect(record).toEqual({ context: 'main', event: 'scan.duration' })
+      expect(JSON.stringify(record)).not.toContain('alice')
+      expect(JSON.stringify(record)).not.toContain('sk-secret')
+    }
+  })
+
+  it('leaves `kind` a free-form allowlisted string (capped, not enumerated)', () => {
+    // Deliberate: `kind` is allowlisted by name today, so it keeps the string
+    // rules (trim + 200-char cap, no basename rewrite) instead of joining the
+    // closed vocabulary. Pinned here so the decision cannot drift silently.
+    expect(clean({ kind: 'claude' })).toMatchObject({ kind: 'claude' })
+    expect(clean({ kind: '  opencode  ' })).toMatchObject({ kind: 'opencode' })
+    expect(String(clean({ kind: 'y'.repeat(500) })['kind'])).toHaveLength(200)
   })
 })
 

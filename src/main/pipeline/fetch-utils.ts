@@ -78,8 +78,10 @@ const liveFetchCounters: HttpFetchCounters = {
 // unlike `ignore`, also swallows defects and interruptions) covers every sink
 // defect — so the `HttpFetchError{timeout}` contract stays byte-identical.
 // Abort and network paths never file. Filed fields are reason-only — never
-// the URL (untrusted input for the allowlist; `sanitizeOperationalRecord` is
-// the enforcement point and is NOT widened here).
+// the URL, which is untrusted input and is on no list. `reason: 'timeout'` is
+// the single value allowlisted for this key (`ALLOWED_ENUM_FIELDS.reason`), so
+// the record breaks down by reason while every other `reason` string in the app
+// stays droppable; `sanitizeOperationalRecord` remains the enforcement point.
 function fileFetchTimeout(
   counters: HttpFetchCounters,
   timeoutMs: number,

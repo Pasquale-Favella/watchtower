@@ -16,6 +16,52 @@ const ALLOWED_STRING_FIELDS = [
 ] as const
 const ALLOWED_COUNT_FIELDS = ['count', 'ported', 'unparsed', 'failed'] as const
 
+/**
+ * Closed-vocabulary fields (#148, Wave 9 Slice E): allowlisted BY VALUE, not
+ * by name. A counter dimension (`scan.duration` outcome, `fetch.timeout`
+ * reason, `probe.outcome` status) can break down in the Operational log
+ * without any free text reaching it — the only fileable values under these
+ * keys are the constants below, and a value outside its set is dropped exactly
+ * like a non-allowlisted field. No coercion, no trimming, no cap-then-keep:
+ * the set is the whole allowlist, so `' success '` is as foreign as a prompt.
+ *
+ * Every set is transcribed from the emitting call site's own declared union
+ * (the runtime enforcement point remains this sanitizer — every counter seam
+ * takes a `Record<string, unknown>` field bag, so types cannot enforce it at
+ * the boundary):
+ * - `outcome` — `ScanDurationOutcome` in `src/main/pipeline/scan.ts`;
+ *   `outcomeForScanExit` returns exactly `success | aborted | failed`.
+ * - `status` — `ProbeResult['status']` in `src/main/agents/probe.ts`, i.e.
+ *   `Exclude<ProbeStatus, 'pending'>`. `pending` is a not-yet-probed row state
+ *   and never a settled probe, so it is deliberately NOT a member.
+ * - `reason` — the `FETCH_TIMEOUT_COUNTER` field in
+ *   `src/main/pipeline/fetch-utils.ts`, timeout-only (the `HttpFetchError`
+ *   `abort`/`network` reasons are error values, never filed). That keeps every
+ *   other `reason` in the app droppable, e.g. the free-text skills-dismiss
+ *   reason in `src/main/store/ledger.ts`.
+ *
+ * `kind` deliberately stays in `ALLOWED_STRING_FIELDS` (free-form, 200-capped)
+ * instead of joining this map: it is allowlisted by name today, so moving it
+ * would silently change every harness record, and the harness registry owns
+ * that list. The dimension that actually needs breaking down — the settled
+ * probe `status` — is enumerated.
+ *
+ * The sets are hand-transcribed from the type unions above, so adding a union
+ * member (say a fifth `ProbeStatus`) compiles, files nothing, and fails
+ * SILENTLY — the fail-closed direction, and the same trade `ALLOWED_STRING_FIELDS`
+ * already makes. A vocabulary test asserts each transcription against its union
+ * so the drift shows up as a red test rather than a missing dimension.
+ */
+const ALLOWED_ENUM_FIELDS = {
+  outcome: ['success', 'aborted', 'failed'],
+  status: ['ready', 'warning', 'error', 'disabled'],
+  reason: ['timeout'],
+} as const
+
+const ALLOWED_ENUM_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.fromEntries(
+  Object.entries(ALLOWED_ENUM_FIELDS).map(([key, values]) => [key, new Set<string>(values)] as const),
+)
+
 export function sanitizeOperationalRecord(
   event: string,
   fields: Record<string, unknown>,
@@ -36,6 +82,12 @@ export function sanitizeOperationalRecord(
   for (const key of ALLOWED_COUNT_FIELDS) {
     const value = fields[key]
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) record[key] = value
+  }
+  // Last, so a future name collision between the lists can only tighten the
+  // record: this loop writes vocabulary members or nothing.
+  for (const [key, allowed] of Object.entries(ALLOWED_ENUM_VALUES)) {
+    const value = fields[key]
+    if (typeof value === 'string' && allowed.has(value)) record[key] = value
   }
   return record
 }
