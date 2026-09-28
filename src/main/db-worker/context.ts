@@ -784,8 +784,14 @@ export class DbWorkerContext {
         if (typeof code !== 'string' || !isValidCurrencyCode(code)) {
           throw new Error('invalid ISO 4217 currency code')
         }
+        // Repository-direct write (ADR 0032 follow-up): through the `FxRates`
+        // port straight to `LedgerRepository`, bypassing the
+        // `LedgerStore.setDisplayCurrency` removal candidate. Background FX
+        // still uses `liveFxLayer`/`layerWithStore` until it migrates.
         Effect.runSync(
-          Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(Effect.provide(liveFxLayer(ledger))),
+          Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(
+            Effect.provide(FxRates.layerWithRepository(ledger)),
+          ),
         )
         const emit = this.emit
         const isClosed = (): boolean => this.closed

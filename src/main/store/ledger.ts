@@ -307,11 +307,12 @@ export class LedgerStore {
     return this.runRepositorySync(repository => repository.getDisplayCurrency())
   }
 
-  /** Sole remaining caller is the `FxRates.layerWithStore` adapter (`fx.ts`) —
-   * every former direct caller (worker `currency:set` arm, all tests) now
-   * writes through the `FxRates` port (retired Wave 7 with a zero-caller grep
-   * proof outside the adapter). Deletes only with a repository-direct `FxRates`
-   * layer, which needs `runRepositorySync` access that lives here. */
+  /** Display-currency write kept for the legacy `FxRates.layerWithStore`
+   * adapter: that adapter still serves the background FX job and the tests
+   * that pin its behavior, so deletion is WITHHELD (Wave 7 precedent). Delete
+   * this method only when grep proves zero `store.setDisplayCurrency` callers
+   * outside a repository-direct layer — i.e. once `layerWithStore` itself is
+   * removed or re-pointed at `runRepositorySync`. */
   setDisplayCurrency(code: string): void {
     const safe = /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'
     this.runRepositorySync(repository => repository.setDisplayCurrency(safe))
@@ -373,7 +374,15 @@ export class LedgerStore {
     this.db.close()
   }
 
-  private runRepositorySync<A>(operation: (repository: LedgerRepository['Service']) => Effect.Effect<A, SqlError>): A {
+  /**
+   * Synchronous repository runner for Effect-native callers on the owning
+   * thread (currently `FxRates.layerWithRepository`). Public so the
+   * repository-direct `FxRates` layer can reach `LedgerRepository` without
+   * going through this facade's per-method adapters — the single-writer
+   * invariant is unchanged: only the worker thread that owns this store may
+   * call it; main never touches the ledger connection.
+   */
+  runRepositorySync<A>(operation: (repository: LedgerRepository['Service']) => Effect.Effect<A, SqlError>): A {
     return this.db.runSync(
       Effect.gen(function* () {
         const repository = yield* LedgerRepository

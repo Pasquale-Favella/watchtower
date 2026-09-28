@@ -244,4 +244,33 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
     expect(store.getCurrencyRate('EUR')).toBeNull()
     store.close()
   })
+
+  it('layerWithRepository persists through the repository with no store-facade write', () => {
+    const store = makeStore()
+    const layer = FxRates.layerWithRepository(store)
+    Effect.runSync(
+      Effect.flatMap(FxRates, rates =>
+        Effect.andThen(
+          rates.setDisplayCurrency('EUR'),
+          rates.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: '2026-08-01T00:00:00.000Z' }),
+        ),
+      ).pipe(Effect.provide(layer)),
+    )
+    expect(store.getDisplayCurrency()).toBe('EUR')
+    expect(store.getCurrencyRate('EUR')).toMatchObject({ code: 'EUR', rate: 0.9 })
+    store.close()
+  })
+
+  it('layerWithRepository sanitizes display codes exactly like the store facade', () => {
+    const store = makeStore()
+    const layer = FxRates.layerWithRepository(store)
+    const pin = (code: string): void => {
+      Effect.runSync(Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(Effect.provide(layer)))
+    }
+    pin('eur')
+    expect(store.getDisplayCurrency()).toBe('EUR')
+    pin('nope!')
+    expect(store.getDisplayCurrency()).toBe('USD')
+    store.close()
+  })
 })

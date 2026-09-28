@@ -2,11 +2,13 @@ import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import type { SqlError } from 'effect/unstable/sql/SqlError'
 
 import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 import type { CurrencyRate } from '../shared/schemas/ledger.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 import type { LedgerStore } from './store/ledger.js'
+import type { LedgerRepository } from './store/ledger-repository.js'
 
 export type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 
@@ -109,11 +111,24 @@ function displayCurrencyCode(store: LedgerStore): string {
   return isValidCurrencyCode(code) ? code : 'USD'
 }
 
+/** Write-side display-code sanitization, the same rule as
+ * `LedgerStore.setDisplayCurrency` (uppercase a 3-letter code, else `USD`).
+ * Duplicated rather than imported: `fx.ts` reaches the ledger only through the
+ * `FxRatesRepositoryRunner` seam, never through the concrete store. */
+function sanitizeDisplayCurrencyCode(code: string): string {
+  return /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'
+}
+
 /** The active display currency: the persisted code plus its cached rate.
  * Falls back to the last successfully cached rate whenever one exists (even
  * if stale — a stale rate beats no rate), or to the USD-equivalent rate 1
  * when nothing has ever been cached. Never fetches; this is the renderer's
- * single read path. */
+ * single read path.
+ *
+ * This stays a plain sync read permanently: the db-worker IPC dispatch answers
+ * `currency:get` with this value inline, and Effect values never cross IPC —
+ * Effect-ifying the read would push every sync caller (dispatch, cadence
+ * snapshot, exports) through a runtime for no gain. */
 export function getActiveCurrency(store: LedgerStore): ActiveCurrency {
   const code = displayCurrencyCode(store)
   if (code === 'USD') return { ...USD_CURRENCY }
@@ -138,6 +153,18 @@ export interface RefreshFxRateEffectOptions {
   now?: () => number
   /** Fetch timeout override; defaults to the shared HTTP ceiling. */
   timeoutMs?: number
+}
+
+/**
+ * Structural seam for the repository-direct `FxRates` layer: anything that can
+ * run `LedgerRepository` effects synchronously on the owning thread
+ * (`LedgerStore.runRepositorySync`, public for exactly this). Keeps `fx.ts`
+ * free of the concrete store while preserving the single-writer SQLite
+ * invariant — the worker still owns the ledger on its thread; main never
+ * touches the connection.
+ */
+export interface FxRatesRepositoryRunner {
+  runRepositorySync<A>(operation: (repository: LedgerRepository['Service']) => Effect.Effect<A, SqlError>): A
 }
 
 /**
@@ -166,6 +193,27 @@ export class FxRates extends Context.Service<
 
   static readonly layerWithRates = (rates: FxRates['Service']): Layer.Layer<FxRates> =>
     Layer.succeed(FxRates, FxRates.of(rates))
+
+  /**
+   * Repository-direct `FxRates` layer (ADR 0032 follow-up, additive alongside
+   * `layerWithStore`): reaches `LedgerRepository` through the runner instead of
+   * the `LedgerStore` facade, so the worker's `currency:set` arm no longer
+   * routes through `LedgerStore.setDisplayCurrency`. Display-code sanitization
+   * mirrors the store method, keeping behavior identical. `layerWithStore`
+   * stays until its remaining callers (background FX, pinned tests) migrate —
+   * only then can the store method be deleted.
+   */
+  static readonly layerWithRepository = (runner: FxRatesRepositoryRunner): Layer.Layer<FxRates> => {
+    const run = <A>(operation: (repository: LedgerRepository['Service']) => Effect.Effect<A, SqlError>) =>
+      Effect.sync(() => runner.runRepositorySync(operation))
+
+    return FxRates.layerWithRates({
+      getCurrencyRate: code => run(repository => repository.getCurrencyRate(code)),
+      setCurrencyRate: rate => run(repository => repository.setCurrencyRate(rate)),
+      getDisplayCurrency: () => run(repository => repository.getDisplayCurrency()),
+      setDisplayCurrency: code => run(repository => repository.setDisplayCurrency(sanitizeDisplayCurrencyCode(code))),
+    })
+  }
 }
 
 /** Port-based USD→code refresh core (ADR 0032 slice 2).
