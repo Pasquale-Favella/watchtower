@@ -1,7 +1,12 @@
+import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Schema from 'effect/Schema'
 
 import type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress } from '../../shared/schemas/scan.js'
 import type { Env } from '../env.js'
+import { OperationalLog, SCAN_DURATION_COUNTER } from '../operational-log.js'
 import { HttpFetch } from './fetch-utils.js'
 import { loadPricingEffect } from './models.js'
 import type { DeltaHandler } from './parser.js'
@@ -9,12 +14,65 @@ import { parseAllSessions } from './parser.js'
 
 export type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress, ScanStage } from '../../shared/schemas/scan.js'
 
-export class ScanAbortedError extends Error {
-  constructor() {
-    super('scan aborted')
-    this.name = 'ScanAbortedError'
-  }
+/** Typed abort sentinel (Wave 5, issue #148 §2): `Schema.TaggedError` with
+ * `_tag: 'ScanAbortedError'` for Effect-native `catchTag` handling. The class
+ * NAME stays `ScanAbortedError` (so `instanceof` keeps working) and
+ * `TaggedError` sets `prototype.name` to the tag (so the parser's
+ * `err.name === 'ScanAbortedError'` re-throw-by-name in `parser.ts`
+ * `safeEmitDelta` keeps working — verified by regression + explicit
+ * name/instanceof tests). Message stays `'scan aborted'` so the
+ * `scan:error` envelope and `{ok:false, aborted:true}` wire stay
+ * byte-identical. Mirrors `HttpFetchError`/`PricingRefreshError`. */
+export class ScanAbortedError extends Schema.TaggedError<ScanAbortedError>()('ScanAbortedError', {
+  message: Schema.String,
+}) {}
+
+type ScanDurationOutcome = 'success' | 'aborted' | 'failed'
+
+function abortedScanError(): ScanAbortedError {
+  return new ScanAbortedError({ message: 'scan aborted' })
 }
+
+function isScanAbortedError(err: unknown): boolean {
+  if (err instanceof ScanAbortedError) return true
+  return typeof err === 'object' && err !== null && (err as { _tag?: unknown })._tag === 'ScanAbortedError'
+}
+
+/** Maps a finished scan `Exit` to the duration-counter outcome label
+ * (labels only, no payloads). Success → `success`; failure whose cause
+ * contains `ScanAbortedError` (typed abort) or an interruption (fiber abort
+ * rides the flag) → `aborted`; every other failure or defect → `failed`.
+ * Defects stay in `Cause` — this only reads the exit for the label, never
+ * converts. Pure (unit-testable via `Exit`). */
+function outcomeForScanExit(exit: Exit.Exit<unknown, unknown>): ScanDurationOutcome {
+  if (Exit.isSuccess(exit)) return 'success'
+  const cause = exit.cause as Cause.Cause<unknown>
+  if (Cause.hasInterrupts(cause)) return 'aborted'
+  for (const reason of cause.reasons) {
+    if (reason._tag === 'Fail' && isScanAbortedError((reason as { error: unknown }).error)) return 'aborted'
+  }
+  return 'failed'
+}
+
+/** Files `SCAN_DURATION_COUNTER` for one finished scan (Wave 5 counter
+ * wiring). Amount is wall duration in ms; fields are outcome labels only
+ * (`op: 'scan'` + `outcome`) — never payloads, never paths. The allowlist
+ * (`sanitizeOperationalRecord`) keeps `op` + `count` and drops `outcome`
+ * today (same as the probe slice's dropped `status` and the fetch slice's
+ * dropped `reason` — allowlist NOT widened here, privacy-reviewed later).
+ * Never throws (mirrors the probe/fetch `catchCause` guard) so forked scan
+ * fibers are never broken by logging. Clock source is
+ * `Clock.currentTimeMillis` so `TestClock` governs duration in tests. */
+const fileScanDuration = Effect.fnUntraced(function* (
+  start: number,
+  exit: Exit.Exit<unknown, unknown>,
+): Effect.fn.Return<void, never, OperationalLog> {
+  const oplog = yield* OperationalLog
+  const end = yield* Clock.currentTimeMillis
+  const duration = Math.max(0, end - start)
+  const outcome = outcomeForScanExit(exit)
+  yield* oplog.incrementCounter(SCAN_DURATION_COUNTER, duration, { op: 'scan', outcome })
+})
 
 /**
  * Runs the full watchtower pipeline (discovery, parse, classify, price) and
@@ -31,89 +89,126 @@ export const runScan = Effect.fnUntraced(function* (
   onProgress?: (progress: ScanProgress) => void,
   abort?: { isAborted(): boolean },
   onDelta?: DeltaHandler,
-): Effect.fn.Return<ScanMetadata, unknown, HttpFetch | Env> {
-  const scanId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const startedAt = new Date().toISOString()
+): Effect.fn.Return<ScanMetadata, ScanAbortedError | Error, HttpFetch | Env | OperationalLog> {
+  // Wall-duration start via the Effect Clock so TestClock governs duration in
+  // tests (mirrors `refreshFxRateWithRates` staleness + fetch-timeout Clock).
+  // `Date.now`/`new Date` below stay for scanId/timestamps (wire, out of scope).
+  const start = yield* Clock.currentTimeMillis
 
-  onProgress?.({ stage: 'pricing' })
-  yield* loadPricingEffect()
+  return yield* Effect.gen(function* () {
+    const scanId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const startedAt = new Date().toISOString()
 
-  onProgress?.({ stage: 'parse' })
-  if (onDelta) onProgress?.({ stage: 'port-in' })
+    onProgress?.({ stage: 'pricing' })
+    yield* loadPricingEffect()
 
-  const perProvider = new Map<string, PerProviderPort>()
-  const ensureProvider = (provider: string): PerProviderPort => {
-    let row = perProvider.get(provider)
-    if (!row) {
-      row = { provider, ported: 0, unchanged: 0, failed: 0, unparsed: 0 }
-      perProvider.set(provider, row)
-    }
-    return row
-  }
+    onProgress?.({ stage: 'parse' })
+    if (onDelta) onProgress?.({ stage: 'port-in' })
 
-  let aborted = false
-
-  const countingDelta: DeltaHandler | undefined = onDelta
-    ? async delta => {
-        if (abort?.isAborted()) {
-          aborted = true
-          throw new ScanAbortedError()
-        }
-        const row = ensureProvider(delta.provider)
-        if (delta.cachedFile.failed) {
-          // failed files are counted but never forwarded: scan metadata knows
-          // them, the ledger never ports a failed file
-          row.failed++
-          return
-        }
-        if (delta.verdict === 'unchanged') row.unchanged++
-        else row.ported++
-        await onDelta(delta)
+    const perProvider = new Map<string, PerProviderPort>()
+    const ensureProvider = (provider: string): PerProviderPort => {
+      let row = perProvider.get(provider)
+      if (!row) {
+        row = { provider, ported: 0, unchanged: 0, failed: 0, unparsed: 0 }
+        perProvider.set(provider, row)
       }
-    : undefined
+      return row
+    }
 
-  // Extraction seam tally (ADR 0003): rows/blobs skipped because a declared
-  // field failed its schema. Surfaced per-provider in scan metadata so provider
-  // schema drift is visible, never fatal.
-  const onUnparsed = (provider: string, count: number): void => {
-    ensureProvider(provider).unparsed += count
-  }
+    let aborted = false
 
-  // parseAllSessions decision (ADR 0032): kept as the documented Promise
-  // boundary. Evaluation: one-shot filesystem reads own no lifecycle worth
-  // managing (no background ownership, no retry schedule, abort is a
-  // caller-owned flag, not fiber cancellation); parsers stay pure
-  // mapping/aggregation; substitution has no value (tests already drive the
-  // onDelta/onUnparsed seams, no fake filesystem service needed). Promoting
-  // to a focused service would add a layer without lifecycle or substitution
-  // benefit, so the call stays in tryPromise with identical abort, progress,
-  // metadata, and port-in semantics.
-  yield* Effect.tryPromise({
-    try: () => parseAllSessions(options.range, options.provider, countingDelta, onUnparsed),
-    catch: cause => cause,
-  })
+    // Promise-boundary seam (NOT Effect-native): `DeltaHandler` is
+    // `(delta) => void | Promise<void>`, so this stays `async`/`throw`.
+    // Throws the TAGGED error with the preserved `'scan aborted'` message —
+    // `instanceof` + `err.name` both keep working for the parser re-throw.
+    const countingDelta: DeltaHandler | undefined = onDelta
+      ? async delta => {
+          if (abort?.isAborted()) {
+            aborted = true
+            throw abortedScanError()
+          }
+          const row = ensureProvider(delta.provider)
+          if (delta.cachedFile.failed) {
+            // failed files are counted but never forwarded: scan metadata knows
+            // them, the ledger never ports a failed file
+            row.failed++
+            return
+          }
+          if (delta.verdict === 'unchanged') row.unchanged++
+          else row.ported++
+          await onDelta(delta)
+        }
+      : undefined
 
-  if (onDelta && abort?.isAborted()) {
-    aborted = true
-    throw new ScanAbortedError()
-  }
+    // Extraction seam tally (ADR 0003): rows/blobs skipped because a declared
+    // field failed its schema. Surfaced per-provider in scan metadata so provider
+    // schema drift is visible, never fatal.
+    const onUnparsed = (provider: string, count: number): void => {
+      ensureProvider(provider).unparsed += count
+    }
 
-  const providerRows = [...perProvider.values()].sort((a, b) => a.provider.localeCompare(b.provider))
-  const portedFiles = providerRows.reduce((s, r) => s + r.ported, 0)
-  const unchangedFiles = providerRows.reduce((s, r) => s + r.unchanged, 0)
-  const failedFiles = providerRows.reduce((s, r) => s + r.failed, 0)
+    // parseAllSessions decision (ADR 0032): kept as the documented Promise
+    // boundary. Evaluation: one-shot filesystem reads own no lifecycle worth
+    // managing (no background ownership, no retry schedule, abort is a
+    // caller-owned flag, not fiber cancellation); parsers stay pure
+    // mapping/aggregation; substitution has no value (tests already drive the
+    // onDelta/onUnparsed seams, no fake filesystem service needed). Promoting
+    // to a focused service would add a layer without lifecycle or substitution
+    // benefit, so the call stays in tryPromise with identical abort, progress,
+    // metadata, and port-in semantics. `catch` preserves the typed abort in
+    // the failure channel (defects stay in Cause); the `as` cast is
+    // type-only (no runtime wrapping, envelopes byte-identical) so the error
+    // channel stays `ScanAbortedError | Error` — a tagged union `catchTag`
+    // accepts (`Tags<unknown>` is `never`, so `unknown` would reject
+    // `'ScanAbortedError'` at type level even though the runtime `_tag`
+    // matches). Non-`Error` rejections (practically impossible here) still
+    // propagate unchanged at runtime.
+    yield* Effect.tryPromise({
+      try: () => parseAllSessions(options.range, options.provider, countingDelta, onUnparsed),
+      catch: cause => cause as ScanAbortedError | Error,
+    })
 
-  onProgress?.({ stage: 'port-in', processed: portedFiles })
-  return {
-    scanId,
-    startedAt,
-    completedAt: new Date().toISOString(),
-    portedFiles,
-    unchangedFiles,
-    failedFiles,
-    perProvider: providerRows,
-    aborted,
-  }
+    if (onDelta && abort?.isAborted()) {
+      aborted = true
+      // Effect-native typed failure (NOT `throw`, which would be a defect):
+      // always `return yield*` per AGENTS.md so `catchTag('ScanAbortedError')`
+      // downstream sees the `_tag`.
+      return yield* abortedScanError()
+    }
+
+    const providerRows: PerProviderPort[] = [...perProvider.values()].sort((a, b) =>
+      a.provider.localeCompare(b.provider),
+    )
+    let portedFiles = 0
+    let unchangedFiles = 0
+    let failedFiles = 0
+    for (const row of providerRows) {
+      portedFiles += row.ported
+      unchangedFiles += row.unchanged
+      failedFiles += row.failed
+    }
+
+    onProgress?.({ stage: 'port-in', processed: portedFiles })
+    return {
+      scanId,
+      startedAt,
+      completedAt: new Date().toISOString(),
+      portedFiles,
+      unchangedFiles,
+      failedFiles,
+      perProvider: providerRows,
+      aborted,
+    }
+  }).pipe(
+    // Duration filing for every completion (success/abort/failure + interruption):
+    // `onExit` replays the original exit unchanged after filing, so envelopes,
+    // coalescing, and abort semantics stay byte-identical. Filing itself is
+    // never-throw (`catchCause` swallows failure AND defect, mirroring the
+    // fetch/probe slices) so forked scan fibers are never broken by logging.
+    Effect.onExit(exit =>
+      fileScanDuration(start, exit as Exit.Exit<unknown, unknown>).pipe(Effect.catchCause(() => Effect.void)),
+    ),
+  )
 })
 
 /** Operational-log record shape for a finished scan (#128): one `scan.finish`

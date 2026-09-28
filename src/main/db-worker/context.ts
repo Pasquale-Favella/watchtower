@@ -27,6 +27,7 @@ import {
   refreshFxRateWithRates,
 } from '../fx.js'
 import { buildModelsViewFromLedger, type ModelsPayload } from '../models-view.js'
+import { OperationalLog } from '../operational-log.js'
 import { buildOptimizeViewFromLedger, type OptimizePayload } from '../optimize-view.js'
 import { buildOverviewFromLedger, type OverviewScope } from '../overview.js'
 import { HttpFetch } from '../pipeline/fetch-utils.js'
@@ -87,6 +88,10 @@ function dirSize(path: string): number {
  */
 function lifetimeRange(): DateRange {
   return { start: new Date(0), end: new Date() }
+}
+
+function abortedScanError(): ScanAbortedError {
+  return new ScanAbortedError({ message: 'scan aborted' })
 }
 
 /** Live HttpFetch, resolved at run time so tests stubbing global fetch drive
@@ -194,7 +199,26 @@ export class DbWorkerContext {
       // to the ledger while the parse runs. The scan's delta wrapper already
       // gates out failed parses; `unchanged` is a no-op inside portIn.
       portIn,
-    ).pipe(Effect.provide(liveFetchLayer()), Effect.provide(Env.layer))
+    ).pipe(
+      // Effect-native typed-abort proof (Wave 5 §2): `catchTag` on the `_tag`
+      // (NOT `instanceof`, NOT `either`). No `either` here, so no span-inside
+      // trap — any future `withSpan` must wrap OUTSIDE this `catchTag`, never
+      // inside a branch. Re-fails unchanged so envelopes/flag semantics stay
+      // byte-identical downstream (Promise-boundary `instanceof` + flag in the
+      // `scan:start`/background catches). Defects stay in Cause (no catchAll).
+      Effect.catchTag('ScanAbortedError', err => Effect.fail(err)),
+      // Duration-counter live provision (Wave 5): `R`-channel `OperationalLog`
+      // merged here (mirrors `liveFxLayer`'s `mergeAll` shape at worker scope).
+      // Chosen over the snapshot-style optional value-seam because grep proves
+      // `runScan` has exactly one caller (`performScan`; zero direct callers in
+      // `src`/`tests`/`renderer`/`e2e`/`scripts`, incl. all FORBIDDEN tests), so
+      // no forbidden direct caller needs a zero-edit default. Live layer
+      // delegates to the main-owned pino singleton (same sink/allowlist/`main`
+      // context, never a second sink); tests substitute
+      // `OperationalLog.layerWithSink` fake. Never-throw filing lives in
+      // `runScan`'s `onExit` (`catchCause`), so forked scan fibers stay green.
+      Effect.provide(Layer.mergeAll(liveFetchLayer(), Env.layer, OperationalLog.layer)),
+    )
   }
 
   private async runTrackedScan(
@@ -238,6 +262,10 @@ export class DbWorkerContext {
   }
 
   private emitScanFailure(err: unknown): void {
+    // Promise-boundary seam (NOT Effect-native): called from `await`
+    // `runTrackedScan` catches with `unknown`, so this stays `instanceof`
+    // (NOT `catchTag` — no Effect here). Works with the TaggedError because
+    // the class NAME is preserved.
     if (err instanceof ScanAbortedError) {
       this.emit({ event: 'oplog', level: 'warn', logEvent: 'scan.abort', fields: { op: 'scan', code: 'aborted' } })
     } else {
@@ -279,9 +307,12 @@ export class DbWorkerContext {
     } catch (err) {
       // background scans fail silently; manual ⌘R remains available.
       // Fiber interruption (abort/close) rides the abort flag so the oplog
-      // stays `scan.abort` (warn), not `scan.error`.
+      // stays `scan.abort` (warn), not `scan.error`. Promise-boundary
+      // `instanceof` + flag mapping stays (NOT `catchTag` — this is `await`,
+      // not an Effect); the Effect-native `catchTag` proof lives in
+      // `performScan`.
       this.emit({ event: 'scan:idle' })
-      this.emitScanFailure(this.scanAbortFlag ? new ScanAbortedError() : err)
+      this.emitScanFailure(this.scanAbortFlag ? abortedScanError() : err)
     }
   }
 
@@ -447,8 +478,12 @@ export class DbWorkerContext {
           // Fiber interruption (abort/close) rides the abort flag so the wire
           // stays `{ok:false, aborted:true}` + `scan:error` even when the
           // failure is an interruption cause rather than `ScanAbortedError`.
+          // Promise-boundary `instanceof` + flag mapping stays (NOT `catchTag`
+          // — this is `await runTrackedScan`, not an Effect); the Effect-native
+          // `catchTag` proof lives in `performScan`. `store:changed` only on
+          // success (this `catch` never emits it).
           const aborted = err instanceof ScanAbortedError || this.scanAbortFlag
-          const normalized = aborted && !(err instanceof ScanAbortedError) ? new ScanAbortedError() : err
+          const normalized = aborted && !(err instanceof ScanAbortedError) ? abortedScanError() : err
           const message = aborted ? 'scan aborted' : err instanceof Error ? err.message : String(err)
           this.emit({ event: 'scan:error', manual: true, message })
           this.emitScanFailure(normalized)

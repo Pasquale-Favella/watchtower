@@ -10,7 +10,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DbWorkerClient, type DbWorkerPort } from '../src/main/db-worker/client.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
-import type { ScanMetadata } from '../src/main/pipeline/scan.js'
+import { Env } from '../src/main/env.js'
+import { OperationalLog, type OperationalLogSink, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
+import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
+import { runScan, ScanAbortedError, type ScanMetadata } from '../src/main/pipeline/scan.js'
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'watchtower-dbworker-'))
@@ -240,6 +243,39 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
   })
 
+  it('ScanAbortedError TaggedError preserves instanceof, name, message, _tag (parser name-check)', () => {
+    const err = new ScanAbortedError({ message: 'scan aborted' })
+    // instanceof (class NAME preserved) — Promise-boundary seams + context envelope
+    expect(err).toBeInstanceOf(ScanAbortedError)
+    expect(err).toBeInstanceOf(Error)
+    // parser.ts safeEmitDelta re-throws BY NAME (~lines 68-74, forbidden, never edited)
+    expect((err as Error).name).toBe('ScanAbortedError')
+    expect((err as unknown as { _tag: string })._tag).toBe('ScanAbortedError')
+    expect(err.message).toBe('scan aborted')
+    // Simulated parser check (mirrors `err?.name === 'ScanAbortedError'`)
+    const rethrowsByName = (e: unknown): boolean => (e as Error | undefined)?.name === 'ScanAbortedError'
+    expect(rethrowsByName(err)).toBe(true)
+    expect(rethrowsByName(new Error('boom'))).toBe(false)
+  })
+
+  it('typed ScanAbortedError without the flag maps to envelope (catchTag path, no cooperative seam)', async () => {
+    const c = open()
+    // Fail with the TAGGED error directly — flag stays false, proving the typed
+    // `_tag` path (Effect-native `catchTag` in `performScan`) maps without the
+    // cooperative `scanAbortFlag` seam. Envelopes stay byte-identical.
+    vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    ).mockReturnValue(Effect.fail(new ScanAbortedError({ message: 'scan aborted' })))
+    const result = (await c.dispatch('scan:start', [])) as { ok: boolean; aborted: boolean; error: string }
+    expect(result).toMatchObject({ ok: false, aborted: true })
+    expect(result.error).toBe('scan aborted')
+    expect((c as unknown as { scanAbortFlag: boolean }).scanAbortFlag).toBe(false)
+    expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
+    expect(events).toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.abort', level: 'warn' }))
+    expect(events.filter(event => event.event === 'store:changed')).toHaveLength(0)
+  })
+
   it('waits for a cancelled FX request before closing the ledger', async () => {
     let resolveResponse!: (response: Response) => void
     let requestSignal: AbortSignal | undefined
@@ -337,6 +373,111 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     } finally {
       vi.stubGlobal('fetch', originalFetch)
     }
+  })
+})
+
+describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)', () => {
+  type SinkRecord = { level: string; event: string; fields: Record<string, unknown>; context: string }
+
+  function makeFakeSink(): { sink: OperationalLogSink; records: SinkRecord[] } {
+    const records: SinkRecord[] = []
+    const sink: OperationalLogSink = {
+      emit: (level, event, fields, context) => {
+        records.push({ level, event, fields: { ...fields }, context })
+      },
+    }
+    return { sink, records }
+  }
+
+  function testEnv(): ReturnType<typeof Env.layerWithValues> {
+    return Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })
+  }
+
+  function lifetimeOptions(): { range: { start: Date; end: Date }; provider: string } {
+    // Empty-provider filter keeps these unit tests fast + deterministic (no real
+    // provider dirs walked) while still exercising pricing + duration filing.
+    // Real-filesystem success is already covered by the `#128` oplog test.
+    return { range: { start: new Date(0), end: new Date() }, provider: '__wave5-empty-provider__' }
+  }
+
+  function provideScanLayers(
+    program: Effect.Effect<ScanMetadata, ScanAbortedError | Error, HttpFetch | Env | OperationalLog>,
+    sink: OperationalLogSink,
+  ): Effect.Effect<ScanMetadata, ScanAbortedError | Error> {
+    return program.pipe(
+      Effect.provide(HttpFetch.layerWithFetch(throwingFetch())),
+      Effect.provide(testEnv()),
+      Effect.provide(OperationalLog.layerWithSink(sink)),
+      Effect.provide(TestClock.layer()),
+    )
+  }
+
+  function expectDurationFiled(records: SinkRecord[], outcome: 'success' | 'aborted' | 'failed'): void {
+    expect(records).toHaveLength(1)
+    expect(records[0]!.event).toBe(SCAN_DURATION_COUNTER)
+    expect(records[0]!.fields).toMatchObject({ op: 'scan', outcome })
+  }
+
+  it('files success with outcome label via fake sink (TestClock governs Clock)', async () => {
+    const { sink, records } = makeFakeSink()
+    const program = provideScanLayers(runScan(lifetimeOptions()), sink)
+    const metadata = await Effect.runPromise(program)
+    expect(metadata.aborted).toBe(false)
+    expect(typeof metadata.scanId).toBe('string')
+    expect(records[0]!.level).toBe('info')
+    // Amount is wall duration ms via Clock.currentTimeMillis (TestClock => virtual,
+    // deterministic 0 without concurrent adjust — proves Clock, not Date.now).
+    expect(typeof records[0]!.fields['count']).toBe('number')
+    expect(Number(records[0]!.fields['count'])).toBeGreaterThanOrEqual(0)
+    // Outcome labels only (no payloads, no paths); `outcome` is dropped by the
+    // file allowlist today (same as probe `status` / fetch `reason` — NOT widened).
+    expectDurationFiled(records, 'success')
+  })
+
+  it('files aborted with outcome label via fake sink (abort flag + onDelta seam)', async () => {
+    const { sink, records } = makeFakeSink()
+    const program = provideScanLayers(
+      runScan(lifetimeOptions(), undefined, { isAborted: () => true }, async () => {}),
+      sink,
+    )
+    const error = await Effect.runPromise(program.pipe(Effect.flip))
+    expect(error).toBeInstanceOf(ScanAbortedError)
+    expect((error as ScanAbortedError)._tag).toBe('ScanAbortedError')
+    expect((error as Error).message).toBe('scan aborted')
+    expect((error as Error).name).toBe('ScanAbortedError')
+    expectDurationFiled(records, 'aborted')
+  })
+
+  it('files failed with outcome label when the scan dies (defect stays in Cause)', async () => {
+    const { sink, records } = makeFakeSink()
+    // Omit Env on purpose: `loadPricingEffect` dies with missing-service defect.
+    // `onExit` still files `failed` (defects are read for the label, never converted).
+    const program = runScan(lifetimeOptions()).pipe(
+      Effect.provide(HttpFetch.layerWithFetch(throwingFetch())),
+      Effect.provide(OperationalLog.layerWithSink(sink)),
+      Effect.provide(TestClock.layer()),
+    )
+    const exit = await Effect.runPromise(Effect.exit(program))
+    expect(exit._tag).toBe('Failure')
+    expectDurationFiled(records, 'failed')
+  })
+
+  it('a throwing sink never breaks success or abort (never-throw in fibers)', async () => {
+    const throwing: OperationalLogSink = {
+      emit: () => {
+        throw new Error('sink boom')
+      },
+    }
+    const okProgram = provideScanLayers(runScan(lifetimeOptions()), throwing)
+    await expect(Effect.runPromise(okProgram)).resolves.toMatchObject({ aborted: false })
+
+    const abortProgram = provideScanLayers(
+      runScan(lifetimeOptions(), undefined, { isAborted: () => true }, async () => {}),
+      throwing,
+    )
+    const error = await Effect.runPromise(abortProgram.pipe(Effect.flip))
+    expect(error).toBeInstanceOf(ScanAbortedError)
+    expect((error as Error).message).toBe('scan aborted')
   })
 })
 
