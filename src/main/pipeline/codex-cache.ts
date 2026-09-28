@@ -2,8 +2,8 @@ import { readFile, mkdir, stat, open, rename, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import { randomBytes } from 'crypto'
 import { join } from 'path'
-import { homedir } from 'os'
 
+import { resolveCacheDir } from '../env.js'
 import type { ParsedProviderCall } from './providers/types.js'
 
 // v4: attribute MCP calls emitted as event_msg/mcp_tool_call_end (issue #478).
@@ -34,7 +34,7 @@ type ResultCache = {
 }
 
 function getCacheDir(): string {
-  return process.env['WATCHTOWER_CACHE_DIR'] ?? join(homedir(), '.cache', 'watchtower')
+  return resolveCacheDir()
 }
 
 function getCachePath(): string {

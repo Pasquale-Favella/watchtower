@@ -2,8 +2,8 @@ import { readFile, stat, open, rename, unlink, readdir, mkdir } from 'fs/promise
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { createHash, randomBytes } from 'crypto'
 import { join } from 'path'
-import { homedir } from 'os'
 
+import { resolveCacheDir } from '../env.js'
 import type {
   CachedCall,
   CachedFile,
@@ -118,7 +118,7 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
 // ── Cache Dir ──────────────────────────────────────────────────────────
 
 function getCacheDir(): string {
-  return process.env['WATCHTOWER_CACHE_DIR'] ?? join(homedir(), '.cache', 'watchtower')
+  return resolveCacheDir()
 }
 
 function getCachePath(): string {

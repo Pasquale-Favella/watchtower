@@ -1,4 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads'
+import { initAppPaths } from '../env.js'
 import { DbWorkerContext } from './context.js'
 import type { DbWorkerData, DbWorkerRequest, DbWorkerResponse } from './protocol.js'
 
@@ -23,7 +24,9 @@ const init = workerData as DbWorkerData
 // DB) reports and exits instead of serving errors forever — the client never
 // respawns a worker that never lived.
 try {
-  process.env['WATCHTOWER_CACHE_DIR'] = init.cacheDir
+  // Worker cache dir still arrives via `init` — captured as the startup
+  // snapshot instead of ambient env mutation.
+  initAppPaths({ cacheDir: init.cacheDir })
 
   const ctx = new DbWorkerContext(init, event => port.postMessage(event))
 

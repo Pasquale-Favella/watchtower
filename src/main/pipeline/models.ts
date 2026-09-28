@@ -1,10 +1,9 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { mkdir, readFile, writeFile } from 'fs/promises'
-import { homedir } from 'os'
 import { join } from 'path'
 
-import { Env } from '../env.js'
+import { Env, resolveCacheDir } from '../env.js'
 import snapshotData from './data/litellm-snapshot.json'
 import fallbackData from './data/pricing-fallback.json'
 import { DEFAULT_FETCH_TIMEOUT_MS, HttpFetch } from './fetch-utils.js'
@@ -153,8 +152,7 @@ function getLowercasePricingIndex(): Map<string, ModelCosts> {
 }
 
 function getCacheDir(): string {
-  if (process.env['WATCHTOWER_CACHE_DIR']) return process.env['WATCHTOWER_CACHE_DIR']
-  return join(homedir(), '.cache', 'watchtower')
+  return resolveCacheDir()
 }
 
 function getCachePath(): string {

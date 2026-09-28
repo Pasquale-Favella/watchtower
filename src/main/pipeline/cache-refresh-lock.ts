@@ -1,8 +1,9 @@
 import { randomBytes } from 'crypto'
 import { existsSync } from 'fs'
 import { mkdir, open, readFile, stat, unlink, utimes, writeFile } from 'fs/promises'
-import { homedir } from 'os'
 import { join } from 'path'
+
+import { resolveCacheDir } from '../env.js'
 
 const LOCK_FILE = 'session-refresh.lock'
 const TAKEOVER_FILE = `${LOCK_FILE}.takeover`
@@ -44,10 +45,6 @@ export type RefreshLockOutcome =
 const defaultClock: RefreshLockClock = {
   monotonicNow: () => Number(process.hrtime.bigint()) / 1_000_000,
   wallNow: () => Date.now(),
-}
-
-function defaultCacheDir(): string {
-  return process.env['WATCHTOWER_CACHE_DIR'] ?? join(homedir(), '.cache', 'watchtower')
 }
 
 function delay(ms: number): Promise<void> {
@@ -151,7 +148,7 @@ export async function acquireCacheRefreshLock(options: RefreshLockOptions = {}):
     leaveSingleFlight()
   }
 
-  const cacheDir = options.cacheDir ?? defaultCacheDir()
+  const cacheDir = options.cacheDir ?? resolveCacheDir()
   const clock = options.clock ?? defaultClock
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
   const staleMs = options.staleMs ?? DEFAULT_STALE_MS

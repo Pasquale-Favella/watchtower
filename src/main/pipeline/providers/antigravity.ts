@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url'
 import https from 'https'
 
 import { calculateCost } from '../models.js'
+import { resolveCacheDir } from '../../env.js'
 import { isSqliteAvailable, isSqliteBusyError, openDatabase } from '../sqlite.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 
@@ -176,7 +177,7 @@ function getAgent(): https.Agent {
 }
 
 function getCacheDir(): string {
-  return process.env['WATCHTOWER_CACHE_DIR'] ?? join(homedir(), '.cache', 'watchtower')
+  return resolveCacheDir()
 }
 
 function getCachePath(): string {

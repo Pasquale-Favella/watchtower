@@ -3,6 +3,8 @@ import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
+import { homedir } from 'os'
+import { join } from 'path'
 
 /**
  * Env-only Config service (ADR 0032 §5.2, Wave 3 first seam + Wave 4 TTL seam).
@@ -19,12 +21,12 @@ import * as Option from 'effect/Option'
  * design (locked §5.2). No unified `AppConfig`, no `@effect/platform`,
  * no Zod, no renderer/IPC involvement.
  *
- * Extension (next seam): `WATCHTOWER_CACHE_DIR` sync readers stay via
- * `process.env` until the startup-snapshot design lands (later slice —
- * explicitly NOT this one). The fake `layerWithValues` already accepts the
- * full shape so callers/tests pick up new keys with no signature churn;
- * `layerWithGatewayKey` stays as the single-key shortcut for the gateway seam
- * (defaults the TTL to `Infinity`).
+ * Extension (cache-dir seam, this slice): `WATCHTOWER_CACHE_DIR` sync readers
+ * stay sync via the startup snapshot below — `initAppPaths` captures it once
+ * at boot and `resolveCacheDir` is the single reader. The fake
+ * `layerWithValues` already accepts the full shape so callers/tests pick up
+ * new keys with no signature churn; `layerWithGatewayKey` stays as the
+ * single-key shortcut for the gateway seam (defaults the TTL to `Infinity`).
  */
 export function resolveGatewayKey(primaryRaw: string | undefined, fallbackRaw: string | undefined): string | null {
   const raw = primaryRaw ?? fallbackRaw
@@ -43,6 +45,35 @@ export function resolvePricingCacheTtlMs(raw: string | undefined): number {
   const hours = Number(raw)
   if (!Number.isFinite(hours) || hours <= 0) return Infinity
   return hours * MS_PER_HOUR
+}
+
+// ── Cache-dir startup snapshot (§5.2 env-only Config, cache-dir seam) ──
+//
+// The five sync cache-dir readers (session-cache, codex-cache,
+// cache-refresh-lock, models pricing cache, antigravity) sit on sync parse
+// paths that Effect Config cannot reach without wide ripples, so the cache
+// dir travels as a startup-immutable snapshot rather than an `Env` service
+// field: `initAppPaths` captures it once at boot (db-worker entry from
+// `init.cacheDir`) and `resolveCacheDir` is the single sync reader.
+//
+// Precedence: (1) explicitly initialized snapshot, (2)
+// `process.env['WATCHTOWER_CACHE_DIR']` fallback — kept so every existing
+// env-mutating test stays green with zero edits, (3) the homedir default.
+// Write-once at boot in production; re-init overwrites deterministically so
+// tests can re-init per case like `Env.layerWithValues` fakes.
+//
+// Named removal condition: the `process.env` fallback inside
+// `resolveCacheDir` deletes when all readers are snapshot-initialized in
+// every isolate AND the env-mutating tests migrate to `initAppPaths`
+// (later slice).
+let appPathsSnapshot: { cacheDir: string } | null = null
+
+export function initAppPaths({ cacheDir }: { cacheDir: string }): void {
+  appPathsSnapshot = { cacheDir }
+}
+
+export function resolveCacheDir(): string {
+  return appPathsSnapshot?.cacheDir ?? process.env['WATCHTOWER_CACHE_DIR'] ?? join(homedir(), '.cache', 'watchtower')
 }
 
 function readOptionalEnv(name: string): Effect.Effect<string | undefined, never> {
