@@ -344,11 +344,31 @@ export class DbWorkerContext {
 
       const ms = resolveCadenceMs(ledger.getRefreshCadence())
       if (ms === null) return // Manual: no background timer
+      // Scheduling-hygiene verdicts (Wave 7 §4.4 — the "Schedule retry/jitter
+      // + Cron" item, closed honestly):
+      // - Cron evaluated, rejected: Unix Cron is minute-resolution, so the
+      //   30s preset is below Cron resolution; and even with Effect Cron's
+      //   optional seconds field, Cron expresses wall-clock times, not
+      //   fixed-rate intervals — mapping the preset family
+      //   (30s/1m/3m/5m/10m + manual=null) to Cron would align ticks to the
+      //   wall clock (plus timezone/DST handling) and change tick semantics,
+      //   with `manual` having no Cron meaning at all. `Schedule` ticks stay.
+      // - Carrier `spaced`, not `fixed`: `fixed` phase-locks ticks to a grid
+      //   and fires catch-up ticks for jitter-induced phase lag — measured 22
+      //   ticks vs 10 nominal over 300s virtual with `fixed+jittered`
+      //   (TestClock, instant ticks), i.e. ~2.2x background scans in
+      //   fast-scan regimes. `spaced+jittered` measures exactly nominal (10
+      //   vs 10) with the same ±20% mean-preserving spread, so fleet/host
+      //   timers decorrelate instead of re-aligning to one grid. First tick
+      //   stays exact via the leading sleep; coalescing, generation,
+      //   staleness, and manual=null are untouched.
       // The FX background job rides the same repurposed cadence as the scan
       // trigger (ADR 0009): each tick also refreshes the selected currency's
       // rate when it is missing or older than 24h. refreshFxRateWithRates never
       // throws, so a Frankfurter outage can never disturb the scan itself.
-      const cadence = Effect.sleep(ms).pipe(Effect.andThen(Effect.repeat(tick, Schedule.fixed(ms))))
+      const cadence = Effect.sleep(ms).pipe(
+        Effect.andThen(Effect.repeat(tick, Schedule.spaced(ms).pipe(Schedule.jittered))),
+      )
       const fiber = yield* Effect.forkIn(cadence, backgroundScope, { startImmediately: true })
       yield* Effect.sync(() => install(fiber))
     })

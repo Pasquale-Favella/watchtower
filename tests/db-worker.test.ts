@@ -2,12 +2,22 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import * as Schedule from 'effect/Schedule'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { DbWorkerClient, type DbWorkerPort } from '../src/main/db-worker/client.js'
+import {
+  DbWorkerClient,
+  nextRespawnAttempt,
+  RESPAWN_BACKOFF_BASE_MS,
+  RESPAWN_BACKOFF_CAP_MS,
+  RESPAWN_BACKOFF_RESET_AFTER_MS,
+  respawnBackoffDelayForAttempt,
+  type DbWorkerPort,
+} from '../src/main/db-worker/client.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { Env } from '../src/main/env.js'
@@ -577,7 +587,9 @@ describe('DbWorkerClient request/response correlation', () => {
     const pending = client.request('overview:query', {})
     fakes[0]!.emit('exit', 1)
     await expect(pending).rejects.toThrow(/exited unexpectedly/)
-    expect(spawn).toHaveBeenCalledTimes(2)
+    // Backoff (Wave 7 §4.4): the first post-ready crash respawns fast
+    // (~0.8–1.2s jittered), not synchronously — wait out the Clock delay.
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(2), { timeout: 5000 })
     // The respawned worker serves new requests once it is ready.
     fakes[1]!.emit('message', { event: 'ready' })
     await expect(client.request('currency:get')).resolves.toEqual({ op: 'currency:get', args: [] })
@@ -703,5 +715,153 @@ describe('DbWorkerClient shutdown deadline (Effect Clock, §5.1)', () => {
     await expect(client.shutdown()).resolves.toBeUndefined()
     expect(terminateSpy).not.toHaveBeenCalled()
     await expect(client.shutdown()).resolves.toBeUndefined()
+  })
+})
+
+describe('DbWorkerClient crash-respawn backoff (Wave 7 §4.4, TestClock)', () => {
+  it('restarts the streak on the first crash and after sustained health', () => {
+    const now = 1_000_000
+    expect(nextRespawnAttempt(0, now, null)).toBe(1)
+    // Rapid follow-up crashes keep counting up the streak.
+    expect(nextRespawnAttempt(1, now + 1_000, now)).toBe(2)
+    expect(nextRespawnAttempt(4, now + 5_000, now)).toBe(5)
+    // A worker that stayed up past the quiet period clears the streak.
+    expect(nextRespawnAttempt(7, now + RESPAWN_BACKOFF_RESET_AFTER_MS + 1, now)).toBe(1)
+    // Exactly at the boundary still counts — reset needs MORE than quiet.
+    expect(nextRespawnAttempt(7, now + RESPAWN_BACKOFF_RESET_AFTER_MS, now)).toBe(8)
+  })
+
+  it('grows exponentially with jitter bounds and caps at tens of seconds', async () => {
+    const nominal = (attempt: number): number =>
+      Math.min(RESPAWN_BACKOFF_BASE_MS * 2 ** (attempt - 1), RESPAWN_BACKOFF_CAP_MS)
+    for (const attempt of [1, 2, 3, 4, 5, 6, 8, 12]) {
+      const ms: number = Duration.toMillis(await Effect.runPromise(respawnBackoffDelayForAttempt(attempt)))
+      const expected: number = nominal(attempt)
+      expect(ms).toBeGreaterThanOrEqual(expected * 0.8)
+      expect(ms).toBeLessThanOrEqual(expected * 1.2)
+    }
+    // Past the knee the delay pins to the cap band, never minutes of dead UI.
+    const capped: number = Duration.toMillis(await Effect.runPromise(respawnBackoffDelayForAttempt(20)))
+    expect(capped).toBeGreaterThanOrEqual(RESPAWN_BACKOFF_CAP_MS * 0.8)
+    expect(capped).toBeLessThanOrEqual(RESPAWN_BACKOFF_CAP_MS * 1.2)
+  })
+
+  it('sleeps on the TestClock: no respawn before 0.8x nominal, respawned by 1.2x', async () => {
+    const { client, fakes } = makeClient()
+    fakes[0]!.emit('message', { event: 'ready' })
+    await client.ready
+    // Attempt 1: nominal 1s → hold at 799ms, released by 1200ms.
+    const before = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(client.respawnAfterCrashEffect(1, '1'))
+        yield* TestClock.adjust(799)
+        const count = yield* Effect.sync(() => fakes.length)
+        yield* TestClock.adjust(401)
+        yield* Fiber.join(fiber)
+        return count
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+    expect(before).toBe(1)
+    expect(fakes.length).toBe(2)
+    await client.terminate()
+  })
+
+  it('backs a deep streak off toward the cap band on the TestClock', async () => {
+    const { client, fakes } = makeClient()
+    fakes[0]!.emit('message', { event: 'ready' })
+    await client.ready
+    // Attempt 5: nominal 16s → hold at 12.799s, released by 19.2s.
+    const before = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(client.respawnAfterCrashEffect(5, '1'))
+        yield* TestClock.adjust(12_799)
+        const count = yield* Effect.sync(() => fakes.length)
+        yield* TestClock.adjust(6_401)
+        yield* Fiber.join(fiber)
+        return count
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+    expect(before).toBe(1)
+    expect(fakes.length).toBe(2)
+    await client.terminate()
+  })
+
+  it('skips the respawn when torn down during the backoff window', async () => {
+    const spawn = vi.fn()
+    const { client, fakes } = makeClient(echoResponder, () => {
+      spawn()
+    })
+    fakes[0]!.emit('message', { event: 'ready' })
+    await client.ready
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(client.respawnAfterCrashEffect(1, '1'))
+        yield* TestClock.adjust(100)
+        yield* Effect.tryPromise({ try: () => client.shutdown(), catch: cause => cause })
+        yield* TestClock.adjust(5_000)
+        yield* Fiber.join(fiber)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+    expect(spawn).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('DbWorkerContext cadence jitter (Wave 7 §4.4)', () => {
+  it('spaces repeat ticks within ±20% of the preset and holds the nominal count', async () => {
+    vi.useFakeTimers()
+    const dir = tempDataDir()
+    const ctx = new DbWorkerContext(
+      { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') },
+      () => {},
+    )
+    const tickTimes: number[] = []
+    const triggerScan = vi
+      .spyOn(ctx as unknown as { triggerBackgroundScan: () => Promise<void> }, 'triggerBackgroundScan')
+      .mockImplementation(async () => {
+        tickTimes.push(Date.now())
+      })
+    try {
+      await ctx.dispatch('cadence:set', ['30s'])
+      await vi.advanceTimersByTimeAsync(300_000)
+      // Every repeat gap is one independent jittered draw in [24s, 36s]
+      // (`Date` is real-walled under these fake timers, so gaps only —
+      // absolute first-tick exactness is the pre-existing timing test's job).
+      expect(tickTimes.length).toBeGreaterThan(1)
+      for (let i = 1; i < tickTimes.length; i++) {
+        const gap = tickTimes[i]! - tickTimes[i - 1]!
+        expect(gap).toBeGreaterThanOrEqual(24_000)
+        expect(gap).toBeLessThanOrEqual(36_000)
+      }
+      // Closed-loop nominal rate: ~10 ticks per 300s (renewal std < 0.4, so
+      // [8, 12] is wide). `fixed+jittered` fails this (catch-up ticks ≈ 22);
+      // `spaced+jittered` holds it — the carrier verdict in `context.ts`.
+      expect(tickTimes.length).toBeGreaterThanOrEqual(8)
+      expect(tickTimes.length).toBeLessThanOrEqual(12)
+      expect(triggerScan.mock.calls.length).toBe(tickTimes.length)
+    } finally {
+      await ctx.close()
+      vi.useRealTimers()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('samples the jittered spaced schedule: bounded ±20%, mean ≈ nominal', async () => {
+    const ms: number = 30_000
+    const schedule = Schedule.spaced(ms).pipe(Schedule.jittered)
+    const delays: number[] = await Effect.runPromise(
+      Effect.gen(function* () {
+        const step = yield* Schedule.toStep(schedule)
+        const out: number[] = []
+        for (let i = 0; i < 100; i++) out.push(Duration.toMillis((yield* Effect.orDie(step(0, undefined)))[1]))
+        return out
+      }),
+    )
+    for (const delay of delays) {
+      expect(delay).toBeGreaterThanOrEqual(ms * 0.8)
+      expect(delay).toBeLessThanOrEqual(ms * 1.2)
+    }
+    const mean: number = delays.reduce((a: number, b: number) => a + b, 0) / delays.length
+    expect(mean).toBeGreaterThanOrEqual(ms * 0.95)
+    expect(mean).toBeLessThanOrEqual(ms * 1.05)
   })
 })

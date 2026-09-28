@@ -2,6 +2,7 @@ import { Worker } from 'node:worker_threads'
 
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
+import * as Schedule from 'effect/Schedule'
 
 import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
 import {
@@ -61,6 +62,60 @@ const awaitGracefulShutdown = Effect.fn('awaitGracefulShutdown')(function* (
   }).pipe(Effect.timeoutOption(Duration.millis(timeoutMs)), Effect.ignore)
 })
 
+/**
+ * Crash-respawn backoff (Wave 7 §4.4 scheduling hygiene).
+ *
+ * Rationale:
+ * - Base 1s: the first post-ready crash respawns fast (~0.8–1.2s jittered) —
+ *   a lone crash is usually a flake, and downtime dominates any backoff gain.
+ * - ×2 exponential: repeated rapid crashes are a poisoned worker until
+ *   proven otherwise; growth buys the host and ledger room without a manual cap.
+ * - Cap 30s (`Schedule.min` with `spaced(30s)`, then `jittered` — the
+ *   production retry shape from Effect's Schedule docs): the worst case lands
+ *   ~24–36s, i.e. tens of seconds, never minutes of dead UI.
+ * - Reset 60s: a respawned worker that stays up longer than this has served
+ *   at least two fastest cadence ticks (30s preset) — sustained health, so
+ *   the streak clears and the next crash counts as attempt 1 again.
+ */
+export const RESPAWN_BACKOFF_BASE_MS = 1_000
+export const RESPAWN_BACKOFF_CAP_MS = 30_000
+export const RESPAWN_BACKOFF_RESET_AFTER_MS = 60_000
+
+/** Capped exponential respawn backoff with jitter: attempt N (1-based) waits
+ * `min(base * 2^(N-1), cap)`, scaled by `jittered` (±20%, mean-preserving) so
+ * fleet/host timers don't thunder. `Schedule.min` is the v4 cap combinator
+ * (no `whileOutput`/`intersect` in `effect@4.0.0-rc.115`). */
+export const respawnBackoffSchedule = Schedule.min([
+  Schedule.exponential(Duration.millis(RESPAWN_BACKOFF_BASE_MS)),
+  Schedule.spaced(Duration.millis(RESPAWN_BACKOFF_CAP_MS)),
+]).pipe(Schedule.jittered)
+
+/** Pure streak rule: a crash landing more than `RESET_AFTER` past the
+ * previous one closes the incident — the worker proved sustained health, so
+ * the streak restarts at 1; otherwise it increments. Pure (wall ms in, count
+ * out) so tests pin the rule without timers. */
+export function nextRespawnAttempt(streak: number, nowMs: number, lastCrashMs: number | null): number {
+  if (lastCrashMs === null || nowMs - lastCrashMs > RESPAWN_BACKOFF_RESET_AFTER_MS) return 1
+  return streak + 1
+}
+
+/** The attempt-N backoff delay: steps the capped+jittered exponential N times
+ * (`now` fixed — `exponential`/`jittered` are attempt-driven, not wall-clock,
+ * so the Nth step IS the attempt-N delay). Exposed so tests assert growth,
+ * jitter bounds, and the cap without sleeping. */
+export const respawnBackoffDelayForAttempt = (attempt: number): Effect.Effect<Duration.Duration> =>
+  Effect.gen(function* () {
+    const step = yield* Schedule.toStep(respawnBackoffSchedule)
+    const steps: number = Math.max(1, Math.floor(attempt))
+    let delay: Duration.Duration = Duration.millis(0)
+    for (let i = 0; i < steps; i++) {
+      // `orDie`: the capped exponential never completes, so the step's `Done`
+      // channel is unreachable — a completion would be a bug, fail loud.
+      delay = (yield* Effect.orDie(step(0, undefined)))[1]
+    }
+    return delay
+  })
+
 export class DbWorkerClient {
   private worker: DbWorkerPort | null = null
   private nextId = 1
@@ -71,6 +126,12 @@ export class DbWorkerClient {
   /** True once the CURRENT worker incarnation posted `ready`. Gates respawn:
    * only a worker that once lived is recreated. */
   private becameReady = false
+  /** Consecutive post-ready crashes (backoff streak for `respawnAfterCrashEffect`).
+   * Reset when a respawned worker stays up past `RESPAWN_BACKOFF_RESET_AFTER_MS`. */
+  private consecutiveCrashes = 0
+  /** Wall time (ms) of the previous post-ready crash; null until the first.
+   * Measurement only — every wait rides the Effect Clock, never this stamp. */
+  private lastCrashAtMs: number | null = null
   private initError: string | null = null
   private readyResolve!: () => void
   private readyReject!: (err: Error) => void
@@ -134,18 +195,19 @@ export class DbWorkerClient {
       for (const { reject } of this.pending.values()) reject(err)
       this.pending.clear()
       this.inflightReads.clear()
+      // Crash-respawn with backoff (Wave 7 §4.4): recreating immediately
+      // hot-loops on a poisoned worker, so consecutive post-ready crashes wait
+      // out a capped exponential + jittered delay on the Effect Clock
+      // (TestClock in tests — no raw `setTimeout`). In-flight calls are
+      // already rejected above: no replay, exactly as before. Never-lived
+      // workers return early above and never enter this path.
+      const nowMs = Date.now()
+      const attempt = nextRespawnAttempt(this.consecutiveCrashes, nowMs, this.lastCrashAtMs)
+      this.consecutiveCrashes = attempt
+      this.lastCrashAtMs = nowMs
       // Recreate so the app keeps serving reads; the renderer already shows
       // error states for the rejected in-flight calls.
-      try {
-        this.spawn()
-      } catch (spawnErr) {
-        safeLogOperationalEvent(
-          'error',
-          'worker.error',
-          { op: 'worker-restart', code: logCodeFor(spawnErr, 'restart-failed') },
-          'worker',
-        )
-      }
+      void Effect.runPromise(this.respawnAfterCrashEffect(attempt, code))
     })
   }
 
@@ -226,6 +288,54 @@ export class DbWorkerClient {
     return awaitGracefulShutdown(() => this.send('shutdown'), timeoutMs).pipe(
       Effect.ensuring(this.terminateWorkerEffect()),
     )
+  }
+
+  /**
+   * Delayed crash-respawn behind `worker.on('exit')` (ADR 0023 + Wave 7 §4.4):
+   * files the scheduling record, sleeps the attempt's capped+jittered
+   * exponential backoff on the Effect Clock, then recreates the worker —
+   * unless torn down meanwhile. attempt/backoff ride the allowlisted `count`
+   * + `label` fields (the sanitizer drops any other key, so no bespoke field
+   * names here). Exposed (additive) so tests run it under `TestClock`;
+   * production runs it via the exit handler with the live Clock — the same
+   * seam shape as `shutdownEffect`. Never fails: a respawn that cannot sleep
+   * or spawn must not surface as a rejection.
+   */
+  respawnAfterCrashEffect(attempt: number, exitCode: string): Effect.Effect<void> {
+    // Arrow closure (NOT a `self` alias): lexical `this`, same shape as
+    // `terminateWorkerEffect`'s `takeWorker` below.
+    const respawnIfLive = (): void => {
+      if (this.intentionalTeardown) return
+      try {
+        this.spawn()
+      } catch (spawnErr) {
+        safeLogOperationalEvent(
+          'error',
+          'worker.error',
+          { op: 'worker-restart', code: logCodeFor(spawnErr, 'restart-failed') },
+          'worker',
+        )
+      }
+    }
+    return Effect.gen(function* () {
+      const delay = yield* respawnBackoffDelayForAttempt(attempt)
+      const backoffMs = Math.round(Duration.toMillis(delay))
+      yield* Effect.sync(() =>
+        safeLogOperationalEvent(
+          'error',
+          'worker.error',
+          {
+            op: 'worker-restart',
+            code: `exit-${exitCode}`,
+            label: `attempt ${attempt} backoff ${backoffMs}ms`,
+            count: attempt,
+          },
+          'worker',
+        ),
+      )
+      yield* Effect.sleep(delay)
+      yield* Effect.sync(respawnIfLive)
+    })
   }
 
   /** Termination finalizer for `shutdownEffect`: captures the live worker,
