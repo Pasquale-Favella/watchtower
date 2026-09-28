@@ -9,10 +9,15 @@ export interface LoginTerminalDeps {
 export type LoginTerminalResult = { ok: true } | { ok: false; error: string }
 
 function attachErrorListener(child: ChildProcess): void {
-  child.on('error', () => { /* A terminal launch failure is returned or ignored, never uncaught. */ })
+  child.on('error', () => {
+    /* A terminal launch failure is returned or ignored, never uncaught. */
+  })
 }
 
-function launch(argv: readonly string[], deps: Required<Pick<LoginTerminalDeps, 'platform' | 'spawn' | 'execFile'>>): LoginTerminalResult {
+function launch(
+  argv: readonly string[],
+  deps: Required<Pick<LoginTerminalDeps, 'platform' | 'spawn' | 'execFile'>>,
+): LoginTerminalResult {
   try {
     if (deps.platform === 'win32') {
       const child = deps.spawn('cmd.exe', ['/k', ...argv], { detached: true, stdio: 'ignore', windowsHide: false })

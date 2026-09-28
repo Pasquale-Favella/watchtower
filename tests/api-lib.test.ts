@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
-import {
-  fetchScanStatus,
-  fetchViews,
-  fetchPayload,
-  parsePayload,
-} from '../src/renderer/src/shared/lib/api.js'
+import { fetchScanStatus, fetchViews, fetchPayload, parsePayload } from '../src/renderer/src/shared/lib/api.js'
 
 const scanStatusSchema = z.object({ scanned: z.boolean() })
 

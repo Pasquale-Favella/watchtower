@@ -1,7 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import type { ScanMetadata } from '../shared/schemas/scan.js'
-import type { DashboardViews, SessionDetail, SessionRow, ProjectRow, AnalyticalViews, SearchHit } from '../main/views.js'
+import type {
+  DashboardViews,
+  SessionDetail,
+  SessionRow,
+  ProjectRow,
+  AnalyticalViews,
+  SearchHit,
+} from '../main/views.js'
 import type { OverviewPayload, OverviewScope } from '../main/overview.js'
 import type { PullRequestsPayload } from '../main/pull-requests-view.js'
 import type { SpendPayload } from '../main/spend-view.js'
@@ -65,11 +72,10 @@ const api = {
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome,
-    node: process.versions.node
+    node: process.versions.node,
   },
   platform: process.platform,
-  scan: (options?: { provider?: string }): Promise<ScanResult> =>
-    ipcRenderer.invoke('scan:start', options),
+  scan: (options?: { provider?: string }): Promise<ScanResult> => ipcRenderer.invoke('scan:start', options),
   abort: (): void => ipcRenderer.send('scan:abort'),
   onProgress: (callback: (progress: ScanProgressMessage) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, progress: ScanProgressMessage): void => callback(progress)
@@ -113,31 +119,32 @@ const api = {
   getAnalytics: (): Promise<AnalyticalViews | null> => ipcRenderer.invoke('store:analytics'),
   getOverview: (scope: OverviewScope): Promise<OverviewPayload | null> => ipcRenderer.invoke('overview:query', scope),
   getSessionRows: (scope: OverviewScope): Promise<SessionRow[]> => ipcRenderer.invoke('sessions:view', scope),
-  getPullRequests: (scope: OverviewScope): Promise<PullRequestsPayload | null> => ipcRenderer.invoke('pullRequests:view', scope),
+  getPullRequests: (scope: OverviewScope): Promise<PullRequestsPayload | null> =>
+    ipcRenderer.invoke('pullRequests:view', scope),
   getSpend: (scope: OverviewScope): Promise<SpendPayload | null> => ipcRenderer.invoke('spend:view', scope),
   getModels: (scope: OverviewScope): Promise<ModelsPayload | null> => ipcRenderer.invoke('models:view', scope),
   getCompare: (scope: OverviewScope, pair?: ComparePair): Promise<ComparePayload | null> =>
     ipcRenderer.invoke('compare:view', scope, pair),
-  getOptimize: (scope: OverviewScope): Promise<OptimizePayload | null> =>
-    ipcRenderer.invoke('optimize:view', scope),
-  getYield: (scope: OverviewScope): Promise<YieldPayload | null> =>
-    ipcRenderer.invoke('optimize:yield', scope),
+  getOptimize: (scope: OverviewScope): Promise<OptimizePayload | null> => ipcRenderer.invoke('optimize:view', scope),
+  getYield: (scope: OverviewScope): Promise<YieldPayload | null> => ipcRenderer.invoke('optimize:yield', scope),
   getSkills: (scope: OverviewScope, thresholds?: SkillsThresholds): Promise<SkillsPayload | null> =>
     ipcRenderer.invoke('skills:view', scope, thresholds),
   dismissSkill: (request: SkillsDismissalRequest): Promise<SkillsDismissalResult> =>
     ipcRenderer.invoke('skills:dismiss', request),
-  saveSkill: (request: SkillsSaveRequest): Promise<SkillsSaveResult> =>
-    ipcRenderer.invoke('skills:save', request),
-  addModelAlias: (model: string, aliasOf: string): Promise<{ ok: true }> => ipcRenderer.invoke('models:addAlias', model, aliasOf),
+  saveSkill: (request: SkillsSaveRequest): Promise<SkillsSaveResult> => ipcRenderer.invoke('skills:save', request),
+  addModelAlias: (model: string, aliasOf: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('models:addAlias', model, aliasOf),
   setModelPrice: (model: string, inputPricePerMillion: number, outputPricePerMillion: number): Promise<{ ok: true }> =>
     ipcRenderer.invoke('models:setPrice', model, inputPricePerMillion, outputPricePerMillion),
   /** Settings › Model aliases CRUD: the current alias config plus removal. */
   getModelAliases: (): Promise<Array<{ model: string; aliasOf: string }>> => ipcRenderer.invoke('models:getAliases'),
   removeModelAlias: (model: string): Promise<{ ok: true }> => ipcRenderer.invoke('models:removeAlias', model),
   /** Settings › Pricing CRUD: the current price-override config plus removal. */
-  getPriceOverrides: (): Promise<Array<{ model: string; inputPricePerMillion: number; outputPricePerMillion: number }>> =>
-    ipcRenderer.invoke('models:getPriceOverrides'),
-  removePriceOverride: (model: string): Promise<{ ok: true }> => ipcRenderer.invoke('models:removePriceOverride', model),
+  getPriceOverrides: (): Promise<
+    Array<{ model: string; inputPricePerMillion: number; outputPricePerMillion: number }>
+  > => ipcRenderer.invoke('models:getPriceOverrides'),
+  removePriceOverride: (model: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('models:removePriceOverride', model),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('open-external', url),
   /** macOS Full Disk Access pane (ADR 0015); a no-op on other platforms. */
   openSystemSettings: (): Promise<boolean> => ipcRenderer.invoke('open-fda-settings'),
@@ -178,8 +185,8 @@ const api = {
    * owned by the main process, and the harness reads platform data through the
    * in-app ledger MCP server. */
   getCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses'),
-    openCoachLoginTerminal: (instanceId: string): Promise<CoachLoginTerminalResult> =>
-      ipcRenderer.invoke('coach:open-login-terminal', instanceId),
+  openCoachLoginTerminal: (instanceId: string): Promise<CoachLoginTerminalResult> =>
+    ipcRenderer.invoke('coach:open-login-terminal', instanceId),
   refreshCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses-refresh'),
   onCoachHarnessesChanged: (callback: (rows: CoachHarnessRow[]) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, rows: CoachHarnessRow[]): void => callback(rows)
@@ -194,8 +201,7 @@ const api = {
     ipcRenderer.invoke('coach:inspect', request),
   /** Starts a harness run; resolves with the immediate ack. Events stream on
    * `onCoachEvent` keyed by the returned runId. */
-  startCoachRun: (request: CoachRunRequest): Promise<CoachRunResult> =>
-    ipcRenderer.invoke('coach:run', request),
+  startCoachRun: (request: CoachRunRequest): Promise<CoachRunResult> => ipcRenderer.invoke('coach:run', request),
   /** Interrupts the active run (fire-and-forget). */
   cancelCoachRun: (runId: string): void => ipcRenderer.send('coach:cancel', runId),
   /** Brand-new conversation: cancels active runs and cleans the temp workspace

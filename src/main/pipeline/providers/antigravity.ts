@@ -110,10 +110,12 @@ type StatusLineCurrentUsage = {
 type StatusLinePayload = {
   conversation_id?: string
   session_id?: string
-  model?: string | {
-    id?: string
-    display_name?: string
-  }
+  model?:
+    | string
+    | {
+        id?: string
+        display_name?: string
+      }
   context_window?: {
     current_usage?: StatusLineCurrentUsage | null
   }
@@ -219,7 +221,9 @@ function normalizeAppDataDir(value: string | null): 'antigravity' | 'antigravity
   return undefined
 }
 
-export function extractAntigravityAppDataDirFromLine(line: string): 'antigravity' | 'antigravity-cli' | 'antigravity-ide' | undefined {
+export function extractAntigravityAppDataDirFromLine(
+  line: string,
+): 'antigravity' | 'antigravity-cli' | 'antigravity-ide' | undefined {
   return normalizeAppDataDir(getFlagValue(line, APP_DATA_DIR_FLAGS))
 }
 
@@ -333,7 +337,9 @@ async function loadCache(): Promise<AntigravityCache> {
       memCache = cache
       return cache
     }
-  } catch { /* no cache or invalid */ }
+  } catch {
+    /* no cache or invalid */
+  }
   memCache = { version: CACHE_VERSION, cascades: {} }
   return memCache
 }
@@ -355,7 +361,6 @@ async function flushCache(liveCascadeIds?: Set<string>): Promise<void> {
   }
   if (!cacheDirty) return
   try {
-
     const dir = getCacheDir()
     await mkdir(dir, { recursive: true })
     const finalPath = getCachePath()
@@ -370,10 +375,16 @@ async function flushCache(liveCascadeIds?: Set<string>): Promise<void> {
     try {
       await rename(tempPath, finalPath)
     } catch {
-      try { await unlink(tempPath) } catch { /* cleanup */ }
+      try {
+        await unlink(tempPath)
+      } catch {
+        /* cleanup */
+      }
     }
     cacheDirty = false
-  } catch { /* best-effort */ }
+  } catch {
+    /* best-effort */
+  }
 }
 
 async function readProcessCommandLines(): Promise<string[]> {
@@ -383,7 +394,11 @@ async function readProcessCommandLines(): Promise<string[]> {
       '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
       "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and $_.CommandLine -like '*antigravity*' } | ForEach-Object { $_.CommandLine }",
     ].join('; ')
-    const output = await execFileText('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], 5000)
+    const output = await execFileText(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      5000,
+    )
     return output.split(/\r?\n/)
   }
 
@@ -391,16 +406,23 @@ async function readProcessCommandLines(): Promise<string[]> {
   return output.split('\n')
 }
 
-async function resolveEphemeralPort(csrfToken: string, appDataDir?: 'antigravity' | 'antigravity-cli' | 'antigravity-ide'): Promise<ServerInfo | null> {
+async function resolveEphemeralPort(
+  csrfToken: string,
+  appDataDir?: 'antigravity' | 'antigravity-cli' | 'antigravity-ide',
+): Promise<ServerInfo | null> {
   if (process.platform === 'win32') {
     try {
       const script = [
         "$ErrorActionPreference = 'SilentlyContinue'",
         '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
-        "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and $_.CommandLine -like '*antigravity*' } | ForEach-Object { @{ PID = $_.ProcessId; Cmd = $_.CommandLine } | ConvertTo-Json -Compress }"
+        "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and $_.CommandLine -like '*antigravity*' } | ForEach-Object { @{ PID = $_.ProcessId; Cmd = $_.CommandLine } | ConvertTo-Json -Compress }",
       ].join('; ')
-      const output = await execFileText('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], 5000)
-      
+      const output = await execFileText(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+        5000,
+      )
+
       let targetPid = 0
       for (const line of output.split(/\r?\n/)) {
         if (!line.trim()) continue
@@ -413,45 +435,59 @@ async function resolveEphemeralPort(csrfToken: string, appDataDir?: 'antigravity
               break
             }
           }
-        } catch { /* skip invalid parse */ }
+        } catch {
+          /* skip invalid parse */
+        }
       }
-      
+
       if (targetPid === 0) return null
-      
+
       const portScript = `Get-NetTCPConnection -State Listen -OwningProcess ${targetPid} | Select-Object -ExpandProperty LocalPort`
-      const portOutput = await execFileText('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', portScript], 5000)
-      const ports = portOutput.split(/\r?\n/)
+      const portOutput = await execFileText(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', portScript],
+        5000,
+      )
+      const ports = portOutput
+        .split(/\r?\n/)
         .map(p => Number(p.trim()))
         .filter(p => Number.isInteger(p) && p > 0)
-      
+
       for (const port of ports) {
         try {
           await new Promise((resolve, reject) => {
-            const req = https.request({
-              hostname: '127.0.0.1',
-              port: port,
-              path: '/exa.language_server_pb.LanguageServerService/GetAvailableModels',
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Connect-Protocol-Version': '1',
-                'X-Codeium-Csrf-Token': csrfToken,
-                'Content-Length': 2,
+            const req = https.request(
+              {
+                hostname: '127.0.0.1',
+                port: port,
+                path: '/exa.language_server_pb.LanguageServerService/GetAvailableModels',
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Connect-Protocol-Version': '1',
+                  'X-Codeium-Csrf-Token': csrfToken,
+                  'Content-Length': 2,
+                },
+                agent: getAgent(),
+                timeout: 1000,
               },
-              agent: getAgent(),
-              timeout: 1000,
-            }, (res) => {
-              if (res.statusCode === 200) resolve(true)
-              else reject(new Error())
-            })
+              res => {
+                if (res.statusCode === 200) resolve(true)
+                else reject(new Error())
+              },
+            )
             req.on('error', reject)
             req.write('{}')
             req.end()
           })
           return { port, csrfToken }
-        } catch { /* try next port */ }
+        } catch {
+          /* try next port */
+        }
       }
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
     return null
   }
 
@@ -478,24 +514,31 @@ async function resolveEphemeralPort(csrfToken: string, appDataDir?: 'antigravity
         if (port > 0) return { port, csrfToken }
       }
     }
-  } catch { /* best-effort */ }
+  } catch {
+    /* best-effort */
+  }
   return null
 }
 
-export function antigravityAppDataDirFromSourcePath(path: string): 'antigravity' | 'antigravity-cli' | 'antigravity-ide' {
+export function antigravityAppDataDirFromSourcePath(
+  path: string,
+): 'antigravity' | 'antigravity-cli' | 'antigravity-ide' {
   const lower = path.replace(/\\/g, '/').toLowerCase()
   if (lower.includes('/.gemini/antigravity-ide/')) return 'antigravity-ide'
   if (lower.includes('/.gemini/antigravity-cli/')) return 'antigravity-cli'
   return 'antigravity'
 }
 
-async function detectServer(appDataDir: 'antigravity' | 'antigravity-cli' | 'antigravity-ide' = 'antigravity'): Promise<ServerInfo | null> {
+async function detectServer(
+  appDataDir: 'antigravity' | 'antigravity-cli' | 'antigravity-ide' = 'antigravity',
+): Promise<ServerInfo | null> {
   if (cachedServers.has(appDataDir)) return cachedServers.get(appDataDir)!
   try {
     const candidates = parseAntigravityServerCandidates(await readProcessCommandLines())
-    const info = candidates.find(candidate => candidate.appDataDir === appDataDir)
-      ?? (appDataDir === 'antigravity' ? candidates.find(candidate => candidate.appDataDir === undefined) : undefined)
-      ?? null
+    const info =
+      candidates.find(candidate => candidate.appDataDir === appDataDir) ??
+      (appDataDir === 'antigravity' ? candidates.find(candidate => candidate.appDataDir === undefined) : undefined) ??
+      null
     if (info && info.port > 0 && appDataDir !== 'antigravity-ide') {
       cachedServers.set(appDataDir, { port: info.port, csrfToken: info.csrfToken })
     } else if (info) {
@@ -504,7 +547,9 @@ async function detectServer(appDataDir: 'antigravity' | 'antigravity-cli' | 'ant
       cachedServers.set(appDataDir, null)
     }
     return cachedServers.get(appDataDir)!
-  } catch { /* process discovery failed or timed out */ }
+  } catch {
+    /* process discovery failed or timed out */
+  }
   cachedServers.set(appDataDir, null)
   return null
 }
@@ -512,46 +557,52 @@ async function detectServer(appDataDir: 'antigravity' | 'antigravity-cli' | 'ant
 async function rpc(server: ServerInfo, method: string, body: Record<string, unknown> = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body)
-    const req = https.request({
-      hostname: '127.0.0.1',
-      port: server.port,
-      path: `/exa.language_server_pb.LanguageServerService/${method}`,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Connect-Protocol-Version': '1',
-        'X-Codeium-Csrf-Token': server.csrfToken,
-        'Content-Length': Buffer.byteLength(data),
+    const req = https.request(
+      {
+        hostname: '127.0.0.1',
+        port: server.port,
+        path: `/exa.language_server_pb.LanguageServerService/${method}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Connect-Protocol-Version': '1',
+          'X-Codeium-Csrf-Token': server.csrfToken,
+          'Content-Length': Buffer.byteLength(data),
+        },
+        agent: getAgent(),
+        timeout: RPC_TIMEOUT_MS,
       },
-      agent: getAgent(),
-      timeout: RPC_TIMEOUT_MS,
-    }, (res) => {
-      const chunks: Buffer[] = []
-      let totalBytes = 0
-      res.on('data', (chunk: Buffer) => {
-        totalBytes += chunk.length
-        if (totalBytes > MAX_RESPONSE_BYTES) {
-          res.destroy()
-          reject(new Error(`RPC ${method}: response too large`))
-          return
-        }
-        chunks.push(chunk)
-      })
-      res.on('end', () => {
-        if (res.statusCode !== 200) {
-          reject(new Error(`RPC ${method}: HTTP ${res.statusCode}`))
-          return
-        }
-        try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')))
-        } catch {
-          reject(new Error(`RPC ${method}: invalid JSON`))
-        }
-      })
-      res.on('error', reject)
-    })
+      res => {
+        const chunks: Buffer[] = []
+        let totalBytes = 0
+        res.on('data', (chunk: Buffer) => {
+          totalBytes += chunk.length
+          if (totalBytes > MAX_RESPONSE_BYTES) {
+            res.destroy()
+            reject(new Error(`RPC ${method}: response too large`))
+            return
+          }
+          chunks.push(chunk)
+        })
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`RPC ${method}: HTTP ${res.statusCode}`))
+            return
+          }
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')))
+          } catch {
+            reject(new Error(`RPC ${method}: invalid JSON`))
+          }
+        })
+        res.on('error', reject)
+      },
+    )
     req.on('error', reject)
-    req.on('timeout', () => { req.destroy(); reject(new Error(`RPC ${method}: timeout`)) })
+    req.on('timeout', () => {
+      req.destroy()
+      reject(new Error(`RPC ${method}: timeout`))
+    })
     req.write(data)
     req.end()
   })
@@ -565,7 +616,9 @@ async function getModelMap(server: ServerInfo): Promise<ModelMap> {
     const modelMap = extractAntigravityModelMap(await rpc(server, 'GetAvailableModels'))
     cachedModelMaps.set(cacheKey, modelMap)
     return modelMap
-  } catch { /* best-effort */ }
+  } catch {
+    /* best-effort */
+  }
   cachedModelMaps.set(cacheKey, {})
   return {}
 }
@@ -680,9 +733,7 @@ function antigravitySqliteResponseId(usageFields: readonly ProtoField[], fallbac
 }
 
 function genMetadataDataBytes(value: Uint8Array | string): Uint8Array {
-  return typeof value === 'string'
-    ? new TextEncoder().encode(value)
-    : value
+  return typeof value === 'string' ? new TextEncoder().encode(value) : value
 }
 
 function antigravitySqliteMetadataAttributes(chatFields: readonly ProtoField[]): Map<string, string> {
@@ -700,10 +751,8 @@ function antigravitySqliteMetadataAttributes(chatFields: readonly ProtoField[]):
 function antigravitySqliteModel(chatFields: readonly ProtoField[]): string {
   const attributes = antigravitySqliteMetadataAttributes(chatFields)
   const displayName = protoFieldText(firstProtoField(chatFields, 21))
-  const rawModel = protoFieldText(firstProtoField(chatFields, 19))
-    ?? attributes.get('model_enum')
-    ?? displayName
-    ?? 'unknown'
+  const rawModel =
+    protoFieldText(firstProtoField(chatFields, 19)) ?? attributes.get('model_enum') ?? displayName ?? 'unknown'
 
   return getCanonicalModelId(rawModel, displayName)
 }
@@ -742,14 +791,18 @@ function antigravitySqliteCreatedAt(chatFields: readonly ProtoField[]): string {
   return protoTimestampToIso(firstProtoField(parseProtoFields(metadataBytes), 4))
 }
 
-function buildCallFromSqliteGenMetadataRow(cascadeId: string, row: AntigravityGenMetadataRow): ParsedProviderCall | null {
+function buildCallFromSqliteGenMetadataRow(
+  cascadeId: string,
+  row: AntigravityGenMetadataRow,
+): ParsedProviderCall | null {
   const rootFields = parseProtoFields(genMetadataDataBytes(row.data))
   const chatFields = parseProtoFields(protoFieldBytes(firstProtoField(rootFields, 1)) ?? new Uint8Array())
   const usageFields = parseProtoFields(protoFieldBytes(firstProtoField(chatFields, 4)) ?? new Uint8Array())
   if (usageFields.length === 0) return null
 
-  const inputTokens = protoFieldPositiveInteger(firstProtoField(usageFields, 2))
-    || protoFieldPositiveInteger(firstProtoField(usageFields, 1))
+  const inputTokens =
+    protoFieldPositiveInteger(firstProtoField(usageFields, 2)) ||
+    protoFieldPositiveInteger(firstProtoField(usageFields, 1))
   const totalOutputTokens = protoFieldPositiveInteger(firstProtoField(usageFields, 3))
   let responseTokens = protoFieldPositiveInteger(firstProtoField(usageFields, 9))
   const thinkingTokens = protoFieldPositiveInteger(firstProtoField(usageFields, 10))
@@ -824,20 +877,12 @@ async function parseSqliteGenMetadataCalls(filePath: string, cascadeId: string):
 }
 
 function parseFiniteToken(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : 0
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
 }
 
 function usageSignature(event: StatusLineEvent): string {
   const u = event.usage
-  return [
-    event.model,
-    u.inputTokens,
-    u.outputTokens,
-    u.cacheCreationInputTokens,
-    u.cacheReadInputTokens,
-  ].join(':')
+  return [event.model, u.inputTokens, u.outputTokens, u.cacheCreationInputTokens, u.cacheReadInputTokens].join(':')
 }
 
 function usageHasTokens(usage: StatusLineEvent['usage']): boolean {
@@ -986,9 +1031,10 @@ function parseStatusLinePayload(input: unknown): StatusLineEvent | null {
     at: new Date().toISOString(),
     conversationId: payload.conversation_id,
     sessionId: typeof payload.session_id === 'string' ? payload.session_id : undefined,
-    model: typeof payload.model === 'string'
-      ? payload.model
-      : payload.model?.id ?? payload.model?.display_name ?? 'unknown',
+    model:
+      typeof payload.model === 'string'
+        ? payload.model
+        : (payload.model?.id ?? payload.model?.display_name ?? 'unknown'),
     usage: {
       inputTokens: parseFiniteToken(usage.input_tokens),
       outputTokens: parseFiniteToken(usage.output_tokens),
@@ -1040,7 +1086,8 @@ function parseStatusLineEvent(input: unknown): StatusLineEvent | null {
     usage.outputTokens === 0 &&
     usage.cacheCreationInputTokens === 0 &&
     usage.cacheReadInputTokens === 0
-  ) return null
+  )
+    return null
 
   return {
     at: event.at,
@@ -1100,9 +1147,10 @@ async function parseStatusLineCalls(source: SessionSource, seenKeys: Set<string>
 
       const event = run.event
       const signature = run.signature
-      const billableUsage = previousSnapshotUsage && usageIsMonotonic(event.usage, previousSnapshotUsage)
-        ? usageDelta(event.usage, previousSnapshotUsage)
-        : event.usage
+      const billableUsage =
+        previousSnapshotUsage && usageIsMonotonic(event.usage, previousSnapshotUsage)
+          ? usageDelta(event.usage, previousSnapshotUsage)
+          : event.usage
       previousSnapshotUsage = event.usage
       if (!usageHasTokens(billableUsage)) continue
 
@@ -1156,11 +1204,15 @@ export function shouldReparseAntigravitySource(path: string, cachedTurnCount: nu
 
 async function findCascadeSource(cascadeId: string): Promise<SessionSource | null> {
   const sources = await discoverAntigravitySessionSources()
-  return sources.find(source => {
-    const lower = source.path.replace(/\\/g, '/').toLowerCase()
-    return (lower.includes('/.gemini/antigravity-cli/') || lower.includes('/.gemini/antigravity-ide/')) &&
-      antigravityCascadeIdFromPath(source.path) === cascadeId
-  }) ?? null
+  return (
+    sources.find(source => {
+      const lower = source.path.replace(/\\/g, '/').toLowerCase()
+      return (
+        (lower.includes('/.gemini/antigravity-cli/') || lower.includes('/.gemini/antigravity-ide/')) &&
+        antigravityCascadeIdFromPath(source.path) === cascadeId
+      )
+    }) ?? null
+  )
 }
 
 export async function snapshotAntigravityStatusLinePayload(input: unknown): Promise<boolean> {
@@ -1213,7 +1265,9 @@ async function extractWorkspacePath(filePath: string): Promise<string | undefine
       db.close()
       const textDecoder = new TextDecoder('utf-8', { fatal: false })
       text = rows.map(r => textDecoder.decode(r.data)).join(' ')
-    } catch { /* ignore and fallback */ }
+    } catch {
+      /* ignore and fallback */
+    }
   }
 
   if (!text) {
@@ -1238,7 +1292,11 @@ function sanitizeProject(path: string): string {
   return basename(path.replace(/\\/g, '/'))
 }
 
-function applyAntigravityProject(call: ParsedProviderCall, source: SessionSource, projectPath: string | undefined): void {
+function applyAntigravityProject(
+  call: ParsedProviderCall,
+  source: SessionSource,
+  projectPath: string | undefined,
+): void {
   if (source.project === 'antigravity-cli') {
     call.project = source.project
     delete call.projectPath

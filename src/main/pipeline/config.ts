@@ -46,7 +46,10 @@ export async function readConfig(): Promise<WatchtowerConfig> {
 export async function getClaudeConfigDirs(): Promise<string[]> {
   const envDirs = process.env['CLAUDE_CONFIG_DIRS']
   if (envDirs) {
-    return envDirs.split(/[,;]/).map(s => s.trim()).filter(Boolean)
+    return envDirs
+      .split(/[,;]/)
+      .map(s => s.trim())
+      .filter(Boolean)
   }
   const envDir = process.env['CLAUDE_CONFIG_DIR']
   if (envDir) return [envDir]

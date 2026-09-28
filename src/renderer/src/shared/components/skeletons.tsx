@@ -25,7 +25,9 @@ export function LoadingRegion({
   return (
     <div role="status" className={className}>
       <span className="sr-only">{label}</span>
-      <div className="contents" aria-hidden="true">{children}</div>
+      <div className="contents" aria-hidden="true">
+        {children}
+      </div>
     </div>
   )
 }
@@ -42,7 +44,7 @@ export function SkeletonCard({
   children?: ReactNode
 }) {
   return (
-    <div className={cn('rounded-lg border border-border bg-card p-3.5', className)}>
+    <div className={cn('border-border bg-card rounded-lg border p-3.5', className)}>
       {title && (
         <div className="mb-3 flex items-center justify-between gap-4">
           <Skeleton className="h-3.5 w-32" />
@@ -57,7 +59,7 @@ export function SkeletonCard({
 /** A KPI-card skeleton: label line over a value line. */
 export function SkeletonMetricCard() {
   return (
-    <div className="rounded-lg border border-border bg-card p-3">
+    <div className="border-border bg-card rounded-lg border p-3">
       <Skeleton className="h-3 w-14" />
       <Skeleton className="mt-2 h-5 w-20" />
     </div>
@@ -108,7 +110,7 @@ export function SkeletonRows({ rows = 7, className }: { rows?: number; className
   return (
     <div className={cn('flex flex-col', className)} aria-hidden="true">
       {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 border-t border-border py-2.5 first:border-t-0">
+        <div key={i} className="border-border flex items-center gap-3 border-t py-2.5 first:border-t-0">
           <Skeleton className="h-3.5 w-2/5" />
           <Skeleton className="h-3 w-16" />
           <Skeleton className="ml-auto h-3 w-20" />

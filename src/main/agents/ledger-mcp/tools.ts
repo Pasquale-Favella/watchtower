@@ -75,7 +75,10 @@ function scopeRange(scope: OverviewScope): {
  *  in-window counts (sessions/calls/providers). Shared by the `ledger_scope`
  *  tool AND the `ledger://scope` resource (ADR 0020) — one computation, two
  *  MCP surfaces, so the resource can never drift from the tool. */
-export function describeLedgerScope(store: LedgerStore, scope: OverviewScope): {
+export function describeLedgerScope(
+  store: LedgerStore,
+  scope: OverviewScope,
+): {
   scope: OverviewScope
   range: { startMs: number; endMs: number }
   sessions: number
@@ -99,40 +102,47 @@ export function buildLedgerTools(store: LedgerStore): LedgerToolDef[] {
   return [
     {
       name: 'ledger_scope',
-      description: 'The window a query is scoped to (from the optional `scope` argument; default: the full lifetime ledger), its epoch range, and the counts inside it. Call this first to orient.',
+      description:
+        'The window a query is scoped to (from the optional `scope` argument; default: the full lifetime ledger), its epoch range, and the counts inside it. Call this first to orient.',
       inputSchema: { scope: overviewScopeSchema.optional() },
-      run: (args) => describeLedgerScope(store, resolveToolScope(args)),
+      run: args => describeLedgerScope(store, resolveToolScope(args)),
     },
     {
       name: 'ledger_overview',
-      description: 'The full Overview payload for a window — the same payload the UI dashboard shows: KPIs (cost, calls, sessions, tokens, savings), daily spend, per-model / per-activity / per-tool / per-MCP / per-skill / per-subagent breakdowns, efficiency grade, workflow and unpriced-model facts. Accepts an optional `scope`; default: lifetime.',
+      description:
+        'The full Overview payload for a window — the same payload the UI dashboard shows: KPIs (cost, calls, sessions, tokens, savings), daily spend, per-model / per-activity / per-tool / per-MCP / per-skill / per-subagent breakdowns, efficiency grade, workflow and unpriced-model facts. Accepts an optional `scope`; default: lifetime.',
       inputSchema: { scope: overviewScopeSchema.optional() },
-      run: (args) => buildOverviewFromLedger(store, resolveToolScope(args)),
+      run: args => buildOverviewFromLedger(store, resolveToolScope(args)),
     },
     {
       name: 'ledger_sessions',
-      description: 'Session rows for a window, newest first — the same SessionRow[] the UI Sessions view shows: session id, title, project, provider, models, cost, savings, calls, turns, token buckets, started/ended timestamps. Accepts an optional `scope`; default: lifetime.',
+      description:
+        'Session rows for a window, newest first — the same SessionRow[] the UI Sessions view shows: session id, title, project, provider, models, cost, savings, calls, turns, token buckets, started/ended timestamps. Accepts an optional `scope`; default: lifetime.',
       inputSchema: { scope: overviewScopeSchema.optional() },
-      run: (args) => buildSessionsViewFromLedger(store, resolveToolScope(args)),
+      run: args => buildSessionsViewFromLedger(store, resolveToolScope(args)),
     },
     {
       name: 'ledger_models',
-      description: 'The by-model / by-task / audit report for a window — the same ModelsPayload the UI Models view shows, with the current alias + price-override config applied (query-time pricing). Accepts an optional `scope`; default: lifetime.',
+      description:
+        'The by-model / by-task / audit report for a window — the same ModelsPayload the UI Models view shows, with the current alias + price-override config applied (query-time pricing). Accepts an optional `scope`; default: lifetime.',
       inputSchema: { scope: overviewScopeSchema.optional() },
-      run: (args) => buildModelsViewFromLedger(store, resolveToolScope(args), {
-        aliases: store.getModelAliases(),
-        overrides: store.getPriceOverrides(),
-      }),
+      run: args =>
+        buildModelsViewFromLedger(store, resolveToolScope(args), {
+          aliases: store.getModelAliases(),
+          overrides: store.getPriceOverrides(),
+        }),
     },
     {
       name: 'ledger_skills',
-      description: 'The Skills payload for a window — the same SkillsPayload the UI shows: detected skill-candidate drafts (with frequency, spread, cost, sample, evidence sessions), below-gate opportunities, and ghost skills (inventory entries never invoked). This is the suggested-skill pool the chat\'s craft chips surface. Accepts an optional `scope`; default: lifetime.',
+      description:
+        "The Skills payload for a window — the same SkillsPayload the UI shows: detected skill-candidate drafts (with frequency, spread, cost, sample, evidence sessions), below-gate opportunities, and ghost skills (inventory entries never invoked). This is the suggested-skill pool the chat's craft chips surface. Accepts an optional `scope`; default: lifetime.",
       inputSchema: { scope: overviewScopeSchema.optional() },
-      run: (args) => buildSkillsViewFromLedger(store, resolveToolScope(args)),
+      run: args => buildSkillsViewFromLedger(store, resolveToolScope(args)),
     },
     {
       name: 'ledger_calls',
-      description: 'Raw per-call rows for a window, most recent first — a drill-down the UI views do not offer. Optional filters: limit (1-200), scope (period/provider/range — default lifetime), model, project, category, tool (exact tool name). Costs are the UI\'s query-time display cost.',
+      description:
+        "Raw per-call rows for a window, most recent first — a drill-down the UI views do not offer. Optional filters: limit (1-200), scope (period/provider/range — default lifetime), model, project, category, tool (exact tool name). Costs are the UI's query-time display cost.",
       inputSchema: {
         limit: z.number().int().min(1).max(200).optional(),
         scope: overviewScopeSchema.optional(),
@@ -141,7 +151,7 @@ export function buildLedgerTools(store: LedgerStore): LedgerToolDef[] {
         category: z.string().optional(),
         tool: z.string().optional(),
       },
-      run: (args) => {
+      run: args => {
         const limit = typeof args.limit === 'number' ? Math.min(Math.max(Math.floor(args.limit), 1), 200) : 20
         const scope = resolveToolScope(args)
         const model = typeof args.model === 'string' && args.model.length > 0 ? args.model : undefined
@@ -160,7 +170,8 @@ export function buildLedgerTools(store: LedgerStore): LedgerToolDef[] {
             if (!inRange(call.timestamp)) return false
             if (model && call.resolvedModel !== model && call.model !== model) return false
             if (project && call.project !== project) return false
-            if (category && categoryByTurn.get(`${call.sourceId}\0${call.sessionId}\0${call.turnIndex}`) !== category) return false
+            if (category && categoryByTurn.get(`${call.sourceId}\0${call.sessionId}\0${call.turnIndex}`) !== category)
+              return false
             if (tool && !call.tools.includes(tool)) return false
             return true
           })

@@ -111,7 +111,10 @@ function flattenConfigOptions(options: unknown): ConfigSelectValue[] {
   return out
 }
 
-function configOption(session: AcpSessionResponse, category: 'model' | 'mode'): Record<string, unknown> & { id: string } | undefined {
+function configOption(
+  session: AcpSessionResponse,
+  category: 'model' | 'mode',
+): (Record<string, unknown> & { id: string }) | undefined {
   if (!Array.isArray(session.configOptions)) return undefined
   let byId: (Record<string, unknown> & { id: string }) | undefined
   for (const entry of session.configOptions) {
@@ -125,7 +128,7 @@ function configOption(session: AcpSessionResponse, category: 'model' | 'mode'): 
   return byId
 }
 
-function thinkingOption(session: AcpSessionResponse): Record<string, unknown> & { id: string } | undefined {
+function thinkingOption(session: AcpSessionResponse): (Record<string, unknown> & { id: string }) | undefined {
   if (!Array.isArray(session.configOptions)) return undefined
   let byId: (Record<string, unknown> & { id: string }) | undefined
   for (const entry of session.configOptions) {
@@ -174,7 +177,12 @@ function legacyModeInfo(session: AcpSessionResponse): LegacySelectInfo | undefin
 }
 
 function modelsFromSession(session: AcpSessionResponse): CoachSessionModels | undefined {
-  if (isRecord(session.models) && Array.isArray(session.models.availableModels) && typeof session.models.currentModelId === 'string' && session.models.currentModelId.length > 0) {
+  if (
+    isRecord(session.models) &&
+    Array.isArray(session.models.availableModels) &&
+    typeof session.models.currentModelId === 'string' &&
+    session.models.currentModelId.length > 0
+  ) {
     const rows = session.models.availableModels.flatMap(entry => {
       if (!isRecord(entry)) return []
       const modelId = asString(entry.modelId)
@@ -197,7 +205,12 @@ function modelsFromSession(session: AcpSessionResponse): CoachSessionModels | un
 }
 
 function modesFromSession(session: AcpSessionResponse): CoachSessionModes | undefined {
-  if (isRecord(session.modes) && Array.isArray(session.modes.availableModes) && typeof session.modes.currentModeId === 'string' && session.modes.currentModeId.length > 0) {
+  if (
+    isRecord(session.modes) &&
+    Array.isArray(session.modes.availableModes) &&
+    typeof session.modes.currentModeId === 'string' &&
+    session.modes.currentModeId.length > 0
+  ) {
     const rows = session.modes.availableModes.flatMap(entry => {
       if (!isRecord(entry)) return []
       const id = asString(entry.id)
@@ -290,7 +303,11 @@ function legacyWrite(value: string): LegacySelectionWrite {
   return { via: 'legacy', value }
 }
 
-function attempt(writes: SelectionWrite[], appliedId: string, missingSetter: SelectionAttempt['missingSetter']): SelectionAttempt {
+function attempt(
+  writes: SelectionWrite[],
+  appliedId: string,
+  missingSetter: SelectionAttempt['missingSetter'],
+): SelectionAttempt {
   return { writes, appliedId, missingSetter }
 }
 
@@ -299,20 +316,34 @@ function alternateChannel(order: RoutingChannel[], channel: RoutingChannel): Rou
 }
 
 function hasModel(catalog: HarnessCatalog, channel: RoutingChannel, modelId: string): boolean {
-  return channel === 'config' ? catalog.selects.model?.values.has(modelId) ?? false : catalog.legacy.models?.ids.has(modelId) ?? false
+  return channel === 'config'
+    ? (catalog.selects.model?.values.has(modelId) ?? false)
+    : (catalog.legacy.models?.ids.has(modelId) ?? false)
 }
 
 function hasMode(catalog: HarnessCatalog, channel: RoutingChannel, modeId: string): boolean {
-  return channel === 'config' ? catalog.selects.mode?.values.has(modeId) ?? false : catalog.legacy.modes?.ids.has(modeId) ?? false
+  return channel === 'config'
+    ? (catalog.selects.mode?.values.has(modeId) ?? false)
+    : (catalog.legacy.modes?.ids.has(modeId) ?? false)
 }
 
-function modelAttempt(catalog: HarnessCatalog, channel: RoutingChannel, modelId: string, missingSetter: SelectionAttempt['missingSetter']): SelectionAttempt {
+function modelAttempt(
+  catalog: HarnessCatalog,
+  channel: RoutingChannel,
+  modelId: string,
+  missingSetter: SelectionAttempt['missingSetter'],
+): SelectionAttempt {
   return channel === 'config' && catalog.selects.model
     ? attempt([configWrite(catalog.selects.model, modelId)], modelId, missingSetter)
     : attempt([legacyWrite(modelId)], modelId, missingSetter)
 }
 
-function modeAttempt(catalog: HarnessCatalog, channel: RoutingChannel, modeId: string, missingSetter: SelectionAttempt['missingSetter']): SelectionAttempt {
+function modeAttempt(
+  catalog: HarnessCatalog,
+  channel: RoutingChannel,
+  modeId: string,
+  missingSetter: SelectionAttempt['missingSetter'],
+): SelectionAttempt {
   return channel === 'config' && catalog.selects.mode
     ? attempt([configWrite(catalog.selects.mode, modeId)], modeId, missingSetter)
     : attempt([legacyWrite(modeId)], modeId, missingSetter)
@@ -328,12 +359,18 @@ export function planModelSelection(policy: RoutingPolicy, catalog: HarnessCatalo
     const writes: SelectionWrite[] = []
     if (config.current !== split.base) writes.push(configWrite(config, split.base))
     const thinking = catalog.selects.thinking
-    if (thinking && thinking.values.has(split.suffix) && thinking.current !== split.suffix) writes.push(configWrite(thinking, split.suffix))
+    if (thinking && thinking.values.has(split.suffix) && thinking.current !== split.suffix)
+      writes.push(configWrite(thinking, split.suffix))
     return { kind: 'model', attempts: [attempt(writes, split.base, 'success')], unavailableMessage }
   }
 
   let effectiveId = modelId
-  if (split && !hasModel(catalog, 'config', modelId) && !hasModel(catalog, 'legacy', modelId) && (hasModel(catalog, 'config', split.base) || hasModel(catalog, 'legacy', split.base))) {
+  if (
+    split &&
+    !hasModel(catalog, 'config', modelId) &&
+    !hasModel(catalog, 'legacy', modelId) &&
+    (hasModel(catalog, 'config', split.base) || hasModel(catalog, 'legacy', split.base))
+  ) {
     effectiveId = split.base
   }
 
@@ -356,14 +393,18 @@ export function planModelSelection(policy: RoutingPolicy, catalog: HarnessCatalo
   const minimal = !config && !legacy
   if (minimal) {
     const base = split?.base
-    const attempts: SelectionAttempt[] = policy.minimalModelOrder.map(channel => channel === 'config'
-      ? attempt([{ via: 'config', configId: 'model', value: modelId }], modelId, 'continue')
-      : attempt([legacyWrite(modelId)], modelId, base ? 'continue' : 'success'))
+    const attempts: SelectionAttempt[] = policy.minimalModelOrder.map(channel =>
+      channel === 'config'
+        ? attempt([{ via: 'config', configId: 'model', value: modelId }], modelId, 'continue')
+        : attempt([legacyWrite(modelId)], modelId, base ? 'continue' : 'success'),
+    )
     if (base) {
       for (const channel of policy.minimalModelOrder) {
-        attempts.push(channel === 'config'
-          ? attempt([{ via: 'config', configId: 'model', value: base }], base, 'continue')
-          : attempt([legacyWrite(base)], base, 'success'))
+        attempts.push(
+          channel === 'config'
+            ? attempt([{ via: 'config', configId: 'model', value: base }], base, 'continue')
+            : attempt([legacyWrite(base)], base, 'success'),
+        )
       }
     }
     return { kind: 'model', attempts, unavailableMessage }
@@ -382,9 +423,7 @@ export function planModeSelection(policy: RoutingPolicy, catalog: HarnessCatalog
   if (primary) {
     const select = primary === 'config' ? config : legacy
     const attempts = [
-      select?.current === modeId
-        ? attempt([], modeId, 'success')
-        : modeAttempt(catalog, primary, modeId, 'success'),
+      select?.current === modeId ? attempt([], modeId, 'success') : modeAttempt(catalog, primary, modeId, 'success'),
     ]
     const alternate = alternateChannel(policy.modeOrder, primary)
     if (alternate && hasMode(catalog, alternate, modeId) && select?.current !== modeId) {
@@ -394,7 +433,9 @@ export function planModeSelection(policy: RoutingPolicy, catalog: HarnessCatalog
   }
 
   if (!config && !legacy) {
-    const attempts = policy.minimalModeConfigIds.map(configId => attempt([{ via: 'config', configId, value: modeId }], modeId, 'continue'))
+    const attempts = policy.minimalModeConfigIds.map(configId =>
+      attempt([{ via: 'config', configId, value: modeId }], modeId, 'continue'),
+    )
     attempts.push(attempt([legacyWrite(modeId)], modeId, 'success'))
     return { kind: 'mode', attempts, unavailableMessage }
   }
@@ -404,7 +445,11 @@ export function planModeSelection(policy: RoutingPolicy, catalog: HarnessCatalog
 
 /** Runs attempts in order; the first whose writes all succeed wins. When all
  *  fail, the LAST agent error surfaces (the fallback's own rejection). */
-export async function executeSelectionPlan(provider: SelectionProvider, sessionId: string, plan: SelectionPlan): Promise<string | undefined> {
+export async function executeSelectionPlan(
+  provider: SelectionProvider,
+  sessionId: string,
+  plan: SelectionPlan,
+): Promise<string | undefined> {
   let lastError: unknown
   for (const candidate of plan.attempts) {
     let failed = false

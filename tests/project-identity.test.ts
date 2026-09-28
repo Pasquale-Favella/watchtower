@@ -12,10 +12,7 @@ import {
 } from '../src/main/store/aggregate.js'
 import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
 import { buildProjectsFromLedger, buildProjectRowsFromLedger } from '../src/main/views.js'
-import {
-  buildFixtureCachedFile,
-  buildFixtureCachedTurn,
-} from './fixtures/cached-file.js'
+import { buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 // Uniform project identity (#102/#105): ledger rows in, canonical project
 // shells out. One checkout spelled four ways by four providers must form one

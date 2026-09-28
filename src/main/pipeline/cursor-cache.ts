@@ -49,10 +49,7 @@ async function getDbFingerprint(dbPath: string): Promise<{ mtimeMs: number; size
   }
 }
 
-export async function readCachedResults(
-  dbPath: string,
-  requestedFloor: string,
-): Promise<ParsedProviderCall[] | null> {
+export async function readCachedResults(dbPath: string, requestedFloor: string): Promise<ParsedProviderCall[] | null> {
   try {
     const fp = await getDbFingerprint(dbPath)
     if (!fp) return null

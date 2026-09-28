@@ -23,16 +23,19 @@ test('operational log records boot and IPC failures as JSON lines', async () => 
       const files = readdirSync(logDir).filter(file => file.startsWith('operational'))
       const lines: string[] = []
       for (const file of files) {
-        lines.push(...readFileSync(join(logDir, file), 'utf8').split('\n').filter(line => line.trim()))
+        lines.push(
+          ...readFileSync(join(logDir, file), 'utf8')
+            .split('\n')
+            .filter(line => line.trim()),
+        )
       }
       return lines.map(line => JSON.parse(line) as Record<string, unknown>)
     }
 
     // Boot record lands once the data worker is ready (before first scan).
-    await expect.poll(
-      () => readRecords().filter(record => record['event'] === 'boot.ready').length,
-      { timeout: 60_000 },
-    ).toBe(1)
+    await expect
+      .poll(() => readRecords().filter(record => record['event'] === 'boot.ready').length, { timeout: 60_000 })
+      .toBe(1)
     expect(readRecords().find(record => record['event'] === 'boot.ready')?.['level']).toBe('info')
     expect(readRecords().find(record => record['event'] === 'boot.ready')?.['context']).toBe('main')
 
@@ -48,10 +51,9 @@ test('operational log records boot and IPC failures as JSON lines', async () => 
     )
     expect(outcome).toContain('rejected:')
 
-    await expect.poll(
-      () => readRecords().filter(record => record['event'] === 'ipc.error').length,
-      { timeout: 30_000 },
-    ).toBe(1)
+    await expect
+      .poll(() => readRecords().filter(record => record['event'] === 'ipc.error').length, { timeout: 30_000 })
+      .toBe(1)
     const ipcError = readRecords().find(record => record['event'] === 'ipc.error')
     expect(ipcError?.['op']).toBe('ledger-mcp:startup:set')
     expect(ipcError?.['code']).toBe('failed')

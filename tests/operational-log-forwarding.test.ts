@@ -7,7 +7,9 @@ import { parseSidecarLogLine } from '../src/main/agents/ledger-mcp/sidecar.js'
 import { rendererNoticeSchema } from '../src/shared/schemas/ipc.js'
 import type { ScanMetadata } from '../src/shared/schemas/scan.js'
 
-function metadata(rows: Array<{ provider: string; ported: number; unchanged: number; failed: number; unparsed: number }>): ScanMetadata {
+function metadata(
+  rows: Array<{ provider: string; ported: number; unchanged: number; failed: number; unparsed: number }>,
+): ScanMetadata {
   return {
     scanId: 'test',
     startedAt: new Date(0).toISOString(),
@@ -22,10 +24,12 @@ function metadata(rows: Array<{ provider: string; ported: number; unchanged: num
 
 describe('scan summary records (#128)', () => {
   it('emits finish totals first, then one record per provider with issues', () => {
-    const records = buildScanSummaryRecords(metadata([
-      { provider: 'clean', ported: 10, unchanged: 5, failed: 0, unparsed: 0 },
-      { provider: 'messy', ported: 3, unchanged: 0, failed: 2, unparsed: 4 },
-    ]))
+    const records = buildScanSummaryRecords(
+      metadata([
+        { provider: 'clean', ported: 10, unchanged: 5, failed: 0, unparsed: 0 },
+        { provider: 'messy', ported: 3, unchanged: 0, failed: 2, unparsed: 4 },
+      ]),
+    )
     expect(records).toHaveLength(2)
     expect(records[0]).toEqual({
       logEvent: 'scan.finish',
@@ -40,9 +44,9 @@ describe('scan summary records (#128)', () => {
   })
 
   it('stays silent beyond finish when every provider is clean', () => {
-    const records = buildScanSummaryRecords(metadata([
-      { provider: 'clean', ported: 10, unchanged: 5, failed: 0, unparsed: 0 },
-    ]))
+    const records = buildScanSummaryRecords(
+      metadata([{ provider: 'clean', ported: 10, unchanged: 5, failed: 0, unparsed: 0 }]),
+    )
     expect(records).toEqual([
       { logEvent: 'scan.finish', level: 'info', fields: { op: 'scan', ported: 10, unparsed: 0, failed: 0 } },
     ])
@@ -85,7 +89,11 @@ describe('file-error outbox (#128)', () => {
 
 describe('sidecar stderr protocol (#129)', () => {
   it('parses a request-failure line to kind + method + route + code', () => {
-    expect(parseSidecarLogLine(JSON.stringify({ level: 50, time: 0, kind: 'request', method: 'POST', route: '/mcp', code: 'failed' }))).toEqual({
+    expect(
+      parseSidecarLogLine(
+        JSON.stringify({ level: 50, time: 0, kind: 'request', method: 'POST', route: '/mcp', code: 'failed' }),
+      ),
+    ).toEqual({
       kind: 'request',
       method: 'POST',
       route: '/mcp',
@@ -94,7 +102,11 @@ describe('sidecar stderr protocol (#129)', () => {
   })
 
   it('parses a boot-failure line to kind + op + code', () => {
-    expect(parseSidecarLogLine(JSON.stringify({ level: 50, time: 0, kind: 'boot', op: 'ledger-mcp-boot', code: 'db-open-failed' }))).toEqual({
+    expect(
+      parseSidecarLogLine(
+        JSON.stringify({ level: 50, time: 0, kind: 'boot', op: 'ledger-mcp-boot', code: 'db-open-failed' }),
+      ),
+    ).toEqual({
       kind: 'boot',
       op: 'ledger-mcp-boot',
       code: 'db-open-failed',
@@ -121,14 +133,16 @@ describe('sidecar stderr protocol (#129)', () => {
   })
 
   it('ignores sensitive keys even when the sidecar sends them', () => {
-    const parsed = parseSidecarLogLine(JSON.stringify({
-      method: 'POST',
-      route: '/mcp',
-      code: 'failed',
-      body: 'secret bytes',
-      token: 'Bearer sk-secret',
-      prompt: 'do evil',
-    }))
+    const parsed = parseSidecarLogLine(
+      JSON.stringify({
+        method: 'POST',
+        route: '/mcp',
+        code: 'failed',
+        body: 'secret bytes',
+        token: 'Bearer sk-secret',
+        prompt: 'do evil',
+      }),
+    )
     expect(parsed).toEqual({ kind: 'request', method: 'POST', route: '/mcp', code: 'failed' })
   })
 })

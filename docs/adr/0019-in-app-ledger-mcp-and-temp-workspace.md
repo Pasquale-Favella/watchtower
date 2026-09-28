@@ -59,7 +59,7 @@ app itself, self-spawned as plain node:
   tools/call, ping) over newline-delimited stdio — an electron-free second
   electron-vite main entry (`out/main/ledger-mcp.js`).
 - The ledger is opened with a second `node:sqlite DatabaseSync(path,
-  { readOnly: true })` connection — safe against the app's own WAL-mode
+{ readOnly: true })` connection — safe against the app's own WAL-mode
   connection, DDL-forbidden, SELECT-only (port-in stays the only writer).
 - The scope is the conversation's snapshot of the current UI scope
   (`overviewScopeSchema`, sent on `coach:run`), baked at spawn as epoch-ms
@@ -69,12 +69,12 @@ app itself, self-spawned as plain node:
 
 **Tools** (each read-only, scope-filtered):
 
-| Tool | Returns |
-|---|---|
-| `ledger_scope` | the baked scope + counts inside it (sessions/calls/cost/providers) |
-| `ledger_summary` | totals + tokens + per-model/category/skill/project/tool/bash breakdowns |
-| `ledger_sessions` | per-session rows (filters: limit, model, project, category) |
-| `ledger_calls` | raw call rows, newest first (filters: limit, model, project, category, tool) |
+| Tool              | Returns                                                                      |
+| ----------------- | ---------------------------------------------------------------------------- |
+| `ledger_scope`    | the baked scope + counts inside it (sessions/calls/cost/providers)           |
+| `ledger_summary`  | totals + tokens + per-model/category/skill/project/tool/bash breakdowns      |
+| `ledger_sessions` | per-session rows (filters: limit, model, project, category)                  |
+| `ledger_calls`    | raw call rows, newest first (filters: limit, model, project, category, tool) |
 
 Costs are the ledger's stored `base_cost_usd` — query-time pricing overrides
 are a view concern and are not applied server-side.

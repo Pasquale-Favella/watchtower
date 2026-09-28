@@ -46,12 +46,15 @@ export function AppSidebarShell({
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" className="pointer-events-none hover:bg-transparent group-data-[collapsible=icon]:justify-center">
+            <SidebarMenuButton
+              size="lg"
+              className="pointer-events-none group-data-[collapsible=icon]:justify-center hover:bg-transparent"
+            >
               {/* Brand: tinted square + wordmark when expanded. In the
                * collapsed 32px icon rail the button itself is size-8 with
                * padding, so the box shrinks to a plain centered icon — the
                * same shape as the nav items beside it. */}
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary group-data-[collapsible=icon]:size-4 group-data-[collapsible=icon]:rounded-sm group-data-[collapsible=icon]:bg-transparent">
+              <div className="bg-primary/10 text-primary flex size-10 shrink-0 items-center justify-center rounded-xl group-data-[collapsible=icon]:size-4 group-data-[collapsible=icon]:rounded-sm group-data-[collapsible=icon]:bg-transparent">
                 {/* Expanded rail: the logo fills most of the 40px brand tile;
                  * collapsed to icon-only, it drops back to the nav-item size.
                  * The `!` important beats the sidebar button's own
@@ -80,7 +83,7 @@ export function AppSidebarShell({
                     {item.icon}
                     <span>{shortcutForAction(item.id)?.label ?? item.id}</span>
                   </SidebarMenuButton>
-                  <SidebarMenuBadge className="font-mono text-[10px] font-normal tracking-normal text-muted-foreground">
+                  <SidebarMenuBadge className="text-muted-foreground font-mono text-[10px] font-normal tracking-normal">
                     {displayShortcutForAction(item.id)}
                   </SidebarMenuBadge>
                 </SidebarMenuItem>
@@ -91,7 +94,7 @@ export function AppSidebarShell({
       </SidebarContent>
       <SidebarFooter>
         {status && (
-          <div className="truncate px-2 py-1 font-mono text-[11px] tabular-nums text-muted-foreground group-data-[collapsible=icon]:hidden">
+          <div className="text-muted-foreground truncate px-2 py-1 font-mono text-[11px] tabular-nums group-data-[collapsible=icon]:hidden">
             {status}
           </div>
         )}
@@ -114,10 +117,12 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
 
   const providerOptions = providerOptionsFromDetected(detectedProviders)
   const providerLabel = providerOptions.find(p => p.value === provider)?.label ?? provider
-  const periodLabel = customRange
-    ? `${customRange.since} → ${customRange.until}`
-    : (PERIOD_LABELS[period] ?? period)
-  const status = <span>{periodLabel} <b className="font-medium text-foreground">{providerLabel}</b></span>
+  const periodLabel = customRange ? `${customRange.since} → ${customRange.until}` : (PERIOD_LABELS[period] ?? period)
+  const status = (
+    <span>
+      {periodLabel} <b className="text-foreground font-medium">{providerLabel}</b>
+    </span>
+  )
 
   return <AppSidebarShell active={active} onNavigate={navigateToSection} status={status} {...props} />
 }

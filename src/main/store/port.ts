@@ -75,7 +75,8 @@ export function mapFileToLedgerRows(input: PortInput): MappedFile {
   // Discovery-time metadata beats the cache fallbacks: `canonicalProjectName`/
   // `canonicalCwd` are set only for Claude worktrees, so without `project`/`workingDirectory`
   // every other provider degrades to the directory UUID — the pre-fix symptom.
-  const projectPath = cachedFile.canonicalCwd ?? workingDirectory ?? firstCallWorkingDirectory ?? firstCallProjectPath ?? dirName
+  const projectPath =
+    cachedFile.canonicalCwd ?? workingDirectory ?? firstCallWorkingDirectory ?? firstCallProjectPath ?? dirName
   const projectName = project ?? cachedFile.canonicalProjectName ?? dirName
 
   // Session PR links = union of every turn's resolved refs + the file's native

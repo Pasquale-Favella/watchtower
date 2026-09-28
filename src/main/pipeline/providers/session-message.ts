@@ -95,12 +95,21 @@ export function buildAssistantCall(opts: {
     cacheWrite: data.tokens?.cache?.write ?? data.usage?.cache_creation_input_tokens ?? 0,
   }
 
-  const toolParts = parts.filter((p) => (p.type === 'tool' || p.type === 'tool-call' || p.type === 'tool_call') && normalizeToolName(p.tool))
-  const hasTextOutput = parts.some((p) => p.type === 'text' && typeof p.text === 'string' && p.text.trim().length > 0)
+  const toolParts = parts.filter(
+    p => (p.type === 'tool' || p.type === 'tool-call' || p.type === 'tool_call') && normalizeToolName(p.tool),
+  )
+  const hasTextOutput = parts.some(p => p.type === 'text' && typeof p.text === 'string' && p.text.trim().length > 0)
   const hasToolOrTextParts = hasTextOutput || toolParts.length > 0
-  const hasAnySubstantiveParts = parts.some((p) =>
-    p.type === 'text' || p.type === 'tool' || p.type === 'tool-call' || p.type === 'tool_call' ||
-    p.type === 'tool-result' || p.type === 'tool_result' || p.type === 'reasoning' || p.type === 'file'
+  const hasAnySubstantiveParts = parts.some(
+    p =>
+      p.type === 'text' ||
+      p.type === 'tool' ||
+      p.type === 'tool-call' ||
+      p.type === 'tool_call' ||
+      p.type === 'tool-result' ||
+      p.type === 'tool_result' ||
+      p.type === 'reasoning' ||
+      p.type === 'file',
   )
   const hasActivity = hasToolOrTextParts || hasAnySubstantiveParts
 
@@ -112,24 +121,22 @@ export function buildAssistantCall(opts: {
     tokens.cacheWrite === 0
   if (allZero && (data.cost ?? 0) === 0 && !hasActivity) return null
 
-  const tools = toolParts
-    .map((p) => normalizeToolName(p.tool))
-    .filter(Boolean)
+  const tools = toolParts.map(p => normalizeToolName(p.tool)).filter(Boolean)
 
   const bashCommands = toolParts
-    .filter((p) => p.tool === 'bash' && typeof p.state?.input?.command === 'string')
-    .flatMap((p) => extractBashCommands(p.state!.input!.command!))
+    .filter(p => p.tool === 'bash' && typeof p.state?.input?.command === 'string')
+    .flatMap(p => extractBashCommands(p.state!.input!.command!))
 
   // The skill/subagent name lives in the tool-call input, not the tool name, so
   // the Skills & Agents breakdown needs these extracted alongside the tool list.
   const skills = toolParts
-    .filter((p) => p.tool === 'skill' && typeof p.state?.input?.name === 'string')
-    .map((p) => p.state!.input!.name!)
+    .filter(p => p.tool === 'skill' && typeof p.state?.input?.name === 'string')
+    .map(p => p.state!.input!.name!)
     .filter(Boolean)
 
   const subagentTypes = toolParts
-    .filter((p) => p.tool === 'task' && typeof p.state?.input?.subagent_type === 'string')
-    .map((p) => p.state!.input!.subagent_type!)
+    .filter(p => p.tool === 'task' && typeof p.state?.input?.subagent_type === 'string')
+    .map(p => p.state!.input!.subagent_type!)
     .filter(Boolean)
 
   const model = data.modelID ?? data.model ?? 'unknown'

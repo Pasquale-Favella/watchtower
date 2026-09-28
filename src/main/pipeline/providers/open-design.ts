@@ -129,7 +129,7 @@ async function discoverNamespacesDir(namespacesDir: string): Promise<SessionSour
 
   for (const ns of namespaces) {
     const runsDir = join(namespacesDir, ns, 'data', 'runs')
-    sources.push(...await discoverRunsDir(runsDir, ns))
+    sources.push(...(await discoverRunsDir(runsDir, ns)))
   }
 
   return sources
@@ -156,9 +156,9 @@ async function discoverOpenDesignSessions(baseDir: string): Promise<SessionSourc
   }
 
   const sources: SessionSource[] = []
-  sources.push(...await discoverRunsDir(join(baseDir, 'data', 'runs'), basename(baseDir) || PROVIDER_NAME))
-  sources.push(...await discoverRunsDir(join(baseDir, 'runs'), basename(baseDir) || PROVIDER_NAME))
-  sources.push(...await discoverNamespacesDir(baseName === 'namespaces' ? baseDir : join(baseDir, 'namespaces')))
+  sources.push(...(await discoverRunsDir(join(baseDir, 'data', 'runs'), basename(baseDir) || PROVIDER_NAME)))
+  sources.push(...(await discoverRunsDir(join(baseDir, 'runs'), basename(baseDir) || PROVIDER_NAME)))
+  sources.push(...(await discoverNamespacesDir(baseName === 'namespaces' ? baseDir : join(baseDir, 'namespaces'))))
   return dedupeSources(sources)
 }
 

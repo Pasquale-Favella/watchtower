@@ -40,10 +40,7 @@ function sortedEntries(totals: Map<string, number>): Array<[string, number]> {
 /** Map key-keyed day segments back to leaf display names. Same-leaf checkouts
  * sharing a day merge into one display segment (costs summed, no spend lost);
  * the Sankey flow below keeps them as separate key-id nodes. */
-function displayProjectSegments(
-  segments: SpendSegment[],
-  displayByKey: Map<string, string>,
-): SpendSegment[] {
+function displayProjectSegments(segments: SpendSegment[], displayByKey: Map<string, string>): SpendSegment[] {
   const merged = new Map<string, number>()
   for (const seg of segments) {
     const display = displayByKey.get(seg.name) ?? seg.name
@@ -245,9 +242,13 @@ function buildSpendPayload(
   const modelOrder = new Map(models.map((node, index) => [node.id, index]))
   const projectOrder = new Map(projects.map((node, index) => [node.id, index]))
   const links = rollLinks(matrix, keptModels, keptProjects).sort((a, b) => {
-    const byModel = (modelOrder.get(a.model) ?? Number.MAX_SAFE_INTEGER) - (modelOrder.get(b.model) ?? Number.MAX_SAFE_INTEGER)
+    const byModel =
+      (modelOrder.get(a.model) ?? Number.MAX_SAFE_INTEGER) - (modelOrder.get(b.model) ?? Number.MAX_SAFE_INTEGER)
     if (byModel !== 0) return byModel
-    return (projectOrder.get(a.project) ?? Number.MAX_SAFE_INTEGER) - (projectOrder.get(b.project) ?? Number.MAX_SAFE_INTEGER)
+    return (
+      (projectOrder.get(a.project) ?? Number.MAX_SAFE_INTEGER) -
+      (projectOrder.get(b.project) ?? Number.MAX_SAFE_INTEGER)
+    )
   })
 
   return {

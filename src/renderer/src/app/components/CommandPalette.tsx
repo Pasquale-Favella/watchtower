@@ -14,12 +14,7 @@ import {
   CommandShortcut,
 } from '@/shared/components/ui/command'
 import { useSidebar } from '@/shared/components/ui/sidebar'
-import {
-  NAV_SECTIONS,
-  displayShortcutForAction,
-  shortcutForAction,
-  type Section,
-} from '@/app/shortcuts'
+import { NAV_SECTIONS, displayShortcutForAction, shortcutForAction, type Section } from '@/app/shortcuts'
 import { navigateToSection } from '@/app/navigation'
 import { usePaletteStore } from '@/app/stores/palette-store'
 import { useScanStore } from '@/app/stores/scan-store'
@@ -35,9 +30,7 @@ export type PaletteAction = (typeof PALETTE_ACTIONS)[number]
 /** One palette row: the registry action plus its explicit source (spec §What
  * to build). The Sections/Actions groups below are views over PALETTE_ROWS,
  * so a future `global` source plugs in as data, not structure. */
-export type PaletteRow =
-  | { action: Section; source: 'section' }
-  | { action: PaletteAction; source: 'action' }
+export type PaletteRow = { action: Section; source: 'section' } | { action: PaletteAction; source: 'action' }
 
 export const PALETTE_ROWS: readonly PaletteRow[] = [
   ...PALETTE_SECTIONS.map((action): PaletteRow => ({ action, source: 'section' })),
@@ -58,9 +51,7 @@ export function rowLabel(row: PaletteRow): string {
 }
 
 function iconFor(row: PaletteRow): ReactNode {
-  return row.source === 'section'
-    ? SECTION_ICONS[row.action]
-    : ACTION_ICONS[row.action]
+  return row.source === 'section' ? SECTION_ICONS[row.action] : ACTION_ICONS[row.action]
 }
 
 /** cmdk filter key: label plus registry id, so `pullrequests` and
@@ -111,13 +102,9 @@ export function CommandPalette(): ReactElement {
         <CommandInput placeholder="Go to a section or run an action..." />
         <CommandList>
           <CommandEmpty>No matching section or action.</CommandEmpty>
-          <CommandGroup heading="Sections">
-            {SECTION_ROWS.map(renderRow)}
-          </CommandGroup>
+          <CommandGroup heading="Sections">{SECTION_ROWS.map(renderRow)}</CommandGroup>
           <CommandSeparator />
-          <CommandGroup heading="Actions">
-            {ACTION_ROWS.map(renderRow)}
-          </CommandGroup>
+          <CommandGroup heading="Actions">{ACTION_ROWS.map(renderRow)}</CommandGroup>
         </CommandList>
       </Command>
     </CommandDialog>

@@ -3,12 +3,22 @@ import { lstat, readFile, readdir, stat } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { readSessionLines } from './fs-utils.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
-import { calculateCost, calculateLocalModelSavings, getShortModelName, isProxiedPath, getProxyPathsConfigHash } from './models.js'
+import {
+  calculateCost,
+  calculateLocalModelSavings,
+  getShortModelName,
+  isProxiedPath,
+  getProxyPathsConfigHash,
+} from './models.js'
 import { resolveSubagentAttribution, sessionIdentity } from './sessions-report.js'
 import { normalizeContentBlocks } from './content-utils.js'
 import { discoverAllSessions, getProvider } from './providers/index.js'
 import { flushCodexCache } from './codex-cache.js'
-import { antigravityCascadeIdFromPath, flushAntigravityCache, shouldReparseAntigravitySource } from './providers/antigravity.js'
+import {
+  antigravityCascadeIdFromPath,
+  flushAntigravityCache,
+  shouldReparseAntigravitySource,
+} from './providers/antigravity.js'
 import { getDesktopSessionsDirs } from './providers/claude.js'
 import { isSqliteBusyError } from './sqlite.js'
 import {
@@ -53,10 +63,7 @@ import { extractBashCommands } from './bash-utils.js'
 
 // ── Delta seam (map T3): per-file port-in events ─────────────────────────
 
-export type {
-  ScanDelta,
-  ScanDeltaVerdict,
-} from '../../shared/schemas/scan.js'
+export type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 import type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 
 export type DeltaHandler = (delta: ScanDelta) => void | Promise<void>
@@ -91,7 +98,6 @@ function warnProviderPortFailure(providerName: string, sourcePath: string): void
     fields: { op: 'scan', provider: providerName, file: logFileName(sourcePath), code: 'port-failed' },
   })
 }
-
 
 // ── Canonical project identity seam (#103): one checkout, one grouping key,
 // whatever the provider's spelling. Pure and lexical only — no filesystem
@@ -152,7 +158,6 @@ export function deriveCanonicalProjectKey(
   if (!canonical) return `orphan:${provider}`
   return normalizeProjectPathKey(canonical)
 }
-
 
 // Returns true for sessions whose canonical project key must NOT be derived
 // from the cwd. Cowork sessions come in two flavours:
@@ -284,14 +289,31 @@ function isBufferWhitespaceAt(source: Buffer, index: number): boolean {
     const second = source[start + 1]
     const third = source[start + 2]
     const fourth = source[start + 3]
-    if (second === undefined || third === undefined || fourth === undefined || (second & 0xc0) !== 0x80 || (third & 0xc0) !== 0x80 || (fourth & 0xc0) !== 0x80) {
+    if (
+      second === undefined ||
+      third === undefined ||
+      fourth === undefined ||
+      (second & 0xc0) !== 0x80 ||
+      (third & 0xc0) !== 0x80 ||
+      (fourth & 0xc0) !== 0x80
+    ) {
       return false
     }
     codePoint = ((first & 0x07) << 18) | ((second & 0x3f) << 12) | ((third & 0x3f) << 6) | (fourth & 0x3f)
     byteLength = 4
   }
   if (codePoint === undefined || index >= start + byteLength) return false
-  return codePoint === 0x00a0 || codePoint === 0x1680 || (codePoint >= 0x2000 && codePoint <= 0x200a) || codePoint === 0x2028 || codePoint === 0x2029 || codePoint === 0x202f || codePoint === 0x205f || codePoint === 0x3000 || codePoint === 0xfeff
+  return (
+    codePoint === 0x00a0 ||
+    codePoint === 0x1680 ||
+    (codePoint >= 0x2000 && codePoint <= 0x200a) ||
+    codePoint === 0x2028 ||
+    codePoint === 0x2029 ||
+    codePoint === 0x202f ||
+    codePoint === 0x205f ||
+    codePoint === 0x3000 ||
+    codePoint === 0xfeff
+  )
 }
 
 function safeBufferSegmentEnd(source: Buffer, index: number): number {
@@ -312,14 +334,16 @@ function createJsonSource(source: string | Buffer): JsonSource {
     raw: source,
     length: source.length,
     slice: (start, end, maxChars = Number.POSITIVE_INFINITY) => {
-      const cappedEnd = Number.isFinite(maxChars) ? safeBufferSegmentEnd(source, Math.min(end, start + maxChars * 4)) : end
+      const cappedEnd = Number.isFinite(maxChars)
+        ? safeBufferSegmentEnd(source, Math.min(end, start + maxChars * 4))
+        : end
       return source.subarray(start, cappedEnd).toString('utf-8').slice(0, maxChars)
     },
   }
 }
 
 function jsonCharCodeAt(source: JsonSource, index: number): number {
-  return typeof source.raw === 'string' ? source.raw.charCodeAt(index) : source.raw[index] ?? Number.NaN
+  return typeof source.raw === 'string' ? source.raw.charCodeAt(index) : (source.raw[index] ?? Number.NaN)
 }
 
 function skipJsonWhitespace(source: JsonSource, start: number, limit = source.length): number {
@@ -339,13 +363,24 @@ function findJsonStringEnd(source: JsonSource, start: number, limit = source.len
     : findJsonStringEndBuffer(source.raw, start, limit)
 }
 
-function findJsonContainerEnd(source: JsonSource, start: number, open: number, close: number, limit = source.length): number {
+function findJsonContainerEnd(
+  source: JsonSource,
+  start: number,
+  open: number,
+  close: number,
+  limit = source.length,
+): number {
   return typeof source.raw === 'string'
     ? findJsonContainerEndString(source.raw, start, open, close, limit)
     : findJsonContainerEndBuffer(source.raw, start, open, close, limit)
 }
 
-function findObjectFieldValue(source: JsonSource, objectStart: number, objectEnd: number, field: string): JsonValueBounds | null {
+function findObjectFieldValue(
+  source: JsonSource,
+  objectStart: number,
+  objectEnd: number,
+  field: string,
+): JsonValueBounds | null {
   return typeof source.raw === 'string'
     ? findObjectFieldValueString(source.raw, objectStart, objectEnd, field)
     : findObjectFieldValueBuffer(source.raw, objectStart, objectEnd, field)
@@ -357,12 +392,20 @@ function findJsonValueBounds(source: JsonSource, start: number, limit = source.l
     : findJsonValueBoundsBuffer(source.raw, start, limit)
 }
 
-function readJsonString(source: JsonSource, bounds: JsonValueBounds | null, cap = Number.POSITIVE_INFINITY): string | undefined {
+function readJsonString(
+  source: JsonSource,
+  bounds: JsonValueBounds | null,
+  cap = Number.POSITIVE_INFINITY,
+): string | undefined {
   if (typeof source.raw === 'string') return readJsonStringString(source.raw, bounds, cap)
   return readJsonStringBuffer(source.raw, bounds, cap)
 }
 
-function readJsonNumberField(source: JsonSource, objectBounds: JsonValueBounds | null, field: string): number | undefined {
+function readJsonNumberField(
+  source: JsonSource,
+  objectBounds: JsonValueBounds | null,
+  field: string,
+): number | undefined {
   if (!objectBounds || objectBounds.kind !== 'object') return undefined
   const bounds = findObjectFieldValue(source, objectBounds.start, objectBounds.end, field)
   if (!bounds) return undefined
@@ -448,24 +491,45 @@ function extractLargeToolBlocks(source: JsonSource, contentBounds: JsonValueBoun
     const objectBounds = { start: i, end: objectEnd + 1, kind: 'object' as const }
     const blockType = readJsonString(source, findObjectFieldValue(source, objectBounds.start, objectBounds.end, 'type'))
     if (blockType === 'tool_use') {
-      const name = readJsonString(source, findObjectFieldValue(source, objectBounds.start, objectBounds.end, 'name')) ?? ''
+      const name =
+        readJsonString(source, findObjectFieldValue(source, objectBounds.start, objectBounds.end, 'name')) ?? ''
       const id = readJsonString(source, findObjectFieldValue(source, objectBounds.start, objectBounds.end, 'id')) ?? ''
       const inputBounds = findObjectFieldValue(source, objectBounds.start, objectBounds.end, 'input')
       const input: Record<string, unknown> = {}
       if (inputBounds?.kind === 'object') {
         if (name === 'Skill') {
-          const skill = readJsonString(source, findObjectFieldValue(source, inputBounds.start, inputBounds.end, 'skill'), 200)
-          const skillName = readJsonString(source, findObjectFieldValue(source, inputBounds.start, inputBounds.end, 'name'), 200)
+          const skill = readJsonString(
+            source,
+            findObjectFieldValue(source, inputBounds.start, inputBounds.end, 'skill'),
+            200,
+          )
+          const skillName = readJsonString(
+            source,
+            findObjectFieldValue(source, inputBounds.start, inputBounds.end, 'name'),
+            200,
+          )
           if (skill !== undefined) input['skill'] = skill
           if (skillName !== undefined) input['name'] = skillName
         } else if (name === 'Read' || name === 'FileReadTool' || EDIT_TOOLS.has(name)) {
-          const filePath = readJsonString(source, findObjectFieldValue(source, inputBounds.start, inputBounds.end, 'file_path'), BASH_COMMAND_CAP)
+          const filePath = readJsonString(
+            source,
+            findObjectFieldValue(source, inputBounds.start, inputBounds.end, 'file_path'),
+            BASH_COMMAND_CAP,
+          )
           if (filePath !== undefined) input['file_path'] = filePath
         } else if (name === 'Agent' || name === 'Task') {
-          const subagentType = readJsonString(source, findObjectFieldValue(source, inputBounds.start, inputBounds.end, 'subagent_type'), 200)
+          const subagentType = readJsonString(
+            source,
+            findObjectFieldValue(source, inputBounds.start, inputBounds.end, 'subagent_type'),
+            200,
+          )
           if (subagentType !== undefined) input['subagent_type'] = subagentType
         } else if (BASH_TOOLS.has(name)) {
-          const command = readJsonString(source, findObjectFieldValue(source, inputBounds.start, inputBounds.end, 'command'), BASH_COMMAND_CAP)
+          const command = readJsonString(
+            source,
+            findObjectFieldValue(source, inputBounds.start, inputBounds.end, 'command'),
+            BASH_COMMAND_CAP,
+          )
           if (command !== undefined) input['command'] = command
         }
       }
@@ -512,7 +576,10 @@ function extractLargeUserText(source: JsonSource, contentBounds: JsonValueBounds
 
 function extractLargeAddedNames(source: JsonSource, attachmentBounds: JsonValueBounds | null): string[] {
   if (!attachmentBounds || attachmentBounds.kind !== 'object') return []
-  const attachmentType = readJsonString(source, findObjectFieldValue(source, attachmentBounds.start, attachmentBounds.end, 'type'))
+  const attachmentType = readJsonString(
+    source,
+    findObjectFieldValue(source, attachmentBounds.start, attachmentBounds.end, 'type'),
+  )
   if (attachmentType !== 'deferred_tools_delta') return []
   const addedNames = findObjectFieldValue(source, attachmentBounds.start, attachmentBounds.end, 'addedNames')
   if (!addedNames || addedNames.kind !== 'array') return []
@@ -579,7 +646,7 @@ function extractObjectFields(
   for (const field of fields) captured[field] = null
   if (jsonCharCodeAt(source, objectStart) !== 0x7b) return captured
 
-  const fieldBuffers = typeof source.raw === 'string' ? null : fields.map((f) => Buffer.from(f))
+  const fieldBuffers = typeof source.raw === 'string' ? null : fields.map(f => Buffer.from(f))
   let remaining = fields.length
   let i = objectStart + 1
   while (i < objectEnd - 1 && remaining > 0) {
@@ -682,7 +749,13 @@ function findJsonStringEndString(source: string, start: number, limit = source.l
   return -1
 }
 
-function findJsonContainerEndString(source: string, start: number, open: number, close: number, limit = source.length): number {
+function findJsonContainerEndString(
+  source: string,
+  start: number,
+  open: number,
+  close: number,
+  limit = source.length,
+): number {
   let depth = 0
   let inString = false
   for (let i = start; i < limit; i++) {
@@ -745,7 +818,13 @@ function findJsonStringEndBuffer(source: Buffer, start: number, limit = source.l
   return -1
 }
 
-function findJsonContainerEndBuffer(source: Buffer, start: number, open: number, close: number, limit = source.length): number {
+function findJsonContainerEndBuffer(
+  source: Buffer,
+  start: number,
+  open: number,
+  close: number,
+  limit = source.length,
+): number {
   let depth = 0
   let inString = false
   for (let i = start; i < limit; i++) {
@@ -796,7 +875,12 @@ function findJsonValueBoundsBuffer(source: Buffer, start: number, limit = source
   return { start: i, end, kind: 'scalar' }
 }
 
-function findObjectFieldValueString(source: string, objectStart: number, objectEnd: number, field: string): JsonValueBounds | null {
+function findObjectFieldValueString(
+  source: string,
+  objectStart: number,
+  objectEnd: number,
+  field: string,
+): JsonValueBounds | null {
   if (source.charCodeAt(objectStart) !== 0x7b) return null
   let i = objectStart + 1
   while (i < objectEnd - 1) {
@@ -823,7 +907,12 @@ function findObjectFieldValueString(source: string, objectStart: number, objectE
   return null
 }
 
-function findObjectFieldValueBuffer(source: Buffer, objectStart: number, objectEnd: number, field: string): JsonValueBounds | null {
+function findObjectFieldValueBuffer(
+  source: Buffer,
+  objectStart: number,
+  objectEnd: number,
+  field: string,
+): JsonValueBounds | null {
   if (source[objectStart] !== 0x7b) return null
   let i = objectStart + 1
   while (i < objectEnd - 1) {
@@ -862,7 +951,11 @@ function appendBufferJsonSegment(source: Buffer, start: number, end: number, cur
   return current + source.subarray(start, cappedEnd).toString('utf-8').slice(0, remaining)
 }
 
-function readJsonStringString(source: string, bounds: JsonValueBounds | null, cap = Number.POSITIVE_INFINITY): string | undefined {
+function readJsonStringString(
+  source: string,
+  bounds: JsonValueBounds | null,
+  cap = Number.POSITIVE_INFINITY,
+): string | undefined {
   if (!bounds || bounds.kind !== 'string') return undefined
   let out = ''
   const contentEnd = bounds.end - 1
@@ -905,7 +998,11 @@ function readJsonStringString(source: string, bounds: JsonValueBounds | null, ca
   return appendStringJsonSegment(source, segmentStart, contentEnd, out, cap)
 }
 
-function readJsonStringBuffer(source: Buffer, bounds: JsonValueBounds | null, cap = Number.POSITIVE_INFINITY): string | undefined {
+function readJsonStringBuffer(
+  source: Buffer,
+  bounds: JsonValueBounds | null,
+  cap = Number.POSITIVE_INFINITY,
+): string | undefined {
   if (!bounds || bounds.kind !== 'string') return undefined
   let out = ''
   const contentEnd = bounds.end - 1
@@ -1055,7 +1152,9 @@ export function compactEntry(raw: JournalEntry): JournalEntry {
 
   const rawContent = msg.content
   const contentArr = Array.isArray(rawContent) ? rawContent : []
-  const toolBlocks = contentArr.filter((b): b is ToolUseBlock => b != null && typeof b === 'object' && b.type === 'tool_use')
+  const toolBlocks = contentArr.filter(
+    (b): b is ToolUseBlock => b != null && typeof b === 'object' && b.type === 'tool_use',
+  )
   const compactContent: ContentBlock[] = toolBlocks.slice(0, MAX_TOOL_BLOCKS).map(tb => {
     const input: Record<string, unknown> = {}
     if (tb.name === 'Skill') {
@@ -1064,10 +1163,12 @@ export function compactEntry(raw: JournalEntry): JournalEntry {
       if (typeof ri['name'] === 'string') input['name'] = (ri['name'] as string).slice(0, 200)
     } else if (tb.name === 'Read' || tb.name === 'FileReadTool' || EDIT_TOOLS.has(tb.name)) {
       const ri = (tb.input ?? {}) as Record<string, unknown>
-      if (typeof ri['file_path'] === 'string') input['file_path'] = (ri['file_path'] as string).slice(0, BASH_COMMAND_CAP)
+      if (typeof ri['file_path'] === 'string')
+        input['file_path'] = (ri['file_path'] as string).slice(0, BASH_COMMAND_CAP)
     } else if (tb.name === 'Agent' || tb.name === 'Task') {
       const ri = (tb.input ?? {}) as Record<string, unknown>
-      if (typeof ri['subagent_type'] === 'string') input['subagent_type'] = (ri['subagent_type'] as string).slice(0, 200)
+      if (typeof ri['subagent_type'] === 'string')
+        input['subagent_type'] = (ri['subagent_type'] as string).slice(0, 200)
     } else if (BASH_TOOLS.has(tb.name)) {
       const ri = (tb.input ?? {}) as Record<string, unknown>
       if (typeof ri['command'] === 'string') {
@@ -1085,8 +1186,12 @@ export function compactEntry(raw: JournalEntry): JournalEntry {
   if (u.cache_creation_input_tokens) compactUsage.cache_creation_input_tokens = u.cache_creation_input_tokens
   if (u.cache_creation) {
     compactUsage.cache_creation = {
-      ...(u.cache_creation.ephemeral_5m_input_tokens ? { ephemeral_5m_input_tokens: u.cache_creation.ephemeral_5m_input_tokens } : {}),
-      ...(u.cache_creation.ephemeral_1h_input_tokens ? { ephemeral_1h_input_tokens: u.cache_creation.ephemeral_1h_input_tokens } : {}),
+      ...(u.cache_creation.ephemeral_5m_input_tokens
+        ? { ephemeral_5m_input_tokens: u.cache_creation.ephemeral_5m_input_tokens }
+        : {}),
+      ...(u.cache_creation.ephemeral_1h_input_tokens
+        ? { ephemeral_1h_input_tokens: u.cache_creation.ephemeral_1h_input_tokens }
+        : {}),
     }
   }
   if (u.cache_read_input_tokens) compactUsage.cache_read_input_tokens = u.cache_read_input_tokens
@@ -1114,11 +1219,16 @@ export function compactEntry(raw: JournalEntry): JournalEntry {
         if (it.cache_read_input_tokens) compact.cache_read_input_tokens = it.cache_read_input_tokens
         if (it.cache_creation) {
           compact.cache_creation = {
-            ...(it.cache_creation.ephemeral_5m_input_tokens ? { ephemeral_5m_input_tokens: it.cache_creation.ephemeral_5m_input_tokens } : {}),
-            ...(it.cache_creation.ephemeral_1h_input_tokens ? { ephemeral_1h_input_tokens: it.cache_creation.ephemeral_1h_input_tokens } : {}),
+            ...(it.cache_creation.ephemeral_5m_input_tokens
+              ? { ephemeral_5m_input_tokens: it.cache_creation.ephemeral_5m_input_tokens }
+              : {}),
+            ...(it.cache_creation.ephemeral_1h_input_tokens
+              ? { ephemeral_1h_input_tokens: it.cache_creation.ephemeral_1h_input_tokens }
+              : {}),
           }
         }
-        if (it.server_tool_use?.web_search_requests) compact.server_tool_use = { web_search_requests: it.server_tool_use.web_search_requests }
+        if (it.server_tool_use?.web_search_requests)
+          compact.server_tool_use = { web_search_requests: it.server_tool_use.web_search_requests }
         if (it.speed) compact.speed = it.speed
         return compact
       })
@@ -1138,9 +1248,7 @@ export function compactEntry(raw: JournalEntry): JournalEntry {
 }
 
 function extractToolNames(content: ContentBlock[]): string[] {
-  return content
-    .filter((b): b is ToolUseBlock => b.type === 'tool_use')
-    .map(b => b.name)
+  return content.filter((b): b is ToolUseBlock => b.type === 'tool_use').map(b => b.name)
 }
 
 function extractMcpTools(tools: string[]): string[] {
@@ -1243,7 +1351,9 @@ export function collectPrUrlsFromEntry(entry: JournalEntry): string[] {
         if (input && typeof input === 'object') {
           try {
             push(JSON.stringify(input).slice(0, 4000))
-          } catch { /* unstringifiable input: skip */ }
+          } catch {
+            /* unstringifiable input: skip */
+          }
         }
       }
     }
@@ -1253,7 +1363,9 @@ export function collectPrUrlsFromEntry(entry: JournalEntry): string[] {
   else if (tur && typeof tur === 'object') {
     try {
       push(JSON.stringify(tur).slice(0, PR_SCAN_CAP))
-    } catch { /* unstringifiable result: skip */ }
+    } catch {
+      /* unstringifiable result: skip */
+    }
   }
   if (parts.length === 0) return []
   return extractPrUrlsFromText(parts.join('\n'))
@@ -1411,7 +1523,7 @@ export function collectToolResultMeta(entry: JournalEntry, map: Map<string, Tool
   const content = msg && typeof msg === 'object' ? (msg as { content?: unknown }).content : undefined
   if (!Array.isArray(content)) return
   const tur = (entry as Record<string, unknown>)['toolUseResult']
-  const turObj = tur && typeof tur === 'object' ? tur as Record<string, unknown> : undefined
+  const turObj = tur && typeof tur === 'object' ? (tur as Record<string, unknown>) : undefined
   const loc = countStructuredPatchLoc(turObj?.['structuredPatch'])
   const interrupted = turObj?.['interrupted'] === true
   const userModified = turObj?.['userModified'] === true
@@ -1459,9 +1571,14 @@ export function collectSessionMeta(entry: JournalEntry, meta: SessionMeta): void
       const msg = entry.message
       const content = msg && typeof msg === 'object' ? (msg as { content?: unknown }).content : undefined
       if (Array.isArray(content)) {
-        const results = content.filter((b): b is Record<string, unknown> =>
-          !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'tool_result'
-          && typeof (b as { tool_use_id?: unknown }).tool_use_id === 'string' && !!(b as { tool_use_id?: unknown }).tool_use_id)
+        const results = content.filter(
+          (b): b is Record<string, unknown> =>
+            !!b &&
+            typeof b === 'object' &&
+            (b as { type?: unknown }).type === 'tool_result' &&
+            typeof (b as { tool_use_id?: unknown }).tool_use_id === 'string' &&
+            !!(b as { tool_use_id?: unknown }).tool_use_id,
+        )
         let spawnId: string | undefined
         if (results.length === 1) {
           spawnId = results[0]!['tool_use_id'] as string
@@ -1633,23 +1750,25 @@ export function parseAdvisorCalls(entry: JournalEntry): ParsedApiCall[] {
       cacheCreation.oneHourTokens,
     )
 
-    calls.push(applyLocalModelSavings({
-      provider: 'claude',
-      model,
-      usage: tokens,
-      costUSD,
-      tools: [],
-      mcpTools: [],
-      skills: [],
-      subagentTypes: [],
-      hasAgentSpawn: false,
-      hasPlanMode: false,
-      speed,
-      timestamp: entry.timestamp ?? '',
-      bashCommands: [],
-      deduplicationKey: `${baseKey}:advisor:${index}`,
-      cacheCreationOneHourTokens: cacheCreation.oneHourTokens || undefined,
-    }))
+    calls.push(
+      applyLocalModelSavings({
+        provider: 'claude',
+        model,
+        usage: tokens,
+        costUSD,
+        tools: [],
+        mcpTools: [],
+        skills: [],
+        subagentTypes: [],
+        hasAgentSpawn: false,
+        hasPlanMode: false,
+        speed,
+        timestamp: entry.timestamp ?? '',
+        bashCommands: [],
+        deduplicationKey: `${baseKey}:advisor:${index}`,
+        cacheCreationOneHourTokens: cacheCreation.oneHourTokens || undefined,
+      }),
+    )
   }
   return calls
 }
@@ -1678,7 +1797,11 @@ export function dedupeStreamingMessageIds(entries: JournalEntry[]): JournalEntry
   return result
 }
 
-export function groupIntoTurns(entries: JournalEntry[], seenMsgIds: Set<string>, toolResultMeta?: Map<string, ToolResultMeta>): ParsedTurn[] {
+export function groupIntoTurns(
+  entries: JournalEntry[],
+  seenMsgIds: Set<string>,
+  toolResultMeta?: Map<string, ToolResultMeta>,
+): ParsedTurn[] {
   const turns: ParsedTurn[] = []
   let currentUserMessage = ''
   let currentCalls: ParsedApiCall[] = []
@@ -1736,7 +1859,8 @@ export function groupIntoTurns(entries: JournalEntry[], seenMsgIds: Set<string>,
       const call = parseApiCall(entry, toolResultMeta)
       if (call) {
         currentCalls.push(call)
-        if (call.spawnToolUseIds) for (const id of call.spawnToolUseIds) if (!currentSpawnIds.includes(id)) currentSpawnIds.push(id)
+        if (call.spawnToolUseIds)
+          for (const id of call.spawnToolUseIds) if (!currentSpawnIds.includes(id)) currentSpawnIds.push(id)
       }
       for (const advisorCall of parseAdvisorCalls(entry)) currentCalls.push(advisorCall)
     } else if (entry.type === 'pr-link') {
@@ -1765,7 +1889,9 @@ export function groupIntoTurns(entries: JournalEntry[], seenMsgIds: Set<string>,
 // spawns within it; otherwise the carried set does. First occurrence of a spawn id
 // wins deterministically (tool_use ids are unique in practice; this only guards a
 // pathological restatement). Drives cross-range subagent PR attribution.
-export function buildSpawnPrSets(turns: Array<{ prRefs?: string[]; spawnToolUseIds?: string[] }>): Record<string, string[]> {
+export function buildSpawnPrSets(
+  turns: Array<{ prRefs?: string[]; spawnToolUseIds?: string[] }>,
+): Record<string, string[]> {
   const out: Record<string, string[]> = {}
   let cur: string[] = []
   for (const turn of turns) {
@@ -1796,8 +1922,8 @@ function isMcpToolName(name: string): boolean {
   if (!name.startsWith('mcp__')) return false
   const rest = name.slice(5) // strip `mcp__`
   const sep = rest.indexOf('__')
-  if (sep <= 0) return false                   // missing or empty server
-  if (sep >= rest.length - 2) return false     // missing or empty tool
+  if (sep <= 0) return false // missing or empty server
+  if (sep >= rest.length - 2) return false // missing or empty tool
   return true
 }
 
@@ -1860,7 +1986,14 @@ export function buildSessionSummary(
     const turnSavings = turn.assistantCalls.reduce((s, c) => s + (c.savingsUSD ?? 0), 0)
 
     if (!categoryBreakdown[turn.category]) {
-      categoryBreakdown[turn.category] = { turns: 0, costUSD: 0, savingsUSD: 0, retries: 0, editTurns: 0, oneShotTurns: 0 }
+      categoryBreakdown[turn.category] = {
+        turns: 0,
+        costUSD: 0,
+        savingsUSD: 0,
+        retries: 0,
+        editTurns: 0,
+        oneShotTurns: 0,
+      }
     }
     categoryBreakdown[turn.category].turns++
     categoryBreakdown[turn.category].costUSD += turnCost
@@ -1905,7 +2038,15 @@ export function buildSessionSummary(
           costUSD: 0,
           savingsUSD: 0,
           estimatedCostUSD: 0,
-          tokens: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0, webSearchRequests: 0 },
+          tokens: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            cachedInputTokens: 0,
+            reasoningTokens: 0,
+            webSearchRequests: 0,
+          },
         }
       }
       modelBreakdown[modelKey].calls++
@@ -1983,7 +2124,9 @@ async function parseSessionFile(
     try {
       const s = await stat(filePath)
       if (s.mtimeMs < dateRange.start.getTime()) return null
-    } catch { /* fall through to normal read; missing stat shouldn't break parsing */ }
+    } catch {
+      /* fall through to normal read; missing stat shouldn't break parsing */
+    }
   }
   const entries: JournalEntry[] = []
   let hasLines = false
@@ -1992,12 +2135,8 @@ async function parseSessionFile(
   // is older than range.start - 24h without calling JSON.parse. Huge lines
   // that cannot be skipped are yielded as Buffers and compact-parsed without
   // converting the whole line into a V8 string.
-  const earlySkipThreshold = dateRange
-    ? new Date(dateRange.start.getTime() - 86_400_000).toISOString()
-    : null
-  const skipFn = earlySkipThreshold
-    ? (head: string) => shouldSkipLine(head, earlySkipThreshold)
-    : undefined
+  const earlySkipThreshold = dateRange ? new Date(dateRange.start.getTime() - 86_400_000).toISOString() : null
+  const skipFn = earlySkipThreshold ? (head: string) => shouldSkipLine(head, earlySkipThreshold) : undefined
 
   for await (const line of readSessionLines(filePath, skipFn, { largeLineAsBuffer: true })) {
     hasLines = true
@@ -2078,7 +2217,9 @@ export async function readAgentType(filePath: string): Promise<string | undefine
   try {
     const t = (JSON.parse(await readFile(metaPath, 'utf8')) as { agentType?: unknown }).agentType
     if (typeof t === 'string' && t.trim()) return t.trim().slice(0, 100)
-  } catch { /* missing or unreadable meta */ }
+  } catch {
+    /* missing or unreadable meta */
+  }
   // Workflow agents always live under `subagents/workflows/`, so fall back to that
   // even when the meta sidecar is absent.
   return /[\\/]subagents[\\/]workflows[\\/]/.test(filePath) ? 'workflow-subagent' : undefined
@@ -2099,9 +2240,23 @@ async function scanProjectDirs(
   const section = getOrCreateProviderSection(diskCache, 'claude')
   const allDiscoveredFiles = new Set<string>()
 
-  type FileInfo = { dirName: string; fp: NonNullable<Awaited<ReturnType<typeof fingerprintFile>>>; source?: SessionSourceMetadata }
-  const unchangedFiles: Array<{ filePath: string; dirName: string; source?: SessionSourceMetadata; cached: CachedFile }> = []
-  const changedFiles: Array<{ filePath: string; info: FileInfo; verdict: 'new' | 'appended' | 'modified'; append?: { cached: CachedFile; readFromOffset: number } }> = []
+  type FileInfo = {
+    dirName: string
+    fp: NonNullable<Awaited<ReturnType<typeof fingerprintFile>>>
+    source?: SessionSourceMetadata
+  }
+  const unchangedFiles: Array<{
+    filePath: string
+    dirName: string
+    source?: SessionSourceMetadata
+    cached: CachedFile
+  }> = []
+  const changedFiles: Array<{
+    filePath: string
+    info: FileInfo
+    verdict: 'new' | 'appended' | 'modified'
+    append?: { cached: CachedFile; readFromOffset: number }
+  }> = []
 
   // Delta-seam emission: per-file port-in event fired once a file has settled in
   // `section.files`. Skipped in read-only mode (nothing may be mutated). Failed
@@ -2109,7 +2264,13 @@ async function scanProjectDirs(
   // into the ledger (runScan) gate failed deltas out.
   const emitDelta = async (filePath: string, verdict: ScanDeltaVerdict, cachedFile: CachedFile): Promise<void> => {
     if (readOnly || !onDelta) return
-    await safeEmitDelta(onDelta, { provider: 'claude', envFingerprint: section.envFingerprint, filePath, verdict, cachedFile })
+    await safeEmitDelta(onDelta, {
+      provider: 'claude',
+      envFingerprint: section.envFingerprint,
+      filePath,
+      verdict,
+      cachedFile,
+    })
   }
 
   const discoverProgress = createScanProgress('scanning claude project dirs', dirs.length)
@@ -2143,7 +2304,11 @@ async function scanProjectDirs(
           })
           continue
         }
-        changedFiles.push({ filePath, info: { dirName, fp, source }, verdict: action.action === 'new' ? 'new' : 'modified' })
+        changedFiles.push({
+          filePath,
+          info: { dirName, fp, source },
+          verdict: action.action === 'new' ? 'new' : 'modified',
+        })
       }
     }
     dirsDone++
@@ -2160,9 +2325,7 @@ async function scanProjectDirs(
   for (const [filePath, cached] of Object.entries(section.files)) {
     if (allDiscoveredFiles.has(filePath)) continue
     if (!readOnly && !cached.prLinks?.length) continue
-    const dirName = cached.canonicalProjectName
-      ?? cached.turns[0]?.calls[0]?.project
-      ?? basename(dirname(filePath))
+    const dirName = cached.canonicalProjectName ?? cached.turns[0]?.calls[0]?.project ?? basename(dirname(filePath))
     unchangedFiles.push({ filePath, dirName, cached })
   }
 
@@ -2198,7 +2361,10 @@ async function scanProjectDirs(
         const tracker = { lastCompleteLineOffset: append.readFromOffset }
         const toolResultMeta = new Map<string, ToolResultMeta>()
         const sessionMeta = emptySessionMeta()
-        const newEntries = await parseClaudeEntries(filePath, tracker, append.readFromOffset, { toolResultMeta, sessionMeta })
+        const newEntries = await parseClaudeEntries(filePath, tracker, append.readFromOffset, {
+          toolResultMeta,
+          sessionMeta,
+        })
         const cached = append.cached
 
         // Straddle guard: a streamed assistant message id that first appeared in
@@ -2210,13 +2376,17 @@ async function scanProjectDirs(
         // re-parse, so on any id overlap the shortcut is abandoned and the file
         // re-parses from byte 0 (rare: ~0.3% of real files).
         const cachedIds = new Set(cached.turns.flatMap(t => t.calls.map(c => c.deduplicationKey)))
-        const straddles = newEntries !== null && newEntries.some(e => {
-          const id = getMessageId(e)
-          return id !== null && cachedIds.has(id)
-        })
+        const straddles =
+          newEntries !== null &&
+          newEntries.some(e => {
+            const id = getMessageId(e)
+            return id !== null && cachedIds.has(id)
+          })
         if (!straddles) {
           const newTurns = newEntries
-            ? parsedTurnsToCachedTurns(groupIntoTurns(dedupeStreamingMessageIds(newEntries), seenMsgIds, toolResultMeta))
+            ? parsedTurnsToCachedTurns(
+                groupIntoTurns(dedupeStreamingMessageIds(newEntries), seenMsgIds, toolResultMeta),
+              )
             : []
 
           const mergedTurns: CachedTurn[] = cached.turns.map(t => ({ ...t, calls: [...t.calls] }))
@@ -2234,7 +2404,9 @@ async function scanProjectDirs(
               if (refs.length > 0) last.prRefs = refs
               // A subagent spawned in the appended continuation belongs to this
               // same turn: union its spawn ids in for the same reason.
-              const spawnIds = Array.from(new Set([...(last.spawnToolUseIds ?? []), ...(newTurns[0]!.spawnToolUseIds ?? [])]))
+              const spawnIds = Array.from(
+                new Set([...(last.spawnToolUseIds ?? []), ...(newTurns[0]!.spawnToolUseIds ?? [])]),
+              )
               if (spawnIds.length > 0) last.spawnToolUseIds = spawnIds
               startIdx = 1
             }
@@ -2254,7 +2426,8 @@ async function scanProjectDirs(
           if (canonicalCwd === undefined && newEntries) {
             const cwd = extractCanonicalCwd(newEntries)
             workingDirectory = workingDirectory ?? cwd
-            const canonical = (cwd && !isCoworkSession(cwd, filePath)) ? await resolveCanonicalProjectPath(cwd) : undefined
+            const canonical =
+              cwd && !isCoworkSession(cwd, filePath) ? await resolveCanonicalProjectPath(cwd) : undefined
             canonicalCwd = canonical?.path
             canonicalProjectName = canonical?.isWorktree ? projectNameFromPath(canonical.path, info.dirName) : undefined
           }
@@ -2273,7 +2446,9 @@ async function scanProjectDirs(
           const mergedSidechain = cached.isSidechain === true || sessionMeta.isSidechain
           const mergedParentSessionId = cached.parentSessionId ?? sessionMeta.parentSessionId
           const mergedSpawnLinks = { ...sessionMeta.agentSpawnLinks, ...cached.agentSpawnLinks }
-          const mergedAmbiguousIds = Array.from(new Set([...(cached.ambiguousSpawnAgentIds ?? []), ...sessionMeta.ambiguousSpawnAgentIds]))
+          const mergedAmbiguousIds = Array.from(
+            new Set([...(cached.ambiguousSpawnAgentIds ?? []), ...sessionMeta.ambiguousSpawnAgentIds]),
+          )
 
           section.files[filePath] = {
             fingerprint: info.fp,
@@ -2308,11 +2483,15 @@ async function scanProjectDirs(
       const toolResultMeta = new Map<string, ToolResultMeta>()
       const sessionMeta = emptySessionMeta()
       const entries = await parseClaudeEntries(filePath, tracker, undefined, { toolResultMeta, sessionMeta })
-      if (!entries) { filesDone++; await parseProgress.tick(filesDone); continue }
+      if (!entries) {
+        filesDone++
+        await parseProgress.tick(filesDone)
+        continue
+      }
 
       const turns = groupIntoTurns(dedupeStreamingMessageIds(entries), seenMsgIds, toolResultMeta)
       const cwd = extractCanonicalCwd(entries)
-      const canonical = (cwd && !isCoworkSession(cwd, filePath)) ? await resolveCanonicalProjectPath(cwd) : undefined
+      const canonical = cwd && !isCoworkSession(cwd, filePath) ? await resolveCanonicalProjectPath(cwd) : undefined
       section.files[filePath] = {
         fingerprint: info.fp,
         lastCompleteLineOffset: tracker.lastCompleteLineOffset,
@@ -2326,8 +2505,12 @@ async function scanProjectDirs(
         ...(sessionMeta.prLinks.length > 0 ? { prLinks: sessionMeta.prLinks } : {}),
         ...(sessionMeta.isSidechain ? { isSidechain: true } : {}),
         ...(sessionMeta.parentSessionId ? { parentSessionId: sessionMeta.parentSessionId } : {}),
-        ...(Object.keys(sessionMeta.agentSpawnLinks).length > 0 ? { agentSpawnLinks: sessionMeta.agentSpawnLinks } : {}),
-        ...(sessionMeta.ambiguousSpawnAgentIds.length > 0 ? { ambiguousSpawnAgentIds: sessionMeta.ambiguousSpawnAgentIds } : {}),
+        ...(Object.keys(sessionMeta.agentSpawnLinks).length > 0
+          ? { agentSpawnLinks: sessionMeta.agentSpawnLinks }
+          : {}),
+        ...(sessionMeta.ambiguousSpawnAgentIds.length > 0
+          ? { ambiguousSpawnAgentIds: sessionMeta.ambiguousSpawnAgentIds }
+          : {}),
       }
       ;(diskCache as { _dirty?: boolean })._dirty = true
     } catch (err) {
@@ -2385,11 +2568,24 @@ async function scanProjectDirs(
 /** The report-era query-time assembly for Claude (see the gate above). */
 async function buildClaudeProjectSummaries(
   unchangedFiles: Array<{ filePath: string; dirName: string; source?: SessionSourceMetadata; cached: CachedFile }>,
-  changedFiles: Array<{ filePath: string; info: { dirName: string; source?: SessionSourceMetadata }; verdict: 'new' | 'appended' | 'modified' }>,
+  changedFiles: Array<{
+    filePath: string
+    info: { dirName: string; source?: SessionSourceMetadata }
+    verdict: 'new' | 'appended' | 'modified'
+  }>,
   section: ProviderSection,
   dateRange?: DateRange,
 ): Promise<ProjectSummary[]> {
-  const projectMap = new Map<string, { project: string; projectPath: string; sessions: SessionSummary[]; anchors: SessionSummary[]; dirNames: Set<string> }>()
+  const projectMap = new Map<
+    string,
+    {
+      project: string
+      projectPath: string
+      sessions: SessionSummary[]
+      anchors: SessionSummary[]
+      dirNames: Set<string>
+    }
+  >()
 
   const allFiles = [
     ...unchangedFiles.map(f => ({ filePath: f.filePath, dirName: f.dirName, source: f.source })),
@@ -2487,12 +2683,16 @@ async function buildClaudeProjectSummaries(
     if (Object.keys(spawnPrSets).length > 0) session.spawnPrSets = spawnPrSets
 
     if (session.apiCalls > 0 || anchorOnly) {
-      const projectKey = cachedFile.canonicalCwd
-        ? normalizeProjectPathKey(cachedFile.canonicalCwd)
-        : `slug:${dirName}`
+      const projectKey = cachedFile.canonicalCwd ? normalizeProjectPathKey(cachedFile.canonicalCwd) : `slug:${dirName}`
       const existing = projectMap.get(projectKey)
       // An anchor (no in-range spend) goes into a separate bucket, never `sessions`.
-      const target = existing ?? { project: projectName, projectPath, sessions: [], anchors: [], dirNames: new Set([dirName]) }
+      const target = existing ?? {
+        project: projectName,
+        projectPath,
+        sessions: [],
+        anchors: [],
+        dirNames: new Set([dirName]),
+      }
       if (anchorOnly) target.anchors.push(session)
       else target.sessions.push(session)
       target.dirNames.add(dirName)
@@ -2533,7 +2733,12 @@ async function buildClaudeProjectSummaries(
 /// `totalProxiedCostUSD` (subscription-covered). All ProjectSummary callers go
 /// through here so the rule stays consistent across the fresh, cached, and
 /// date/day-filtered paths.
-function summarizeProject(project: string, projectPath: string, sessions: SessionSummary[], anchors: SessionSummary[] = []): ProjectSummary {
+function summarizeProject(
+  project: string,
+  projectPath: string,
+  sessions: SessionSummary[],
+  anchors: SessionSummary[] = [],
+): ProjectSummary {
   const totalCostUSD = sessions.reduce((s, sess) => s + sess.totalCostUSD, 0)
   return {
     project,
@@ -2660,7 +2865,17 @@ function providerCallToCachedCall(call: ParsedProviderCall): CachedCall {
       webSearchRequests: call.webSearchRequests,
       cacheCreationOneHourTokens: 0,
     },
-    costUSD: (call.provider === 'mistral-vibe' || call.provider === 'antigravity' || call.provider === 'devin' || call.provider === 'vercel-gateway' || call.provider === 'hermes' || call.provider === 'kiro' || call.provider === 'codewhale' || call.provider === 'quickdesk') ? call.costUSD : undefined,
+    costUSD:
+      call.provider === 'mistral-vibe' ||
+      call.provider === 'antigravity' ||
+      call.provider === 'devin' ||
+      call.provider === 'vercel-gateway' ||
+      call.provider === 'hermes' ||
+      call.provider === 'kiro' ||
+      call.provider === 'codewhale' ||
+      call.provider === 'quickdesk'
+        ? call.costUSD
+        : undefined,
     isEstimated: call.costIsEstimated || undefined,
     speed: call.speed,
     timestamp: call.timestamp,
@@ -2790,13 +3005,16 @@ function providerCallsToCachedTurns(calls: ParsedProviderCall[]): CachedTurn[] {
 
 function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
   const u = call.usage
-  const outputForCost = call.provider === 'claude'
-    ? u.outputTokens
-    : u.outputTokens + u.reasoningTokens
+  const outputForCost = call.provider === 'claude' ? u.outputTokens : u.outputTokens + u.reasoningTokens
   const costUSD = calculateCost(
-    call.model, u.inputTokens, outputForCost,
-    u.cacheCreationInputTokens, u.cacheReadInputTokens,
-    u.webSearchRequests, call.speed, u.cacheCreationOneHourTokens,
+    call.model,
+    u.inputTokens,
+    outputForCost,
+    u.cacheCreationInputTokens,
+    u.cacheReadInputTokens,
+    u.webSearchRequests,
+    call.speed,
+    u.cacheCreationOneHourTokens,
   )
   return applyLocalModelSavings({
     provider: call.provider,
@@ -2837,11 +3055,13 @@ export function cachedTurnToClassified(turn: CachedTurn, resolvedBranch?: string
   // Re-extract when the cached turn predates PR capture (or a narrower URL
   // shape): the user message plus every call's executed commands, so already
   // cached sessions gain the broader detection without a re-parse.
-  const prRefs = turn.prRefs?.length ? turn.prRefs : extractPrUrlsFromProviderCall({
-    userMessage: turn.userMessage,
-    bashCommands: turn.calls.flatMap(c => c.bashCommands ?? []),
-    toolSequence: turn.calls.flatMap(c => c.toolSequence ?? []),
-  })
+  const prRefs = turn.prRefs?.length
+    ? turn.prRefs
+    : extractPrUrlsFromProviderCall({
+        userMessage: turn.userMessage,
+        bashCommands: turn.calls.flatMap(c => c.bashCommands ?? []),
+        toolSequence: turn.calls.flatMap(c => c.toolSequence ?? []),
+      })
   const parsed: ParsedTurn = {
     userMessage: turn.userMessage,
     assistantCalls: turn.calls.map(cachedCallToApiCall),
@@ -2880,7 +3100,10 @@ function mergeBoundaryCalls(cachedCalls: CachedCall[], newCalls: CachedCall[]): 
   for (let i = 0; i < combined.length; i++) {
     const call = combined[i]!
     const key = call.deduplicationKey
-    if (key.startsWith('claude:')) { result.push(call); continue }
+    if (key.startsWith('claude:')) {
+      result.push(call)
+      continue
+    }
     if (lastIdx.get(key) !== i) continue
     if (firstIdx.get(key) !== i) {
       result.push({ ...call, timestamp: combined[firstIdx.get(key)!]!.timestamp })
@@ -2950,9 +3173,7 @@ function cachedFileNeedsProviderReparse(providerName: string, sourcePath: string
 
   if (providerName !== 'gemini') return false
 
-  return cached.turns.some(turn =>
-    turn.calls.some(call => call.deduplicationKey === `gemini:${turn.sessionId}`),
-  )
+  return cached.turns.some(turn => turn.calls.some(call => call.deduplicationKey === `gemini:${turn.sessionId}`))
 }
 
 const warnedProviderReadFailures = new Set<string>()
@@ -3051,7 +3272,11 @@ export type ScanProgressEvent =
 
 export function emitScanProgress(event: ScanProgressEvent): void {
   if (process.env['WATCHTOWER_PROGRESS'] !== '1') return
-  try { process.stderr.write(`${PROGRESS_LINE_PREFIX}${JSON.stringify(event)}\n`) } catch { /* stderr closed */ }
+  try {
+    process.stderr.write(`${PROGRESS_LINE_PREFIX}${JSON.stringify(event)}\n`)
+  } catch {
+    /* stderr closed */
+  }
 }
 
 // Minimum spacing between partial-progress saves during a cold parse. Low enough
@@ -3095,7 +3320,11 @@ async function parseProviderSources(
   const allDiscoveredFiles = new Set<string>()
   const servedSources = [...sources]
 
-  type SourceInfo = { source: SessionSource; fp: NonNullable<Awaited<ReturnType<typeof fingerprintFile>>>; verdict: 'new' | 'modified' }
+  type SourceInfo = {
+    source: SessionSource
+    fp: NonNullable<Awaited<ReturnType<typeof fingerprintFile>>>
+    verdict: 'new' | 'modified'
+  }
   const unchangedSources: Array<{ source: SessionSource; cached: CachedFile }> = []
   const changedSources: SourceInfo[] = []
 
@@ -3103,7 +3332,12 @@ async function parseProviderSources(
   // in `section.files`. Skipped in read-only mode; failed files are forwarded so
   // scan metadata can count them (ledger consumers gate them out). Durable
   // providers mark the delta so the store never deletes already-ported rows.
-  const emitProviderDelta = async (path: string, verdict: ScanDeltaVerdict, cachedFile: CachedFile, source?: SessionSource): Promise<void> => {
+  const emitProviderDelta = async (
+    path: string,
+    verdict: ScanDeltaVerdict,
+    cachedFile: CachedFile,
+    source?: SessionSource,
+  ): Promise<void> => {
     if (readOnly || !onDelta) return
     await safeEmitDelta(onDelta, {
       provider: providerName,
@@ -3146,7 +3380,13 @@ async function parseProviderSources(
     // A cached parse failure at this same fingerprint stays skipped — don't
     // re-read a file that already threw and hasn't changed. It re-parses only
     // when the file changes (then `reconcileFile` reports non-'unchanged').
-    if (cached && !forceEvidenceReparse && (readOnly || (action.action === 'unchanged' && (cached.failed || !cachedFileNeedsProviderReparse(providerName, source.path, cached))))) {
+    if (
+      cached &&
+      !forceEvidenceReparse &&
+      (readOnly ||
+        (action.action === 'unchanged' &&
+          (cached.failed || !cachedFileNeedsProviderReparse(providerName, source.path, cached))))
+    ) {
       unchangedSources.push({ source, cached })
     } else if (!readOnly) {
       changedSources.push({ source, fp, verdict: action.action === 'new' ? 'new' : 'modified' })
@@ -3229,12 +3469,8 @@ async function parseProviderSources(
         if (provider.durableSources) {
           const existingEntry = section.files[source.path]
           if (existingEntry) {
-            const existingKeys = new Set(
-              existingEntry.turns.flatMap(t => t.calls.map(c => c.deduplicationKey))
-            )
-            const newTurns = turns.filter(t =>
-              t.calls.every(c => !existingKeys.has(c.deduplicationKey))
-            )
+            const existingKeys = new Set(existingEntry.turns.flatMap(t => t.calls.map(c => c.deduplicationKey)))
+            const newTurns = turns.filter(t => t.calls.every(c => !existingKeys.has(c.deduplicationKey)))
             existingEntry.turns = [...existingEntry.turns, ...newTurns]
             existingEntry.fingerprint = fp
           } else {
@@ -3369,7 +3605,17 @@ async function parseProviderSources(
 
   // Query-time: derive SessionSummary from all cached turns.
   // Uses seenKeys (shared across providers) for cross-provider dedup.
-  const sessionMap = new Map<string, { project: string; projectPath?: string; workingDirectory?: string; turns: ClassifiedTurn[]; prLinks?: Set<string>; title?: string }>()
+  const sessionMap = new Map<
+    string,
+    {
+      project: string
+      projectPath?: string
+      workingDirectory?: string
+      turns: ClassifiedTurn[]
+      prLinks?: Set<string>
+      title?: string
+    }
+  >()
 
   for (const source of servedSources) {
     const cachedFile = section.files[source.path]
@@ -3398,7 +3644,8 @@ async function parseProviderSources(
         if (!existing.projectPath && turn.calls[0]?.projectPath) {
           existing.projectPath = turn.calls[0]!.projectPath
         }
-        if (!existing.workingDirectory && turn.calls[0]?.workingDirectory) existing.workingDirectory = turn.calls[0].workingDirectory
+        if (!existing.workingDirectory && turn.calls[0]?.workingDirectory)
+          existing.workingDirectory = turn.calls[0].workingDirectory
         if (cachedFile.prLinks?.length) {
           const links = (existing.prLinks ??= new Set())
           for (const link of cachedFile.prLinks) links.add(link)
@@ -3422,7 +3669,7 @@ async function parseProviderSources(
   // counted here so the monthly total never drops.
   if (provider.durableSources) {
     for (const [cachedPath, cachedFile] of Object.entries(section.files)) {
-      if (allDiscoveredFiles.has(cachedPath)) continue  // already counted above
+      if (allDiscoveredFiles.has(cachedPath)) continue // already counted above
 
       for (const turn of cachedFile.turns) {
         const hasDup = turn.calls.some(c => seenKeys.has(c.deduplicationKey))
@@ -3448,7 +3695,12 @@ async function parseProviderSources(
             existingEntry.projectPath = turn.calls[0]!.projectPath
           }
         } else {
-          sessionMap.set(key, { project, projectPath: turn.calls[0]?.projectPath, workingDirectory: turn.calls[0]?.workingDirectory, turns: [classified] })
+          sessionMap.set(key, {
+            project,
+            projectPath: turn.calls[0]?.projectPath,
+            workingDirectory: turn.calls[0]?.workingDirectory,
+            turns: [classified],
+          })
         }
       }
     }
@@ -3613,7 +3865,11 @@ function recomputeRangeStartPrRefs(original: SessionSummary, sliceStartMs: numbe
     const tMs = new Date(ts).getTime()
     if (Number.isNaN(tMs) || tMs >= sliceStartMs) continue
     const key = [...turn.prRefs].sort().join(',')
-    if (tMs > bestMs || (tMs === bestMs && key > bestKey)) { bestMs = tMs; bestKey = key; current = turn.prRefs }
+    if (tMs > bestMs || (tMs === bestMs && key > bestKey)) {
+      bestMs = tMs
+      bestKey = key
+      current = turn.prRefs
+    }
   }
   return current
 }
@@ -3648,7 +3904,10 @@ function seedFilteredTurnsPerDay(original: SessionSummary, filteredTurns: Classi
       lastDay = day
       if (!turn.prRefs?.length) {
         const carried = recomputeRangeStartPrRefs(original, new Date(`${day}T00:00:00`).getTime())
-        if (carried?.length) { out.push({ ...turn, prRefs: carried }); continue }
+        if (carried?.length) {
+          out.push({ ...turn, prRefs: carried })
+          continue
+        }
       }
     }
     out.push(turn)
@@ -3686,7 +3945,13 @@ export function filterProjectsByDays(projects: ProjectSummary[], days: Set<strin
         continue
       }
       const seeded = seedFilteredTurnsPerDay(session, turns)
-      const rebuilt = buildSessionSummary(session.sessionId, session.project, seeded, session.mcpInventory, session.source)
+      const rebuilt = buildSessionSummary(
+        session.sessionId,
+        session.project,
+        seeded,
+        session.mcpInventory,
+        session.source,
+      )
       carryLinkageFields(rebuilt, session)
       if (!Number.isNaN(sliceStartMs)) applyRecomputedRangeStart(rebuilt, session, sliceStartMs)
       // Identity of the ORIGINAL (pre-filter) session: a duplicate anchor matches the
@@ -3719,7 +3984,8 @@ export function mergeProjectsByCrossProviderKey(projects: ProjectSummary[]): Map
     const existing = mergedMap.get(key)
     if (existing) {
       existing.sessions.push(...p.sessions)
-      if (p.subagentAnchors?.length) existing.subagentAnchors = [...(existing.subagentAnchors ?? []), ...p.subagentAnchors]
+      if (p.subagentAnchors?.length)
+        existing.subagentAnchors = [...(existing.subagentAnchors ?? []), ...p.subagentAnchors]
       existing.totalCostUSD += p.totalCostUSD
       existing.totalEstimatedCostUSD = (existing.totalEstimatedCostUSD ?? 0) + (p.totalEstimatedCostUSD ?? 0)
       existing.totalApiCalls += p.totalApiCalls
@@ -3779,7 +4045,10 @@ export function correlateCrossProviderPrSessions(projects: ProjectSummary[]): vo
   // mutating the child. This lets a Codex/Gemini/etc. review launched inside a
   // Claude subagent inherit the parent turn's PR while the subagent itself still
   // folds exactly once under the existing accounting model.
-  for (const resolved of resolveSubagentAttribution(sessions, projects.flatMap(p => p.subagentAnchors ?? [])).values()) {
+  for (const resolved of resolveSubagentAttribution(
+    sessions,
+    projects.flatMap(p => p.subagentAnchors ?? []),
+  ).values()) {
     for (const child of resolved) {
       // A multi-PR spawn set is valid for folding the child's own cost, but is
       // too broad to identify which PR an independently saved nested review was
@@ -3804,7 +4073,7 @@ export function correlateCrossProviderPrSessions(projects: ProjectSummary[]): vo
       for (const call of turn.assistantCalls) {
         const commands = (call.toolSequence ?? [])
           .flat()
-          .map(tool => typeof tool.command === 'string' ? normalizedPrompt(tool.command) : '')
+          .map(tool => (typeof tool.command === 'string' ? normalizedPrompt(tool.command) : ''))
           .filter(command => command.length > 0)
         if (commands.length === 0) continue
         const atMs = Date.parse(call.timestamp || turn.timestamp)
@@ -3818,17 +4087,16 @@ export function correlateCrossProviderPrSessions(projects: ProjectSummary[]): vo
   const LAUNCH_WINDOW_MS = 15 * 60 * 1000
   for (const session of candidates) {
     const provider = summaryProvider(session)
-    const prompt = session.turns
-      .map(t => normalizedPrompt(t.userMessage))
-      .find(text => text.length >= PROMPT_MIN)
+    const prompt = session.turns.map(t => normalizedPrompt(t.userMessage)).find(text => text.length >= PROMPT_MIN)
     if (!prompt) continue
     const prefix = prompt.slice(0, PROMPT_PREFIX)
     const startedMs = Date.parse(session.firstTimestamp)
     if (!Number.isFinite(startedMs)) continue
-    const matches = launches.filter(launch =>
-      launch.provider !== provider
-      && Math.abs(launch.atMs - startedMs) <= LAUNCH_WINDOW_MS
-      && launch.commands.some(command => command.includes(prefix))
+    const matches = launches.filter(
+      launch =>
+        launch.provider !== provider &&
+        Math.abs(launch.atMs - startedMs) <= LAUNCH_WINDOW_MS &&
+        launch.commands.some(command => command.includes(prefix)),
     )
     const refSets = new Map(matches.map(m => [m.refs.slice().sort().join('\0'), m.refs]))
     if (refSets.size === 1) {
@@ -3863,9 +4131,7 @@ export function filterProjectsByClaudeConfigSource(projects: ProjectSummary[], s
   for (const project of projects) {
     // Match by source id across both claude-config and claude-desktop kinds so
     // the Claude Desktop bucket is selectable too.
-    const sessions = project.sessions.filter(session =>
-      session.source?.id === sourceId
-    )
+    const sessions = project.sessions.filter(session => session.source?.id === sourceId)
     // Anchors get the SAME source scoping as sessions (a config-source filter is a
     // provenance filter, not a date filter), so an anchor stays only with its own
     // config's children.
@@ -3891,7 +4157,13 @@ export function filterProjectsByDateRange(projects: ProjectSummary[], dateRange:
         if (isSpawnParent(session)) anchors.push(session)
         continue
       }
-      const rebuilt = buildSessionSummary(session.sessionId, session.project, turns, session.mcpInventory, session.source)
+      const rebuilt = buildSessionSummary(
+        session.sessionId,
+        session.project,
+        turns,
+        session.mcpInventory,
+        session.source,
+      )
       carryLinkageFields(rebuilt, session)
       applyRecomputedRangeStart(rebuilt, session, sliceStartMs)
       survivingIdentities.add(sessionIdentity(session))
@@ -3961,7 +4233,15 @@ export async function parseAllSessions(
     // Reload only after ownership is canonical; this closes the lost-update
     // window between the pre-gate read and the holder's completed publication.
     diskCache = await loadCache()
-    return await runParse(key, diskCache, dateRange, providerFilter, { refreshLock: refresh.handle }, onDelta, onUnparsed)
+    return await runParse(
+      key,
+      diskCache,
+      dateRange,
+      providerFilter,
+      { refreshLock: refresh.handle },
+      onDelta,
+      onUnparsed,
+    )
   } catch (err) {
     if (!(err instanceof RefreshFenceLostError) && !(err instanceof RefreshPublicationUnavailableError)) throw err
     return runParse(key, await loadCache(), dateRange, providerFilter, { readOnly: true }, onDelta, onUnparsed)
@@ -4013,26 +4293,41 @@ async function runParse(
     if (!(diskCache as { _dirty?: boolean })._dirty) return
     if (Date.now() - lastSaveAt < PROGRESS_SAVE_THROTTLE_MS) return
     lastSaveAt = Date.now()
-    try { await saveCache(diskCache) } catch { /* best-effort partial save */ }
+    try {
+      await saveCache(diskCache)
+    } catch {
+      /* best-effort partial save */
+    }
   }
 
-  emitScanProgress({ kind: 'providers', cold: isCold, providers: [
-    ...(claudeSources.length > 0 ? ['claude'] : []),
-    ...providerGroups.keys(),
-  ] })
+  emitScanProgress({
+    kind: 'providers',
+    cold: isCold,
+    providers: [...(claudeSources.length > 0 ? ['claude'] : []), ...providerGroups.keys()],
+  })
 
   const claudeDirs = claudeSources.map(s => ({
     path: s.path,
     name: s.project,
-    source: s.sourceId && s.sourceLabel && s.sourcePath && s.sourceKind
-      ? { id: s.sourceId, label: s.sourceLabel, path: s.sourcePath, kind: s.sourceKind }
-      : undefined,
+    source:
+      s.sourceId && s.sourceLabel && s.sourcePath && s.sourceKind
+        ? { id: s.sourceId, label: s.sourceLabel, path: s.sourcePath, kind: s.sourceKind }
+        : undefined,
   }))
   if (claudeSources.length > 0) emitScanProgress({ kind: 'provider', provider: 'claude', state: 'start' })
   let claudeProjects: ProjectSummary[] = []
   try {
-    claudeProjects = await scanProjectDirs(claudeDirs, seenMsgIds, diskCache, dateRange, saveProgress, readOnly, onDelta)
-    if (claudeSources.length > 0) emitScanProgress({ kind: 'provider', provider: 'claude', state: 'done', files: claudeSources.length })
+    claudeProjects = await scanProjectDirs(
+      claudeDirs,
+      seenMsgIds,
+      diskCache,
+      dateRange,
+      saveProgress,
+      readOnly,
+      onDelta,
+    )
+    if (claudeSources.length > 0)
+      emitScanProgress({ kind: 'provider', provider: 'claude', state: 'done', files: claudeSources.length })
   } catch (err) {
     if (!isPermissionError(err)) throw err
     queueLogRecord({
@@ -4047,7 +4342,16 @@ async function runParse(
   for (const [providerName, sources] of providerGroups) {
     emitScanProgress({ kind: 'provider', provider: providerName, state: 'start' })
     try {
-      const projects = await parseProviderSources(providerName, sources, seenKeys, diskCache, dateRange, readOnly, onDelta, onUnparsed)
+      const projects = await parseProviderSources(
+        providerName,
+        sources,
+        seenKeys,
+        diskCache,
+        dateRange,
+        readOnly,
+        onDelta,
+        onUnparsed,
+      )
       emitScanProgress({ kind: 'provider', provider: providerName, state: 'done', files: sources.length })
       otherProjects.push(...projects)
     } catch (err) {
@@ -4080,7 +4384,16 @@ async function runParse(
     // constant — both checks are O(1) and avoid a getProvider() dynamic-import
     // round-trip for every unprocessed provider in the disk cache.
     if (!section.durable && !DURABLE_PROVIDER_NAMES.has(providerName)) continue
-    const projects = await parseProviderSources(providerName, [], seenKeys, diskCache, dateRange, readOnly, onDelta, onUnparsed)
+    const projects = await parseProviderSources(
+      providerName,
+      [],
+      seenKeys,
+      diskCache,
+      dateRange,
+      readOnly,
+      onDelta,
+      onUnparsed,
+    )
     otherProjects.push(...projects)
   }
 
@@ -4116,15 +4429,16 @@ async function runParse(
   //    function only operates on call.projectPath, which Codex doesn't set.
   //    Resolve at the ProjectSummary level here: prepend '/' if needed to get
   //    an absolute path, then run the same worktree-detection logic.
-  const resolvedOtherProjects = await Promise.all(otherProjects.map(async p => {
-    const absPath = p.projectPath.startsWith('/') || p.projectPath.startsWith('\\')
-      ? p.projectPath
-      : '/' + p.projectPath
-    const canonical = await resolveCanonicalProjectPath(absPath)
-    // Skip if path is unchanged: same location, not a worktree, not a subdir
-    if (!canonical.isWorktree && canonical.path === absPath.replace(/[/\\]+$/, '')) return p
-    return { ...p, project: projectNameFromPath(canonical.path, p.project), projectPath: canonical.path }
-  }))
+  const resolvedOtherProjects = await Promise.all(
+    otherProjects.map(async p => {
+      const absPath =
+        p.projectPath.startsWith('/') || p.projectPath.startsWith('\\') ? p.projectPath : '/' + p.projectPath
+      const canonical = await resolveCanonicalProjectPath(absPath)
+      // Skip if path is unchanged: same location, not a worktree, not a subdir
+      if (!canonical.isWorktree && canonical.path === absPath.replace(/[/\\]+$/, '')) return p
+      return { ...p, project: projectNameFromPath(canonical.path, p.project), projectPath: canonical.path }
+    }),
+  )
 
   const mergedMap = mergeProjectsByCrossProviderKey([...claudeProjects, ...resolvedOtherProjects])
 

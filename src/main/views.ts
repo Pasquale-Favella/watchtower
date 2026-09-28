@@ -2,7 +2,12 @@ import { sessionRowFromSummary, type SessionRow as ReportSessionRow } from './pi
 import { isProxiedPath } from './pipeline/models.js'
 import { CATEGORY_LABELS } from './pipeline/types.js'
 import type { ProjectSummary, SessionSummary, TaskCategory } from './pipeline/types.js'
-import { buildSessionRows, buildSessionSummaries, groupSummariesIntoProjects, sessionProjectKey } from './store/aggregate.js'
+import {
+  buildSessionRows,
+  buildSessionSummaries,
+  groupSummariesIntoProjects,
+  sessionProjectKey,
+} from './store/aggregate.js'
 import type { LedgerStore } from './store/ledger.js'
 import {
   analyticalViewsSchema,
@@ -72,7 +77,7 @@ function analyticalFrom(dashboard: DashboardViews, sessions: SessionSummary[]): 
     subagents: Array.from(subagentSum.entries())
       .filter(([, s]) => s.cost !== 0 || s.calls !== 0)
       .map(([name, s]) => ({ name, calls: s.calls, cost: s.cost, savingsUSD: s.savingsUSD }))
-      .sort(byCost)
+      .sort(byCost),
   }
 }
 
@@ -107,7 +112,7 @@ function searchSessionsCore(store: LedgerStore, term: string): SearchHit[] {
         provider,
         timestamp,
         kind,
-        snippet
+        snippet,
       })
     }
     for (const turn of session.turns) {
@@ -182,7 +187,7 @@ function buildProjectRowsCore(store: LedgerStore): ProjectRow[] {
  */
 export function querySessionRowsFromLedger(
   store: LedgerStore,
-  filter: { project?: string; since?: string; until?: string }
+  filter: { project?: string; since?: string; until?: string },
 ): SessionRow[] {
   const sinceMs = filter.since ? new Date(filter.since).getTime() : Number.NEGATIVE_INFINITY
   const untilMs = filter.until ? new Date(filter.until).getTime() : Number.POSITIVE_INFINITY
@@ -223,7 +228,7 @@ function sessionDetailFromSummary(session: SessionSummary): SessionDetail {
     apiCalls: session.apiCalls,
     prLinks: session.prLinks ?? [],
     modelBreakdown: Object.fromEntries(
-      Object.entries(session.modelBreakdown).map(([model, b]) => [model, { calls: b.calls, costUSD: b.costUSD }])
+      Object.entries(session.modelBreakdown).map(([model, b]) => [model, { calls: b.calls, costUSD: b.costUSD }]),
     ),
     turns: session.turns.map(turn => ({
       timestamp: turn.timestamp,
@@ -250,10 +255,10 @@ function sessionDetailFromSummary(session: SessionSummary): SessionDetail {
           outputTokens: call.usage.outputTokens,
           reasoningTokens: call.usage.reasoningTokens,
           cacheReadInputTokens: call.usage.cacheReadInputTokens,
-          cacheCreationInputTokens: call.usage.cacheCreationInputTokens
-        }
-      }))
-    }))
+          cacheCreationInputTokens: call.usage.cacheCreationInputTokens,
+        },
+      })),
+    })),
   }
 }
 
@@ -327,7 +332,9 @@ function buildDashboardCore(
   }
 
   for (const session of sessions) {
-    for (const [category, value] of Object.entries(session.categoryBreakdown) as Array<[TaskCategory, { turns: number; costUSD: number }]>) {
+    for (const [category, value] of Object.entries(session.categoryBreakdown) as Array<
+      [TaskCategory, { turns: number; costUSD: number }]
+    >) {
       const sum = categorySum.get(category) ?? emptySum()
       sum.cost += value.costUSD
       sum.turns += value.turns
@@ -346,7 +353,10 @@ function buildDashboardCore(
     costOverTime: Array.from(costByDay.entries())
       .map(([date, cost]) => ({ date, cost }))
       .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
-    byProvider: toEntry<DashboardViews['byProvider'][number]>(providerSum).map(e => ({ ...e, sessions: providerSum.get(e.name)!.sessions })),
+    byProvider: toEntry<DashboardViews['byProvider'][number]>(providerSum).map(e => ({
+      ...e,
+      sessions: providerSum.get(e.name)!.sessions,
+    })),
     byModel: toEntry<DashboardViews['byModel'][number]>(modelSum),
     byProject: toEntry<DashboardViews['byProject'][number]>(projectSum).map(e => ({
       ...e,

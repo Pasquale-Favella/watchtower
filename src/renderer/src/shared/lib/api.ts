@@ -32,11 +32,7 @@ import {
   type ModelsPayload,
   type PriceOverride,
 } from '../../../../shared/schemas/models.js'
-import {
-  comparePayloadSchema,
-  type ComparePair,
-  type ComparePayload,
-} from '../../../../shared/schemas/compare.js'
+import { comparePayloadSchema, type ComparePair, type ComparePayload } from '../../../../shared/schemas/compare.js'
 import { optimizePayloadSchema, type OptimizePayload } from '../../../../shared/schemas/optimize.js'
 import { yieldPayloadSchema, type YieldPayload } from '../../../../shared/schemas/yield.js'
 import {
@@ -50,10 +46,7 @@ import {
   type SkillsSaveResult,
   type SkillsThresholds,
 } from '../../../../shared/schemas/skills.js'
-import {
-  pullRequestsPayloadSchema,
-  type PullRequestsPayload,
-} from '../../../../shared/schemas/pull-requests.js'
+import { pullRequestsPayloadSchema, type PullRequestsPayload } from '../../../../shared/schemas/pull-requests.js'
 import {
   pricingRefreshResultSchema,
   scanResultSchema,
@@ -64,7 +57,12 @@ import {
   type ScanStatus,
   type SettingsInfo,
 } from '../../../../shared/schemas/ipc.js'
-import { updateStatusSchema, appVersionSchema, type AppVersion, type UpdateStatus } from '../../../../shared/schemas/updates.js'
+import {
+  updateStatusSchema,
+  appVersionSchema,
+  type AppVersion,
+  type UpdateStatus,
+} from '../../../../shared/schemas/updates.js'
 import {
   activeCurrencySchema,
   currencyOptionSchema,
@@ -82,12 +80,12 @@ import {
 } from '../../../../shared/schemas/ledger-mcp.js'
 import {
   coachHarnessesResultSchema,
-    coachLoginTerminalResultSchema,
+  coachLoginTerminalResultSchema,
   coachInspectResultSchema,
   coachRunResultSchema,
   type CoachHarnessRow,
   type CoachHarnessesResult,
-    type CoachLoginTerminalResult,
+  type CoachLoginTerminalResult,
   type CoachInspectRequest,
   type CoachInspectResult,
   type CoachRunRequest,
@@ -140,9 +138,13 @@ export function parseEvent<T>(schema: z.ZodType<T>, label: string, raw: unknown)
 
 function forwardTripwireNotice(label: string, location: string): void {
   try {
-    const api = (globalThis as unknown as { api?: { notifyNotice?: (label: string, location: string) => Promise<unknown> } }).api
+    const api = (
+      globalThis as unknown as { api?: { notifyNotice?: (label: string, location: string) => Promise<unknown> } }
+    ).api
     void api?.notifyNotice?.(label, location)?.catch(() => {})
-  } catch { /* logging must never break rendering */ }
+  } catch {
+    /* logging must never break rendering */
+  }
 }
 
 const okEnvelopeSchema = z.object({ ok: z.literal(true) })
@@ -160,7 +162,11 @@ export function fetchProjects(): Promise<ApiResult<ProjectRow[]>> {
   return fetchPayload('projects', z.array(projectRowSchema), () => window.api.getProjects())
 }
 
-export function fetchSessions(filter?: { project?: string; since?: string; until?: string }): Promise<ApiResult<SessionRow[]>> {
+export function fetchSessions(filter?: {
+  project?: string
+  since?: string
+  until?: string
+}): Promise<ApiResult<SessionRow[]>> {
   return fetchPayload('sessions', z.array(sessionRowSchema), () => window.api.getSessions(filter))
 }
 
@@ -308,7 +314,9 @@ export function fetchSetModelPrice(
   inputPricePerMillion: number,
   outputPricePerMillion: number,
 ): Promise<ApiResult<OkEnvelope>> {
-  return fetchPayload('price write', okEnvelopeSchema, () => window.api.setModelPrice(model, inputPricePerMillion, outputPricePerMillion))
+  return fetchPayload('price write', okEnvelopeSchema, () =>
+    window.api.setModelPrice(model, inputPricePerMillion, outputPricePerMillion),
+  )
 }
 
 export function fetchRemovePriceOverride(model: string): Promise<ApiResult<OkEnvelope>> {
@@ -324,7 +332,9 @@ export function refreshCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>
 }
 
 export function openCoachLoginTerminal(instanceId: string): Promise<ApiResult<CoachLoginTerminalResult>> {
-  return fetchPayload('coach login terminal', coachLoginTerminalResultSchema, () => window.api.openCoachLoginTerminal(instanceId))
+  return fetchPayload('coach login terminal', coachLoginTerminalResultSchema, () =>
+    window.api.openCoachLoginTerminal(instanceId),
+  )
 }
 
 export function onCoachHarnessesChanged(callback: (rows: CoachHarnessRow[]) => void): () => void {
@@ -346,4 +356,3 @@ export function fetchCoachInspect(request: CoachInspectRequest): Promise<ApiResu
 export function fetchCoachRun(request: CoachRunRequest): Promise<ApiResult<CoachRunResult>> {
   return fetchPayload('coach run', coachRunResultSchema, () => window.api.startCoachRun(request))
 }
-

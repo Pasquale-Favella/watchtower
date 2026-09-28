@@ -29,10 +29,7 @@ export async function getRepoUrl(cwd: string): Promise<string | undefined> {
  * Popola `repoUrl` su ogni progetto in parallelo (worker pool).
  * Ignora silenziosamente ogni fallimento — il repoUrl è puramente informativo.
  */
-export async function attachRepoUrls(
-  projects: ProjectSummary[],
-  concurrency = 8,
-): Promise<void> {
+export async function attachRepoUrls(projects: ProjectSummary[], concurrency = 8): Promise<void> {
   const queue = [...projects]
   const workers: Promise<void>[] = []
   for (let i = 0; i < concurrency; i++) {

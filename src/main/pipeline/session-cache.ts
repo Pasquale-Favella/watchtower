@@ -200,9 +200,7 @@ function isOptionalStringRecord(v: unknown): boolean {
 function isToolCall(v: unknown): boolean {
   if (!v || typeof v !== 'object') return false
   const o = v as Record<string, unknown>
-  return typeof o['tool'] === 'string'
-    && isOptionalString(o['file'])
-    && isOptionalString(o['command'])
+  return typeof o['tool'] === 'string' && isOptionalString(o['file']) && isOptionalString(o['command'])
 }
 
 function isToolCallArray(v: unknown): boolean {
@@ -218,71 +216,84 @@ function validateFingerprint(fp: unknown): fp is FileFingerprint {
 function validateUsage(u: unknown): u is CachedUsage {
   if (!u || typeof u !== 'object') return false
   const o = u as Record<string, unknown>
-  return isNum(o['inputTokens']) && isNum(o['outputTokens'])
-    && isNum(o['cacheCreationInputTokens']) && isNum(o['cacheReadInputTokens'])
-    && isNum(o['cachedInputTokens']) && isNum(o['reasoningTokens'])
-    && isNum(o['webSearchRequests']) && isNum(o['cacheCreationOneHourTokens'])
+  return (
+    isNum(o['inputTokens']) &&
+    isNum(o['outputTokens']) &&
+    isNum(o['cacheCreationInputTokens']) &&
+    isNum(o['cacheReadInputTokens']) &&
+    isNum(o['cachedInputTokens']) &&
+    isNum(o['reasoningTokens']) &&
+    isNum(o['webSearchRequests']) &&
+    isNum(o['cacheCreationOneHourTokens'])
+  )
 }
 
 function validateCall(c: unknown): c is CachedCall {
   if (!c || typeof c !== 'object') return false
   const o = c as Record<string, unknown>
-  return typeof o['provider'] === 'string'
-    && typeof o['model'] === 'string'
-    && typeof o['deduplicationKey'] === 'string'
-    && typeof o['timestamp'] === 'string'
-    && (o['speed'] === 'standard' || o['speed'] === 'fast')
-    && isOptionalNum(o['costUSD'])
-    && isOptionalBool(o['isEstimated'])
-    && isStringArray(o['tools'])
-    && isStringArray(o['bashCommands'])
-    && isStringArray(o['skills'])
-    && (o['subagentTypes'] === undefined || isStringArray(o['subagentTypes']))
-    && isOptionalString(o['project'])
-    && isOptionalString(o['projectPath'])
-    && isOptionalString(o['workingDirectory'])
-    && (o['toolSequence'] === undefined || (Array.isArray(o['toolSequence']) && (o['toolSequence'] as unknown[]).every(s => isToolCallArray(s))))
-    && isOptionalNum(o['locAdded'])
-    && isOptionalNum(o['locRemoved'])
-    && isOptionalBool(o['interrupted'])
-    && isOptionalBool(o['userModified'])
-    && isOptionalNum(o['toolErrors'])
-    && isOptionalNum(o['editFailed'])
-    && validateUsage(o['usage'])
+  return (
+    typeof o['provider'] === 'string' &&
+    typeof o['model'] === 'string' &&
+    typeof o['deduplicationKey'] === 'string' &&
+    typeof o['timestamp'] === 'string' &&
+    (o['speed'] === 'standard' || o['speed'] === 'fast') &&
+    isOptionalNum(o['costUSD']) &&
+    isOptionalBool(o['isEstimated']) &&
+    isStringArray(o['tools']) &&
+    isStringArray(o['bashCommands']) &&
+    isStringArray(o['skills']) &&
+    (o['subagentTypes'] === undefined || isStringArray(o['subagentTypes'])) &&
+    isOptionalString(o['project']) &&
+    isOptionalString(o['projectPath']) &&
+    isOptionalString(o['workingDirectory']) &&
+    (o['toolSequence'] === undefined ||
+      (Array.isArray(o['toolSequence']) && (o['toolSequence'] as unknown[]).every(s => isToolCallArray(s)))) &&
+    isOptionalNum(o['locAdded']) &&
+    isOptionalNum(o['locRemoved']) &&
+    isOptionalBool(o['interrupted']) &&
+    isOptionalBool(o['userModified']) &&
+    isOptionalNum(o['toolErrors']) &&
+    isOptionalNum(o['editFailed']) &&
+    validateUsage(o['usage'])
+  )
 }
 
 function validateTurn(t: unknown): t is CachedTurn {
   if (!t || typeof t !== 'object') return false
   const o = t as Record<string, unknown>
-  return typeof o['timestamp'] === 'string'
-    && typeof o['sessionId'] === 'string'
-    && typeof o['userMessage'] === 'string'
-    && isOptionalString(o['gitBranch'])
-    && (o['prRefs'] === undefined || isStringArray(o['prRefs']))
-    && (o['spawnToolUseIds'] === undefined || isStringArray(o['spawnToolUseIds']))
-    && Array.isArray(o['calls'])
-    && (o['calls'] as unknown[]).every(validateCall)
+  return (
+    typeof o['timestamp'] === 'string' &&
+    typeof o['sessionId'] === 'string' &&
+    typeof o['userMessage'] === 'string' &&
+    isOptionalString(o['gitBranch']) &&
+    (o['prRefs'] === undefined || isStringArray(o['prRefs'])) &&
+    (o['spawnToolUseIds'] === undefined || isStringArray(o['spawnToolUseIds'])) &&
+    Array.isArray(o['calls']) &&
+    (o['calls'] as unknown[]).every(validateCall)
+  )
 }
 
 function validateCachedFile(f: unknown): f is CachedFile {
   if (!f || typeof f !== 'object') return false
   const o = f as Record<string, unknown>
-  return validateFingerprint(o['fingerprint'])
-    && isOptionalNum(o['lastCompleteLineOffset'])
-    && isOptionalString(o['canonicalCwd'])
-    && isOptionalString(o['workingDirectory'])
-    && isOptionalString(o['canonicalProjectName'])
-    && isStringArray(o['mcpInventory'])
-    && isOptionalString(o['title'])
-    && (o['prLinks'] === undefined || isStringArray(o['prLinks']))
-    && isOptionalBool(o['isSidechain'])
-    && isOptionalString(o['agentType'])
-    && isOptionalBool(o['failed'])
-    && isOptionalString(o['parentSessionId'])
-    && isOptionalStringRecord(o['agentSpawnLinks'])
-    && (o['ambiguousSpawnAgentIds'] === undefined || isStringArray(o['ambiguousSpawnAgentIds']))
-    && Array.isArray(o['turns'])
-    && (o['turns'] as unknown[]).every(validateTurn)
+  return (
+    validateFingerprint(o['fingerprint']) &&
+    isOptionalNum(o['lastCompleteLineOffset']) &&
+    isOptionalString(o['canonicalCwd']) &&
+    isOptionalString(o['workingDirectory']) &&
+    isOptionalString(o['canonicalProjectName']) &&
+    isStringArray(o['mcpInventory']) &&
+    isOptionalString(o['title']) &&
+    (o['prLinks'] === undefined || isStringArray(o['prLinks'])) &&
+    isOptionalBool(o['isSidechain']) &&
+    isOptionalString(o['agentType']) &&
+    isOptionalBool(o['failed']) &&
+    isOptionalString(o['parentSessionId']) &&
+    isOptionalStringRecord(o['agentSpawnLinks']) &&
+    (o['ambiguousSpawnAgentIds'] === undefined || isStringArray(o['ambiguousSpawnAgentIds'])) &&
+    Array.isArray(o['turns']) &&
+    (o['turns'] as unknown[]).every(validateTurn)
+  )
 }
 
 function validateProviderSection(s: unknown): s is ProviderSection {
@@ -318,11 +329,15 @@ function priorCacheFile(version: number): string {
 // Lightweight top-level check: a specific prior-version cache envelope with a
 // providers object. Files are validated per-entry in adoptPriorCache so one
 // corrupt entry cannot drop every valid expired-transcript PR session.
-function isCacheEnvelope(raw: unknown, version: number): raw is { version: number; providers: Record<string, unknown> } {
+function isCacheEnvelope(
+  raw: unknown,
+  version: number,
+): raw is { version: number; providers: Record<string, unknown> } {
   if (!raw || typeof raw !== 'object') return false
   const o = raw as Record<string, unknown>
-  return o['version'] === version
-    && !!o['providers'] && typeof o['providers'] === 'object' && !Array.isArray(o['providers'])
+  return (
+    o['version'] === version && !!o['providers'] && typeof o['providers'] === 'object' && !Array.isArray(o['providers'])
+  )
 }
 
 // One-time migration on a version bump: carry forward exactly the prior-version
@@ -373,10 +388,16 @@ async function adoptNewestPriorCache(): Promise<SessionCache | null> {
   for (const version of oldestFirst) {
     const adopted = await adoptPriorCache(version)
     if (!adopted) continue
-    if (!merged) { merged = adopted; continue }
+    if (!merged) {
+      merged = adopted
+      continue
+    }
     for (const [provider, section] of Object.entries(adopted.providers)) {
       const existing = merged.providers[provider]
-      if (!existing) { merged.providers[provider] = section; continue }
+      if (!existing) {
+        merged.providers[provider] = section
+        continue
+      }
       // Newer version's entries overwrite older ones for the same source path.
       Object.assign(existing.files, section.files)
       if (section.durable) existing.durable = true
@@ -442,7 +463,7 @@ export async function saveCache(cache: SessionCache, verifyStillOwner?: () => Pr
     // The warm refresh transaction passes an ownership fence. It must be the
     // final operation before publication so a displaced writer cannot replace
     // the canonical cache with its stale snapshot.
-    if (verifyStillOwner && !await verifyStillOwner()) {
+    if (verifyStillOwner && !(await verifyStillOwner())) {
       await retryCacheFileMutation(() => unlink(tempPath))
       return false
     }
@@ -455,7 +476,9 @@ export async function saveCache(cache: SessionCache, verifyStillOwner?: () => Pr
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code
         if ((code !== 'EPERM' && code !== 'EBUSY') || attempt === 2) throw err
-        await new Promise(resolve => { setTimeout(resolve, 10 * (attempt + 1)) })
+        await new Promise(resolve => {
+          setTimeout(resolve, 10 * (attempt + 1))
+        })
       }
     }
     if (!renamed) throw new Error('session cache rename failed')
@@ -475,7 +498,9 @@ async function retryCacheFileMutation(operation: () => Promise<void>): Promise<b
       const code = (err as NodeJS.ErrnoException).code
       if (code === 'ENOENT') return true
       if ((code !== 'EPERM' && code !== 'EBUSY') || attempt === 2) return false
-      await new Promise(resolve => { setTimeout(resolve, 10 * (attempt + 1)) })
+      await new Promise(resolve => {
+        setTimeout(resolve, 10 * (attempt + 1))
+      })
     }
   }
   return false
@@ -528,15 +553,9 @@ export async function fingerprintFile(filePath: string): Promise<FileFingerprint
 // ── Reconciliation ─────────────────────────────────────────────────────
 
 export type ReconcileAction =
-  | { action: 'unchanged' }
-  | { action: 'appended'; readFromOffset: number }
-  | { action: 'modified' }
-  | { action: 'new' }
+  { action: 'unchanged' } | { action: 'appended'; readFromOffset: number } | { action: 'modified' } | { action: 'new' }
 
-export function reconcileFile(
-  current: FileFingerprint,
-  cached: CachedFile | undefined,
-): ReconcileAction {
+export function reconcileFile(current: FileFingerprint, cached: CachedFile | undefined): ReconcileAction {
   if (!cached) return { action: 'new' }
 
   const fp = cached.fingerprint
@@ -571,15 +590,10 @@ export function reconcileFile(
 // the same dedup key with updated usage. Merge by key: keep the earliest
 // timestamp, take incoming usage/tools/bashCommands/skills (latest wins).
 
-export function mergeCallByDedupKey(
-  existing: CachedCall,
-  incoming: CachedCall,
-): CachedCall {
+export function mergeCallByDedupKey(existing: CachedCall, incoming: CachedCall): CachedCall {
   return {
     ...incoming,
-    timestamp: existing.timestamp < incoming.timestamp
-      ? existing.timestamp
-      : incoming.timestamp,
+    timestamp: existing.timestamp < incoming.timestamp ? existing.timestamp : incoming.timestamp,
   }
 }
 
@@ -639,8 +653,12 @@ function lockPath(): string {
 // belongs to another user — still alive.
 function pidLooksAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false
-  try { process.kill(pid, 0); return true }
-  catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM' }
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
 }
 
 async function readLockRecord(): Promise<LockRecord | null> {
@@ -648,7 +666,9 @@ async function readLockRecord(): Promise<LockRecord | null> {
     const parsed = JSON.parse(await readFile(lockPath(), 'utf-8')) as Partial<LockRecord>
     if (typeof parsed?.pid === 'number' && typeof parsed?.at === 'number') return { pid: parsed.pid, at: parsed.at }
     return null
-  } catch { return null }
+  } catch {
+    return null
+  }
 }
 
 async function writeOurLock(): Promise<boolean> {
@@ -656,17 +676,24 @@ async function writeOurLock(): Promise<boolean> {
     const dir = getCacheDir()
     if (!existsSync(dir)) await mkdir(dir, { recursive: true })
     const handle = await open(lockPath(), 'wx', 0o600)
-    try { await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }), { encoding: 'utf-8' }) }
-    finally { await handle.close() }
+    try {
+      await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }), { encoding: 'utf-8' })
+    } finally {
+      await handle.close()
+    }
     return true
-  } catch { return false }
+  } catch {
+    return false
+  }
 }
 
 async function removeOurLock(): Promise<void> {
   try {
     const cur = await readLockRecord()
     if (cur && cur.pid === process.pid) await unlink(lockPath())
-  } catch { /* best-effort; a leaked lock is reclaimed as stale next cold start */ }
+  } catch {
+    /* best-effort; a leaked lock is reclaimed as stale next cold start */
+  }
 }
 
 // Synchronous variant for the signal path: a handler can't await, so read + unlink
@@ -675,7 +702,9 @@ function removeOurLockSync(): void {
   try {
     const parsed = JSON.parse(readFileSync(lockPath(), 'utf-8')) as Partial<LockRecord>
     if (parsed?.pid === process.pid) unlinkSync(lockPath())
-  } catch { /* best-effort; nothing to clean or already gone */ }
+  } catch {
+    /* best-effort; nothing to clean or already gone */
+  }
 }
 
 // Arm once, only while we hold the lock: on a catchable termination (Ctrl-C, or a
@@ -697,7 +726,9 @@ function armSignalCleanup(): void {
 const releaseHandle: HydrationHandle = { waited: false, release: removeOurLock }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => { setTimeout(resolve, ms) })
+  return new Promise(resolve => {
+    setTimeout(resolve, ms)
+  })
 }
 
 /**
@@ -715,7 +746,10 @@ function sleep(ms: number): Promise<void> {
 export async function beginColdHydration(isCold: boolean): Promise<HydrationHandle> {
   if (!isCold) return NOOP_HANDLE
   try {
-    if (await writeOurLock()) { armSignalCleanup(); return releaseHandle }
+    if (await writeOurLock()) {
+      armSignalCleanup()
+      return releaseHandle
+    }
     const existing = await readLockRecord()
     const fresh = existing !== null && Date.now() - existing.at < LOCK_FRESH_MS
     if (existing && fresh && pidLooksAlive(existing.pid)) {
@@ -731,17 +765,34 @@ export async function beginColdHydration(isCold: boolean): Promise<HydrationHand
         await sleep(LOCK_POLL_MS)
         const cur = await readLockRecord()
         if (!cur) break
-        if (Date.now() - cur.at >= LOCK_FRESH_MS) { takeover = true; break }
-        if (!pidLooksAlive(cur.pid)) { takeover = true; break }
+        if (Date.now() - cur.at >= LOCK_FRESH_MS) {
+          takeover = true
+          break
+        }
+        if (!pidLooksAlive(cur.pid)) {
+          takeover = true
+          break
+        }
       }
       if (takeover) {
-        try { await unlink(lockPath()) } catch { /* another process may have; fine */ }
-        if (await writeOurLock()) { armSignalCleanup(); return releaseHandle }
+        try {
+          await unlink(lockPath())
+        } catch {
+          /* another process may have; fine */
+        }
+        if (await writeOurLock()) {
+          armSignalCleanup()
+          return releaseHandle
+        }
       }
       return { waited: true, release: async () => {} }
     }
     // Stale, dead-pid, or unreadable lock: replace it and take over.
-    try { await unlink(lockPath()) } catch { /* another process may have; fine */ }
+    try {
+      await unlink(lockPath())
+    } catch {
+      /* another process may have; fine */
+    }
     if (await writeOurLock()) return releaseHandle
     return NOOP_HANDLE
   } catch {

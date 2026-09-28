@@ -93,9 +93,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         }
 
         if (entry.type === 'user' && entry.message) {
-          const texts = (entry.message.parts ?? [])
-            .filter(p => p.text && !p.thought)
-            .map(p => p.text!)
+          const texts = (entry.message.parts ?? []).filter(p => p.text && !p.thought).map(p => p.text!)
           if (texts.length > 0) {
             pendingUserMessage = texts.join(' ').slice(0, 500)
           }

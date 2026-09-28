@@ -10,12 +10,7 @@ export type UnparsedTally = { count: number }
  * `null` so the caller can skip just that unit and keep going — a provider
  * version bump degrades that provider's extraction, never bricks the scan.
  */
-export function parseOrSkip<T>(
-  schema: z.ZodType<T>,
-  value: unknown,
-  tally: UnparsedTally,
-  context: string,
-): T | null {
+export function parseOrSkip<T>(schema: z.ZodType<T>, value: unknown, tally: UnparsedTally, context: string): T | null {
   const result = schema.safeParse(value)
   if (result.success) return result.data
   tally.count++

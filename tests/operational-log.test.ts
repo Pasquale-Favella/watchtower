@@ -21,7 +21,11 @@ import {
 let dir = ''
 
 afterEach(() => {
-  try { closeOperationalLog() } catch { /* not initialised */ }
+  try {
+    closeOperationalLog()
+  } catch {
+    /* not initialised */
+  }
   if (dir) rmSync(dir, { recursive: true, force: true })
   dir = ''
 })

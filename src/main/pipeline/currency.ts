@@ -20,10 +20,12 @@ export function isValidCurrencyCode(code: string): boolean {
 }
 
 export function getFractionDigits(code: string): number {
-  return new Intl.NumberFormat('en', {
-    style: 'currency',
-    currency: code,
-  }).resolvedOptions().maximumFractionDigits ?? 2
+  return (
+    new Intl.NumberFormat('en', {
+      style: 'currency',
+      currency: code,
+    }).resolvedOptions().maximumFractionDigits ?? 2
+  )
 }
 
 export function roundForActiveCurrency(value: number): number {

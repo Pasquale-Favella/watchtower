@@ -2,7 +2,11 @@ import { join } from 'path'
 import { homedir } from 'os'
 
 import { getShortModelName } from '../models.js'
-import { discoverSqliteSessions, createSqliteSessionParser, type SqliteProviderConfig } from './sqlite-session-parser.js'
+import {
+  discoverSqliteSessions,
+  createSqliteSessionParser,
+  type SqliteProviderConfig,
+} from './sqlite-session-parser.js'
 import { discoverOpenCodeFileSessions, createOpenCodeFileSessionParser } from './opencode-file-parser.js'
 import type { Provider, ProbeRoot, SessionSource, SessionParser } from './types.js'
 

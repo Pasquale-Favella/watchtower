@@ -9,12 +9,7 @@ export type HealthGrade = z.infer<typeof healthGradeSchema>
 export const trendSchema = z.enum(['active', 'improving'])
 export type Trend = z.infer<typeof trendSchema>
 
-export const pasteDestinationSchema = z.enum([
-  'claude-md',
-  'session-opener',
-  'prompt',
-  'shell-config',
-])
+export const pasteDestinationSchema = z.enum(['claude-md', 'session-opener', 'prompt', 'shell-config'])
 export type PasteDestination = z.infer<typeof pasteDestinationSchema>
 
 export const wasteActionSchema = z.discriminatedUnion('type', [

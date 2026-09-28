@@ -37,11 +37,9 @@ export function AboutSection() {
 
   return (
     <div>
-      <p className="text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">About</p>
+      <p className="text-muted-foreground text-[10.5px] font-semibold tracking-[0.05em] uppercase">About</p>
       <div className="mt-2 flex items-center gap-3">
-        <span className="text-[12.5px] text-foreground">
-          {version ? `Version ${version}` : '…'}
-        </span>
+        <span className="text-foreground text-[12.5px]">{version ? `Version ${version}` : '…'}</span>
         <Button
           type="button"
           variant="outline"
@@ -55,13 +53,13 @@ export function AboutSection() {
         </Button>
       </div>
       {status && (
-        <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
+        <p className="text-muted-foreground mt-1.5 text-[11px] leading-snug">
           {status.updateAvailable && status.tag ? (
             <>
               Update available: {status.latestVersion} ·{' '}
               <button
                 type="button"
-                className="inline underline decoration-brand-text/40 underline-offset-2 text-brand-text"
+                className="decoration-brand-text/40 text-brand-text inline underline underline-offset-2"
                 onClick={() => void window.api.openExternal(releasePageUrl(status.tag!))}
               >
                 Open release page <ExternalLink className="inline size-3" />
@@ -74,11 +72,11 @@ export function AboutSection() {
           )}
         </p>
       )}
-      <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
+      <p className="text-muted-foreground mt-1.5 text-[11px] leading-snug">
         Watchtower is open source —{' '}
         <button
           type="button"
-          className="inline underline decoration-brand-text/40 underline-offset-2 text-brand-text"
+          className="decoration-brand-text/40 text-brand-text inline underline underline-offset-2"
           onClick={() => void window.api.openExternal(REPO_URL)}
         >
           GitHub repository <ExternalLink className="inline size-3" />

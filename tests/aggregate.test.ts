@@ -8,11 +8,7 @@ import { calculateCost } from '../src/main/pipeline/models.js'
 import { buildSessionSummary, cachedTurnToClassified } from '../src/main/pipeline/parser.js'
 import { aggregateSessions } from '../src/main/pipeline/sessions-report.js'
 import type { ClassifiedTurn } from '../src/main/pipeline/types.js'
-import {
-  buildFixtureCachedFile,
-  buildFixtureCachedTurn,
-  FIXTURE_SOURCE_PATH,
-} from './fixtures/cached-file.js'
+import { buildFixtureCachedFile, buildFixtureCachedTurn, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
 const tempDirs: string[] = []
 
@@ -36,7 +32,9 @@ const FULL_RANGE = defaultRange(new Date('2026-08-01T00:00:00.000Z'), 60)
 
 // The OLD path's reference assembly for the same classified facts, mirroring the
 // parser's post-assembly attachments (title, prLinks, workingDirectory).
-function oldPathSummaries(cachedFile: ReturnType<typeof buildFixtureCachedFile>): ReturnType<typeof buildSessionSummaries> {
+function oldPathSummaries(
+  cachedFile: ReturnType<typeof buildFixtureCachedFile>,
+): ReturnType<typeof buildSessionSummaries> {
   const project = cachedFile.canonicalProjectName ?? 'demo-project'
   let carriedBranch: string | undefined
   const turns: ClassifiedTurn[] = cachedFile.turns.map(turn => {
@@ -268,11 +266,7 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
 
   it('an Alias matches provider-prefixed, pinned and cased variants of the stored id', () => {
     const store = makeStore()
-    const variants = [
-      'Opencode/Demo-Model@20250929',
-      'openrouter/opencode/demo-model',
-      'demo-model:thinking',
-    ]
+    const variants = ['Opencode/Demo-Model@20250929', 'openrouter/opencode/demo-model', 'demo-model:thinking']
     variants.forEach((model, i) => {
       const file = buildFixtureCachedFile()
       file.turns[0]!.calls[0]!.model = model
@@ -360,7 +354,16 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     // The report-shaped reference: the old view path projects the old-path
     // summaries (already proven byte-equal to the seam) into SessionRow[].
     const expected = aggregateSessions([
-      { project: 'demo-project', projectPath: '/workspace/demo-project', totalCostUSD: 0.42, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 1, totalProxiedCostUSD: 0, sessions: oldPathSummaries(file) },
+      {
+        project: 'demo-project',
+        projectPath: '/workspace/demo-project',
+        totalCostUSD: 0.42,
+        totalSavingsUSD: 0,
+        totalEstimatedCostUSD: 0,
+        totalApiCalls: 1,
+        totalProxiedCostUSD: 0,
+        sessions: oldPathSummaries(file),
+      },
     ])
 
     expect(actual).toEqual(expected)

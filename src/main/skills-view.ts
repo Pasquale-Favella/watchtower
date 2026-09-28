@@ -47,11 +47,29 @@ export type { SkillsPayload } from '../shared/schemas/skills.js'
  *  not a skill signal, so they never become tool-seam candidates. This is a
  *  taxonomy, not a threshold — thresholds stay app settings. */
 const PRIMITIVE_TOOLS = new Set([
-  'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash',
-  'Glob', 'Grep', 'TodoWrite', 'Task', 'Agent', 'EnterPlanMode',
-  'WebFetch', 'WebSearch', 'WebSearchTool', 'ToolSearch', 'Fetch',
-  'AttemptCompletion', 'ExitPlanMode', 'AskUserQuestion',
-  'NewFile', 'DeleteFile', 'MoveFile',
+  'Read',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+  'Bash',
+  'Glob',
+  'Grep',
+  'TodoWrite',
+  'Task',
+  'Agent',
+  'EnterPlanMode',
+  'WebFetch',
+  'WebSearch',
+  'WebSearchTool',
+  'ToolSearch',
+  'Fetch',
+  'AttemptCompletion',
+  'ExitPlanMode',
+  'AskUserQuestion',
+  'NewFile',
+  'DeleteFile',
+  'MoveFile',
 ])
 
 /** A pattern is "repeated" (opportunity-worthy) from its second occurrence. */
@@ -116,7 +134,21 @@ function sessionDate(timestamp: string): string {
 /** Mine the three seams over the scope's session summaries into per-pattern
  *  aggregates. Pure: no I/O, fully unit-testable with fixture summaries. */
 export function collectSkillCandidates(
-  summaries: Array<{ sessionId: string; project: string; turns: Array<{ timestamp: string; subCategory?: string; assistantCalls: Array<{ costUSD: number; timestamp: string; skills: string[]; bashCommands: string[]; tools: string[] }> }> }>,
+  summaries: Array<{
+    sessionId: string
+    project: string
+    turns: Array<{
+      timestamp: string
+      subCategory?: string
+      assistantCalls: Array<{
+        costUSD: number
+        timestamp: string
+        skills: string[]
+        bashCommands: string[]
+        tools: string[]
+      }>
+    }>
+  }>,
 ): CandidateAgg[] {
   const aggs = new Map<string, CandidateAgg>()
 
@@ -144,7 +176,12 @@ export function collectSkillCandidates(
     agg.turnKeys.add(event.turnKey)
     agg.costUSD += event.costUSD
     if (event.timestamp > agg.latest) agg.latest = event.timestamp
-    const session = agg.perSession.get(event.sessionId) ?? { project: event.project, date: sessionDate(event.timestamp), turns: 0, costUSD: 0 }
+    const session = agg.perSession.get(event.sessionId) ?? {
+      project: event.project,
+      date: sessionDate(event.timestamp),
+      turns: 0,
+      costUSD: 0,
+    }
     session.turns++
     session.costUSD += event.costUSD
     if (sessionDate(event.timestamp) < session.date) session.date = sessionDate(event.timestamp)
@@ -229,8 +266,7 @@ export function partitionSkillCandidates(
   const opportunities: SkillCandidate[] = []
   for (const agg of candidates) {
     const candidate = toCandidate(agg)
-    const spreadQualifies =
-      agg.sessions.size >= thresholds.spread || agg.projects.size >= thresholds.spread
+    const spreadQualifies = agg.sessions.size >= thresholds.spread || agg.projects.size >= thresholds.spread
     if (agg.frequency >= thresholds.frequency && spreadQualifies) drafts.push(candidate)
     else if (agg.frequency >= REPEATED_FREQUENCY) opportunities.push(candidate)
   }

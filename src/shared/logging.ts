@@ -29,7 +29,7 @@ export function sanitizeOperationalRecord(
     const value = fields[key]
     if (typeof value !== 'string') continue
     const trimmed = value.trim()
-    const safeValue = key === 'file' ? trimmed.split(/[\\/]/).pop() ?? '' : trimmed
+    const safeValue = key === 'file' ? (trimmed.split(/[\\/]/).pop() ?? '') : trimmed
     const capped = safeValue.slice(0, 200)
     if (capped) record[key] = capped
   }
@@ -46,9 +46,7 @@ export function errorCodeFor(err: unknown, fallback = 'failed'): string {
   // stable identifier across main/worker/sidecar paths — then fall back to
   // the Error-name slug, then the caller fallback. Main and worker must log
   // the same failure with the same `code`.
-  const errno = err && typeof err === 'object' && 'code' in err
-    ? (err as { code?: unknown }).code
-    : undefined
+  const errno = err && typeof err === 'object' && 'code' in err ? (err as { code?: unknown }).code : undefined
   if (typeof errno === 'string' && errno.trim()) return errno.trim()
   if (err instanceof Error && err.name && err.name !== 'Error') {
     const slug = err.name

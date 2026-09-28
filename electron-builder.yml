@@ -43,7 +43,7 @@ mac:
   # and the merge hard-fails unless those files are declared arch-neutral.
   # NOTE: the schema wants ONE minimatch string (not a list) — a list fails
   # config validation for every target.
-  x64ArchFiles: "**/node_modules/{@openai/codex-darwin-*,@anthropic-ai/claude-agent-sdk-darwin-*}/**"
+  x64ArchFiles: '**/node_modules/{@openai/codex-darwin-*,@anthropic-ai/claude-agent-sdk-darwin-*}/**'
   category: public.app-category.developer-tools
   # Sign-ready (ADR 0015): electron-builder signs with CSC_LINK/
   # CSC_KEY_PASSWORD when present and skips signing when absent.

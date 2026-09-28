@@ -1,12 +1,6 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
-import {
-  fetchCadence,
-  fetchCurrencies,
-  fetchCurrency,
-  fetchSetCadence,
-  fetchSetCurrency,
-} from '@/shared/lib/api'
+import { fetchCadence, fetchCurrencies, fetchCurrency, fetchSetCadence, fetchSetCurrency } from '@/shared/lib/api'
 import type { ActiveCurrency, CurrencyOption } from '../../../../shared/schemas/fx.js'
 import type { Theme } from '../../../../shared/schemas/renderer.js'
 import { DEFAULT_SKILLS_THRESHOLDS } from '../../../../shared/schemas/skills.js'
@@ -49,7 +43,7 @@ export interface SettingsState {
 
 export const useSettingsStore = create<SettingsState>()(
   persist(
-    (set) => ({
+    set => ({
       theme: 'system',
       defaultPeriod: 'today',
       onboarded: false,
@@ -59,19 +53,19 @@ export const useSettingsStore = create<SettingsState>()(
       skillsFrequency: DEFAULT_SKILLS_THRESHOLDS.frequency,
       skillsSpread: DEFAULT_SKILLS_THRESHOLDS.spread,
       allowHarnessApiKeyEnv: false,
-      setTheme: (theme) => set({ theme }),
-      setDefaultPeriod: (defaultPeriod) => set({ defaultPeriod }),
+      setTheme: theme => set({ theme }),
+      setDefaultPeriod: defaultPeriod => set({ defaultPeriod }),
       markOnboarded: () => set({ onboarded: true }),
       setSkillsThresholds: (frequency, spread) => set({ skillsFrequency: frequency, skillsSpread: spread }),
-      setAllowHarnessApiKeyEnv: (allowHarnessApiKeyEnv) => set({ allowHarnessApiKeyEnv }),
-      setCadence: async (value) => {
+      setAllowHarnessApiKeyEnv: allowHarnessApiKeyEnv => set({ allowHarnessApiKeyEnv }),
+      setCadence: async value => {
         // Optimistic, matching today's Settings › General handler: paint the
         // choice immediately, confirm it with the main process's persisted value.
         set({ cadence: value })
         const result = await fetchSetCadence(value)
         if (result.ok) set({ cadence: result.data })
       },
-      setCurrency: async (code) => {
+      setCurrency: async code => {
         // Not optimistic: the main process returns the current state (last
         // cached rate, or USD if none), which is what every section repaints.
         const result = await fetchSetCurrency(code)
@@ -95,7 +89,7 @@ export const useSettingsStore = create<SettingsState>()(
         const result = await fetchCurrencies()
         if (result.ok) set({ currencyOptions: result.data })
       },
-      onCurrencyChanged: (activeCurrency) => {
+      onCurrencyChanged: activeCurrency => {
         set({ activeCurrency })
         setActiveCurrency(activeCurrency)
       },
@@ -103,7 +97,7 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: 'watchtower:settings',
       storage: createJSONStorage(() => localStorage),
-      partialize: (s) => ({
+      partialize: s => ({
         theme: s.theme,
         defaultPeriod: s.defaultPeriod,
         onboarded: s.onboarded,

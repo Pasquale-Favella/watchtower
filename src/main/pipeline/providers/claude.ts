@@ -96,11 +96,13 @@ export async function getClaudeConfigDirs(): Promise<string[]> {
 
 export async function discoverClaudeConfigSources(): Promise<ClaudeConfigSource[]> {
   const dirs = await getClaudeConfigDirs()
-  return makeUniqueLabels(dirs.map(path => ({
-    id: claudeConfigSourceId(path),
-    label: baseClaudeConfigLabel(path),
-    path,
-  })))
+  return makeUniqueLabels(
+    dirs.map(path => ({
+      id: claudeConfigSourceId(path),
+      label: baseClaudeConfigLabel(path),
+      path,
+    })),
+  )
 }
 
 // Filesystem changes under an unchanged input key intentionally do not invalidate this cache.
@@ -123,26 +125,20 @@ export function getDesktopSessionsDirs(): string[] {
 
   if (override) return cacheDesktopSessionsDirs(cacheKey, [override])
   if (platform === 'darwin') {
-    return cacheDesktopSessionsDirs(
-      cacheKey,
-      [join(homedir(), 'Library', 'Application Support', 'Claude', 'local-agent-mode-sessions')],
-    )
+    return cacheDesktopSessionsDirs(cacheKey, [
+      join(homedir(), 'Library', 'Application Support', 'Claude', 'local-agent-mode-sessions'),
+    ])
   }
   if (platform === 'win32') {
     const appData = appDataInput?.trim()
-    const candidates = [
-      join(appData || join(homedir(), 'AppData', 'Roaming'), 'Claude', 'local-agent-mode-sessions'),
-    ]
+    const candidates = [join(appData || join(homedir(), 'AppData', 'Roaming'), 'Claude', 'local-agent-mode-sessions')]
 
     const localAppData = localAppDataInput?.trim()
     const packagesDir = join(localAppData || join(homedir(), 'AppData', 'Local'), 'Packages')
     try {
       const entries = readdirSync(packagesDir, { withFileTypes: true })
-        .filter(entry =>
-          entry.isDirectory() &&
-          (entry.name.startsWith('Claude_') || entry.name.includes('.Claude_')),
-        )
-        .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+        .filter(entry => entry.isDirectory() && (entry.name.startsWith('Claude_') || entry.name.includes('.Claude_')))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 
       for (const entry of entries) {
         const sessionsDir = join(
@@ -165,10 +161,7 @@ export function getDesktopSessionsDirs(): string[] {
 
     return cacheDesktopSessionsDirs(cacheKey, candidates)
   }
-  return cacheDesktopSessionsDirs(
-    cacheKey,
-    [join(homedir(), '.config', 'Claude', 'local-agent-mode-sessions')],
-  )
+  return cacheDesktopSessionsDirs(cacheKey, [join(homedir(), '.config', 'Claude', 'local-agent-mode-sessions')])
 }
 
 async function findDesktopProjectDirs(base: string): Promise<string[]> {
@@ -206,8 +199,13 @@ async function findDesktopProjectDirs(base: string): Promise<string[]> {
 // lives in the sibling <workspaceId>/local_<sessionId>.json (spaceId field)
 // and <workspaceId>/spaces.json (id → name mapping).
 
-interface CoworkSpace { id: string; name: string }
-interface CoworkSpacesFile { spaces: CoworkSpace[] }
+interface CoworkSpace {
+  id: string
+  name: string
+}
+interface CoworkSpacesFile {
+  spaces: CoworkSpace[]
+}
 
 // Cache spaces.json per workspace directory to avoid redundant reads.
 const spacesJsonCache = new Map<string, CoworkSpacesFile | null>()
@@ -241,7 +239,11 @@ async function resolveCoworkSpaceName(workspaceDir: string, sessionId: string): 
   ])
   if (!sessionMetaRaw) return null
   let sessionMeta: unknown
-  try { sessionMeta = JSON.parse(sessionMetaRaw) } catch { return null }
+  try {
+    sessionMeta = JSON.parse(sessionMetaRaw)
+  } catch {
+    return null
+  }
   if (sessionMeta === null || typeof sessionMeta !== 'object') return null
   const meta = sessionMeta as Record<string, unknown>
 
@@ -345,7 +347,8 @@ export const claude: Provider = {
       // distinct source so a per-config view can account for them as their own
       // "Claude Desktop" bucket instead of silently dropping them (which made
       // sum-of-configs < All).
-      const desktopSourceId = 'claude-desktop:' + createHash('sha256').update(resolve(desktopBase)).digest('hex').slice(0, 16)
+      const desktopSourceId =
+        'claude-desktop:' + createHash('sha256').update(resolve(desktopBase)).digest('hex').slice(0, 16)
       for (const dirPath of desktopDirs) {
         const resolved = resolve(dirPath)
         if (seenProjectDirs.has(resolved)) continue

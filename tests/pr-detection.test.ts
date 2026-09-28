@@ -66,18 +66,22 @@ describe('extractPrUrlsFromText (provider-neutral shapes)', () => {
 
 describe('extractPrUrlsFromProviderCall', () => {
   it('unions user message, bash commands and tool commands', () => {
-    expect(extractPrUrlsFromProviderCall({
-      userMessage: 'keep going',
-      bashCommands: [`gh pr view ${GH} --comments`],
-      toolSequence: [[{ tool: 'Bash', command: `gh pr create --title x --body ${GHE}` }]],
-    })).toEqual([GHE, GH])
+    expect(
+      extractPrUrlsFromProviderCall({
+        userMessage: 'keep going',
+        bashCommands: [`gh pr view ${GH} --comments`],
+        toolSequence: [[{ tool: 'Bash', command: `gh pr create --title x --body ${GHE}` }]],
+      }),
+    ).toEqual([GHE, GH])
   })
 
   it('scans provider-persisted assistant text', () => {
-    expect(extractPrUrlsFromProviderCall({
-      userMessage: 'ship it',
-      assistantText: `Done, opened ${GITLAB} for review`,
-    })).toEqual([GITLAB])
+    expect(
+      extractPrUrlsFromProviderCall({
+        userMessage: 'ship it',
+        assistantText: `Done, opened ${GITLAB} for review`,
+      }),
+    ).toEqual([GITLAB])
   })
 
   it('returns [] when nothing references a PR', () => {
@@ -159,8 +163,7 @@ describe('Claude assistant / tool-result PR capture', () => {
       sessionId: 'sess-1',
       message: { role: 'user', content: [{ type: 'text', text: 'implement the widget' }] },
     }
-    const entries = [userEntry, assistantEntry(`Done, see ${GH}`), toolResultEntry(GHE)]
-      .map(raw => compactEntry(raw))
+    const entries = [userEntry, assistantEntry(`Done, see ${GH}`), toolResultEntry(GHE)].map(raw => compactEntry(raw))
     const turns = groupIntoTurns(entries, new Set())
     expect(turns).toHaveLength(1)
     expect(turns[0]!.prRefs).toEqual([GHE, GH])
@@ -198,9 +201,7 @@ describe('end-to-end: pre-capture shaped sessions reach the PR section', () => {
   }
 
   it('a session whose only evidence is a GHE link in the prompt appears', () => {
-    const store = ledgerWithTurns([
-      buildFixtureCachedTurn(0, `continue work on ${GHE}`),
-    ])
+    const store = ledgerWithTurns([buildFixtureCachedTurn(0, `continue work on ${GHE}`)])
     const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
     expect(payload.rows.map(r => r.url)).toEqual([GHE])
     expect(payload.rows[0]!.label).toBe('acme/widget#34')
@@ -209,9 +210,7 @@ describe('end-to-end: pre-capture shaped sessions reach the PR section', () => {
 
   it('a session whose only evidence is a gh command in the turn appears', () => {
     const call = { ...buildFixtureCachedCall(0), bashCommands: [`gh pr view ${GH} --comments`] }
-    const store = ledgerWithTurns([
-      buildFixtureCachedTurn(0, 'look at the failing check', { calls: [call] }),
-    ])
+    const store = ledgerWithTurns([buildFixtureCachedTurn(0, 'look at the failing check', { calls: [call] })])
     const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
     expect(payload.rows.map(r => r.url)).toEqual([GH])
     store.close()
@@ -266,16 +265,40 @@ describe('codex assistant text reaches the PR seam', () => {
     process.env['WATCHTOWER_CACHE_DIR'] = mkdtempSync(join(tmpdir(), 'tr-codex-cache-'))
     const filePath = join(dir, 'rollout-2026-07-20.jsonl')
     const lines = [
-      { type: 'session_meta', timestamp: '2026-07-20T10:00:00.000Z', payload: { session_id: 'sess-x', cwd: '/work/demo', model: 'gpt-5' } },
-      { type: 'response_item', timestamp: '2026-07-20T10:00:01.000Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'ship the widget' }] } },
-      { type: 'response_item', timestamp: '2026-07-20T10:00:02.000Z', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `Done, opened ${GH}` }] } },
       {
-        type: 'event_msg', timestamp: '2026-07-20T10:00:03.000Z',
+        type: 'session_meta',
+        timestamp: '2026-07-20T10:00:00.000Z',
+        payload: { session_id: 'sess-x', cwd: '/work/demo', model: 'gpt-5' },
+      },
+      {
+        type: 'response_item',
+        timestamp: '2026-07-20T10:00:01.000Z',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'ship the widget' }] },
+      },
+      {
+        type: 'response_item',
+        timestamp: '2026-07-20T10:00:02.000Z',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `Done, opened ${GH}` }] },
+      },
+      {
+        type: 'event_msg',
+        timestamp: '2026-07-20T10:00:03.000Z',
         payload: {
           type: 'token_count',
           info: {
-            total_token_usage: { total_tokens: 100, input_tokens: 60, cached_input_tokens: 0, output_tokens: 30, reasoning_output_tokens: 10 },
-            last_token_usage: { input_tokens: 60, cached_input_tokens: 0, output_tokens: 30, reasoning_output_tokens: 10 },
+            total_token_usage: {
+              total_tokens: 100,
+              input_tokens: 60,
+              cached_input_tokens: 0,
+              output_tokens: 30,
+              reasoning_output_tokens: 10,
+            },
+            last_token_usage: {
+              input_tokens: 60,
+              cached_input_tokens: 0,
+              output_tokens: 30,
+              reasoning_output_tokens: 10,
+            },
           },
         },
       },

@@ -165,9 +165,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         const model = dominantModel(db, sessionId)
         // Crush already records cost in dollars; trust it. Fall back to
         // pricing-table calculation only when the row is missing a cost.
-        const costUSD = cost > 0
-          ? cost
-          : calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
+        const costUSD = cost > 0 ? cost : calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
 
         yield {
           provider: 'crush',

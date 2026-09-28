@@ -12,7 +12,11 @@ type UiMessage = {
   ts?: number
 }
 
-export function getVSCodeGlobalStoragePaths(extensionId: string, homeDir = homedir(), platform = process.platform): string[] {
+export function getVSCodeGlobalStoragePaths(
+  extensionId: string,
+  homeDir = homedir(),
+  platform = process.platform,
+): string[] {
   const pathJoin = platform === 'win32' ? win32.join : posix.join
 
   if (platform === 'darwin') {
@@ -42,14 +46,25 @@ export function getVSCodeGlobalStoragePath(extensionId: string): string {
   return getVSCodeGlobalStoragePaths(extensionId)[0]!
 }
 
-export async function discoverClineTasks(extensionId: string, providerName: string, displayName: string, overrideDir?: string | string[]): Promise<SessionSource[]> {
+export async function discoverClineTasks(
+  extensionId: string,
+  providerName: string,
+  displayName: string,
+  overrideDir?: string | string[],
+): Promise<SessionSource[]> {
   const baseDirs = overrideDir
-    ? (Array.isArray(overrideDir) ? overrideDir : [overrideDir])
+    ? Array.isArray(overrideDir)
+      ? overrideDir
+      : [overrideDir]
     : getVSCodeGlobalStoragePaths(extensionId)
   return discoverClineTasksInBaseDirs(baseDirs, providerName, displayName)
 }
 
-export async function discoverClineTasksInBaseDirs(baseDirs: string[], providerName: string, displayName: string): Promise<SessionSource[]> {
+export async function discoverClineTasksInBaseDirs(
+  baseDirs: string[],
+  providerName: string,
+  displayName: string,
+): Promise<SessionSource[]> {
   const sources: SessionSource[] = []
   const seen = new Set<string>()
   for (const baseDir of baseDirs) {
@@ -62,7 +77,11 @@ export async function discoverClineTasksInBaseDirs(baseDirs: string[], providerN
   return sources
 }
 
-async function discoverClineTasksInBaseDir(baseDir: string, providerName: string, displayName: string): Promise<SessionSource[]> {
+async function discoverClineTasksInBaseDir(
+  baseDir: string,
+  providerName: string,
+  displayName: string,
+): Promise<SessionSource[]> {
   const tasksDir = join(baseDir, 'tasks')
   const sources: SessionSource[] = []
 
@@ -125,7 +144,12 @@ function workspaceToProject(workspace: string): string {
   return basename(workspace) || workspace
 }
 
-export function createClineParser(source: SessionSource, seenKeys: Set<string>, providerName: string, fallbackModel = 'cline-auto'): SessionParser {
+export function createClineParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  providerName: string,
+  fallbackModel = 'cline-auto',
+): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const taskDir = source.path

@@ -26,7 +26,11 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
       { kind: 'tool', tool: 'Bash', id: 'call-1', state: 'completed', input: '{"command":"ls"}', output: 'total 0' },
       { kind: 'tool', tool: 'Bash', id: 'call-1', state: 'error', error: 'timeout' },
       { kind: 'session', resumeCursor: 'cursor_1' },
-      { kind: 'session', resumeCursor: 'cursor_1', models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' } },
+      {
+        kind: 'session',
+        resumeCursor: 'cursor_1',
+        models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' },
+      },
       { kind: 'notice', message: 'continuing in a fresh session' },
       { kind: 'error', message: 'CLI not logged in' },
     ]
@@ -36,27 +40,31 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
   })
 
   it('accepts agent-declared models/modes on the session event (progressive selection)', () => {
-    expect(coachEventSchema.safeParse({
-      kind: 'session',
-      resumeCursor: 'cursor_1',
-      models: {
-        availableModels: [
-          { modelId: 'opus', name: 'Claude Opus' },
-          { modelId: 'sonnet', name: 'Claude Sonnet', description: 'Fast' },
-        ],
-        currentModelId: 'opus',
-      },
-      modes: {
-        availableModes: [{ id: 'plan', name: 'Plan' }],
-        currentModeId: 'plan',
-      },
-    }).success).toBe(true)
+    expect(
+      coachEventSchema.safeParse({
+        kind: 'session',
+        resumeCursor: 'cursor_1',
+        models: {
+          availableModels: [
+            { modelId: 'opus', name: 'Claude Opus' },
+            { modelId: 'sonnet', name: 'Claude Sonnet', description: 'Fast' },
+          ],
+          currentModelId: 'opus',
+        },
+        modes: {
+          availableModes: [{ id: 'plan', name: 'Plan' }],
+          currentModeId: 'plan',
+        },
+      }).success,
+    ).toBe(true)
     // A malformed models payload (missing currentModelId) is rejected.
-    expect(coachEventSchema.safeParse({
-      kind: 'session',
-      resumeCursor: 'cursor_1',
-      models: { availableModels: [{ modelId: 'opus', name: 'x' }] },
-    }).success).toBe(false)
+    expect(
+      coachEventSchema.safeParse({
+        kind: 'session',
+        resumeCursor: 'cursor_1',
+        models: { availableModels: [{ modelId: 'opus', name: 'x' }] },
+      }).success,
+    ).toBe(false)
   })
 
   it('rejects a discriminant outside the union and a bad status state', () => {
@@ -96,7 +104,9 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
     expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p' }).success).toBe(true)
     expect(coachRunRequestSchema.safeParse({ prompt: 'p' }).success).toBe(false)
     // A malformed scope (bad period) is rejected.
-    expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', scope: { period: 'decade' } }).success).toBe(false)
+    expect(
+      coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', scope: { period: 'decade' } }).success,
+    ).toBe(false)
   })
 
   it('strips a stray mode or evidence field (the single-coach wire carries neither)', () => {
@@ -125,11 +135,15 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
   })
 
   it('parses the API-key passthrough opt-in on the run request (absent = stored-login default)', () => {
-    expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', allowApiKeyEnv: true }).success).toBe(true)
+    expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', allowApiKeyEnv: true }).success).toBe(
+      true,
+    )
     const without = coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p' })
     expect(without.success).toBe(true)
     if (without.success) expect('allowApiKeyEnv' in without.data).toBe(false)
-    expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', allowApiKeyEnv: 'yes' }).success).toBe(false)
+    expect(coachRunRequestSchema.safeParse({ harnessKind: 'claude', prompt: 'p', allowApiKeyEnv: 'yes' }).success).toBe(
+      false,
+    )
   })
 
   it('parses the inspect request as a bare key or key-plus-passthrough', () => {
@@ -150,21 +164,35 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
   })
 
   it('parses a harness picker row (no static model list — map 47 ticket 49)', () => {
-    expect(coachHarnessRowSchema.safeParse({
-      instanceId: 'claude',
-      kind: 'claude',
-      displayName: 'Claude Code',
-      status: 'ready',
-      auth: { status: 'configured' },
-    }).success).toBe(true)
+    expect(
+      coachHarnessRowSchema.safeParse({
+        instanceId: 'claude',
+        kind: 'claude',
+        displayName: 'Claude Code',
+        status: 'ready',
+        auth: { status: 'configured' },
+      }).success,
+    ).toBe(true)
     expect(coachHarnessRowSchema.safeParse({ kind: 'claude' }).success).toBe(false)
-    expect(coachHarnessRowSchema.safeParse({
-      instanceId: 'claude', kind: 'claude', displayName: 'x', status: 'ready', auth: { status: 'nope' },
-    }).success).toBe(false)
-    expect(coachHarnessRowSchema.safeParse({
-      instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'warning',
-      auth: { status: 'unauthenticated', loginCommand: 'codex login' }, message: 'Sign in',
-    }).success).toBe(true)
+    expect(
+      coachHarnessRowSchema.safeParse({
+        instanceId: 'claude',
+        kind: 'claude',
+        displayName: 'x',
+        status: 'ready',
+        auth: { status: 'nope' },
+      }).success,
+    ).toBe(false)
+    expect(
+      coachHarnessRowSchema.safeParse({
+        instanceId: 'codex',
+        kind: 'codex',
+        displayName: 'Codex',
+        status: 'warning',
+        auth: { status: 'unauthenticated', loginCommand: 'codex login' },
+        message: 'Sign in',
+      }).success,
+    ).toBe(true)
   })
 
   it('parses the login-terminal request and result arms', () => {
@@ -178,12 +206,17 @@ describe('Coach wire contract (ticket 21, ADR 0005) — frozen shared schemas', 
   it('parses the pre-flight inspect result — models/modes optional, probe failure as ok:false (map 47 ticket 50)', () => {
     const models = { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' }
     expect(coachInspectResultSchema.safeParse({ ok: true, models }).success).toBe(true)
-    expect(coachInspectResultSchema.safeParse({ ok: true, models, modes: { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan' } }).success).toBe(true)
+    expect(
+      coachInspectResultSchema.safeParse({
+        ok: true,
+        models,
+        modes: { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan' },
+      }).success,
+    ).toBe(true)
     // No declared set — the pickers simply stay absent.
     expect(coachInspectResultSchema.safeParse({ ok: true }).success).toBe(true)
     expect(coachInspectResultSchema.safeParse({ ok: false, error: 'agent binary not found' }).success).toBe(true)
     expect(coachInspectResultSchema.safeParse({ ok: true, models: { availableModels: [] } }).success).toBe(false)
     expect(coachInspectResultSchema.safeParse({ ok: 'maybe' }).success).toBe(false)
   })
-
 })

@@ -217,14 +217,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             return typeof script === 'string' ? extractBashCommands(script) : []
           })
 
-        const costUSD = calculateCost(
-          model,
-          inputTokens,
-          outputTokens + reasoning,
-          cacheCreate,
-          cacheRead,
-          0,
-        )
+        const costUSD = calculateCost(model, inputTokens, outputTokens + reasoning, cacheCreate, cacheRead, 0)
 
         const timestamp = toIsoTimestamp(meta.timestamp, msg.createdAt)
 

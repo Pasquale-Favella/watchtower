@@ -90,10 +90,7 @@ function canonicalPath(path: string): string {
  * is not inside a git work tree. Keyed on `git-common-dir` so monorepo
  * subdirectories and linked worktrees of one repo collapse to one group.
  * Cached per directory. */
-async function resolveRepoIdentity(
-  dir: string,
-  cache: Map<string, RepoIdentity | null>,
-): Promise<RepoIdentity | null> {
+async function resolveRepoIdentity(dir: string, cache: Map<string, RepoIdentity | null>): Promise<RepoIdentity | null> {
   const cached = cache.get(dir)
   if (cached !== undefined) return cached
 
@@ -128,10 +125,7 @@ async function getMainBranch(cwd: string): Promise<string> {
  * history (not just the window). The standard revert body format is
  * "This reverts commit <SHA>." which we grep out. */
 async function getRevertedShas(cwd: string): Promise<Set<string>> {
-  const bodies = (await runGit(
-    ['log', '--all', '--grep=^This reverts commit', '--format=%B%x1e'],
-    cwd,
-  )) ?? ''
+  const bodies = (await runGit(['log', '--all', '--grep=^This reverts commit', '--format=%B%x1e'], cwd)) ?? ''
   const set = new Set<string>()
   const re = /This reverts commit ([0-9a-f]{7,40})/g
   let m: RegExpExecArray | null
@@ -141,12 +135,7 @@ async function getRevertedShas(cwd: string): Promise<Set<string>> {
   return set
 }
 
-async function getCommitsInRange(
-  cwd: string,
-  since: Date,
-  until: Date,
-  mainBranch: string,
-): Promise<CommitInfo[]> {
+async function getCommitsInRange(cwd: string, since: Date, until: Date, mainBranch: string): Promise<CommitInfo[]> {
   const log = await runGit(
     ['log', '--all', `--since=${since.toISOString()}`, `--until=${until.toISOString()}`, '--format=%H|%aI|%s'],
     cwd,
@@ -154,22 +143,25 @@ async function getCommitsInRange(
   if (!log) return []
 
   const mainCommits = new Set(
-    (await runGit(['log', mainBranch, '--format=%H'], cwd) ?? '').split('\n').filter(Boolean),
+    ((await runGit(['log', mainBranch, '--format=%H'], cwd)) ?? '').split('\n').filter(Boolean),
   )
   const revertedShas = await getRevertedShas(cwd)
 
-  return log.split('\n').filter(Boolean).map(line => {
-    const [sha, timestamp] = line.split('|')
-    return {
-      sha: sha ?? '',
-      timestamp: new Date(timestamp ?? ''),
-      inMain: mainCommits.has(sha ?? ''),
-      // Compare against the full SHA AND its 7-char short prefix to be safe;
-      // git revert sometimes records the short form.
-      wasReverted: revertedShas.has((sha ?? '').toLowerCase())
-        || revertedShas.has((sha ?? '').toLowerCase().slice(0, 7)),
-    }
-  })
+  return log
+    .split('\n')
+    .filter(Boolean)
+    .map(line => {
+      const [sha, timestamp] = line.split('|')
+      return {
+        sha: sha ?? '',
+        timestamp: new Date(timestamp ?? ''),
+        inMain: mainCommits.has(sha ?? ''),
+        // Compare against the full SHA AND its 7-char short prefix to be safe;
+        // git revert sometimes records the short form.
+        wasReverted:
+          revertedShas.has((sha ?? '').toLowerCase()) || revertedShas.has((sha ?? '').toLowerCase().slice(0, 7)),
+      }
+    })
 }
 
 function sessionWindow(session: SessionSummary): SessionWindow | null {
@@ -183,10 +175,7 @@ function sessionWindow(session: SessionSummary): SessionWindow | null {
 /** Award each commit to the session whose window contains it with the
  * tightest span (ties broken by earlier start, then sessionId). Windows that
  * merely overlap a commit a tighter window won lose candidacy. */
-function attributeCommits(
-  sessions: SessionSummary[],
-  commits: CommitInfo[],
-): SessionAttribution[] {
+function attributeCommits(sessions: SessionSummary[], commits: CommitInfo[]): SessionAttribution[] {
   const attributions: SessionAttribution[] = sessions.map(session => ({
     window: sessionWindow(session),
     commits: [],
@@ -196,24 +185,21 @@ function attributeCommits(
   for (const commit of commits) {
     const candidates = attributions.filter(
       (attribution): attribution is SessionAttribution & { window: SessionWindow } =>
-        attribution.window !== null
-        && commit.timestamp >= attribution.window.start
-        && commit.timestamp <= attribution.window.end,
+        attribution.window !== null &&
+        commit.timestamp >= attribution.window.start &&
+        commit.timestamp <= attribution.window.end,
     )
 
-    const owner = candidates.reduce<SessionAttribution & { window: SessionWindow } | null>(
-      (current, candidate) => {
-        if (current === null) return candidate
-        const currentSpan = current.window.end.getTime() - current.window.start.getTime()
-        const candidateSpan = candidate.window.end.getTime() - candidate.window.start.getTime()
-        if (candidateSpan !== currentSpan) return candidateSpan < currentSpan ? candidate : current
-        if (candidate.window.start.getTime() !== current.window.start.getTime()) {
-          return candidate.window.start < current.window.start ? candidate : current
-        }
-        return candidate.window.sessionId < current.window.sessionId ? candidate : current
-      },
-      null,
-    )
+    const owner = candidates.reduce<(SessionAttribution & { window: SessionWindow }) | null>((current, candidate) => {
+      if (current === null) return candidate
+      const currentSpan = current.window.end.getTime() - current.window.start.getTime()
+      const candidateSpan = candidate.window.end.getTime() - candidate.window.start.getTime()
+      if (candidateSpan !== currentSpan) return candidateSpan < currentSpan ? candidate : current
+      if (candidate.window.start.getTime() !== current.window.start.getTime()) {
+        return candidate.window.start < current.window.start ? candidate : current
+      }
+      return candidate.window.sessionId < current.window.sessionId ? candidate : current
+    }, null)
 
     for (const candidate of candidates) {
       if (candidate !== owner) candidate.lostCandidacy = true
@@ -269,9 +255,7 @@ async function buildRepoGroups(
   const repoGroups = new Map<string, RepoGroup>()
 
   for (const project of projects) {
-    const identity = project.projectPath
-      ? await resolveRepoIdentity(project.projectPath, repoIdentityCache)
-      : null
+    const identity = project.projectPath ? await resolveRepoIdentity(project.projectPath, repoIdentityCache) : null
     const groupKey = identity ? identity.key : project.projectPath
 
     let group = repoGroups.get(groupKey)
@@ -328,11 +312,7 @@ export async function buildYieldPayload(
     const attributions = attributeCommits(group.sessions, group.commits)
     for (const [index, session] of group.sessions.entries()) {
       const attribution = attributions[index]!
-      const { category, commitCount } = categorizeSession(
-        session,
-        attribution.commits,
-        attribution.lostCandidacy,
-      )
+      const { category, commitCount } = categorizeSession(session, attribution.commits, attribution.lostCandidacy)
       totalCost += session.totalCostUSD
       totalSessions += 1
       summary[category].costUSD += session.totalCostUSD
@@ -347,22 +327,38 @@ export async function buildYieldPayload(
     }
   }
 
-  const pct = (value: number): number =>
-    totalCost > 0 ? Math.round((value / totalCost) * 1000) / 10 : 0
+  const pct = (value: number): number => (totalCost > 0 ? Math.round((value / totalCost) * 1000) / 10 : 0)
   const sessionPct = (value: number): number =>
     totalSessions > 0 ? Math.round((value / totalSessions) * 1000) / 10 : 0
 
   return {
     period: { start: range.start.toISOString(), end: range.end.toISOString() },
     summary: {
-      productive: { ...summary.productive, costPercent: pct(summary.productive.costUSD), sessionPercent: sessionPct(summary.productive.sessions) },
-      reverted: { ...summary.reverted, costPercent: pct(summary.reverted.costUSD), sessionPercent: sessionPct(summary.reverted.sessions) },
-      abandoned: { ...summary.abandoned, costPercent: pct(summary.abandoned.costUSD), sessionPercent: sessionPct(summary.abandoned.sessions) },
-      ambiguous: { ...summary.ambiguous, costPercent: pct(summary.ambiguous.costUSD), sessionPercent: sessionPct(summary.ambiguous.sessions) },
+      productive: {
+        ...summary.productive,
+        costPercent: pct(summary.productive.costUSD),
+        sessionPercent: sessionPct(summary.productive.sessions),
+      },
+      reverted: {
+        ...summary.reverted,
+        costPercent: pct(summary.reverted.costUSD),
+        sessionPercent: sessionPct(summary.reverted.sessions),
+      },
+      abandoned: {
+        ...summary.abandoned,
+        costPercent: pct(summary.abandoned.costUSD),
+        sessionPercent: sessionPct(summary.abandoned.sessions),
+      },
+      ambiguous: {
+        ...summary.ambiguous,
+        costPercent: pct(summary.ambiguous.costUSD),
+        sessionPercent: sessionPct(summary.ambiguous.sessions),
+      },
       total: { costUSD: totalCost, sessions: totalSessions },
-      productiveToRevertedCostRatio: summary.reverted.costUSD > 0
-        ? Math.round((summary.productive.costUSD / summary.reverted.costUSD) * 100) / 100
-        : null,
+      productiveToRevertedCostRatio:
+        summary.reverted.costUSD > 0
+          ? Math.round((summary.productive.costUSD / summary.reverted.costUSD) * 100) / 100
+          : null,
     },
     methodology: 'timestamp-window',
     details,

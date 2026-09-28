@@ -25,7 +25,12 @@ export const overviewKpisSchema = z.object({
 })
 export type OverviewKpis = z.infer<typeof overviewKpisSchema>
 
-export const overviewDailyEntrySchema = z.object({ date: z.string(), costUSD: z.number(), calls: z.number(), sessions: z.number() })
+export const overviewDailyEntrySchema = z.object({
+  date: z.string(),
+  costUSD: z.number(),
+  calls: z.number(),
+  sessions: z.number(),
+})
 export type OverviewDailyEntry = z.infer<typeof overviewDailyEntrySchema>
 
 export const overviewModelRowSchema = z.object({
@@ -42,7 +47,12 @@ export const overviewModelRowSchema = z.object({
 })
 export type OverviewModelRow = z.infer<typeof overviewModelRowSchema>
 
-export const overviewActivityRowSchema = z.object({ name: z.string(), cost: z.number(), turns: z.number(), oneShotRate: z.number().nullable() })
+export const overviewActivityRowSchema = z.object({
+  name: z.string(),
+  cost: z.number(),
+  turns: z.number(),
+  oneShotRate: z.number().nullable(),
+})
 export type OverviewActivityRow = z.infer<typeof overviewActivityRowSchema>
 
 export const overviewToolRowSchema = z.object({ name: z.string(), calls: z.number() })
@@ -57,7 +67,12 @@ export type OverviewSkillRow = z.infer<typeof overviewSkillRowSchema>
 export const overviewSubagentRowSchema = z.object({ name: z.string(), calls: z.number(), cost: z.number() })
 export type OverviewSubagentRow = z.infer<typeof overviewSubagentRowSchema>
 
-export const overviewRetryTaxRowSchema = z.object({ name: z.string(), taxUSD: z.number(), retries: z.number(), retriesPerEdit: z.number().nullable() })
+export const overviewRetryTaxRowSchema = z.object({
+  name: z.string(),
+  taxUSD: z.number(),
+  retries: z.number(),
+  retriesPerEdit: z.number().nullable(),
+})
 export type OverviewRetryTaxRow = z.infer<typeof overviewRetryTaxRowSchema>
 
 export const overviewRetryTaxSchema = z.object({
@@ -123,7 +138,11 @@ export const overviewLocalSavingsRowSchema = z.object({
 })
 export type OverviewLocalSavingsRow = z.infer<typeof overviewLocalSavingsRowSchema>
 
-export const overviewLocalSavingsProviderRowSchema = z.object({ name: z.string(), calls: z.number(), savingsUSD: z.number() })
+export const overviewLocalSavingsProviderRowSchema = z.object({
+  name: z.string(),
+  calls: z.number(),
+  savingsUSD: z.number(),
+})
 export type OverviewLocalSavingsProviderRow = z.infer<typeof overviewLocalSavingsProviderRowSchema>
 
 export const overviewLocalModelSavingsSchema = z.object({

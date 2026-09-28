@@ -13,13 +13,7 @@ import {
   AlertDialogTitle,
 } from '@/shared/components/ui/alert-dialog'
 import { LoadingRegion, SkeletonPills } from '@/shared/components/skeletons'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/shared/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip'
 import { InfoTip } from '@/shared/components/InfoTip'
 import { formatUsd } from '@/shared/lib/models'
@@ -62,13 +56,13 @@ function ClaudeAuthHint() {
   // bottom).
   return (
     <div className="-mb-2 px-5">
-      <div className="flex w-full flex-wrap items-center justify-center gap-x-2 gap-y-0.5 rounded-t-[19px] border border-border bg-card px-4 pb-3 pt-1 text-center text-[11px] leading-relaxed text-muted-foreground shadow-sm">
+      <div className="border-border bg-card text-muted-foreground flex w-full flex-wrap items-center justify-center gap-x-2 gap-y-0.5 rounded-t-[19px] border px-4 pt-1 pb-3 text-center text-[11px] leading-relaxed shadow-sm">
         <InfoTip label="How Claude authentication works" text={infoText} />
         {signedOut && (
           <span>
             Claude Code sign-in not detected — run{' '}
-            <code className="rounded bg-muted px-1 font-mono text-[10.5px]">claude auth login</code>{' '}
-            in a terminal, then retry.
+            <code className="bg-muted rounded px-1 font-mono text-[10.5px]">claude auth login</code> in a terminal, then
+            retry.
           </span>
         )}
         <span>{promptText}</span>
@@ -78,7 +72,7 @@ function ClaudeAuthHint() {
           size="sm"
           onClick={togglePassthrough}
           title="When on, Coach runs inherit API keys (e.g. ANTHROPIC_API_KEY) from the app's environment instead of using each harness's stored login. The key itself is never stored by the app."
-          className="h-6 px-1.5 text-[11px] font-medium text-primary hover:text-primary"
+          className="text-primary hover:text-primary h-6 px-1.5 text-[11px] font-medium"
         >
           {toggleLabel}
         </Button>
@@ -105,7 +99,10 @@ const SAMPLE_PROMPTS = [
  *  draft card. The run is part of the conversation, and the ledger briefing
  *  lets the harness ground the draft in real usage (ledger_skills /
  *  ledger_calls). A hover tooltip shows the evidence. */
-export function PatternChips({ onCraft, disabled = false }: {
+export function PatternChips({
+  onCraft,
+  disabled = false,
+}: {
   onCraft: (draft: SkillCandidate) => void
   disabled?: boolean
 }) {
@@ -121,7 +118,7 @@ export function PatternChips({ onCraft, disabled = false }: {
   }
   if (drafts.length === 0) {
     return (
-      <p className="text-[12px] text-muted-foreground">
+      <p className="text-muted-foreground text-[12px]">
         No patterns detected in this window yet — ask the coach and it can discover them through its ledger tools.
       </p>
     )
@@ -136,9 +133,9 @@ export function PatternChips({ onCraft, disabled = false }: {
                 type="button"
                 disabled={disabled}
                 onClick={() => onCraft(draft)}
-                className="group flex items-center gap-1.5 rounded-full border border-border bg-card px-4 py-2 text-[12px] text-muted-foreground transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-foreground hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
+                className="group border-border bg-card text-muted-foreground hover:border-primary/40 hover:bg-primary/5 hover:text-foreground flex items-center gap-1.5 rounded-full border px-4 py-2 text-[12px] transition-all hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
               >
-                <span className="font-medium text-foreground">{draft.name}</span>
+                <span className="text-foreground font-medium">{draft.name}</span>
                 <span className="tabular-nums">×{draft.frequency}</span>
                 <span className="hidden text-[10.5px] sm:inline">{formatUsd(draft.costUSD)}</span>
               </button>
@@ -149,12 +146,15 @@ export function PatternChips({ onCraft, disabled = false }: {
               <span className="font-semibold">{draft.name}</span>
               <span className="text-[10px] leading-relaxed opacity-80">
                 ×{draft.frequency} calls · {draft.spreadSessions} session{draft.spreadSessions === 1 ? '' : 's'} ·{' '}
-                {draft.spreadProjects} project{draft.spreadProjects === 1 ? '' : 's'} · {formatUsd(draft.costUSD)} · {draft.turns} turns
+                {draft.spreadProjects} project{draft.spreadProjects === 1 ? '' : 's'} · {formatUsd(draft.costUSD)} ·{' '}
+                {draft.turns} turns
               </span>
               <span className="text-[10px] leading-relaxed opacity-80">
                 Source: {draft.source} — {draft.sample}
               </span>
-              <span className="mt-0.5 text-[10px] font-medium text-primary">Click to craft a SKILL.md for this pattern</span>
+              <span className="text-primary mt-0.5 text-[10px] font-medium">
+                Click to craft a SKILL.md for this pattern
+              </span>
             </div>
           </TooltipContent>
         </Tooltip>
@@ -167,7 +167,11 @@ export function PatternChips({ onCraft, disabled = false }: {
  *  message: a centered welcome (title, hint, sample prompts), the
  *  suggested-skill chips, and the no-harness note. No card of its own: the
  *  page IS the surface. */
-export function ConversationWelcome({ onCraft, onSend, canSend }: {
+export function ConversationWelcome({
+  onCraft,
+  onSend,
+  canSend,
+}: {
   onCraft: (draft: SkillCandidate) => void
   onSend: (text: string) => void
   canSend: boolean
@@ -177,11 +181,11 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 overflow-y-auto px-6 py-12">
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="text-[20px] font-semibold tracking-tight text-foreground">Coach & Skills</span>
-        <p className="max-w-lg text-[13px] leading-[1.7] text-muted-foreground">
-          Ask the harness for guidance on your workflow — or craft a skill together, just by talking: describe
-          what you do and ask it to write a SKILL.md. Every run reads your platform data live through the in-app
-          ledger, so answers are grounded in your real usage.
+        <span className="text-foreground text-[20px] font-semibold tracking-tight">Coach & Skills</span>
+        <p className="text-muted-foreground max-w-lg text-[13px] leading-[1.7]">
+          Ask the harness for guidance on your workflow — or craft a skill together, just by talking: describe what you
+          do and ask it to write a SKILL.md. Every run reads your platform data live through the in-app ledger, so
+          answers are grounded in your real usage.
         </p>
       </div>
 
@@ -192,7 +196,7 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
             type="button"
             disabled={!canSend}
             onClick={() => onSend(prompt)}
-            className="rounded-full border border-border bg-card px-4 py-2 text-[12px] text-muted-foreground transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-foreground hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
+            className="border-border bg-card text-muted-foreground hover:border-primary/40 hover:bg-primary/5 hover:text-foreground rounded-full border px-4 py-2 text-[12px] transition-all hover:shadow-sm disabled:pointer-events-none disabled:opacity-50"
           >
             {prompt}
           </button>
@@ -200,14 +204,14 @@ export function ConversationWelcome({ onCraft, onSend, canSend }: {
       </div>
 
       <div className="w-full max-w-2xl pt-2">
-        <p className="mb-3 text-center text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <p className="text-muted-foreground mb-3 text-center text-[11px] font-medium tracking-wide uppercase">
           Craft a skill from a detected pattern
         </p>
         <PatternChips onCraft={onCraft} disabled={!canSend} />
       </div>
 
       {hydrated && harnessCount === 0 && (
-        <p className="text-[12px] text-muted-foreground">
+        <p className="text-muted-foreground text-[12px]">
           No coding-agent harness detected — install Claude Code, OpenCode or Codex to get started.
         </p>
       )}
@@ -237,7 +241,12 @@ export function ConversationThread() {
  *  send/stop action pinned to the end of the footer.
  *  The coach reads the full lifetime ledger (no data-window chip — the agent
  *  filters per question). */
-export function ConversationComposer({ running, canSend, onSend, onStop }: {
+export function ConversationComposer({
+  running,
+  canSend,
+  onSend,
+  onStop,
+}: {
   running: boolean
   canSend: boolean
   onSend: (text: string) => void
@@ -307,7 +316,7 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   }
 
   const pendingName = pendingSwitch
-    ? harnesses.find(h => h.instanceId === pendingSwitch.kind)?.displayName ?? pendingSwitch.kind
+    ? (harnesses.find(h => h.instanceId === pendingSwitch.kind)?.displayName ?? pendingSwitch.kind)
     : null
 
   /** Auto-grow the textarea with its content, capped so the input never
@@ -331,7 +340,7 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
   }
 
   return (
-    <div className="relative z-10 overflow-hidden rounded-xl border border-border bg-card shadow-[var(--card-shadow)] transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+    <div className="border-border bg-card focus-within:border-ring focus-within:ring-ring/50 relative z-10 overflow-hidden rounded-xl border shadow-[var(--card-shadow)] transition-colors focus-within:ring-3">
       <textarea
         ref={textareaRef}
         value={prompt}
@@ -347,7 +356,7 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
         }}
         rows={1}
         placeholder="Ask anything or say “craft a skill for …”"
-        className="max-h-[168px] w-full resize-none overflow-y-auto bg-transparent p-3.5 text-[12px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
+        className="text-foreground placeholder:text-muted-foreground max-h-[168px] w-full resize-none overflow-y-auto bg-transparent p-3.5 text-[12px] leading-relaxed outline-none"
       />
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
         {/* The unified harness + model picker: one trigger opens the harness
@@ -359,24 +368,38 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
               the set instantly (no reload, no agent spawn). Committing a
               model row on ANOTHER harness routes through the switch
               confirmation below when a conversation exists. */}
-          <HarnessModelPicker
-            harnesses={harnesses}
-            harnessKind={harnessKind}
-            modelId={modelId}
-            sessionModels={sessionModels?.availableModels ?? []}
-            modelsByKind={modelsByKind}
-            inspectingKind={inspectingKind}
-            onInspect={kind => { void inspectHarness(kind) }}
-            onInstanceModelChange={onInstanceModelChange}
-          />
+        <HarnessModelPicker
+          harnesses={harnesses}
+          harnessKind={harnessKind}
+          modelId={modelId}
+          sessionModels={sessionModels?.availableModels ?? []}
+          modelsByKind={modelsByKind}
+          inspectingKind={inspectingKind}
+          onInspect={kind => {
+            void inspectHarness(kind)
+          }}
+          onInstanceModelChange={onInstanceModelChange}
+        />
         {sessionModes && sessionModes.availableModes.length > 0 && (
-          <Select value={modeId ?? ''} onValueChange={next => { if (next) setModeId(next) }}>
-            <SelectTrigger size="sm" aria-label="Mode" className="h-7 border-border text-[11.5px]" title="Agent-declared mode">
+          <Select
+            value={modeId ?? ''}
+            onValueChange={next => {
+              if (next) setModeId(next)
+            }}
+          >
+            <SelectTrigger
+              size="sm"
+              aria-label="Mode"
+              className="border-border h-7 text-[11.5px]"
+              title="Agent-declared mode"
+            >
               <SelectValue>{selectedMode?.name ?? 'Mode: default'}</SelectValue>
             </SelectTrigger>
             <SelectContent align="start">
               {sessionModes.availableModes.map(m => (
-                <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                <SelectItem key={m.id} value={m.id}>
+                  {m.name}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -421,22 +444,22 @@ export function ConversationComposer({ running, canSend, onSend, onStop }: {
           backdrop/Escape — the user must answer. */}
       <AlertDialog
         open={pendingSwitch !== null}
-        onOpenChange={open => { if (!open) setPendingSwitch(null) }}
+        onOpenChange={open => {
+          if (!open) setPendingSwitch(null)
+        }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Switch harness?</AlertDialogTitle>
             <AlertDialogDescription>
-              Chatting with <span className="font-medium text-foreground">{pendingName}</span> starts a new conversation
+              Chatting with <span className="text-foreground font-medium">{pendingName}</span> starts a new conversation
               the current thread and its session will be cleared.
               {running && ' Any run in progress will be stopped.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmHarnessSwitch}>
-              Switch & start new conversation
-            </AlertDialogAction>
+            <AlertDialogAction onClick={confirmHarnessSwitch}>Switch & start new conversation</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -476,11 +499,7 @@ export function ConversationView() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {isEmpty ? (
-        <ConversationWelcome
-          canSend={!!harnessKind}
-          onCraft={draft => craft(draft)}
-          onSend={text => start(text)}
-        />
+        <ConversationWelcome canSend={!!harnessKind} onCraft={draft => craft(draft)} onSend={text => start(text)} />
       ) : (
         <>
           {/* Conversation header: same language as the composer controls
@@ -493,7 +512,7 @@ export function ConversationView() {
               variant="outline"
               size="sm"
               onClick={resetSession}
-              className="h-7 gap-1.5 text-[11.5px] font-medium text-foreground"
+              className="text-foreground h-7 gap-1.5 text-[11.5px] font-medium"
             >
               New conversation
             </Button>
@@ -507,15 +526,10 @@ export function ConversationView() {
           tucked behind the textarea card. */}
       <div>
         <ClaudeAuthHint />
-        <ConversationComposer
-          running={running}
-          canSend={!!harnessKind}
-          onSend={text => start(text)}
-          onStop={cancel}
-        />
+        <ConversationComposer running={running} canSend={!!harnessKind} onSend={text => start(text)} onStop={cancel} />
       </div>
 
-      {error && <p className="px-0.5 pt-1 text-[10.5px] text-destructive">{error}</p>}
+      {error && <p className="text-destructive px-0.5 pt-1 text-[10.5px]">{error}</p>}
     </div>
   )
 }

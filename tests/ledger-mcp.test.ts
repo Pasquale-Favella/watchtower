@@ -31,12 +31,20 @@ function seedLedger(): { dbPath: string; cleanup: () => void } {
 
   const db = new DatabaseSync(dbPath)
   db.exec('BEGIN')
-  const sourceClaude = Number(db.prepare(
-    "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('claude', 'fp1', 'C:\\work\\.claude\\sessions.json')",
-  ).run().lastInsertRowid)
-  const sourceOpencode = Number(db.prepare(
-    "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('opencode', 'fp2', 'C:\\work\\.opencode\\sessions.json')",
-  ).run().lastInsertRowid)
+  const sourceClaude = Number(
+    db
+      .prepare(
+        "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('claude', 'fp1', 'C:\\work\\.claude\\sessions.json')",
+      )
+      .run().lastInsertRowid,
+  )
+  const sourceOpencode = Number(
+    db
+      .prepare(
+        "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('opencode', 'fp2', 'C:\\work\\.opencode\\sessions.json')",
+      )
+      .run().lastInsertRowid,
+  )
   db.prepare(
     "INSERT INTO ledger_session (source_id, session_id, project, working_directory, agent_type, title) VALUES (?, 'sess-a', 'watchtower', 'C:\\work', 'claude', 'Fix bug')",
   ).run(sourceClaude)
@@ -111,7 +119,13 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
   it('ledger_scope reports the window a query is scoped to (optional scope arg)', () => {
     const store = openStore()
     const tool = buildLedgerTools(store).find(t => t.name === 'ledger_scope')!
-    const out = tool.run({ scope }) as { scope: OverviewScope; sessions: number; calls: number; providers: string[]; range: { startMs: number } }
+    const out = tool.run({ scope }) as {
+      scope: OverviewScope
+      sessions: number
+      calls: number
+      providers: string[]
+      range: { startMs: number }
+    }
     expect(out.scope).toEqual(scope)
     expect(out.sessions).toBe(2)
     expect(out.calls).toBe(3) // the January call is out of the window
@@ -378,7 +392,8 @@ describe('Ledger MCP server (ADR 0020) — prompts + resources over the in-memor
     expect(scopeText).toContain('Calls: 4')
 
     const overviewRead = await client.readResource({ uri: 'ledger://overview' })
-    const overviewText = overviewRead.contents[0] && 'text' in overviewRead.contents[0] ? overviewRead.contents[0].text : ''
+    const overviewText =
+      overviewRead.contents[0] && 'text' in overviewRead.contents[0] ? overviewRead.contents[0].text : ''
     expect(overviewPayloadSchema.safeParse(JSON.parse(overviewText)).success).toBe(true)
 
     await client.close()

@@ -152,7 +152,10 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
    *  a 'superseded' arm when a newer request replaced it before its spawn);
    *  the renderer's stale-guard drops anything it has moved past. */
   let probedChain: Promise<CoachInspectResult> | null = null
-  let probedQueued: { input: ProbeInput; resolve: (result: CoachInspectResult | Promise<CoachInspectResult>) => void } | null = null
+  let probedQueued: {
+    input: ProbeInput
+    resolve: (result: CoachInspectResult | Promise<CoachInspectResult>) => void
+  } | null = null
   /** Scope the agent was last briefed with (full briefing or scope update) — a
    *  resumed turn under a different scope gets a one-line update. */
   let briefedScopeKey: string | null = null
@@ -187,7 +190,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // The conversation workspace as the probe's cwd — created lazily, the
       // same way the first run would; a probe must still spawn the agent
       // somewhere real (reset/quit cleans it up).
-      const probeWorkspace = workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-'))
+      const probeWorkspace = (workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-')))
       const result = await runtime.inspect({
         harness,
         workspacePath: probeWorkspace,
@@ -359,11 +362,22 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         void (async () => {
           let settled = false
           try {
-            if (resumeLost) emit(runId, { kind: 'notice', message: 'The previous session could not be restored — continuing in a fresh session.' })
-            if (firstRun && !ledgerServer) emit(runId, { kind: 'notice', message: 'Ledger data is not available yet (no scan found) — answers will not be grounded in your usage data.' })
+            if (resumeLost)
+              emit(runId, {
+                kind: 'notice',
+                message: 'The previous session could not be restored — continuing in a fresh session.',
+              })
+            if (firstRun && !ledgerServer)
+              emit(runId, {
+                kind: 'notice',
+                message:
+                  'Ledger data is not available yet (no scan found) — answers will not be grounded in your usage data.',
+              })
             for await (const event of gen) {
-              if (event.kind === 'status' && event.state === 'done') harnessSource.reportAuth?.(instance.instanceId, 'configured')
-              if (event.kind === 'error' && isAuthFailureMessage(event.message)) harnessSource.reportAuth?.(instance.instanceId, 'unauthenticated')
+              if (event.kind === 'status' && event.state === 'done')
+                harnessSource.reportAuth?.(instance.instanceId, 'configured')
+              if (event.kind === 'error' && isAuthFailureMessage(event.message))
+                harnessSource.reportAuth?.(instance.instanceId, 'unauthenticated')
               emit(runId, event)
             }
             settled = true
@@ -407,8 +421,11 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         // return() can reject if the generator's finally (provider cleanup)
         // throws — that must not become an unhandled rejection; the stream is
         // already being torn down by the caller's intent.
-        const cancelPromise = gen.return(undefined)
-          .catch(() => { /* teardown already in flight */ })
+        const cancelPromise = gen
+          .return(undefined)
+          .catch(() => {
+            /* teardown already in flight */
+          })
           .finally(() => cancelPromises.delete(runId)) as Promise<void>
         cancelPromises.set(runId, cancelPromise)
         return cancelPromise
@@ -467,13 +484,17 @@ export interface AgentsIpcSources {
 /** Wire the Coach & Skills IPC surface onto ipcMain. Call once from
  *  registerIpc(); returns the runner cleanup handle (temp workspace teardown)
  *  for the app's quit path. `dismissals` bridges the not-a-skill store. */
-export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Promise<void>; dispose: () => Promise<void> } {
+export function registerAgentsIpc(sources: AgentsIpcSources): {
+  reset: () => Promise<void>
+  dispose: () => Promise<void>
+} {
   const { dismissals, appPath, clientVersion, ledgerMcpServer } = sources
   let runtimePromise: Promise<HarnessRuntime> | null = null
   const harnessStore: HarnessSnapshotStore = createHarnessSnapshotStore({
-    detect: () => detectHarnesses({
-      resolveBundled: spec => resolveBundledEntry(spec, appPath),
-    }),
+    detect: () =>
+      detectHarnesses({
+        resolveBundled: spec => resolveBundledEntry(spec, appPath),
+      }),
     probe: info => probeHarness(info, { clientVersion }),
     onChange: rows => {
       for (const win of BrowserWindow.getAllWindows()) {
@@ -501,7 +522,7 @@ export function registerAgentsIpc(sources: AgentsIpcSources): { reset: () => Pro
     const loginCommand = instance
       ? harnessSpecs.find(spec => spec.kind === instance.info.kind)?.auth?.loginCommand
       : undefined
-    return openLoginTerminal(parsed.data, instanceId => instanceId === parsed.data ? loginCommand : undefined)
+    return openLoginTerminal(parsed.data, instanceId => (instanceId === parsed.data ? loginCommand : undefined))
   })
 
   /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared

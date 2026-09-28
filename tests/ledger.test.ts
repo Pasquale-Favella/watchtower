@@ -117,13 +117,15 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     expect(tables).not.toContain('ratio_metrics')
 
     const indexes = store.getIndexNames('ledger_call')
-    expect(indexes.sort()).toEqual([
-      'idx_ledger_call_timestamp',
-      'idx_ledger_call_session',
-      'idx_ledger_call_model',
-      'idx_ledger_call_project',
-      'idx_ledger_call_provider',
-    ].sort())
+    expect(indexes.sort()).toEqual(
+      [
+        'idx_ledger_call_timestamp',
+        'idx_ledger_call_session',
+        'idx_ledger_call_model',
+        'idx_ledger_call_project',
+        'idx_ledger_call_provider',
+      ].sort(),
+    )
     const version = new DatabaseSync(store.dbPath, { readOnly: true })
     expect(version.prepare('SELECT migration_id FROM watchtower_sql_migrations').get()).toEqual({ migration_id: 1 })
     version.close()
@@ -562,7 +564,10 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     const store = makeStore()
     const file = buildFixtureCachedFile()
     file.turns[0]!.calls[0]!.toolSequence = [
-      [{ tool: 'Edit', file: 'src/auth.ts' }, { tool: 'Bash', command: 'npm test' }],
+      [
+        { tool: 'Edit', file: 'src/auth.ts' },
+        { tool: 'Bash', command: 'npm test' },
+      ],
       [{ tool: 'Read', file: 'src/auth.ts' }],
     ]
 
@@ -571,7 +576,10 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     const calls = store.getCalls()
     expect(calls).toHaveLength(1)
     expect(calls[0]!.toolSequence).toEqual([
-      [{ tool: 'Edit', file: 'src/auth.ts' }, { tool: 'Bash', command: 'npm test' }],
+      [
+        { tool: 'Edit', file: 'src/auth.ts' },
+        { tool: 'Bash', command: 'npm test' },
+      ],
       [{ tool: 'Read', file: 'src/auth.ts' }],
     ])
 
@@ -592,26 +600,39 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.dismissSkill('bash', 'git commit', 'not-a-skill')
 
     expect(store.getModelAliases()).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
-    expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 3, outputPricePerMillion: 15 }])
-    expect(store.getCurrencyRate('EUR')).toEqual({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
+    expect(store.getPriceOverrides()).toEqual([
+      { model: 'demo-model', inputPricePerMillion: 3, outputPricePerMillion: 15 },
+    ])
+    expect(store.getCurrencyRate('EUR')).toEqual({
+      code: 'EUR',
+      symbol: '€',
+      rate: 0.92,
+      updatedAt: '2026-07-01T00:00:00.000Z',
+    })
     expect(store.getDisplayCurrency()).toBe('EUR')
     expect(store.getRefreshCadence()).toBe('5m')
     expect(store.getSkillDismissals()).toHaveLength(1)
 
     // a second upsert overwrites, never appends
     store.setPriceOverride('demo-model', { inputPricePerMillion: 4, outputPricePerMillion: 16 })
-    expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 }])
+    expect(store.getPriceOverrides()).toEqual([
+      { model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 },
+    ])
 
     store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
     store.clear()
 
     expect(store.getSources()).toEqual([])
     expect(store.getModelAliases()).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
-    expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 }])
+    expect(store.getPriceOverrides()).toEqual([
+      { model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 },
+    ])
     expect(store.getCurrencyRate('EUR')).not.toBeNull()
     expect(store.getDisplayCurrency()).toBe('EUR')
     expect(store.getRefreshCadence()).toBe('5m')
-    expect(store.getSkillDismissals()).toEqual([{ source: 'bash', name: 'git commit', reason: 'not-a-skill', created: expect.any(String) }])
+    expect(store.getSkillDismissals()).toEqual([
+      { source: 'bash', name: 'git commit', reason: 'not-a-skill', created: expect.any(String) },
+    ])
 
     store.close()
   })
@@ -808,9 +829,11 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
   }
 
   function readTableNames(ro: DatabaseSync): string[] {
-    const rows = ro.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'watchtower_sql_migrations' ORDER BY name ASC",
-    ).all() as Array<{ name: string }>
+    const rows = ro
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'watchtower_sql_migrations' ORDER BY name ASC",
+      )
+      .all() as Array<{ name: string }>
     return rows.map(r => r.name)
   }
 
@@ -955,9 +978,8 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
   }
 
   function readTableSql(ro: DatabaseSync, table: string): string {
-    const row = ro.prepare(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-    ).get(table) as { sql: string | null } | undefined
+    const row = ro.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as
+      { sql: string | null } | undefined
     return row?.sql ?? ''
   }
 
@@ -965,10 +987,9 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
     withTempLedgerReadOnly(ro => {
       const list = readIndexList(ro, 'ledger_call')
       const named = list.filter(i => i.origin === 'c')
-      expect(
-        named.map(i => i.name).sort(),
-        '[ledger_call] named indexes',
-      ).toEqual(Object.keys(EXPECTED_NAMED_CALL_INDEXES).sort())
+      expect(named.map(i => i.name).sort(), '[ledger_call] named indexes').toEqual(
+        Object.keys(EXPECTED_NAMED_CALL_INDEXES).sort(),
+      )
       for (const [index, column] of Object.entries(EXPECTED_NAMED_CALL_INDEXES)) {
         const entry = named.find(i => i.name === index)
         expect(entry, `[ledger_call.${index}] present`).toBeDefined()
@@ -1124,10 +1145,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
           canonicalCwd: '/workspace/demo-project',
           agentType: 'parity-harness',
           title: 'Parity adversarial round trip',
-          prLinks: [
-            'https://github.com/acme/demo-project/pull/7',
-            'https://github.com/acme/demo-project/pull/8',
-          ],
+          prLinks: ['https://github.com/acme/demo-project/pull/7', 'https://github.com/acme/demo-project/pull/8'],
           isSidechain: 1,
           parentSessionId: 'sess-parent-parity',
           agentSpawnLinks: { 'spawn-parity-1': 'sess-side-parity' },
@@ -1300,9 +1318,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         verdict: 'new',
         cachedFile: buildFixtureCachedFile(),
       })
-      const unshaped = store
-        .getSources()
-        .find(s => s.filePath.endsWith('sess-unshaped.jsonl'))!
+      const unshaped = store.getSources().find(s => s.filePath.endsWith('sess-unshaped.jsonl'))!
       expect(unshaped.repoUrl).toBeUndefined()
       expect(unshaped.project).toBeUndefined()
     } finally {
@@ -1456,10 +1472,7 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
           canonicalCwd: '/workspace/demo-project',
           agentType: 'coverage-harness',
           title: 'Coverage probe',
-          prLinks: [
-            'https://github.com/acme/demo-project/pull/10',
-            'https://github.com/acme/demo-project/pull/9',
-          ],
+          prLinks: ['https://github.com/acme/demo-project/pull/10', 'https://github.com/acme/demo-project/pull/9'],
           isSidechain: 1,
           parentSessionId: 'sess-parent-cov',
           agentSpawnLinks: { 'spawn-cov-1': 'sess-cov-side' },

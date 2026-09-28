@@ -43,10 +43,7 @@ function notice(filePath: string, code: string): void {
   })
 }
 
-export async function readSessionFile(
-  filePath: string,
-  encoding: BufferEncoding = 'utf-8'
-): Promise<string | null> {
+export async function readSessionFile(filePath: string, encoding: BufferEncoding = 'utf-8'): Promise<string | null> {
   let size: number
   try {
     size = (await stat(filePath)).size
@@ -100,10 +97,7 @@ type ReadSessionLinesOptions = {
   maxBytes?: number
 }
 
-export function readSessionLines(
-  filePath: string,
-  shouldSkipHead?: (head: string) => boolean,
-): AsyncGenerator<string>
+export function readSessionLines(filePath: string, shouldSkipHead?: (head: string) => boolean): AsyncGenerator<string>
 export function readSessionLines(
   filePath: string,
   shouldSkipHead?: (head: string) => boolean,
@@ -185,9 +179,7 @@ export async function* readSessionLines(
           headChecked = false
 
           if (shouldSkipHead) {
-            const head = lineLen > SKIP_HEAD
-              ? buf.subarray(0, SKIP_HEAD).toString('utf-8')
-              : buf.toString('utf-8')
+            const head = lineLen > SKIP_HEAD ? buf.subarray(0, SKIP_HEAD).toString('utf-8') : buf.toString('utf-8')
             if (shouldSkipHead(head)) continue
             yield formatLine(buf, lineLen, head)
           } else {
@@ -203,9 +195,8 @@ export async function* readSessionLines(
           // enter scanning mode — just look for \n without accumulating.
           if (shouldSkipHead && !headChecked && len >= SKIP_HEAD) {
             headChecked = true
-            const headBuf = parts.length === 1
-              ? parts[0]!.subarray(0, SKIP_HEAD)
-              : Buffer.concat(parts, len).subarray(0, SKIP_HEAD)
+            const headBuf =
+              parts.length === 1 ? parts[0]!.subarray(0, SKIP_HEAD) : Buffer.concat(parts, len).subarray(0, SKIP_HEAD)
             if (shouldSkipHead(headBuf.toString('utf-8'))) {
               skipping = true
               parts = []
@@ -221,9 +212,7 @@ export async function* readSessionLines(
       const buf = parts.length === 1 ? parts[0]! : Buffer.concat(parts, len)
       const lineLen = len
       if (shouldSkipHead) {
-        const head = lineLen > SKIP_HEAD
-          ? buf.subarray(0, SKIP_HEAD).toString('utf-8')
-          : buf.toString('utf-8')
+        const head = lineLen > SKIP_HEAD ? buf.subarray(0, SKIP_HEAD).toString('utf-8') : buf.toString('utf-8')
         if (!shouldSkipHead(head)) {
           yield formatLine(buf, lineLen, head)
         }

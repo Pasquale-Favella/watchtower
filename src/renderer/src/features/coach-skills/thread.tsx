@@ -22,7 +22,11 @@ import { useCoachSkillsStore, type ChatMessage } from './store'
  *  the prose, copyable like any answer. Rows rise gently into place via GSAP
  *  (transform + opacity only, so the scroller's positioning is never fought —
  *  see the MessageScroller docs on animating rows). */
-export function MessageBubble({ message, canRetry, onRetry }: {
+export function MessageBubble({
+  message,
+  canRetry,
+  onRetry,
+}: {
   message: ChatMessage
   /** Whether this assistant turn is the LAST one — the only one a retry can
    *  regenerate in place (a mid-thread answer has turns after it). */
@@ -38,8 +42,8 @@ export function MessageBubble({ message, canRetry, onRetry }: {
   if (message.role === 'user') {
     return (
       <div ref={rowRef} className="flex justify-end">
-        <div className="max-w-[75%] rounded-2xl rounded-br-md border border-border bg-primary/10 px-4 py-2.5">
-          <span className="text-[13.5px] leading-[1.65] text-foreground">{message.content}</span>
+        <div className="border-border bg-primary/10 max-w-[75%] rounded-2xl rounded-br-md border px-4 py-2.5">
+          <span className="text-foreground text-[13.5px] leading-[1.65]">{message.content}</span>
         </div>
       </div>
     )
@@ -57,37 +61,40 @@ export function MessageBubble({ message, canRetry, onRetry }: {
               hover-reveal copy action. Airy: breathing room below before the
               prose starts. */}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pb-1.5">
-            <Badge variant="secondary" className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <Badge
+              variant="secondary"
+              className="text-muted-foreground text-[9px] font-semibold tracking-wide uppercase"
+            >
               Coach
             </Badge>
             {message.meta?.harness && (
-              <span className="text-[9.5px] text-muted-foreground">{message.meta.harness}</span>
+              <span className="text-muted-foreground text-[9.5px]">{message.meta.harness}</span>
             )}
             {message.meta?.model && (
-              <span className="hidden items-center gap-0.5 text-[9.5px] text-muted-foreground sm:inline-flex">
-                <span aria-hidden>·</span>{message.meta.model}
+              <span className="text-muted-foreground hidden items-center gap-0.5 text-[9.5px] sm:inline-flex">
+                <span aria-hidden>·</span>
+                {message.meta.model}
               </span>
             )}
             {message.meta?.mode && (
-              <span className="hidden items-center gap-0.5 text-[9.5px] text-muted-foreground sm:inline-flex">
-                <span aria-hidden>·</span>{message.meta.mode}
+              <span className="text-muted-foreground hidden items-center gap-0.5 text-[9.5px] sm:inline-flex">
+                <span aria-hidden>·</span>
+                {message.meta.mode}
               </span>
             )}
-            {message.streaming && !message.content && <StreamingDots label={message.thinking ? 'Thinking' : 'Working'} />}
-            {message.error && <span className="text-[10px] text-destructive">{message.error}</span>}
+            {message.streaming && !message.content && (
+              <StreamingDots label={message.thinking ? 'Thinking' : 'Working'} />
+            )}
+            {message.error && <span className="text-destructive text-[10px]">{message.error}</span>}
             <span className="ml-auto flex items-center gap-0.5">
               <CopyButton text={message.content} />
-              {canRetry && (
-                <RetryButton onRetry={onRetry} disabled={running || message.streaming} />
-              )}
+              {canRetry && <RetryButton onRetry={onRetry} disabled={running || message.streaming} />}
             </span>
           </div>
 
           {/* The thinking/reasoning panel — starts collapsed; the header's
               pulsing dot + elapsed timer show it is live. */}
-          {message.thinking && (
-            <ThinkingBlock thinking={message.thinking} streaming={message.streaming} />
-          )}
+          {message.thinking && <ThinkingBlock thinking={message.thinking} streaming={message.streaming} />}
 
           {/* Tool-call activity — one collapsible card per call, starts
               collapsed (the status badge in each header shows the state). */}
@@ -100,8 +107,10 @@ export function MessageBubble({ message, canRetry, onRetry }: {
           )}
 
           {message.notices.length > 0 && (
-            <ul className="mt-2 space-y-0.5 text-[10px] leading-relaxed text-muted-foreground">
-              {message.notices.map((notice, index) => <li key={`${notice}-${index}`}>{notice}</li>)}
+            <ul className="text-muted-foreground mt-2 space-y-0.5 text-[10px] leading-relaxed">
+              {message.notices.map((notice, index) => (
+                <li key={`${notice}-${index}`}>{notice}</li>
+              ))}
             </ul>
           )}
 
@@ -110,9 +119,8 @@ export function MessageBubble({ message, canRetry, onRetry }: {
               <Markdown>{message.content}</Markdown>
             </div>
           ) : (
-            !message.error && !message.streaming && (
-              <p className="mt-3 text-[13px] text-muted-foreground">Waiting for the harness…</p>
-            )
+            !message.error &&
+            !message.streaming && <p className="text-muted-foreground mt-3 text-[13px]">Waiting for the harness…</p>
           )}
         </div>
       </div>
@@ -128,9 +136,7 @@ export function MessageBubble({ message, canRetry, onRetry }: {
  *  MessageScrollerItem (anchored on user turns), the viewport preserves the
  *  visible row when history is prepended, and the Button is the "jump to
  *  latest" control. */
-export function Thread({ messages }: {
-  messages: ChatMessage[]
-}) {
+export function Thread({ messages }: { messages: ChatMessage[] }) {
   // Hooks before the empty-transcript early return (rules-of-hooks): the
   // selector subscription must run in the same order on every render.
   const retryAssistant = useCoachSkillsStore(s => s.retryAssistant)
@@ -146,15 +152,13 @@ export function Thread({ messages }: {
         <MessageScrollerViewport>
           <MessageScrollerContent aria-busy={streaming} className="w-full gap-8 px-1 py-3.5">
             {messages.map(message => (
-              <MessageScrollerItem
-                key={message.id}
-                messageId={message.id}
-                scrollAnchor={message.role === 'user'}
-              >
+              <MessageScrollerItem key={message.id} messageId={message.id} scrollAnchor={message.role === 'user'}>
                 <MessageBubble
                   message={message}
                   canRetry={message.role === 'assistant' && message.id === lastAssistantId}
-                  onRetry={() => { void retryAssistant(message.id) }}
+                  onRetry={() => {
+                    void retryAssistant(message.id)
+                  }}
                 />
               </MessageScrollerItem>
             ))}

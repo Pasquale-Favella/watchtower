@@ -95,12 +95,12 @@ export async function initOperationalLog(opts: OperationalLogOptions): Promise<v
     opts.isPackaged
       ? pino(loggerOptions(level), stream)
       : pino(
-        loggerOptions(level),
-        pino.multistream([
-          { stream, level },
-          { stream: pretty({ colorize: false, singleLine: true }), level: 'debug' },
-        ]),
-      )
+          loggerOptions(level),
+          pino.multistream([
+            { stream, level },
+            { stream: pretty({ colorize: false, singleLine: true }), level: 'debug' },
+          ]),
+        )
   ) as ActiveLog['logger']
   active = { logger, stream }
 }
@@ -118,10 +118,17 @@ export function logOperationalEvent(
 export const logCodeFor = errorCodeFor
 
 /** Never-throwing emit shared by the record helpers below. */
-function emitSafe(level: LogLevel, event: string, fields: Record<string, unknown> = {}, context: LogContext = 'main'): void {
+function emitSafe(
+  level: LogLevel,
+  event: string,
+  fields: Record<string, unknown> = {},
+  context: LogContext = 'main',
+): void {
   try {
     logOperationalEvent(level, event, fields, context)
-  } catch { /* logging must never break callers */ }
+  } catch {
+    /* logging must never break callers */
+  }
 }
 
 /** Never-throwing IPC failure record: operation name + code only. */
@@ -141,7 +148,11 @@ export function safeLogOperationalEvent(
 
 export function closeOperationalLog(): void {
   if (!active) return
-  try { active.stream.end() } catch { /* best effort */ }
+  try {
+    active.stream.end()
+  } catch {
+    /* best effort */
+  }
   active = null
 }
 
@@ -172,9 +183,7 @@ export const FETCH_TIMEOUT_COUNTER = 'fetch.timeout' as const
 export const PROBE_OUTCOME_COUNTER = 'probe.outcome' as const
 
 export type OperationalLogCounter =
-  | typeof SCAN_DURATION_COUNTER
-  | typeof FETCH_TIMEOUT_COUNTER
-  | typeof PROBE_OUTCOME_COUNTER
+  typeof SCAN_DURATION_COUNTER | typeof FETCH_TIMEOUT_COUNTER | typeof PROBE_OUTCOME_COUNTER
 
 function liveEmit(level: LogLevel, event: string, fields: Record<string, unknown>, context: LogContext): void {
   safeLogOperationalEvent(level, event, fields, context)
@@ -190,7 +199,9 @@ function makeOperationalLogImpl(sink: OperationalLogSink) {
     Effect.sync(() => {
       try {
         sink.emit(level, event, fields, context)
-      } catch { /* logging must never break callers */ }
+      } catch {
+        /* logging must never break callers */
+      }
     })
 
   const log = Effect.fnUntraced(function* (
@@ -210,11 +221,7 @@ function makeOperationalLogImpl(sink: OperationalLogSink) {
     yield* emitSafely('info', name, { ...fields, count: amount }, 'main')
   })
 
-  const recordGauge = Effect.fnUntraced(function* (
-    name: string,
-    value: number,
-    fields: Record<string, unknown> = {},
-  ) {
+  const recordGauge = Effect.fnUntraced(function* (name: string, value: number, fields: Record<string, unknown> = {}) {
     yield* emitSafely('info', name, { ...fields, count: value }, 'main')
   })
 
@@ -240,17 +247,10 @@ export class OperationalLog extends Context.Service<
       amount?: number,
       fields?: Record<string, unknown>,
     ) => Effect.Effect<void>
-    readonly recordGauge: (
-      name: string,
-      value: number,
-      fields?: Record<string, unknown>,
-    ) => Effect.Effect<void>
+    readonly recordGauge: (name: string, value: number, fields?: Record<string, unknown>) => Effect.Effect<void>
   }
 >()('watchtower/main/OperationalLog') {
-  static readonly layer = Layer.succeed(
-    OperationalLog,
-    OperationalLog.of(makeOperationalLogImpl({ emit: liveEmit })),
-  )
+  static readonly layer = Layer.succeed(OperationalLog, OperationalLog.of(makeOperationalLogImpl({ emit: liveEmit })))
 
   static readonly layerWithSink = (sink: OperationalLogSink): Layer.Layer<OperationalLog> =>
     Layer.succeed(OperationalLog, OperationalLog.of(makeOperationalLogImpl(sink)))
@@ -323,14 +323,20 @@ export const OperationalLogLogger: EffectLogger.Logger<unknown, void> = EffectLo
       if (annotations && typeof annotations === 'object') {
         for (const [key, value] of Object.entries(annotations)) fields[key] = value
       }
-    } catch { /* annotations are best-effort */ }
+    } catch {
+      /* annotations are best-effort */
+    }
     try {
       if (options.cause && options.cause.reasons.length > 0) {
         fields['code'] = errorCodeFor(Cause.squash(options.cause))
       }
-    } catch { /* cause code is best-effort */ }
+    } catch {
+      /* cause code is best-effort */
+    }
     safeLogOperationalEvent(level, 'effect.log', fields)
-  } catch { /* logging must never break callers, including inside fibers */ }
+  } catch {
+    /* logging must never break callers, including inside fibers */
+  }
 })
 
 /** Installs `OperationalLogLogger`, replacing the default loggers so Effect

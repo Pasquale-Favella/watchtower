@@ -50,8 +50,15 @@ type ModelAcc = Omit<CompareModelStat, 'model' | 'displayName'>
 
 function emptyAcc(): ModelAcc {
   return {
-    calls: 0, costUSD: 0, outputTokens: 0, inputTokens: 0, cacheReadTokens: 0,
-    totalTurns: 0, editTurns: 0, oneShotTurns: 0, retries: 0,
+    calls: 0,
+    costUSD: 0,
+    outputTokens: 0,
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    totalTurns: 0,
+    editTurns: 0,
+    oneShotTurns: 0,
+    retries: 0,
   }
 }
 
@@ -104,8 +111,7 @@ function accumulateModelStats(sessions: SessionSummary[]): CompareModelStat[] {
     }
   }
 
-  return [...byModel.entries()]
-    .map(([model, acc]) => ({ model, displayName: getShortModelName(model), ...acc }))
+  return [...byModel.entries()].map(([model, acc]) => ({ model, displayName: getShortModelName(model), ...acc }))
 }
 
 function pickWinner(valueA: number | null, valueB: number | null, higherIsBetter: boolean | null): CompareWinner {
@@ -128,14 +134,18 @@ const METRICS: MetricDef[] = [
   { label: 'Input tokens', formatFn: 'compact', higherIsBetter: null, compute: s => s.inputTokens },
   { label: 'Output tokens', formatFn: 'compact', higherIsBetter: null, compute: s => s.outputTokens },
   {
-    label: 'One-shot rate', formatFn: 'percent', higherIsBetter: true,
+    label: 'One-shot rate',
+    formatFn: 'percent',
+    higherIsBetter: true,
     compute: s => (s.editTurns > 0 ? (s.oneShotTurns / s.editTurns) * 100 : null),
   },
   {
     // Retries accumulate across ALL the model's primary turns
     // but are divided by edit turns ("retries per edit"), so the rate can
     // exceed 1.0 when a model also retries non-edit turns.
-    label: 'Retry rate', formatFn: 'decimal', higherIsBetter: false,
+    label: 'Retry rate',
+    formatFn: 'decimal',
+    higherIsBetter: false,
     compute: s => (s.editTurns > 0 ? s.retries / s.editTurns : null),
   },
   {
@@ -143,11 +153,15 @@ const METRICS: MetricDef[] = [
     // patterns, so this uses
     // the desktop's established selfCorrectionRate ratio (editTurns/totalTurns,
     // matching extractRatioMetrics). Lower is better.
-    label: 'Self-correction rate', formatFn: 'percent', higherIsBetter: false,
+    label: 'Self-correction rate',
+    formatFn: 'percent',
+    higherIsBetter: false,
     compute: s => (s.totalTurns > 0 ? (s.editTurns / s.totalTurns) * 100 : null),
   },
   {
-    label: 'Cache hit rate', formatFn: 'percent', higherIsBetter: true,
+    label: 'Cache hit rate',
+    formatFn: 'percent',
+    higherIsBetter: true,
     compute: s => {
       // Reads over reads + fresh input (excludes cache writes), matching the
       // rest of the app (extractRatioMetrics / Overview's cacheHitPercent).
@@ -173,11 +187,7 @@ function computeComparison(a: CompareModelStat, b: CompareModelStat): Comparison
 
 type CategoryAcc = { turns: number; editTurns: number; oneShotTurns: number }
 
-function computeCategoryComparison(
-  sessions: SessionSummary[],
-  modelA: string,
-  modelB: string,
-): CategoryComparison[] {
+function computeCategoryComparison(sessions: SessionSummary[], modelA: string, modelB: string): CategoryComparison[] {
   const mapA = new Map<string, CategoryAcc>()
   const mapB = new Map<string, CategoryAcc>()
 
@@ -229,13 +239,19 @@ function computeCategoryComparison(
     })
   }
 
-  return result.sort((x, y) => (y.turnsA + y.turnsB) - (x.turnsA + x.turnsB))
+  return result.sort((x, y) => y.turnsA + y.turnsB - (x.turnsA + x.turnsB))
 }
 
 const PLANNING_TOOLS = new Set(['TaskCreate', 'TaskUpdate', 'TodoWrite', 'EnterPlanMode', 'ExitPlanMode'])
 
 function computeWorkingStyle(sessions: SessionSummary[], modelA: string, modelB: string): WorkingStyleRow[] {
-  type StyleAcc = { totalTurns: number; agentSpawns: number; planModeUses: number; totalToolCalls: number; fastModeCalls: number }
+  type StyleAcc = {
+    totalTurns: number
+    agentSpawns: number
+    planModeUses: number
+    totalToolCalls: number
+    fastModeCalls: number
+  }
   const sA: StyleAcc = { totalTurns: 0, agentSpawns: 0, planModeUses: 0, totalToolCalls: 0, fastModeCalls: 0 }
   const sB: StyleAcc = { totalTurns: 0, agentSpawns: 0, planModeUses: 0, totalToolCalls: 0, fastModeCalls: 0 }
 
@@ -264,16 +280,39 @@ function computeWorkingStyle(sessions: SessionSummary[], modelA: string, modelB:
   const avg = (num: number, den: number): number | null => (den > 0 ? num / den : null)
 
   return [
-    { label: 'Delegation rate', valueA: pct(sA.agentSpawns, sA.totalTurns), valueB: pct(sB.agentSpawns, sB.totalTurns), formatFn: 'percent' },
-    { label: 'Planning rate', valueA: pct(sA.planModeUses, sA.totalTurns), valueB: pct(sB.planModeUses, sB.totalTurns), formatFn: 'percent' },
-    { label: 'Avg tools / turn', valueA: avg(sA.totalToolCalls, sA.totalTurns), valueB: avg(sB.totalToolCalls, sB.totalTurns), formatFn: 'decimal' },
-    { label: 'Fast mode usage', valueA: pct(sA.fastModeCalls, sA.totalTurns), valueB: pct(sB.fastModeCalls, sB.totalTurns), formatFn: 'percent' },
+    {
+      label: 'Delegation rate',
+      valueA: pct(sA.agentSpawns, sA.totalTurns),
+      valueB: pct(sB.agentSpawns, sB.totalTurns),
+      formatFn: 'percent',
+    },
+    {
+      label: 'Planning rate',
+      valueA: pct(sA.planModeUses, sA.totalTurns),
+      valueB: pct(sB.planModeUses, sB.totalTurns),
+      formatFn: 'percent',
+    },
+    {
+      label: 'Avg tools / turn',
+      valueA: avg(sA.totalToolCalls, sA.totalTurns),
+      valueB: avg(sB.totalToolCalls, sB.totalTurns),
+      formatFn: 'decimal',
+    },
+    {
+      label: 'Fast mode usage',
+      valueA: pct(sA.fastModeCalls, sA.totalTurns),
+      valueB: pct(sB.fastModeCalls, sB.totalTurns),
+      formatFn: 'percent',
+    },
   ]
 }
 
 /** Resolve the requested pair against the detected models: a valid distinct
  * pair wins, otherwise the default top-two by cost. */
-function resolvePair(models: CompareModelStat[], pair: ComparePair | undefined): { a: CompareModelStat; b: CompareModelStat } {
+function resolvePair(
+  models: CompareModelStat[],
+  pair: ComparePair | undefined,
+): { a: CompareModelStat; b: CompareModelStat } {
   if (pair) {
     const a = models.find(model => model.model === pair.modelA)
     const b = models.find(model => model.model === pair.modelB)
@@ -306,8 +345,7 @@ export function buildCompareViewFromLedger(
 }
 
 function buildComparePayload(sessions: SessionSummary[], pair?: ComparePair): ComparePayload {
-  const models = accumulateModelStats(sessions)
-    .sort((a, b) => (b.costUSD - a.costUSD) || a.model.localeCompare(b.model))
+  const models = accumulateModelStats(sessions).sort((a, b) => b.costUSD - a.costUSD || a.model.localeCompare(b.model))
 
   if (models.length < 2) return { models, report: null }
 

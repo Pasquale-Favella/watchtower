@@ -83,16 +83,16 @@ const CACHE_EXCESS_HIGH_THRESHOLD = 15000
 const UNUSED_MCP_HIGH_THRESHOLD = 3
 const MCP_COVERAGE_MIN_TOOLS = 10
 const MCP_COVERAGE_MIN_SESSIONS = 2
-const MCP_COVERAGE_LOW_THRESHOLD = 0.20
+const MCP_COVERAGE_LOW_THRESHOLD = 0.2
 const MCP_COVERAGE_HIGH_IMPACT_TOKENS = 200_000
 const MCP_PROFILE_MIN_PROJECTS = 3
 const MCP_PROFILE_MIN_HOT_INVOCATIONS = 2
-const MCP_PROFILE_HOT_INVOCATION_SHARE = 0.80
+const MCP_PROFILE_HOT_INVOCATION_SHARE = 0.8
 const MCP_PROFILE_MIN_COLD_LOADED_SESSIONS = 2
 const MCP_PROFILE_HIGH_IMPACT_TOKENS = 200_000
 const MCP_PROFILE_PREVIEW = 3
 const CACHE_WRITE_MULTIPLIER = 1.25
-const CACHE_READ_DISCOUNT = 0.10
+const CACHE_READ_DISCOUNT = 0.1
 const GHOST_AGENTS_HIGH_THRESHOLD = 5
 const GHOST_AGENTS_MEDIUM_THRESHOLD = 2
 const GHOST_SKILLS_HIGH_THRESHOLD = 10
@@ -127,8 +127,8 @@ const WORTH_IT_HIGH_MIN_CANDIDATES = 10
 const WORTH_IT_HIGH_TOTAL_COST_USD = 50
 const CAPABILITY_RELIABILITY_MIN_EDIT_TURNS = 5
 const CAPABILITY_RELIABILITY_MIN_RETRY_TURNS = 3
-const CAPABILITY_RELIABILITY_MIN_RETRY_RATE = 0.50
-const CAPABILITY_RELIABILITY_RECOVERY_FRACTION = 0.50
+const CAPABILITY_RELIABILITY_MIN_RETRY_RATE = 0.5
+const CAPABILITY_RELIABILITY_RECOVERY_FRACTION = 0.5
 const CAPABILITY_RELIABILITY_PREVIEW = 5
 const CAPABILITY_RELIABILITY_LOW_MAX_CANDIDATES = 1
 const CAPABILITY_RELIABILITY_LOW_MAX_TOKENS = 50_000
@@ -170,9 +170,21 @@ const DEFAULT_TREND_PERIOD_MS = DEFAULT_TREND_PERIOD_DAYS * 24 * 60 * 60 * 1000
 const IMPROVING_THRESHOLD = 0.5
 
 const JUNK_DIRS = [
-  'node_modules', '.git', 'dist', 'build', '__pycache__', '.next',
-  '.nuxt', '.output', 'coverage', '.cache', '.tsbuildinfo',
-  '.venv', 'venv', '.svn', '.hg',
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  '__pycache__',
+  '.next',
+  '.nuxt',
+  '.output',
+  'coverage',
+  '.cache',
+  '.tsbuildinfo',
+  '.venv',
+  'venv',
+  '.svn',
+  '.hg',
 ]
 const JUNK_PATTERN = new RegExp(`/(?:${JUNK_DIRS.join('|')})/`)
 
@@ -306,10 +318,7 @@ function anySessionHasMcpInventory(projects: ProjectSummary[]): boolean {
 
 export function loadMcpConfigs(projectCwds: Iterable<string>, home = homedir()): Map<string, McpConfigEntry> {
   const servers = new Map<string, McpConfigEntry>()
-  const configPaths = [
-    join(home, '.claude', 'settings.json'),
-    join(home, '.claude', 'settings.local.json'),
-  ]
+  const configPaths = [join(home, '.claude', 'settings.json'), join(home, '.claude', 'settings.local.json')]
   for (const cwd of projectCwds) {
     configPaths.push(join(cwd, '.mcp.json'))
     configPaths.push(join(cwd, '.claude', 'settings.json'))
@@ -321,7 +330,9 @@ export function loadMcpConfigs(projectCwds: Iterable<string>, home = homedir()):
     const config = readJsonFile(p)
     if (!config) continue
     let mtime = 0
-    try { mtime = statSync(p).mtimeMs } catch {}
+    try {
+      mtime = statSync(p).mtimeMs
+    } catch {}
     const serversObj = (config.mcpServers ?? {}) as Record<string, unknown>
     for (const [name, rawEntry] of Object.entries(serversObj)) {
       const normalized = name.replace(/:/g, '_')
@@ -365,7 +376,9 @@ export function findDeferralEnvSetting(
     const path = join(home, profile)
     if (!existsSync(path)) continue
     let content: string | null = null
-    try { content = readFileSync(path, 'utf8') } catch {}
+    try {
+      content = readFileSync(path, 'utf8')
+    } catch {}
     if (content === null) continue
     const match = content.match(linePattern)
     if (match) return { value: match[1]!, scope: 'shell profile', path }
@@ -489,7 +502,10 @@ export function detectJunkReads(steps: ScanStep[], dateRange?: DateRange, now = 
   if (trend === 'resolved') return null
 
   const sorted = [...dirCounts.entries()].sort((a, b) => b[1] - a[1])
-  const dirList = sorted.slice(0, TOP_ITEMS_PREVIEW).map(([d, n]) => `${d}/ (${n}x)`).join(', ')
+  const dirList = sorted
+    .slice(0, TOP_ITEMS_PREVIEW)
+    .map(([d, n]) => `${d}/ (${n}x)`)
+    .join(', ')
   const tokensSaved = totalJunkReads * AVG_TOKENS_PER_READ
 
   const detected = sorted.map(([d]) => d)
@@ -501,7 +517,12 @@ export function detectJunkReads(steps: ScanStep[], dateRange?: DateRange, now = 
     id: 'build-folder-reads',
     title: 'Claude is reading build/dependency folders',
     explanation: `Claude read into ${dirList} (${totalJunkReads} reads). These are generated or dependency directories, not your code. Tell Claude in CLAUDE.md to avoid them.`,
-    impact: totalJunkReads > JUNK_READS_HIGH_THRESHOLD ? 'high' : totalJunkReads > JUNK_READS_MEDIUM_THRESHOLD ? 'medium' : 'low',
+    impact:
+      totalJunkReads > JUNK_READS_HIGH_THRESHOLD
+        ? 'high'
+        : totalJunkReads > JUNK_READS_MEDIUM_THRESHOLD
+          ? 'medium'
+          : 'low',
     tokensSaved,
     fix: {
       type: 'paste',
@@ -562,7 +583,12 @@ export function detectDuplicateReads(steps: ScanStep[], dateRange?: DateRange, n
     id: 'redundant-rereads',
     title: 'Claude is re-reading the same files',
     explanation: `${totalDuplicates} redundant re-reads across sessions. Top repeats: ${worst}. Each re-read loads the same content into context again.`,
-    impact: totalDuplicates > DUPLICATE_READS_HIGH_THRESHOLD ? 'high' : totalDuplicates > DUPLICATE_READS_MEDIUM_THRESHOLD ? 'medium' : 'low',
+    impact:
+      totalDuplicates > DUPLICATE_READS_HIGH_THRESHOLD
+        ? 'high'
+        : totalDuplicates > DUPLICATE_READS_MEDIUM_THRESHOLD
+          ? 'medium'
+          : 'low',
     tokensSaved,
     fix: {
       type: 'paste',
@@ -593,7 +619,8 @@ export function detectLowReadEditRatio(steps: ScanStep[]): WasteFinding | null {
   const ratio = reads / edits
   if (ratio >= HEALTHY_READ_EDIT_RATIO) return null
 
-  const impact: Impact = ratio < LOW_RATIO_HIGH_THRESHOLD ? 'high' : ratio < LOW_RATIO_MEDIUM_THRESHOLD ? 'medium' : 'low'
+  const impact: Impact =
+    ratio < LOW_RATIO_HIGH_THRESHOLD ? 'high' : ratio < LOW_RATIO_MEDIUM_THRESHOLD ? 'medium' : 'low'
   const extraReadsNeeded = Math.max(Math.round(edits * HEALTHY_READ_EDIT_RATIO) - reads, 0)
   const tokensSaved = extraReadsNeeded * AVG_TOKENS_PER_READ
 
@@ -638,7 +665,12 @@ function computeBudgetAwareCacheBaseline(projects: ProjectSummary[]): number {
   return sorted[Math.floor(sorted.length * CACHE_BASELINE_QUANTILE)] || DEFAULT_CACHE_BASELINE_TOKENS
 }
 
-export function detectCacheBloat(apiCalls: ApiCallMeta[], projects: ProjectSummary[], dateRange?: DateRange, now = new Date()): WasteFinding | null {
+export function detectCacheBloat(
+  apiCalls: ApiCallMeta[],
+  projects: ProjectSummary[],
+  dateRange?: DateRange,
+  now = new Date(),
+): WasteFinding | null {
   if (apiCalls.length < MIN_API_CALLS_FOR_CACHE) return null
 
   const sorted = apiCalls.map(c => c.cacheCreationTokens).sort((a, b) => a - b)
@@ -668,8 +700,9 @@ export function detectCacheBloat(apiCalls: ApiCallMeta[], projects: ProjectSumma
     fix: {
       type: 'paste',
       destination: 'shell-config',
-      label: 'Check for recent Claude Code updates or heavy MCP/skill additions. As a workaround (not officially supported), add to ~/.zshrc or ~/.bashrc:',
-      text: 'export ANTHROPIC_CUSTOM_HEADERS=\'User-Agent: claude-cli/2.1.98 (external, sdk-cli)\'',
+      label:
+        'Check for recent Claude Code updates or heavy MCP/skill additions. As a workaround (not officially supported), add to ~/.zshrc or ~/.bashrc:',
+      text: "export ANTHROPIC_CUSTOM_HEADERS='User-Agent: claude-cli/2.1.98 (external, sdk-cli)'",
     },
     trend,
   }
@@ -751,7 +784,9 @@ export function aggregateMcpCoverage(projects: ProjectSummary[]): McpServerCover
     for (const fqn of acc.invokedTools) {
       if (acc.inventory.has(fqn)) invokedInInventory.add(fqn)
     }
-    const unusedTools = Array.from(acc.inventory).filter(t => !invokedInInventory.has(t)).sort()
+    const unusedTools = Array.from(acc.inventory)
+      .filter(t => !invokedInInventory.has(t))
+      .sort()
     const toolsInvoked = acc.inventory.size - unusedTools.length
     result.push({
       server,
@@ -789,7 +824,10 @@ export function estimateMcpSchemaCost(
       let loaded = false
       for (const fqn of session.mcpInventory ?? []) {
         const seg = fqn.split('__')[1]
-        if (seg && serverSet.has(seg)) { loaded = true; break }
+        if (seg && serverSet.has(seg)) {
+          loaded = true
+          break
+        }
       }
       if (!loaded) continue
 
@@ -816,14 +854,15 @@ export function detectMcpToolCoverage(
 ): WasteFinding | null {
   if (coverage.length === 0) return null
 
-  const flagged = coverage.filter(c =>
-    c.toolsAvailable > MCP_COVERAGE_MIN_TOOLS
-    && c.loadedSessions >= MCP_COVERAGE_MIN_SESSIONS
-    && c.coverageRatio < MCP_COVERAGE_LOW_THRESHOLD,
+  const flagged = coverage.filter(
+    c =>
+      c.toolsAvailable > MCP_COVERAGE_MIN_TOOLS &&
+      c.loadedSessions >= MCP_COVERAGE_MIN_SESSIONS &&
+      c.coverageRatio < MCP_COVERAGE_LOW_THRESHOLD,
   )
   if (flagged.length === 0) return null
 
-  flagged.sort((a, b) => (b.toolsAvailable - b.toolsInvoked) - (a.toolsAvailable - a.toolsInvoked))
+  flagged.sort((a, b) => b.toolsAvailable - b.toolsInvoked - (a.toolsAvailable - a.toolsInvoked))
 
   const lines: string[] = []
   const removeCommands: string[] = []
@@ -842,11 +881,12 @@ export function detectMcpToolCoverage(
 
   const cost = estimateMcpSchemaCost(unusedCountsByServer, projects, flaggedServers)
   const tokensSaved = Math.round(cost.effectiveInputTokens)
-  const impact: Impact = tokensSaved >= MCP_COVERAGE_HIGH_IMPACT_TOKENS
-    ? 'high'
-    : flagged.length >= UNUSED_MCP_HIGH_THRESHOLD
+  const impact: Impact =
+    tokensSaved >= MCP_COVERAGE_HIGH_IMPACT_TOKENS
       ? 'high'
-      : 'medium'
+      : flagged.length >= UNUSED_MCP_HIGH_THRESHOLD
+        ? 'high'
+        : 'medium'
 
   return {
     id: 'mcp-low-coverage',
@@ -859,9 +899,10 @@ export function detectMcpToolCoverage(
     tokensSaved,
     fix: {
       type: 'command',
-      label: flagged.length === 1
-        ? 'Remove the underused server, or trim its tools in your MCP config:'
-        : 'Remove underused servers, or trim their tools in your MCP config:',
+      label:
+        flagged.length === 1
+          ? 'Remove the underused server, or trim its tools in your MCP config:'
+          : 'Remove underused servers, or trim their tools in your MCP config:',
       text: removeCommands.join('\n'),
     },
   }
@@ -907,10 +948,11 @@ function sessionLoadedMcpServer(session: SessionSummary, server: string): boolea
 function lowCoverageMcpServers(coverage: McpServerCoverage[]): Set<string> {
   return new Set(
     coverage
-      .filter(c =>
-        c.toolsAvailable > MCP_COVERAGE_MIN_TOOLS
-        && c.loadedSessions >= MCP_COVERAGE_MIN_SESSIONS
-        && c.coverageRatio < MCP_COVERAGE_LOW_THRESHOLD,
+      .filter(
+        c =>
+          c.toolsAvailable > MCP_COVERAGE_MIN_TOOLS &&
+          c.loadedSessions >= MCP_COVERAGE_MIN_SESSIONS &&
+          c.coverageRatio < MCP_COVERAGE_LOW_THRESHOLD,
       )
       .map(c => c.server),
   )
@@ -955,10 +997,7 @@ function estimateMcpProfileColdSchemaCost(
   return { cacheWriteTokens, cacheReadTokens, effectiveInputTokens }
 }
 
-function collectMcpProjectProfiles(
-  projects: ProjectSummary[],
-  coverage: McpServerCoverage[],
-): McpProfileCandidate[] {
+function collectMcpProjectProfiles(projects: ProjectSummary[], coverage: McpServerCoverage[]): McpProfileCandidate[] {
   const suppressedServers = lowCoverageMcpServers(coverage)
   const coverageByServer = new Map(coverage.map(c => [c.server, c]))
   const byServer = new Map<string, Map<string, McpProjectProfileStats>>()
@@ -1012,10 +1051,11 @@ function collectMcpProjectProfiles(
     const invocations = loaded.reduce((sum, p) => sum + p.invocations, 0)
     if (invocations < MCP_PROFILE_MIN_HOT_INVOCATIONS) continue
 
-    loaded.sort((a, b) =>
-      b.invocations - a.invocations
-      || b.loadedSessions - a.loadedSessions
-      || a.projectPath.localeCompare(b.projectPath),
+    loaded.sort(
+      (a, b) =>
+        b.invocations - a.invocations ||
+        b.loadedSessions - a.loadedSessions ||
+        a.projectPath.localeCompare(b.projectPath),
     )
     const invokedProjects = loaded.filter(p => p.invocations > 0)
     if (invokedProjects.length === 0) continue
@@ -1049,11 +1089,12 @@ function collectMcpProjectProfiles(
     })
   }
 
-  candidates.sort((a, b) =>
-    b.estimatedTokensSaved - a.estimatedTokensSaved
-    || b.coldProjects.length - a.coldProjects.length
-    || b.loadedSessions - a.loadedSessions
-    || a.server.localeCompare(b.server),
+  candidates.sort(
+    (a, b) =>
+      b.estimatedTokensSaved - a.estimatedTokensSaved ||
+      b.coldProjects.length - a.coldProjects.length ||
+      b.loadedSessions - a.loadedSessions ||
+      a.server.localeCompare(b.server),
   )
   return candidates
 }
@@ -1083,10 +1124,8 @@ export function detectMcpProfileAdvisor(
   const coldProjectKeysByServer = new Map(candidates.map(c => [c.server, c.coldProjectKeys]))
   const combinedCost = estimateMcpProfileColdSchemaCost(projects, serverToolCounts, coldProjectKeysByServer)
   const tokensSaved = Math.round(combinedCost.effectiveInputTokens)
-  const impact: Impact = tokensSaved >= MCP_PROFILE_HIGH_IMPACT_TOKENS
-    || candidates.length >= UNUSED_MCP_HIGH_THRESHOLD
-    ? 'high'
-    : 'medium'
+  const impact: Impact =
+    tokensSaved >= MCP_PROFILE_HIGH_IMPACT_TOKENS || candidates.length >= UNUSED_MCP_HIGH_THRESHOLD ? 'high' : 'medium'
 
   return {
     id: 'mcp-project-scope',
@@ -1104,7 +1143,10 @@ export function detectMcpProfileAdvisor(
         `Review these MCP profile recommendations before changing config (${preview.length} of ${candidates.length} shown):`,
         ...preview.map(candidate => {
           const hot = candidate.hotProjects.map(p => p.projectPath).join(', ')
-          const cold = candidate.coldProjects.slice(0, 3).map(p => p.projectPath).join(', ')
+          const cold = candidate.coldProjects
+            .slice(0, 3)
+            .map(p => p.projectPath)
+            .join(', ')
           return `- Keep ${candidate.server} available for ${hot}; remove or project-scope it away from ${cold}. Re-add it only in projects that actually need it.`
         }),
       ].join('\n'),
@@ -1130,7 +1172,9 @@ function mcpServerFromToolName(fqn: string): string | null {
   return parts[1] || null
 }
 
-function collectReliabilityCapabilities(turn: ProjectSummary['sessions'][number]['turns'][number]): Map<string, CapabilityRef> {
+function collectReliabilityCapabilities(
+  turn: ProjectSummary['sessions'][number]['turns'][number],
+): Map<string, CapabilityRef> {
   const capabilities = new Map<string, CapabilityRef>()
 
   for (const call of turn.assistantCalls) {
@@ -1152,13 +1196,17 @@ function collectReliabilityCapabilities(turn: ProjectSummary['sessions'][number]
 }
 
 function turnEffectiveTokenTotal(turn: ProjectSummary['sessions'][number]['turns'][number]): number {
-  return Math.round(turn.assistantCalls.reduce((sum, call) =>
-    sum
-    + call.usage.inputTokens
-    + call.usage.outputTokens
-    + call.usage.cacheCreationInputTokens * CACHE_WRITE_MULTIPLIER
-    + call.usage.cacheReadInputTokens * CACHE_READ_DISCOUNT,
-  0))
+  return Math.round(
+    turn.assistantCalls.reduce(
+      (sum, call) =>
+        sum +
+        call.usage.inputTokens +
+        call.usage.outputTokens +
+        call.usage.cacheCreationInputTokens * CACHE_WRITE_MULTIPLIER +
+        call.usage.cacheReadInputTokens * CACHE_READ_DISCOUNT,
+      0,
+    ),
+  )
 }
 
 function reliabilityTurnKey(
@@ -1217,9 +1265,8 @@ function findCapabilityReliabilityCandidates(projects: ProjectSummary[]): Array<
 
         const turnTokens = turnEffectiveTokenTotal(turn)
         const turnKey = reliabilityTurnKey(project, session, turn, turnIndex)
-        const recoverableTokens = turn.retries > 0
-          ? Math.round(turnTokens * CAPABILITY_RELIABILITY_RECOVERY_FRACTION)
-          : 0
+        const recoverableTokens =
+          turn.retries > 0 ? Math.round(turnTokens * CAPABILITY_RELIABILITY_RECOVERY_FRACTION) : 0
 
         for (const ref of capabilities.values()) {
           const acc = getReliabilityAccumulator(stats, ref)
@@ -1270,12 +1317,13 @@ function findCapabilityReliabilityCandidates(projects: ProjectSummary[]): Array<
     })
   }
 
-  candidates.sort((a, b) =>
-    b.retryRate - a.retryRate
-    || b.retries - a.retries
-    || b.tokensSaved - a.tokensSaved
-    || a.kind.localeCompare(b.kind)
-    || a.name.localeCompare(b.name)
+  candidates.sort(
+    (a, b) =>
+      b.retryRate - a.retryRate ||
+      b.retries - a.retries ||
+      b.tokensSaved - a.tokensSaved ||
+      a.kind.localeCompare(b.kind) ||
+      a.name.localeCompare(b.name),
   )
   return candidates
 }
@@ -1306,30 +1354,35 @@ export function detectCapabilityReliability(projects: ProjectSummary[]): WasteFi
 
   const tokensSaved = Array.from(uniqueRetryTurnSavings.values()).reduce((sum, tokens) => sum + tokens, 0)
   const preview = candidates.slice(0, CAPABILITY_RELIABILITY_PREVIEW)
-  const list = preview.map(c => {
-    const percent = Math.round(c.retryRate * 100)
-    const projects = c.projects.length > 1 ? ` across ${c.projects.length} projects` : ` in ${c.projects[0] ?? 'one project'}`
-    return `${formatCapabilityKind(c.kind)} ${c.name}: ${c.retryTurns}/${c.editTurns} edit turns retried (${percent}%), ${c.retries} retries${projects}`
-  }).join('; ')
+  const list = preview
+    .map(c => {
+      const percent = Math.round(c.retryRate * 100)
+      const projects =
+        c.projects.length > 1 ? ` across ${c.projects.length} projects` : ` in ${c.projects[0] ?? 'one project'}`
+      return `${formatCapabilityKind(c.kind)} ${c.name}: ${c.retryTurns}/${c.editTurns} edit turns retried (${percent}%), ${c.retries} retries${projects}`
+    })
+    .join('; ')
   const extra = candidates.length > preview.length ? `; +${candidates.length - preview.length} more` : ''
 
-  const names = preview
-    .map(c => `${formatCapabilityKind(c.kind)} ${c.name}`)
-    .join(', ')
+  const names = preview.map(c => `${formatCapabilityKind(c.kind)} ${c.name}`).join(', ')
 
   let impact: Impact
-  if (candidates.length >= CAPABILITY_RELIABILITY_HIGH_MIN_CANDIDATES || tokensSaved >= CAPABILITY_RELIABILITY_HIGH_IMPACT_TOKENS) {
+  if (
+    candidates.length >= CAPABILITY_RELIABILITY_HIGH_MIN_CANDIDATES ||
+    tokensSaved >= CAPABILITY_RELIABILITY_HIGH_IMPACT_TOKENS
+  ) {
     impact = 'high'
-  } else if (candidates.length <= CAPABILITY_RELIABILITY_LOW_MAX_CANDIDATES && tokensSaved < CAPABILITY_RELIABILITY_LOW_MAX_TOKENS) {
+  } else if (
+    candidates.length <= CAPABILITY_RELIABILITY_LOW_MAX_CANDIDATES &&
+    tokensSaved < CAPABILITY_RELIABILITY_LOW_MAX_TOKENS
+  ) {
     impact = 'low'
   } else {
     impact = 'medium'
   }
 
   const kindSet = new Set(candidates.map(c => c.kind))
-  const noun = kindSet.size === 1
-    ? (kindSet.has('mcp') ? 'MCP server' : 'skill')
-    : 'MCP/skill capability'
+  const noun = kindSet.size === 1 ? (kindSet.has('mcp') ? 'MCP server' : 'skill') : 'MCP/skill capability'
   const pluralNoun = noun === 'MCP/skill capability' ? 'MCP/skill capabilities' : `${noun}s`
   const verb = candidates.length === 1 ? 'correlates' : 'correlate'
 
@@ -1532,8 +1585,12 @@ export function detectMcpAlwaysLoadHygiene(
     const toolsAvailable = coverage?.toolsAvailable ?? TOOLS_PER_MCP_SERVER
     const loadedSessions = coverage?.loadedSessions ?? totalSessions
     tokensSaved += toolsAvailable * TOKENS_PER_MCP_TOOL * loadedSessions
-    lines.push(`${entry.original}: ${invocations} call${invocations === 1 ? '' : 's'} across ${totalSessions} session${totalSessions === 1 ? '' : 's'}`)
-    fixLines.push(`- Remove "alwaysLoad": true from ${entry.original} in ${entry.alwaysLoadPaths.map(p => shortHomePath(p, home)).join(', ')}.`)
+    lines.push(
+      `${entry.original}: ${invocations} call${invocations === 1 ? '' : 's'} across ${totalSessions} session${totalSessions === 1 ? '' : 's'}`,
+    )
+    fixLines.push(
+      `- Remove "alwaysLoad": true from ${entry.original} in ${entry.alwaysLoadPaths.map(p => shortHomePath(p, home)).join(', ')}.`,
+    )
   }
   if (lines.length === 0) return null
 
@@ -1564,9 +1621,10 @@ export function detectMcpDeferThreshold(
   if (!setting) return null
   const match = /^auto(?::(\d+))?$/.exec(setting.value)
   if (!match) return null
-  const percent = match[1] !== undefined
-    ? Math.min(DEFER_THRESHOLD_MAX_PERCENT, parseInt(match[1], 10))
-    : DEFER_THRESHOLD_DEFAULT_PERCENT
+  const percent =
+    match[1] !== undefined
+      ? Math.min(DEFER_THRESHOLD_MAX_PERCENT, parseInt(match[1], 10))
+      : DEFER_THRESHOLD_DEFAULT_PERCENT
 
   if (anySessionHasMcpInventory(projects)) return null
 
@@ -1618,7 +1676,10 @@ export function detectMcpDeferThreshold(
 // Ghost-agent/skill/command detectors
 // ============================================================================
 
-export async function detectGhostAgents(subagentTypes: Iterable<string>, home = homedir()): Promise<WasteFinding | null> {
+export async function detectGhostAgents(
+  subagentTypes: Iterable<string>,
+  home = homedir(),
+): Promise<WasteFinding | null> {
   const defined = await listMarkdownFiles(join(home, '.claude', 'agents'))
   if (defined.length === 0) return null
 
@@ -1627,18 +1688,28 @@ export async function detectGhostAgents(subagentTypes: Iterable<string>, home = 
   if (ghosts.length === 0) return null
 
   const tokensSaved = ghosts.length * TOKENS_PER_AGENT_DEF
-  const list = ghosts.slice(0, GHOST_NAMES_PREVIEW).join(', ') + (ghosts.length > GHOST_NAMES_PREVIEW ? `, +${ghosts.length - GHOST_NAMES_PREVIEW} more` : '')
+  const list =
+    ghosts.slice(0, GHOST_NAMES_PREVIEW).join(', ') +
+    (ghosts.length > GHOST_NAMES_PREVIEW ? `, +${ghosts.length - GHOST_NAMES_PREVIEW} more` : '')
 
   return {
     id: 'unused-agents',
     title: `${ghosts.length} custom agent${ghosts.length > 1 ? 's' : ''} you never use`,
     explanation: `Defined in ~/.claude/agents/ but never invoked in this period: ${list}. Each adds ~${TOKENS_PER_AGENT_DEF} tokens to the Task tool schema on every session.`,
-    impact: ghosts.length >= GHOST_AGENTS_HIGH_THRESHOLD ? 'high' : ghosts.length >= GHOST_AGENTS_MEDIUM_THRESHOLD ? 'medium' : 'low',
+    impact:
+      ghosts.length >= GHOST_AGENTS_HIGH_THRESHOLD
+        ? 'high'
+        : ghosts.length >= GHOST_AGENTS_MEDIUM_THRESHOLD
+          ? 'medium'
+          : 'low',
     tokensSaved,
     fix: {
       type: 'command',
       label: `Archive unused agent${ghosts.length > 1 ? 's' : ''}:`,
-      text: ghosts.slice(0, GHOST_CLEANUP_COMMANDS_LIMIT).map(name => `mv ~/.claude/agents/${name}.md ~/.claude/agents/.archived/`).join('\n'),
+      text: ghosts
+        .slice(0, GHOST_CLEANUP_COMMANDS_LIMIT)
+        .map(name => `mv ~/.claude/agents/${name}.md ~/.claude/agents/.archived/`)
+        .join('\n'),
     },
   }
 }
@@ -1652,18 +1723,28 @@ export async function detectGhostSkills(skills: Iterable<string>, home = homedir
   if (ghosts.length === 0) return null
 
   const tokensSaved = ghosts.length * TOKENS_PER_SKILL_DEF
-  const list = ghosts.slice(0, GHOST_NAMES_PREVIEW).join(', ') + (ghosts.length > GHOST_NAMES_PREVIEW ? `, +${ghosts.length - GHOST_NAMES_PREVIEW} more` : '')
+  const list =
+    ghosts.slice(0, GHOST_NAMES_PREVIEW).join(', ') +
+    (ghosts.length > GHOST_NAMES_PREVIEW ? `, +${ghosts.length - GHOST_NAMES_PREVIEW} more` : '')
 
   return {
     id: 'unused-skills',
     title: `${ghosts.length} skill${ghosts.length > 1 ? 's' : ''} you never use`,
     explanation: `In ~/.claude/skills/ but not invoked this period: ${list}. Each adds ~${TOKENS_PER_SKILL_DEF} tokens of metadata to every session.`,
-    impact: ghosts.length >= GHOST_SKILLS_HIGH_THRESHOLD ? 'high' : ghosts.length >= GHOST_SKILLS_MEDIUM_THRESHOLD ? 'medium' : 'low',
+    impact:
+      ghosts.length >= GHOST_SKILLS_HIGH_THRESHOLD
+        ? 'high'
+        : ghosts.length >= GHOST_SKILLS_MEDIUM_THRESHOLD
+          ? 'medium'
+          : 'low',
     tokensSaved,
     fix: {
       type: 'command',
       label: `Archive unused skill${ghosts.length > 1 ? 's' : ''}:`,
-      text: ghosts.slice(0, GHOST_CLEANUP_COMMANDS_LIMIT).map(name => `mv ~/.claude/skills/${name} ~/.claude/skills/.archived/`).join('\n'),
+      text: ghosts
+        .slice(0, GHOST_CLEANUP_COMMANDS_LIMIT)
+        .map(name => `mv ~/.claude/skills/${name} ~/.claude/skills/.archived/`)
+        .join('\n'),
     },
   }
 }
@@ -1687,7 +1768,9 @@ export async function detectGhostCommands(userMessages: string[], home = homedir
   if (ghosts.length === 0) return null
 
   const tokensSaved = ghosts.length * TOKENS_PER_COMMAND_DEF
-  const list = ghosts.slice(0, GHOST_NAMES_PREVIEW).join(', ') + (ghosts.length > GHOST_NAMES_PREVIEW ? `, +${ghosts.length - GHOST_NAMES_PREVIEW} more` : '')
+  const list =
+    ghosts.slice(0, GHOST_NAMES_PREVIEW).join(', ') +
+    (ghosts.length > GHOST_NAMES_PREVIEW ? `, +${ghosts.length - GHOST_NAMES_PREVIEW} more` : '')
 
   return {
     id: 'unused-commands',
@@ -1698,7 +1781,10 @@ export async function detectGhostCommands(userMessages: string[], home = homedir
     fix: {
       type: 'command',
       label: `Archive unused command${ghosts.length > 1 ? 's' : ''}:`,
-      text: ghosts.slice(0, GHOST_CLEANUP_COMMANDS_LIMIT).map(name => `mv ~/.claude/commands/${name}.md ~/.claude/commands/.archived/`).join('\n'),
+      text: ghosts
+        .slice(0, GHOST_CLEANUP_COMMANDS_LIMIT)
+        .map(name => `mv ~/.claude/commands/${name}.md ~/.claude/commands/.archived/`)
+        .join('\n'),
     },
   }
 }
@@ -1708,16 +1794,17 @@ export async function detectGhostCommands(userMessages: string[], home = homedir
 // ============================================================================
 
 function sessionTokenTotal(session: SessionSummary): number {
-  return session.totalInputTokens
-    + session.totalOutputTokens
-    + session.totalCacheReadTokens
-    + session.totalCacheWriteTokens
+  return (
+    session.totalInputTokens + session.totalOutputTokens + session.totalCacheReadTokens + session.totalCacheWriteTokens
+  )
 }
 
 function sessionEffectiveContextTokens(session: SessionSummary): number {
-  return session.totalInputTokens
-    + session.totalCacheReadTokens * CACHE_READ_DISCOUNT
-    + session.totalCacheWriteTokens * CACHE_WRITE_MULTIPLIER
+  return (
+    session.totalInputTokens +
+    session.totalCacheReadTokens * CACHE_READ_DISCOUNT +
+    session.totalCacheWriteTokens * CACHE_WRITE_MULTIPLIER
+  )
 }
 
 function formatContextRatio(ratio: number): string {
@@ -1736,12 +1823,13 @@ function sessionDeliveryCommand(session: SessionSummary): string | null {
 }
 
 function hasCategoryBreakdownData(session: SessionSummary): boolean {
-  return Object.values(session.categoryBreakdown).some(category =>
-    category.turns > 0
-    || category.costUSD > 0
-    || category.retries > 0
-    || category.editTurns > 0
-    || category.oneShotTurns > 0
+  return Object.values(session.categoryBreakdown).some(
+    category =>
+      category.turns > 0 ||
+      category.costUSD > 0 ||
+      category.retries > 0 ||
+      category.editTurns > 0 ||
+      category.oneShotTurns > 0,
   )
 }
 
@@ -1782,8 +1870,10 @@ function estimateLowWorthRecoverableTokens(session: SessionSummary, editTurns: n
   return Math.round(tokens * fraction)
 }
 
-export const LOW_WORTH_OPENER = 'Before continuing, name the deliverable in one sentence (PR title, file changed, command output you expect). Stop and check with me if (a) you spend more than 10 minutes without an edit, or (b) the same approach fails twice. Do not retry past two attempts on any single fix.'
-export const CONTEXT_HEAVY_OPENER = 'Start fresh before continuing. Use only the current goal, the relevant files, the failing command/output, and the constraints below. Restate the working context in under 10 bullets before editing.'
+export const LOW_WORTH_OPENER =
+  'Before continuing, name the deliverable in one sentence (PR title, file changed, command output you expect). Stop and check with me if (a) you spend more than 10 minutes without an edit, or (b) the same approach fails twice. Do not retry past two attempts on any single fix.'
+export const CONTEXT_HEAVY_OPENER =
+  'Start fresh before continuing. Use only the current goal, the relevant files, the failing command/output, and the constraints below. Restate the working context in under 10 bullets before editing.'
 
 export function findLowWorthCandidates(projects: ProjectSummary[]): LowWorthCandidate[] {
   const candidates: LowWorthCandidate[] = []
@@ -1804,11 +1894,7 @@ export function findLowWorthCandidates(projects: ProjectSummary[]): LowWorthCand
       if (retries >= WORTH_IT_MIN_RETRIES) {
         reasons.push(`${retries} retries`)
       }
-      if (
-        editTurns > 0
-        && oneShotTurns === 0
-        && retries >= WORTH_IT_RETRY_WITH_EDIT_MIN_RETRIES
-      ) {
+      if (editTurns > 0 && oneShotTurns === 0 && retries >= WORTH_IT_RETRY_WITH_EDIT_MIN_RETRIES) {
         reasons.push('no one-shot edit turns')
       }
 
@@ -1825,11 +1911,12 @@ export function findLowWorthCandidates(projects: ProjectSummary[]): LowWorthCand
     }
   }
 
-  candidates.sort((a, b) =>
-    b.cost - a.cost
-    || a.date.localeCompare(b.date)
-    || a.project.localeCompare(b.project)
-    || a.sessionId.localeCompare(b.sessionId)
+  candidates.sort(
+    (a, b) =>
+      b.cost - a.cost ||
+      a.date.localeCompare(b.date) ||
+      a.project.localeCompare(b.project) ||
+      a.sessionId.localeCompare(b.sessionId),
   )
   return candidates
 }
@@ -1874,8 +1961,8 @@ export function findContextBloatCandidates(projects: ProjectSummary[]): ContextB
   const candidates: ContextBloatCandidate[] = []
 
   for (const project of projects) {
-    const sessions = [...project.sessions].sort((a, b) =>
-      new Date(a.firstTimestamp).getTime() - new Date(b.firstTimestamp).getTime()
+    const sessions = [...project.sessions].sort(
+      (a, b) => new Date(a.firstTimestamp).getTime() - new Date(b.firstTimestamp).getTime(),
     )
     let previousInputTokens: number | null = null
     let previousTimestampMs: number | null = null
@@ -1886,12 +1973,13 @@ export function findContextBloatCandidates(projects: ProjectSummary[]): ContextB
       const ratio = inputTokens / Math.max(outputTokens, 1)
       const currentMs = new Date(session.firstTimestamp).getTime()
       const gapMs = previousTimestampMs !== null ? currentMs - previousTimestampMs : null
-      const growthRatio = previousInputTokens !== null
-        && previousInputTokens > 0
-        && gapMs !== null
-        && gapMs <= CONTEXT_BLOAT_GROWTH_MAX_GAP_MS
-        ? inputTokens / previousInputTokens
-        : null
+      const growthRatio =
+        previousInputTokens !== null &&
+        previousInputTokens > 0 &&
+        gapMs !== null &&
+        gapMs <= CONTEXT_BLOAT_GROWTH_MAX_GAP_MS
+          ? inputTokens / previousInputTokens
+          : null
 
       previousInputTokens = inputTokens
       previousTimestampMs = currentMs
@@ -1912,26 +2000,30 @@ export function findContextBloatCandidates(projects: ProjectSummary[]): ContextB
     }
   }
 
-  candidates.sort((a, b) =>
-    b.excessInputTokens - a.excessInputTokens
-    || a.date.localeCompare(b.date)
-    || a.project.localeCompare(b.project)
-    || a.sessionId.localeCompare(b.sessionId)
+  candidates.sort(
+    (a, b) =>
+      b.excessInputTokens - a.excessInputTokens ||
+      a.date.localeCompare(b.date) ||
+      a.project.localeCompare(b.project) ||
+      a.sessionId.localeCompare(b.sessionId),
   )
   return candidates
 }
 
-export function detectContextBloat(projects: ProjectSummary[], excludedSessionIds?: ReadonlySet<string>): WasteFinding | null {
-  const candidates = findContextBloatCandidates(projects)
-    .filter(c => !excludedSessionIds?.has(c.sessionId))
+export function detectContextBloat(
+  projects: ProjectSummary[],
+  excludedSessionIds?: ReadonlySet<string>,
+): WasteFinding | null {
+  const candidates = findContextBloatCandidates(projects).filter(c => !excludedSessionIds?.has(c.sessionId))
   if (candidates.length === 0) return null
 
   const preview = candidates.slice(0, CONTEXT_BLOAT_PREVIEW)
   const list = preview
     .map(c => {
-      const growth = c.growthRatio !== null && c.growthRatio >= CONTEXT_BLOAT_GROWTH_RATIO
-        ? `, ${c.growthRatio.toFixed(1)}x previous session input`
-        : ''
+      const growth =
+        c.growthRatio !== null && c.growthRatio >= CONTEXT_BLOAT_GROWTH_RATIO
+          ? `, ${c.growthRatio.toFixed(1)}x previous session input`
+          : ''
       return `${c.project}/${c.sessionId} on ${c.date}: ${formatTokens(c.effectiveInputTokens)} effective input/cache vs ${formatTokens(c.outputTokens)} output (${formatContextRatio(c.ratio)}:1${growth})`
     })
     .join('; ')
@@ -1942,7 +2034,10 @@ export function detectContextBloat(projects: ProjectSummary[], excludedSessionId
   let impact: Impact
   if (candidates.length >= CONTEXT_BLOAT_HIGH_MIN_CANDIDATES || totalInputTokens >= CONTEXT_BLOAT_HIGH_INPUT_TOKENS) {
     impact = 'high'
-  } else if (candidates.length <= CONTEXT_BLOAT_LOW_MAX_CANDIDATES && totalInputTokens < CONTEXT_BLOAT_LOW_INPUT_TOKENS) {
+  } else if (
+    candidates.length <= CONTEXT_BLOAT_LOW_MAX_CANDIDATES &&
+    totalInputTokens < CONTEXT_BLOAT_LOW_INPUT_TOKENS
+  ) {
     impact = 'low'
   } else {
     impact = 'medium'
@@ -1963,7 +2058,10 @@ export function detectContextBloat(projects: ProjectSummary[], excludedSessionId
   }
 }
 
-export function detectSessionOutliers(projects: ProjectSummary[], excludedSessionIds?: ReadonlySet<string>): WasteFinding | null {
+export function detectSessionOutliers(
+  projects: ProjectSummary[],
+  excludedSessionIds?: ReadonlySet<string>,
+): WasteFinding | null {
   type Outlier = {
     project: string
     sessionId: string
@@ -2040,8 +2138,8 @@ function findYoungProjectFirstSessionIds(projects: ProjectSummary[]): Set<string
     let firstSession: SessionSummary | null = null
     for (const session of costed) {
       if (
-        firstSession === null
-        || new Date(session.firstTimestamp).getTime() < new Date(firstSession.firstTimestamp).getTime()
+        firstSession === null ||
+        new Date(session.firstTimestamp).getTime() < new Date(firstSession.firstTimestamp).getTime()
       ) {
         firstSession = session
       }
@@ -2069,10 +2167,15 @@ export function computeHealth(findings: WasteFinding[]): { score: number; grade:
   for (const f of findings) penalty += HEALTH_WEIGHTS[f.impact] ?? 0
   const score = Math.max(0, 100 - Math.min(HEALTH_MAX_PENALTY, penalty))
   const grade: HealthGrade =
-    score >= GRADE_A_MIN ? 'A' :
-    score >= GRADE_B_MIN ? 'B' :
-    score >= GRADE_C_MIN ? 'C' :
-    score >= GRADE_D_MIN ? 'D' : 'F'
+    score >= GRADE_A_MIN
+      ? 'A'
+      : score >= GRADE_B_MIN
+        ? 'B'
+        : score >= GRADE_C_MIN
+          ? 'C'
+          : score >= GRADE_D_MIN
+            ? 'D'
+            : 'F'
   return { score, grade }
 }
 
@@ -2131,8 +2234,10 @@ const DEFAULT_COST_PER_TOKEN = 0
 export function computeInputCostRate(projects: ProjectSummary[]): number {
   const sessions = projects.flatMap(p => p.sessions)
   const totalCost = sessions.reduce((s, sess) => s + sess.totalCostUSD, 0)
-  const totalTokens = sessions.reduce((s, sess) =>
-    s + sess.totalInputTokens + sess.totalCacheReadTokens + sess.totalCacheWriteTokens, 0)
+  const totalTokens = sessions.reduce(
+    (s, sess) => s + sess.totalInputTokens + sess.totalCacheReadTokens + sess.totalCacheWriteTokens,
+    0,
+  )
   if (totalTokens === 0 || totalCost === 0) return DEFAULT_COST_PER_TOKEN
   return (totalCost * INPUT_COST_RATIO) / totalTokens
 }
@@ -2240,9 +2345,8 @@ export async function buildOptimizePayload(
 
   const potentialSavingsTokens = findings.reduce((s, f) => s + f.tokensSaved, 0)
   const potentialSavingsCostUSD = potentialSavingsTokens * costRate
-  const potentialSavingsPercent = periodCostUSD > 0
-    ? Math.round((potentialSavingsCostUSD / periodCostUSD) * 1000) / 10
-    : null
+  const potentialSavingsPercent =
+    periodCostUSD > 0 ? Math.round((potentialSavingsCostUSD / periodCostUSD) * 1000) / 10 : null
 
   return {
     period: { start: dateRange?.start.toISOString() ?? null, end: dateRange?.end.toISOString() ?? null },

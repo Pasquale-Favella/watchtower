@@ -4,6 +4,9 @@
  *  see the SAME data-window label the user sees, so it cannot live in either
  *  process alone. */
 export const PERIOD_LABELS: Record<string, string> = {
-  today: 'Today', week: 'Last 7 days', '30days': 'Last 30 days',
-  all: 'Last 6 months', lifetime: 'Lifetime',
+  today: 'Today',
+  week: 'Last 7 days',
+  '30days': 'Last 30 days',
+  all: 'Last 6 months',
+  lifetime: 'Lifetime',
 }

@@ -59,10 +59,12 @@ export function createLedgerMcpServer(store: LedgerStore): McpServer {
       // The render returns the user-facing text as a single user message — the
       // standard MCP prompt shape the client can splice into a conversation.
       async args => ({
-        messages: [{
-          role: 'user' as const,
-          content: { type: 'text' as const, text: prompt.render((args ?? {}) as Record<string, unknown>) },
-        }],
+        messages: [
+          {
+            role: 'user' as const,
+            content: { type: 'text' as const, text: prompt.render((args ?? {}) as Record<string, unknown>) },
+          },
+        ],
       }),
     )
   }

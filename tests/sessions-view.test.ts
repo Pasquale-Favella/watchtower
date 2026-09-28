@@ -7,11 +7,13 @@ import { LedgerStore } from '../src/main/store/ledger.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
 import {
-  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions,
-  type SessionSort
+  filterSessions,
+  sortSessions,
+  groupSessionsByProvider,
+  summarizeSessions,
+  type SessionSort,
 } from '../src/renderer/src/features/sessions/sessions-lib.js'
 import type { SessionRow } from '../src/renderer/src/features/sessions/drilldown.js'
-
 
 // ── Ledger-backed sessions view (map 03) ───────────────────────────────────
 // Same scope semantics as the report-based builder above, but the facts come
@@ -25,7 +27,14 @@ function makeLedger(): LedgerStore {
   return new LedgerStore(join(dir, 'data.db'))
 }
 
-type SessionSpec = { sessionId: string; provider: string; localDate: string; cost: number; turns?: number; title?: string }
+type SessionSpec = {
+  sessionId: string
+  provider: string
+  localDate: string
+  cost: number
+  turns?: number
+  title?: string
+}
 
 function cachedFileFor(spec: SessionSpec): CachedFile {
   const turnCount = spec.turns ?? 1
@@ -46,9 +55,40 @@ function cachedFileFor(spec: SessionSpec): CachedFile {
 }
 
 function portThreeSessions(store: LedgerStore): void {
-  store.portIn({ provider: 'claude', envFingerprint: 'env-demo', filePath: '/cache/claude/sess-0.jsonl', verdict: 'new', cachedFile: cachedFileFor({ sessionId: 'sess-0', provider: 'claude', localDate: '2026-07-10', cost: 10, turns: 3 }) })
-  store.portIn({ provider: 'opencode', envFingerprint: 'env-demo', filePath: '/cache/opencode/sess-1.jsonl', verdict: 'new', cachedFile: cachedFileFor({ sessionId: 'sess-1', provider: 'opencode', localDate: '2026-07-20', cost: 5, turns: 5 }) })
-  store.portIn({ provider: 'claude', envFingerprint: 'env-demo', filePath: '/cache/claude/sess-2.jsonl', verdict: 'new', cachedFile: cachedFileFor({ sessionId: 'sess-2', provider: 'claude', localDate: '2026-08-01', cost: 8, turns: 2, title: 'refactor API' }) })
+  store.portIn({
+    provider: 'claude',
+    envFingerprint: 'env-demo',
+    filePath: '/cache/claude/sess-0.jsonl',
+    verdict: 'new',
+    cachedFile: cachedFileFor({ sessionId: 'sess-0', provider: 'claude', localDate: '2026-07-10', cost: 10, turns: 3 }),
+  })
+  store.portIn({
+    provider: 'opencode',
+    envFingerprint: 'env-demo',
+    filePath: '/cache/opencode/sess-1.jsonl',
+    verdict: 'new',
+    cachedFile: cachedFileFor({
+      sessionId: 'sess-1',
+      provider: 'opencode',
+      localDate: '2026-07-20',
+      cost: 5,
+      turns: 5,
+    }),
+  })
+  store.portIn({
+    provider: 'claude',
+    envFingerprint: 'env-demo',
+    filePath: '/cache/claude/sess-2.jsonl',
+    verdict: 'new',
+    cachedFile: cachedFileFor({
+      sessionId: 'sess-2',
+      provider: 'claude',
+      localDate: '2026-08-01',
+      cost: 8,
+      turns: 2,
+      title: 'refactor API',
+    }),
+  })
 }
 
 describe('buildSessionsViewFromLedger (aggregation seam scope)', () => {
@@ -74,7 +114,13 @@ describe('buildSessionsViewFromLedger (aggregation seam scope)', () => {
   it('excludes sessions whose source is a different provider', () => {
     const store = makeLedger()
     portThreeSessions(store)
-    store.portIn({ provider: 'codex', envFingerprint: 'env-demo', filePath: '/cache/codex/sess-3.jsonl', verdict: 'new', cachedFile: cachedFileFor({ sessionId: 'sess-3', provider: 'codex', localDate: '2026-07-25', cost: 3 }) })
+    store.portIn({
+      provider: 'codex',
+      envFingerprint: 'env-demo',
+      filePath: '/cache/codex/sess-3.jsonl',
+      verdict: 'new',
+      cachedFile: cachedFileFor({ sessionId: 'sess-3', provider: 'codex', localDate: '2026-07-25', cost: 3 }),
+    })
     const rows = buildSessionsViewFromLedger(store, { period: 'lifetime', provider: 'claude' })
     expect(rows.map(r => r.sessionId)).toEqual(['sess-2', 'sess-0'])
     expect(rows).toHaveLength(2)
@@ -113,9 +159,7 @@ describe('buildSessionsViewFromLedger (aggregation seam scope)', () => {
     expect(buildSessionsViewFromLedger(store, { period: 'lifetime' })).toEqual([])
     store.close()
   })
-
 })
-
 
 function makeRow(partial: Partial<SessionRow>): SessionRow {
   return {
@@ -137,9 +181,41 @@ function makeRow(partial: Partial<SessionRow>): SessionRow {
 }
 
 const ROWS: SessionRow[] = [
-  makeRow({ sessionId: 'sess-aa', provider: 'claude', title: 'Refactor auth', project: 'api', models: ['claude-sonnet'], cost: 10, turns: 3, inputTokens: 1000, outputTokens: 500, endedAt: '2026-07-10T12:00:00.000Z' }),
-  makeRow({ sessionId: 'sess-bb', provider: 'opencode', project: 'web', models: ['deepseek'], cost: 5, turns: 5, inputTokens: 300, outputTokens: 100, endedAt: '2026-07-20T12:00:00.000Z' }),
-  makeRow({ sessionId: 'sess-cc', provider: 'claude', title: 'Bump deps', project: 'api', models: ['claude-sonnet'], cost: 8, turns: 2, inputTokens: 200, outputTokens: 50, endedAt: '2026-07-30T12:00:00.000Z' }),
+  makeRow({
+    sessionId: 'sess-aa',
+    provider: 'claude',
+    title: 'Refactor auth',
+    project: 'api',
+    models: ['claude-sonnet'],
+    cost: 10,
+    turns: 3,
+    inputTokens: 1000,
+    outputTokens: 500,
+    endedAt: '2026-07-10T12:00:00.000Z',
+  }),
+  makeRow({
+    sessionId: 'sess-bb',
+    provider: 'opencode',
+    project: 'web',
+    models: ['deepseek'],
+    cost: 5,
+    turns: 5,
+    inputTokens: 300,
+    outputTokens: 100,
+    endedAt: '2026-07-20T12:00:00.000Z',
+  }),
+  makeRow({
+    sessionId: 'sess-cc',
+    provider: 'claude',
+    title: 'Bump deps',
+    project: 'api',
+    models: ['claude-sonnet'],
+    cost: 8,
+    turns: 2,
+    inputTokens: 200,
+    outputTokens: 50,
+    endedAt: '2026-07-30T12:00:00.000Z',
+  }),
 ]
 
 describe('filterSessions (search over title/project/session-id/model)', () => {

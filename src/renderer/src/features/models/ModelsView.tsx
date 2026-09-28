@@ -47,11 +47,12 @@ export function ModelsView(): React.JSX.Element {
   const byTask = payload?.byTask ?? []
   const audit = payload?.audit ?? []
 
-  const openQuickAdd = (row: ModelReportRow) => setQuickAdd({
-    provider: row.provider,
-    model: row.model,
-    modelDisplayName: row.modelDisplayName,
-  })
+  const openQuickAdd = (row: ModelReportRow) =>
+    setQuickAdd({
+      provider: row.provider,
+      model: row.model,
+      modelDisplayName: row.modelDisplayName,
+    })
 
   const onSaved = (): void => {
     setQuickAdd(null)
@@ -65,27 +66,29 @@ export function ModelsView(): React.JSX.Element {
   const removeAlias = usePricingStore(s => s.removeAlias)
   const removeOverride = usePricingStore(s => s.removeOverride)
   const pricingActions: PricingRowActions = {
-    onEditAlias: (source, currentTarget) => setQuickAdd({
-      provider: source.provider,
-      model: source.model,
-      modelDisplayName: source.model,
-      initialMode: 'alias',
-      initialAliasTarget: currentTarget,
-    }),
+    onEditAlias: (source, currentTarget) =>
+      setQuickAdd({
+        provider: source.provider,
+        model: source.model,
+        modelDisplayName: source.model,
+        initialMode: 'alias',
+        initialAliasTarget: currentTarget,
+      }),
     onRemoveAlias: sourceModel => {
       void (async () => {
         await removeAlias(sourceModel)
         void reload()
       })()
     },
-    onEditOverride: target => setQuickAdd({
-      provider: target.provider,
-      model: target.model,
-      modelDisplayName: target.modelDisplayName,
-      initialMode: 'price',
-      initialInputPrice: String(target.inputPricePerMillion),
-      initialOutputPrice: String(target.outputPricePerMillion),
-    }),
+    onEditOverride: target =>
+      setQuickAdd({
+        provider: target.provider,
+        model: target.model,
+        modelDisplayName: target.modelDisplayName,
+        initialMode: 'price',
+        initialInputPrice: String(target.inputPricePerMillion),
+        initialOutputPrice: String(target.outputPricePerMillion),
+      }),
     onRemoveOverride: model => {
       void (async () => {
         await removeOverride(model)
@@ -94,9 +97,8 @@ export function ModelsView(): React.JSX.Element {
     },
   }
 
-  const emptyText = lens === 'audit'
-    ? 'No model usage to audit in this range yet.'
-    : 'No model usage in this range yet.'
+  const emptyText =
+    lens === 'audit' ? 'No model usage to audit in this range yet.' : 'No model usage in this range yet.'
 
   return (
     <div className={cn('w-full max-w-[1180px]', motionClass('flex flex-col gap-3', 'section-fade'))}>
@@ -111,9 +113,11 @@ export function ModelsView(): React.JSX.Element {
       </div>
 
       {payload === null ? (
-        error ? <ErrorPanel message={error} /> : (
-          <LoadingRegion label="Loading models…" className="overflow-hidden rounded-lg border border-border bg-card">
-            <div className="flex items-center gap-3 border-b border-border px-3.5 py-2.5">
+        error ? (
+          <ErrorPanel message={error} />
+        ) : (
+          <LoadingRegion label="Loading models…" className="border-border bg-card overflow-hidden rounded-lg border">
+            <div className="border-border flex items-center gap-3 border-b px-3.5 py-2.5">
               <Skeleton className="h-3 w-24" />
               <Skeleton className="ml-auto h-3 w-14" />
               <Skeleton className="h-3 w-14" />
@@ -123,16 +127,28 @@ export function ModelsView(): React.JSX.Element {
           </LoadingRegion>
         )
       ) : lens === 'audit' ? (
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
-          {audit.length ? <AuditTable rows={audit} actions={pricingActions} /> : <p className="px-3.5 py-6 text-center text-[11.5px] text-muted-foreground">{emptyText}</p>}
+        <div className="border-border bg-card overflow-hidden rounded-lg border">
+          {audit.length ? (
+            <AuditTable rows={audit} actions={pricingActions} />
+          ) : (
+            <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
+          )}
         </div>
       ) : lens === 'task' ? (
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
-          {byTask.length ? <ModelsByTaskTable rows={byTask} onAddAlias={openQuickAdd} actions={pricingActions} /> : <p className="px-3.5 py-6 text-center text-[11.5px] text-muted-foreground">{emptyText}</p>}
+        <div className="border-border bg-card overflow-hidden rounded-lg border">
+          {byTask.length ? (
+            <ModelsByTaskTable rows={byTask} onAddAlias={openQuickAdd} actions={pricingActions} />
+          ) : (
+            <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
+          )}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
-          {byModel.length ? <ModelsTable rows={byModel} onAddAlias={openQuickAdd} actions={pricingActions} /> : <p className="px-3.5 py-6 text-center text-[11.5px] text-muted-foreground">{emptyText}</p>}
+        <div className="border-border bg-card overflow-hidden rounded-lg border">
+          {byModel.length ? (
+            <ModelsTable rows={byModel} onAddAlias={openQuickAdd} actions={pricingActions} />
+          ) : (
+            <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
+          )}
         </div>
       )}
 

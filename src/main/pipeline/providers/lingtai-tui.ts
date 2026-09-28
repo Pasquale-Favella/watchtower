@@ -45,9 +45,7 @@ type LingTaiHome = {
 }
 
 function normalizeOptions(options?: string | LingTaiProviderOptions): LingTaiProviderOptions {
-  return typeof options === 'string'
-    ? { lingtaiHomeOverride: options }
-    : options ?? {}
+  return typeof options === 'string' ? { lingtaiHomeOverride: options } : (options ?? {})
 }
 
 function expandHome(raw: string): string {
@@ -74,9 +72,7 @@ function getDefaultLingTaiHome(options: LingTaiProviderOptions): string {
 }
 
 function getLingTaiGlobalDir(options: LingTaiProviderOptions): string {
-  return options.globalDirOverride
-    ?? process.env['LINGTAI_TUI_GLOBAL_DIR']
-    ?? join(homedir(), '.lingtai-tui')
+  return options.globalDirOverride ?? process.env['LINGTAI_TUI_GLOBAL_DIR'] ?? join(homedir(), '.lingtai-tui')
 }
 
 function projectPrefixFromHome(lingtaiHome: string, defaultLingTaiHome: string): string | undefined {
@@ -128,7 +124,9 @@ function cwdLingTaiHomes(cwd: string): string[] {
 }
 
 async function getLingTaiHomes(options: LingTaiProviderOptions): Promise<LingTaiHome[]> {
-  const explicit = splitPathList(options.lingtaiHomeOverride ?? process.env['LINGTAI_HOME'] ?? process.env['LINGTAI_TUI_HOME'])
+  const explicit = splitPathList(
+    options.lingtaiHomeOverride ?? process.env['LINGTAI_HOME'] ?? process.env['LINGTAI_TUI_HOME'],
+  )
   const defaultHome = getDefaultLingTaiHome(options)
   const candidates = explicit.length
     ? explicit
@@ -157,7 +155,7 @@ function sanitizeProject(raw: string): string {
 }
 
 function asObject(value: unknown): JsonObject | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : null
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : null
 }
 
 function stringField(obj: JsonObject | null, key: string): string | undefined {
@@ -197,9 +195,7 @@ async function readAgentManifest(agentDir: string): Promise<LingTaiAgentManifest
     agent_name: stringField(obj, 'agent_name'),
     address: stringField(obj, 'address'),
     nickname: stringField(obj, 'nickname') ?? null,
-    llm: llm
-      ? { model: stringField(llm, 'model'), base_url: stringField(llm, 'base_url') }
-      : undefined,
+    llm: llm ? { model: stringField(llm, 'model'), base_url: stringField(llm, 'base_url') } : undefined,
   }
 }
 
@@ -208,12 +204,7 @@ function agentDirFromLedgerPath(ledgerPath: string): string {
 }
 
 function projectFromManifest(manifest: LingTaiAgentManifest | null, fallback: string, prefix?: string): string {
-  const name = sanitizeProject(
-    manifest?.nickname
-      ?? manifest?.agent_name
-      ?? manifest?.address
-      ?? fallback,
-  )
+  const name = sanitizeProject(manifest?.nickname ?? manifest?.agent_name ?? manifest?.address ?? fallback)
   return prefix ? `${prefix}-${name}` : name
 }
 
@@ -233,7 +224,7 @@ function parseLedgerLine(line: string | Buffer): LingTaiLedgerEntry | null {
   try {
     const parsed = JSON.parse(text) as unknown
     const obj = asObject(parsed)
-    return obj ? obj as LingTaiLedgerEntry : null
+    return obj ? (obj as LingTaiLedgerEntry) : null
   } catch {
     return null
   }
@@ -267,9 +258,7 @@ function activityForSource(sourceLabel: string): { userMessage: string; tools: s
   }
 
   return {
-    userMessage: normalized === 'main'
-      ? 'LingTai main conversation'
-      : `LingTai ${sourceLabel || 'main'} conversation`,
+    userMessage: normalized === 'main' ? 'LingTai main conversation' : `LingTai ${sourceLabel || 'main'} conversation`,
     tools: [],
     subagentTypes: [],
   }
@@ -366,14 +355,7 @@ function createParser(source: SessionSource): SessionParser {
           cachedInputTokens,
         ].join(':')
 
-        const costUSD = calculateCost(
-          model,
-          inputTokens,
-          outputTokens + reasoningTokens,
-          0,
-          cachedInputTokens,
-          0,
-        )
+        const costUSD = calculateCost(model, inputTokens, outputTokens + reasoningTokens, 0, cachedInputTokens, 0)
 
         yield {
           provider: 'lingtai-tui',

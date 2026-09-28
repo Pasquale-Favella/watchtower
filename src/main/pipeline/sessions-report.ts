@@ -33,7 +33,8 @@ function inferProvider(session: SessionSummary): string {
   const models = Object.keys(session.modelBreakdown)
   const model = models[0]?.toLowerCase() ?? ''
   if (model.startsWith('claude')) return 'claude'
-  if (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')) return 'codex'
+  if (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4'))
+    return 'codex'
   if (model.startsWith('gemini')) return 'gemini'
   if (model.includes('/')) return model.split('/', 1)[0] || 'unknown'
   return 'unknown'
@@ -193,15 +194,24 @@ export function sessionModelLabel(models: string[]): string {
 
 function cellValue(row: SessionRow, key: SessionColumnKey): string {
   switch (key) {
-    case 'started': return row.startedAt ? row.startedAt.replace('T', ' ').slice(0, 16) : '-'
-    case 'session': return sessionDisplayName(row)
-    case 'project': return cleanSessionProjectLabel(row.project)
-    case 'provider': return row.provider
-    case 'models': return sessionModelLabel(row.models)
-    case 'cost': return `$${row.cost.toFixed(2)}`
-    case 'saved': return `$${row.savingsUSD.toFixed(2)}`
-    case 'calls': return row.calls.toLocaleString('en-US')
-    case 'turns': return row.turns.toLocaleString('en-US')
+    case 'started':
+      return row.startedAt ? row.startedAt.replace('T', ' ').slice(0, 16) : '-'
+    case 'session':
+      return sessionDisplayName(row)
+    case 'project':
+      return cleanSessionProjectLabel(row.project)
+    case 'provider':
+      return row.provider
+    case 'models':
+      return sessionModelLabel(row.models)
+    case 'cost':
+      return `$${row.cost.toFixed(2)}`
+    case 'saved':
+      return `$${row.savingsUSD.toFixed(2)}`
+    case 'calls':
+      return row.calls.toLocaleString('en-US')
+    case 'turns':
+      return row.turns.toLocaleString('en-US')
   }
 }
 
@@ -215,7 +225,9 @@ export function renderTable(rows: SessionRow[], opts: SessionTableOptions = {}):
     { key: 'provider', header: 'Provider', width: 9, minWidth: 8, optional: true },
     { key: 'models', header: 'Models', width: 22, minWidth: 10, flex: 2 },
     { key: 'cost', header: 'Cost', width: 9, minWidth: 7, right: true },
-    ...(hasSavings ? [{ key: 'saved' as const, header: 'Saved', width: 9, minWidth: 7, right: true, optional: true }] : []),
+    ...(hasSavings
+      ? [{ key: 'saved' as const, header: 'Saved', width: 9, minWidth: 7, right: true, optional: true }]
+      : []),
     { key: 'calls', header: 'Calls', width: 7, minWidth: 5, right: true, optional: true },
     { key: 'turns', header: 'Turns', width: 7, minWidth: 5, right: true, optional: true },
   ]
@@ -233,11 +245,16 @@ export function renderTable(rows: SessionRow[], opts: SessionTableOptions = {}):
 
   const border = (left: string, middle: string, right: string): string =>
     left + columns.map(col => '\u2500'.repeat(col.width + 2)).join(middle) + right
-  const line = (cells: string[]): string => '\u2502' + columns.map((col, i) => {
-    const value = truncate(cells[i] ?? '', col.width)
-    const padding = ' '.repeat(Math.max(0, col.width - value.length))
-    return ` ${col.right ? padding + value : value + padding} `
-  }).join('\u2502') + '\u2502'
+  const line = (cells: string[]): string =>
+    '\u2502' +
+    columns
+      .map((col, i) => {
+        const value = truncate(cells[i] ?? '', col.width)
+        const padding = ' '.repeat(Math.max(0, col.width - value.length))
+        return ` ${col.right ? padding + value : value + padding} `
+      })
+      .join('\u2502') +
+    '\u2502'
 
   const totalCost = sorted.reduce((sum, row) => sum + row.cost, 0)
   const footer = `${sorted.length.toLocaleString('en-US')} sessions  \u2022  $${totalCost.toFixed(2)} total  \u2022  newest first`
@@ -285,7 +302,8 @@ const GITHUB_PR_RE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/
 // `/-` segment before merge_requests), then keep the last two path segments:
 // `acme/repo/pull/12` -> `acme/repo#12`, `group/sub/repo/-/merge_requests/42`
 // -> `sub/repo#42`. Falls back to the raw URL when nothing matches.
-const GENERIC_PR_RE = /^https?:\/\/[^/]+\/(.+?)\/(?:-\/)?(?:pull|pulls|merge_requests|merge-requests|pull-requests)\/(\d+)(?:[/?#].*)?$/
+const GENERIC_PR_RE =
+  /^https?:\/\/[^/]+\/(.+?)\/(?:-\/)?(?:pull|pulls|merge_requests|merge-requests|pull-requests)\/(\d+)(?:[/?#].*)?$/
 
 export function shortenPrUrl(url: string): string {
   const m = GITHUB_PR_RE.exec(url)
@@ -304,7 +322,10 @@ export function shortenPrUrl(url: string): string {
 /// maps a model key to the raw model ids folded into it via an Alias (empty
 /// when no merge happened), so a merged row never hides where spend came from.
 export type PrContribution = {
-  cost: number; calls: number; savingsUSD: number; approx: boolean
+  cost: number
+  calls: number
+  savingsUSD: number
+  approx: boolean
   models: Map<string, number>
   categories: Map<string, number>
   provenance: Map<string, Set<string>>
@@ -321,7 +342,11 @@ export type SessionPrAttribution = {
 // Minimal structural shape a SessionSummary satisfies, so the state machine is
 // unit-testable without constructing a full session fixture.
 type AttributableSession = {
-  turns: Array<{ prRefs?: string[]; category?: string; assistantCalls: Array<{ costUSD: number; savingsUSD?: number; model?: string; rawModel?: string }> }>
+  turns: Array<{
+    prRefs?: string[]
+    category?: string
+    assistantCalls: Array<{ costUSD: number; savingsUSD?: number; model?: string; rawModel?: string }>
+  }>
   prLinks?: string[]
   totalCostUSD: number
   apiCalls: number
@@ -375,7 +400,15 @@ function recordModel(
 function ensureContribution(map: Map<string, PrContribution>, url: string): PrContribution {
   let e = map.get(url)
   if (!e) {
-    e = { cost: 0, calls: 0, savingsUSD: 0, approx: false, models: new Map(), categories: new Map(), provenance: new Map() }
+    e = {
+      cost: 0,
+      calls: 0,
+      savingsUSD: 0,
+      approx: false,
+      models: new Map(),
+      categories: new Map(),
+      provenance: new Map(),
+    }
     map.set(url, e)
   }
   return e
@@ -496,31 +529,33 @@ function sortedRecord(rec: Record<string, string[]> | undefined): Record<string,
 // savings, per-model cost). Set-semantic fields (PR-ref lists, ambiguous ids,
 // spawnPrSets values) are sorted; the turn list keeps its order (sequence-semantic).
 function sessionFingerprint(s: SessionSummary): string {
-  return JSON.stringify(canonicalize({
-    cost: s.totalCostUSD,
-    calls: s.apiCalls,
-    first: s.firstTimestamp,
-    last: s.lastTimestamp,
-    parent: s.parentSessionId ?? '',
-    agent: s.agentId ?? '',
-    prLinks: sortedCopy(s.prLinks),
-    rangeStart: sortedCopy(s.prRefsAtRangeStart),
-    ambiguous: sortedCopy(s.ambiguousSpawnAgentIds),
-    spawnLinks: s.agentSpawnLinks ?? {},
-    spawnPrSets: sortedRecord(s.spawnPrSets),
-    turns: s.turns.map(t => {
-      const modelCost: Record<string, number> = {}
-      for (const c of t.assistantCalls) if (c.model) modelCost[c.model] = (modelCost[c.model] ?? 0) + c.costUSD
-      return {
-        ts: t.assistantCalls[0]?.timestamp ?? t.timestamp ?? '',
-        prRefs: sortedCopy(t.prRefs),
-        cost: t.assistantCalls.reduce((n, c) => n + c.costUSD, 0),
-        calls: t.assistantCalls.length,
-        savings: t.assistantCalls.reduce((n, c) => n + (c.savingsUSD ?? 0), 0),
-        models: modelCost,
-      }
+  return JSON.stringify(
+    canonicalize({
+      cost: s.totalCostUSD,
+      calls: s.apiCalls,
+      first: s.firstTimestamp,
+      last: s.lastTimestamp,
+      parent: s.parentSessionId ?? '',
+      agent: s.agentId ?? '',
+      prLinks: sortedCopy(s.prLinks),
+      rangeStart: sortedCopy(s.prRefsAtRangeStart),
+      ambiguous: sortedCopy(s.ambiguousSpawnAgentIds),
+      spawnLinks: s.agentSpawnLinks ?? {},
+      spawnPrSets: sortedRecord(s.spawnPrSets),
+      turns: s.turns.map(t => {
+        const modelCost: Record<string, number> = {}
+        for (const c of t.assistantCalls) if (c.model) modelCost[c.model] = (modelCost[c.model] ?? 0) + c.costUSD
+        return {
+          ts: t.assistantCalls[0]?.timestamp ?? t.timestamp ?? '',
+          prRefs: sortedCopy(t.prRefs),
+          cost: t.assistantCalls.reduce((n, c) => n + c.costUSD, 0),
+          calls: t.assistantCalls.length,
+          savings: t.assistantCalls.reduce((n, c) => n + (c.savingsUSD ?? 0), 0),
+          models: modelCost,
+        }
+      }),
     }),
-  }))
+  )
 }
 
 /// Provider-aware, fingerprint-qualified identity of a session: two sessions share
@@ -552,7 +587,12 @@ export function buildSubagentIndex(sessions: SessionSummary[]): Map<string, Sess
 // exactly once and a parent-link cycle terminates. A self-linking descendant is
 // skipped: it attributes standalone. `spawnAtMs` stays the TOP child's, since the
 // whole subtree resolves against the top parent.
-function buildChildFold(child: SessionSummary, index: Map<string, SessionSummary[]>, claimed: Set<string>, ambiguous: Set<string>): ChildFold {
+function buildChildFold(
+  child: SessionSummary,
+  index: Map<string, SessionSummary[]>,
+  claimed: Set<string>,
+  ambiguous: Set<string>,
+): ChildFold {
   claimed.add(child.sessionId)
   const models = new Map<string, number>()
   const categories = new Map<string, number>()
@@ -569,17 +609,25 @@ function buildChildFold(child: SessionSummary, index: Map<string, SessionSummary
   }
   const fold: ChildFold = {
     agentId: child.agentId ?? child.sessionId,
-    cost: child.totalCostUSD, calls: child.apiCalls, savingsUSD: child.totalSavingsUSD,
+    cost: child.totalCostUSD,
+    calls: child.apiCalls,
+    savingsUSD: child.totalSavingsUSD,
     spawnAtMs: parseMs(child.firstTimestamp),
-    firstTs: child.firstTimestamp, lastTs: child.lastTimestamp,
-    models, categories, provenance, foldedSessions: 1,
+    firstTs: child.firstTimestamp,
+    lastTs: child.lastTimestamp,
+    models,
+    categories,
+    provenance,
+    foldedSessions: 1,
   }
   for (const gc of index.get(providerSessionKey(child)) ?? []) {
     // Skip a descendant whose id is ambiguous (two conflicting records share it):
     // fold neither, consistent with the parent-level rule.
     if (claimed.has(gc.sessionId) || selfLinks(gc) || ambiguous.has(providerSessionKey(gc))) continue
     const gcf = buildChildFold(gc, index, claimed, ambiguous)
-    fold.cost += gcf.cost; fold.calls += gcf.calls; fold.savingsUSD += gcf.savingsUSD
+    fold.cost += gcf.cost
+    fold.calls += gcf.calls
+    fold.savingsUSD += gcf.savingsUSD
     fold.foldedSessions += gcf.foldedSessions
     for (const [m, c] of gcf.models) addToMap(fold.models, m, c)
     mergeProvenance(fold.provenance, gcf.provenance)
@@ -619,7 +667,11 @@ const AMBIGUOUS_SPAWN_GRACE_MS = 30 * 60 * 1000
 ///      carries the pre-range set (or unattributed).
 function resolveChild(parent: SessionSummary, fold: ChildFold): ResolvedChild {
   const spawnId = parent.agentSpawnLinks?.[fold.agentId]
-  if (spawnId !== undefined && parent.spawnPrSets && Object.prototype.hasOwnProperty.call(parent.spawnPrSets, spawnId)) {
+  if (
+    spawnId !== undefined &&
+    parent.spawnPrSets &&
+    Object.prototype.hasOwnProperty.call(parent.spawnPrSets, spawnId)
+  ) {
     const prs = parent.spawnPrSets[spawnId]!
     return { fold, prSet: prs.length ? prs : null, unlinked: false }
   }
@@ -643,8 +695,9 @@ function resolveChild(parent: SessionSummary, fold: ChildFold): ResolvedChild {
   for (const turn of parent.turns) {
     const tMs = parseMs(turnStartTs(turn))
     if (Number.isNaN(tMs)) continue
-    if (tMs <= ms) { if (turn.prRefs?.length) current = turn.prRefs }
-    else break
+    if (tMs <= ms) {
+      if (turn.prRefs?.length) current = turn.prRefs
+    } else break
   }
   return { fold, prSet: current, unlinked: false }
 }
@@ -656,7 +709,10 @@ function resolveChild(parent: SessionSummary, fold: ChildFold): ResolvedChild {
 /// (deterministic skip, stays standalone): correctness over coverage.
 export type SubagentAttribution = Map<string, ResolvedChild[]>
 
-export function resolveSubagentAttribution(sessions: SessionSummary[], anchors: SessionSummary[] = []): SubagentAttribution {
+export function resolveSubagentAttribution(
+  sessions: SessionSummary[],
+  anchors: SessionSummary[] = [],
+): SubagentAttribution {
   const index = buildSubagentIndex(sessions)
   // A provider+sessionId key is AMBIGUOUS when it is carried by more than one
   // DISTINCT record (different fingerprint) across ALL candidate sessions and
@@ -680,11 +736,14 @@ export function resolveSubagentAttribution(sessions: SessionSummary[], anchors: 
   const resolveParent = (parent: SessionSummary): void => {
     if (!parent.prLinks?.length) return
     const k = providerSessionKey(parent)
-    if (out.has(k)) return                          // already resolved for this key
-    if (ambiguous.has(k)) { out.set(k, []); return } // ambiguous parent id: fold nothing
+    if (out.has(k)) return // already resolved for this key
+    if (ambiguous.has(k)) {
+      out.set(k, [])
+      return
+    } // ambiguous parent id: fold nothing
     const direct = index.get(k)
     if (!direct?.length) return
-    const claimed = new Set<string>()               // one claimed set across all direct children
+    const claimed = new Set<string>() // one claimed set across all direct children
     const resolved: ResolvedChild[] = []
     for (const child of direct) {
       if (claimed.has(child.sessionId) || selfLinks(child) || ambiguous.has(providerSessionKey(child))) continue
@@ -787,7 +846,13 @@ export function attributeSessionPrSpend(session: AttributableSession): SessionPr
 /// PR-linked PARENT sessions ONLY (0-cost fold anchors are excluded); it is
 /// `subagentSessions` (folded subtrees: children plus descendants) that explains
 /// the extra spend.
-export type PrTotals = { cost: number; sessions: number; subagentSessions: number; attributedCost: number; unattributedCost: number }
+export type PrTotals = {
+  cost: number
+  sessions: number
+  subagentSessions: number
+  attributedCost: number
+  unattributedCost: number
+}
 export type PrAttribution = { rows: PrRow[]; totals: PrTotals }
 
 /// Spend by pull request, at turn granularity, with subagent runs folded into the
@@ -797,13 +862,22 @@ export type PrAttribution = { rows: PrRow[]; totals: PrTotals }
 /// marks legacy even-split rows; `models`/`categories` are the attributed
 /// breakdowns. Sorted by cost, descending.
 export function buildPrAttribution(sessions: SessionSummary[], anchors: SessionSummary[] = []): PrAttribution {
-  const byUrl = new Map<string, {
-    cost: number; savingsUSD: number; calls: number; approx: boolean
-    legacyCost: number
-    sessions: Set<string>; firstStarted: string; lastEnded: string
-    models: Map<string, number>; categories: Map<string, number>
-    provenance: Map<string, Set<string>>
-  }>()
+  const byUrl = new Map<
+    string,
+    {
+      cost: number
+      savingsUSD: number
+      calls: number
+      approx: boolean
+      legacyCost: number
+      sessions: Set<string>
+      firstStarted: string
+      lastEnded: string
+      models: Map<string, number>
+      categories: Map<string, number>
+      provenance: Map<string, Set<string>>
+    }
+  >()
   const attribution = resolveSubagentAttribution(sessions, anchors)
   let attributedCost = 0
   let unattributedCost = 0
@@ -816,23 +890,40 @@ export function buildPrAttribution(sessions: SessionSummary[], anchors: SessionS
   // timestamps (a 0-turn anchor) never widen the span; folded children pass their
   // OWN activity span, which is what dates an anchor-only row.
   const addTo = (
-    url: string, sessionKey: string, firstTs: string, lastTs: string,
-    cost: number, savings: number, calls: number, approx: boolean,
-    models: Map<string, number>, categories: Map<string, number>,
+    url: string,
+    sessionKey: string,
+    firstTs: string,
+    lastTs: string,
+    cost: number,
+    savings: number,
+    calls: number,
+    approx: boolean,
+    models: Map<string, number>,
+    categories: Map<string, number>,
     provenance: Map<string, Set<string>>,
   ): void => {
     if (cost === 0 && calls === 0 && savings === 0) return
     const row = byUrl.get(url) ?? {
-      cost: 0, savingsUSD: 0, calls: 0, approx: false, legacyCost: 0,
-      sessions: new Set<string>(), firstStarted: firstTs, lastEnded: lastTs,
-      models: new Map<string, number>(), categories: new Map<string, number>(),
+      cost: 0,
+      savingsUSD: 0,
+      calls: 0,
+      approx: false,
+      legacyCost: 0,
+      sessions: new Set<string>(),
+      firstStarted: firstTs,
+      lastEnded: lastTs,
+      models: new Map<string, number>(),
+      categories: new Map<string, number>(),
       provenance: new Map<string, Set<string>>(),
     }
     row.cost += cost
     row.savingsUSD += savings
     row.calls += calls
     row.sessions.add(sessionKey)
-    if (approx) { row.approx = true; row.legacyCost += cost }
+    if (approx) {
+      row.approx = true
+      row.legacyCost += cost
+    }
     for (const [m, mc] of models) addToMap(row.models, m, mc)
     for (const [cat, cc] of categories) addToMap(row.categories, cat, cc)
     mergeProvenance(row.provenance, provenance)
@@ -854,7 +945,10 @@ export function buildPrAttribution(sessions: SessionSummary[], anchors: SessionS
     for (const rc of attribution.get(key) ?? []) {
       if (rc.unlinked) continue
       subagentSessions += rc.fold.foldedSessions
-      if (!rc.prSet?.length) { unattributedCost += rc.fold.cost; continue }
+      if (!rc.prSet?.length) {
+        unattributedCost += rc.fold.cost
+        continue
+      }
       attributedCost += rc.fold.cost
       const prs = rc.prSet
       const share = 1 / prs.length
@@ -864,8 +958,19 @@ export function buildPrAttribution(sessions: SessionSummary[], anchors: SessionS
         for (const [m, mc] of rc.fold.models) models.set(m, mc * share)
         const categories = new Map<string, number>()
         for (const [cat, cc] of rc.fold.categories) categories.set(cat, cc * share)
-        addTo(url, sessionKey, rc.fold.firstTs, rc.fold.lastTs,
-          rc.fold.cost * share, rc.fold.savingsUSD * share, callAlloc[i]!, false, models, categories, rc.fold.provenance)
+        addTo(
+          url,
+          sessionKey,
+          rc.fold.firstTs,
+          rc.fold.lastTs,
+          rc.fold.cost * share,
+          rc.fold.savingsUSD * share,
+          callAlloc[i]!,
+          false,
+          models,
+          categories,
+          rc.fold.provenance,
+        )
       })
     }
   }
@@ -877,7 +982,19 @@ export function buildPrAttribution(sessions: SessionSummary[], anchors: SessionS
     const { perUrl, unattributed } = attributeSessionPrSpend(session)
     for (const [url, c] of perUrl) {
       attributedCost += c.cost
-      addTo(url, sessionKey, session.firstTimestamp, session.lastTimestamp, c.cost, c.savingsUSD, c.calls, c.approx, c.models, c.categories, c.provenance)
+      addTo(
+        url,
+        sessionKey,
+        session.firstTimestamp,
+        session.lastTimestamp,
+        c.cost,
+        c.savingsUSD,
+        c.calls,
+        c.approx,
+        c.models,
+        c.categories,
+        c.provenance,
+      )
     }
     unattributedCost += unattributed.cost
     foldChildren(session)
@@ -918,8 +1035,10 @@ export function buildPrAttribution(sessions: SessionSummary[], anchors: SessionS
       const models = [...shortCosts.entries()]
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
         .map(([name]) => name)
-      const categories = [...r.categories.entries()]
-        .map(([cat, cost]) => ({ name: CATEGORY_LABELS[cat as TaskCategory] ?? cat, cost }))
+      const categories = [...r.categories.entries()].map(([cat, cost]) => ({
+        name: CATEGORY_LABELS[cat as TaskCategory] ?? cat,
+        cost,
+      }))
       // Mixed row: live per-turn categories exist AND part of the row came from a
       // legacy even-split (no turn data). Add a synthetic line for the legacy
       // share so the expansion reconciles with the row cost instead of silently
@@ -930,10 +1049,14 @@ export function buildPrAttribution(sessions: SessionSummary[], anchors: SessionS
       }
       categories.sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name))
       return {
-        url, label: shortenPrUrl(url),
-        cost: r.cost, savingsUSD: r.savingsUSD,
-        sessions: r.sessions.size, calls: r.calls,
-        firstStarted: r.firstStarted, lastEnded: r.lastEnded,
+        url,
+        label: shortenPrUrl(url),
+        cost: r.cost,
+        savingsUSD: r.savingsUSD,
+        sessions: r.sessions.size,
+        calls: r.calls,
+        firstStarted: r.firstStarted,
+        lastEnded: r.lastEnded,
         approx: r.approx,
         models,
         ...(Object.keys(modelProvenance).length > 0 ? { modelProvenance } : {}),
@@ -942,7 +1065,16 @@ export function buildPrAttribution(sessions: SessionSummary[], anchors: SessionS
     })
     .sort((a, b) => b.cost - a.cost)
 
-  return { rows, totals: { cost: attributedCost + unattributedCost, sessions: parentSessions, subagentSessions, attributedCost, unattributedCost } }
+  return {
+    rows,
+    totals: {
+      cost: attributedCost + unattributedCost,
+      sessions: parentSessions,
+      subagentSessions,
+      attributedCost,
+      unattributedCost,
+    },
+  }
 }
 
 /// Spend attributed to each pull request (thin wrapper over buildPrAttribution).

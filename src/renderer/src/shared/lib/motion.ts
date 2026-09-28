@@ -37,19 +37,22 @@ export function motionClass(base: string, animated: string): string {
  * Runs on mount and when `deps` change, not on data re-renders.
  */
 export function useBarGrowIn(scope: RefObject<HTMLElement | null>, selector: string, deps: unknown[]): void {
-  useGSAP(() => {
-    if (!motionEnabled()) return
-    const bars = gsap.utils.toArray<HTMLElement>(selector, scope.current)
-    if (!bars.length) return
-    const each = Math.min(0.02, 0.26 / Math.max(1, bars.length - 1))
-    gsap.from(bars, {
-      scaleY: 0,
-      transformOrigin: 'bottom',
-      duration: 0.14,
-      ease: 'power1.out',
-      stagger: each,
-    })
-  }, { scope, dependencies: deps })
+  useGSAP(
+    () => {
+      if (!motionEnabled()) return
+      const bars = gsap.utils.toArray<HTMLElement>(selector, scope.current)
+      if (!bars.length) return
+      const each = Math.min(0.02, 0.26 / Math.max(1, bars.length - 1))
+      gsap.from(bars, {
+        scaleY: 0,
+        transformOrigin: 'bottom',
+        duration: 0.14,
+        ease: 'power1.out',
+        stagger: each,
+      })
+    },
+    { scope, dependencies: deps },
+  )
 }
 
 /**
@@ -60,14 +63,17 @@ export function useBarGrowIn(scope: RefObject<HTMLElement | null>, selector: str
  * keeps its entrance even as its text grows.
  */
 export function useChatRowIn(scope: RefObject<HTMLElement | null>): void {
-  useGSAP(() => {
-    if (!motionEnabled()) return
-    if (!scope.current) return
-    gsap.from(scope.current, {
-      opacity: 0,
-      y: 6,
-      duration: 0.2,
-      ease: 'power1.out',
-    })
-  }, { scope })
+  useGSAP(
+    () => {
+      if (!motionEnabled()) return
+      if (!scope.current) return
+      gsap.from(scope.current, {
+        opacity: 0,
+        y: 6,
+        duration: 0.2,
+        ease: 'power1.out',
+      })
+    },
+    { scope },
+  )
 }

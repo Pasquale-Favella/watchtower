@@ -4,8 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import {
-  buildDashboardViewsFromLedger, buildProjectRowsFromLedger, querySessionRowsFromLedger,
-  getSessionDetailFromLedger, buildAnalyticalViewsFromLedger, searchSessionsFromLedger,
+  buildDashboardViewsFromLedger,
+  buildProjectRowsFromLedger,
+  querySessionRowsFromLedger,
+  getSessionDetailFromLedger,
+  buildAnalyticalViewsFromLedger,
+  searchSessionsFromLedger,
 } from '../src/main/views.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
@@ -76,18 +80,37 @@ function portViews(store: LedgerStore, specs: ViewsSessionSpec[]): void {
 
 const VIEWS_SPECS: ViewsSessionSpec[] = [
   {
-    sessionId: 'sess-aa', project: 'api', provider: 'claude', model: 'claude-opus-4', cost: 10,
-    date: '2026-07-10', title: 'Refactor auth', userMessage: 'refactor the auth module',
-    bashCommands: ['npm test'], subagentTypes: ['explore'],
+    sessionId: 'sess-aa',
+    project: 'api',
+    provider: 'claude',
+    model: 'claude-opus-4',
+    cost: 10,
+    date: '2026-07-10',
+    title: 'Refactor auth',
+    userMessage: 'refactor the auth module',
+    bashCommands: ['npm test'],
+    subagentTypes: ['explore'],
     prRefs: ['https://github.com/acme/api/pull/7'],
   },
   {
-    sessionId: 'sess-bb', project: 'web', provider: 'opencode', model: 'deepseek-v3', cost: 5,
-    date: '2026-07-20', userMessage: 'ship the widget', bashCommands: ['npm run deploy -- --env prod'],
+    sessionId: 'sess-bb',
+    project: 'web',
+    provider: 'opencode',
+    model: 'deepseek-v3',
+    cost: 5,
+    date: '2026-07-20',
+    userMessage: 'ship the widget',
+    bashCommands: ['npm run deploy -- --env prod'],
   },
   {
-    sessionId: 'sess-cc', project: 'api', provider: 'claude', model: 'claude-sonnet-4', cost: 8,
-    date: '2026-08-01', userMessage: 'bump deps', bashCommands: ['npm run build'],
+    sessionId: 'sess-cc',
+    project: 'api',
+    provider: 'claude',
+    model: 'claude-sonnet-4',
+    cost: 8,
+    date: '2026-08-01',
+    userMessage: 'bump deps',
+    bashCommands: ['npm run build'],
   },
 ]
 
@@ -200,5 +223,4 @@ describe('ledger-backed views family (aggregation seam)', () => {
     expect(searchSessionsFromLedger(store, 'zzz-nothing')).toEqual([])
     store.close()
   })
-
 })

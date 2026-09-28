@@ -13,7 +13,14 @@ describe('opaque resume cursor', () => {
     expect(decodeResumeCursor(cursor, 'codex')).toBeUndefined()
   })
 
-  it.each([undefined, null, 42, '', 'not-base64', 'eyJ2IjoyLCJpbnN0YW5jZUlkIjoiY2xhdWRlIiwic2Vzc2lvbklkIjoic2Vzc18xIn0'])('returns undefined for invalid input without throwing: %s', raw => {
+  it.each([
+    undefined,
+    null,
+    42,
+    '',
+    'not-base64',
+    'eyJ2IjoyLCJpbnN0YW5jZUlkIjoiY2xhdWRlIiwic2Vzc2lvbklkIjoic2Vzc18xIn0',
+  ])('returns undefined for invalid input without throwing: %s', raw => {
     expect(() => decodeResumeCursor(raw, 'claude')).not.toThrow()
     expect(decodeResumeCursor(raw, 'claude')).toBeUndefined()
   })

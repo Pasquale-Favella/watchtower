@@ -65,8 +65,8 @@ function getDbPath(): string {
 
 function validateSchema(db: SqliteDatabase): boolean {
   try {
-    db.query<{ cnt: number }>("SELECT COUNT(*) as cnt FROM sessions LIMIT 1")
-    db.query<{ cnt: number }>("SELECT COUNT(*) as cnt FROM messages LIMIT 1")
+    db.query<{ cnt: number }>('SELECT COUNT(*) as cnt FROM sessions LIMIT 1')
+    db.query<{ cnt: number }>('SELECT COUNT(*) as cnt FROM messages LIMIT 1')
     return true
   } catch {
     return false
@@ -82,7 +82,10 @@ function parseModelConfig(raw: string | null): ModelConfig {
   }
 }
 
-function extractToolsFromMessages(db: SqliteDatabase, sessionId: string): { tools: string[]; bashCommands: string[]; toolSequence: ToolCall[][] } {
+function extractToolsFromMessages(
+  db: SqliteDatabase,
+  sessionId: string,
+): { tools: string[]; bashCommands: string[]; toolSequence: ToolCall[][] } {
   const tools: string[] = []
   const bashCommands: string[] = []
   const seen = new Set<string>()
@@ -131,7 +134,9 @@ function extractToolsFromMessages(db: SqliteDatabase, sessionId: string): { tool
       }
       if (msgCalls.length > 0) toolSequence.push(msgCalls)
     }
-  } catch { /* best-effort */ }
+  } catch {
+    /* best-effort */
+  }
 
   return { tools, bashCommands, toolSequence }
 }

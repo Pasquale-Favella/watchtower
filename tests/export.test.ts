@@ -119,8 +119,9 @@ describe('exportCsv (ADR 0009: folder of CSVs in the selected display currency)'
     const store = makeStore()
     const dir = mkdtempSync(join(tmpdir(), 'tr-export-guard-'))
     mkdirSync(join(dir, 'occupied'), { recursive: true })
-    await expect(exportCsv(buildFixtureReport(), join(dir, 'occupied'), store))
-      .rejects.toThrow('no .watchtower-export marker')
+    await expect(exportCsv(buildFixtureReport(), join(dir, 'occupied'), store)).rejects.toThrow(
+      'no .watchtower-export marker',
+    )
     store.close()
   })
 })

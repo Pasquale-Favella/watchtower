@@ -55,10 +55,14 @@ beforeEach(() => {
 describe('createScopedDataStore — SWR semantics (ADR 0011)', () => {
   type Pending = { resolve: (r: { ok: true; data: { n: number } }) => void }
   const deferred = (resolvers: Pending[]) => (): Promise<{ ok: true; data: { n: number } }> =>
-    new Promise(resolve => { resolvers.push({ resolve }) })
+    new Promise(resolve => {
+      resolvers.push({ resolve })
+    })
 
   it('loads a scope to ready', async () => {
-    const useStore = createScopedDataStore<{ n: number }>(scope => Promise.resolve({ ok: true, data: { n: scope.period.length } }))
+    const useStore = createScopedDataStore<{ n: number }>(scope =>
+      Promise.resolve({ ok: true, data: { n: scope.period.length } }),
+    )
     await useStore.getState().load({ period: 'week' })
     const s = useStore.getState()
     expect(s.status).toBe('ready')
@@ -129,8 +133,7 @@ describe('createScopedDataStore — SWR semantics (ADR 0011)', () => {
 
   it('reload() refetches the stored scope; clear() resets', async () => {
     let calls = 0
-    const useStore = createScopedDataStore<{ n: number }>(() =>
-      Promise.resolve({ ok: true, data: { n: ++calls } }))
+    const useStore = createScopedDataStore<{ n: number }>(() => Promise.resolve({ ok: true, data: { n: ++calls } }))
     await useStore.getState().load({ period: 'week' })
     await useStore.getState().reload()
     expect(useStore.getState().data).toEqual({ n: 2 })
@@ -146,9 +149,17 @@ describe('createScopedDataStore — SWR semantics (ADR 0011)', () => {
 describe('feature data stores wire the frozen wire contract (ADR 0005)', () => {
   const overviewPayload = {
     kpis: {
-      cost: 1, calls: 2, sessions: 3, inputTokens: 4, outputTokens: 5,
-      cacheReadTokens: 6, cacheWriteTokens: 7, savingsUSD: 8, estimatedCostUSD: 9,
-      oneShotRate: null, cacheHitPercent: 10,
+      cost: 1,
+      calls: 2,
+      sessions: 3,
+      inputTokens: 4,
+      outputTokens: 5,
+      cacheReadTokens: 6,
+      cacheWriteTokens: 7,
+      savingsUSD: 8,
+      estimatedCostUSD: 9,
+      oneShotRate: null,
+      cacheHitPercent: 10,
     },
     daily: [],
     dataStart: null,
@@ -159,13 +170,18 @@ describe('feature data stores wire the frozen wire contract (ADR 0005)', () => {
     skills: [],
     subagents: [],
     efficiency: {
-      score: 80, grade: 'B', oneShotRate: null,
+      score: 80,
+      grade: 'B',
+      oneShotRate: null,
       retryTax: { totalUSD: 0, retries: 0, editTurns: 0, byModel: [] },
       routingWaste: { baselineModel: 'x', baselineCostPerEdit: 0, totalSavingsUSD: 0, byModel: [] },
       pricingCoverage: 1,
     },
     workflow: {
-      corrections: 0, userTurns: 0, correctionRate: null, medianTimeToFirstEditMs: null,
+      corrections: 0,
+      userTurns: 0,
+      correctionRate: null,
+      medianTimeToFirstEditMs: null,
       topReworkedFiles: [],
     },
     unpricedModels: [],

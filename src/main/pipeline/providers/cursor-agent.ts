@@ -9,12 +9,7 @@ import { openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { normalizeContentBlocks } from '../content-utils.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 import { reportProviderIssue } from '../file-errors.js'
-import type {
-  Provider,
-  SessionSource,
-  SessionParser,
-  ParsedProviderCall,
-} from './types.js'
+import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 
 type ConversationSummary = {
   conversationId: string
@@ -153,11 +148,7 @@ function toConversationId(transcriptPath: string): string {
   return createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16)
 }
 
-async function appendTranscriptSources(
-  scanDir: string,
-  projectId: string,
-  sources: SessionSource[],
-): Promise<void> {
+async function appendTranscriptSources(scanDir: string, projectId: string, sources: SessionSource[]): Promise<void> {
   const transcriptEntries = await readdir(scanDir, { withFileTypes: true })
   for (const transcript of transcriptEntries) {
     // Legacy format: .txt files directly in the scan dir
@@ -458,14 +449,7 @@ function createParser(
           if (seenKeys.has(deduplicationKey)) continue
           seenKeys.add(deduplicationKey)
 
-          const costUSD = calculateCost(
-            costModel(model),
-            inputTokens,
-            outputTokens + reasoningTokens,
-            0,
-            0,
-            0,
-          )
+          const costUSD = calculateCost(costModel(model), inputTokens, outputTokens + reasoningTokens, 0, 0, 0)
 
           yield {
             provider: 'cursor-agent',

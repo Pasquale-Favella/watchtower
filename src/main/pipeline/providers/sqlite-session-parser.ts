@@ -5,11 +5,7 @@ import { calculateCost } from '../models.js'
 import { isSqliteAvailable, openDatabase, blobToText, isSqliteBusyError, type SqliteDatabase } from '../sqlite.js'
 import { buildAssistantCall, parseTimestamp, sanitize, type MessageData, type PartData } from './session-message.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
-import type {
-  SessionSource,
-  SessionParser,
-  ParsedProviderCall,
-} from './types.js'
+import type { SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 
 type MessageRow = {
   session_id: string
@@ -40,9 +36,17 @@ type SessionTokenRow = {
   model_id?: string
 }
 
-function tryQuerySessionTokens(db: SqliteDatabase, sessionId: string): {
-  cost: number; input: number; output: number; reasoning: number
-  cacheRead: number; cacheWrite: number; model: string | undefined
+function tryQuerySessionTokens(
+  db: SqliteDatabase,
+  sessionId: string,
+): {
+  cost: number
+  input: number
+  output: number
+  reasoning: number
+  cacheRead: number
+  cacheWrite: number
+  model: string | undefined
 } | null {
   try {
     const rows = db.query<SessionTokenRow>(
@@ -210,8 +214,8 @@ export function createSqliteSessionParser(
 
           if (data.role === 'user') {
             const textParts = (partsByMsg.get(msg.id) ?? [])
-              .filter((p) => p.type === 'text')
-              .map((p) => p.text ?? '')
+              .filter(p => p.type === 'text')
+              .map(p => p.text ?? '')
               .filter(Boolean)
             if (textParts.length > 0) {
               currentUserMessageBySession.set(msg.session_id, textParts.join(' '))
@@ -251,7 +255,14 @@ export function createSqliteSessionParser(
             if (!seenKeys.has(dedupKey)) {
               seenKeys.add(dedupKey)
               const model = sessionTokens.model ?? 'unknown'
-              let costUSD = calculateCost(model, sessionTokens.input, sessionTokens.output, sessionTokens.cacheWrite, sessionTokens.cacheRead, 0)
+              let costUSD = calculateCost(
+                model,
+                sessionTokens.input,
+                sessionTokens.output,
+                sessionTokens.cacheWrite,
+                sessionTokens.cacheRead,
+                0,
+              )
               if (costUSD === 0 && sessionTokens.cost > 0) costUSD = sessionTokens.cost
               yield {
                 provider: config.providerName,
@@ -280,8 +291,8 @@ export function createSqliteSessionParser(
           if (yieldCount === 0 && process.env['WATCHTOWER_VERBOSE'] === '1') {
             process.stderr.write(
               `watchtower: ${config.displayName} session has ${messages.length} messages ` +
-              `(${parseFailCount} unparseable, ${roleSkipCount} non-user/assistant roles) ` +
-              `but yielded 0 calls. Parts: ${parts.length}.\n`
+                `(${parseFailCount} unparseable, ${roleSkipCount} non-user/assistant roles) ` +
+                `but yielded 0 calls. Parts: ${parts.length}.\n`,
             )
           }
         }
@@ -292,17 +303,15 @@ export function createSqliteSessionParser(
   }
 }
 
-export async function discoverSqliteSessions(
-  config: SqliteProviderConfig,
-): Promise<SessionSource[]> {
+export async function discoverSqliteSessions(config: SqliteProviderConfig): Promise<SessionSource[]> {
   if (!isSqliteAvailable()) return []
 
   let dbPaths: string[]
   try {
     const entries = await readdir(config.dbDir)
     dbPaths = entries
-      .filter((f) => f.startsWith(config.dbFilePrefix) && f.endsWith('.db'))
-      .map((f) => join(config.dbDir, f))
+      .filter(f => f.startsWith(config.dbFilePrefix) && f.endsWith('.db'))
+      .map(f => join(config.dbDir, f))
   } catch {
     return []
   }
@@ -345,4 +354,3 @@ export async function discoverSqliteSessions(
 
   return sessions
 }
-

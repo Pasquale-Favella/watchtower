@@ -32,8 +32,12 @@ describe('probeClaudeAuthStatus — Claude Code sign-in probe (loggedIn boolean 
   })
 
   it('reports unknown when the CLI is missing, hangs, or the output has no login signal', async () => {
-    const missing = vi.fn(async () => { throw Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' }) })
-    const timeout = vi.fn(async () => { throw Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) })
+    const missing = vi.fn(async () => {
+      throw Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' })
+    })
+    const timeout = vi.fn(async () => {
+      throw Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })
+    })
     const empty = vi.fn(async () => ({ stdout: JSON.stringify({ apiProvider: 'firstParty' }) }))
 
     await expect(probeClaudeAuthStatus(missing)).resolves.toBe('unknown')

@@ -1,6 +1,10 @@
 import { z } from 'zod'
 
-export const spendSegmentSchema = z.object({ name: z.string(), cost: z.number(), sourceModels: z.array(z.string()).optional() })
+export const spendSegmentSchema = z.object({
+  name: z.string(),
+  cost: z.number(),
+  sourceModels: z.array(z.string()).optional(),
+})
 export type SpendSegment = z.infer<typeof spendSegmentSchema>
 
 export const spendDayEntrySchema = z.object({
@@ -10,7 +14,12 @@ export const spendDayEntrySchema = z.object({
 })
 export type SpendDayEntry = z.infer<typeof spendDayEntrySchema>
 
-export const spendFlowNodeSchema = z.object({ id: z.string(), label: z.string(), cost: z.number(), sourceModels: z.array(z.string()).optional() })
+export const spendFlowNodeSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  cost: z.number(),
+  sourceModels: z.array(z.string()).optional(),
+})
 export type SpendFlowNode = z.infer<typeof spendFlowNodeSchema>
 
 export const spendFlowLinkSchema = z.object({ model: z.string(), project: z.string(), cost: z.number() })

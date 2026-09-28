@@ -191,27 +191,74 @@ async function loadZed(): Promise<Provider | null> {
   }
 }
 
-const coreProviders: Provider[] = [claude, cline, codewhale, codebuff, codex, copilot, devin, droid, gemini, hermes, ibmBob, kiloCode, kiro, kimi, kimicode, lingtaiTui, mistralVibe, mux, openclaw, openDesign, pi, omp, qwen, quickdesk, rooCode, zerostack, grok]
+const coreProviders: Provider[] = [
+  claude,
+  cline,
+  codewhale,
+  codebuff,
+  codex,
+  copilot,
+  devin,
+  droid,
+  gemini,
+  hermes,
+  ibmBob,
+  kiloCode,
+  kiro,
+  kimi,
+  kimicode,
+  lingtaiTui,
+  mistralVibe,
+  mux,
+  openclaw,
+  openDesign,
+  pi,
+  omp,
+  qwen,
+  quickdesk,
+  rooCode,
+  zerostack,
+  grok,
+]
 
 // Lazily loaded providers, listed by name so --provider validation works even
 // when an optional module fails to load. Must stay in sync with getAllProviders.
-const lazyProviderNames = ['antigravity', 'forge', 'goose', 'cursor', 'opencode', 'cursor-agent', 'crush', 'warp', 'vercel-gateway', 'zcode', 'zed']
+const lazyProviderNames = [
+  'antigravity',
+  'forge',
+  'goose',
+  'cursor',
+  'opencode',
+  'cursor-agent',
+  'crush',
+  'warp',
+  'vercel-gateway',
+  'zcode',
+  'zed',
+]
 
 // Canonical set of every provider name (core + lazy), used to validate the
 // --provider CLI flag. Computed lazily so importing this module never depends on
 // every provider object being defined at load time (e.g. under test mocks).
 let allProviderNamesCache: string[] | undefined
 export function allProviderNames(): readonly string[] {
-  allProviderNamesCache ??= [
-    ...coreProviders.map(p => p.name),
-    ...lazyProviderNames,
-  ].sort()
+  allProviderNamesCache ??= [...coreProviders.map(p => p.name), ...lazyProviderNames].sort()
   return allProviderNamesCache
 }
 
 export async function getAllProviders(): Promise<Provider[]> {
   const [ag, forge, gs, cursor, opencode, cursorAgent, crush, warp, vercelGw, zc, zd] = await Promise.all([
-    loadAntigravity(), loadForge(), loadGoose(), loadCursor(), loadOpenCode(), loadCursorAgent(), loadCrush(), loadWarp(), loadVercelGateway(), loadZcode(), loadZed(),
+    loadAntigravity(),
+    loadForge(),
+    loadGoose(),
+    loadCursor(),
+    loadOpenCode(),
+    loadCursorAgent(),
+    loadCrush(),
+    loadWarp(),
+    loadVercelGateway(),
+    loadZcode(),
+    loadZed(),
   ])
   const all = [...coreProviders]
   if (ag) all.push(ag)
@@ -254,10 +301,9 @@ export async function discoverAllSessions(
   // the helper. Defaults to the real registry.
   providerList?: Provider[],
 ): Promise<SessionSource[]> {
-  const allProviders = providerList ?? await getAllProviders()
-  const filtered = providerFilter && providerFilter !== 'all'
-    ? allProviders.filter(p => p.name === providerFilter)
-    : allProviders
+  const allProviders = providerList ?? (await getAllProviders())
+  const filtered =
+    providerFilter && providerFilter !== 'all' ? allProviders.filter(p => p.name === providerFilter) : allProviders
   const all: SessionSource[] = []
   for (const provider of filtered) {
     const sessions = await safeDiscoverSessions(provider)

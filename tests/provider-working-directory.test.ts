@@ -41,7 +41,13 @@ describe('opencode file sessions', () => {
     )
     writeFileSync(
       join(dataDir, 'storage', 'message', 'sess-1', 'm1.json'),
-      JSON.stringify({ id: 'm1', role: 'assistant', modelID: 'gpt-4o', time: { created: 1750000000 }, tokens: { input: 10, output: 5 } }),
+      JSON.stringify({
+        id: 'm1',
+        role: 'assistant',
+        modelID: 'gpt-4o',
+        time: { created: 1750000000 },
+        tokens: { input: 10, output: 5 },
+      }),
     )
     writeFileSync(join(dataDir, 'storage', 'part', 'm1', 'p1.json'), JSON.stringify({ type: 'text', text: 'hello' }))
 
@@ -63,12 +69,16 @@ describe('opencode sqlite sessions', () => {
     const dbDir = mkdtempSync(join(tmpdir(), 'oc-db-'))
     const dbPath = join(dbDir, 'opencode-test.db')
     const setup = new DatabaseSync(dbPath)
-    setup.exec('CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created REAL, time_archived REAL, parent_id TEXT)')
+    setup.exec(
+      'CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created REAL, time_archived REAL, parent_id TEXT)',
+    )
     setup.exec('CREATE TABLE message (session_id TEXT, id TEXT, time_created REAL, data BLOB)')
     setup.exec('CREATE TABLE part (session_id TEXT, message_id TEXT, id TEXT, data BLOB)')
     setup.prepare('INSERT INTO session VALUES (?, ?, ?, ?, NULL, NULL)').run('sess-1', DIR, 't', 1750000000)
     setup.prepare('INSERT INTO message VALUES (?, ?, ?, ?)').run('sess-1', 'm1', 1750000000, assistantMessage())
-    setup.prepare('INSERT INTO part VALUES (?, ?, ?, ?)').run('sess-1', 'm1', 'p1', JSON.stringify({ type: 'text', text: 'hi' }))
+    setup
+      .prepare('INSERT INTO part VALUES (?, ?, ?, ?)')
+      .run('sess-1', 'm1', 'p1', JSON.stringify({ type: 'text', text: 'hi' }))
     setup.close()
 
     const config = { providerName: 'opencode', displayName: 'OpenCode', dbDir, dbFilePrefix: 'opencode' }
@@ -95,7 +105,9 @@ describe('opencode sqlite sessions', () => {
     setup.exec('CREATE TABLE part (session_id TEXT, message_id TEXT, id TEXT, data BLOB)')
     setup.prepare('INSERT INTO session VALUES (?, ?, ?, NULL, NULL)').run('sess-1', 't', 1750000000)
     setup.prepare('INSERT INTO message VALUES (?, ?, ?, ?)').run('sess-1', 'm1', 1750000000, assistantMessage())
-    setup.prepare('INSERT INTO part VALUES (?, ?, ?, ?)').run('sess-1', 'm1', 'p1', JSON.stringify({ type: 'text', text: 'hi' }))
+    setup
+      .prepare('INSERT INTO part VALUES (?, ?, ?, ?)')
+      .run('sess-1', 'm1', 'p1', JSON.stringify({ type: 'text', text: 'hi' }))
     setup.close()
 
     const config = { providerName: 'opencode', displayName: 'OpenCode', dbDir, dbFilePrefix: 'opencode' }
@@ -129,7 +141,13 @@ describe('attachWorkspacePaths', () => {
     timestamp: '2025-01-01T00:00:00.000Z',
     speed: 'standard' as const,
     project: '-Users-tester-proj',
-    usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningTokens: 0 },
+    usage: {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningTokens: 0,
+    },
     tools: [],
     mcpTools: [],
     skills: [],
@@ -163,10 +181,9 @@ describe('cursor workspace sessions', () => {
     writeFileSync(join(dir, 'workspace.json'), JSON.stringify({ folder }))
     const wsDb = new DatabaseSync(join(dir, 'state.vscdb'))
     wsDb.exec('CREATE TABLE ItemTable (key TEXT, value TEXT)')
-    wsDb.prepare('INSERT INTO ItemTable VALUES (?, ?)').run(
-      'composer.composerData',
-      JSON.stringify({ allComposers: [{ composerId: `composer-${hash}` }] }),
-    )
+    wsDb
+      .prepare('INSERT INTO ItemTable VALUES (?, ?)')
+      .run('composer.composerData', JSON.stringify({ allComposers: [{ composerId: `composer-${hash}` }] }))
     wsDb.close()
   }
 

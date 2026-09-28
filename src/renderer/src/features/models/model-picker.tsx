@@ -106,10 +106,15 @@ export function ModelPickerCombobox({
       items={groupedOptions}
       itemToStringValue={item => item.label}
       value={selected ?? null}
-      onValueChange={next => { if (next) onPick(next.value) }}
+      onValueChange={next => {
+        if (next) onPick(next.value)
+      }}
       autoHighlight
       open={open}
-      onOpenChange={next => { setOpen(next); if (next) setQuery('') }}
+      onOpenChange={next => {
+        setOpen(next)
+        if (next) setQuery('')
+      }}
     >
       <ComboboxTrigger
         render={
@@ -122,7 +127,7 @@ export function ModelPickerCombobox({
             <span className="min-w-0 flex-1 truncate text-left">
               {selected ? <ComboboxValue /> : value ? value : placeholder}
             </span>
-            <ChevronDownIcon className="pointer-events-none size-4 shrink-0 text-muted-foreground" />
+            <ChevronDownIcon className="text-muted-foreground pointer-events-none size-4 shrink-0" />
           </Button>
         }
       />
@@ -137,7 +142,10 @@ export function ModelPickerCombobox({
           {trimmedQuery ? (
             <button
               type="button"
-              onClick={() => { onPick(trimmedQuery); setOpen(false) }}
+              onClick={() => {
+                onPick(trimmedQuery)
+                setOpen(false)
+              }}
               onKeyDown={event => {
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault()
@@ -145,7 +153,7 @@ export function ModelPickerCombobox({
                   setOpen(false)
                 }
               }}
-              className="cursor-pointer text-[12.5px] font-medium text-primary hover:underline"
+              className="text-primary cursor-pointer text-[12.5px] font-medium hover:underline"
             >
               Use “{trimmedQuery}”
             </button>
@@ -162,8 +170,8 @@ export function ModelPickerCombobox({
                 <ComboboxItem key={item.id} value={item}>
                   {item.dot && <ModelDot model={item.dot} />}
                   <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-[12px] font-medium text-foreground">{item.label}</span>
-                    {item.sub && <span className="truncate text-[9.5px] text-muted-foreground">{item.sub}</span>}
+                    <span className="text-foreground truncate text-[12px] font-medium">{item.label}</span>
+                    {item.sub && <span className="text-muted-foreground truncate text-[9.5px]">{item.sub}</span>}
                   </span>
                 </ComboboxItem>
               ))}

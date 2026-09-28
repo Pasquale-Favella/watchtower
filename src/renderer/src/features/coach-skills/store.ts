@@ -185,9 +185,11 @@ function nextMessageId(): string {
 
 /** Default instance: first ready, else first warning/pending — never an errored one. */
 function defaultHarnessId(harnesses: CoachHarnessRow[]): string | null {
-  return harnesses.find(h => h.status === 'ready')?.instanceId
-    ?? harnesses.find(h => h.status === 'warning' || h.status === 'pending')?.instanceId
-    ?? null
+  return (
+    harnesses.find(h => h.status === 'ready')?.instanceId ??
+    harnesses.find(h => h.status === 'warning' || h.status === 'pending')?.instanceId ??
+    null
+  )
 }
 
 /** A ready-to-spread empty assistant turn for the thread. The run context
@@ -237,10 +239,11 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   runMessageIds: {},
   error: null,
   detection: scopedDataSlice<SkillsPayload>(
-    scope => fetchSkills(scope, {
-      frequency: useSettingsStore.getState().skillsFrequency,
-      spread: useSettingsStore.getState().skillsSpread,
-    }),
+    scope =>
+      fetchSkills(scope, {
+        frequency: useSettingsStore.getState().skillsFrequency,
+        spread: useSettingsStore.getState().skillsSpread,
+      }),
     patch => set(state => ({ detection: { ...state.detection, ...patch } })),
     () => get().detection,
   ),
@@ -254,7 +257,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     if (!result.ok) return
     get().replaceHarnesses(result.data)
   },
-  replaceHarnesses: (harnesses) => {
+  replaceHarnesses: harnesses => {
     const { harnessKind: current, harnessAutoPicked, messages } = get()
     const currentRow = current ? harnesses.find(h => h.instanceId === current) : undefined
     // An auto-pick is re-evaluated as probes land, until the user picks or chats.
@@ -283,7 +286,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       }
     }
   },
-  setHarness: (harnessKind) => {
+  setHarness: harnessKind => {
     const s = get()
     const previous = s.harnessKind
     // Remember the OUTGOING harness's current picks against its cached set —
@@ -291,9 +294,10 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     // user's live choices may have changed since. Only when the kind has an
     // entry: a never-probed kind must not be marked cached (its next probe
     // can still fail and must be retried).
-    const modelsByKind = previous && previous !== harnessKind && s.modelsByKind[previous]
-      ? { ...s.modelsByKind, [previous]: { ...s.modelsByKind[previous], modelId: s.modelId, modeId: s.modeId } }
-      : s.modelsByKind
+    const modelsByKind =
+      previous && previous !== harnessKind && s.modelsByKind[previous]
+        ? { ...s.modelsByKind, [previous]: { ...s.modelsByKind[previous], modelId: s.modelId, modeId: s.modeId } }
+        : s.modelsByKind
     // A previously probed harness restores its declared set + the user's
     // picks INSTANTLY. An uncached harness starts clean; the picker triggers
     // its lazy inspect when opened or hovered. The auto-pick warm-start lives
@@ -309,7 +313,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
         : { sessionModels: null, sessionModes: null, modelId: null, modeId: null }),
     })
   },
-  inspectHarness: async (kind) => {
+  inspectHarness: async kind => {
     // Hybrid probe (map 47 ticket 50, pre-#145): lazy when the model picker
     // opens/hovers, plus a warm-start for the auto-selected harness on load
     // (fired from replaceHarnesses). The probe declares models/modes only —
@@ -346,11 +350,11 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       const existing = state.modelsByKind[kind]
       const isCurrent = state.harnessKind === kind
       const pickModelId = isCurrent
-        ? state.modelId ?? existing?.modelId ?? models?.currentModelId ?? null
-        : existing?.modelId ?? models?.currentModelId ?? null
+        ? (state.modelId ?? existing?.modelId ?? models?.currentModelId ?? null)
+        : (existing?.modelId ?? models?.currentModelId ?? null)
       const pickModeId = isCurrent
-        ? state.modeId ?? existing?.modeId ?? modes?.currentModeId ?? null
-        : existing?.modeId ?? modes?.currentModeId ?? null
+        ? (state.modeId ?? existing?.modeId ?? modes?.currentModeId ?? null)
+        : (existing?.modeId ?? modes?.currentModeId ?? null)
       const modelsByKind = {
         ...state.modelsByKind,
         [kind]: { models: models ?? null, modes: modes ?? null, modelId: pickModelId, modeId: pickModeId },
@@ -368,27 +372,29 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       }
     })
   },
-  setModelId: (modelId) => set(state => {
-    // Write-through to the per-harness cache (when the kind has an entry):
-    // the cache ALSO holds the user's picks, and `resetSession` restores
-    // from it — without this a pick made after the probe would be lost on a
-    // new conversation. No entry is created for a never-probed kind: that
-    // would mark it cached and block its lazy probe (`inspectHarness`
-    // returns early on cached kinds) — the live pick still survives the
-    // probe via its live-pick-wins rule.
-    const kind = state.harnessKind
-    const entry = kind ? state.modelsByKind[kind] : undefined
-    if (!kind || !entry) return { modelId }
-    return { modelId, modelsByKind: { ...state.modelsByKind, [kind]: { ...entry, modelId } } }
-  }),
-  setModeId: (modeId) => set(state => {
-    // Same write-through contract as setModelId (see above).
-    const kind = state.harnessKind
-    const entry = kind ? state.modelsByKind[kind] : undefined
-    if (!kind || !entry) return { modeId }
-    return { modeId, modelsByKind: { ...state.modelsByKind, [kind]: { ...entry, modeId } } }
-  }),
-  sendCoach: async (prompt) => {
+  setModelId: modelId =>
+    set(state => {
+      // Write-through to the per-harness cache (when the kind has an entry):
+      // the cache ALSO holds the user's picks, and `resetSession` restores
+      // from it — without this a pick made after the probe would be lost on a
+      // new conversation. No entry is created for a never-probed kind: that
+      // would mark it cached and block its lazy probe (`inspectHarness`
+      // returns early on cached kinds) — the live pick still survives the
+      // probe via its live-pick-wins rule.
+      const kind = state.harnessKind
+      const entry = kind ? state.modelsByKind[kind] : undefined
+      if (!kind || !entry) return { modelId }
+      return { modelId, modelsByKind: { ...state.modelsByKind, [kind]: { ...entry, modelId } } }
+    }),
+  setModeId: modeId =>
+    set(state => {
+      // Same write-through contract as setModelId (see above).
+      const kind = state.harnessKind
+      const entry = kind ? state.modelsByKind[kind] : undefined
+      if (!kind || !entry) return { modeId }
+      return { modeId, modelsByKind: { ...state.modelsByKind, [kind]: { ...entry, modeId } } }
+    }),
+  sendCoach: async prompt => {
     const s = get()
     if (s.running) return
     const trimmed = prompt.trim()
@@ -399,7 +405,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       resume: true,
     })
   },
-  retryAssistant: async (messageId) => {
+  retryAssistant: async messageId => {
     const s = get()
     if (s.running) return
     const index = s.messages.findIndex(m => m.id === messageId)
@@ -412,11 +418,14 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     if (!assistant || assistant.role !== 'assistant' || assistant.streaming || index !== lastAssistantIndex) return
     const user = s.messages[index - 1]
     if (!user || user.role !== 'user') return
-    await startRun({
-      userContent: user.content,
-      prompt: user.content,
-      resume: true,
-    }, { replaceAssistantId: messageId })
+    await startRun(
+      {
+        userContent: user.content,
+        prompt: user.content,
+        resume: true,
+      },
+      { replaceAssistantId: messageId },
+    )
   },
   cancel: () => {
     const runId = get().activeRunId
@@ -425,7 +434,8 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       running: false,
       activeRunId: null,
       messages: state.messages.map(message =>
-        message.streaming ? { ...message, streaming: false, error: 'cancelled' } : message),
+        message.streaming ? { ...message, streaming: false, error: 'cancelled' } : message,
+      ),
     }))
   },
   resetSession: () => {
@@ -436,7 +446,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       // The thread is conversation state — cleared. Agent capabilities are
       // not: restore the current harness's cached set + picks so the pickers
       // never go blank after a reset (no re-probe needed).
-      const cached = state.harnessKind ? state.modelsByKind[state.harnessKind] ?? null : null
+      const cached = state.harnessKind ? (state.modelsByKind[state.harnessKind] ?? null) : null
       return {
         messages: [],
         resumeCursor: null,
@@ -452,7 +462,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
       }
     })
   },
-  onEvent: (envelope) => {
+  onEvent: envelope => {
     const state = get()
     const messageId = state.runMessageIds[envelope.runId]
     if (!messageId) {
@@ -465,7 +475,9 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     const event = envelope.event
     const active = state.activeRunId === envelope.runId
     const updateMessage = (update: (message: ChatMessage) => ChatMessage): void => {
-      set(current => ({ messages: current.messages.map(message => message.id === messageId ? update(message) : message) }))
+      set(current => ({
+        messages: current.messages.map(message => (message.id === messageId ? update(message) : message)),
+      }))
     }
     switch (event.kind) {
       case 'status':
@@ -535,17 +547,19 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
             resumeCursor: event.resumeCursor,
             sessionModels: event.models ?? state.sessionModels,
             sessionModes: event.modes ?? state.sessionModes,
-            modelId: state.modelId ?? (event.models?.currentModelId ?? null),
-            modeId: state.modeId ?? (event.modes?.currentModeId ?? null),
+            modelId: state.modelId ?? event.models?.currentModelId ?? null,
+            modeId: state.modeId ?? event.modes?.currentModeId ?? null,
             modelsByKind,
           }
         })
         break
       }
       case 'error':
-        updateMessage(message => message.error === 'cancelled'
-          ? { ...message, streaming: false }
-          : { ...message, streaming: false, error: event.message })
+        updateMessage(message =>
+          message.error === 'cancelled'
+            ? { ...message, streaming: false }
+            : { ...message, streaming: false, error: event.message },
+        )
         if (active) set({ running: false, activeRunId: null })
         break
     }
@@ -556,17 +570,28 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
  *  streaming assistant turn, acks the run, and arms event routing. When
  *  `replaceAssistantId` is set (a retry), the old assistant turn is swapped
  *  out IN PLACE — the user message is kept, no duplicate turn is added. */
-async function startRun(input: {
-  userContent: string
-  prompt: string
-  resume: boolean
-}, options: { replaceAssistantId?: string } = {}): Promise<void> {
+async function startRun(
+  input: {
+    userContent: string
+    prompt: string
+    resume: boolean
+  },
+  options: { replaceAssistantId?: string } = {},
+): Promise<void> {
   const s = useCoachSkillsStore.getState()
   if (!s.harnessKind) {
     setRunFailed('select a harness first')
     return
   }
-  const userMessage: ChatMessage = { id: nextMessageId(), role: 'user', content: input.userContent, thinking: '', tools: [], notices: [], streaming: false }
+  const userMessage: ChatMessage = {
+    id: nextMessageId(),
+    role: 'user',
+    content: input.userContent,
+    thinking: '',
+    tools: [],
+    notices: [],
+    streaming: false,
+  }
   const assistantMessage = emptyAssistant()
   setRunPending(userMessage, assistantMessage, options.replaceAssistantId)
 
@@ -628,9 +653,7 @@ function setRunFailed(error: string): void {
     running: false,
     error,
     pendingEvents: {},
-    messages: state.messages.map(message =>
-      message.streaming ? { ...message, streaming: false, error } : message,
-    ),
+    messages: state.messages.map(message => (message.streaming ? { ...message, streaming: false, error } : message)),
   }))
 }
 

@@ -77,12 +77,13 @@ export function groupTaskRows(rows: ModelReportRow[]): ModelTaskGroup[] {
     const key = `${row.provider}\u0000${row.model}`
     const group = groups.get(key)
     if (group) group.rows.push(row)
-    else groups.set(key, {
-      provider: row.provider,
-      model: row.model,
-      modelDisplayName: row.modelDisplayName,
-      rows: [row],
-    })
+    else
+      groups.set(key, {
+        provider: row.provider,
+        model: row.model,
+        modelDisplayName: row.modelDisplayName,
+        rows: [row],
+      })
   }
   return [...groups.values()]
 }

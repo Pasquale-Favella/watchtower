@@ -75,7 +75,10 @@ function parseSession(data: GeminiSession, seenKeys: Set<string>): ParsedProvide
   for (const msg of data.messages) {
     if (msg.type === 'user') {
       if (Array.isArray(msg.content)) {
-        lastUserMessage = msg.content.map(c => c.text).join(' ').slice(0, 500)
+        lastUserMessage = msg.content
+          .map(c => c.text)
+          .join(' ')
+          .slice(0, 500)
       } else if (typeof msg.content === 'string') {
         lastUserMessage = msg.content.slice(0, 500)
       }
@@ -197,7 +200,9 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         if (parsed.messages && parsed.sessionId) {
           data = parsed
         }
-      } catch { /* not single JSON */ }
+      } catch {
+        /* not single JSON */
+      }
 
       if (!data) {
         data = parseJsonl(raw)

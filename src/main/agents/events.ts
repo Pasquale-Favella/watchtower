@@ -82,7 +82,16 @@ export type CoachStreamPart =
   | { type: 'reasoning-delta'; id?: string; delta?: string; text?: string }
   | { type: 'tool-input-start'; id?: string; toolName: string; title?: string }
   | { type: 'tool-call'; toolCallId?: string; toolName: string; input?: unknown; title?: string }
-  | { type: 'tool-result'; toolCallId?: string; toolName: string; input?: unknown; output?: unknown; result?: unknown; isError?: boolean; title?: string }
+  | {
+      type: 'tool-result'
+      toolCallId?: string
+      toolName: string
+      input?: unknown
+      output?: unknown
+      result?: unknown
+      isError?: boolean
+      title?: string
+    }
   | { type: 'tool-error'; toolCallId?: string; toolName: string; input?: unknown; error?: unknown }
   | { type: 'finish'; finishReason?: unknown }
   | { type: 'error'; error: unknown }
@@ -105,21 +114,22 @@ export function createCoachEventNormalizer(): (part: CoachStreamPart) => CoachEv
     }
   }
 
-  return part => deriveCoachEvents(part).map(event => {
-    if (event.kind !== 'tool') return event
+  return part =>
+    deriveCoachEvents(part).map(event => {
+      if (event.kind !== 'tool') return event
 
-    if (event.state === 'started') {
-      const id = event.id ?? generatedId()
-      const ids = openIds.get(event.tool) ?? []
-      if (!ids.includes(id)) ids.push(id)
-      openIds.set(event.tool, ids)
+      if (event.state === 'started') {
+        const id = event.id ?? generatedId()
+        const ids = openIds.get(event.tool) ?? []
+        if (!ids.includes(id)) ids.push(id)
+        openIds.set(event.tool, ids)
+        return { ...event, id }
+      }
+
+      const id = event.id ?? openIds.get(event.tool)?.shift() ?? generatedId()
+      if (event.id) removeOpenId(event.id)
       return { ...event, id }
-    }
-
-    const id = event.id ?? openIds.get(event.tool)?.shift() ?? generatedId()
-    if (event.id) removeOpenId(event.id)
-    return { ...event, id }
-  })
+    })
 }
 
 export function deriveCoachEvents(part: CoachStreamPart): CoachEvent[] {

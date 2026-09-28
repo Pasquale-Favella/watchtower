@@ -5,7 +5,13 @@ import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { LoadingRegion } from '@/shared/components/skeletons'
-import { dedupeGroups, ModelPickerCombobox, uniqueAliasTargets, usagePickerItem, type ModelPickerGroup } from '@/features/models/model-picker'
+import {
+  dedupeGroups,
+  ModelPickerCombobox,
+  uniqueAliasTargets,
+  usagePickerItem,
+  type ModelPickerGroup,
+} from '@/features/models/model-picker'
 import { usePricingStore } from '@/features/models/pricing-store'
 import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
 
@@ -50,51 +56,58 @@ export function AliasesPane() {
 
   // Unrecognized model candidates: models already aliased plus the usage
   // models that are not mapped yet (the unpriced ones).
-  const fromGroups = useMemo<ModelPickerGroup[]>(() => [
-    {
-      label: 'Already mapped',
-      items: (aliases ?? []).map(alias => ({
-        id: `mapped:${alias.model}`,
-        value: alias.model,
-        label: alias.model,
-        dot: alias.model,
-        sub: `→ ${alias.aliasOf}`,
-      })),
-    },
-    {
-      label: 'Not mapped',
-      items: unpricedItems.filter(item => !aliasedModels.has(item.value)),
-    },
-  ], [aliases, unpricedItems, aliasedModels])
+  const fromGroups = useMemo<ModelPickerGroup[]>(
+    () => [
+      {
+        label: 'Already mapped',
+        items: (aliases ?? []).map(alias => ({
+          id: `mapped:${alias.model}`,
+          value: alias.model,
+          label: alias.model,
+          dot: alias.model,
+          sub: `→ ${alias.aliasOf}`,
+        })),
+      },
+      {
+        label: 'Not mapped',
+        items: unpricedItems.filter(item => !aliasedModels.has(item.value)),
+      },
+    ],
+    [aliases, unpricedItems, aliasedModels],
+  )
 
   // Priced model candidates: targets already aliased (deduped) plus the
   // already-priced models — explicit overrides and priced usage models.
   // Values are deduped so each model appears once (first group wins).
-  const toGroups = useMemo<ModelPickerGroup[]>(() => dedupeGroups([
-    {
-      label: 'Already mapped',
-      items: uniqueAliasTargets(aliases ?? []).map(alias => ({
-        id: `mapped:${alias.aliasOf}`,
-        value: alias.aliasOf,
-        label: alias.aliasOf,
-        dot: alias.aliasOf,
-        sub: `from ${alias.model}`,
-      })),
-    },
-    {
-      label: 'Priced models',
-      items: [
-        ...(overrides ?? []).map(override => ({
-          id: `override:${override.model}`,
-          value: override.model,
-          label: override.model,
-          dot: override.model,
-          sub: `in ${override.inputPricePerMillion} · out ${override.outputPricePerMillion}`,
-        })),
-        ...pricedItems,
-      ],
-    },
-  ]), [aliases, overrides, pricedItems])
+  const toGroups = useMemo<ModelPickerGroup[]>(
+    () =>
+      dedupeGroups([
+        {
+          label: 'Already mapped',
+          items: uniqueAliasTargets(aliases ?? []).map(alias => ({
+            id: `mapped:${alias.aliasOf}`,
+            value: alias.aliasOf,
+            label: alias.aliasOf,
+            dot: alias.aliasOf,
+            sub: `from ${alias.model}`,
+          })),
+        },
+        {
+          label: 'Priced models',
+          items: [
+            ...(overrides ?? []).map(override => ({
+              id: `override:${override.model}`,
+              value: override.model,
+              label: override.model,
+              dot: override.model,
+              sub: `in ${override.inputPricePerMillion} · out ${override.outputPricePerMillion}`,
+            })),
+            ...pricedItems,
+          ],
+        },
+      ]),
+    [aliases, overrides, pricedItems],
+  )
 
   const add = async (): Promise<void> => {
     const model = from.trim()
@@ -131,26 +144,24 @@ export function AliasesPane() {
             ))}
           </LoadingRegion>
         ) : aliases.length === 0 ? (
-          <p className="text-[11.5px] text-muted-foreground">No aliases configured. Unknown models are priced at $0 until aliased.</p>
+          <p className="text-muted-foreground text-[11.5px]">
+            No aliases configured. Unknown models are priced at $0 until aliased.
+          </p>
         ) : (
           <ul className="flex flex-col gap-2">
             {aliases.map(alias => (
               <li key={alias.model} className="flex items-center gap-2">
                 <code className="min-w-0 flex-1 truncate font-mono text-[11.5px]">{alias.model}</code>
                 <span className="text-muted-foreground">→</span>
-                <code className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-foreground">{alias.aliasOf}</code>
-                <ConfirmRemove
-                  label="Remove"
-                  prompt="Remove?"
-                  onConfirm={() => void removeAlias(alias.model)}
-                />
+                <code className="text-foreground min-w-0 flex-1 truncate font-mono text-[11.5px]">{alias.aliasOf}</code>
+                <ConfirmRemove label="Remove" prompt="Remove?" onConfirm={() => void removeAlias(alias.model)} />
               </li>
             ))}
           </ul>
         )}
         <Separator className="my-3" />
         <div className="flex flex-col gap-2">
-          <span className="text-[10.5px] font-medium text-muted-foreground">Unrecognized model</span>
+          <span className="text-muted-foreground text-[10.5px] font-medium">Unrecognized model</span>
           <ModelPickerCombobox
             groups={fromGroups}
             value={from}
@@ -159,7 +170,7 @@ export function AliasesPane() {
             emptyText="No unmapped models detected yet — type a name."
             ariaLabel="Unrecognized model"
           />
-          <span className="text-[10.5px] font-medium text-muted-foreground">Priced model</span>
+          <span className="text-muted-foreground text-[10.5px] font-medium">Priced model</span>
           <ModelPickerCombobox
             groups={toGroups}
             value={to}
@@ -178,9 +189,12 @@ export function AliasesPane() {
             Add
           </Button>
         </div>
-        {storeError && <p className="mt-2 text-[11px] text-destructive">{storeError}</p>}
+        {storeError && <p className="text-destructive mt-2 text-[11px]">{storeError}</p>}
       </Card>
-      <p className="text-[11px] text-muted-foreground">Unknown models are priced at $0 until aliased. A local model can instead be credited with what it would have cost via model-savings.</p>
+      <p className="text-muted-foreground text-[11px]">
+        Unknown models are priced at $0 until aliased. A local model can instead be credited with what it would have
+        cost via model-savings.
+      </p>
     </div>
   )
 }

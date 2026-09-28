@@ -140,7 +140,11 @@ function matchesCorrection(text: string): boolean {
   return USER_CORRECTION_PATTERNS.some(p => p.test(text))
 }
 
-function scanCorrections(sessions: SessionSummary[]): { corrections: number; userTurns: number; correctionRate: number | null } {
+function scanCorrections(sessions: SessionSummary[]): {
+  corrections: number
+  userTurns: number
+  correctionRate: number | null
+} {
   let corrections = 0
   let userTurns = 0
   for (const sess of sessions) {
@@ -277,7 +281,16 @@ function aggregateModelEfficiency(sessions: SessionSummary[]): Map<string, Model
   function ensure(model: string): ModelEfficiencyAcc {
     let stats = byModel.get(model)
     if (!stats) {
-      stats = { model, editTurns: 0, oneShotTurns: 0, retries: 0, editCostUSD: 0, oneShotRate: null, retriesPerEdit: null, costPerEditUSD: null }
+      stats = {
+        model,
+        editTurns: 0,
+        oneShotTurns: 0,
+        retries: 0,
+        editCostUSD: 0,
+        oneShotRate: null,
+        retriesPerEdit: null,
+        costPerEditUSD: null,
+      }
       byModel.set(model, stats)
     }
     return stats
@@ -324,16 +337,35 @@ export function buildOverviewPayload(
   sessions = sessions.filter(s => inScope(s, scope, now, provider))
 
   const kpis: OverviewKpis = {
-    cost: 0, calls: 0, sessions: sessions.length, inputTokens: 0, outputTokens: 0,
-    cacheReadTokens: 0, cacheWriteTokens: 0, savingsUSD: 0, estimatedCostUSD: 0,
-    oneShotRate: null, cacheHitPercent: 0,
+    cost: 0,
+    calls: 0,
+    sessions: sessions.length,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    savingsUSD: 0,
+    estimatedCostUSD: 0,
+    oneShotRate: null,
+    cacheHitPercent: 0,
   }
 
-  const categoryTotals = new Map<string, { turns: number; cost: number; savingsUSD: number; editTurns: number; oneShotTurns: number }>()
-  const modelTotals = new Map<string, {
-    calls: number; cost: number; savingsUSD: number; estimatedCostUSD: number;
-    inputTokens: number; outputTokens: number; allTokens: number
-  }>()
+  const categoryTotals = new Map<
+    string,
+    { turns: number; cost: number; savingsUSD: number; editTurns: number; oneShotTurns: number }
+  >()
+  const modelTotals = new Map<
+    string,
+    {
+      calls: number
+      cost: number
+      savingsUSD: number
+      estimatedCostUSD: number
+      inputTokens: number
+      outputTokens: number
+      allTokens: number
+    }
+  >()
   const modelProvenance = new Map<string, Set<string>>()
   const toolTotals = new Map<string, number>()
   const mcpTotals = new Map<string, number>()
@@ -341,10 +373,17 @@ export function buildOverviewPayload(
   const subagentTotals = new Map<string, { calls: number; cost: number }>()
   const dayBuckets = new Map<string, { cost: number; calls: number; sessions: number }>()
 
-  const savingsByModel = new Map<string, {
-    calls: number; actualUSD: number; savingsUSD: number; baselineModel: string;
-    inputTokens: number; outputTokens: number
-  }>()
+  const savingsByModel = new Map<
+    string,
+    {
+      calls: number
+      actualUSD: number
+      savingsUSD: number
+      baselineModel: string
+      inputTokens: number
+      outputTokens: number
+    }
+  >()
   const savingsByProvider = new Map<string, { calls: number; savingsUSD: number }>()
   let totalSavings = 0
   let totalSavingsCalls = 0
@@ -381,14 +420,23 @@ export function buildOverviewPayload(
     for (const [model, d] of Object.entries(sess.modelBreakdown)) {
       if (model === '<synthetic>') continue
       const name = getShortModelName(model)
-      const acc = modelTotals.get(name) ?? { calls: 0, cost: 0, savingsUSD: 0, estimatedCostUSD: 0, inputTokens: 0, outputTokens: 0, allTokens: 0 }
+      const acc = modelTotals.get(name) ?? {
+        calls: 0,
+        cost: 0,
+        savingsUSD: 0,
+        estimatedCostUSD: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        allTokens: 0,
+      }
       acc.calls += d.calls
       acc.cost += d.costUSD
       acc.savingsUSD += d.savingsUSD
       acc.estimatedCostUSD += d.estimatedCostUSD ?? 0
       acc.inputTokens += d.tokens.inputTokens
       acc.outputTokens += d.tokens.outputTokens
-      acc.allTokens += d.tokens.inputTokens + d.tokens.outputTokens + d.tokens.cacheReadInputTokens + d.tokens.cacheCreationInputTokens
+      acc.allTokens +=
+        d.tokens.inputTokens + d.tokens.outputTokens + d.tokens.cacheReadInputTokens + d.tokens.cacheCreationInputTokens
       modelTotals.set(name, acc)
       if (d.sourceModels?.length) {
         let set = modelProvenance.get(name)
@@ -427,8 +475,12 @@ export function buildOverviewPayload(
         totalSavingsCalls += 1
         const name = getShortModelName(call.model)
         const acc = savingsByModel.get(name) ?? {
-          calls: 0, actualUSD: 0, savingsUSD: 0, baselineModel: call.savingsBaselineModel ?? '',
-          inputTokens: 0, outputTokens: 0
+          calls: 0,
+          actualUSD: 0,
+          savingsUSD: 0,
+          baselineModel: call.savingsBaselineModel ?? '',
+          inputTokens: 0,
+          outputTokens: 0,
         }
         acc.calls += 1
         acc.actualUSD += call.costUSD
@@ -471,7 +523,8 @@ export function buildOverviewPayload(
       if (key < periodStart || key > todayKey) continue
       if (earliestInPeriod === null || key < earliestInPeriod) earliestInPeriod = key
     }
-    const startKey = earliestInPeriod !== null && earliestInPeriod < defaultChartStart ? earliestInPeriod : defaultChartStart
+    const startKey =
+      earliestInPeriod !== null && earliestInPeriod < defaultChartStart ? earliestInPeriod : defaultChartStart
     daily.push(...contiguousDaily(dayBuckets, startKey, todayKey))
   }
 
@@ -542,13 +595,15 @@ export function buildOverviewPayload(
   }
 
   const reliableModels = [...effMap.values()]
-    .filter(m => m.oneShotRate !== null && m.oneShotRate >= 90 && m.editTurns >= 5
-      && (m.costPerEditUSD ?? 0) >= 0.01)
+    .filter(m => m.oneShotRate !== null && m.oneShotRate >= 90 && m.editTurns >= 5 && (m.costPerEditUSD ?? 0) >= 0.01)
     .sort((a, b) => (a.costPerEditUSD ?? Infinity) - (b.costPerEditUSD ?? Infinity))
   const baseline = reliableModels[0]
   const routingWasteByModel = baseline
     ? [...effMap.values()]
-        .filter(m => m.model !== baseline.model && m.editTurns > 0 && (m.costPerEditUSD ?? 0) > (baseline.costPerEditUSD ?? 0))
+        .filter(
+          m =>
+            m.model !== baseline.model && m.editTurns > 0 && (m.costPerEditUSD ?? 0) > (baseline.costPerEditUSD ?? 0),
+        )
         .map(m => {
           const counterfactual = m.editTurns * (baseline.costPerEditUSD ?? 0)
           return {
@@ -568,8 +623,9 @@ export function buildOverviewPayload(
     byModel: routingWasteByModel.slice(0, ROUTING_WASTE_LIMIT),
   }
 
-  const unpricedModels: OverviewUnpricedModel[] = findUnpricedModels([...modelTotals.entries()]
-    .map(([model, d]) => ({ model, calls: d.calls, cost: d.cost, tokens: d.allTokens })))
+  const unpricedModels: OverviewUnpricedModel[] = findUnpricedModels(
+    [...modelTotals.entries()].map(([model, d]) => ({ model, calls: d.calls, cost: d.cost, tokens: d.allTokens })),
+  )
   let costBearingCalls = 0
   for (const [model, d] of modelTotals) {
     if (model === '<synthetic>' || isExpectedFreeModel(model)) continue
@@ -582,7 +638,7 @@ export function buildOverviewPayload(
   const cacheFrac = clamp(kpis.cacheHitPercent / 100, 0, 1)
   const retrySpendFraction = retryTax.totalUSD / Math.max(kpis.cost, 1e-9)
   const retryPenalty = clamp(retrySpendFraction * 4, 0, 1)
-  const score = 100 * (0.45 * oneShot + 0.30 * cacheFrac + 0.25 * (1 - retryPenalty))
+  const score = 100 * (0.45 * oneShot + 0.3 * cacheFrac + 0.25 * (1 - retryPenalty))
 
   const corrections = scanCorrections(sessions)
 
@@ -666,11 +722,7 @@ export function dataStartForSessions(sessions: SessionSummary[]): string | null 
  * ledger (one all-time read) so period-scoped charts keep the real data start
  * the old `dataStartFor(report)` provided.
  */
-export function buildOverviewFromLedger(
-  store: LedgerStore,
-  scope: OverviewScope,
-  now = new Date(),
-): OverviewPayload {
+export function buildOverviewFromLedger(store: LedgerStore, scope: OverviewScope, now = new Date()): OverviewPayload {
   const allSessions = buildSessionSummaries(store, {
     range: overviewDateRange({ period: 'lifetime' }, now),
   })

@@ -14,7 +14,8 @@ export type { SessionRow } from '../shared/schemas/views.js'
  * renderer only receives serializable rows over IPC.
  */
 export function buildSessionsViewFromLedger(store: LedgerStore, scope: OverviewScope, now = new Date()): SessionRow[] {
-  const rows = buildSessionRows(store, { range: overviewDateRange(scope, now), provider: scope.provider })
-    .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))
+  const rows = buildSessionRows(store, { range: overviewDateRange(scope, now), provider: scope.provider }).sort(
+    (a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0),
+  )
   return sessionRowSchema.array().parse(rows)
 }

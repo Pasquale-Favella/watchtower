@@ -86,7 +86,7 @@ function quickworkHome(): string {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : null
 }
 
@@ -123,7 +123,7 @@ async function resolveProfileBases(): Promise<ProfileBase[]> {
       }
       if (bases.length > 0) {
         const legacyDbPath = join(root, 'sessions', 'sessions.db')
-        if (!seenPaths.has(root) && await isFile(legacyDbPath)) {
+        if (!seenPaths.has(root) && (await isFile(legacyDbPath))) {
           bases.push({ path: root, profile: 'default' })
         }
         return bases
@@ -207,14 +207,18 @@ function toolNames(value: unknown): string[] {
       return parsed.flatMap(entry => {
         if (typeof entry === 'string') return entry.trim() ? [entry.trim()] : []
         const record = asRecord(entry)
-        const name = stringValue(record?.['name']) || stringValue(record?.['tool_name']) || stringValue(record?.['toolName'])
+        const name =
+          stringValue(record?.['name']) || stringValue(record?.['tool_name']) || stringValue(record?.['toolName'])
         return name ? [name] : []
       })
     }
   } catch {
     // Older stores may use a comma-separated tool_names value instead of JSON.
   }
-  return text.split(',').map(name => name.trim()).filter(Boolean)
+  return text
+    .split(',')
+    .map(name => name.trim())
+    .filter(Boolean)
 }
 
 function uniqueMappedTools(values: string[]): string[] {
@@ -344,9 +348,11 @@ async function readMetricsRecords(path: string): Promise<MetricsRecord[]> {
 }
 
 function usageRecord(record: Record<string, unknown>): boolean {
-  return Boolean(stringValue(record['Model']))
-    && nonNegativeNumber(record['InputTokens']) !== undefined
-    && nonNegativeNumber(record['OutputTokens']) !== undefined
+  return (
+    Boolean(stringValue(record['Model'])) &&
+    nonNegativeNumber(record['InputTokens']) !== undefined &&
+    nonNegativeNumber(record['OutputTokens']) !== undefined
+  )
 }
 
 function sessionId(record: Record<string, unknown>): string {
@@ -491,9 +497,7 @@ function createDatabaseParser(source: SessionSource, seenKeys: Set<string>): Ses
 
       for (const metadata of snapshot.sessions.values()) {
         if (metadata.deleted || meteredSessions.has(metadata.id) || metadata.createdAt === undefined) continue
-        const createdAtSeconds = metadata.createdAt > 1_000_000_000_000
-          ? metadata.createdAt / 1000
-          : metadata.createdAt
+        const createdAtSeconds = metadata.createdAt > 1_000_000_000_000 ? metadata.createdAt / 1000 : metadata.createdAt
         const timestamp = unixSecondsIso(createdAtSeconds)
         if (!timestamp) continue
         const inputTokens = estimateTokensFromChars(metadata.inputChars)

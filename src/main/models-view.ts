@@ -1,4 +1,11 @@
-import { calculateCost, createPricingConfigLookup, getModelCosts, getShortModelName, type ModelCosts, type PricingConfigLookup } from './pipeline/models.js'
+import {
+  calculateCost,
+  createPricingConfigLookup,
+  getModelCosts,
+  getShortModelName,
+  type ModelCosts,
+  type PricingConfigLookup,
+} from './pipeline/models.js'
 import type { SessionSummary, TaskCategory } from './pipeline/types.js'
 import { overviewDateRange, type OverviewScope } from './overview.js'
 import { buildSessionSummaries } from './store/aggregate.js'
@@ -12,13 +19,7 @@ import {
   type RowOverride,
 } from '../shared/schemas/models.js'
 
-export type {
-  AuditRow,
-  ModelReportRow,
-  ModelsConfig,
-  ModelsPayload,
-  RowOverride,
-} from '../shared/schemas/models.js'
+export type { AuditRow, ModelReportRow, ModelsConfig, ModelsPayload, RowOverride } from '../shared/schemas/models.js'
 
 /**
  * The Models section's scoped payload (ADR 0008) — the by-model / by-task
@@ -91,9 +92,17 @@ function modelBucketFor(
   let bucket = map.get(key)
   if (!bucket) {
     bucket = {
-      provider, model, category,
-      inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0,
-      costUSD: 0, savingsUSD: 0, savingsBaselineModel: '', calls: 0,
+      provider,
+      model,
+      category,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheWriteTokens: 0,
+      cacheReadTokens: 0,
+      costUSD: 0,
+      savingsUSD: 0,
+      savingsBaselineModel: '',
+      calls: 0,
       sources: new Set<string>(),
     }
     map.set(key, bucket)
@@ -129,15 +138,13 @@ function accumulate(
  * pipeline (the scan priced the raw name, typically at $0); otherwise the
  * scan's recorded cost stands. Identity and rates come from the shared
  * pricing-config lookup, so this lens resolves exactly like the seam. */
-function resolveCallCost(
-  call: ParsedCall,
-  effectiveModel: string,
-  pricingConfig: PricingConfigLookup,
-): number {
+function resolveCallCost(call: ParsedCall, effectiveModel: string, pricingConfig: PricingConfigLookup): number {
   const override = pricingConfig.findOverride(effectiveModel)
   if (override) {
-    return (call.usage.inputTokens / 1_000_000) * override.inputPricePerMillion
-      + (call.usage.outputTokens / 1_000_000) * override.outputPricePerMillion
+    return (
+      (call.usage.inputTokens / 1_000_000) * override.inputPricePerMillion +
+      (call.usage.outputTokens / 1_000_000) * override.outputPricePerMillion
+    )
   }
   if (effectiveModel !== call.model) {
     return calculateCost(
@@ -165,10 +172,7 @@ function callCacheReadTokens(call: ParsedCall): number {
  * cost: an override on the EFFECTIVE model wins (zero cache/web — that is
  * all the stored override covers); an aliased model inherits its target's
  * full rate card; otherwise the model's own pricing stands. */
-function auditRatesFor(
-  effectiveModel: string,
-  pricingConfig: PricingConfigLookup,
-): ModelCosts | null {
+function auditRatesFor(effectiveModel: string, pricingConfig: PricingConfigLookup): ModelCosts | null {
   const override = pricingConfig.findOverride(effectiveModel)
   if (override) {
     return {
@@ -192,7 +196,12 @@ function overrideFor(
 ): { override: RowOverride } | Record<string, never> {
   const found = pricingConfig.findOverride(effectiveModel)
   return found
-    ? { override: { inputPricePerMillion: found.inputPricePerMillion, outputPricePerMillion: found.outputPricePerMillion } }
+    ? {
+        override: {
+          inputPricePerMillion: found.inputPricePerMillion,
+          outputPricePerMillion: found.outputPricePerMillion,
+        },
+      }
     : {}
 }
 
@@ -269,10 +278,19 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
         let ab = auditBuckets.get(ak)
         if (!ab) {
           ab = {
-            provider, model: rawModel, calls: 0, attributedCostUSD: 0, cacheReadDisplayed: 0,
+            provider,
+            model: rawModel,
+            calls: 0,
+            attributedCostUSD: 0,
+            cacheReadDisplayed: 0,
             raw: {
-              inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheCreationInputTokens: 0,
-              cacheReadInputTokens: 0, cachedInputTokens: 0, webSearchRequests: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              reasoningTokens: 0,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens: 0,
+              cachedInputTokens: 0,
+              webSearchRequests: 0,
             },
           }
           auditBuckets.set(ak, ab)
@@ -313,7 +331,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
   for (const bucket of modelBuckets.values()) {
     byModel.push(rowFrom(bucket))
   }
-  byModel.sort((a, b) => (b.costUSD + b.savingsUSD) - (a.costUSD + a.savingsUSD))
+  byModel.sort((a, b) => b.costUSD + b.savingsUSD - (a.costUSD + a.savingsUSD))
 
   const byTask: ModelReportRow[] = []
   for (const bucket of taskBuckets.values()) {
@@ -328,7 +346,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
     if (aTotal !== bTotal) return bTotal - aTotal
     if (a.provider !== b.provider) return a.provider.localeCompare(b.provider)
     if (a.model !== b.model) return a.model.localeCompare(b.model)
-    return (b.costUSD + b.savingsUSD) - (a.costUSD + a.savingsUSD)
+    return b.costUSD + b.savingsUSD - (a.costUSD + a.savingsUSD)
   })
 
   const audit: AuditRow[] = []

@@ -6,7 +6,7 @@ import {
   shortcutForAction,
   displayShortcut,
   displayShortcutForAction,
-  sectionsRangeLabel
+  sectionsRangeLabel,
 } from '../src/renderer/src/app/shortcuts.js'
 
 describe('shortcut registry', () => {

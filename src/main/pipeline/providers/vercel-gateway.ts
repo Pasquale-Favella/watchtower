@@ -97,11 +97,7 @@ export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
   )
 })
 
-function createParser(
-  source: SessionSource,
-  seenKeys: Set<string>,
-  dateRange?: DateRange,
-): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!dateRange) return
@@ -183,11 +179,7 @@ export const vercelGateway: Provider = {
     return Effect.runPromise(discoverVercelGatewaySessionsEffect().pipe(Effect.provide(Env.layer)))
   },
 
-  createSessionParser(
-    source: SessionSource,
-    seenKeys: Set<string>,
-    dateRange?: DateRange,
-  ): SessionParser {
+  createSessionParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
     return createParser(source, seenKeys, dateRange)
   },
 }

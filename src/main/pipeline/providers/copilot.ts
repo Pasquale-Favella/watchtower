@@ -68,12 +68,7 @@ import { extractBashCommands } from '../bash-utils.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 
 const estimateTokens = (text: string) => estimateTokensFromChars(text.length)
-import type {
-  Provider,
-  SessionSource,
-  SessionParser,
-  ParsedProviderCall,
-} from './types.js'
+import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 
 // ---------------------------------------------------------------------------
 // Model display names (unchanged from original)
@@ -153,9 +148,7 @@ function normalizeTool(rawTool: string): string {
   return rawTool
 }
 
-const modelDisplayEntries = Object.entries(modelDisplayNames).sort(
-  (a, b) => b[0].length - a[0].length
-)
+const modelDisplayEntries = Object.entries(modelDisplayNames).sort((a, b) => b[0].length - a[0].length)
 
 // Tool names that represent shell/bash execution. When the AI calls one of
 // these, we extract the `arguments.command` string into bashCommands[].
@@ -165,8 +158,8 @@ const BASH_TOOL_NAMES = new Set(['bash', 'run_in_terminal', 'runInTerminal', 'ru
 // Types for JSONL session state events (unchanged from original)
 // ---------------------------------------------------------------------------
 type ToolRequest = {
-  toolName?: string  // older format
-  name?: string      // newer format (copilot-agent)
+  toolName?: string // older format
+  name?: string // newer format (copilot-agent)
   arguments?: Record<string, unknown>
 }
 
@@ -186,7 +179,7 @@ type UserMessageData = {
 
 type AssistantMessageData = {
   messageId: string
-  model?: string       // present in newer copilot-agent format
+  model?: string // present in newer copilot-agent format
   outputTokens: number
   interactionId?: string
   toolRequests?: ToolRequest[]
@@ -281,9 +274,36 @@ function getAgentTracesDbPath(): string | null {
   if (p === 'darwin') {
     // macOS: VS Code, VS Code Insiders, VSCodium
     candidates.push(
-      join(home, 'Library', 'Application Support', 'Code', 'User', 'globalStorage', 'github.copilot-chat', 'agent-traces.db'),
-      join(home, 'Library', 'Application Support', 'Code - Insiders', 'User', 'globalStorage', 'github.copilot-chat', 'agent-traces.db'),
-      join(home, 'Library', 'Application Support', 'VSCodium', 'User', 'globalStorage', 'github.copilot-chat', 'agent-traces.db'),
+      join(
+        home,
+        'Library',
+        'Application Support',
+        'Code',
+        'User',
+        'globalStorage',
+        'github.copilot-chat',
+        'agent-traces.db',
+      ),
+      join(
+        home,
+        'Library',
+        'Application Support',
+        'Code - Insiders',
+        'User',
+        'globalStorage',
+        'github.copilot-chat',
+        'agent-traces.db',
+      ),
+      join(
+        home,
+        'Library',
+        'Application Support',
+        'VSCodium',
+        'User',
+        'globalStorage',
+        'github.copilot-chat',
+        'agent-traces.db',
+      ),
     )
   } else if (p === 'linux') {
     // Linux: VS Code, VS Code Insiders, VSCodium
@@ -363,13 +383,13 @@ function parseCwd(yaml: string): string | null {
  * are stored as separate key-value rows rather than a JSON blob.
  */
 function loadSpanAttributesFromTable(
-  db: ReturnType<typeof import('../sqlite.js')['openDatabase']>,
-  spanId: string
+  db: ReturnType<(typeof import('../sqlite.js'))['openDatabase']>,
+  spanId: string,
 ): SpanAttributes {
   try {
     const rows = db.query<{ key: string; value: string | null }>(
       `SELECT key, value FROM span_attributes WHERE span_id = ?`,
-      [spanId]
+      [spanId],
     )
     const attrs: SpanAttributes = {}
     for (const row of rows) {
@@ -377,9 +397,7 @@ function loadSpanAttributesFromTable(
         try {
           // Try to parse numeric values
           const numValue = Number(row.value)
-          attrs[row.key as keyof SpanAttributes] = Number.isNaN(numValue) 
-            ? row.value
-            : numValue
+          attrs[row.key as keyof SpanAttributes] = Number.isNaN(numValue) ? row.value : numValue
         } catch {
           attrs[row.key as keyof SpanAttributes] = row.value
         }
@@ -517,7 +535,7 @@ function applyChatJournalAppend(root: unknown, path: ChatJournalPathSegment[], i
 
 function replayChatSessionJournal(content: string): unknown {
   let root: unknown = createReplayObject()
-  const lines = content.split('\n').filter((l) => l.trim())
+  const lines = content.split('\n').filter(l => l.trim())
 
   for (const line of lines) {
     let entry: unknown
@@ -651,9 +669,23 @@ function parseToolCommand(raw: unknown): string | null {
 // Shell control-flow keywords. These lead a statement but are not commands, so
 // they must never be reported as bash commands.
 const OTEL_SHELL_KEYWORDS = new Set([
-  'if', 'then', 'else', 'elif', 'fi',
-  'for', 'while', 'until', 'do', 'done',
-  'case', 'esac', 'select', 'function', 'in', 'time', 'coproc',
+  'if',
+  'then',
+  'else',
+  'elif',
+  'fi',
+  'for',
+  'while',
+  'until',
+  'do',
+  'done',
+  'case',
+  'esac',
+  'select',
+  'function',
+  'in',
+  'time',
+  'coproc',
 ])
 
 /**
@@ -726,16 +758,13 @@ function inferTranscriptModel(lines: string[]): string {
 // transcript format via session.start { producer: 'copilot-agent' })
 // ---------------------------------------------------------------------------
 
-function createJsonlParser(
-  source: SessionSource,
-  seenKeys: Set<string>
-): SessionParser {
+function createJsonlParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const content = await readSessionFile(source.path)
       if (!content) return
       const sessionId = basename(dirname(source.path))
-      const lines = content.split('\n').filter((l) => l.trim())
+      const lines = content.split('\n').filter(l => l.trim())
 
       // Detect VS Code transcript format: the first session.start event has
       // { producer: 'copilot-agent' } and no outputTokens in messages.
@@ -837,10 +866,7 @@ function createJsonlParser(
             // cache_write). calculateCost expects the uncached input alone with
             // cache tokens billed separately, so subtract the cache components.
             // Clamp at 0 in case a future schema reports input non-inclusively.
-            const inputTokens = Math.max(
-              0,
-              numberOrZero(usage['inputTokens']) - cacheReadTokens - cacheWriteTokens
-            )
+            const inputTokens = Math.max(0, numberOrZero(usage['inputTokens']) - cacheReadTokens - cacheWriteTokens)
 
             // Nothing this call would add over the per-turn events, so skip it
             // to avoid an empty $0 row (output is intentionally excluded).
@@ -898,17 +924,19 @@ function createJsonlParser(
           seenKeys.add(dedupKey)
 
           const tools = toolRequests
-            .map((t) => {
-              const raw = typeof t === 'object' && t !== null
-                ? ((t as { name?: unknown; toolName?: unknown }).name ?? (t as { name?: unknown; toolName?: unknown }).toolName)
-                : null
+            .map(t => {
+              const raw =
+                typeof t === 'object' && t !== null
+                  ? ((t as { name?: unknown; toolName?: unknown }).name ??
+                    (t as { name?: unknown; toolName?: unknown }).toolName)
+                  : null
               return typeof raw === 'string' ? normalizeTool(raw) : null
             })
             .filter((t): t is string => t !== null)
 
-          const skills = toolRequests.flatMap((t) => {
+          const skills = toolRequests.flatMap(t => {
             if (typeof t !== 'object' || t === null) return []
-            const name = (t.name ?? t.toolName) ?? ''
+            const name = t.name ?? t.toolName ?? ''
             if (name !== 'skill') return []
             const skill = t.arguments?.['skill']
             return typeof skill === 'string' && skill.trim().length > 0 ? [skill.trim()] : []
@@ -918,9 +946,9 @@ function createJsonlParser(
           // raw command through the shared extractBashCommands helper so chained
           // commands are normalised the same way as every other provider
           // (see bash-utils.ts, parser.ts, forge.ts, grok.ts, etc.).
-          const bashCommands = toolRequests.flatMap((t) => {
+          const bashCommands = toolRequests.flatMap(t => {
             if (typeof t !== 'object' || t === null) return []
-            const name = (t.name ?? t.toolName) ?? ''
+            const name = t.name ?? t.toolName ?? ''
             if (!BASH_TOOL_NAMES.has(name)) return []
             const cmd = t.arguments?.['command']
             return typeof cmd === 'string' ? extractBashCommands(cmd) : []
@@ -962,10 +990,7 @@ function createJsonlParser(
   }
 }
 
-function createChatSessionParser(
-  source: SessionSource,
-  seenKeys: Set<string>
-): SessionParser {
+function createChatSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const content = await readSessionFile(source.path)
@@ -1120,7 +1145,11 @@ function inferJetBrainsProject(raw: string): string | undefined {
   while ((m = re.exec(raw))) {
     // Decode %20 etc. and strip a trailing .rej/.orig suffix noise; keep the dir.
     let p = m[1]
-    try { p = decodeURIComponent(p) } catch { /* leave as-is */ }
+    try {
+      p = decodeURIComponent(p)
+    } catch {
+      /* leave as-is */
+    }
     const dir = p.slice(0, p.lastIndexOf('/'))
     if (dir.startsWith('/')) seen.add(dir)
   }
@@ -1242,7 +1271,9 @@ function extractJetBrainsConversations(raw: string): JBConversation[] {
     // The title is the Java-UTF string between the `value` marker and `source`.
     const tm = window.match(/value.{1,6}?([\x20-\x7e]{3,80}?)t\x00\x06source/)
     if (!tm) continue
-    const title = Buffer.from(tm[1].replace(/^[^A-Za-z0-9]*/, ''), 'latin1').toString('utf8').trim()
+    const title = Buffer.from(tm[1].replace(/^[^A-Za-z0-9]*/, ''), 'latin1')
+      .toString('utf8')
+      .trim()
     if (!title) continue
     // Keep the latest non-default title; only fall back to a default if no
     // meaningful title has been seen for this conversation yet.
@@ -1261,12 +1292,27 @@ function matchJsonObject(raw: string, start: number): { chunk: string; end: numb
   let i = start
   for (; i < raw.length; i++) {
     const c = raw[i]
-    if (esc) { esc = false; continue }
-    if (c === '\\') { esc = true; continue }
-    if (c === '"') { inStr = !inStr; continue }
+    if (esc) {
+      esc = false
+      continue
+    }
+    if (c === '\\') {
+      esc = true
+      continue
+    }
+    if (c === '"') {
+      inStr = !inStr
+      continue
+    }
     if (inStr) continue
     if (c === '{') depth++
-    else if (c === '}') { depth--; if (depth === 0) { i++; break } }
+    else if (c === '}') {
+      depth--
+      if (depth === 0) {
+        i++
+        break
+      }
+    }
   }
   return { chunk: raw.slice(start, i), end: i }
 }
@@ -1403,7 +1449,7 @@ function extractJetBrainsDbTurns(raw: string): JBDbTurn[] {
   const conversations = extractJetBrainsConversations(raw)
   // Precompute the byte offset of each conversation GUID's full form so a turn
   // can be attributed to the conversation whose id most recently precedes it.
-  const convById = new Map(conversations.map((c) => [c.id, c]))
+  const convById = new Map(conversations.map(c => [c.id, c]))
 
   const turns: JBDbTurn[] = []
   const seenReplies = new Set<string>() // keyed by `${conversationId}::${reply}`
@@ -1466,7 +1512,8 @@ function extractJetBrainsDbTurns(raw: string): JBDbTurn[] {
     // It starts with a UUID-keyed Value entry: {"<uuid>":{"type":"Value",...}}.
     // Hex is matched case-insensitively — an uppercase UUID must not cause the
     // whole session to fall through to $0 (the exact bug this path fixes).
-    const outerDocRe = /[\x00-\x1f\x7f-\xff]\{"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}":\{"type":"Value"/g
+    const outerDocRe =
+      /[\x00-\x1f\x7f-\xff]\{"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}":\{"type":"Value"/g
     let dm: RegExpExecArray | null
     while ((dm = outerDocRe.exec(raw))) {
       // Skip the leading binary byte; matchJsonObject starts at the '{'.
@@ -1537,10 +1584,7 @@ function extractJetBrainsDbTurns(raw: string): JBDbTurn[] {
 // JetBrains parser: one ParsedProviderCall per assistant turn in the .db
 // ---------------------------------------------------------------------------
 
-function createJetBrainsParser(
-  source: JetBrainsSessionSource,
-  seenKeys: Set<string>
-): SessionParser {
+function createJetBrainsParser(source: JetBrainsSessionSource, seenKeys: Set<string>): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const sessionId = source.sessionId
@@ -1592,8 +1636,7 @@ function createJetBrainsParser(
             //   3. one honest bucket when neither signal exists.
             // The conversation TITLE is a chat-thread name, NOT a project, and is
             // kept out of `project` (it would otherwise pollute By-Project).
-            const project =
-              source.projectName || turn.conversationProject || 'copilot-jetbrains'
+            const project = source.projectName || turn.conversationProject || 'copilot-jetbrains'
 
             yield {
               provider: 'copilot',
@@ -1621,7 +1664,6 @@ function createJetBrainsParser(
           }
         }
       }
-
     },
   }
 }
@@ -1630,10 +1672,7 @@ function createJetBrainsParser(
 // OTel SQLite parser — reads agent-traces.db for FULL token data
 // ---------------------------------------------------------------------------
 
-function createOtelParser(
-  source: SessionSource,
-  seenKeys: Set<string>
-): SessionParser {
+function createOtelParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       // Lazy-load the SQLite module (same pattern as Cursor/OpenCode providers)
@@ -1662,7 +1701,7 @@ function createOtelParser(
              ON s.span_id = sa_repo.span_id AND sa_repo.key = 'github.copilot.git.repository'
            WHERE sa_conv.value IS NOT NULL
            GROUP BY sa_conv.value
-           ORDER BY min_start DESC`
+           ORDER BY min_start DESC`,
         )
 
         for (const convRow of conversationRows) {
@@ -1684,7 +1723,7 @@ function createOtelParser(
              INNER JOIN span_attributes sa 
                ON s.span_id = sa.span_id AND sa.key = 'gen_ai.conversation.id' AND sa.value = ?
              ORDER BY s.start_time_ms ASC`,
-            [conversationId]
+            [conversationId],
           )
 
           // Collect trace IDs and span IDs belonging to this conversation
@@ -1710,7 +1749,7 @@ function createOtelParser(
             response_model: string | null
           }>(
             `SELECT span_id, trace_id, operation_name, start_time_ms, response_model FROM spans WHERE trace_id IN (${tracePlaceholders})`,
-            traceIdArr
+            traceIdArr,
           )
 
           // Collect tool names, shell commands and subagent names from the
@@ -1731,7 +1770,10 @@ function createOtelParser(
           const bashByTrace = new Map<string, string[]>()
           const subagentsByTrace = new Map<string, string[]>()
           const chatSpanIds: string[] = []
-          const spanMetaById = new Map<string, { trace_id: string; start_time_ms: number; response_model: string | null }>()
+          const spanMetaById = new Map<
+            string,
+            { trace_id: string; start_time_ms: number; response_model: string | null }
+          >()
 
           for (const span of traceSpans) {
             const opName = span.operation_name || ''
@@ -1829,7 +1871,7 @@ function createOtelParser(
               outputTokens,
               cacheCreationTokens,
               cacheReadTokens,
-              0 // reasoningTokens — not exposed in current OTel schema
+              0, // reasoningTokens — not exposed in current OTel schema
             )
 
             yield {
@@ -1916,9 +1958,7 @@ function isJetBrainsSource(source: SessionSource): source is JetBrainsSessionSou
 // Session discovery: JSONL (original)
 // ---------------------------------------------------------------------------
 
-async function discoverJsonlSessions(
-  sessionStateDir: string
-): Promise<JsonlSessionSource[]> {
+async function discoverJsonlSessions(sessionStateDir: string): Promise<JsonlSessionSource[]> {
   const sources: JsonlSessionSource[] = []
 
   let sessionDirs: string[]
@@ -1936,9 +1976,7 @@ async function discoverJsonlSessions(
     let project = sessionId
     let workingDirectory: string | undefined
     try {
-      const yaml = await readSessionFile(
-        join(sessionStateDir, sessionId, 'workspace.yaml')
-      )
+      const yaml = await readSessionFile(join(sessionStateDir, sessionId, 'workspace.yaml'))
       const cwd = parseCwd(yaml ?? '')
       if (cwd) {
         project = basename(cwd)
@@ -1964,9 +2002,7 @@ async function discoverJsonlSessions(
 // Session discovery: OTel SQLite
 // ---------------------------------------------------------------------------
 
-async function discoverOtelSessions(
-  dbPath: string
-): Promise<OTelSessionSource[]> {
+async function discoverOtelSessions(dbPath: string): Promise<OTelSessionSource[]> {
   // Verify the DB file exists. Return one source per DB file; the parser
   // opens the DB once and iterates all conversations in a single DB open,
   // which is far more efficient than one source (and one DB open) per conversation.
@@ -2006,7 +2042,7 @@ async function findNitriteDbPath(storeDir: string, kind: string): Promise<string
   } catch {
     return null
   }
-  const db = files.find((f) => f.endsWith('-nitrite.db'))
+  const db = files.find(f => f.endsWith('-nitrite.db'))
   return db ? join(storeDir, db) : null
 }
 
@@ -2021,9 +2057,7 @@ async function findNitriteDbPath(storeDir: string, kind: string): Promise<string
  * records no token counts, so the parser estimates output tokens from the
  * assistant reply text (see createJetBrainsParser).
  */
-async function discoverJetBrainsSessions(
-  root: string
-): Promise<JetBrainsSessionSource[]> {
+async function discoverJetBrainsSessions(root: string): Promise<JetBrainsSessionSource[]> {
   const sources: JetBrainsSessionSource[] = []
 
   let ideDirs: string[]
@@ -2081,9 +2115,7 @@ async function discoverJetBrainsSessions(
  * own .db lacks the field inherits it from a sibling-kind store with the same
  * id. Best-effort — read/parse failures leave projectName undefined.
  */
-async function resolveJetBrainsProjectNames(
-  sources: JetBrainsSessionSource[]
-): Promise<void> {
+async function resolveJetBrainsProjectNames(sources: JetBrainsSessionSource[]): Promise<void> {
   const byStore = new Map<string, string>()
   for (const src of sources) {
     // Already found this store's name via a sibling-kind source — skip the read.
@@ -2181,7 +2213,10 @@ function copilotWorkspaceFsPath(uri: string): string | undefined {
   return path.replace(/^\/([a-zA-Z]:\/)/, '$1')
 }
 
-async function resolveWorkspaceProject(wsDir: string, hashDir: string): Promise<{ project: string; workingDirectory?: string }> {
+async function resolveWorkspaceProject(
+  wsDir: string,
+  hashDir: string,
+): Promise<{ project: string; workingDirectory?: string }> {
   let project = hashDir
   let workingDirectory: string | undefined
   try {
@@ -2230,9 +2265,7 @@ async function hasChatSessionFiles(chatSessionsDir: string): Promise<boolean> {
 // Session discovery: VS Code core chatSessions
 // ---------------------------------------------------------------------------
 
-async function discoverWorkspaceChatSessions(
-  workspaceStorageDirs: string[]
-): Promise<ChatSessionSource[]> {
+async function discoverWorkspaceChatSessions(workspaceStorageDirs: string[]): Promise<ChatSessionSource[]> {
   const sources: ChatSessionSource[] = []
 
   for (const wsDir of workspaceStorageDirs) {
@@ -2272,9 +2305,7 @@ async function discoverWorkspaceChatSessions(
   return sources
 }
 
-async function discoverEmptyWindowChatSessions(
-  globalStorageDirs: string[]
-): Promise<ChatSessionSource[]> {
+async function discoverEmptyWindowChatSessions(globalStorageDirs: string[]): Promise<ChatSessionSource[]> {
   const sources: ChatSessionSource[] = []
 
   for (const globalDir of globalStorageDirs) {
@@ -2312,9 +2343,7 @@ async function discoverEmptyWindowChatSessions(
  * Structure: {wsDir}/{hash}/GitHub.copilot-chat/transcripts/{session}.jsonl
  * Project is read from {wsDir}/{hash}/workspace.json (folder URI).
  */
-async function discoverTranscriptSessions(
-  workspaceStorageDirs: string[]
-): Promise<JsonlSessionSource[]> {
+async function discoverTranscriptSessions(workspaceStorageDirs: string[]): Promise<JsonlSessionSource[]> {
   const sources: JsonlSessionSource[] = []
 
   for (const wsDir of workspaceStorageDirs) {
@@ -2361,7 +2390,7 @@ export function createCopilotProvider(
   sessionStateDir?: string,
   workspaceStorageDir?: string,
   globalStorageDir?: string,
-  jetbrainsDir?: string
+  jetbrainsDir?: string,
 ): Provider {
   // jsonlDir is resolved lazily inside discoverSessions so that env-var
   // overrides set after module load (e.g. in tests) are respected.
@@ -2463,9 +2492,7 @@ export function createCopilotProvider(
       // in a store none of the VS Code / CLI sources touch, so there is no
       // overlap to dedupe against; the shared seenKeys set still guards it.
       try {
-        const jetbrainsSources = await discoverJetBrainsSessions(
-          getJetBrainsCopilotRoot(jetbrainsDir)
-        )
+        const jetbrainsSources = await discoverJetBrainsSessions(getJetBrainsCopilotRoot(jetbrainsDir))
         sources.push(...jetbrainsSources)
       } catch {
         // JetBrains discovery failed
@@ -2474,10 +2501,7 @@ export function createCopilotProvider(
       return sources
     },
 
-    createSessionParser(
-      source: SessionSource,
-      seenKeys: Set<string>
-    ): SessionParser {
+    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
       // Route to the correct parser based on source type.
       // The dedup key set (seenKeys) is shared across both parsers,
       // so if OTel already yielded a span, the JSONL parser will skip

@@ -46,14 +46,14 @@ schema (e.g. `ledger_calls`'s `limit`/`model`/`project`/`category`/`tool`).
 renderer's payload types — validated by the same zod schemas the renderer
 parses over IPC:
 
-| Tool | Payload |
-|---|---|
-| `ledger_scope` | the window of a query (`OverviewScope`, from the optional `scope` arg) + epoch range + in-window counts |
-| `ledger_overview` | `OverviewPayload` (`buildOverviewFromLedger`) |
-| `ledger_sessions` | `SessionRow[]` (`buildSessionsViewFromLedger`) |
-| `ledger_models` | `ModelsPayload` (`buildModelsViewFromLedger` + live alias/override config) |
-| `ledger_skills` | `SkillsPayload` (`buildSkillsViewFromLedger` — the suggested-skill pool the chat's craft chips surface) |
-| `ledger_calls` | raw drill-down (the one custom shape the views don't offer), fed by the same `queryScope` seam with the UI's query-time display pricing |
+| Tool              | Payload                                                                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `ledger_scope`    | the window of a query (`OverviewScope`, from the optional `scope` arg) + epoch range + in-window counts                                 |
+| `ledger_overview` | `OverviewPayload` (`buildOverviewFromLedger`)                                                                                           |
+| `ledger_sessions` | `SessionRow[]` (`buildSessionsViewFromLedger`)                                                                                          |
+| `ledger_models`   | `ModelsPayload` (`buildModelsViewFromLedger` + live alias/override config)                                                              |
+| `ledger_skills`   | `SkillsPayload` (`buildSkillsViewFromLedger` — the suggested-skill pool the chat's craft chips surface)                                 |
+| `ledger_calls`    | raw drill-down (the one custom shape the views don't offer), fed by the same `queryScope` seam with the UI's query-time display pricing |
 
 ### Lifetime-serving: the harness filters autonomously (2026-08-12)
 
@@ -66,7 +66,7 @@ defaults to `{ period: 'lifetime' }`. The harness therefore consumes the data
 and filters autonomously — one server instance answers any window the agent
 asks about, instead of one server per conversation baked to the UI's current
 scope. The UI's current window is not lost: it rides the first-run briefing
-as a *suggested default* ("the user is currently viewing …"), phrased
+as a _suggested default_ ("the user is currently viewing …"), phrased
 explicitly as a hint the agent is free to ignore.
 
 `LedgerStore` gains a `readOnly` constructor option: the MCP process opens a

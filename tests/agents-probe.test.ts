@@ -5,7 +5,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import { HARNESS_HANDSHAKE_TIMEOUT_MS, probeTimeoutFor } from '../src/main/agents/harness-timeouts.js'
-import { probeHarness, type ProbeChild, type ProbeConnection, type ProbeResult, type ProbeSpawn } from '../src/main/agents/probe.js'
+import {
+  probeHarness,
+  type ProbeChild,
+  type ProbeConnection,
+  type ProbeResult,
+  type ProbeSpawn,
+} from '../src/main/agents/probe.js'
 
 class FakeChild extends EventEmitter implements ProbeChild {
   pid = 4321
@@ -68,7 +74,9 @@ describe('probeHarness', () => {
       spawn: spawnWith(child),
       connectionFactory: () => connection,
       clientVersion: '9.9.9',
-      kill: () => { child.killed += 1 },
+      kill: () => {
+        child.killed += 1
+      },
     })
 
     expect(result).toMatchObject({ status: 'ready', auth: { status: 'unknown' }, version: '1.2.3' })
@@ -80,7 +88,9 @@ describe('probeHarness', () => {
     const child = new FakeChild()
     const result = await runProbe(codex, {
       spawn: spawnWith(child),
-      connectionFactory: () => ({ initialize: async () => ({ ...initialized, authMethods: [{ id: 'login' }] }) as never }),
+      connectionFactory: () => ({
+        initialize: async () => ({ ...initialized, authMethods: [{ id: 'login' }] }) as never,
+      }),
     })
     expect(result.status).toBe('ready')
     expect(result.auth.status).toBe('unknown')
@@ -94,14 +104,22 @@ describe('probeHarness', () => {
       connectionFactory: () => ({ initialize: async () => initialized }),
       claudeAuthProbe: async () => 'unauthenticated',
     })
-    expect(result).toMatchObject({ status: 'warning', auth: { status: 'unauthenticated' }, message: 'Claude Code is not signed in' })
+    expect(result).toMatchObject({
+      status: 'warning',
+      auth: { status: 'unauthenticated' },
+      message: 'Claude Code is not signed in',
+    })
   })
 
   it('returns an actionable error containing display name and binary path when initialize throws', async () => {
     const child = new FakeChild()
     const result = await runProbe(codex, {
       spawn: spawnWith(child),
-      connectionFactory: () => ({ initialize: async () => { throw new Error('handshake failed') } }),
+      connectionFactory: () => ({
+        initialize: async () => {
+          throw new Error('handshake failed')
+        },
+      }),
     })
     expect(result.status).toBe('error')
     expect(result.message).toContain('Codex')
@@ -175,7 +193,12 @@ describe('probeHarness', () => {
       connectionFactory: () => ({ initialize: async () => initialized }),
       execFile,
     })
-    expect(execFile).toHaveBeenCalledWith('taskkill', ['/pid', '4321', '/T', '/F'], { windowsHide: true }, expect.any(Function))
+    expect(execFile).toHaveBeenCalledWith(
+      'taskkill',
+      ['/pid', '4321', '/T', '/F'],
+      { windowsHide: true },
+      expect.any(Function),
+    )
     expect(child.killed).toBe(0)
   })
 })

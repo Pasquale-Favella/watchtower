@@ -1,5 +1,16 @@
-import { calculateCost, createPricingConfigLookup, getShortModelName, type PricingConfigLookup } from '../pipeline/models.js'
-import { buildSpawnPrSets, deriveCanonicalProjectKey, extractPrUrlsFromProviderCall, isAbsoluteProjectPath, projectNameFromPath } from '../pipeline/parser.js'
+import {
+  calculateCost,
+  createPricingConfigLookup,
+  getShortModelName,
+  type PricingConfigLookup,
+} from '../pipeline/models.js'
+import {
+  buildSpawnPrSets,
+  deriveCanonicalProjectKey,
+  extractPrUrlsFromProviderCall,
+  isAbsoluteProjectPath,
+  projectNameFromPath,
+} from '../pipeline/parser.js'
 import { sessionRowFromSummary, type SessionRow } from '../pipeline/sessions-report.js'
 import type {
   ClassifiedTurn,
@@ -178,11 +189,14 @@ function reconstructTurn(row: LedgerTurnRow, calls: ParsedApiCall[]): Classified
   // narrower URL shape): re-extract from the stored user message plus the
   // turn's executed commands, mirroring the parser's provider-call scan, so
   // already-ported sessions gain detection without a re-parse.
-  const prRefs = row.prRefs.length > 0 ? row.prRefs : extractPrUrlsFromProviderCall({
-    userMessage: row.userMessage,
-    bashCommands: calls.flatMap(c => c.bashCommands ?? []),
-    toolSequence: calls.flatMap(c => c.toolSequence ?? []),
-  })
+  const prRefs =
+    row.prRefs.length > 0
+      ? row.prRefs
+      : extractPrUrlsFromProviderCall({
+          userMessage: row.userMessage,
+          bashCommands: calls.flatMap(c => c.bashCommands ?? []),
+          toolSequence: calls.flatMap(c => c.toolSequence ?? []),
+        })
   if (prRefs.length > 0) turn.prRefs = prRefs
   if (row.spawnToolUseIds.length > 0) turn.spawnToolUseIds = row.spawnToolUseIds
   if (row.subCategory) turn.subCategory = row.subCategory
@@ -268,7 +282,14 @@ export function assembleSession(
     const turnCost = turn.assistantCalls.reduce((s, c) => s + c.costUSD, 0)
     const turnSavings = turn.assistantCalls.reduce((s, c) => s + (c.savingsUSD ?? 0), 0)
 
-    const cat = categoryBreakdown[turn.category] ?? { turns: 0, costUSD: 0, savingsUSD: 0, retries: 0, editTurns: 0, oneShotTurns: 0 }
+    const cat = categoryBreakdown[turn.category] ?? {
+      turns: 0,
+      costUSD: 0,
+      savingsUSD: 0,
+      retries: 0,
+      editTurns: 0,
+      oneShotTurns: 0,
+    }
     categoryBreakdown[turn.category] = cat
     cat.turns++
     cat.costUSD += turnCost
@@ -442,11 +463,7 @@ export function sessionProjectKey(summary: SessionSummary): string {
  * overview, compare, export — groups them into the visible bucket with no
  * per-view special cases.
  */
-function attachCanonicalIdentity(
-  summary: SessionSummary,
-  session: LedgerSessionRow,
-  provider: string,
-): void {
+function attachCanonicalIdentity(summary: SessionSummary, session: LedgerSessionRow, provider: string): void {
   const storedPath = session.projectPath?.trim()
   const pathCandidate = storedPath && isAbsoluteProjectPath(storedPath) ? storedPath : undefined
   summary.projectKey = deriveCanonicalProjectKey(
@@ -463,8 +480,9 @@ function attachCanonicalIdentity(
   // worktrees — set from this same canonical path at parse time, so identical
   // for real data), then the path leaf in original case, then the legacy
   // label for orphans via the bucket name (set below).
-  summary.project = session.canonicalProject
-    ?? (canonicalPath ? projectNameFromPath(summary.projectPath!, summary.project) : summary.projectKey)
+  summary.project =
+    session.canonicalProject ??
+    (canonicalPath ? projectNameFromPath(summary.projectPath!, summary.project) : summary.projectKey)
 }
 
 /**

@@ -39,7 +39,9 @@ const DEFAULT_DB_PATH = join(homedir(), '.forge', '.forge.db')
 
 function validateSchema(db: SqliteDatabase): boolean {
   try {
-    db.query('SELECT conversation_id, title, CAST(workspace_id AS TEXT) AS workspace_id, context, created_at, updated_at FROM conversations LIMIT 1')
+    db.query(
+      'SELECT conversation_id, title, CAST(workspace_id AS TEXT) AS workspace_id, context, created_at, updated_at FROM conversations LIMIT 1',
+    )
     return true
   } catch {
     return false
@@ -102,10 +104,14 @@ function pushUnique(values: string[], value: string): void {
 }
 
 function toolCalls(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter(v => v && typeof v === 'object') as Record<string, unknown>[] : []
+  return Array.isArray(value) ? (value.filter(v => v && typeof v === 'object') as Record<string, unknown>[]) : []
 }
 
-function extractToolsAndCommands(calls: Record<string, unknown>[]): { tools: string[]; bashCommands: string[]; firstCallId?: string } {
+function extractToolsAndCommands(calls: Record<string, unknown>[]): {
+  tools: string[]
+  bashCommands: string[]
+  firstCallId?: string
+} {
   const tools: string[] = []
   const bashCommands: string[] = []
   let firstCallId: string | undefined

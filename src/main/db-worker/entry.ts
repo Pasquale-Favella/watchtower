@@ -42,11 +42,12 @@ try {
     const req = raw as DbWorkerRequest
     void ctx.dispatch(req.op, req.args).then(
       data => port.postMessage({ id: req.id, ok: true, data } satisfies DbWorkerResponse),
-      err => port.postMessage({
-        id: req.id,
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-      } satisfies DbWorkerResponse),
+      err =>
+        port.postMessage({
+          id: req.id,
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        } satisfies DbWorkerResponse),
     )
   })
 

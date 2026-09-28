@@ -1,10 +1,27 @@
 import { describe, expect, it } from 'vitest'
-import { buildOverviewPayload, dataStartForSessions, periodWindowStart, type OverviewPayload, type OverviewScope } from '../src/main/overview.js'
+import {
+  buildOverviewPayload,
+  dataStartForSessions,
+  periodWindowStart,
+  type OverviewPayload,
+  type OverviewScope,
+} from '../src/main/overview.js'
 import type { ProjectSummary, SessionSummary, TaskCategory, TokenUsage } from '../src/main/pipeline/types.js'
 
 const CATEGORIES: TaskCategory[] = [
-  'coding', 'debugging', 'feature', 'refactoring', 'testing', 'exploration',
-  'planning', 'delegation', 'git', 'build/deploy', 'conversation', 'brainstorming', 'general'
+  'coding',
+  'debugging',
+  'feature',
+  'refactoring',
+  'testing',
+  'exploration',
+  'planning',
+  'delegation',
+  'git',
+  'build/deploy',
+  'conversation',
+  'brainstorming',
+  'general',
 ]
 
 /** Local-constructed ISO timestamp: both the fixture and the builder interpret
@@ -15,13 +32,24 @@ function ts(y: number, m: number, d: number, h: number): string {
 
 function zeroTokens(): TokenUsage {
   return {
-    inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0,
-    cacheReadInputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0, webSearchRequests: 0
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    cachedInputTokens: 0,
+    reasoningTokens: 0,
+    webSearchRequests: 0,
   }
 }
 
 function tokens(input: number, output: number, cacheRead = 0, reasoning = 0): TokenUsage {
-  return { ...zeroTokens(), inputTokens: input, outputTokens: output, cacheReadInputTokens: cacheRead, reasoningTokens: reasoning }
+  return {
+    ...zeroTokens(),
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadInputTokens: cacheRead,
+    reasoningTokens: reasoning,
+  }
 }
 
 function zeroedCategoryBreakdown(): SessionSummary['categoryBreakdown'] {
@@ -55,30 +83,44 @@ function buildOverviewFixture(): ProjectSummary[] {
     totalCacheReadTokens: 20,
     totalCacheWriteTokens: 0,
     apiCalls: 1,
-    turns: [{
-      userMessage: 'prompt for sess1',
-      timestamp: ts(2026, 7, 1, 10),
-      sessionId: 'sess1',
-      category: 'coding',
-      retries: 0,
-      hasEdits: true,
-      assistantCalls: [{
-        provider: 'opencode', model: 'demo-model', usage: tokens(100, 50, 20, 5),
-        costUSD: 0.5, tools: ['Edit'], mcpTools: [], skills: ['refactor'], subagentTypes: [],
-        hasAgentSpawn: false, hasPlanMode: false, speed: 'standard',
-        timestamp: ts(2026, 7, 1, 10), bashCommands: [], deduplicationKey: 'd1'
-      }]
-    }],
+    turns: [
+      {
+        userMessage: 'prompt for sess1',
+        timestamp: ts(2026, 7, 1, 10),
+        sessionId: 'sess1',
+        category: 'coding',
+        retries: 0,
+        hasEdits: true,
+        assistantCalls: [
+          {
+            provider: 'opencode',
+            model: 'demo-model',
+            usage: tokens(100, 50, 20, 5),
+            costUSD: 0.5,
+            tools: ['Edit'],
+            mcpTools: [],
+            skills: ['refactor'],
+            subagentTypes: [],
+            hasAgentSpawn: false,
+            hasPlanMode: false,
+            speed: 'standard',
+            timestamp: ts(2026, 7, 1, 10),
+            bashCommands: [],
+            deduplicationKey: 'd1',
+          },
+        ],
+      },
+    ],
     modelBreakdown: { 'demo-model': { calls: 1, costUSD: 0.5, savingsUSD: 0, tokens: tokens(100, 50, 20, 5) } },
     toolBreakdown: { Edit: { calls: 1 } },
     mcpBreakdown: {},
     bashBreakdown: {},
     categoryBreakdown: {
       ...zeroedCategoryBreakdown(),
-      coding: { turns: 1, costUSD: 0.5, savingsUSD: 0, retries: 0, editTurns: 1, oneShotTurns: 1 }
+      coding: { turns: 1, costUSD: 0.5, savingsUSD: 0, retries: 0, editTurns: 1, oneShotTurns: 1 },
     },
     skillBreakdown: { refactor: { turns: 1, costUSD: 0.5, savingsUSD: 0, editTurns: 1, oneShotTurns: 1 } },
-    subagentBreakdown: {}
+    subagentBreakdown: {},
   }
 
   const sess2: SessionSummary = {
@@ -103,13 +145,25 @@ function buildOverviewFixture(): ProjectSummary[] {
         category: 'feature',
         retries: 1,
         hasEdits: true,
-        assistantCalls: [{
-          provider: 'claude', model: 'claude-sonnet-4.5', usage: tokens(100, 50, 20),
-          costUSD: 1.2, tools: ['Write'], mcpTools: ['mcp__github__list_prs'], skills: ['refactor-helper'],
-          subagentTypes: ['general-purpose'], hasAgentSpawn: false, hasPlanMode: false, speed: 'standard',
-          timestamp: ts(2026, 7, 2, 9), bashCommands: [], deduplicationKey: 'd2',
-          toolSequence: [[{ tool: 'Write', file: '/tmp/demo-app/src/widget.tsx' }]]
-        }]
+        assistantCalls: [
+          {
+            provider: 'claude',
+            model: 'claude-sonnet-4.5',
+            usage: tokens(100, 50, 20),
+            costUSD: 1.2,
+            tools: ['Write'],
+            mcpTools: ['mcp__github__list_prs'],
+            skills: ['refactor-helper'],
+            subagentTypes: ['general-purpose'],
+            hasAgentSpawn: false,
+            hasPlanMode: false,
+            speed: 'standard',
+            timestamp: ts(2026, 7, 2, 9),
+            bashCommands: [],
+            deduplicationKey: 'd2',
+            toolSequence: [[{ tool: 'Write', file: '/tmp/demo-app/src/widget.tsx' }]],
+          },
+        ],
       },
       {
         userMessage: "that's not what I meant",
@@ -118,13 +172,25 @@ function buildOverviewFixture(): ProjectSummary[] {
         category: 'debugging',
         retries: 0,
         hasEdits: false,
-        assistantCalls: [{
-          provider: 'claude', model: 'claude-sonnet-4.5', usage: tokens(100, 50, 20),
-          costUSD: 0.3, tools: [], mcpTools: [], skills: [], subagentTypes: [],
-          hasAgentSpawn: false, hasPlanMode: false, speed: 'standard',
-          timestamp: ts(2026, 7, 2, 10), bashCommands: [], deduplicationKey: 'd3'
-        }]
-      }
+        assistantCalls: [
+          {
+            provider: 'claude',
+            model: 'claude-sonnet-4.5',
+            usage: tokens(100, 50, 20),
+            costUSD: 0.3,
+            tools: [],
+            mcpTools: [],
+            skills: [],
+            subagentTypes: [],
+            hasAgentSpawn: false,
+            hasPlanMode: false,
+            speed: 'standard',
+            timestamp: ts(2026, 7, 2, 10),
+            bashCommands: [],
+            deduplicationKey: 'd3',
+          },
+        ],
+      },
     ],
     modelBreakdown: { 'Sonnet 4.5': { calls: 2, costUSD: 1.5, savingsUSD: 0, tokens: tokens(200, 100, 40) } },
     toolBreakdown: { Write: { calls: 1 } },
@@ -133,10 +199,10 @@ function buildOverviewFixture(): ProjectSummary[] {
     categoryBreakdown: {
       ...zeroedCategoryBreakdown(),
       feature: { turns: 1, costUSD: 1.2, savingsUSD: 0, retries: 1, editTurns: 1, oneShotTurns: 0 },
-      debugging: { turns: 1, costUSD: 0.3, savingsUSD: 0, retries: 0, editTurns: 0, oneShotTurns: 0 }
+      debugging: { turns: 1, costUSD: 0.3, savingsUSD: 0, retries: 0, editTurns: 0, oneShotTurns: 0 },
     },
     skillBreakdown: { 'refactor-helper': { turns: 1, costUSD: 1.2, savingsUSD: 0, editTurns: 1, oneShotTurns: 0 } },
-    subagentBreakdown: { 'general-purpose': { calls: 1, costUSD: 1.2, savingsUSD: 0 } }
+    subagentBreakdown: { 'general-purpose': { calls: 1, costUSD: 1.2, savingsUSD: 0 } },
   }
 
   const sess3: SessionSummary = {
@@ -153,43 +219,61 @@ function buildOverviewFixture(): ProjectSummary[] {
     totalCacheReadTokens: 0,
     totalCacheWriteTokens: 0,
     apiCalls: 1,
-    turns: [{
-      userMessage: 'refactor for free',
-      timestamp: ts(2026, 7, 3, 12),
-      sessionId: 'sess3',
-      category: 'coding',
-      retries: 0,
-      hasEdits: true,
-      assistantCalls: [{
-        provider: 'opencode', model: 'demo-model', usage: tokens(300, 100, 0),
-        costUSD: 0, savingsUSD: 0.8, savingsBaselineModel: 'claude-opus-4-6', isLocalSavings: true,
-        tools: ['Edit'], mcpTools: [], skills: [], subagentTypes: [],
-        hasAgentSpawn: false, hasPlanMode: false, speed: 'standard',
-        timestamp: ts(2026, 7, 3, 12), bashCommands: [], deduplicationKey: 'd4'
-      }]
-    }],
+    turns: [
+      {
+        userMessage: 'refactor for free',
+        timestamp: ts(2026, 7, 3, 12),
+        sessionId: 'sess3',
+        category: 'coding',
+        retries: 0,
+        hasEdits: true,
+        assistantCalls: [
+          {
+            provider: 'opencode',
+            model: 'demo-model',
+            usage: tokens(300, 100, 0),
+            costUSD: 0,
+            savingsUSD: 0.8,
+            savingsBaselineModel: 'claude-opus-4-6',
+            isLocalSavings: true,
+            tools: ['Edit'],
+            mcpTools: [],
+            skills: [],
+            subagentTypes: [],
+            hasAgentSpawn: false,
+            hasPlanMode: false,
+            speed: 'standard',
+            timestamp: ts(2026, 7, 3, 12),
+            bashCommands: [],
+            deduplicationKey: 'd4',
+          },
+        ],
+      },
+    ],
     modelBreakdown: { 'demo-model': { calls: 1, costUSD: 0, savingsUSD: 0.8, tokens: tokens(300, 100) } },
     toolBreakdown: { Edit: { calls: 1 } },
     mcpBreakdown: {},
     bashBreakdown: {},
     categoryBreakdown: {
       ...zeroedCategoryBreakdown(),
-      coding: { turns: 1, costUSD: 0, savingsUSD: 0.8, retries: 0, editTurns: 1, oneShotTurns: 1 }
+      coding: { turns: 1, costUSD: 0, savingsUSD: 0.8, retries: 0, editTurns: 1, oneShotTurns: 1 },
     },
     skillBreakdown: {},
-    subagentBreakdown: {}
+    subagentBreakdown: {},
   }
 
-  return [{
-    project: 'demo-app',
-    projectPath: '/tmp/demo-app',
-    sessions: [sess1, sess2, sess3],
-    totalCostUSD: 2.0,
-    totalSavingsUSD: 0.8,
-    totalEstimatedCostUSD: 0,
-    totalApiCalls: 4,
-    totalProxiedCostUSD: 0
-  }]
+  return [
+    {
+      project: 'demo-app',
+      projectPath: '/tmp/demo-app',
+      sessions: [sess1, sess2, sess3],
+      totalCostUSD: 2.0,
+      totalSavingsUSD: 0.8,
+      totalEstimatedCostUSD: 0,
+      totalApiCalls: 4,
+      totalProxiedCostUSD: 0,
+    },
+  ]
 }
 
 /** The payload core fed the fixture's sessions (map 05): the report path is
@@ -237,7 +321,7 @@ describe('buildOverview KPI row', () => {
     // 2 one-shot edit turns / 3 edit turns (sess1, sess2 feature retried, sess3)
     expect(payload.kpis.oneShotRate).toBeCloseTo(2 / 3, 6)
     // 60 cache-read / (60 + 600 input)
-    expect(payload.kpis.cacheHitPercent).toBeCloseTo(60 / 660 * 100, 6)
+    expect(payload.kpis.cacheHitPercent).toBeCloseTo((60 / 660) * 100, 6)
   })
 
   it('returns zeros for an empty report instead of dividing by zero', () => {
@@ -267,7 +351,8 @@ describe('buildOverview daily chart', () => {
   })
 
   it('honours an explicit custom range window', () => {
-    const payload = payloadFor(buildOverviewFixture(),
+    const payload = payloadFor(
+      buildOverviewFixture(),
       { period: 'lifetime', range: { since: '2026-07-02', until: '2026-07-03' } },
       NOW,
     )
@@ -308,7 +393,13 @@ describe('buildOverview rankings', () => {
   it('ranks models by cost with token totals and short-name merging', () => {
     expect(payload.models.map(m => m.name)).toEqual(['Sonnet 4.5', 'demo-model'])
     expect(payload.models[0]).toMatchObject({ cost: 1.5, calls: 2, inputTokens: 200, outputTokens: 100, savingsUSD: 0 })
-    expect(payload.models[1]).toMatchObject({ cost: 0.5, calls: 2, inputTokens: 400, outputTokens: 150, savingsUSD: 0.8 })
+    expect(payload.models[1]).toMatchObject({
+      cost: 0.5,
+      calls: 2,
+      inputTokens: 400,
+      outputTokens: 150,
+      savingsUSD: 0.8,
+    })
   })
 
   it('ranks activities by cost with per-category one-shot rates', () => {
@@ -320,11 +411,14 @@ describe('buildOverview rankings', () => {
   })
 
   it('ranks tools, MCP servers, skills, and subagents', () => {
-    expect(payload.tools).toEqual([{ name: 'Edit', calls: 2 }, { name: 'Write', calls: 1 }])
+    expect(payload.tools).toEqual([
+      { name: 'Edit', calls: 2 },
+      { name: 'Write', calls: 1 },
+    ])
     expect(payload.mcpServers).toEqual([{ name: 'github', calls: 1 }])
     expect(payload.skills).toEqual([
       { name: 'refactor-helper', turns: 1, cost: 1.2 },
-      { name: 'refactor', turns: 1, cost: 0.5 }
+      { name: 'refactor', turns: 1, cost: 0.5 },
     ])
     expect(payload.subagents).toEqual([{ name: 'general-purpose', calls: 1, cost: 1.2 }])
   })
@@ -338,17 +432,22 @@ describe('buildOverview efficiency signals', () => {
     expect(payload.efficiency.retryTax).toMatchObject({
       totalUSD: 1.2,
       retries: 1,
-      editTurns: 1
+      editTurns: 1,
     })
     expect(payload.efficiency.retryTax.byModel).toHaveLength(1)
-    expect(payload.efficiency.retryTax.byModel[0]).toMatchObject({ name: 'Sonnet 4.5', taxUSD: 1.2, retries: 1, retriesPerEdit: 1 })
+    expect(payload.efficiency.retryTax.byModel[0]).toMatchObject({
+      name: 'Sonnet 4.5',
+      taxUSD: 1.2,
+      retries: 1,
+      retriesPerEdit: 1,
+    })
   })
 
   it('computes the composite efficiency score and grade', () => {
     const payload = payloadFor(buildOverviewFixture(), LIFETIME, NOW)
 
     // oneShot 2/3, cacheFrac 60/660, retrySpendFraction 1.2/2 => retryPenalty 1
-    const score = 100 * (0.45 * (2 / 3) + 0.30 * (60 / 660) + 0.25 * 0)
+    const score = 100 * (0.45 * (2 / 3) + 0.3 * (60 / 660) + 0.25 * 0)
     expect(payload.efficiency.score).toBeCloseTo(score, 6)
     expect(payload.efficiency.grade).toBe('F')
   })
@@ -367,16 +466,36 @@ describe('buildOverview efficiency signals', () => {
     // cheap-model: 5 one-shot edit turns at $0.02/edit (reliable baseline)
     // spendy-model: 2 one-shot edit turns at $1.00/edit
     const cheapCall = (ts: string, key: string): SessionSummary['turns'][number]['assistantCalls'][number] => ({
-      provider: 'opencode', model: 'cheap-model', usage: tokens(10, 10),
-      costUSD: 0.1, tools: ['Edit'], mcpTools: [], skills: [], subagentTypes: [],
-      hasAgentSpawn: false, hasPlanMode: false, speed: 'standard',
-      timestamp: ts, bashCommands: [], deduplicationKey: key
+      provider: 'opencode',
+      model: 'cheap-model',
+      usage: tokens(10, 10),
+      costUSD: 0.1,
+      tools: ['Edit'],
+      mcpTools: [],
+      skills: [],
+      subagentTypes: [],
+      hasAgentSpawn: false,
+      hasPlanMode: false,
+      speed: 'standard',
+      timestamp: ts,
+      bashCommands: [],
+      deduplicationKey: key,
     })
     const spendyCall = (ts: string, key: string): SessionSummary['turns'][number]['assistantCalls'][number] => ({
-      provider: 'opencode', model: 'spendy-model', usage: tokens(10, 10),
-      costUSD: 1.0, tools: ['Edit'], mcpTools: [], skills: [], subagentTypes: [],
-      hasAgentSpawn: false, hasPlanMode: false, speed: 'standard',
-      timestamp: ts, bashCommands: [], deduplicationKey: key
+      provider: 'opencode',
+      model: 'spendy-model',
+      usage: tokens(10, 10),
+      costUSD: 1.0,
+      tools: ['Edit'],
+      mcpTools: [],
+      skills: [],
+      subagentTypes: [],
+      hasAgentSpawn: false,
+      hasPlanMode: false,
+      speed: 'standard',
+      timestamp: ts,
+      bashCommands: [],
+      deduplicationKey: key,
     })
     const cheapTurns = Array.from({ length: 5 }, (_, i) => ({
       userMessage: `cheap turn ${i}`,
@@ -385,7 +504,7 @@ describe('buildOverview efficiency signals', () => {
       category: 'coding' as const,
       retries: 0,
       hasEdits: true,
-      assistantCalls: [cheapCall(`2026-07-0${i + 1}T09:00:00.000Z`, `ck${i}`)]
+      assistantCalls: [cheapCall(`2026-07-0${i + 1}T09:00:00.000Z`, `ck${i}`)],
     }))
     const spendyTurns = Array.from({ length: 2 }, (_, i) => ({
       userMessage: `spendy turn ${i}`,
@@ -394,7 +513,7 @@ describe('buildOverview efficiency signals', () => {
       category: 'coding' as const,
       retries: 0,
       hasEdits: true,
-      assistantCalls: [spendyCall(`2026-07-0${i + 1}T10:00:00.000Z`, `sk${i}`)]
+      assistantCalls: [spendyCall(`2026-07-0${i + 1}T10:00:00.000Z`, `sk${i}`)],
     }))
     const allTurns = [...cheapTurns, ...spendyTurns]
     const breakdown = {
@@ -402,34 +521,64 @@ describe('buildOverview efficiency signals', () => {
       coding: {
         turns: allTurns.length,
         costUSD: allTurns.reduce((s, t) => s + t.assistantCalls[0]!.costUSD, 0),
-        savingsUSD: 0, retries: 0,
+        savingsUSD: 0,
+        retries: 0,
         editTurns: allTurns.length,
-        oneShotTurns: allTurns.length
-      }
+        oneShotTurns: allTurns.length,
+      },
     }
     const session: SessionSummary = {
-      sessionId: 'routing-sess', project: 'routing', firstTimestamp: '2026-07-01T09:00:00.000Z',
-      lastTimestamp: '2026-07-02T10:00:00.000Z', totalCostUSD: 2.5, totalSavingsUSD: 0,
-      totalEstimatedCostUSD: 0, totalInputTokens: 70, totalOutputTokens: 70, totalReasoningTokens: 0,
-      totalCacheReadTokens: 0, totalCacheWriteTokens: 0, apiCalls: 7,
+      sessionId: 'routing-sess',
+      project: 'routing',
+      firstTimestamp: '2026-07-01T09:00:00.000Z',
+      lastTimestamp: '2026-07-02T10:00:00.000Z',
+      totalCostUSD: 2.5,
+      totalSavingsUSD: 0,
+      totalEstimatedCostUSD: 0,
+      totalInputTokens: 70,
+      totalOutputTokens: 70,
+      totalReasoningTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheWriteTokens: 0,
+      apiCalls: 7,
       turns: allTurns as SessionSummary['turns'],
       modelBreakdown: {
         'cheap-model': { calls: 5, costUSD: 0.5, savingsUSD: 0, tokens: tokens(50, 50) },
-        'spendy-model': { calls: 2, costUSD: 2.0, savingsUSD: 0, tokens: tokens(20, 20) }
+        'spendy-model': { calls: 2, costUSD: 2.0, savingsUSD: 0, tokens: tokens(20, 20) },
       },
-      toolBreakdown: { Edit: { calls: 7 } }, mcpBreakdown: {}, bashBreakdown: {},
+      toolBreakdown: { Edit: { calls: 7 } },
+      mcpBreakdown: {},
+      bashBreakdown: {},
       categoryBreakdown: breakdown,
-      skillBreakdown: {}, subagentBreakdown: {}
+      skillBreakdown: {},
+      subagentBreakdown: {},
     }
-    const payload = payloadFor([{
-      project: 'routing', projectPath: '/tmp/routing', sessions: [session],
-      totalCostUSD: 2.5, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 7, totalProxiedCostUSD: 0
-    }], LIFETIME, NOW)
+    const payload = payloadFor(
+      [
+        {
+          project: 'routing',
+          projectPath: '/tmp/routing',
+          sessions: [session],
+          totalCostUSD: 2.5,
+          totalSavingsUSD: 0,
+          totalEstimatedCostUSD: 0,
+          totalApiCalls: 7,
+          totalProxiedCostUSD: 0,
+        },
+      ],
+      LIFETIME,
+      NOW,
+    )
 
     expect(payload.efficiency.routingWaste.baselineModel).toBe('cheap-model')
     expect(payload.efficiency.routingWaste.baselineCostPerEdit).toBeCloseTo(0.1, 6)
     expect(payload.efficiency.routingWaste.byModel).toHaveLength(1)
-    expect(payload.efficiency.routingWaste.byModel[0]).toMatchObject({ name: 'spendy-model', actualUSD: 2.0, counterfactualUSD: 0.2, savingsUSD: 1.8 })
+    expect(payload.efficiency.routingWaste.byModel[0]).toMatchObject({
+      name: 'spendy-model',
+      actualUSD: 2.0,
+      counterfactualUSD: 0.2,
+      savingsUSD: 1.8,
+    })
     expect(payload.efficiency.routingWaste.totalSavingsUSD).toBeCloseTo(1.8, 6)
   })
 
@@ -453,16 +602,18 @@ describe('buildOverview efficiency signals', () => {
       totalCostUSD: 0,
       apiCalls: 1,
       modelBreakdown: {
-        'strange-unknown-model-xyz': { calls: 1, costUSD: 0, savingsUSD: 0, tokens: tokens(100, 50) }
+        'strange-unknown-model-xyz': { calls: 1, costUSD: 0, savingsUSD: 0, tokens: tokens(100, 50) },
       },
       turns: session.turns.map(turn => ({
         ...turn,
         sessionId: 'unpriced-sess',
         assistantCalls: turn.assistantCalls.map(call => ({
-          ...call, model: 'strange-unknown-model-xyz', costUSD: 0
-        }))
+          ...call,
+          model: 'strange-unknown-model-xyz',
+          costUSD: 0,
+        })),
       })),
-      categoryBreakdown: { ...zeroedCategoryBreakdown() }
+      categoryBreakdown: { ...zeroedCategoryBreakdown() },
     }
     const projects: ProjectSummary[] = [{ ...base[0]!, sessions: [...base[0]!.sessions, unpricedSession] }]
 
@@ -484,10 +635,17 @@ describe('buildOverview efficiency signals', () => {
     const payload = payloadFor(buildOverviewFixture(), LIFETIME, NOW)
 
     expect(payload.localModelSavings).toMatchObject({ totalUSD: 0.8, calls: 1 })
-    expect(payload.localModelSavings.byModel).toEqual([{
-      name: 'demo-model', calls: 1, actualUSD: 0, savingsUSD: 0.8,
-      baselineModel: 'claude-opus-4-6', inputTokens: 300, outputTokens: 100
-    }])
+    expect(payload.localModelSavings.byModel).toEqual([
+      {
+        name: 'demo-model',
+        calls: 1,
+        actualUSD: 0,
+        savingsUSD: 0.8,
+        baselineModel: 'claude-opus-4-6',
+        inputTokens: 300,
+        outputTokens: 100,
+      },
+    ])
     expect(payload.localModelSavings.byProvider).toEqual([{ name: 'opencode', calls: 1, savingsUSD: 0.8 }])
   })
 })

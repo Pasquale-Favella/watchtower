@@ -39,17 +39,22 @@ function defaultExec(command: string, args: readonly string[]): Promise<{ stdout
     // so npm-global `.cmd` shims resolve under `cmd.exe /c`.
     const bin = which(command) ?? command
     const spawn = acpSpawnCommand(bin, args, process.platform)
-    execFile(spawn.command, spawn.args, { timeout: CLAUDE_AUTH_PROBE_TIMEOUT_MS, windowsHide: true }, (error, stdout) => {
-      const text = typeof stdout === 'string' ? stdout : String(stdout ?? '')
-      const failure = error as { killed?: boolean; code?: string | number } | null
-      if (error && (failure?.killed || failure?.code === 'ETIMEDOUT')) {
-        reject(error)
-        return
-      }
-      // Non-zero exit still carries the JSON status on stdout (logged-out
-      // exits 1) — resolve and let the parser decide.
-      resolve({ stdout: text })
-    })
+    execFile(
+      spawn.command,
+      spawn.args,
+      { timeout: CLAUDE_AUTH_PROBE_TIMEOUT_MS, windowsHide: true },
+      (error, stdout) => {
+        const text = typeof stdout === 'string' ? stdout : String(stdout ?? '')
+        const failure = error as { killed?: boolean; code?: string | number } | null
+        if (error && (failure?.killed || failure?.code === 'ETIMEDOUT')) {
+          reject(error)
+          return
+        }
+        // Non-zero exit still carries the JSON status on stdout (logged-out
+        // exits 1) — resolve and let the parser decide.
+        resolve({ stdout: text })
+      },
+    )
   })
 }
 

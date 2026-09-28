@@ -42,7 +42,12 @@ describe('extraction seam under zod (ADR 0003: loose + skip-and-report)', () => 
     // full context (which embeds source paths) never leaves the scan.
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
 
-    const bad = parseOrSkip(parsedProviderCallSchema, { ...validCall, costUSD: 'not-a-number' }, tally, 'demo session /x.jsonl')
+    const bad = parseOrSkip(
+      parsedProviderCallSchema,
+      { ...validCall, costUSD: 'not-a-number' },
+      tally,
+      'demo session /x.jsonl',
+    )
     expect(bad).toBeNull()
     expect(tally.count).toBe(1)
     expect(stderr).not.toHaveBeenCalled()
@@ -57,7 +62,12 @@ describe('extraction seam under zod (ADR 0003: loose + skip-and-report)', () => 
 
   it('an invalid enum value (speed) is a declared-field failure, not an unknown-key case', () => {
     const tally = { count: 0 }
-    const parsed = parseOrSkip(parsedProviderCallSchema, { ...validCall, speed: 'turbo' }, tally, 'demo session /x.jsonl')
+    const parsed = parseOrSkip(
+      parsedProviderCallSchema,
+      { ...validCall, speed: 'turbo' },
+      tally,
+      'demo session /x.jsonl',
+    )
     expect(parsed).toBeNull()
     expect(tally.count).toBe(1)
   })

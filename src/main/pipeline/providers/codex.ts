@@ -6,7 +6,12 @@ import { basename, join } from 'path'
 import { resolveCodexHome } from '../../env.js'
 import { readSessionLines } from '../fs-utils.js'
 import { calculateCost } from '../models.js'
-import { readCachedCodexResults, writeCachedCodexResults, getCachedCodexProject, fingerprintFile } from '../codex-cache.js'
+import {
+  readCachedCodexResults,
+  writeCachedCodexResults,
+  getCachedCodexProject,
+  fingerprintFile,
+} from '../codex-cache.js'
 import { normalizeContentBlocks } from '../content-utils.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 import type { ToolCall } from '../types.js'
@@ -64,9 +69,12 @@ const toolNameMap: Record<string, string> = {
 // class don't overlap, so there is no catastrophic backtracking.
 const MCP_CLI_CALL = /(?<![\w.-])mcp-cli(?:\s+(?!call\b)[^\s;|&]+)*\s+call\s+(\S+)\s+(\S+)/
 function mcpToolFromShellCommand(command: unknown): string | null {
-  const text = typeof command === 'string'
-    ? command
-    : Array.isArray(command) ? command.filter(x => typeof x === 'string').join(' ') : ''
+  const text =
+    typeof command === 'string'
+      ? command
+      : Array.isArray(command)
+        ? command.filter(x => typeof x === 'string').join(' ')
+        : ''
   if (!text) return null
   const m = MCP_CLI_CALL.exec(text)
   if (!m) return null
@@ -175,7 +183,8 @@ async function readFirstLine(filePath: string): Promise<CodexEntry | null> {
 async function isValidCodexSession(filePath: string): Promise<{ valid: boolean; meta?: CodexEntry }> {
   const entry = await readFirstLine(filePath)
   if (!entry) return { valid: false }
-  const valid = entry.type === 'session_meta' &&
+  const valid =
+    entry.type === 'session_meta' &&
     typeof entry.payload?.originator === 'string' &&
     entry.payload.originator.toLowerCase().startsWith('codex')
   return { valid, meta: valid ? entry : undefined }
@@ -286,7 +295,9 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
   if (type === 'response_item' && payloadType === 'message' && role === 'user') {
     entry.payload!.content = [{ type: 'input_text', text: extractFirstJsonText(line) }]
   } else if (type === 'response_item' && payloadType === 'message' && role === 'assistant') {
-    entry.payload!.content = [{ type: 'output_text', text: 'x'.repeat(Math.min(countFirstJsonText(line), LARGE_TEXT_CAP)) }]
+    entry.payload!.content = [
+      { type: 'output_text', text: 'x'.repeat(Math.min(countFirstJsonText(line), LARGE_TEXT_CAP)) },
+    ]
   }
 
   return entry
@@ -363,11 +374,7 @@ async function discoverSessionsInDir(codexDir: string): Promise<SessionSource[]>
 }
 
 function resolveModel(info: CodexEntry['payload'], sessionModel?: string): string {
-  return info?.model
-    ?? info?.info?.model
-    ?? info?.info?.model_name
-    ?? sessionModel
-    ?? 'gpt-5'
+  return info?.model ?? info?.info?.model ?? info?.info?.model_name ?? sessionModel ?? 'gpt-5'
 }
 
 function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
@@ -452,9 +459,18 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           pendingTools.push(mapped)
           const call: ToolCall = { tool: mapped }
           const rawArgs = (entry.payload as Record<string, unknown>)['arguments']
-          const args = typeof rawArgs === 'string'
-            ? (() => { try { return JSON.parse(rawArgs) as Record<string, unknown> } catch { return null } })()
-            : typeof rawArgs === 'object' && rawArgs ? rawArgs as Record<string, unknown> : null
+          const args =
+            typeof rawArgs === 'string'
+              ? (() => {
+                  try {
+                    return JSON.parse(rawArgs) as Record<string, unknown>
+                  } catch {
+                    return null
+                  }
+                })()
+              : typeof rawArgs === 'object' && rawArgs
+                ? (rawArgs as Record<string, unknown>)
+                : null
           if (args) {
             const fp = args['file_path'] ?? args['path']
             if (typeof fp === 'string') call.file = fp
@@ -476,7 +492,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           pendingTools.push('Edit')
           const p = entry.payload as Record<string, unknown>
           const changes = p['changes']
-          const changesObj = typeof changes === 'object' && changes ? changes as Record<string, unknown> : {}
+          const changesObj = typeof changes === 'object' && changes ? (changes as Record<string, unknown>) : {}
           const filePaths = Object.keys(changesObj)
           if (filePaths.length > 0) {
             for (const fp of filePaths) {
@@ -500,8 +516,8 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         // classifier recognizes.
         if (entry.type === 'event_msg' && entry.payload?.type === 'mcp_tool_call_end') {
           const inv = (entry.payload as Record<string, unknown>)['invocation'] as Record<string, unknown> | undefined
-          const server = typeof inv?.['server'] === 'string' ? inv['server'] as string : ''
-          const tool = typeof inv?.['tool'] === 'string' ? inv['tool'] as string : ''
+          const server = typeof inv?.['server'] === 'string' ? (inv['server'] as string) : ''
+          const tool = typeof inv?.['tool'] === 'string' ? (inv['tool'] as string) : ''
           if (server && tool) {
             const name = `mcp__${server}__${tool}`
             pendingTools.push(name)
@@ -522,7 +538,11 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           continue
         }
 
-        if (entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload?.role === 'assistant') {
+        if (
+          entry.type === 'response_item' &&
+          entry.payload?.type === 'message' &&
+          entry.payload?.role === 'assistant'
+        ) {
           const texts = normalizeContentBlocks(entry.payload.content)
             .filter(c => c.type === 'output_text' || c.type === 'text')
             .map(c => c.text ?? '')
@@ -549,7 +569,17 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             const timestamp = entry.timestamp ?? ''
             const dedupKey = `codex:${sessionId}:${timestamp}:est${estCounter++}`
 
-            if (seenKeys.has(dedupKey)) { pendingTools = []; pendingToolSequence = []; pendingUserMessage = ''; pendingAssistantText = ''; pendingOutputChars = 0; pendingLocAdded = 0; pendingLocRemoved = 0; pendingEditFailed = 0; continue }
+            if (seenKeys.has(dedupKey)) {
+              pendingTools = []
+              pendingToolSequence = []
+              pendingUserMessage = ''
+              pendingAssistantText = ''
+              pendingOutputChars = 0
+              pendingLocAdded = 0
+              pendingLocRemoved = 0
+              pendingEditFailed = 0
+              continue
+            }
             seenKeys.add(dedupKey)
 
             const costUSD = calculateCost(model, estInput, estOutput, 0, 0, 0)

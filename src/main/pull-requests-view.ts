@@ -30,18 +30,20 @@ function payloadFrom(sessions: SessionSummary[], anchors: SessionSummary[]): Pul
   const { rows, totals } = buildPrAttribution(sessions, anchors)
   const attributedCost = rows.reduce((sum, r) => sum + r.cost, 0)
   return {
-    rows: rows.map(({ url, label, cost, sessions, calls, firstStarted, lastEnded, models, modelProvenance, categories }) => ({
-      url,
-      label,
-      cost,
-      sessions,
-      calls,
-      firstStarted,
-      lastEnded,
-      models,
-      ...(modelProvenance && Object.keys(modelProvenance).length > 0 ? { modelProvenance } : {}),
-      ...(categories?.length ? { categories } : {}),
-    })),
+    rows: rows.map(
+      ({ url, label, cost, sessions, calls, firstStarted, lastEnded, models, modelProvenance, categories }) => ({
+        url,
+        label,
+        cost,
+        sessions,
+        calls,
+        firstStarted,
+        lastEnded,
+        models,
+        ...(modelProvenance && Object.keys(modelProvenance).length > 0 ? { modelProvenance } : {}),
+        ...(categories?.length ? { categories } : {}),
+      }),
+    ),
     distinctCost: attributedCost + totals.unattributedCost,
     distinctSessions: totals.sessions,
     subagentSessions: totals.subagentSessions,
@@ -56,7 +58,11 @@ function payloadFrom(sessions: SessionSummary[], anchors: SessionSummary[]): Pul
  * in-range turns; the turn-by-turn PR attribution reducer then runs over the
  * seam's session summaries (no ProjectSummary shell reconstructed).
  */
-export function buildPullRequestsViewFromLedger(store: LedgerStore, scope: OverviewScope, now = new Date()): PullRequestsPayload {
+export function buildPullRequestsViewFromLedger(
+  store: LedgerStore,
+  scope: OverviewScope,
+  now = new Date(),
+): PullRequestsPayload {
   const sessions = buildSessionSummaries(store, {
     range: overviewDateRange(scope, now),
     provider: scope.provider,

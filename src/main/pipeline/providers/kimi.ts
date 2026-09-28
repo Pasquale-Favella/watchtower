@@ -36,7 +36,7 @@ const toolNameMap: Record<string, string> = {
 }
 
 function asObject(value: unknown): JsonObject | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : null
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : null
 }
 
 function stringField(obj: JsonObject | null, key: string): string | undefined {
@@ -296,7 +296,8 @@ function createParser(source: SessionSource, shareDir: string, seenKeys: Set<str
         if (seenKeys.has(dedupKey)) continue
         seenKeys.add(dedupKey)
 
-        const model = stringField(envelope.payload, 'model') ?? stringField(envelope.payload, 'model_name') ?? configuredModel
+        const model =
+          stringField(envelope.payload, 'model') ?? stringField(envelope.payload, 'model_name') ?? configuredModel
         const costUSD = calculateCost(
           model,
           usage.inputTokens,

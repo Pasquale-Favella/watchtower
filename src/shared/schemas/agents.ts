@@ -235,4 +235,3 @@ export const coachInspectResultSchema = z.discriminatedUnion('ok', [
   }),
 ])
 export type CoachInspectResult = z.infer<typeof coachInspectResultSchema>
-
