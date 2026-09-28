@@ -141,7 +141,7 @@ export interface RefreshFxRateEffectOptions {
 }
 
 /**
- * Minimal FX persistence port (ADR 0032 §4.2 first half): the exact three
+ * Minimal FX persistence port (ADR 0032 §4.2 first half): the exact four
  * `LedgerStore` members the FX boundary uses, exposed as a `Context.Service`
  * + layers so the refresh core depends on the port rather than the concrete
  * store (the `HttpFetch.layerWithFetch` / `HarnessProbe.layerWithProbe`
@@ -153,6 +153,7 @@ export class FxRates extends Context.Service<
     readonly getCurrencyRate: (code: string) => Effect.Effect<CurrencyRate | null>
     readonly setCurrencyRate: (rate: CurrencyRate) => Effect.Effect<void>
     readonly getDisplayCurrency: () => Effect.Effect<string>
+    readonly setDisplayCurrency: (code: string) => Effect.Effect<void>
   }
 >()('watchtower/fx/FxRates') {
   static readonly layerWithStore = (store: LedgerStore): Layer.Layer<FxRates> =>
@@ -160,6 +161,7 @@ export class FxRates extends Context.Service<
       getCurrencyRate: code => Effect.sync(() => store.getCurrencyRate(code)),
       setCurrencyRate: rate => Effect.sync(() => store.setCurrencyRate(rate)),
       getDisplayCurrency: () => Effect.sync(() => store.getDisplayCurrency()),
+      setDisplayCurrency: code => Effect.sync(() => store.setDisplayCurrency(code)),
     })
 
   static readonly layerWithRates = (rates: FxRates['Service']): Layer.Layer<FxRates> =>

@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { FxRates } from '../src/main/fx.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import {
   currencyRateRowSchema,
@@ -581,7 +583,11 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.setModelAlias('proxy-model', 'claude-sonnet-4.5')
     store.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
-    store.setDisplayCurrency('EUR')
+    Effect.runSync(
+      Effect.flatMap(FxRates, rates => rates.setDisplayCurrency('EUR')).pipe(
+        Effect.provide(FxRates.layerWithStore(store)),
+      ),
+    )
     store.setRefreshCadence('5m')
     store.dismissSkill('bash', 'git commit', 'not-a-skill')
 

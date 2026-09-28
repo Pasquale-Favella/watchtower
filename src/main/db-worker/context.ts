@@ -764,7 +764,9 @@ export class DbWorkerContext {
         if (typeof code !== 'string' || !isValidCurrencyCode(code)) {
           throw new Error('invalid ISO 4217 currency code')
         }
-        ledger.setDisplayCurrency(code)
+        Effect.runSync(
+          Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(Effect.provide(liveFxLayer(ledger))),
+        )
         const emit = this.emit
         const isClosed = (): boolean => this.closed
         this.startBackgroundFx(
