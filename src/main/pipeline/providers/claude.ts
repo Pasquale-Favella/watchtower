@@ -8,6 +8,7 @@ import type { Provider, ProbeRoot, SessionSource, SessionParser } from './types.
 import { getShortModelName } from '../models.js'
 import { reportProviderIssue } from '../file-errors.js'
 import { readConfig } from '../config.js'
+import { overrideFor, type AppPaths, platformFor } from '../../env.js'
 
 export type ClaudeConfigSource = {
   id: string
@@ -67,8 +68,13 @@ function makeUniqueLabels(sources: ClaudeConfigSource[]): ClaudeConfigSource[] {
 /// then `~/.claude`. Sessions from every returned dir are merged into one
 /// ProjectSummary per project name in `src/parser.ts:scanProjectDirs`, so two
 /// dirs holding the same sanitized project slug naturally aggregate (#208).
-export async function getClaudeConfigDirs(): Promise<string[]> {
-  const multi = process.env['CLAUDE_CONFIG_DIRS']
+///
+/// `paths` is the trailing AppPaths snapshot seam (`env.ts` convention): both
+/// env vars are read through `overrideFor`, which reports the raw string. The
+/// normalization below stays here — an empty value is still skipped by the
+/// `!== ''` checks, which is what `process.env[...] === undefined` used to do.
+export async function getClaudeConfigDirs(paths?: AppPaths): Promise<string[]> {
+  const multi = overrideFor(paths, 'CLAUDE_CONFIG_DIRS')
   if (multi !== undefined && multi !== '') {
     const dirs = multi
       .split(pathDelimiter)
@@ -77,7 +83,7 @@ export async function getClaudeConfigDirs(): Promise<string[]> {
       .map(s => resolve(expandHome(s)))
     if (dirs.length > 0) return dedupeResolved(dirs)
   }
-  const single = process.env['CLAUDE_CONFIG_DIR']
+  const single = overrideFor(paths, 'CLAUDE_CONFIG_DIR')
   if (single !== undefined && single !== '') return [resolve(expandHome(single))]
 
   // Config-file fallback (menubar-driven). Env vars always win so a power user
@@ -114,10 +120,21 @@ function cacheDesktopSessionsDirs(key: string, candidates: string[]): string[] {
   return [...dirs]
 }
 
-export function getDesktopSessionsDirs(): string[] {
-  const override = process.env['WATCHTOWER_DESKTOP_SESSIONS_DIR']
-  const appDataInput = process.env['APPDATA']
-  const localAppDataInput = process.env['LOCALAPPDATA']
+export function getDesktopSessionsDirs(paths?: AppPaths): string[] {
+  const override = overrideFor(paths, 'WATCHTOWER_DESKTOP_SESSIONS_DIR')
+  // `appDataInput` / `localAppDataInput` are `string | null` on the snapshot
+  // ("null means unset"), so both normalization sites below stay byte-identical
+  // to the old `string | undefined` reads: the cache key's `?? null` collapses
+  // unset to `null` either way, and `?.trim() || default` treats `null` exactly
+  // like `undefined`. `''` and `'  '` are still real values, still reach the
+  // join verbatim, and still collapse to the homedir default by the `||`.
+  const platformEnv = platformFor(paths)
+  const appDataInput = platformEnv.appData
+  const localAppDataInput = platformEnv.localAppData
+  // The only `process.*` read left in this file, and deliberately so: the OS
+  // name is not an env var, so `AppPaths` has no field for it (the env-only rule
+  // in #148 §5.2 and `docs/architecture.md` keeps this file env-only).
+  // Everything env-shaped comes from the snapshot.
   const platform = process.platform
   const cacheKey = JSON.stringify([platform, override ?? null, appDataInput ?? null, localAppDataInput ?? null])
   const cached = desktopSessionsDirsCache.get(cacheKey)
@@ -334,7 +351,10 @@ export const claude: Provider = {
     // misconfiguration: a Windows user typing `:` (POSIX delimiter) when
     // the platform expects `;`, which produces a single bogus path that
     // silently resolves to nothing on disk.
-    const explicitMulti = process.env['CLAUDE_CONFIG_DIRS']
+    // `Provider.discoverSessions()` takes no arguments, so the snapshot cannot
+    // be threaded through the registry: `overrideFor(undefined, …)` is the
+    // documented "no record passed" spelling, i.e. the ambient `appPaths()`.
+    const explicitMulti = overrideFor(undefined, 'CLAUDE_CONFIG_DIRS')
     if (!anyDirReadable && explicitMulti !== undefined && explicitMulti !== '' && configSources.length > 0) {
       // User-configured paths never reach any output — provider + code only.
       reportProviderIssue('claude', 'config-unreadable')

@@ -66,6 +66,7 @@ import { readSessionFile } from '../fs-utils.js'
 import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
+import { overrideFor, type AppPaths, platformFor } from '../../env.js'
 
 const estimateTokens = (text: string) => estimateTokensFromChars(text.length)
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
@@ -247,9 +248,18 @@ interface SpanAttributes {
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
+//
+// Every seam below takes the AppPaths snapshot as ONE optional trailing
+// `paths` argument (`env.ts` seam convention). The snapshot REPORTS: each
+// reader keeps its own `??` / truthy / `isAbsolute` chain, so a `null` from
+// the snapshot produces exactly what `process.env[...] === undefined` did.
 
-function getCopilotSessionStateDir(override?: string): string {
-  return override ?? process.env['WATCHTOWER_COPILOT_SESSION_STATE_DIR'] ?? join(homedir(), '.copilot', 'session-state')
+export function getCopilotSessionStateDir(override?: string, paths?: AppPaths): string {
+  return (
+    override ??
+    overrideFor(paths, 'WATCHTOWER_COPILOT_SESSION_STATE_DIR') ??
+    join(homedir(), '.copilot', 'session-state')
+  )
 }
 
 /**
@@ -260,9 +270,9 @@ function getCopilotSessionStateDir(override?: string): string {
  *   2. Platform-specific default VS Code global storage path
  *   3. VSCodium variant paths
  */
-function getAgentTracesDbPath(): string | null {
+export function getAgentTracesDbPath(paths?: AppPaths): string | null {
   // Allow explicit override
-  const envOverride = process.env['WATCHTOWER_COPILOT_OTEL_DB']
+  const envOverride = overrideFor(paths, 'WATCHTOWER_COPILOT_OTEL_DB')
   if (envOverride) {
     return existsSync(envOverride) ? envOverride : null
   }
@@ -314,7 +324,7 @@ function getAgentTracesDbPath(): string | null {
     )
   } else if (p === 'win32') {
     // Windows
-    const appdata = process.env['APPDATA'] ?? join(home, 'AppData', 'Roaming')
+    const appdata = platformFor(paths).appData ?? join(home, 'AppData', 'Roaming')
     candidates.push(
       join(appdata, 'Code', 'User', 'globalStorage', 'github.copilot-chat', 'agent-traces.db'),
       join(appdata, 'Code - Insiders', 'User', 'globalStorage', 'github.copilot-chat', 'agent-traces.db'),
@@ -345,17 +355,21 @@ function getAgentTracesDbPath(): string | null {
  * Ultimate, `intellij` for the community edition) containing
  * chat-agent-sessions/, chat-sessions/, and chat-edit-sessions/.
  */
-function getJetBrainsCopilotRoot(override?: string): string {
-  const envOverride = override ?? process.env['WATCHTOWER_COPILOT_JETBRAINS_DIR']
+export function getJetBrainsCopilotRoot(override?: string, paths?: AppPaths): string {
+  const envOverride = override ?? overrideFor(paths, 'WATCHTOWER_COPILOT_JETBRAINS_DIR')
   if (envOverride) return envOverride
 
-  const xdg = process.env['XDG_CONFIG_HOME']
+  const { xdgConfigHome: xdg, localAppData } = platformFor(paths)
+  // Reader-side asymmetry the snapshot must not resolve: an EMPTY or RELATIVE
+  // XDG_CONFIG_HOME is rejected here (`if (xdg && isAbsolute(xdg))`) and falls
+  // through to the platform default, while the plain `??` readers would join
+  // into a relative path. `null` ("unset") and `''` both fail this test.
   if (xdg && (posix.isAbsolute(xdg) || win32.isAbsolute(xdg))) {
     return join(xdg, 'github-copilot')
   }
 
   if (platform() === 'win32') {
-    const local = process.env['LOCALAPPDATA'] ?? join(homedir(), 'AppData', 'Local')
+    const local = localAppData ?? join(homedir(), 'AppData', 'Local')
     return join(local, 'github-copilot')
   }
 
@@ -2391,6 +2405,7 @@ export function createCopilotProvider(
   workspaceStorageDir?: string,
   globalStorageDir?: string,
   jetbrainsDir?: string,
+  paths?: AppPaths,
 ): Provider {
   // jsonlDir is resolved lazily inside discoverSessions so that env-var
   // overrides set after module load (e.g. in tests) are respected.
@@ -2404,14 +2419,14 @@ export function createCopilotProvider(
    */
   function getWsDirs(): string[] {
     if (workspaceStorageDir !== undefined) return [workspaceStorageDir]
-    const envDir = process.env['WATCHTOWER_COPILOT_WS_STORAGE_DIR']
+    const envDir = overrideFor(paths, 'WATCHTOWER_COPILOT_WS_STORAGE_DIR')
     if (envDir) return [envDir]
     return getVSCodeWorkspaceStorageDirs(homedir(), platform())
   }
 
   function getGlobalDirs(): string[] {
     if (globalStorageDir !== undefined) return [globalStorageDir]
-    const envDir = process.env['WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR']
+    const envDir = overrideFor(paths, 'WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR')
     if (envDir) return [envDir]
     return getVSCodeGlobalStorageDirs(homedir(), platform())
   }
@@ -2437,9 +2452,11 @@ export function createCopilotProvider(
       let discoveredOtel = false
 
       // 1. Discover OTel sessions (preferred — full token data)
-      const disableOtel = process.env['WATCHTOWER_COPILOT_DISABLE_OTEL'] === '1'
+      // `=== '1'`, not a presence check: any other value (including `'0'` and
+      // `''`) leaves OTel enabled, exactly as before.
+      const disableOtel = overrideFor(paths, 'WATCHTOWER_COPILOT_DISABLE_OTEL') === '1'
       if (!disableOtel) {
-        const dbPath = getAgentTracesDbPath()
+        const dbPath = getAgentTracesDbPath(paths)
         if (dbPath) {
           try {
             const otelSources = await discoverOtelSessions(dbPath)
@@ -2453,7 +2470,7 @@ export function createCopilotProvider(
 
       // 2. Discover JSONL sessions (fallback — output tokens only)
       try {
-        const jsonlDir = getCopilotSessionStateDir(sessionStateDir)
+        const jsonlDir = getCopilotSessionStateDir(sessionStateDir, paths)
         const jsonlSources = await discoverJsonlSessions(jsonlDir)
         sources.push(...jsonlSources)
       } catch {
@@ -2492,7 +2509,7 @@ export function createCopilotProvider(
       // in a store none of the VS Code / CLI sources touch, so there is no
       // overlap to dedupe against; the shared seenKeys set still guards it.
       try {
-        const jetbrainsSources = await discoverJetBrainsSessions(getJetBrainsCopilotRoot(jetbrainsDir))
+        const jetbrainsSources = await discoverJetBrainsSessions(getJetBrainsCopilotRoot(jetbrainsDir, paths))
         sources.push(...jetbrainsSources)
       } catch {
         // JetBrains discovery failed
