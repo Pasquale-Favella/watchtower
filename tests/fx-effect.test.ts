@@ -13,6 +13,7 @@ import {
   type ActiveCurrency,
   FX_CACHE_TTL_MS,
   FxRates,
+  type RefreshFxRateEffectOptions,
   refreshFxRateWithRates,
 } from '../src/main/fx.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
@@ -32,7 +33,7 @@ function fakeFetchOk(rates: Record<string, unknown>): typeof fetch {
   })) as unknown as typeof fetch
 }
 
-function throwingFetch(message = 'offline'): typeof fetch {
+function throwingFetch(message: string = 'offline'): typeof fetch {
   return (async () => {
     throw new Error(message)
   }) as unknown as typeof fetch
@@ -42,7 +43,7 @@ function fxEffect(
   store: LedgerStore,
   code: string,
   fetchImpl: typeof fetch,
-  options: { now?: () => number; timeoutMs?: number } = {},
+  options: RefreshFxRateEffectOptions = {},
 ): Effect.Effect<ActiveCurrency, never, never> {
   return refreshFxRateWithRates(code, options).pipe(
     Effect.provide(FxRates.layerWithStore(store)),
@@ -54,20 +55,36 @@ function runFx(
   store: LedgerStore,
   code: string,
   fetchImpl: typeof fetch,
-  options: { now?: () => number; timeoutMs?: number } = {},
+  options: RefreshFxRateEffectOptions = {},
 ): Promise<ActiveCurrency> {
   return Effect.runPromise(fxEffect(store, code, fetchImpl, options))
 }
 
+/** Display-currency pin through the `FxRates` port (ADR 0032, Wave-6 pin):
+ * same persisted value as the old direct store write — the store-backed
+ * layer delegates to `LedgerStore`, so sanitization is unchanged. */
+function pinDisplayCurrency(store: LedgerStore, code: string): void {
+  Effect.runSync(
+    Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(
+      Effect.provide(FxRates.layerWithStore(store)),
+    ),
+  )
+}
+
 function makeFakeRates(): { saved: Map<string, CurrencyRate>; ratesLayer: Layer.Layer<FxRates> } {
   const saved = new Map<string, CurrencyRate>()
+  let displayCurrency: string = 'EUR'
   const ratesLayer = FxRates.layerWithRates({
     getCurrencyRate: code => Effect.succeed(saved.get(code) ?? null),
     setCurrencyRate: rate =>
       Effect.sync(() => {
         saved.set(rate.code, rate)
       }),
-    getDisplayCurrency: () => Effect.succeed('EUR'),
+    getDisplayCurrency: () => Effect.succeed(displayCurrency),
+    setDisplayCurrency: code =>
+      Effect.sync(() => {
+        displayCurrency = code
+      }),
   })
   return { saved, ratesLayer }
 }
@@ -75,7 +92,7 @@ function makeFakeRates(): { saved: Map<string, CurrencyRate>; ratesLayer: Layer.
 describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
   it('fetches a missing rate and caches it', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     const active = await runFx(store, 'EUR', fakeFetchOk({ EUR: 0.9 }))
     expect(active).toMatchObject({ code: 'EUR', rate: 0.9 })
     expect(store.getCurrencyRate('EUR')).toMatchObject({ code: 'EUR', rate: 0.9 })
@@ -84,7 +101,7 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
 
   it('skips the network when the cached rate is fresh', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: new Date().toISOString() })
     let calls = 0
     const counting = (async () => {

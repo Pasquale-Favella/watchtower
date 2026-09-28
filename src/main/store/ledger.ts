@@ -307,6 +307,11 @@ export class LedgerStore {
     return this.runRepositorySync(repository => repository.getDisplayCurrency())
   }
 
+  /** Sole remaining caller is the `FxRates.layerWithStore` adapter (`fx.ts`) —
+   * every former direct caller (worker `currency:set` arm, all tests) now
+   * writes through the `FxRates` port (retired Wave 7 with a zero-caller grep
+   * proof outside the adapter). Deletes only with a repository-direct `FxRates`
+   * layer, which needs `runRepositorySync` access that lives here. */
   setDisplayCurrency(code: string): void {
     const safe = /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'
     this.runRepositorySync(repository => repository.setDisplayCurrency(safe))

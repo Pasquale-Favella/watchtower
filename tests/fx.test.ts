@@ -38,7 +38,7 @@ function fakeFetchOk(rates: Record<string, unknown>): typeof fetch {
   })) as unknown as typeof fetch
 }
 
-function throwingFetch(message = 'offline'): typeof fetch {
+function throwingFetch(message: string = 'offline'): typeof fetch {
   return (async () => {
     throw new Error(message)
   }) as unknown as typeof fetch
@@ -73,6 +73,17 @@ function runFx(
   options: RefreshFxRateEffectOptions = {},
 ): Promise<ActiveCurrency> {
   return Effect.runPromise(fxEffect(store, code, fetchImpl, options))
+}
+
+/** Display-currency pin through the `FxRates` port (ADR 0032, Wave-6 pin):
+ * same persisted value as the old direct store write — the store-backed
+ * layer delegates to `LedgerStore`, so sanitization is unchanged. */
+function pinDisplayCurrency(store: LedgerStore, code: string): void {
+  Effect.runSync(
+    Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(
+      Effect.provide(FxRates.layerWithStore(store)),
+    ),
+  )
 }
 
 const EUR: ActiveCurrency = { code: 'EUR', symbol: '€', rate: 0.9 }
@@ -111,7 +122,7 @@ describe('getActiveCurrency (the renderer-only read path, never fetches)', () =>
 
   it('uses the cached rate and symbol for the selected currency', () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: '2026-08-01T00:00:00.000Z' })
     const active = getActiveCurrency(store)
     expect(active).toEqual({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: '2026-08-01T00:00:00.000Z' })
@@ -120,7 +131,7 @@ describe('getActiveCurrency (the renderer-only read path, never fetches)', () =>
 
   it('falls back to the USD-equivalent rate for a never-cached currency (USD-only until a fetch succeeds)', () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     const active = getActiveCurrency(store)
     expect(active.code).toBe('EUR')
     expect(active.symbol).toBe('€')
@@ -131,7 +142,7 @@ describe('getActiveCurrency (the renderer-only read path, never fetches)', () =>
 
   it('still serves a STALE cached rate rather than nothing (last successful rate wins)', () => {
     const store = makeStore()
-    store.setDisplayCurrency('JPY')
+    pinDisplayCurrency(store, 'JPY')
     const stale = new Date(Date.now() - (FX_CACHE_TTL_MS + 60_000)).toISOString()
     store.setCurrencyRate({ code: 'JPY', symbol: '¥', rate: 150, updatedAt: stale })
     expect(getActiveCurrency(store).rate).toBe(150)
@@ -142,7 +153,7 @@ describe('getActiveCurrency (the renderer-only read path, never fetches)', () =>
 describe('refreshFxRateWithRates (the main-process Frankfurter background job)', () => {
   it('fetches a missing rate and caches it into the FX side-table', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     const { fetch: counting, getCalls } = fakeCountingFetch({ EUR: 0.9 })
     const active = await runFx(store, 'EUR', counting)
 
@@ -155,7 +166,7 @@ describe('refreshFxRateWithRates (the main-process Frankfurter background job)',
 
   it('skips the network when the cached rate is fresh', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: new Date().toISOString() })
     const { fetch: counting, getCalls } = fakeCountingFetch({ EUR: 1.5 })
     await runFx(store, 'EUR', counting)
@@ -167,7 +178,7 @@ describe('refreshFxRateWithRates (the main-process Frankfurter background job)',
 
   it('refetches a stale cached rate and replaces it', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     const stale = new Date(Date.now() - (FX_CACHE_TTL_MS + 60_000)).toISOString()
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: stale })
     await runFx(store, 'EUR', fakeFetchOk({ EUR: 0.85 }))
@@ -178,7 +189,7 @@ describe('refreshFxRateWithRates (the main-process Frankfurter background job)',
 
   it('falls back to the last cached rate when the fetch fails (offline/blocked) — never throws', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     const stale = new Date(Date.now() - (FX_CACHE_TTL_MS + 60_000)).toISOString()
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: stale })
 
@@ -189,7 +200,7 @@ describe('refreshFxRateWithRates (the main-process Frankfurter background job)',
 
   it('falls back to USD (rate 1) when nothing was ever cached and the fetch fails', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     const active = await runFx(store, 'EUR', throwingFetch())
     expect(active.rate).toBe(1)
     expect(getActiveCurrency(store).rate).toBe(1)
@@ -222,7 +233,7 @@ describe('refreshFxRateWithRates (the main-process Frankfurter background job)',
 
   it('rejects out-of-bounds rates (parser bug / tampered response) and keeps the cached rate', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     await runFx(store, 'EUR', fakeFetchOk({ EUR: 9_999_999 }))
     expect(getActiveCurrency(store).rate).toBe(1)
 
@@ -251,7 +262,7 @@ describe('refreshFxRateWithRates (the main-process Frankfurter background job)',
 })
 
 describe('isRateStale', () => {
-  const now = new Date('2026-08-05T12:00:00Z').getTime()
+  const now: number = new Date('2026-08-05T12:00:00Z').getTime()
   it('treats missing and unparsable timestamps as stale', () => {
     expect(isRateStale(undefined, now)).toBe(true)
     expect(isRateStale('not-a-date', now)).toBe(true)
@@ -295,7 +306,7 @@ describe('display-currency config (ADR 0009)', () => {
     const store = makeStore()
     expect(store.getDisplayCurrency()).toBe('USD')
 
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     expect(store.getDisplayCurrency()).toBe('EUR')
 
     store.clear()
@@ -305,9 +316,9 @@ describe('display-currency config (ADR 0009)', () => {
 
   it('sanitizes invalid codes to USD', () => {
     const store = makeStore()
-    store.setDisplayCurrency('eur') // lowercased is still a valid 3-letter code
+    pinDisplayCurrency(store, 'eur') // lowercased is still a valid 3-letter code
     expect(store.getDisplayCurrency()).toBe('EUR')
-    store.setDisplayCurrency('nope!')
+    pinDisplayCurrency(store, 'nope!')
     expect(store.getDisplayCurrency()).toBe('USD')
     store.close()
   })
