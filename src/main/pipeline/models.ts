@@ -3,7 +3,7 @@ import * as Schema from 'effect/Schema'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 
-import { Env, resolveCacheDir } from '../env.js'
+import { type AppPaths, Env, overrideFor, resolveCacheDir } from '../env.js'
 import snapshotData from './data/litellm-snapshot.json'
 import fallbackData from './data/pricing-fallback.json'
 import { DEFAULT_FETCH_TIMEOUT_MS, HttpFetch } from './fetch-utils.js'
@@ -151,6 +151,11 @@ function getLowercasePricingIndex(): Map<string, ModelCosts> {
   return lowercasePricingIndex
 }
 
+// The pricing cache directory is ALREADY the AppPaths cache-dir seam:
+// `resolveCacheDir()` resolves `AppPaths.cacheDir` (boot-initialized) →
+// `process.env['WATCHTOWER_CACHE_DIR']` → `~/.cache/watchtower`, so there is no
+// `process.env` read to migrate here and no `paths` parameter to add. Anything
+// that wants a threaded record reads `AppPaths.cacheDir` from it.
 function getCacheDir(): string {
   return resolveCacheDir()
 }
@@ -775,7 +780,7 @@ export function findUnpricedModels(
   )
 }
 
-function shouldWarnAboutUnknownModel(name: string): boolean {
+function shouldWarnAboutUnknownModel(name: string, paths?: AppPaths): boolean {
   if (!name || name === '<synthetic>') return false
   if (warnedUnknownModels.has(name)) return false
   // Suppress for local/quantized models — the "update the CLI" hint is
@@ -787,7 +792,10 @@ function shouldWarnAboutUnknownModel(name: string): boolean {
   // data" lines greet a user before the dashboard even draws. Now opt-in
   // via --verbose. The unknown model still costs $0 in reports; users who
   // suspect missing models run `token-reader --verbose` to see the list.
-  if (process.env['WATCHTOWER_VERBOSE'] !== '1') return false
+  // The module's only `WATCHTOWER_VERBOSE` read, through the `AppPaths` seam
+  // (`overrideFor`, so an unthreaded caller reads the same `process.env` value
+  // it always did). The `=== '1'` comparison is unchanged.
+  if (overrideFor(paths, 'WATCHTOWER_VERBOSE') !== '1') return false
   return true
 }
 
@@ -800,10 +808,15 @@ export function calculateCost(
   webSearchRequests: number,
   speed: 'standard' | 'fast' = 'standard',
   oneHourCacheCreationTokens = 0,
+  // The AppPaths threading slot, threaded straight to the verbose gate below:
+  // pricing math itself is pure, so this is the ONE argument a caller may add
+  // and only to reach `WATCHTOWER_VERBOSE`. Existing callers pass ≤ 8 arguments
+  // and keep reading the ambient env.
+  paths?: AppPaths,
 ): number {
   const costs = getModelCosts(model)
   if (!costs) {
-    if (shouldWarnAboutUnknownModel(model)) {
+    if (shouldWarnAboutUnknownModel(model, paths)) {
       warnedUnknownModels.add(model)
       // Strip control characters and cap length: model names come from JSONL
       // payloads written by external tools, so a hostile or corrupt file
@@ -982,7 +995,9 @@ export function getShortModelName(model: string): string {
 // Same contracts as the Promise adapters above, with the network entering
 // through the `HttpFetch` service (Effect Clock timeout, fiber interruption
 // aborts the underlying fetch). Filesystem cache reads/writes stay via
-// `Effect.tryPromise` + the existing `WATCHTOWER_CACHE_DIR` override.
+// `Effect.tryPromise` + the `resolveCacheDir()` seam (which resolves
+// `AppPaths.cacheDir` → the `WATCHTOWER_CACHE_DIR` override → the homedir
+// default), so the cache location needs no `paths` parameter here.
 // Pure pricing math stays plain TypeScript. Both effects write through to the
 // SAME module-level cache (`pricingCache`, `sortedPricingKeys`,
 // `lowercasePricingIndex`) so current callers keep working.

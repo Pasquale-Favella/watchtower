@@ -136,6 +136,20 @@ export function sessionCachePath(): string {
 
 // ── Env Fingerprint ────────────────────────────────────────────────────
 
+/**
+ * The per-provider env fingerprint: which vars a provider's cached parse depends
+ * on, so a config change invalidates its cache entries.
+ *
+ * NOT yet on the `AppPaths` snapshot (issue #148): the list below is a
+ * second, independent inventory of the same env vars that
+ * `env.ts:PROVIDER_ENV_KEYS` registers, and this function reads `process.env`
+ * directly. That is correct today because nothing threads a record into the
+ * cache path, so both sides see the same ambient env. It becomes wrong the moment
+ * a seam IS threaded: a snapshot-driven config change would then change what the
+ * provider reads without changing the fingerprint, and stale rows would survive
+ * it. A test asserting the two lists agree on their overlap, and a slice moving
+ * this onto the snapshot, are both follow-ups.
+ */
 export function computeEnvFingerprint(provider: string): string {
   const vars = PROVIDER_ENV_VARS[provider] ?? []
   const parts = vars.map(v => `${v}=${process.env[v] ?? ''}`)

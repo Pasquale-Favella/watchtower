@@ -1,6 +1,7 @@
 import { join } from 'path'
 import { homedir } from 'os'
 
+import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { getShortModelName } from '../models.js'
 import {
   discoverSqliteSessions,
@@ -25,7 +26,7 @@ const toolNameMap: Record<string, string> = {
   patch: 'Patch',
 }
 
-function getDataDir(dataDir?: string): string {
+function getDataDir(dataDir?: string, paths?: AppPaths): string {
   // Test seam: createOpenCodeProvider(tmpDir) points at a base dir that still
   // gets the 'opencode' subdirectory appended, preserving existing fixtures
   // (tmpDir/opencode/opencode*.db and tmpDir/opencode/storage/...).
@@ -35,19 +36,23 @@ function getDataDir(dataDir?: string): string {
   // ~/.local/share/mimocode). This is the EXACT data directory — no 'opencode'
   // suffix — so a fork writing <dir>/<prefix>*.db or <dir>/storage/... is found
   // instead of silently yielding zero sessions. (issue #617)
-  const override = process.env['OPENCODE_DATA_DIR']
+  // Snapshot lookup (`overrideFor`), seam's own truthy check kept: a defined
+  // empty override falls through to the XDG default exactly as `''` did.
+  const override = overrideFor(paths, 'OPENCODE_DATA_DIR')
   if (override) return override
 
   // Default: $XDG_DATA_HOME/opencode or ~/.local/share/opencode.
-  const base = process.env['XDG_DATA_HOME'] ?? join(homedir(), '.local', 'share')
+  // `??` parity: the snapshot reports `null` for unset (never `''`), and an
+  // empty `XDG_DATA_HOME` still joins as the relative 'opencode'.
+  const base = platformFor(paths).xdgDataHome ?? join(homedir(), '.local', 'share')
   return join(base, 'opencode')
 }
 
-function getSqliteConfig(dataDir?: string): SqliteProviderConfig {
+function getSqliteConfig(dataDir?: string, paths?: AppPaths): SqliteProviderConfig {
   return {
     providerName: 'opencode',
     displayName: 'OpenCode',
-    dbDir: getDataDir(dataDir),
+    dbDir: getDataDir(dataDir, paths),
     // Truthy check (not `??`): an empty-string `OPENCODE_DB_PREFIX` must fall
     // back to 'opencode'. With `??`, '' survives as the prefix and
     // `discoverSqliteSessions` matches every '*.db' file (filename.startsWith('')
@@ -55,13 +60,15 @@ function getSqliteConfig(dataDir?: string): SqliteProviderConfig {
     // `OPENCODE_DATA_DIR`'s truthy handling above, and makes behavior identical
     // for unset vs empty — which matches the env fingerprint, since
     // `computeEnvFingerprint` collapses both to 'OPENCODE_DB_PREFIX='. (issue #617)
-    dbFilePrefix: process.env['OPENCODE_DB_PREFIX'] || 'opencode',
+    // `||` against the snapshot keeps that: `''` is a DEFINED value there too
+    // (the resolver records raw strings), and it must reach the same default.
+    dbFilePrefix: overrideFor(paths, 'OPENCODE_DB_PREFIX') || 'opencode',
   }
 }
 
-export function createOpenCodeProvider(dataDir?: string): Provider {
-  const sqliteConfig = getSqliteConfig(dataDir)
-  const resolvedDataDir = getDataDir(dataDir)
+export function createOpenCodeProvider(dataDir?: string, paths?: AppPaths): Provider {
+  const sqliteConfig = getSqliteConfig(dataDir, paths)
+  const resolvedDataDir = getDataDir(dataDir, paths)
 
   return {
     name: 'opencode',

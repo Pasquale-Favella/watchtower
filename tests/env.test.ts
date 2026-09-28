@@ -1,28 +1,33 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
-  appPaths,
   type AppPaths,
+  appPaths,
   Env,
   initAppPaths,
   overrideFor,
-  type PlatformPaths,
   platformFor,
+  type PlatformPaths,
   PROVIDER_ENV_KEYS,
-  type ProviderEnvKey,
+  type ProviderOverrides,
   resolveCacheDir,
   resolveCodexHome,
   resolveCursorCacheSuppressWrites,
   resolveGatewayKey,
+  REMAINING_DIRECT_ENV_READS,
   resolvePlatformPaths,
   resolvePricingCacheTtlMs,
   resolveProviderOverrides,
 } from '../src/main/env.js'
+
+/** Repo root, for the one case that reads a source file to check a claim. */
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 // The snapshot holder is module-global and this file never resets it — only
 // re-inits. Every case that asserts an UNINITIALIZED fallback therefore has to
@@ -59,10 +64,7 @@ function makeTempDir(prefix: string): string {
 
 /** A minimal `AppPaths` for the seam-helper cases: the fields they read are the
  *  ones passed, everything else falls back to the ambient env like production. */
-function appPathsOf(
-  overrides: Readonly<Partial<Record<ProviderEnvKey, string>>>,
-  platform: PlatformPaths = appPaths().platform,
-): AppPaths {
+function appPathsOf(overrides: ProviderOverrides, platform: PlatformPaths = appPaths().platform): AppPaths {
   return { ...appPaths(), overrides, platform }
 }
 
@@ -370,14 +372,38 @@ describe('resolveProviderOverrides + overrideFor/platformFor (rollout step 1)', 
   it('overrideFor prefers a threaded record and otherwise reads the ambient env', () => {
     const threaded = appPathsOf({ CLAUDE_CONFIG_DIR: '/threaded' })
     expect(overrideFor(threaded, 'CLAUDE_CONFIG_DIR')).toBe('/threaded')
-    expect(overrideFor(threaded, 'CRUSH_GLOBAL_DATA')).toBe(process.env['CRUSH_GLOBAL_DATA'])
-    // No record threaded: the same value the seam read from `process.env` before.
-    expect(overrideFor(undefined, 'CLAUDE_CONFIG_DIR')).toBe(process.env['CLAUDE_CONFIG_DIR'])
+    // A threaded record REPLACES the overrides map, it does not merge with the
+    // ambient env: a key it does not carry is `undefined`, exactly what
+    // `process.env[missing]` would have been. Pinned with a value the machine may
+    // or may not actually set, so the assertion cannot depend on the host.
+    process.env['CRUSH_GLOBAL_DATA'] = '/ambient/crush'
+    try {
+      expect(overrideFor(threaded, 'CRUSH_GLOBAL_DATA')).toBeUndefined()
+      // No record threaded: the same value the seam read from `process.env` before.
+      expect(overrideFor(undefined, 'CRUSH_GLOBAL_DATA')).toBe('/ambient/crush')
+      expect(overrideFor(undefined, 'CLAUDE_CONFIG_DIR')).toBe(process.env['CLAUDE_CONFIG_DIR'])
+    } finally {
+      delete process.env['CRUSH_GLOBAL_DATA']
+    }
   })
 
   it('platformFor prefers a threaded record and otherwise reads the ambient env', () => {
     expect(platformFor(appPathsOf({}, NO_PLATFORM))).toEqual(NO_PLATFORM)
     expect(platformFor(undefined)).toEqual(appPaths().platform)
+  })
+
+  it('every listed remaining direct read really is a direct read (the list is not a wish)', () => {
+    // The registry is the seam's honesty check: an entry that no longer matches
+    // the file makes this fail, so the snapshot can never quietly stop being
+    // the single source of truth for a key it claims to own.
+    for (const [relativePath, keys] of Object.entries(REMAINING_DIRECT_ENV_READS)) {
+      const source = readFileSync(join(repoRoot, 'src', 'main', 'pipeline', relativePath), 'utf8')
+      for (const key of keys) {
+        expect(source, `${relativePath} must still read ${key} directly`).toContain(`process.env['${key}']`)
+        // A key the snapshot already carries must never appear here.
+        expect(PROVIDER_ENV_KEYS).toContain(key)
+      }
+    }
   })
 })
 

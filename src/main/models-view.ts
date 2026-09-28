@@ -189,8 +189,13 @@ function auditRatesFor(effectiveModel: string, pricingConfig: PricingConfigLooku
 
 /** The Price override attached to a by-model/by-task row's effective model,
  * shaped for the row schema — present only when an override prices the row,
- * so plain rows stay byte-identical to the pre-state payload. */
-function overrideFor(
+ * so plain rows stay byte-identical to the pre-state payload.
+ *
+ * Named `rowOverrideFor`, not `overrideFor`: `env.ts` exports an
+ * `overrideFor(paths, envKey)` with the same shape of name and an unrelated
+ * meaning, and two functions called `overrideFor` in one process invite a wrong
+ * import. */
+function rowOverrideFor(
   effectiveModel: string,
   pricingConfig: PricingConfigLookup,
 ): { override: RowOverride } | Record<string, never> {
@@ -324,7 +329,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
     savingsBaselineModel: b.savingsBaselineModel,
     calls: b.calls,
     ...(b.sources.size > 0 ? { sourceModels: [...b.sources].sort() } : {}),
-    ...overrideFor(b.model, pricingConfig),
+    ...rowOverrideFor(b.model, pricingConfig),
   })
 
   const byModel: ModelReportRow[] = []
@@ -379,7 +384,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
       cost,
       attributedCostUSD: bucket.attributedCostUSD,
       ...(effectiveModel !== bucket.model ? { aliasOf: effectiveModel } : {}),
-      ...overrideFor(effectiveModel, pricingConfig),
+      ...rowOverrideFor(effectiveModel, pricingConfig),
     })
   }
   audit.sort((a, b) => b.attributedCostUSD - a.attributedCostUSD)

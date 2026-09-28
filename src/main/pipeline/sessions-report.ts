@@ -1,3 +1,4 @@
+import { type AppPaths, overrideFor } from '../env.js'
 import { getShortModelName } from './models.js'
 import { CATEGORY_LABELS } from './types.js'
 import type { ProjectSummary, SessionSummary, TaskCategory } from './types.js'
@@ -99,11 +100,15 @@ export type SessionTableOptions = {
   terminalWidth?: number
 }
 
-function defaultTerminalWidth(): number {
+function defaultTerminalWidth(paths?: AppPaths): number {
   const cols = process.stdout.columns
   if (typeof cols === 'number' && cols > 0) return cols
-  const env = process.env['COLUMNS'] ? Number.parseInt(process.env['COLUMNS'], 10) : NaN
-  return Number.isFinite(env) && env > 0 ? env : 120
+  // The seam keeps its own chain: truthy guard, then `parseInt`, then the NaN
+  // default. `COLUMNS=''` stays NaN (not 0) exactly as before, and a threaded
+  // `''` (a defined-empty value the snapshot records verbatim) does too.
+  const raw = overrideFor(paths, 'COLUMNS')
+  const fromEnv = raw ? Number.parseInt(raw, 10) : NaN
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 120
 }
 
 function frameWidth(columns: SessionColumn[]): number {
@@ -215,7 +220,7 @@ function cellValue(row: SessionRow, key: SessionColumnKey): string {
   }
 }
 
-export function renderTable(rows: SessionRow[], opts: SessionTableOptions = {}): string {
+export function renderTable(rows: SessionRow[], opts: SessionTableOptions = {}, paths?: AppPaths): string {
   const sorted = [...rows].sort((a, b) => b.startedAt.localeCompare(a.startedAt))
   const hasSavings = sorted.some(row => row.savingsUSD > 0)
   const allColumns: SessionColumn[] = [
@@ -231,7 +236,7 @@ export function renderTable(rows: SessionRow[], opts: SessionTableOptions = {}):
     { key: 'calls', header: 'Calls', width: 7, minWidth: 5, right: true, optional: true },
     { key: 'turns', header: 'Turns', width: 7, minWidth: 5, right: true, optional: true },
   ]
-  const available = Math.max(60, opts.terminalWidth ?? defaultTerminalWidth())
+  const available = Math.max(60, opts.terminalWidth ?? defaultTerminalWidth(paths))
   const columns = fitColumns(allColumns, available)
   const values = sorted.map(row => columns.map(col => cellValue(row, col.key)))
   // Content can use spare room, but never grow beyond the terminal frame.

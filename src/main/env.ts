@@ -29,18 +29,22 @@ import { join } from 'path'
  *    it hands the worker) and `appPaths()` is the single sync reader.
  *
  * Persisted settings stay in `LedgerRepository` — this file is env-only by
- * design (locked §5.2). No unified `AppConfig`, no `@effect/platform`, no Zod,
- * no renderer/IPC involvement.
+ * design (locked: #148 §5.2, restated in `docs/architecture.md`). No unified
+ * `AppConfig`, no `@effect/platform`, no Zod, no renderer/IPC involvement.
  *
  * ── SEAM CONVENTION (binding for the provider-seam slices) ──
  *
  * Every provider-home / platform-path seam takes **ONE optional trailing
  * `paths: AppPaths` parameter** — not one parameter per env var — reads only
- * its own field out of it, and keeps `override`-wins precedence:
+ * its own field out of it, and keeps `override`-wins precedence. Real migrated
+ * seams (`providers/crush.ts:getRegistryPath`, `providers/claude.ts:getDesktopSessionsDirs`):
  *
  * ```ts
- * function getAgentTracesDbPath(override?: string, paths?: AppPaths) {
- *   const appData = (paths ?? appPaths()).platform.appData ?? join(home, 'AppData', 'Roaming')
+ * export function getRegistryPath(paths?: AppPaths): string {
+ *   const explicit = overrideFor(paths, 'CRUSH_GLOBAL_DATA')
+ *   if (explicit) return explicit
+ *   const local = platformFor(paths).localAppData ?? join(homedir(), 'AppData', 'Local')
+ *   return join(local, 'crush', 'data')
  * }
  * ```
  *
@@ -101,20 +105,22 @@ export function resolveCodexHome(envRaw: string | undefined, override?: string):
 
 /**
  * Platform-standard env roots as the readers actually use them. `null` means
- * "unset" — never "empty": every platform reader in `src/main/pipeline`
- * reaches these with `??` (`copilot.ts:317`, `crush.ts:37`, `crush.ts:41`,
- * `ibm-bob.ts:22`, `ibm-bob.ts:28`, `open-design.ts:88`, `goose.ts:60`,
- * `kilo-code.ts:16`, `opencode.ts:42`, `zerostack.ts:54`), where an empty
- * string is a real value used verbatim. Only `undefined` maps to `null`.
+ * "unset" — never "empty": the platform readers in `src/main/pipeline` reach
+ * these with `??` (`providers/copilot.ts` `getAgentTracesDbPath`,
+ * `providers/crush.ts:getRegistryPath`, `providers/opencode.ts:getDataDir`,
+ * `providers/ibm-bob.ts`, `providers/open-design.ts`, `providers/goose.ts`,
+ * `providers/kilo-code.ts`, `providers/zerostack.ts`), where an empty string is
+ * a real value used verbatim. Only `undefined` maps to `null`.
  *
  * Known reader-side asymmetries — the snapshot reports, so each reader keeps
- * its own normalization and MUST keep it when it migrates to `paths.platform`:
- * - `XDG_CONFIG_HOME`: `copilot.ts:352` does `if (xdg && (isAbsolute(xdg)…))`
- *   — empty AND relative values are rejected; `ibm-bob.ts:28` does `??` and
- *   would `join('', 'IBM Bob', …)` into a relative path. Same env var, two
- *   behaviors; the snapshot must not pick one.
- * - `APPDATA` / `LOCALAPPDATA`: `claude.ts:133-137` does `?.trim() || <default>`
- *   (empty/whitespace → homedir default) where the `??` readers use it as-is.
+ * its own normalization and MUST keep it when it migrates to `platformFor`:
+ * - `XDG_CONFIG_HOME`: `providers/copilot.ts:getJetBrainsCopilotRoot` does
+ *   `if (xdg && (isAbsolute(xdg)…))` — empty AND relative values are rejected;
+ *   `providers/ibm-bob.ts` does `??` and would `join('', 'IBM Bob', …)` into a
+ *   relative path. Same env var, two behaviors; the snapshot must not pick one.
+ * - `APPDATA` / `LOCALAPPDATA`: `providers/claude.ts:getDesktopSessionsDirs` does
+ *   `?.trim() || <default>` (empty/whitespace → homedir default) where the `??`
+ *   readers use it as-is.
  */
 export interface PlatformPaths {
   readonly appData: string | null
@@ -133,36 +139,14 @@ export interface AppPaths {
 }
 
 /**
- * The per-provider discovery overrides (Wave 9 rollout, step 1 of the seam
- * migration). Keyed by the ENV VAR NAME on purpose: the value's shape is
- * provider-specific (a dir, a path list, a flag) and every seam applies its own
- * chain to it, so a schema per provider would only add a second place to keep
- * in sync. The key union keeps that honest — a typo is a compile error, and
- * `PROVIDER_ENV_KEYS` is the exhaustive list `resolveProviderOverrides` reads.
- *
- * `undefined` means "not set" and only `undefined` may mean that: the readers
- * disagree about empty values on purpose (`??` uses `''` verbatim, `||` and
- * `.trim()` treat it as unset), so the snapshot records the raw string and
- * never decides. That is the same rule as `PlatformPaths`.
+ * The single place a provider env var is registered: the exhaustive key list
+ * `resolveProviderOverrides` reads, sorted so a new var is added in one place
+ * (and the sort is pinned by a test, so the list stays reviewable).
  */
-export type ProviderEnvKey =
-  | 'CLAUDE_CONFIG_DIR'
-  | 'CLAUDE_CONFIG_DIRS'
-  | 'CRUSH_GLOBAL_DATA'
-  | 'OPENCODE_DATA_DIR'
-  | 'OPENCODE_DB_PREFIX'
-  | 'WATCHTOWER_COPILOT_DISABLE_OTEL'
-  | 'WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR'
-  | 'WATCHTOWER_COPILOT_JETBRAINS_DIR'
-  | 'WATCHTOWER_COPILOT_OTEL_DB'
-  | 'WATCHTOWER_COPILOT_SESSION_STATE_DIR'
-  | 'WATCHTOWER_COPILOT_WS_STORAGE_DIR'
-  | 'WATCHTOWER_DESKTOP_SESSIONS_DIR'
-
-/** Exhaustive key list, sorted so a new var is added in one place. */
-export const PROVIDER_ENV_KEYS: readonly ProviderEnvKey[] = [
+export const PROVIDER_ENV_KEYS = [
   'CLAUDE_CONFIG_DIR',
   'CLAUDE_CONFIG_DIRS',
+  'COLUMNS',
   'CRUSH_GLOBAL_DATA',
   'OPENCODE_DATA_DIR',
   'OPENCODE_DB_PREFIX',
@@ -173,7 +157,40 @@ export const PROVIDER_ENV_KEYS: readonly ProviderEnvKey[] = [
   'WATCHTOWER_COPILOT_SESSION_STATE_DIR',
   'WATCHTOWER_COPILOT_WS_STORAGE_DIR',
   'WATCHTOWER_DESKTOP_SESSIONS_DIR',
+  'WATCHTOWER_PROGRESS',
+  'WATCHTOWER_VERBOSE',
 ] as const
+
+/**
+ * The per-provider discovery overrides (Wave 9 rollout, step 1 of the seam
+ * migration). Keyed by the ENV VAR NAME on purpose: the value's shape is
+ * provider-specific (a dir, a path list, a flag) and every seam applies its own
+ * chain to it, so a schema per provider would only add a second place to keep
+ * in sync. The union is DERIVED from `PROVIDER_ENV_KEYS`, so the two cannot
+ * drift: a var is registered in one place and a typo is a compile error at
+ * every seam that asks for it.
+ *
+ * `undefined` means "not set" and only `undefined` may mean that: the readers
+ * disagree about empty values on purpose (`??` uses `''` verbatim, `||` and
+ * `.trim()` treat it as unset), so the snapshot records the raw string and
+ * never decides. That is the same rule as `PlatformPaths`.
+ */
+export type ProviderEnvKey = (typeof PROVIDER_ENV_KEYS)[number]
+
+/**
+ * Every `process.env` read that a `ProviderEnvKey` already covers, so "is the
+ * snapshot the single source of truth" stays a checkable claim instead of a
+ * comment. Anything listed here must resolve through `overrideFor` /
+ * `platformFor` / a snapshot FIELD, never a bare read.
+ *
+ * Known gap while this list is not empty:
+ * `providers/sqlite-session-parser.ts` still reads `WATCHTOWER_VERBOSE` directly
+ * for its "no yields parsed" notice, so a threaded record opens the
+ * `models.ts` warning gate while leaving that one shut.
+ */
+export const REMAINING_DIRECT_ENV_READS: Readonly<Record<string, readonly string[]>> = {
+  'providers/sqlite-session-parser.ts': ['WATCHTOWER_VERBOSE'],
+}
 
 export type ProviderOverrides = Readonly<Partial<Record<ProviderEnvKey, string>>>
 
@@ -197,6 +214,11 @@ export function resolveProviderOverrides(read: EnvReader): ProviderOverrides {
  * per provider. When no snapshot is threaded this is the identical
  * `process.env` read the seam did before, because `appPaths()` resolves
  * uninitialized fields through the same pure resolvers.
+ *
+ * A threaded record REPLACES the overrides map rather than merging with the
+ * ambient env, so a key it does not carry resolves to `undefined` — the same as
+ * `process.env` not setting it. Threading a record is therefore a full
+ * statement about that seam's environment, not a partial override of it.
  */
 export function overrideFor(paths: AppPaths | undefined, key: ProviderEnvKey): string | undefined {
   return (paths ?? appPaths()).overrides[key]
@@ -267,6 +289,18 @@ export function resolvePlatformPaths(read: EnvReader): PlatformPaths {
 // mutating `process.env`, and it is the slot a future boot-time pin would use.
 let appPathsSnapshot: Partial<AppPaths> | null = null
 
+/**
+ * Boot-time snapshot init. REPLACES the record wholesale, so a field this call
+ * omits falls back to its `process.env` value (that is how a test re-inits with
+ * one field and keeps the rest honest).
+ *
+ * ORDERING CONSTRAINT: module bodies evaluate before any importer's body, so a
+ * MODULE-LEVEL singleton that captured `appPaths()` at import time
+ * (`providers/codex.ts:codex`) holds the value from BEFORE this call. Every
+ * other seam resolves lazily inside the call, so it sees the record. A new
+ * pinned field that a module-level singleton reads must therefore either make
+ * that singleton lazy or be initialized before the provider registry loads.
+ */
 export function initAppPaths(input: { cacheDir: string } & Partial<Omit<AppPaths, 'cacheDir'>>): void {
   appPathsSnapshot = { ...input }
 }

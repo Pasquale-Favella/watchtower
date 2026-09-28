@@ -1,6 +1,7 @@
 import { readFile, stat } from 'fs/promises'
 import { readFileSync, statSync, createReadStream } from 'fs'
 import { basename } from 'node:path'
+import { type AppPaths, overrideFor } from '../env.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
 
 // Hard cap well below V8's 512 MB string limit. Callers that need line-by-line
@@ -17,8 +18,15 @@ export const LARGE_STREAM_LINE_BYTES = 32 * 1024
 // not verbose-gated) so a dropped session never silently understates usage.
 export const MAX_STREAM_SESSION_FILE_BYTES = 4 * 1024 * 1024 * 1024
 
-function verbose(): boolean {
-  return process.env.WATCHTOWER_VERBOSE === '1'
+/**
+ * The one verbose-gate read in this module, through the `AppPaths` seam
+ * (`overrideFor`, so an unthreaded caller reads the same `process.env` value it
+ * always did). The `=== '1'` comparison is deliberately strict equality:
+ * 'true' or 'yes' never enabled it, and that has not changed. Callers inside
+ * this module call it with no argument, so they compile and behave as before.
+ */
+function verbose(paths?: AppPaths): boolean {
+  return overrideFor(paths, 'WATCHTOWER_VERBOSE') === '1'
 }
 
 function warn(msg: string): void {

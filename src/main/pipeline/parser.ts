@@ -1,6 +1,7 @@
 import { existsSync } from 'fs'
 import { lstat, readFile, readdir, stat } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
+import { type AppPaths, overrideFor } from '../env.js'
 import { readSessionLines } from './fs-utils.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
 import {
@@ -3270,8 +3271,12 @@ export type ScanProgressEvent =
   | { kind: 'provider'; provider: string; state: 'start' | 'done' | 'skipped'; files?: number }
   | { kind: 'tick'; provider: string; done: number; total: number }
 
-export function emitScanProgress(event: ScanProgressEvent): void {
-  if (process.env['WATCHTOWER_PROGRESS'] !== '1') return
+export function emitScanProgress(event: ScanProgressEvent, paths?: AppPaths): void {
+  // The `WATCHTOWER_PROGRESS` read through the `AppPaths` seam: `overrideFor` is
+  // the same `process.env` value for an unthreaded caller and the snapshot value
+  // for a threaded one. The `!== '1'` comparison is unchanged — anything but the
+  // exact string keeps progress off.
+  if (overrideFor(paths, 'WATCHTOWER_PROGRESS') !== '1') return
   try {
     process.stderr.write(`${PROGRESS_LINE_PREFIX}${JSON.stringify(event)}\n`)
   } catch {
@@ -3741,12 +3746,19 @@ const CACHE_TTL_MS = 180_000
 const MAX_CACHE_ENTRIES = 10
 const sessionCache = new Map<string, { data: ProjectSummary[]; ts: number }>()
 
-function cacheKey(dateRange?: DateRange, providerFilter?: string): string {
+function cacheKey(dateRange?: DateRange, providerFilter?: string, paths?: AppPaths): string {
   const s = dateRange ? `${dateRange.start.getTime()}:${dateRange.end.getTime()}` : 'none'
   // Include the Claude config-dir env so a config change in a long-lived
   // process (menubar / GNOME extension / test workers) does not return
-  // stale data keyed under a previous configuration.
-  const claudeEnv = (process.env['CLAUDE_CONFIG_DIRS'] ?? '') + '|' + (process.env['CLAUDE_CONFIG_DIR'] ?? '')
+  // stale data keyed under a previous configuration. Both keys are
+  // `ProviderEnvKey`s, read through `overrideFor`; the `?? ''` (fingerprint
+  // only, never a path) is what keeps unset and empty collapsing to the same key.
+  // NOT yet threaded in production: `parseAllSessions` does not pass `paths`
+  // (see issue #148), so this is the ambient value either way. Note the parallel
+  // gap: `session-cache.ts` fingerprints the same vars for the FILE cache, so a
+  // threaded record must move both before it can invalidate anything.
+  const claudeEnv =
+    (overrideFor(paths, 'CLAUDE_CONFIG_DIRS') ?? '') + '|' + (overrideFor(paths, 'CLAUDE_CONFIG_DIR') ?? '')
   // Proxy attribution (totalProxiedCostUSD) is computed live from proxyPaths and
   // then cached, so the key must change when that config changes.
   return `${s}:${providerFilter ?? 'all'}:${claudeEnv}:${getProxyPathsConfigHash()}`
