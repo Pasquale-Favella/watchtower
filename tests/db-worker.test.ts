@@ -400,7 +400,12 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
   }
 
   function testEnv(): ReturnType<typeof Env.layerWithValues> {
-    return Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })
+    return Env.layerWithValues({
+      vercelGatewayApiKey: null,
+      pricingCacheTtlMs: Infinity,
+      cursorCacheSuppressWrites: false,
+      codexHome: '/fake/codex-home',
+    })
   }
 
   function lifetimeOptions(): { range: { start: Date; end: Date }; provider: string } {

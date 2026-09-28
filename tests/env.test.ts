@@ -2,9 +2,18 @@ import { mkdtempSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { initAppPaths, resolveCacheDir, resolveGatewayKey, resolvePricingCacheTtlMs } from '../src/main/env.js'
+import {
+  Env,
+  initAppPaths,
+  resolveCacheDir,
+  resolveCodexHome,
+  resolveCursorCacheSuppressWrites,
+  resolveGatewayKey,
+  resolvePricingCacheTtlMs,
+} from '../src/main/env.js'
 
 // The snapshot holder is module-global and this file never resets it — only
 // re-inits. The uninitialized cases (default, env fallback) therefore run
@@ -72,5 +81,69 @@ describe('gateway/TTL seams unaffected by the snapshot', () => {
     expect(resolvePricingCacheTtlMs('-2')).toBe(Infinity)
     expect(resolvePricingCacheTtlMs('0')).toBe(Infinity)
     expect(resolvePricingCacheTtlMs('2')).toBe(2 * 60 * 60 * 1000)
+  })
+})
+
+describe('resolveCursorCacheSuppressWrites (sync seam, truthiness parity)', () => {
+  it('absent/empty does not suppress', () => {
+    expect(resolveCursorCacheSuppressWrites(undefined)).toBe(false)
+    expect(resolveCursorCacheSuppressWrites('')).toBe(false)
+  })
+
+  it('any set value suppresses (no trim — legacy `if` parity)', () => {
+    expect(resolveCursorCacheSuppressWrites('1')).toBe(true)
+    // '0' is truthy in JS: the legacy check suppressed on it too.
+    expect(resolveCursorCacheSuppressWrites('0')).toBe(true)
+    expect(resolveCursorCacheSuppressWrites('   ')).toBe(true)
+  })
+})
+
+describe('resolveCodexHome (single-provider exemplar, ?? parity)', () => {
+  it('falls back to the homedir default when unset', () => {
+    expect(resolveCodexHome(undefined)).toBe(join(homedir(), '.codex'))
+  })
+
+  it('honors the CODEX_HOME value verbatim (no trim/empty skip)', () => {
+    expect(resolveCodexHome('/custom/home')).toBe('/custom/home')
+    expect(resolveCodexHome('')).toBe('')
+  })
+
+  it('explicit override wins over env', () => {
+    expect(resolveCodexHome('/env/home', '/override')).toBe('/override')
+    expect(resolveCodexHome(undefined, '/override')).toBe('/override')
+  })
+})
+
+describe('Env layer carries the new fields (fake-only, zero env mutation)', () => {
+  async function readNewFields(layer: ReturnType<typeof Env.layerWithValues>): Promise<{
+    suppress: boolean
+    home: string
+  }> {
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const env = yield* Env
+        return { suppress: env.cursorCacheSuppressWrites, home: env.codexHome }
+      }).pipe(Effect.provide(layer)),
+    )
+  }
+
+  it('layerWithValues threads suppress + home through Env', async () => {
+    await expect(
+      readNewFields(
+        Env.layerWithValues({
+          vercelGatewayApiKey: null,
+          pricingCacheTtlMs: Infinity,
+          cursorCacheSuppressWrites: true,
+          codexHome: '/fake/codex-home',
+        }),
+      ),
+    ).resolves.toEqual({ suppress: true, home: '/fake/codex-home' })
+  })
+
+  it('layerWithGatewayKey defaults suppress=false and the homedir default', async () => {
+    await expect(readNewFields(Env.layerWithGatewayKey('test-key'))).resolves.toEqual({
+      suppress: false,
+      home: join(homedir(), '.codex'),
+    })
   })
 })

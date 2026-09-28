@@ -41,7 +41,12 @@ function freshCacheDir(): string {
 }
 
 function pricingEnv(ttlMs: number = Infinity): ReturnType<typeof Env.layerWithValues> {
-  return Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: ttlMs })
+  return Env.layerWithValues({
+    vercelGatewayApiKey: null,
+    pricingCacheTtlMs: ttlMs,
+    cursorCacheSuppressWrites: false,
+    codexHome: '/fake/codex-home',
+  })
 }
 
 function runLoadPricing(fetchImpl: typeof fetch, timeoutMs?: number, ttlMs: number = Infinity): Promise<void> {
@@ -133,12 +138,17 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
     const freshFetch = await import('../src/main/pipeline/fetch-utils.js')
     const freshEnv = await import('../src/main/env.js')
     await Effect.runPromise(
-      freshModels
-        .loadPricingEffect()
-        .pipe(
-          Effect.provide(freshFetch.HttpFetch.layerWithFetch(throwingFetch())),
-          Effect.provide(freshEnv.Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
+      freshModels.loadPricingEffect().pipe(
+        Effect.provide(freshFetch.HttpFetch.layerWithFetch(throwingFetch())),
+        Effect.provide(
+          freshEnv.Env.layerWithValues({
+            vercelGatewayApiKey: null,
+            pricingCacheTtlMs: Infinity,
+            cursorCacheSuppressWrites: false,
+            codexHome: '/fake/codex-home',
+          }),
         ),
+      ),
     )
     // Never fails: reaching here means no rejection. Snapshot still resolves.
     expect(freshModels.getModelCosts('gpt-4o')).not.toBeNull()

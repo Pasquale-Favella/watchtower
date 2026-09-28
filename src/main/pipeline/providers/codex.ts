@@ -2,8 +2,8 @@ import { readdir, stat } from 'fs/promises'
 import { createReadStream } from 'fs'
 import { createInterface } from 'readline'
 import { basename, join } from 'path'
-import { homedir } from 'os'
 
+import { resolveCodexHome } from '../../env.js'
 import { readSessionLines } from '../fs-utils.js'
 import { calculateCost } from '../models.js'
 import { readCachedCodexResults, writeCachedCodexResults, getCachedCodexProject, fingerprintFile } from '../codex-cache.js'
@@ -124,10 +124,6 @@ type CodexTokenUsage = {
 
 const RAW_HEAD_BYTES = 64 * 1024
 const LARGE_TEXT_CAP = 2000
-
-function getCodexDir(override?: string): string {
-  return override ?? process.env['CODEX_HOME'] ?? join(homedir(), '.codex')
-}
 
 function sanitizeProject(cwd: string): string {
   return cwd.replace(/^[/\\]+/, '').replace(/[/\\]/g, '-')
@@ -730,8 +726,10 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
   }
 }
 
-export function createCodexProvider(codexDir?: string): Provider {
-  const dir = getCodexDir(codexDir)
+export function createCodexProvider(codexDir?: string, envCodexHome?: string): Provider {
+  // Arg order note: `resolveCodexHome(envRaw, override)` — the threaded
+  // `Env.codexHome` beats `process.env['CODEX_HOME']`, and `codexDir` beats both.
+  const dir = resolveCodexHome(envCodexHome ?? process.env['CODEX_HOME'], codexDir)
 
   return {
     name: 'codex',

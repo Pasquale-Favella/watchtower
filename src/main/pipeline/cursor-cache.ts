@@ -3,6 +3,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { randomBytes } from 'crypto'
 
+import { resolveCursorCacheSuppressWrites } from '../env.js'
 import type { ParsedProviderCall } from './providers/types.js'
 
 // Bumped to 3 for the workspace-aware breakdown change: the cursor parser
@@ -78,11 +79,15 @@ export async function writeCachedResults(
   dbPath: string,
   calls: ParsedProviderCall[],
   lookbackFloor: string,
+  suppressWrites?: boolean,
 ): Promise<void> {
   // Diagnostic contexts sample-parse providers under a
   // strictly read-only promise; this is the one parse path that writes to
-  // disk before its first yield, so it honors the suppression flag.
-  if (process.env['WATCHTOWER_SUPPRESS_CACHE_WRITES']) return
+  // disk before its first yield, so it honors the suppression flag. The flag
+  // arrives threaded from `Env.cursorCacheSuppressWrites` at the Effect root
+  // (later slice); the `process.env` fallback stays until every reader is
+  // snapshot-initialized AND the env-mutating tests migrate.
+  if (suppressWrites ?? resolveCursorCacheSuppressWrites(process.env['WATCHTOWER_SUPPRESS_CACHE_WRITES'])) return
   const fp = await getDbFingerprint(dbPath)
   if (!fp) return
 

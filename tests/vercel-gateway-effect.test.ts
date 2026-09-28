@@ -89,7 +89,14 @@ describe('fetchVercelGatewayReportEffect (Effect-native gateway boundary)', () =
     const rows = await Effect.runPromise(
       fetchVercelGatewayReportEffect(RANGE).pipe(
         Effect.provide(HttpFetch.layerWithFetch(fakeJsonFetch(200, { results }))),
-        Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: 'test-key', pricingCacheTtlMs: Infinity })),
+        Effect.provide(
+          Env.layerWithValues({
+            vercelGatewayApiKey: 'test-key',
+            pricingCacheTtlMs: Infinity,
+            cursorCacheSuppressWrites: false,
+            codexHome: '/fake/codex-home',
+          }),
+        ),
       ),
     )
     expect(rows).toEqual(results)

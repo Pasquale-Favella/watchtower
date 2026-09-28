@@ -27,6 +27,14 @@ import { join } from 'path'
  * `layerWithValues` already accepts the full shape so callers/tests pick up
  * new keys with no signature churn; `layerWithGatewayKey` stays as the
  * single-key shortcut for the gateway seam (defaults the TTL to `Infinity`).
+ *
+ * Extension (cursor-suppress + codex-home seams): `WATCHTOWER_SUPPRESS_CACHE_WRITES`
+ * and `CODEX_HOME` travel as `Env` fields with pure resolvers below. The sync
+ * discovery paths stay sync — `writeCachedResults` and `createCodexProvider`
+ * accept an optional threaded value and fall back to the legacy `process.env`
+ * read, so behavior is byte-identical until the call-site roots thread `Env`
+ * through (later slice; the `process.env` fallbacks delete only when every
+ * reader is snapshot-initialized AND the env-mutating tests migrate).
  */
 export function resolveGatewayKey(primaryRaw: string | undefined, fallbackRaw: string | undefined): string | null {
   const raw = primaryRaw ?? fallbackRaw
@@ -45,6 +53,26 @@ export function resolvePricingCacheTtlMs(raw: string | undefined): number {
   const hours = Number(raw)
   if (!Number.isFinite(hours) || hours <= 0) return Infinity
   return hours * MS_PER_HOUR
+}
+
+/**
+ * Pure suppression-flag parser preserving `writeCachedResults` semantics
+ * exactly: any set (non-empty) value suppresses, absent/empty does not.
+ * No trim — even whitespace is truthy at the legacy `if (process.env[...])`
+ * check, so `Boolean` is the exact parity mapping.
+ */
+export function resolveCursorCacheSuppressWrites(raw: string | undefined): boolean {
+  return Boolean(raw)
+}
+
+/**
+ * Pure provider-home resolver preserving `createCodexProvider` semantics
+ * exactly (single-provider exemplar for the Wave-9 rollout): explicit override
+ * wins, then the `CODEX_HOME` value, then the homedir default. `??` parity —
+ * empty strings are used verbatim, never skipped.
+ */
+export function resolveCodexHome(envRaw: string | undefined, override?: string): string {
+  return override ?? envRaw ?? join(homedir(), '.codex')
 }
 
 // ── Cache-dir startup snapshot (§5.2 env-only Config, cache-dir seam) ──
@@ -83,22 +111,39 @@ function readOptionalEnv(name: string): Effect.Effect<string | undefined, never>
   )
 }
 
+/** One live `Config` read piped through its pure resolver, so each new
+ * single-variable `Env` field is a single declaration line instead of a
+ * copy-pasted 3-line `Effect.gen`. Multi-variable seams (the gateway key) keep
+ * their own explicit read. */
+function readEnvFieldLive<A>(name: string, resolve: (raw: string | undefined) => A): Effect.Effect<A, never> {
+  return Effect.gen(function* () {
+    const raw = yield* readOptionalEnv(name)
+    return resolve(raw)
+  })
+}
+
 const readGatewayKeyLive: Effect.Effect<string | null, never> = Effect.gen(function* () {
   const primary = yield* readOptionalEnv('AI_GATEWAY_API_KEY')
   const fallback = yield* readOptionalEnv('VERCEL_OIDC_TOKEN')
   return resolveGatewayKey(primary, fallback)
 })
 
-const readPricingCacheTtlMsLive: Effect.Effect<number, never> = Effect.gen(function* () {
-  const raw = yield* readOptionalEnv('WATCHTOWER_PRICING_TTL_HOURS')
-  return resolvePricingCacheTtlMs(raw)
-})
+const readPricingCacheTtlMsLive = readEnvFieldLive('WATCHTOWER_PRICING_TTL_HOURS', resolvePricingCacheTtlMs)
+
+const readCursorCacheSuppressWritesLive = readEnvFieldLive(
+  'WATCHTOWER_SUPPRESS_CACHE_WRITES',
+  resolveCursorCacheSuppressWrites,
+)
+
+const readCodexHomeLive = readEnvFieldLive('CODEX_HOME', resolveCodexHome)
 
 export class Env extends Context.Service<
   Env,
   {
     readonly vercelGatewayApiKey: string | null
     readonly pricingCacheTtlMs: number
+    readonly cursorCacheSuppressWrites: boolean
+    readonly codexHome: string
   }
 >()('watchtower/env/Env') {
   static readonly layer: Layer.Layer<Env> = Layer.effect(
@@ -106,12 +151,19 @@ export class Env extends Context.Service<
     Effect.gen(function* () {
       const vercelGatewayApiKey = yield* readGatewayKeyLive
       const pricingCacheTtlMs = yield* readPricingCacheTtlMsLive
-      return Env.of({ vercelGatewayApiKey, pricingCacheTtlMs })
+      const cursorCacheSuppressWrites = yield* readCursorCacheSuppressWritesLive
+      const codexHome = yield* readCodexHomeLive
+      return Env.of({ vercelGatewayApiKey, pricingCacheTtlMs, cursorCacheSuppressWrites, codexHome })
     }),
   )
 
   static readonly layerWithValues = (values: Env['Service']): Layer.Layer<Env> => Layer.succeed(Env, Env.of(values))
 
   static readonly layerWithGatewayKey = (vercelGatewayApiKey: string | null): Layer.Layer<Env> =>
-    Env.layerWithValues({ vercelGatewayApiKey, pricingCacheTtlMs: Infinity })
+    Env.layerWithValues({
+      vercelGatewayApiKey,
+      pricingCacheTtlMs: Infinity,
+      cursorCacheSuppressWrites: false,
+      codexHome: resolveCodexHome(undefined),
+    })
 }
