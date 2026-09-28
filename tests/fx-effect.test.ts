@@ -46,7 +46,7 @@ function fxEffect(
   options: RefreshFxRateEffectOptions = {},
 ): Effect.Effect<ActiveCurrency, never, never> {
   return refreshFxRateWithRates(code, options).pipe(
-    Effect.provide(FxRates.layerWithStore(store)),
+    Effect.provide(FxRates.layerWithRepository(store)),
     Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
   )
 }
@@ -61,12 +61,12 @@ function runFx(
 }
 
 /** Display-currency pin through the `FxRates` port (ADR 0032, Wave-6 pin):
- * same persisted value as the old direct store write — the store-backed
- * layer delegates to `LedgerStore`, so sanitization is unchanged. */
+ * same persisted value as the old direct store write — the repository-direct
+ * layer sanitizes the code in `fx.ts`, so the stored result is unchanged. */
 function pinDisplayCurrency(store: LedgerStore, code: string): void {
   Effect.runSync(
     Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(
-      Effect.provide(FxRates.layerWithStore(store)),
+      Effect.provide(FxRates.layerWithRepository(store)),
     ),
   )
 }

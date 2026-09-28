@@ -90,9 +90,10 @@ function jsonIsNonEmpty(raw: string): boolean {
 }
 
 afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    // temp dirs are left to the OS; only the store handle is closed by tests
-  }
+  // The temp dirs themselves are left to the OS (only the store handle is
+  // closed by the tests); the list just has to be emptied so the next case
+  // does not inherit a stale entry.
+  tempDirs.length = 0
 })
 
 const baseInput = {
@@ -593,7 +594,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
     Effect.runSync(
       Effect.flatMap(FxRates, rates => rates.setDisplayCurrency('EUR')).pipe(
-        Effect.provide(FxRates.layerWithStore(store)),
+        Effect.provide(FxRates.layerWithRepository(store)),
       ),
     )
     store.setRefreshCadence('5m')

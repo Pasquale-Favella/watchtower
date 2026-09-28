@@ -22,6 +22,7 @@ import {
   type CurrencyOption,
   FxRates,
   getActiveCurrency,
+  type FxRatesRepositoryRunner,
   isValidCurrencyCode,
   listCurrencies,
   refreshFxRateWithRates,
@@ -100,12 +101,16 @@ function liveFetchLayer(): Layer.Layer<HttpFetch> {
   return HttpFetch.layerWithFetch(globalThis.fetch)
 }
 
-/** Worker-local live layer (ADR 0032): flat `HttpFetch` + store-backed
+/** Worker-local live layer (ADR 0032): flat `HttpFetch` + repository-direct
  * `FxRates` composition, mirroring `MainLive`'s `Layer.mergeAll` shape at
  * worker scope. Provided once at the `run*` boundary in `startBackgroundFx`,
- * so FX call sites depend on the ports, never the concrete `LedgerStore`. */
-function liveFxLayer(store: LedgerStore): Layer.Layer<HttpFetch | FxRates> {
-  return Layer.mergeAll(liveFetchLayer(), FxRates.layerWithStore(store))
+ * so FX call sites depend on the ports, never the concrete `LedgerStore`. The
+ * parameter is typed as the `FxRatesRepositoryRunner` SEAM (a worker-owned
+ * `LedgerStore` satisfies it), so the type says what the layer actually needs —
+ * background FX writes go straight to `LedgerRepository`, same as the
+ * `currency:set` arm. */
+function liveFxLayer(store: FxRatesRepositoryRunner): Layer.Layer<HttpFetch | FxRates> {
+  return Layer.mergeAll(liveFetchLayer(), FxRates.layerWithRepository(store))
 }
 
 /**
@@ -208,7 +213,8 @@ export class DbWorkerContext {
       // `scan:start`/background catches). Defects stay in Cause (no catchAll).
       Effect.catchTag('ScanAbortedError', err => Effect.fail(err)),
       // Duration-counter live provision (Wave 5): `R`-channel `OperationalLog`
-      // merged here (mirrors `liveFxLayer`'s `mergeAll` shape at worker scope).
+      // merged here (mirrors `liveFxLayer`'s `mergeAll` shape at worker scope:
+      // fetch + the repository-direct `FxRates` port, no store facade).
       // Chosen over the snapshot-style optional value-seam because grep proves
       // `runScan` has exactly one caller (`performScan`; zero direct callers in
       // `src`/`tests`/`renderer`/`e2e`/`scripts`, incl. all FORBIDDEN tests), so
@@ -785,9 +791,9 @@ export class DbWorkerContext {
           throw new Error('invalid ISO 4217 currency code')
         }
         // Repository-direct write (ADR 0032 follow-up): through the `FxRates`
-        // port straight to `LedgerRepository`, bypassing the
-        // `LedgerStore.setDisplayCurrency` removal candidate. Background FX
-        // still uses `liveFxLayer`/`layerWithStore` until it migrates.
+        // port straight to `LedgerRepository`, bypassing the store facade —
+        // `LedgerStore.setDisplayCurrency` is gone. The background FX refresh
+        // below reuses the same repository-direct layer via `liveFxLayer`.
         Effect.runSync(
           Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(
             Effect.provide(FxRates.layerWithRepository(ledger)),

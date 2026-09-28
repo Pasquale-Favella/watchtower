@@ -111,12 +111,28 @@ function displayCurrencyCode(store: LedgerStore): string {
   return isValidCurrencyCode(code) ? code : 'USD'
 }
 
-/** Write-side display-code sanitization, the same rule as
- * `LedgerStore.setDisplayCurrency` (uppercase a 3-letter code, else `USD`).
- * Duplicated rather than imported: `fx.ts` reaches the ledger only through the
- * `FxRatesRepositoryRunner` seam, never through the concrete store. */
+/** Write-side display-code sanitization (uppercase a 3-letter code, else
+ * `USD`) — the rule the now-deleted `LedgerStore.setDisplayCurrency` used to
+ * own, so the write stays byte-identical. Kept local rather than imported:
+ * `fx.ts` reaches the ledger only through the `FxRatesRepositoryRunner` seam,
+ * never through the concrete store. */
 function sanitizeDisplayCurrencyCode(code: string): string {
   return /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'
+}
+
+/** The one place the "cached rate, else the USD-equivalent rate 1" rule is
+ * spelled out. Every `ActiveCurrency` the two read paths build goes through
+ * it: the sync `getActiveCurrency`, the refresh core's fresh-cache arm, and
+ * its fallback arm. The `??` chain is the "a stale rate beats no rate"
+ * degrade — `CurrencyRate`'s fields are all required, so for a present cache
+ * the fallbacks never fire. */
+function activeFromCachedRate(code: string, cached: CurrencyRate | null | undefined): ActiveCurrency {
+  return {
+    code,
+    symbol: cached?.symbol ?? resolveSymbol(code),
+    rate: cached?.rate ?? 1,
+    updatedAt: cached?.updatedAt,
+  }
 }
 
 /** The active display currency: the persisted code plus its cached rate.
@@ -132,13 +148,7 @@ function sanitizeDisplayCurrencyCode(code: string): string {
 export function getActiveCurrency(store: LedgerStore): ActiveCurrency {
   const code = displayCurrencyCode(store)
   if (code === 'USD') return { ...USD_CURRENCY }
-  const cached = store.getCurrencyRate(code)
-  return {
-    code,
-    symbol: cached?.symbol ?? resolveSymbol(code),
-    rate: cached?.rate ?? 1,
-    updatedAt: cached?.updatedAt,
-  }
+  return activeFromCachedRate(code, store.getCurrencyRate(code))
 }
 
 export function isRateStale(updatedAt: string | undefined, now = Date.now()): boolean {
@@ -168,9 +178,9 @@ export interface FxRatesRepositoryRunner {
 }
 
 /**
- * Minimal FX persistence port (ADR 0032 §4.2 first half): the exact four
- * `LedgerStore` members the FX boundary uses, exposed as a `Context.Service`
- * + layers so the refresh core depends on the port rather than the concrete
+ * Minimal FX persistence port (ADR 0032 §4.2 first half): the four ledger
+ * persistence members the FX boundary uses, exposed as a `Context.Service` +
+ * layers so the refresh core depends on the port rather than the concrete
  * store (the `HttpFetch.layerWithFetch` / `HarnessProbe.layerWithProbe`
  * fake-ability pattern). Persisted settings stay in the ledger per §5.2.
  */
@@ -183,25 +193,17 @@ export class FxRates extends Context.Service<
     readonly setDisplayCurrency: (code: string) => Effect.Effect<void>
   }
 >()('watchtower/fx/FxRates') {
-  static readonly layerWithStore = (store: LedgerStore): Layer.Layer<FxRates> =>
-    FxRates.layerWithRates({
-      getCurrencyRate: code => Effect.sync(() => store.getCurrencyRate(code)),
-      setCurrencyRate: rate => Effect.sync(() => store.setCurrencyRate(rate)),
-      getDisplayCurrency: () => Effect.sync(() => store.getDisplayCurrency()),
-      setDisplayCurrency: code => Effect.sync(() => store.setDisplayCurrency(code)),
-    })
-
   static readonly layerWithRates = (rates: FxRates['Service']): Layer.Layer<FxRates> =>
     Layer.succeed(FxRates, FxRates.of(rates))
 
   /**
-   * Repository-direct `FxRates` layer (ADR 0032 follow-up, additive alongside
-   * `layerWithStore`): reaches `LedgerRepository` through the runner instead of
-   * the `LedgerStore` facade, so the worker's `currency:set` arm no longer
-   * routes through `LedgerStore.setDisplayCurrency`. Display-code sanitization
-   * mirrors the store method, keeping behavior identical. `layerWithStore`
-   * stays until its remaining callers (background FX, pinned tests) migrate —
-   * only then can the store method be deleted.
+   * Repository-direct `FxRates` layer (ADR 0032 follow-up): reaches
+   * `LedgerRepository` through the runner instead of the `LedgerStore` facade,
+   * so no FX call site routes through a store-facade write — the single live
+   * persistence layer for the port, production and pinned tests alike.
+   * Display-code sanitization happens here (see `sanitizeDisplayCurrencyCode`),
+   * which is what let `LedgerStore.setDisplayCurrency` be deleted without a
+   * behavior change.
    */
   static readonly layerWithRepository = (runner: FxRatesRepositoryRunner): Layer.Layer<FxRates> => {
     const run = <A>(operation: (repository: LedgerRepository['Service']) => Effect.Effect<A, SqlError>) =>
@@ -237,15 +239,8 @@ export const refreshFxRateWithRates = Effect.fnUntraced(function* (
   const rates = yield* FxRates
   const cached = yield* rates.getCurrencyRate(safe)
   const now = options.now ? yield* Effect.sync(options.now) : yield* Clock.currentTimeMillis
-  if (cached && !isRateStale(cached.updatedAt, now)) {
-    return { code: safe, symbol: cached.symbol, rate: cached.rate, updatedAt: cached.updatedAt }
-  }
-  const fallback = (): ActiveCurrency => ({
-    code: safe,
-    symbol: cached?.symbol ?? resolveSymbol(safe),
-    rate: cached?.rate ?? 1,
-    updatedAt: cached?.updatedAt,
-  })
+  if (cached && !isRateStale(cached.updatedAt, now)) return activeFromCachedRate(safe, cached)
+  const fallback = (): ActiveCurrency => activeFromCachedRate(safe, cached)
 
   const http = yield* HttpFetch
   return yield* Effect.gen(function* () {
@@ -264,12 +259,7 @@ export const refreshFxRateWithRates = Effect.fnUntraced(function* (
       updatedAt: new Date(now).toISOString(),
     })
     const latest = yield* rates.getCurrencyRate(safe)
-    return {
-      code: safe,
-      symbol: latest?.symbol ?? resolveSymbol(safe),
-      rate: latest?.rate ?? 1,
-      updatedAt: latest?.updatedAt,
-    } satisfies ActiveCurrency
+    return activeFromCachedRate(safe, latest)
   }).pipe(Effect.catch(() => Effect.succeed(fallback())))
 })
 

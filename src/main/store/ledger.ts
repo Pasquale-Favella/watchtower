@@ -17,9 +17,9 @@ import {
 import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../shared/schemas/ledger-mcp.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { DEFAULT_CADENCE, isValidCadence } from '../cadence.js'
-import { NodeSqliteDatabase } from './node-sqlite-client.js'
 import { LedgerRepository } from './ledger-repository.js'
-import { type FileVerdict, type PortInput } from './port.js'
+import { NodeSqliteDatabase } from './node-sqlite-client.js'
+import type { PortInput } from './port.js'
 import { executeSqliteScript } from './sqlite-migrations.js'
 
 export type {
@@ -305,17 +305,6 @@ export class LedgerStore {
 
   getDisplayCurrency(): string {
     return this.runRepositorySync(repository => repository.getDisplayCurrency())
-  }
-
-  /** Display-currency write kept for the legacy `FxRates.layerWithStore`
-   * adapter: that adapter still serves the background FX job and the tests
-   * that pin its behavior, so deletion is WITHHELD (Wave 7 precedent). Delete
-   * this method only when grep proves zero `store.setDisplayCurrency` callers
-   * outside a repository-direct layer — i.e. once `layerWithStore` itself is
-   * removed or re-pointed at `runRepositorySync`. */
-  setDisplayCurrency(code: string): void {
-    const safe = /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'
-    this.runRepositorySync(repository => repository.setDisplayCurrency(safe))
   }
 
   getRefreshCadence(): string {
