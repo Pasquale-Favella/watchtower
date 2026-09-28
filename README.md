@@ -32,12 +32,12 @@ Claude Code, Codex, Cursor, Copilot, Gemini, and 30+ more tools are read straigh
 
 Download the installer for your platform from the [latest release](https://github.com/Pasquale-Favella/watchtower/releases/latest). The links below always resolve to the newest build.
 
-| Platform                          | Installer                                                                                                                                | Install                                                                     |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| **Windows** (x64)                 | [`Watchtower-win-x64.exe`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-win-x64.exe)               | Run the installer (NSIS).                                                   |
-| **macOS** (Apple Silicon + Intel) | [`Watchtower-mac-universal.dmg`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-mac-universal.dmg)   | Open the DMG, drag Watchtower into Applications.                            |
-| **Linux** (x64)                   | [`Watchtower-linux-x64.AppImage`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x64.AppImage) | `chmod +x Watchtower-linux-x64.AppImage && ./Watchtower-linux-x64.AppImage` |
-| **Linux** (Debian/Ubuntu)         | [`Watchtower-linux-x64.deb`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x64.deb)           | `sudo apt install ./Watchtower-linux-x64.deb`                               |
+| Platform | Installer | Install |
+|---|---|---|
+| **Windows** (x64) | [`Watchtower-win-x64.exe`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-win-x64.exe) | Run the installer (NSIS). |
+| **macOS** (Apple Silicon + Intel) | [`Watchtower-mac-universal.dmg`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-mac-universal.dmg) | Open the DMG, drag Watchtower into Applications. |
+| **Linux** (x64) | [`Watchtower-linux-x64.AppImage`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x64.AppImage) | `chmod +x Watchtower-linux-x64.AppImage && ./Watchtower-linux-x64.AppImage` |
+| **Linux** (Debian/Ubuntu) | [`Watchtower-linux-x64.deb`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x64.deb) | `sudo apt install ./Watchtower-linux-x64.deb` |
 
 Every release ships all three platforms. AppImage and `.deb` are the two Linux flavors; macOS ships one universal binary that runs on both Apple Silicon and Intel.
 
@@ -46,29 +46,29 @@ Every release ships all three platforms. AppImage and `.deb` are the two Linux f
 
 ## The app
 
-| Section            | Shortcut* | What it shows                                                                                                                                                                                                                  |
-| ------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Overview**       | `1`       | KPIs (cost, calls, sessions, tokens, cache hit, savings), a daily spend chart, top models/activities/tools, an A+ to F efficiency grade, workflow signals, and local-model savings                                             |
-| **Sessions**       | `2`       | Every working session, searchable and filterable; click any row to drill into a turn-by-turn timeline with per-call usage                                                                                                      |
-| **Pull Requests**  | `3`       | Spend attributed to each PR from real git history, so the cost of shipped work is trustworthy                                                                                                                                  |
-| **Spend**          | `4`       | Daily spend stacked by model and by project, plus a Sankey flow showing where money moves from models to projects                                                                                                              |
-| **Optimize**       | `5`       | Sixteen waste detectors with copy-paste fixes, an A+ to F setup-health grade, and a Yield tab for productive vs. reverted/abandoned spend                                                                                      |
-| **Models**         | `6`       | Per-model cost, tokens, and calls, broken down by task and audited down to the token, with inline quick-add pricing for unpriced models                                                                                        |
-| **Compare**        | `7`       | Pick two models and see one-shot rate, retry rate, cost per call, and cache-hit rate side by side                                                                                                                              |
-| **Coach & Skills** | `8`       | A chat with your own coding-agent CLI about your usage — ask anything and the harness answers from the same ledger the dashboard shows, or craft a SKILL.md together by talking (suggested-skill chips start the conversation) |
-| **Settings**       | `,`       | Theme, refresh cadence, default period, provider info, model aliases, pricing overrides, export, and privacy controls                                                                                                          |
+| Section | Shortcut* | What it shows |
+|---------|-----------|---------------|
+| **Overview** | `1` | KPIs (cost, calls, sessions, tokens, cache hit, savings), a daily spend chart, top models/activities/tools, an A+ to F efficiency grade, workflow signals, and local-model savings |
+| **Sessions** | `2` | Every working session, searchable and filterable; click any row to drill into a turn-by-turn timeline with per-call usage |
+| **Pull Requests** | `3` | Spend attributed to each PR from real git history, so the cost of shipped work is trustworthy |
+| **Spend** | `4` | Daily spend stacked by model and by project, plus a Sankey flow showing where money moves from models to projects |
+| **Optimize** | `5` | Sixteen waste detectors with copy-paste fixes, an A+ to F setup-health grade, and a Yield tab for productive vs. reverted/abandoned spend |
+| **Models** | `6` | Per-model cost, tokens, and calls, broken down by task and audited down to the token, with inline quick-add pricing for unpriced models |
+| **Compare** | `7` | Pick two models and see one-shot rate, retry rate, cost per call, and cache-hit rate side by side |
+| **Coach & Skills** | `8` | A chat with your own coding-agent CLI about your usage — ask anything and the harness answers from the same ledger the dashboard shows, or craft a SKILL.md together by talking (suggested-skill chips start the conversation) |
+| **Settings** | `,` | Theme, refresh cadence, default period, provider info, model aliases, pricing overrides, export, and privacy controls |
 
-_\* Every section also shares a period switcher (Today, 7D, 30D, Month, 6M, Life, or a custom date range) and a provider filter. The Coach reads the current window as the suggested default for its answers. The full shortcut list and per-section details are in the [usage guide](docs/usage.md)._
+*\* Every section also shares a period switcher (Today, 7D, 30D, Month, 6M, Life, or a custom date range) and a provider filter. The Coach reads the current window as the suggested default for its answers. The full shortcut list and per-section details are in the [usage guide](docs/usage.md).*
 
 ## Tech stack
 
-| Layer                 | Tech                                                                                                               |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Main process**      | Electron 43, Node 22+ (`node:sqlite` for the ledger), TypeScript 5.8                                               |
-| **Renderer**          | React 19, Tailwind CSS 4, shadcn/ui, Zustand, Recharts, GSAP, TanStack Hotkeys                                     |
-| **Data & contracts**  | SQLite (built-in `node:sqlite`), Zod 4 schemas shared between main and renderer                                    |
+| Layer | Tech |
+|-------|------|
+| **Main process** | Electron 43, Node 22+ (`node:sqlite` for the ledger), TypeScript 5.8 |
+| **Renderer** | React 19, Tailwind CSS 4, shadcn/ui, Zustand, Recharts, GSAP, TanStack Hotkeys |
+| **Data & contracts** | SQLite (built-in `node:sqlite`), Zod 4 schemas shared between main and renderer |
 | **Build & packaging** | electron-vite 5, Vite 7, electron-builder (Windows NSIS, macOS DMG/zip universal, Linux AppImage/deb, built in CI) |
-| **Tests**             | Vitest (`tests/`) + Playwright Electron smoke (`e2e/`, `npm run test:e2e`) + ESLint 9 gate (`npm run lint`)        |
+| **Tests** | Vitest (`tests/`) + Playwright Electron smoke (`e2e/`, `npm run test:e2e`) + ESLint 9 gate (`npm run lint`) |
 
 ## Quick start
 

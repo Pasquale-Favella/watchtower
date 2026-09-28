@@ -16,6 +16,12 @@
 //     preload/ may import main sources as types only (the IPC wire contract).
 // - `eslint-config-prettier` LAST so formatting stays Prettier's job.
 //
+// Excluded from BOTH this gate and Prettier (see the global `ignores` below
+// and `.prettierignore`): the vendored `.agents/` skills and the hand-authored
+// root config files (README, electron-builder.yml, the tsconfig/vite/vitest
+// configs). Prettier reflowed them in the one-time #136 pass for no readability
+// gain, so they are pinned to their original layout rather than re-litigated.
+//
 // What this deliberately does NOT cover (see PR #137 + follow-up):
 // - `@/*` needs no restriction: the alias is renderer-scoped in every config
 //   that defines it (tsconfig.web.json paths, electron.vite.config.ts renderer
@@ -59,6 +65,17 @@ export default tseslint.config(
       'coverage/**',
       'test-results/**',
       'playwright-report/**',
+      // Kept in lockstep with .prettierignore: the vendored agent skills and
+      // the hand-authored root config files are deliberately left unformatted
+      // (see .prettierignore for why), so the gate does not re-litigate layout
+      // on files that Prettier is not allowed to touch either.
+      '.agents/**',
+      'README.md',
+      'electron-builder.yml',
+      'electron.vite.config.ts',
+      'tsconfig.json',
+      'tsconfig.web.json',
+      'vitest.config.ts',
     ],
   },
 

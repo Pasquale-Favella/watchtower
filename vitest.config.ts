@@ -11,6 +11,6 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.ts'],
-    testTimeout: 120_000,
-  },
+    testTimeout: 120_000
+  }
 })

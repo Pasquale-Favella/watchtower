@@ -16,20 +16,20 @@ export default defineConfig({
         entry: {
           index: resolve('src/main/index.ts'),
           'ledger-mcp': resolve('src/main/agents/ledger-mcp/entry.ts'),
-          'db-worker': resolve('src/main/db-worker/entry.ts'),
-        },
-      },
-    },
+          'db-worker': resolve('src/main/db-worker/entry.ts')
+        }
+      }
+    }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin()]
   },
   renderer: {
     resolve: {
       alias: {
-        '@': resolve('src/renderer/src'),
-      },
+        '@': resolve('src/renderer/src')
+      }
     },
-    plugins: [react(), tailwindcss()],
-  },
+    plugins: [react(), tailwindcss()]
+  }
 })
