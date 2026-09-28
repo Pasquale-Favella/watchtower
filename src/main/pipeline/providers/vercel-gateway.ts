@@ -1,6 +1,6 @@
 import * as Effect from 'effect/Effect'
 
-import { Env, resolveGatewayKey } from '../../env.js'
+import { Env } from '../../env.js'
 import { HttpFetch, HttpFetchError } from '../fetch-utils.js'
 import { fileErrorCode, queueLogRecord } from '../file-errors.js'
 import type { DateRange } from '../types.js'
@@ -20,17 +20,10 @@ export type ReportRow = {
   request_count?: number
 }
 
-/** Sync boundary adapter for `discoverSessions` (Promise interface — NOT Effect-ified).
- *
- * Unchanged behavior: no key → `[]`. The gateway effect no longer calls this
- * (removal condition 1, done this slice: the `Effect.sync` env read inside
- * the effect was removed when the key arrived via the `Env` service).
- *
- * Named removal condition: deletes when discovery runs through the env layer
- * (later slice — NOT this one). */
-export function getVercelGatewayApiKey(): string | null {
-  return resolveGatewayKey(process.env['AI_GATEWAY_API_KEY'], process.env['VERCEL_OIDC_TOKEN'])
-}
+// Wave-3 named condition #2 done this slice: `getVercelGatewayApiKey` deleted.
+// Discovery runs through the env layer (`Env.layer` provided at this
+// composition root, mirroring the parser seam below); `resolveGatewayKey`
+// stays in `Env` (read-only here).
 
 function formatUtcDate(d: Date): string {
   const y = d.getUTCFullYear()
@@ -50,6 +43,14 @@ function gatewayFailureCode(err: unknown): string {
     return 'unreachable'
   }
   return fileErrorCode(err, 'unreachable')
+}
+
+function queueGatewayWarn(code: string): void {
+  queueLogRecord({
+    logEvent: 'scan.file-error',
+    level: 'warn',
+    fields: { op: 'scan', provider: 'vercel-gateway', code },
+  })
 }
 
 export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
@@ -77,13 +78,7 @@ export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
 
     if (!res.ok) {
       // The gateway error body can carry request echoes — status only.
-      yield* Effect.sync(() =>
-        queueLogRecord({
-          logEvent: 'scan.file-error',
-          level: 'warn',
-          fields: { op: 'scan', provider: 'vercel-gateway', code: `http-${res.status}` },
-        }),
-      )
+      yield* Effect.sync(() => queueGatewayWarn(`http-${res.status}`))
       return []
     }
 
@@ -95,11 +90,7 @@ export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
   }).pipe(
     Effect.catch(err =>
       Effect.sync(() => {
-        queueLogRecord({
-          logEvent: 'scan.file-error',
-          level: 'warn',
-          fields: { op: 'scan', provider: 'vercel-gateway', code: gatewayFailureCode(err) },
-        })
+        queueGatewayWarn(gatewayFailureCode(err))
         return []
       }),
     ),
@@ -158,6 +149,22 @@ function createParser(
   }
 }
 
+export const discoverVercelGatewaySessionsEffect = Effect.fnUntraced(function* (): Effect.fn.Return<
+  SessionSource[],
+  never,
+  Env
+> {
+  const { vercelGatewayApiKey: key } = yield* Env
+  if (!key) return []
+  return [
+    {
+      path: 'vercel-ai-gateway:report',
+      project: 'Vercel AI Gateway',
+      provider: 'vercel-gateway',
+    },
+  ]
+})
+
 export const vercelGateway: Provider = {
   name: 'vercel-gateway',
   displayName: 'Vercel AI Gateway',
@@ -173,13 +180,7 @@ export const vercelGateway: Provider = {
   },
 
   async discoverSessions(): Promise<SessionSource[]> {
-    if (!getVercelGatewayApiKey()) return []
-
-    return [{
-      path: 'vercel-ai-gateway:report',
-      project: 'Vercel AI Gateway',
-      provider: 'vercel-gateway',
-    }]
+    return Effect.runPromise(discoverVercelGatewaySessionsEffect().pipe(Effect.provide(Env.layer)))
   },
 
   createSessionParser(

@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Env, resolveGatewayKey } from '../src/main/env.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
-import { fetchVercelGatewayReportEffect, type ReportRow } from '../src/main/pipeline/providers/vercel-gateway.js'
+import {
+  discoverVercelGatewaySessionsEffect,
+  fetchVercelGatewayReportEffect,
+  type ReportRow,
+  vercelGateway,
+} from '../src/main/pipeline/providers/vercel-gateway.js'
 import type { DateRange } from '../src/main/pipeline/types.js'
 
 const RANGE: DateRange = {
@@ -141,5 +146,53 @@ describe('resolveGatewayKey (env trim/empty normalization)', () => {
     expect(resolveGatewayKey(undefined, 'fallback')).toBe('fallback')
     // Empty primary blocks the fallback (legacy `??` parity): never fall through.
     expect(resolveGatewayKey('', 'fallback')).toBeNull()
+  })
+})
+
+describe('discoverVercelGatewaySessionsEffect (discovery through Env layer)', () => {
+  async function runWithGuardedFetch<T>(run: () => Promise<T>): Promise<T> {
+    const envBefore: NodeJS.ProcessEnv = { ...process.env }
+    let fetchCalls = 0
+    const originalFetch: typeof fetch = globalThis.fetch
+    const countingFetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
+      fetchCalls += 1
+      return fakeJsonFetch(200, { results: [] })(...args)
+    }) as typeof fetch
+    ;(globalThis as { fetch: typeof fetch }).fetch = countingFetch
+    try {
+      return await run()
+    } finally {
+      ;(globalThis as { fetch: typeof fetch }).fetch = originalFetch
+      expect(fetchCalls).toBe(0)
+      expect(process.env).toEqual(envBefore)
+    }
+  }
+
+  it('no-key returns [] with zero fetch and zero process.env mutation', async () => {
+    const rows = await runWithGuardedFetch(() =>
+      Effect.runPromise(discoverVercelGatewaySessionsEffect().pipe(Effect.provide(Env.layerWithGatewayKey(null)))),
+    )
+    expect(rows).toEqual([])
+  })
+
+  it('keyed discovery returns the gateway source via fake Env layer', async () => {
+    const rows = await Effect.runPromise(
+      discoverVercelGatewaySessionsEffect().pipe(Effect.provide(Env.layerWithGatewayKey('test-key'))),
+    )
+    expect(rows).toEqual([
+      { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
+    ])
+  })
+
+  it('Provider.discoverSessions keeps the Promise<SessionSource[]> interface', async () => {
+    const sources = await runWithGuardedFetch(async () => {
+      const pending = vercelGateway.discoverSessions()
+      expect(pending).toBeInstanceOf(Promise)
+      return pending
+    })
+    expect(Array.isArray(sources)).toBe(true)
+    for (const source of sources) {
+      expect(source.provider).toBe('vercel-gateway')
+    }
   })
 })
