@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
+import type { AppPaths } from '../../env.js'
 import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { readCachedResults, writeCachedResults } from '../cursor-cache.js'
@@ -985,7 +986,12 @@ function parseBubbles(
   return { calls: results }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
+function createParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  dateRange?: DateRange,
+  paths?: AppPaths,
+): SessionParser {
   const timeFloor = getCursorTimeFloor(dateRange)
 
   return {
@@ -1063,7 +1069,10 @@ function createParser(source: SessionSource, seenKeys: Set<string>, dateRange?: 
           }
           const { calls: bubbleCalls } = parseBubbles(db, localSeen, timeFloor, agentKvTimestamp)
           allCalls = bubbleCalls
-          await writeCachedResults(dbPath, allCalls, timeFloor)
+          // Suppression comes off the `AppPaths` snapshot threaded by
+          // `createCursorProvider`; `undefined` (no snapshot threaded) falls
+          // back to the `process.env` read inside `writeCachedResults`.
+          await writeCachedResults(dbPath, allCalls, timeFloor, paths?.suppressCacheWrites)
         } finally {
           db.close()
         }
@@ -1083,7 +1092,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, dateRange?: 
   }
 }
 
-export function createCursorProvider(dbPathOverride?: string): Provider {
+export function createCursorProvider(dbPathOverride?: string, paths?: AppPaths): Provider {
   return {
     name: 'cursor',
     displayName: 'Cursor',
@@ -1128,7 +1137,7 @@ export function createCursorProvider(dbPathOverride?: string): Provider {
     },
 
     createSessionParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
-      return createParser(source, seenKeys, dateRange)
+      return createParser(source, seenKeys, dateRange, paths)
     },
   }
 }

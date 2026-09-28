@@ -3,7 +3,7 @@ import { createReadStream } from 'fs'
 import { createInterface } from 'readline'
 import { basename, join } from 'path'
 
-import { resolveCodexHome } from '../../env.js'
+import { appPaths, resolveCodexHome, type AppPaths } from '../../env.js'
 import { readSessionLines } from '../fs-utils.js'
 import { calculateCost } from '../models.js'
 import {
@@ -756,10 +756,13 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
   }
 }
 
-export function createCodexProvider(codexDir?: string, envCodexHome?: string): Provider {
-  // Arg order note: `resolveCodexHome(envRaw, override)` — the threaded
-  // `Env.codexHome` beats `process.env['CODEX_HOME']`, and `codexDir` beats both.
-  const dir = resolveCodexHome(envCodexHome ?? process.env['CODEX_HOME'], codexDir)
+export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provider {
+  // One trailing snapshot param, never a second "override" slot: the explicit
+  // `codexDir` wins, then `AppPaths.codexHome` — the `CODEX_HOME` value the
+  // startup snapshot reports, or the homedir default when the var is unset.
+  // The seam keeps its own `??` chain, so an uninitialized snapshot resolves
+  // exactly the `process.env['CODEX_HOME']` the pre-snapshot read saw.
+  const dir = resolveCodexHome((paths ?? appPaths()).codexHome, codexDir)
 
   return {
     name: 'codex',
@@ -795,4 +798,17 @@ export function createCodexProvider(codexDir?: string, envCodexHome?: string): P
   }
 }
 
-export const codex = createCodexProvider()
+// The registry (`providers/index.ts`) imports this singleton, so the snapshot is
+// resolved here at the module root rather than threaded from a caller that cannot
+// pass one.
+//
+// CONSTRAINT, deliberate: module bodies evaluate BEFORE any importer's body, so
+// this call runs before `initAppPaths` in both isolates — a later
+// `initAppPaths({ codexHome })` would be ignored by `codex` while every other
+// provider (which resolves `appPaths()` lazily inside its seam) honoured it. The
+// value is therefore correct today, because uninitialized `codexHome` falls
+// back to the same `process.env` read the seam always did. It becomes a real
+// inconsistency the moment boot pins `codexHome`: fix it by making this lazy
+// (`createCodexProvider()` — whose seam already falls back to `appPaths()`) or
+// by initializing the snapshot before the provider registry is imported.
+export const codex = createCodexProvider(undefined, appPaths())
