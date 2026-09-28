@@ -1,11 +1,16 @@
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as TestClock from 'effect/testing/TestClock'
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { HttpFetch, HttpFetchError } from '../src/main/pipeline/fetch-utils.js'
+import { closeOperationalLog, FETCH_TIMEOUT_COUNTER, initOperationalLog } from '../src/main/operational-log.js'
+import { HttpFetch, type HttpFetchCounters, HttpFetchError } from '../src/main/pipeline/fetch-utils.js'
 
 function okResponse(body: unknown = {}): Response {
   return {
@@ -284,5 +289,142 @@ describe('HttpFetch.live (FetchHttpClient platform path)', () => {
     expect(error).toBeInstanceOf(HttpFetchError)
     expect(error.reason).toBe('abort')
     expect(observedSignal?.aborted).toBe(true)
+  })
+})
+
+describe('HttpFetch timeout counter (Wave 5, issue #148)', () => {
+  type FiledCounter = { name: string; amount: number; fields: Record<string, unknown> }
+
+  function makeFiledCounters(): { counters: HttpFetchCounters; filed: FiledCounter[] } {
+    const filed: FiledCounter[] = []
+    const counters: HttpFetchCounters = {
+      incrementCounter: (name, amount = 1, fields = {}) =>
+        Effect.sync(() => {
+          filed.push({ name, amount, fields: { ...fields } })
+        }),
+    }
+    return { counters, filed }
+  }
+
+  function hangingFetch(): typeof fetch {
+    return (() => new Promise<Response>(() => {})) as typeof fetch
+  }
+
+  function slowFetchProgram(url = 'https://example.test/slow'): Effect.Effect<Response, HttpFetchError, HttpFetch> {
+    return Effect.gen(function* () {
+      const http = yield* HttpFetch
+      return yield* http.fetch(url, {}, 100)
+    })
+  }
+
+  function runTimeoutWithClock(effect: Effect.Effect<Response, HttpFetchError>): Promise<HttpFetchError> {
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(effect)
+        yield* TestClock.adjust(200)
+        return yield* Fiber.join(fiber).pipe(Effect.flip)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+  }
+
+  it('files FETCH_TIMEOUT_COUNTER once per bespoke timeout via the injected counters seam', async () => {
+    const { counters, filed } = makeFiledCounters()
+    const error = await runTimeoutWithClock(
+      slowFetchProgram().pipe(Effect.provide(HttpFetch.layerWithFetch(hangingFetch(), counters))),
+    )
+    expect(error).toBeInstanceOf(HttpFetchError)
+    expect(error.reason).toBe('timeout')
+    expect(error.message).toBe('fetch timed out after 100ms')
+    expect(error.url).toBe('https://example.test/slow')
+    // Reason-only at the seam — never the URL (untrusted input for the allowlist).
+    expect(filed).toEqual([{ name: FETCH_TIMEOUT_COUNTER, amount: 1, fields: { reason: 'timeout' } }])
+  })
+
+  it('never files on abort or network paths (timeout-only)', async () => {
+    const { counters, filed } = makeFiledCounters()
+    const runWith = (fetchImpl: typeof fetch): Promise<HttpFetchError> =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const http = yield* HttpFetch
+          return yield* http.fetch('https://example.test/x')
+        }).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl, counters)), Effect.flip),
+      )
+    const abortError = await runWith((async () => {
+      throw new DOMException('aborted', 'AbortError')
+    }) as unknown as typeof fetch)
+    const networkError = await runWith((async () => {
+      throw new Error('offline')
+    }) as unknown as typeof fetch)
+    expect(abortError.reason).toBe('abort')
+    expect(networkError.reason).toBe('network')
+    expect(filed).toEqual([])
+  })
+
+  it('a throwing counters sink never breaks the timeout error', async () => {
+    const throwing: HttpFetchCounters = {
+      incrementCounter: () =>
+        Effect.sync(() => {
+          throw new Error('sink boom')
+        }),
+    }
+    const error = await runTimeoutWithClock(
+      slowFetchProgram().pipe(Effect.provide(HttpFetch.layerWithFetch(hangingFetch(), throwing))),
+    )
+    expect(error).toBeInstanceOf(HttpFetchError)
+    expect(error.reason).toBe('timeout')
+    expect(error.message).toBe('fetch timed out after 100ms')
+  })
+
+  it('defaults to live-singleton delegation preserving the legacy timeout error with zero edits', async () => {
+    // Single-arg `layerWithFetch(fake)` — the pre-slice call shape every
+    // forbidden consumer keeps using. The singleton is closed here so the
+    // default is a provable no-op that never throws.
+    closeOperationalLog()
+    const error = await runTimeoutWithClock(
+      slowFetchProgram().pipe(Effect.provide(HttpFetch.layerWithFetch(hangingFetch()))),
+    )
+    expect(error).toBeInstanceOf(HttpFetchError)
+    expect(error.reason).toBe('timeout')
+    expect(error.message).toBe('fetch timed out after 100ms')
+  })
+
+  it('files FETCH_TIMEOUT_COUNTER on the platform path via the live singleton (allowlisted, no URL)', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'watchtower-fetch-counter-'))
+    const logDir = join(base, 'logs')
+    try {
+      await initOperationalLog({ logDir, isPackaged: true })
+      const error = await runTimeoutWithClock(
+        provideLiveFetch(slowFetchProgram('https://example.test/slow?secret=abc'), hangingFetch()),
+      )
+      expect(error).toBeInstanceOf(HttpFetchError)
+      expect(error.reason).toBe('timeout')
+      await vi.waitFor(() => {
+        const files = readdirSync(logDir).filter(f => f.startsWith('operational'))
+        const records = files
+          .flatMap(file => {
+            const text = readFileSync(join(logDir, file), 'utf8')
+            return text
+              .split('\n')
+              .filter(l => l.trim().length > 0)
+              .map(line => JSON.parse(line) as Record<string, unknown>)
+          })
+          .filter(record => record['event'] === FETCH_TIMEOUT_COUNTER)
+        expect(records).toHaveLength(1)
+        expect(records[0]).toMatchObject({ count: 1 })
+        // Allowlist enforcement (verified, not widened): `reason` is not an
+        // allowlisted key and the URL is never filed, so the file record is
+        // event + count only — the key itself carries the timeout meaning.
+        expect(records[0]).not.toHaveProperty('url')
+        expect(records[0]).not.toHaveProperty('reason')
+        expect(records[0]).not.toHaveProperty('message')
+      })
+    } finally {
+      try {
+        closeOperationalLog()
+      } catch {
+        /* not initialised */
+      }
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 })

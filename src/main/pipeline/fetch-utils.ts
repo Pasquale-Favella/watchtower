@@ -12,6 +12,8 @@ import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/unstable/http/HttpClientResponse'
 import type { HttpMethod } from 'effect/unstable/http/HttpMethod'
 
+import { FETCH_TIMEOUT_COUNTER, type OperationalLogCounter, safeLogOperationalEvent } from '../operational-log.js'
+
 // Default ceiling for outbound HTTP. Every CLI command awaits loadPricingEffect(),
 // and the macOS menubar shells out to the CLI and blocks on its exit — so an
 // unbounded fetch() on a half-open network (e.g. Wi-Fi/DNS not yet up after
@@ -34,8 +36,70 @@ function isAbortError(cause: unknown): boolean {
   return false
 }
 
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause)
+}
+
+/** Optional counter sink for fetch timeouts (value-seam, not `R`-channel):
+ *  defaults to the live singleton delegation below so every existing
+ *  `layerWithFetch(fake)` call site keeps compiling with zero edits and prod
+ *  files counters with no second sink. Tests inject a fake recording
+ *  `incrementCounter` calls. Mirrors `HarnessSnapshotCounters` (Wave 4). */
+export interface HttpFetchCounters {
+  incrementCounter: (
+    name: OperationalLogCounter,
+    amount?: number,
+    fields?: Record<string, unknown>,
+  ) => Effect.Effect<void>
+}
+
+/**
+ * Live counter delegation for the fetch-timeout slice (Wave 5, issue #148):
+ * files `FETCH_TIMEOUT_COUNTER` through the main-owned pino singleton via
+ * `safeLogOperationalEvent` — same sink, same allowlist, same `main`
+ * context, never a second sink, never OTLP. Mirrors
+ * `OperationalLog.layer`'s `liveEmit` + never-throw guard so every call site
+ * that omits `counters` files counters with zero edits.
+ */
+const liveFetchCounters: HttpFetchCounters = {
+  incrementCounter: (name, amount = 1, fields = {}) =>
+    Effect.sync(() => {
+      try {
+        safeLogOperationalEvent('info', name, { ...fields, count: amount }, 'main')
+      } catch {
+        /* logging must never break callers, including inside fibers */
+      }
+    }),
+}
+
+// Timeout-only counter: filed AFTER the deadline race resolves (the race
+// width is unchanged — `timeoutOption` already settled to `None` before this
+// runs), alongside the error mapping, never inside it. `catchCause` (which,
+// unlike `ignore`, also swallows defects and interruptions) covers every sink
+// defect — so the `HttpFetchError{timeout}` contract stays byte-identical.
+// Abort and network paths never file. Filed fields are reason-only — never
+// the URL (untrusted input for the allowlist; `sanitizeOperationalRecord` is
+// the enforcement point and is NOT widened here).
+function fileFetchTimeout(
+  counters: HttpFetchCounters,
+  timeoutMs: number,
+  url: string,
+): Effect.Effect<never, HttpFetchError> {
+  return Effect.gen(function* () {
+    yield* counters
+      .incrementCounter(FETCH_TIMEOUT_COUNTER, 1, { reason: 'timeout' })
+      .pipe(Effect.catchCause(() => Effect.void))
+    return yield* new HttpFetchError({
+      reason: 'timeout',
+      message: `fetch timed out after ${timeoutMs}ms`,
+      url,
+    })
+  })
+}
+
 function makeFetch(
   fetchImpl: typeof fetch,
+  counters: HttpFetchCounters = liveFetchCounters,
 ): (url: string, init?: RequestInit, timeoutMs?: number) => Effect.Effect<Response, HttpFetchError> {
   return Effect.fn('HttpFetch.fetch')(function* (
     url: string,
@@ -48,7 +112,7 @@ function makeFetch(
         return fetchImpl(url, { ...init, signal: combined })
       },
       catch: cause => {
-        const message = cause instanceof Error ? cause.message : String(cause)
+        const message = errorMessage(cause)
         return new HttpFetchError({
           reason: isAbortError(cause) ? 'abort' : 'network',
           message,
@@ -58,11 +122,7 @@ function makeFetch(
     })
     const outcome = yield* attempt.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)))
     if (Option.isNone(outcome)) {
-      return yield* new HttpFetchError({
-        reason: 'timeout',
-        message: `fetch timed out after ${timeoutMs}ms`,
-        url,
-      })
+      return yield* fileFetchTimeout(counters, timeoutMs, url)
     }
     return outcome.value
   })
@@ -102,7 +162,7 @@ function toClientBody(
       catch: cause =>
         new HttpFetchError({
           reason: 'network',
-          message: cause instanceof Error ? cause.message : String(cause),
+          message: errorMessage(cause),
           url,
         }),
     }).pipe(Effect.map(bytes => HttpBody.uint8Array(new Uint8Array(bytes), contentType || body.type || undefined)))
@@ -178,6 +238,7 @@ function toWebResponse(
 // transport — same seam, same semantics.
 function makeClientFetch(
   client: HttpClient.HttpClient,
+  counters: HttpFetchCounters = liveFetchCounters,
 ): (url: string, init?: RequestInit, timeoutMs?: number) => Effect.Effect<Response, HttpFetchError> {
   return Effect.fn('HttpFetch.fetch')(function* (
     url: string,
@@ -188,7 +249,7 @@ function makeClientFetch(
       return yield* new HttpFetchError({ reason: 'abort', message: 'fetch aborted before start', url })
     }
     if (init.signal !== undefined && init.signal !== null) {
-      return yield* makeFetch(yield* FetchHttpClient.Fetch)(url, init, timeoutMs)
+      return yield* makeFetch(yield* FetchHttpClient.Fetch, counters)(url, init, timeoutMs)
     }
     const request = yield* buildClientRequest(url, init)
     const outcome = yield* client.execute(request).pipe(
@@ -196,11 +257,8 @@ function makeClientFetch(
       Effect.timeoutOption(Duration.millis(timeoutMs)),
     )
     if (Option.isNone(outcome)) {
-      return yield* new HttpFetchError({
-        reason: 'timeout',
-        message: `fetch timed out after ${timeoutMs}ms`,
-        url,
-      })
+      // Same timeout-only filing as `makeFetch` (see `fileFetchTimeout`).
+      return yield* fileFetchTimeout(counters, timeoutMs, url)
     }
     return yield* toWebResponse(url, outcome.value)
   })
@@ -224,6 +282,6 @@ export class HttpFetch extends Context.Service<
     Effect.map(HttpClient.HttpClient, client => HttpFetch.of({ fetch: makeClientFetch(client) })),
   ).pipe(Layer.provide(FetchHttpClient.layer))
 
-  static readonly layerWithFetch = (fetchImpl: typeof fetch) =>
-    Layer.succeed(HttpFetch, HttpFetch.of({ fetch: makeFetch(fetchImpl) }))
+  static readonly layerWithFetch = (fetchImpl: typeof fetch, counters?: HttpFetchCounters) =>
+    Layer.succeed(HttpFetch, HttpFetch.of({ fetch: makeFetch(fetchImpl, counters ?? liveFetchCounters) }))
 }
