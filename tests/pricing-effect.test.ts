@@ -44,8 +44,6 @@ function pricingEnv(ttlMs: number = Infinity): ReturnType<typeof Env.layerWithVa
   return Env.layerWithValues({
     vercelGatewayApiKey: null,
     pricingCacheTtlMs: ttlMs,
-    cursorCacheSuppressWrites: false,
-    codexHome: '/fake/codex-home',
   })
 }
 
@@ -144,8 +142,6 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
           freshEnv.Env.layerWithValues({
             vercelGatewayApiKey: null,
             pricingCacheTtlMs: Infinity,
-            cursorCacheSuppressWrites: false,
-            codexHome: '/fake/codex-home',
           }),
         ),
       ),

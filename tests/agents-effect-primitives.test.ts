@@ -341,8 +341,6 @@ describe('effect: MainLive flat composition (§4.3 — one runtime, test fakes)'
       Env.layerWithValues({
         vercelGatewayApiKey: 'test-gateway-key',
         pricingCacheTtlMs: Infinity,
-        cursorCacheSuppressWrites: false,
-        codexHome: '/fake/codex-home',
       }),
     )
     const rows = await Effect.runPromise(
@@ -355,18 +353,16 @@ describe('effect: MainLive flat composition (§4.3 — one runtime, test fakes)'
         return {
           gatewayKey: env.vercelGatewayApiKey,
           ttlMs: env.pricingCacheTtlMs,
-          suppress: env.cursorCacheSuppressWrites,
-          codexHome: env.codexHome,
           ok: response.ok,
           status: result.status,
         }
       }).pipe(Effect.provide(testLive)),
     )
+    // Env carries exactly its two Effect-reachable values; the sync
+    // provider-home/platform roots moved to `appPaths()` (see tests/env.test.ts).
     expect(rows).toEqual({
       gatewayKey: 'test-gateway-key',
       ttlMs: Infinity,
-      suppress: false,
-      codexHome: '/fake/codex-home',
       ok: true,
       status: 'ready',
     })

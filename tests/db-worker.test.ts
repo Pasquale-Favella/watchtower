@@ -403,8 +403,6 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
     return Env.layerWithValues({
       vercelGatewayApiKey: null,
       pricingCacheTtlMs: Infinity,
-      cursorCacheSuppressWrites: false,
-      codexHome: '/fake/codex-home',
     })
   }
 

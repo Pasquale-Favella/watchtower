@@ -24,8 +24,10 @@ const init = workerData as DbWorkerData
 // DB) reports and exits instead of serving errors forever — the client never
 // respawns a worker that never lived.
 try {
-  // Worker cache dir still arrives via `init` — captured as the startup
-  // snapshot instead of ambient env mutation.
+  // The sync discovery paths (provider homes, platform roots, caches) still
+  // arrive via `init` — captured as the `AppPaths` startup snapshot instead of
+  // ambient env mutation. Only `cacheDir` is threaded today; the rest fall
+  // back to the same pure resolvers the `process.env` readers already use.
   initAppPaths({ cacheDir: init.cacheDir })
 
   const ctx = new DbWorkerContext(init, event => port.postMessage(event))

@@ -93,8 +93,6 @@ describe('fetchVercelGatewayReportEffect (Effect-native gateway boundary)', () =
           Env.layerWithValues({
             vercelGatewayApiKey: 'test-key',
             pricingCacheTtlMs: Infinity,
-            cursorCacheSuppressWrites: false,
-            codexHome: '/fake/codex-home',
           }),
         ),
       ),

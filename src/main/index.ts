@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { app, BrowserWindow, ipcMain, shell, dialog, type WebContents } from 'electron'
 import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
 import { skillsSaveRequestSchema, type SkillsSaveResult, type SkillsThresholds } from '../shared/schemas/skills.js'
+import { initAppPaths } from './env.js'
 import { mainRuntime } from './main-runtime.js'
 import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
 import {
@@ -463,8 +464,16 @@ app.whenReady().then(async () => {
   }
   // The data plane boots first: the worker owns the ledger from here on —
   // requests simply queue on its port until its synchronous init finishes.
+  const cacheDir = join(dataDir, 'cache')
+  // This isolate's own copy of the `AppPaths` startup snapshot, from the same
+  // value the worker gets below — so a sync discovery path reached from main
+  // resolves the same cache dir as the one reached from the worker. The env
+  // override still wins, exactly as it did before the snapshot existed: the
+  // snapshot is initialized with the value the reader would have resolved
+  // anyway, never with a value that shadows the documented override.
+  initAppPaths({ cacheDir: process.env['WATCHTOWER_CACHE_DIR'] ?? cacheDir })
   const db = new DbWorkerClient(
-    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir: join(dataDir, 'cache') },
+    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir },
     join(__dirname, 'db-worker.js'),
   )
   relayWorkerEvents(db)
