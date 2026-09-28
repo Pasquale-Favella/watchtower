@@ -7,6 +7,7 @@ import * as Fiber from 'effect/Fiber'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { Env } from '../src/main/env.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import {
   getModelCosts,
@@ -39,11 +40,23 @@ function freshCacheDir(): string {
   return dir
 }
 
-function runLoadPricing(fetchImpl: typeof fetch, timeoutMs?: number): Promise<void> {
+function pricingEnv(ttlMs: number = Infinity): ReturnType<typeof Env.layerWithValues> {
+  return Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: ttlMs })
+}
+
+function runLoadPricing(fetchImpl: typeof fetch, timeoutMs?: number, ttlMs: number = Infinity): Promise<void> {
+  const envLayer = pricingEnv(ttlMs)
   if (timeoutMs === undefined) {
-    return Effect.runPromise(loadPricingEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))))
+    return Effect.runPromise(
+      loadPricingEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl)), Effect.provide(envLayer)),
+    )
   }
-  return Effect.runPromise(loadPricingEffect({ timeoutMs }).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))))
+  return Effect.runPromise(
+    loadPricingEffect({ timeoutMs }).pipe(
+      Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+      Effect.provide(envLayer),
+    ),
+  )
 }
 
 function expectSnapshotMerged(): void {
@@ -58,8 +71,10 @@ function hangingFetch(onStart: () => void): typeof fetch {
 }
 
 afterEach(() => {
+  // `WATCHTOWER_CACHE_DIR` stays via `process.env` until the startup-snapshot
+  // design lands (later slice — explicitly NOT this one). TTL no longer
+  // mutates env: it arrives via `Env.layerWithValues` fakes.
   delete process.env['WATCHTOWER_CACHE_DIR']
-  delete process.env['WATCHTOWER_PRICING_TTL_HOURS']
 })
 
 describe('pricing effects (Effect-native pricing boundary)', () => {
@@ -116,8 +131,14 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
     vi.resetModules()
     const freshModels = await import('../src/main/pipeline/models.js')
     const freshFetch = await import('../src/main/pipeline/fetch-utils.js')
+    const freshEnv = await import('../src/main/env.js')
     await Effect.runPromise(
-      freshModels.loadPricingEffect().pipe(Effect.provide(freshFetch.HttpFetch.layerWithFetch(throwingFetch()))),
+      freshModels
+        .loadPricingEffect()
+        .pipe(
+          Effect.provide(freshFetch.HttpFetch.layerWithFetch(throwingFetch())),
+          Effect.provide(freshEnv.Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
+        ),
     )
     // Never fails: reaching here means no rejection. Snapshot still resolves.
     expect(freshModels.getModelCosts('gpt-4o')).not.toBeNull()
@@ -127,7 +148,11 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
   it('refreshPricingNowEffect propagates a typed fetch error', async () => {
     freshCacheDir()
     const error = await Effect.runPromise(
-      refreshPricingNowEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(throwingFetch())), Effect.flip),
+      refreshPricingNowEffect().pipe(
+        Effect.provide(HttpFetch.layerWithFetch(throwingFetch())),
+        Effect.provide(pricingEnv()),
+        Effect.flip,
+      ),
     )
     expect(error).toBeInstanceOf(PricingRefreshError)
     expect(error._tag).toBe('PricingRefreshError')
@@ -144,7 +169,10 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(
-          loadPricingEffect({ timeoutMs: 100 }).pipe(Effect.provide(HttpFetch.layerWithFetch(neverFetch))),
+          loadPricingEffect({ timeoutMs: 100 }).pipe(
+            Effect.provide(HttpFetch.layerWithFetch(neverFetch)),
+            Effect.provide(pricingEnv()),
+          ),
         )
         // Wait until the child has finished the disk-cache read and entered
         // the network fetch before advancing the virtual clock; otherwise the
@@ -162,7 +190,6 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
 
   it('stale disk cache triggers a refetch', async () => {
     const dir = freshCacheDir()
-    process.env['WATCHTOWER_PRICING_TTL_HOURS'] = '24'
     writeFileSync(
       join(dir, 'litellm-pricing.json'),
       JSON.stringify({ timestamp: Date.now() - 25 * 60 * 60 * 1000, data: {} }),
@@ -174,7 +201,7 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
         'stale-refetch-model-zeta': { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
       })
     }) as unknown as typeof fetch
-    await runLoadPricing(counting)
+    await runLoadPricing(counting, undefined, 24 * 60 * 60 * 1000)
     expect(calls).toBe(1)
     expect(getModelCosts('stale-refetch-model-zeta')).not.toBeNull()
   })
@@ -183,7 +210,11 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
     freshCacheDir()
     const badStatus = (async () => ({ ok: false, status: 500, json: async () => ({}) })) as unknown as typeof fetch
     const error = await Effect.runPromise(
-      refreshPricingNowEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(badStatus)), Effect.flip),
+      refreshPricingNowEffect().pipe(
+        Effect.provide(HttpFetch.layerWithFetch(badStatus)),
+        Effect.provide(pricingEnv()),
+        Effect.flip,
+      ),
     )
     expect(error).toBeInstanceOf(PricingRefreshError)
     expect(error.reason).toBe('http')
@@ -199,7 +230,11 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
       },
     })) as unknown as typeof fetch
     const error = await Effect.runPromise(
-      refreshPricingNowEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(badJson)), Effect.flip),
+      refreshPricingNowEffect().pipe(
+        Effect.provide(HttpFetch.layerWithFetch(badJson)),
+        Effect.provide(pricingEnv()),
+        Effect.flip,
+      ),
     )
     expect(error).toBeInstanceOf(PricingRefreshError)
     expect(error.reason).toBe('decode')
@@ -213,7 +248,11 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
       'effect-test-model-epsilon': { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
     }
     const error = await Effect.runPromise(
-      refreshPricingNowEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(fakeFetchOk(upstream))), Effect.flip),
+      refreshPricingNowEffect().pipe(
+        Effect.provide(HttpFetch.layerWithFetch(fakeFetchOk(upstream))),
+        Effect.provide(pricingEnv()),
+        Effect.flip,
+      ),
     )
     expect(error).toBeInstanceOf(PricingRefreshError)
     expect(error.reason).toBe('cache')

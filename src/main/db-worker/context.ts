@@ -14,6 +14,7 @@ import {
 } from '../../shared/schemas/skills.js'
 import { resolveCadenceMs } from '../cadence.js'
 import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from '../compare-view.js'
+import { Env } from '../env.js'
 import type { ExportResult } from '../export.js'
 import { exportCsv, exportJson } from '../export.js'
 import {
@@ -193,7 +194,7 @@ export class DbWorkerContext {
       // to the ledger while the parse runs. The scan's delta wrapper already
       // gates out failed parses; `unchanged` is a no-op inside portIn.
       portIn,
-    ).pipe(Effect.provide(liveFetchLayer()))
+    ).pipe(Effect.provide(liveFetchLayer()), Effect.provide(Env.layer))
   }
 
   private async runTrackedScan(
@@ -706,7 +707,7 @@ export class DbWorkerContext {
       case 'pricing:refresh': {
         return Effect.runPromise(
           refreshPricingNowEffect().pipe(
-            Effect.provide(liveFetchLayer()),
+            Effect.provide(Layer.mergeAll(liveFetchLayer(), Env.layer)),
             Effect.map(() => ({ ok: true as const })),
             Effect.catch(err => Effect.succeed({ ok: false as const, error: err.message })),
           ),

@@ -1,6 +1,7 @@
 import * as Effect from 'effect/Effect'
 
 import type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress } from '../../shared/schemas/scan.js'
+import type { Env } from '../env.js'
 import { HttpFetch } from './fetch-utils.js'
 import { loadPricingEffect } from './models.js'
 import type { DeltaHandler } from './parser.js'
@@ -30,7 +31,7 @@ export const runScan = Effect.fnUntraced(function* (
   onProgress?: (progress: ScanProgress) => void,
   abort?: { isAborted(): boolean },
   onDelta?: DeltaHandler,
-): Effect.fn.Return<ScanMetadata, unknown, HttpFetch> {
+): Effect.fn.Return<ScanMetadata, unknown, HttpFetch | Env> {
   const scanId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const startedAt = new Date().toISOString()
 

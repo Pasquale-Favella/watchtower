@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
+import { Env } from '../env.js'
 import snapshotData from './data/litellm-snapshot.json'
 import fallbackData from './data/pricing-fallback.json'
 import { DEFAULT_FETCH_TIMEOUT_MS, HttpFetch } from './fetch-utils.js'
@@ -42,19 +43,10 @@ const LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/mode
 const WEB_SEARCH_COST = 0.01
 const ONE_HOUR_CACHE_WRITE_MULTIPLIER_FROM_FIVE_MINUTE_RATE = 1.6
 
-/**
- * watchtower: per default il pricing NON viene mai auto-rinfrescato.
- * L'utente forza il refresh con `--refresh-pricing`; l'auto-refetch è attivo
- * solo se `WATCHTOWER_PRICING_TTL_HOURS > 0`.
- * Ritorna `Infinity` per disattivare la scadenza, oppure il TTL in ms.
- */
-function getPricingCacheTtlMs(): number {
-  const raw = process.env['WATCHTOWER_PRICING_TTL_HOURS']
-  if (!raw) return Infinity
-  const hours = Number(raw)
-  if (!Number.isFinite(hours) || hours <= 0) return Infinity
-  return hours * 60 * 60 * 1000
-}
+// Named removal (Wave 4 TTL seam): `getPricingCacheTtlMs` deleted — its
+// single caller `parseCachedPricingPayload` now takes `ttlMs` via `Env`
+// (`pricingCacheTtlMs`, `Infinity` disables expiry); no sync caller remains.
+// TTL parsing lives in `resolvePricingCacheTtlMs` (`src/main/env.ts`).
 
 // Explicit USD/token prices that must override LiteLLM/cache data. Cursor
 // publishes house-model rates in the models table at cursor.com/docs/models
@@ -1015,7 +1007,7 @@ function describeErrorCause(cause: unknown): string {
   return String(cause)
 }
 
-function parseCachedPricingPayload(raw: string): Map<string, ModelCosts> | null {
+function parseCachedPricingPayload(raw: string, ttlMs: number): Map<string, ModelCosts> | null {
   let parsed: { timestamp: number; data: Record<string, ModelCosts> } | null = null
   try {
     parsed = JSON.parse(raw) as { timestamp: number; data: Record<string, ModelCosts> }
@@ -1025,9 +1017,7 @@ function parseCachedPricingPayload(raw: string): Map<string, ModelCosts> | null 
   if (parsed === null || typeof parsed.timestamp !== 'number' || !parsed.data || typeof parsed.data !== 'object') {
     return null
   }
-  if (Date.now() - parsed.timestamp > getPricingCacheTtlMs()) {
-    return null
-  }
+  if (Date.now() - parsed.timestamp > ttlMs) return null
   return new Map(Object.entries(parsed.data))
 }
 
@@ -1039,7 +1029,8 @@ function writeThroughPricingCache(pricing: Map<string, ModelCosts>): void {
 
 const loadCachedPricingEffect = Effect.fn('loadCachedPricingEffect')(function* (): Effect.fn.Return<
   Map<string, ModelCosts> | null,
-  never
+  never,
+  Env
 > {
   const raw = yield* Effect.tryPromise({
     try: () => readFile(getCachePath(), 'utf-8'),
@@ -1048,7 +1039,8 @@ const loadCachedPricingEffect = Effect.fn('loadCachedPricingEffect')(function* (
   if (raw === null) {
     return null
   }
-  return parseCachedPricingPayload(raw)
+  const { pricingCacheTtlMs } = yield* Env
+  return parseCachedPricingPayload(raw, pricingCacheTtlMs)
 })
 
 const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(function* (
@@ -1100,7 +1092,7 @@ const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(funct
  */
 export const loadPricingEffect = Effect.fn('loadPricingEffect')(function* (
   options: PricingEffectOptions = {},
-): Effect.fn.Return<void, never, HttpFetch> {
+): Effect.fn.Return<void, never, HttpFetch | Env> {
   const cached = yield* loadCachedPricingEffect()
   if (cached) {
     yield* Effect.sync(() => writeThroughPricingCache(cached))

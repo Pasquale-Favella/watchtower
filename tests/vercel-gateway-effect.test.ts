@@ -52,11 +52,11 @@ function neverFetch(): typeof fetch {
 function fakeCountingFetch(body: unknown): { fetch: typeof fetch; getCalls: () => number } {
   let calls = 0
   const inner = fakeJsonFetch(200, body)
-  const fetch = (async (...args: Parameters<typeof fetch>) => {
+  const countingFetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
     calls += 1
     return inner(...args)
   }) as typeof fetch
-  return { fetch, getCalls: () => calls }
+  return { fetch: countingFetch, getCalls: () => calls }
 }
 
 describe('fetchVercelGatewayReportEffect (Effect-native gateway boundary)', () => {
@@ -84,7 +84,7 @@ describe('fetchVercelGatewayReportEffect (Effect-native gateway boundary)', () =
     const rows = await Effect.runPromise(
       fetchVercelGatewayReportEffect(RANGE).pipe(
         Effect.provide(HttpFetch.layerWithFetch(fakeJsonFetch(200, { results }))),
-        Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: 'test-key' })),
+        Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: 'test-key', pricingCacheTtlMs: Infinity })),
       ),
     )
     expect(rows).toEqual(results)
