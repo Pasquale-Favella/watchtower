@@ -5,9 +5,8 @@ import { harnessSpecs } from './harnesses/index.js'
  * `initialize` health probe (`probe.ts`) and the `inspect()` pre-flight
  * `initSession` (`runtime.ts`) bound the SAME agent handshake, so they share
  * ONE deadline instead of two mirrored `15_000` constants. Both seams import
- * from here; `probe.ts` / `runtime.ts` keep deprecated compat aliases
- * (`HARNESS_PROBE_TIMEOUT_MS` / `HARNESS_INSPECT_TIMEOUT_MS`) until their
- * importers migrate — alias removal is a later slice.
+ * from here; the Wave-3 compat aliases are gone (removed Wave 5 with a
+ * zero-importer grep proof) — this module is the single source.
  *
  * Family note: `CANCEL_DRAIN_MS` (1500ms, the iterator-drain barrier on cancel)
  * stays in `runtime.ts` — it bounds teardown of an already-running stream, not
@@ -25,7 +24,7 @@ import { harnessSpecs } from './harnesses/index.js'
  *  probe and the `inspect()` pre-flight `initSession` alike. A hung agent
  *  degrades to the `{ ok: false }` arm instead of hanging the picker. Pure —
  *  asserted by value in `tests/agents-probe.test.ts` /
- *  `tests/agents-effect-primitives.test.ts` (via the compat aliases). */
+ *  `tests/agents-effect-primitives.test.ts`. */
 export const HARNESS_HANDSHAKE_TIMEOUT_MS = 15_000
 
 /** Per-harness handshake deadline: the spec's `probeTimeoutMs` override when
