@@ -129,7 +129,17 @@ Locked decisions carried over from the adoption follow-up:
   stay in the ledger repository. There is no unified app config.
 - Any platform-layer adoption is sequenced HttpClient, then FileSystem, then
   Command, each step pinned to the `effect` release line and proven inside
-  the packaged artifact the way `effect` itself was.
+  the packaged artifact the way `effect` itself was. **Re-specified against
+  what `effect@4.0.0-rc.115` actually ships:** there is no Effect-v4
+  `@effect/platform` (every release peer-depends on Effect v3), and rc.115 ships
+  the in-package modules instead — `effect/unstable/http` for step 1 (landed),
+  `effect/unstable/process` (`ChildProcess` + `ChildProcessSpawner`) for step 3
+  (landed, one tracer call site: the Claude auth probe, behind the
+  `CommandRunner` port). `FileSystem` is still step 2 and still open: rc.115
+  ships the `FileSystem` service and `make` with no platform implementation, so
+  taking it means hand-writing the Node fs transport the same way the
+  child-process one is hand-written, or accepting a permanent `node:fs`
+  exception. That decision is not yet taken.
 - Observability is a bridge, not a second pipeline: Effect logs, metrics,
   and spans feed the existing pino-backed Operational log. There is no
   separate exporter.
