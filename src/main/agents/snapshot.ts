@@ -7,7 +7,7 @@ import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
 
 import type { CoachHarnessRow } from '../../shared/schemas/agents.js'
-import { safeLogOperationalEvent } from '../operational-log.js'
+import { PROBE_OUTCOME_COUNTER, safeLogOperationalEvent, type OperationalLogCounter } from '../operational-log.js'
 import type { HarnessInfo } from './detect.js'
 import { harnessSpecs } from './harnesses/index.js'
 import { probeHarness, type ProbeResult, type ProbeStatus } from './probe.js'
@@ -21,11 +21,24 @@ export interface HarnessInstance {
   message?: string
 }
 
+export interface HarnessSnapshotCounters {
+  incrementCounter: (
+    name: OperationalLogCounter,
+    amount?: number,
+    fields?: Record<string, unknown>,
+  ) => Effect.Effect<void>
+}
+
 export interface HarnessSnapshotStoreDeps {
   detect: () => Promise<HarnessInfo[]>
   probe: (info: HarnessInfo) => Effect.Effect<ProbeResult, never>
   onChange: (rows: CoachHarnessRow[]) => void
   concurrency?: number
+  /** Optional counter sink (value-seam, not `R`-channel): defaults to the
+   *  live singleton delegation below so forbidden `ipc.ts` keeps compiling
+   *  with zero edits and prod files counters with no second sink. Tests
+   *  inject a fake recording `incrementCounter` calls. */
+  counters?: HarnessSnapshotCounters
 }
 
 export interface HarnessSnapshotStore {
@@ -86,9 +99,30 @@ export class HarnessProbe extends Context.Service<
   ): Layer.Layer<HarnessProbe> => Layer.succeed(HarnessProbe, HarnessProbe.of({ probe: probeImpl }))
 }
 
+/**
+ * Live counter delegation for the probe-outcome slice (Wave 4, issue #148):
+ * files `PROBE_OUTCOME_COUNTER` through the main-owned pino singleton via
+ * `safeLogOperationalEvent` — same sink, same allowlist, same `main`
+ * context as the legacy `harness.probe` record, never a second sink, never
+ * OTLP. Mirrors `OperationalLog.layer`'s `liveEmit` + never-throw guard so
+ * the forbidden `ipc.ts` call site (no `counters` dep) files counters with
+ * zero edits.
+ */
+const liveSnapshotCounters: HarnessSnapshotCounters = {
+  incrementCounter: (name, amount = 1, fields = {}) =>
+    Effect.sync(() => {
+      try {
+        safeLogOperationalEvent('info', name, { ...fields, count: amount }, 'main')
+      } catch {
+        /* logging must never break callers, including inside fibers */
+      }
+    }),
+}
+
 export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): HarnessSnapshotStore {
   const instances = new Map<string, HarnessInstance>()
   const concurrency = deps.concurrency ?? 4
+  const counters = deps.counters ?? liveSnapshotCounters
   let detected = false
   let lastPath: string | undefined
 
@@ -133,6 +167,11 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
       kind: info.kind,
       status: result.status,
     })
+    try {
+      Effect.runSync(counters.incrementCounter(PROBE_OUTCOME_COUNTER, 1, { kind: info.kind, status: result.status }))
+    } catch {
+      /* logging must never break callers, including inside fibers */
+    }
     if (isClosed()) return
     const instanceId = instanceIdFor(info)
     const current = instances.get(instanceId)

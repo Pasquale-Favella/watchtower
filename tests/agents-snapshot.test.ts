@@ -1,9 +1,17 @@
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { ProbeResult } from '../src/main/agents/probe.js'
-import { createHarnessSnapshotStore, type HarnessSnapshotStore } from '../src/main/agents/snapshot.js'
+import {
+  createHarnessSnapshotStore,
+  type HarnessSnapshotCounters,
+  type HarnessSnapshotStore,
+} from '../src/main/agents/snapshot.js'
+import { closeOperationalLog, initOperationalLog, PROBE_OUTCOME_COUNTER } from '../src/main/operational-log.js'
 import type { CoachHarnessRow } from '../src/shared/schemas/agents.js'
 
 const infos: HarnessInfo[] = [
@@ -32,8 +40,9 @@ function makeStore(
   detect: () => Promise<HarnessInfo[]>,
   probe: (info: HarnessInfo) => Effect.Effect<ProbeResult, never>,
   onChange: (rows: CoachHarnessRow[]) => void = () => {},
+  counters?: HarnessSnapshotCounters,
 ): HarnessSnapshotStore {
-  const store = createHarnessSnapshotStore({ detect, probe, onChange })
+  const store = createHarnessSnapshotStore({ detect, probe, onChange, ...(counters ? { counters } : {}) })
   stores.push(store)
   return store
 }
@@ -237,5 +246,98 @@ describe('createHarnessSnapshotStore', () => {
     await expect(first).rejects.toThrow('scan failed')
     await expect(second).rejects.toThrow('scan failed')
     expect(detect).toHaveBeenCalledTimes(1)
+  })
+
+  it('files PROBE_OUTCOME_COUNTER per settled probe via the injected counters seam', async () => {
+    const filed: Array<{ name: string; amount: number; fields: Record<string, unknown> }> = []
+    const counters: HarnessSnapshotCounters = {
+      incrementCounter: (name, amount = 1, fields = {}) =>
+        Effect.sync(() => {
+          filed.push({ name, amount, fields: { ...fields } })
+        }),
+    }
+    const store = makeStore(
+      async () => infos.slice(0, 2),
+      info => Effect.succeed(info.kind === 'claude' ? ready : warning),
+      () => {},
+      counters,
+    )
+    await store.list()
+    await vi.waitFor(() => expect(filed).toHaveLength(2))
+    expect(filed).toContainEqual({
+      name: PROBE_OUTCOME_COUNTER,
+      amount: 1,
+      fields: { kind: 'claude', status: 'ready' },
+    })
+    expect(filed).toContainEqual({
+      name: PROBE_OUTCOME_COUNTER,
+      amount: 1,
+      fields: { kind: 'opencode', status: 'warning' },
+    })
+    await vi.waitFor(async () => expect((await store.get('claude'))?.status).toBe('ready'))
+  })
+
+  it('a throwing counters sink never breaks settle (logging never throws inside fibers)', async () => {
+    const changes: string[][] = []
+    const throwing: HarnessSnapshotCounters = {
+      incrementCounter: () =>
+        Effect.sync(() => {
+          throw new Error('sink boom')
+        }),
+    }
+    const store = makeStore(
+      async () => infos.slice(0, 1),
+      () => Effect.succeed(ready),
+      rows => changes.push(rows.map(row => `${row.kind}:${row.status}`)),
+      throwing,
+    )
+    await store.list()
+    await vi.waitFor(async () => expect((await store.get('opencode'))?.status).toBe('ready'))
+    expect(changes.flat()).toContain('opencode:ready')
+  })
+
+  it('defaults to live-singleton delegation preserving the legacy harness.probe record', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'watchtower-snapshot-counter-'))
+    const logDir = join(base, 'logs')
+    try {
+      await initOperationalLog({ logDir, isPackaged: true })
+      const store = makeStore(
+        async () => infos.slice(1, 2),
+        () => Effect.succeed(warning),
+      )
+      await store.list()
+      await vi.waitFor(async () => expect((await store.get('claude'))?.status).toBe('warning'))
+      await vi.waitFor(() => {
+        const files = readdirSync(logDir).filter(f => f.startsWith('operational'))
+        const texts: string[] = []
+        const records = files.flatMap(file => {
+          const text = readFileSync(join(logDir, file), 'utf8')
+          texts.push(text)
+          return text
+            .split('\n')
+            .filter(l => l.trim().length > 0)
+            .map(line => JSON.parse(line) as Record<string, unknown>)
+        })
+        expect(records.filter(r => r['event'] === 'harness.probe')).toHaveLength(1)
+        expect(records.filter(r => r['event'] === PROBE_OUTCOME_COUNTER)).toHaveLength(1)
+        expect(records.find(r => r['event'] === 'harness.probe')).toMatchObject({ kind: 'claude' })
+        expect(records.find(r => r['event'] === PROBE_OUTCOME_COUNTER)).toMatchObject({
+          kind: 'claude',
+          count: 1,
+        })
+        for (const record of records) {
+          expect(record).not.toHaveProperty('message')
+          expect(record).not.toHaveProperty('version')
+        }
+        expect(texts.join('\n')).not.toContain('Sign-in not verified')
+      })
+    } finally {
+      try {
+        closeOperationalLog()
+      } catch {
+        /* not initialised */
+      }
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 })
