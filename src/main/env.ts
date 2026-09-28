@@ -129,6 +129,82 @@ export interface AppPaths {
   readonly codexHome: string
   readonly suppressCacheWrites: boolean
   readonly platform: PlatformPaths
+  readonly overrides: ProviderOverrides
+}
+
+/**
+ * The per-provider discovery overrides (Wave 9 rollout, step 1 of the seam
+ * migration). Keyed by the ENV VAR NAME on purpose: the value's shape is
+ * provider-specific (a dir, a path list, a flag) and every seam applies its own
+ * chain to it, so a schema per provider would only add a second place to keep
+ * in sync. The key union keeps that honest — a typo is a compile error, and
+ * `PROVIDER_ENV_KEYS` is the exhaustive list `resolveProviderOverrides` reads.
+ *
+ * `undefined` means "not set" and only `undefined` may mean that: the readers
+ * disagree about empty values on purpose (`??` uses `''` verbatim, `||` and
+ * `.trim()` treat it as unset), so the snapshot records the raw string and
+ * never decides. That is the same rule as `PlatformPaths`.
+ */
+export type ProviderEnvKey =
+  | 'CLAUDE_CONFIG_DIR'
+  | 'CLAUDE_CONFIG_DIRS'
+  | 'CRUSH_GLOBAL_DATA'
+  | 'OPENCODE_DATA_DIR'
+  | 'OPENCODE_DB_PREFIX'
+  | 'WATCHTOWER_COPILOT_DISABLE_OTEL'
+  | 'WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR'
+  | 'WATCHTOWER_COPILOT_JETBRAINS_DIR'
+  | 'WATCHTOWER_COPILOT_OTEL_DB'
+  | 'WATCHTOWER_COPILOT_SESSION_STATE_DIR'
+  | 'WATCHTOWER_COPILOT_WS_STORAGE_DIR'
+  | 'WATCHTOWER_DESKTOP_SESSIONS_DIR'
+
+/** Exhaustive key list, sorted so a new var is added in one place. */
+export const PROVIDER_ENV_KEYS: readonly ProviderEnvKey[] = [
+  'CLAUDE_CONFIG_DIR',
+  'CLAUDE_CONFIG_DIRS',
+  'CRUSH_GLOBAL_DATA',
+  'OPENCODE_DATA_DIR',
+  'OPENCODE_DB_PREFIX',
+  'WATCHTOWER_COPILOT_DISABLE_OTEL',
+  'WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR',
+  'WATCHTOWER_COPILOT_JETBRAINS_DIR',
+  'WATCHTOWER_COPILOT_OTEL_DB',
+  'WATCHTOWER_COPILOT_SESSION_STATE_DIR',
+  'WATCHTOWER_COPILOT_WS_STORAGE_DIR',
+  'WATCHTOWER_DESKTOP_SESSIONS_DIR',
+] as const
+
+export type ProviderOverrides = Readonly<Partial<Record<ProviderEnvKey, string>>>
+
+/**
+ * Pure overrides resolver: reads exactly `PROVIDER_ENV_KEYS` through the
+ * injectable reader and drops the undefined ones. A defined value is kept
+ * VERBATIM (including `''`), per the `ProviderEnvKey` doc.
+ */
+export function resolveProviderOverrides(read: EnvReader): ProviderOverrides {
+  const overrides: Record<string, string> = {}
+  for (const key of PROVIDER_ENV_KEYS) {
+    const value = read(key)
+    if (value !== undefined) overrides[key] = value
+  }
+  return overrides
+}
+
+/**
+ * The expression every provider seam uses for its own override var:
+ * `(paths ?? appPaths()).overrides.KEY` written once so the lookup cannot drift
+ * per provider. When no snapshot is threaded this is the identical
+ * `process.env` read the seam did before, because `appPaths()` resolves
+ * uninitialized fields through the same pure resolvers.
+ */
+export function overrideFor(paths: AppPaths | undefined, key: ProviderEnvKey): string | undefined {
+  return (paths ?? appPaths()).overrides[key]
+}
+
+/** Same one-liner for the platform roots (`APPDATA`, `XDG_*`, …). */
+export function platformFor(paths: AppPaths | undefined): PlatformPaths {
+  return (paths ?? appPaths()).platform
 }
 
 /** The one injectable reader the pure platform resolver takes: `process.env`
@@ -182,6 +258,13 @@ export function resolvePlatformPaths(read: EnvReader): PlatformPaths {
 // Named removal condition: the `process.env` fallbacks below delete when every
 // reader in every isolate is snapshot-initialized AND the env-mutating tests
 // migrate to `initAppPaths` (later slice).
+//
+// `platform` and `overrides` are read from the ambient env through their pure
+// resolvers rather than threaded from boot: in one process the ambient env at
+// read time IS what the reader saw before, so copying it at boot would add a
+// second copy to keep in sync for no behavioral difference. The snapshot field
+// is what lets a TEST inject a value (`initAppPaths({ overrides })`) instead of
+// mutating `process.env`, and it is the slot a future boot-time pin would use.
 let appPathsSnapshot: Partial<AppPaths> | null = null
 
 export function initAppPaths(input: { cacheDir: string } & Partial<Omit<AppPaths, 'cacheDir'>>): void {
@@ -208,6 +291,7 @@ export function appPaths(): AppPaths {
       appPathsSnapshot?.suppressCacheWrites ??
       resolveCursorCacheSuppressWrites(process.env['WATCHTOWER_SUPPRESS_CACHE_WRITES']),
     platform: appPathsSnapshot?.platform ?? resolvePlatformPaths(readProcessEnv),
+    overrides: appPathsSnapshot?.overrides ?? resolveProviderOverrides(readProcessEnv),
   }
 }
 

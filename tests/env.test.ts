@@ -7,15 +7,21 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   appPaths,
+  type AppPaths,
   Env,
   initAppPaths,
+  overrideFor,
   type PlatformPaths,
+  platformFor,
+  PROVIDER_ENV_KEYS,
+  type ProviderEnvKey,
   resolveCacheDir,
   resolveCodexHome,
   resolveCursorCacheSuppressWrites,
   resolveGatewayKey,
   resolvePlatformPaths,
   resolvePricingCacheTtlMs,
+  resolveProviderOverrides,
 } from '../src/main/env.js'
 
 // The snapshot holder is module-global and this file never resets it — only
@@ -49,6 +55,15 @@ const ENV_CODEX_HOME = '/env/codex-home'
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))
+}
+
+/** A minimal `AppPaths` for the seam-helper cases: the fields they read are the
+ *  ones passed, everything else falls back to the ambient env like production. */
+function appPathsOf(
+  overrides: Readonly<Partial<Record<ProviderEnvKey, string>>>,
+  platform: PlatformPaths = appPaths().platform,
+): AppPaths {
+  return { ...appPaths(), overrides, platform }
 }
 
 // Static keys: the restore path uses literal assignments/deletes rather than a
@@ -90,12 +105,16 @@ describe('appPaths() — uninitialized snapshot falls back to env', () => {
     delete process.env['LOCALAPPDATA']
     delete process.env['XDG_CONFIG_HOME']
     delete process.env['XDG_DATA_HOME']
-    expect(appPaths()).toEqual({
+    expect(appPaths()).toMatchObject({
       cacheDir: dir,
       codexHome: ENV_CODEX_HOME,
       suppressCacheWrites: true,
       platform: NO_PLATFORM,
     })
+    // `overrides` is asserted on its own below: it mirrors whatever the ambient
+    // provider vars hold, so pinning it here would make this case depend on the
+    // machine's env.
+    expect(appPaths().overrides).toEqual(resolveProviderOverrides(name => process.env[name]))
   })
 
   it('cacheDir/codexHome resolve their homedir defaults when env is absent', () => {
@@ -221,13 +240,18 @@ describe('appPaths() — initialized snapshot wins per field', () => {
       // value, not a hint.
       suppressCacheWrites: false,
       platform: NO_PLATFORM,
+      overrides: { CLAUDE_CONFIG_DIR: '/fake/claude' },
     })
     expect(appPaths()).toEqual({
       cacheDir: snapshot,
       codexHome: '/fake/codex-home',
       suppressCacheWrites: false,
       platform: NO_PLATFORM,
+      overrides: { CLAUDE_CONFIG_DIR: '/fake/claude' },
     })
+    // The injected override reaches the seam helper with no `process.env` at all.
+    expect(overrideFor(undefined, 'CLAUDE_CONFIG_DIR')).toBe('/fake/claude')
+    expect(platformFor(undefined)).toEqual(NO_PLATFORM)
   })
 
   it('re-init replaces the whole record deterministically (no field bleed)', () => {
@@ -308,6 +332,52 @@ describe('resolvePlatformPaths (pure, injected reader)', () => {
   it('a partial injected reader leaves the names it does not know as null', () => {
     const read = (name: string): string | undefined => (name === 'XDG_DATA_HOME' ? '/only-this' : undefined)
     expect(resolvePlatformPaths(read)).toEqual({ ...NO_PLATFORM, xdgDataHome: '/only-this' })
+  })
+})
+
+describe('resolveProviderOverrides + overrideFor/platformFor (rollout step 1)', () => {
+  it('reads exactly the listed keys, once each, and drops only undefined', () => {
+    const seen: string[] = []
+    const env: Record<string, string> = {
+      CLAUDE_CONFIG_DIRS: '/a:/b',
+      // An empty value is DEFINED: the readers disagree (`??` uses `''`
+      // verbatim, `||` treats it as unset), so the snapshot reports it as-is.
+      WATCHTOWER_COPILOT_OTEL_DB: '',
+      OPENCODE_DB_PREFIX: 'opencode',
+    }
+    const read = (name: string): string | undefined => {
+      seen.push(name)
+      return env[name]
+    }
+    expect(resolveProviderOverrides(read)).toEqual({
+      CLAUDE_CONFIG_DIRS: '/a:/b',
+      OPENCODE_DB_PREFIX: 'opencode',
+      WATCHTOWER_COPILOT_OTEL_DB: '',
+    })
+    expect(seen.sort()).toEqual([...PROVIDER_ENV_KEYS].sort())
+    expect(seen).toHaveLength(PROVIDER_ENV_KEYS.length)
+  })
+
+  it('an empty injected reader yields an empty record (nothing invented)', () => {
+    expect(resolveProviderOverrides(() => undefined)).toEqual({})
+  })
+
+  it('the key list is sorted and unique, so it stays reviewable', () => {
+    expect([...PROVIDER_ENV_KEYS]).toEqual([...PROVIDER_ENV_KEYS].slice().sort())
+    expect(new Set(PROVIDER_ENV_KEYS).size).toBe(PROVIDER_ENV_KEYS.length)
+  })
+
+  it('overrideFor prefers a threaded record and otherwise reads the ambient env', () => {
+    const threaded = appPathsOf({ CLAUDE_CONFIG_DIR: '/threaded' })
+    expect(overrideFor(threaded, 'CLAUDE_CONFIG_DIR')).toBe('/threaded')
+    expect(overrideFor(threaded, 'CRUSH_GLOBAL_DATA')).toBe(process.env['CRUSH_GLOBAL_DATA'])
+    // No record threaded: the same value the seam read from `process.env` before.
+    expect(overrideFor(undefined, 'CLAUDE_CONFIG_DIR')).toBe(process.env['CLAUDE_CONFIG_DIR'])
+  })
+
+  it('platformFor prefers a threaded record and otherwise reads the ambient env', () => {
+    expect(platformFor(appPathsOf({}, NO_PLATFORM))).toEqual(NO_PLATFORM)
+    expect(platformFor(undefined)).toEqual(appPaths().platform)
   })
 })
 
