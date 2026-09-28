@@ -261,16 +261,6 @@ export interface HarnessRuntimeOptions {
 
 export const CANCEL_DRAIN_MS = 1500
 
-/** Handshake deadline for the `inspect()` pre-flight probe (map 47 ticket 50):
- *  the single source is `HARNESS_HANDSHAKE_TIMEOUT_MS` in
- *  `./harness-timeouts.js`, shared with the `probe.ts` health probe, so a hung
- *  agent degrades to the `{ ok: false }` inspect arm instead of hanging the
- *  picker forever.
- *  Compat alias — same value, single source.
- *  @deprecated Use `HARNESS_HANDSHAKE_TIMEOUT_MS` from `./harness-timeouts.js`.
- *  Removal: when every importer reads the canonical module (later slice). */
-export const HARNESS_INSPECT_TIMEOUT_MS = HARNESS_HANDSHAKE_TIMEOUT_MS
-
 /** Provider teardown as a never-fails Effect (the drain-barrier exemplar
  *  extended to teardown): `provider.cleanup()` must never turn a completed
  *  or cancelled run into a rejection, so interruptions/defects are ignored.

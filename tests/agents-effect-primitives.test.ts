@@ -14,7 +14,7 @@ import { Deferred, Effect, Exit, Fiber, FiberHandle, Layer, Option, Ref, Schedul
 import * as TestClock from 'effect/testing/TestClock'
 import { describe, expect, it } from 'vitest'
 
-import { HARNESS_INSPECT_TIMEOUT_MS } from '../src/main/agents/runtime.js'
+import { HARNESS_HANDSHAKE_TIMEOUT_MS } from '../src/main/agents/harness-timeouts.js'
 import { HarnessProbe } from '../src/main/agents/snapshot.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 
@@ -270,16 +270,16 @@ describe('effect: run teardown barrier (§4.3 — acquireRelease + timeoutOption
   })
 
   it('a hung inspect handshake hits the inspect deadline instead of hanging', async () => {
-    expect(HARNESS_INSPECT_TIMEOUT_MS).toBe(15_000)
+    expect(HARNESS_HANDSHAKE_TIMEOUT_MS).toBe(15_000)
     const outcome = await Effect.runPromise(
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(
           Effect.tryPromise({
             try: () => new Promise<unknown>(() => {}),
             catch: error => error,
-          }).pipe(Effect.timeoutOption(HARNESS_INSPECT_TIMEOUT_MS)),
+          }).pipe(Effect.timeoutOption(HARNESS_HANDSHAKE_TIMEOUT_MS)),
         )
-        yield* TestClock.adjust(HARNESS_INSPECT_TIMEOUT_MS + 100)
+        yield* TestClock.adjust(HARNESS_HANDSHAKE_TIMEOUT_MS + 100)
         return yield* Fiber.join(fiber)
       }).pipe(Effect.provide(TestClock.layer())),
     )
