@@ -96,22 +96,24 @@ aggregation, and formatting stay ordinary functions.
 
 Each isolate owns one application runtime with its own lifecycle and
 resources: the main process composes its services into one runtime, and the
-db-worker composes its own. The two runtimes never share SQLite state by
-design — the db-worker owns the single SQLite connection and the
-single-writer data plane on its dedicated thread, keeping database work off
-the main thread. External callbacks and Promise APIs enter or leave Effect at
-these composition roots rather than spreading through domain code.
+db-worker composes its own. `MainLive` is a flat `Layer.mergeAll` of
+`HttpFetch`, `HarnessProbe`, and the startup-immutable env-only `Env` Config —
+provided once at the composition root, never per-call. The two runtimes never
+share SQLite state by design — the db-worker owns the single SQLite connection
+and the single-writer data plane on its dedicated thread, keeping database work
+off the main thread. External callbacks and Promise APIs enter or leave Effect
+at these composition roots rather than spreading through domain code.
 
 Per-slice adoption status:
 
-| Slice                           | Status                                                                                                                                    |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Ledger and db-worker store      | Migrations accepted (ADR 0031); the store surface and worker orchestration migrate slice by slice behind the synchronous worker boundary. |
-| Fetch, FX, pricing, and updates | Migrating on the reference service shape; fallbacks preserved so Sections never block on a failed fetch.                                  |
-| Scan orchestration              | Migrating; provider parsers and the session cache stay pure behind their existing seams.                                                  |
-| Harness lifecycle               | Migrating behind the existing Harness seams, gaining deadlines, bounded concurrency, and deterministic teardown.                          |
-| Main runtime and IPC            | Migrating; one composition root fronts the IPC surface and the remaining channels move over per slice.                                    |
-| Renderer                        | 0% by design: no Effect in the renderer, which consumes the Promise-based, Zod-validated IPC facade.                                      |
+| Slice                           | Status                                                                                                                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Ledger and db-worker store      | Migrations accepted (ADR 0031); the store surface and worker orchestration migrate slice by slice behind the synchronous worker boundary.                                                  |
+| Fetch, FX, pricing, and updates | Migrating on the reference service shape; fallbacks preserved so Sections never block on a failed fetch.                                                                                   |
+| Scan orchestration              | Migrating; provider parsers and the session cache stay pure behind their existing seams.                                                                                                   |
+| Harness lifecycle               | Migrating behind the existing Harness seams, gaining deadlines, bounded concurrency, and deterministic teardown.                                                                           |
+| Main runtime and IPC            | Migrating; one composition root fronts the IPC surface and the remaining channels move over per slice. `Env` Config composed into `MainLive` (flat `mergeAll`, provided once at the root). |
+| Renderer                        | 0% by design: no Effect in the renderer, which consumes the Promise-based, Zod-validated IPC facade.                                                                                       |
 
 Contracts stay stable through the migration. Zod remains the single wire and
 contract truth: there are never parallel Zod and Effect Schema definitions

@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest'
 
 import { HARNESS_HANDSHAKE_TIMEOUT_MS } from '../src/main/agents/harness-timeouts.js'
 import { HarnessProbe } from '../src/main/agents/snapshot.js'
+import { Env } from '../src/main/env.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 
 // ---------------------------------------------------------------------------
@@ -287,16 +288,31 @@ describe('effect: run teardown barrier (§4.3 — acquireRelease + timeoutOption
   })
 })
 
+/** Fake fetch shared by both flat-composition cases: the capability seams only
+ *  read `ok`/`status`/`json`, so the payload shape is irrelevant here. */
+function fakeOkFetch(): typeof fetch {
+  return (async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ rates: { EUR: 0.9 } }),
+  })) as unknown as typeof fetch
+}
+
+/** The one probe request both cases drive through `HarnessProbe` (read-only, so
+ *  a single shared value keeps the two cases byte-comparable). */
+const codexProbeRequest: Parameters<HarnessProbe['Service']['probe']>[0] = {
+  name: 'codex',
+  kind: 'codex',
+  displayName: 'Codex',
+  bin: 'codex',
+  scrubEnv: [],
+}
+
 describe('effect: MainLive flat composition (§4.3 — one runtime, test fakes)', () => {
   it('merged HttpFetch + HarnessProbe test layers provide both capabilities', async () => {
-    const fakeFetch = (async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ rates: { EUR: 0.9 } }),
-    })) as unknown as typeof fetch
     const probeCalls: string[] = []
     const testLive = Layer.mergeAll(
-      HttpFetch.layerWithFetch(fakeFetch),
+      HttpFetch.layerWithFetch(fakeOkFetch()),
       HarnessProbe.layerWithProbe(info => {
         probeCalls.push(info.kind)
         return Effect.succeed({ status: 'ready' as const, auth: { status: 'unknown' as const } })
@@ -307,16 +323,52 @@ describe('effect: MainLive flat composition (§4.3 — one runtime, test fakes)'
         const http = yield* HttpFetch
         const probe = yield* HarnessProbe
         const response = yield* http.fetch('https://example.invalid/fx', {}, 1000)
-        const result = yield* probe.probe({
-          name: 'codex',
-          kind: 'codex',
-          displayName: 'Codex',
-          bin: 'codex',
-          scrubEnv: [],
-        })
+        const result = yield* probe.probe(codexProbeRequest)
         return { ok: response.ok, status: result.status, kinds: probeCalls }
       }).pipe(Effect.provide(testLive)),
     )
     expect(rows).toEqual({ ok: true, status: 'ready', kinds: ['codex'] })
+  })
+
+  it('Env joins the flat merge: startup-immutable Config beside fetch + probe fakes', async () => {
+    // Mirrors MainLive's flat shape with test fakes (no second runtime, zero
+    // process.env mutation): Env.layerWithValues carries the full value shape.
+    const testLive = Layer.mergeAll(
+      HttpFetch.layerWithFetch(fakeOkFetch()),
+      HarnessProbe.layerWithProbe(() =>
+        Effect.succeed({ status: 'ready' as const, auth: { status: 'unknown' as const } }),
+      ),
+      Env.layerWithValues({
+        vercelGatewayApiKey: 'test-gateway-key',
+        pricingCacheTtlMs: Infinity,
+        cursorCacheSuppressWrites: false,
+        codexHome: '/fake/codex-home',
+      }),
+    )
+    const rows = await Effect.runPromise(
+      Effect.gen(function* () {
+        const env = yield* Env
+        const http = yield* HttpFetch
+        const probe = yield* HarnessProbe
+        const response = yield* http.fetch('https://example.invalid/fx', {}, 1000)
+        const result = yield* probe.probe(codexProbeRequest)
+        return {
+          gatewayKey: env.vercelGatewayApiKey,
+          ttlMs: env.pricingCacheTtlMs,
+          suppress: env.cursorCacheSuppressWrites,
+          codexHome: env.codexHome,
+          ok: response.ok,
+          status: result.status,
+        }
+      }).pipe(Effect.provide(testLive)),
+    )
+    expect(rows).toEqual({
+      gatewayKey: 'test-gateway-key',
+      ttlMs: Infinity,
+      suppress: false,
+      codexHome: '/fake/codex-home',
+      ok: true,
+      status: 'ready',
+    })
   })
 })

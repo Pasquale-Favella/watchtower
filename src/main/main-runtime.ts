@@ -2,6 +2,7 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 
 import { HarnessProbe } from './agents/snapshot.js'
+import { Env } from './env.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 
 /**
@@ -18,13 +19,20 @@ import { HttpFetch } from './pipeline/fetch-utils.js'
  * handlers) enter Effect here. `HarnessProbe` is the minimal harness
  * capability seam (§4.3): the never-fails ACP handshake probe with
  * test-friendly fakes (`layerWithProbe`), mirroring `HttpFetch.layerWithFetch`.
+ * `Env` is the startup-immutable env-only Config seam: provided once at this
+ * root via `Env.layer`, never per-call — tests substitute
+ * `Env.layerWithValues` fakes with zero `process.env` mutation.
  * The snapshot store itself stays Promise-bound (its `deps.detect` Promise
  * boundary + `onChange` IPC push never cross into Effect), and the run
  * seam stays injectable via `HarnessSdk` fakes — platform adoption
- * (`@effect/platform` HttpClient/FileSystem/Command) and env-only Config
- * are sequenced follow-ups, each pinned + asar-proven like ADR 0030.
+ * (`@effect/platform` HttpClient/FileSystem/Command) stays a sequenced
+ * follow-up, pinned + asar-proven like ADR 0030.
  */
-export const MainLive: Layer.Layer<HttpFetch | HarnessProbe> = Layer.mergeAll(HttpFetch.layer, HarnessProbe.layer)
+export const MainLive: Layer.Layer<HttpFetch | HarnessProbe | Env> = Layer.mergeAll(
+  HttpFetch.layer,
+  HarnessProbe.layer,
+  Env.layer,
+)
 
 export const mainRuntime = ManagedRuntime.make(MainLive)
 
