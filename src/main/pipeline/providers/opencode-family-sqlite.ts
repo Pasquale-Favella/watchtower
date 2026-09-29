@@ -1,6 +1,7 @@
 import { readdir } from 'fs/promises'
 import { join } from 'path'
 
+import { type AppPaths, overrideFor } from '../../env.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import { calculateCost } from '../models.js'
 import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../sqlite.js'
@@ -583,10 +584,22 @@ export const OPENCODE_FAMILY_2X: SqliteGeneration = {
   },
 }
 
+/// The shared reader, parameterized by whichever tools the family covers — so
+/// the AppPaths seam is ONE trailing slot for the whole family, not one per
+/// tool: `paths` is the binding seam convention from `env.ts` (one optional
+/// trailing param, always last, read only your own key out of it). The reader
+/// reads exactly one key, `WATCHTOWER_VERBOSE`, and only through it — the
+/// notice below is the reader's sole env consumer, and it was the last direct
+/// `process.env` read left in this file.
+///
+/// A caller with no seam to thread (`kilo-code.ts` today) omits it and resolves
+/// `appPaths()`, which reads the same ambient value the bare read did — so
+/// omitting the argument is behavior-preserving, not a silent opt-out.
 export function createSqliteSessionParser(
   source: SessionSource,
   seenKeys: Set<string>,
   config: SqliteProviderConfig,
+  paths?: AppPaths,
 ): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
@@ -723,7 +736,16 @@ export function createSqliteSessionParser(
             }
           }
 
-          if (yieldCount === 0 && process.env['WATCHTOWER_VERBOSE'] === '1') {
+          // `overrideFor` is the seam; `=== '1'` is the reader's own strict
+          // comparison and is unchanged — 'true', '' and any other value stay
+          // silent, exactly as the bare `process.env` read did. Unthreaded
+          // callers resolve the same ambient value through `appPaths()`.
+          //
+          // This line was the tree's LAST direct `process.env` read, the one
+          // `REMAINING_DIRECT_ENV_READS` (env.ts) still listed; both the read and
+          // the registry entry are gone, so the list now names only the
+          // unthreaded readers the seam rollout still has to migrate.
+          if (yieldCount === 0 && overrideFor(paths, 'WATCHTOWER_VERBOSE') === '1') {
             process.stderr.write(
               `watchtower: ${config.displayName} session has ${messages.length} messages ` +
                 `(${parseFailCount} unparseable, ${roleSkipCount} non-user/assistant roles) ` +

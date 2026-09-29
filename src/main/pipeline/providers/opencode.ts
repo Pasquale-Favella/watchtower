@@ -116,7 +116,11 @@ export function createOpenCodeProvider(dataDir?: string, paths?: AppPaths): Prov
       if (source.path.endsWith('.json')) {
         return createOpenCodeFileSessionParser(source, seenKeys, resolvedDataDir, 'opencode')
       }
-      return createSqliteSessionParser(source, seenKeys, sqliteConfig)
+      // `paths` threads straight through to the shared reader's verbose gate:
+      // one trailing seam slot, no second override argument. A caller that
+      // omitted it (`kilo-code.ts`) resolves `appPaths()` there instead — the
+      // same lookup, at the reader rather than at the root.
+      return createSqliteSessionParser(source, seenKeys, sqliteConfig, paths)
     },
   }
 }
