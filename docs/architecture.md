@@ -135,11 +135,15 @@ Locked decisions carried over from the adoption follow-up:
   the in-package modules instead — `effect/unstable/http` for step 1 (landed),
   `effect/unstable/process` (`ChildProcess` + `ChildProcessSpawner`) for step 3
   (landed, one tracer call site: the Claude auth probe, behind the
-  `CommandRunner` port). `FileSystem` is still step 2 and still open: rc.115
-  ships the `FileSystem` service and `make` with no platform implementation, so
-  taking it means hand-writing the Node fs transport the same way the
-  child-process one is hand-written, or accepting a permanent `node:fs`
-  exception. That decision is not yet taken.
+  `CommandRunner` port). `FileSystem` (step 2) is **closed as "no"** — owner
+  decision, 2026-09-29: the ~20 `node:fs` reads it would cover are synchronous
+  discovery reads that must resolve before any Effect context exists, so the
+  transport would buy substitution no test uses and lifecycle no resource needs.
+  The boundary rule that keeps this an exception rather than a spreading
+  default: **sync discovery stays plain functions on `node:fs`; effectful,
+  streamed, retryable, or scope-owned file work goes through a port**
+  (`CommandRunner` is the existing example). No new dependency is needed for
+  steps 1 or 3, and the packaged artifact needs no new external.
 - Observability is a bridge, not a second pipeline: Effect logs, metrics,
   and spans feed the existing pino-backed Operational log. There is no
   separate exporter.
