@@ -4,6 +4,7 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { join, basename } from 'path'
 import { homedir } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { calculateCost } from '../models.js'
 import { openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { normalizeContentBlocks } from '../content-utils.js'
@@ -449,7 +450,16 @@ function createParser(
           if (seenKeys.has(deduplicationKey)) continue
           seenKeys.add(deduplicationKey)
 
-          const costUSD = calculateCost(costModel(model), inputTokens, outputTokens + reasoningTokens, 0, 0, 0)
+          // Both counters are char estimates over disjoint text (the assistant
+          // body and its reasoning body), so the reasoning fold still applies.
+          const costUSD = calculateCost(
+            costModel(model),
+            inputTokens,
+            billableOutputTokens('cursor-agent', outputTokens, reasoningTokens),
+            0,
+            0,
+            0,
+          )
 
           yield {
             provider: 'cursor-agent',

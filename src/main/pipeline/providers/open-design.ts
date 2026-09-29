@@ -2,6 +2,7 @@ import { readdir, stat } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import { homedir, platform } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLines } from '../fs-utils.js'
 import { calculateCost } from '../models.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
@@ -202,7 +203,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         const costUSD = calculateCost(
           currentModel,
           uncachedInputTokens,
-          usage.outputTokens + usage.reasoningTokens,
+          billableOutputTokens(PROVIDER_NAME, usage.outputTokens, usage.reasoningTokens),
           0,
           usage.cacheReadTokens,
           0,

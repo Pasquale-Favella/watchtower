@@ -1,3 +1,4 @@
+import { billableOutputTokens } from '../billable-output.js'
 import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import type { ParsedProviderCall } from './types.js'
@@ -143,7 +144,7 @@ export function buildAssistantCall(opts: {
   let costUSD = calculateCost(
     model,
     tokens.input,
-    tokens.output + tokens.reasoning,
+    billableOutputTokens(opts.providerName, tokens.output, tokens.reasoning),
     tokens.cacheWrite,
     tokens.cacheRead,
     0,

@@ -2,6 +2,7 @@ import { readdir, stat } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { calculateCost, getShortModelName } from '../models.js'
 import { isSqliteAvailable, openDatabase, isSqliteBusyError, type SqliteDatabase } from '../sqlite.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
@@ -400,7 +401,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, hermesHome: 
         const calculatedCost = calculateCost(
           model,
           inputTokens,
-          outputTokens + reasoningTokens,
+          billableOutputTokens('hermes', outputTokens, reasoningTokens),
           cacheWriteTokens,
           cacheReadTokens,
           0,

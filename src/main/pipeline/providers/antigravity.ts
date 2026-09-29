@@ -6,6 +6,7 @@ import { homedir } from 'os'
 import { fileURLToPath } from 'url'
 import https from 'https'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { calculateCost } from '../models.js'
 import { resolveCacheDir } from '../../env.js'
 import { isSqliteAvailable, isSqliteBusyError, openDatabase } from '../sqlite.js'
@@ -819,7 +820,14 @@ function buildCallFromSqliteGenMetadataRow(
   const responseId = antigravitySqliteResponseId(usageFields, String(row.idx))
   const model = antigravitySqliteModel(chatFields)
   const pricingModel = normalizePricingModel(model)
-  const costUSD = calculateCost(pricingModel, inputTokens, responseTokens + thinkingTokens, 0, 0, 0)
+  const costUSD = calculateCost(
+    pricingModel,
+    inputTokens,
+    billableOutputTokens('antigravity', responseTokens, thinkingTokens),
+    0,
+    0,
+    0,
+  )
 
   return {
     provider: 'antigravity',
@@ -941,7 +949,14 @@ function buildCallsFromGeneratorMetadata(
     const model = dropPlaceholderModelId(modelMap[usage.model] ?? usage.model)
     const pricingModel = normalizePricingModel(model)
     const timestamp = entry.chatModel?.chatStartMetadata?.createdAt ?? ''
-    const costUSD = calculateCost(pricingModel, inputTokens, responseTokens + thinkingTokens, 0, 0, 0)
+    const costUSD = calculateCost(
+      pricingModel,
+      inputTokens,
+      billableOutputTokens('antigravity', responseTokens, thinkingTokens),
+      0,
+      0,
+      0,
+    )
 
     results.push({
       provider: 'antigravity',

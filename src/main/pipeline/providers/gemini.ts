@@ -3,6 +3,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 
 import { readSessionFile } from '../fs-utils.js'
+import { billableOutputTokens } from '../billable-output.js'
 import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
@@ -125,7 +126,14 @@ function parseSession(data: GeminiSession, seenKeys: Set<string>): ParsedProvide
     // Gemini bills thoughts at the output token rate; calculateCost does not
     // accept a reasoning parameter, so fold thoughts into the output count for
     // pricing while keeping outputTokens / reasoningTokens reported separately.
-    const costUSD = calculateCost(msg.model, freshInput, totalOutput + totalThoughts, 0, totalCached, 0)
+    const costUSD = calculateCost(
+      msg.model,
+      freshInput,
+      billableOutputTokens('gemini', totalOutput, totalThoughts),
+      0,
+      totalCached,
+      0,
+    )
 
     results.push({
       provider: 'gemini',

@@ -2,6 +2,7 @@ import { existsSync } from 'fs'
 import { lstat, readFile, readdir, stat } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { type AppPaths, overrideFor } from '../env.js'
+import { billableOutputTokens } from './billable-output.js'
 import { readSessionLines } from './fs-utils.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
 import {
@@ -3006,7 +3007,7 @@ function providerCallsToCachedTurns(calls: ParsedProviderCall[]): CachedTurn[] {
 
 function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
   const u = call.usage
-  const outputForCost = call.provider === 'claude' ? u.outputTokens : u.outputTokens + u.reasoningTokens
+  const outputForCost = billableOutputTokens(call.provider, u.outputTokens, u.reasoningTokens)
   const costUSD = calculateCost(
     call.model,
     u.inputTokens,

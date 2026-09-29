@@ -4,6 +4,7 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { basename, dirname, extname, join } from 'path'
 import { homedir } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { readSessionFile } from '../fs-utils.js'
 import { calculateCost } from '../models.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
@@ -778,13 +779,13 @@ async function parseV2Session(source: SessionSource, seenKeys: Set<string>): Pro
         const outputTokens = estimateTokensFromChars(outputChars)
         // Prefer real metered credits (converted at the public overage rate)
         // over token estimation; fall back to token pricing when the turn has
-        // no usage_summary (e.g. still in progress or null usage). Reasoning
-        // text is billed as output, so combine it for pricing only (same as
-        // the codex provider).
+        // no usage_summary (e.g. still in progress or null usage). Kiro's
+        // reported output does not cover the reasoning text, so the shared
+        // helper combines them for pricing only.
         const costUSD =
           turnCredits > 0
             ? turnCredits * USD_PER_KIRO_CREDIT
-            : calculateCost(modelId, inputTokens, outputTokens + reasoningTokens, 0, 0, 0)
+            : calculateCost(modelId, inputTokens, billableOutputTokens('kiro', outputTokens, reasoningTokens), 0, 0, 0)
         results.push({
           provider: 'kiro',
           model: modelId,

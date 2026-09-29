@@ -2,6 +2,7 @@ import { readdir, stat, readFile } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { readSessionFile, readSessionLines } from '../fs-utils.js'
 import { calculateCost, getShortModelName } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
@@ -241,7 +242,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         const costUSD = calculateCost(
           sessionModelDisplay.toLowerCase(),
           inputTokens,
-          outputTokens + thinkingTokens,
+          billableOutputTokens('droid', outputTokens, thinkingTokens),
           cacheCreationTokens,
           cacheReadTokens,
           0,

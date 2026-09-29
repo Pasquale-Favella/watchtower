@@ -5,6 +5,7 @@ import { basename, join } from 'path'
 
 import { appPaths, resolveCodexHome, type AppPaths } from '../../env.js'
 import { readSessionLines } from '../fs-utils.js'
+import { billableOutputTokens } from '../billable-output.js'
 import { calculateCost } from '../models.js'
 import {
   readCachedCodexResults,
@@ -698,7 +699,10 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           const costUSD = calculateCost(
             model,
             uncachedInputTokens,
-            outputTokens + reasoningTokens,
+            // OpenAI's `reasoning_output_tokens` is a breakdown of
+            // `output_tokens`, not a sibling of it — the helper keeps the fold
+            // from billing the same tokens twice.
+            billableOutputTokens('codex', outputTokens, reasoningTokens),
             0,
             cachedInputTokens,
             0,

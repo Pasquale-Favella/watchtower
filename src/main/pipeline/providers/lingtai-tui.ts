@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { basename, delimiter, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLines } from '../fs-utils.js'
 import { calculateCost, getShortModelName } from '../models.js'
 import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
@@ -355,7 +356,14 @@ function createParser(source: SessionSource): SessionParser {
           cachedInputTokens,
         ].join(':')
 
-        const costUSD = calculateCost(model, inputTokens, outputTokens + reasoningTokens, 0, cachedInputTokens, 0)
+        const costUSD = calculateCost(
+          model,
+          inputTokens,
+          billableOutputTokens('lingtai-tui', outputTokens, reasoningTokens),
+          0,
+          cachedInputTokens,
+          0,
+        )
 
         yield {
           provider: 'lingtai-tui',
