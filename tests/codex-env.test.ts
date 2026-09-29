@@ -79,10 +79,22 @@ describe('createCodexProvider (CODEX_HOME seam)', () => {
     }
   })
 
+  it('an explicit dir still beats a boot-pinned snapshot (precedence is not resolution timing)', async () => {
+    try {
+      initAppPaths({ cacheDir: appPaths().cacheDir, codexHome: '/fake/env/codex-home' })
+      const roots = await createCodexProvider('/explicit/codex').probeRoots()
+      expect(roots[0]?.path).toBe(join('/explicit/codex', 'sessions'))
+    } finally {
+      initAppPaths({ cacheDir: appPaths().cacheDir })
+    }
+  })
+
   it('the module singleton the provider registry imports still resolves roots', async () => {
     const roots = await codex.probeRoots()
     // No machine path asserted: the singleton resolves whatever the snapshot
-    // reported on this machine, and only its shape is a contract.
+    // reports on this machine, and only its shape is a contract. That it reports
+    // the CURRENT snapshot, rather than one frozen at import time, is pinned in
+    // `tests/codex-lazy-singleton.test.ts`.
     expect(roots).toHaveLength(2)
     expect(roots[0]?.label).toBe('sessions')
     expect(roots[1]?.label).toBe('archived')

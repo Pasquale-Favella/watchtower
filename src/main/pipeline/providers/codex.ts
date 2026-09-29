@@ -766,7 +766,13 @@ export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provid
   // startup snapshot reports, or the homedir default when the var is unset.
   // The seam keeps its own `??` chain, so an uninitialized snapshot resolves
   // exactly the `process.env['CODEX_HOME']` the pre-snapshot read saw.
-  const dir = resolveCodexHome((paths ?? appPaths()).codexHome, codexDir)
+  //
+  // A FUNCTION, not a value: the dir is resolved per call so this factory is
+  // safe to run at module-evaluation time (the registry imports the singleton
+  // below, and module bodies evaluate before any importer's body, so a value
+  // captured here would freeze the pre-`initAppPaths` snapshot). Every other
+  // seam already resolves `appPaths()` inside its call; this one now does too.
+  const dir = (): string => resolveCodexHome((paths ?? appPaths()).codexHome, codexDir)
 
   return {
     name: 'codex',
@@ -783,17 +789,19 @@ export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provid
       return toolNameMap[rawTool] ?? rawTool
     },
 
-    // Same `dir` discoverSessionsInDir walks: <codexDir>/sessions (dated
-    // rollout files) and <codexDir>/archived_sessions. Honors CODEX_HOME.
+    // `<home>/sessions` (dated rollout files) and `<home>/archived_sessions`
+    // are the two roots `discoverSessionsInDir` walks, where `home` is `dir()`
+    // resolved at this call. Honors CODEX_HOME.
     async probeRoots(): Promise<ProbeRoot[]> {
+      const home = dir()
       return [
-        { path: join(dir, 'sessions'), label: 'sessions' },
-        { path: join(dir, 'archived_sessions'), label: 'archived' },
+        { path: join(home, 'sessions'), label: 'sessions' },
+        { path: join(home, 'archived_sessions'), label: 'archived' },
       ]
     },
 
     async discoverSessions(): Promise<SessionSource[]> {
-      return discoverSessionsInDir(dir)
+      return discoverSessionsInDir(dir())
     },
 
     createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
@@ -802,17 +810,18 @@ export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provid
   }
 }
 
-// The registry (`providers/index.ts`) imports this singleton, so the snapshot is
-// resolved here at the module root rather than threaded from a caller that cannot
-// pass one.
+// The registry (`providers/index.ts`) imports this singleton, and it is built
+// with NO threaded record for the same reason `export const opencode =
+// createOpenCodeProvider()` is: the seam falls back to `appPaths()` at CALL
+// time, so the record the importer's `initAppPaths` installs is honoured.
 //
-// CONSTRAINT, deliberate: module bodies evaluate BEFORE any importer's body, so
-// this call runs before `initAppPaths` in both isolates — a later
-// `initAppPaths({ codexHome })` would be ignored by `codex` while every other
-// provider (which resolves `appPaths()` lazily inside its seam) honoured it. The
-// value is therefore correct today, because uninitialized `codexHome` falls
-// back to the same `process.env` read the seam always did. It becomes a real
-// inconsistency the moment boot pins `codexHome`: fix it by making this lazy
-// (`createCodexProvider()` — whose seam already falls back to `appPaths()`) or
-// by initializing the snapshot before the provider registry is imported.
-export const codex = createCodexProvider(undefined, appPaths())
+// LAZY, deliberately — and the ordering constraint that used to force the
+// opposite is gone. Module bodies evaluate BEFORE any importer's body, so the
+// previous `createCodexProvider(undefined, appPaths())` captured the snapshot
+// from BEFORE `initAppPaths` runs in either isolate: a boot-time
+// `initAppPaths({ codexHome })` would have been ignored by `codex` while every
+// other provider honoured it. That was invisible only because an uninitialized
+// `codexHome` falls back to the same `process.env['CODEX_HOME']` the seam
+// always read. Per-call resolution is what makes `codex` report the pin the
+// moment boot makes it, with no import-order contract to maintain.
+export const codex = createCodexProvider()
