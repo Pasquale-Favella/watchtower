@@ -1,23 +1,24 @@
 import {
-  calculateCost,
-  createPricingConfigLookup,
-  getModelCosts,
-  getShortModelName,
-  type ModelCosts,
-  type PricingConfigLookup,
-} from './pipeline/models.js'
-import type { SessionSummary, TaskCategory } from './pipeline/types.js'
-import { overviewDateRange, type OverviewScope } from './overview.js'
-import { buildSessionSummaries } from './store/aggregate.js'
-import type { LedgerStore } from './store/ledger.js'
-import {
-  modelsPayloadSchema,
   type AuditRow,
   type ModelReportRow,
   type ModelsConfig,
   type ModelsPayload,
+  modelsPayloadSchema,
   type RowOverride,
 } from '../shared/schemas/models.js'
+import { overviewDateRange, type OverviewScope } from './overview.js'
+import { billableOutputTokens } from './pipeline/billable-output.js'
+import {
+  calculateCost,
+  createPricingConfigLookup,
+  getShortModelName,
+  getTieredModelCosts,
+  type ModelCosts,
+  type PricingConfigLookup,
+} from './pipeline/models.js'
+import type { SessionSummary, TaskCategory } from './pipeline/types.js'
+import { buildSessionSummaries } from './store/aggregate.js'
+import type { LedgerStore } from './store/ledger.js'
 
 export type { AuditRow, ModelReportRow, ModelsConfig, ModelsPayload, RowOverride } from '../shared/schemas/models.js'
 
@@ -70,6 +71,12 @@ interface AuditBucket {
   calls: number
   attributedCostUSD: number
   cacheReadDisplayed: number
+  /** The output count the provider's own contract says is billable, summed
+   * through `billableOutputTokens` per call at accumulation time. The audit
+   * lens's `displayed` block is derived from this rather than re-deciding the
+   * reasoning question from the bucket totals, so the displayed tokens and the
+   * `cost` block computed beneath them are the same numbers. */
+  outputDisplayed: number
   raw: AuditRow['raw']
 }
 
@@ -131,33 +138,22 @@ function accumulate(
   bucket.calls += 1
 }
 
-/** The cost a call contributes to its model row. Order matters: a manual
- * price override wins over everything (it is what the user explicitly asked
- * to pay — its two stored rates price the row's input and output); otherwise
- * a store alias that rewrote the model re-prices the call through the normal
- * pipeline (the scan priced the raw name, typically at $0); otherwise the
- * scan's recorded cost stands. Identity and rates come from the shared
- * pricing-config lookup, so this lens resolves exactly like the seam. */
-function resolveCallCost(call: ParsedCall, effectiveModel: string, pricingConfig: PricingConfigLookup): number {
-  const override = pricingConfig.findOverride(effectiveModel)
-  if (override) {
-    return (
-      (call.usage.inputTokens / 1_000_000) * override.inputPricePerMillion +
-      (call.usage.outputTokens / 1_000_000) * override.outputPricePerMillion
-    )
-  }
-  if (effectiveModel !== call.model) {
-    return calculateCost(
-      effectiveModel,
-      call.usage.inputTokens,
-      call.usage.outputTokens,
-      call.usage.cacheCreationInputTokens,
-      Math.max(call.usage.cacheReadInputTokens, call.usage.cachedInputTokens),
-      call.usage.webSearchRequests,
-      call.speed,
-    )
-  }
-  return call.costUSD
+/** The output-token count this lens attributes to a call.
+ *
+ * `billableOutputTokens` is the single answer to "does this provider's reported
+ * output already include its reasoning?" (`src/main/pipeline/billable-output.ts`).
+ * It has to be that function rather than an inline sum, and this file is the
+ * reason it needs saying twice: it answered the question itself at three sites
+ * (the by-model bucket, the by-task bucket, the audit lens's `displayed`
+ * block), unconditionally adding `reasoningTokens`. For `codex` and `copilot` —
+ * whose `outputTokens` already contains the reasoning count — those rows showed
+ * more output than the scan billed, and `displayed` disagreed with the `cost`
+ * block printed directly beneath it. Displaying reasoning that was never billed
+ * reads as a token-accounting bug to anyone reconciling the two, and a second
+ * opinion on a billing question is how the two views drift apart in the first
+ * place. The helper is the whole contract. */
+function displayOutputTokens(call: ParsedCall): number {
+  return billableOutputTokens(call.provider || 'unknown', call.usage.outputTokens, call.usage.reasoningTokens)
 }
 
 /** The per-call cache-read count: the two cache-read vocabularies
@@ -167,12 +163,70 @@ function callCacheReadTokens(call: ParsedCall): number {
   return Math.max(call.usage.cacheReadInputTokens, call.usage.cachedInputTokens)
 }
 
+/** The cost a call contributes to its model row. Order matters: a manual
+ * price override wins over everything (it is what the user explicitly asked
+ * to pay — its two stored rates price the row's input and output); otherwise a
+ * store alias that rewrote the model re-prices the call through the normal
+ * pipeline (the scan priced the raw name, typically at $0); otherwise the
+ * scan's recorded cost stands. Identity and rates come from the shared
+ * pricing-config lookup, so this lens resolves exactly like the seam.
+ *
+ * The re-price reads its output count through `displayOutputTokens` for the
+ * same reason the buckets do. The scan bills a `codex` or `copilot` call at its
+ * reported output alone, so pricing the same call here at output+reasoning made
+ * an aliased or overridden row cost more than the identical call costs as
+ * recorded by a scan — the lens disagreeing with the ledger it is explaining. */
+function resolveCallCost(call: ParsedCall, effectiveModel: string, pricingConfig: PricingConfigLookup): number {
+  const override = pricingConfig.findOverride(effectiveModel)
+  if (override) {
+    return (
+      (call.usage.inputTokens / 1_000_000) * override.inputPricePerMillion +
+      (displayOutputTokens(call) / 1_000_000) * override.outputPricePerMillion
+    )
+  }
+  if (effectiveModel !== call.model) {
+    return calculateCost(
+      effectiveModel,
+      call.usage.inputTokens,
+      displayOutputTokens(call),
+      call.usage.cacheCreationInputTokens,
+      callCacheReadTokens(call),
+      call.usage.webSearchRequests,
+      call.speed,
+    )
+  }
+  return call.costUSD
+}
+
 /** The rates the audit lens attributes to a raw model, resolved through the
  * same chain as `resolveCallCost` so the recompute tracks the attributed
  * cost: an override on the EFFECTIVE model wins (zero cache/web — that is
- * all the stored override covers); an aliased model inherits its target's
- * full rate card; otherwise the model's own pricing stands. */
-function auditRatesFor(effectiveModel: string, pricingConfig: PricingConfigLookup): ModelCosts | null {
+ * all the stored override covers, and a user-typed price is also the one
+ * thing a context-window tier must never reprice, so no tier applies here);
+ * an aliased model inherits its target's full rate card; otherwise the
+ * model's own pricing stands.
+ *
+ * The last case goes through `getTieredModelCosts`, the SAME resolver
+ * `calculateCost` uses, rather than a bare `getModelCosts`. The audit lens
+ * recomputes a row's cost as flat rates × displayed tokens and the renderer
+ * turns any residual against the attributed cost into an "est" badge, so a
+ * lens holding flat rates while the engine billed the tier made every
+ * correctly-priced tiered row look like an estimate: before the fix, a
+ * 250,000-token `grok-4.6` row showed `attributedCostUSD` 1.006 against
+ * `recomputedTotalUSD` 0.3155 and badged, when the 1.006 was a published rate
+ * card. Duplicating the threshold here instead would just re-open the same
+ * gap on the next vendor.
+ *
+ * `promptTokens` is the BUCKET's context window, because the recompute is a
+ * bucket-level figure. Billing prices per call, so a bucket whose calls
+ * straddle the threshold still leaves a residual — one of the three causes
+ * ADR 0033 now records for the badge, alongside fast mode and the 1-hour
+ * cache rate. */
+function auditRatesFor(
+  effectiveModel: string,
+  promptTokens: number,
+  pricingConfig: PricingConfigLookup,
+): ModelCosts | null {
   const override = pricingConfig.findOverride(effectiveModel)
   if (override) {
     return {
@@ -184,7 +238,7 @@ function auditRatesFor(effectiveModel: string, pricingConfig: PricingConfigLooku
       fastMultiplier: 1,
     }
   }
-  return getModelCosts(effectiveModel)
+  return getTieredModelCosts(effectiveModel, promptTokens)
 }
 
 /** The Price override attached to a by-model/by-task row's effective model,
@@ -258,24 +312,29 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
         const category: TaskCategory = turn.category
 
         const input = call.usage.inputTokens
-        const output = call.usage.outputTokens
+        // The billed output count, from the shared helper — NOT
+        // `outputTokens + reasoningTokens`. `raw.reasoningTokens` still lands
+        // in the audit row below as its own field, because the audit lens is
+        // the one place that reports what the provider SAID rather than what
+        // gets billed; the bucketed rows are about money and tokens together,
+        // so they carry the billable count.
+        const output = displayOutputTokens(call)
         const cacheWrite = call.usage.cacheCreationInputTokens
         const cacheRead = callCacheReadTokens(call)
-        const reasoning = call.usage.reasoningTokens
         const cost = resolveCallCost(call, model, pricingConfig)
         const savings = call.savingsUSD ?? 0
         const baseline = call.savingsBaselineModel ?? ''
 
         // --- by-model bucket (effective/aliased model) ---
         const mb = modelBucketFor(modelBuckets, bucketKey(provider, model, null), provider, model, null)
-        accumulate(mb, input, output + reasoning, cacheWrite, cacheRead, cost, savings, baseline)
+        accumulate(mb, input, output, cacheWrite, cacheRead, cost, savings, baseline)
         if (rawModel !== model) mb.sources.add(rawModel)
 
         perModelTotalCost.set(modelKey(provider, model), (perModelTotalCost.get(modelKey(provider, model)) ?? 0) + cost)
 
         // --- by-task bucket (effective/aliased model + category) ---
         const tb = modelBucketFor(taskBuckets, bucketKey(provider, model, category), provider, model, category)
-        accumulate(tb, input, output + reasoning, cacheWrite, cacheRead, cost, savings, baseline)
+        accumulate(tb, input, output, cacheWrite, cacheRead, cost, savings, baseline)
         if (rawModel !== model) tb.sources.add(rawModel)
 
         // --- audit bucket (RAW model identity, token-source breakdown) ---
@@ -288,6 +347,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
             calls: 0,
             attributedCostUSD: 0,
             cacheReadDisplayed: 0,
+            outputDisplayed: 0,
             raw: {
               inputTokens: 0,
               outputTokens: 0,
@@ -308,6 +368,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
         ab.raw.cachedInputTokens += call.usage.cachedInputTokens
         ab.raw.webSearchRequests += call.usage.webSearchRequests
         ab.cacheReadDisplayed += cacheRead
+        ab.outputDisplayed += output
         ab.attributedCostUSD += cost
         ab.calls += 1
       }
@@ -356,14 +417,27 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
 
   const audit: AuditRow[] = []
   for (const bucket of auditBuckets.values()) {
+    // `outputTokens: bucket.raw.outputTokens + bucket.raw.reasoningTokens` was
+    // the fourth site deciding the reasoning question inline, and the most
+    // visible one: `displayed` is printed directly above `cost`, which is
+    // computed from `displayed`, so for a `codex` row the lens showed 246,098
+    // output tokens and then charged for 115,614 fewer of them. `raw` still
+    // carries both counters separately, which is the audit lens's actual job —
+    // showing what the provider reported.
     const displayed = {
       inputTokens: bucket.raw.inputTokens,
-      outputTokens: bucket.raw.outputTokens + bucket.raw.reasoningTokens,
+      outputTokens: bucket.outputDisplayed,
       cacheWriteTokens: bucket.raw.cacheCreationInputTokens,
       cacheReadTokens: bucket.cacheReadDisplayed,
     }
     const effectiveModel = pricingConfig.resolveAlias(bucket.model)
-    const rates = auditRatesFor(effectiveModel, pricingConfig)
+    // The prompt the tier discriminator sees: every token that occupied the
+    // context window for this row, the same three components the engine sums
+    // in `calculateCost`. Per-bucket, not per-call — see the note on
+    // `auditRatesFor` for what that does to a row whose calls straddle the
+    // threshold.
+    const promptTokens = displayed.inputTokens + displayed.cacheReadTokens + displayed.cacheWriteTokens
+    const rates = auditRatesFor(effectiveModel, promptTokens, pricingConfig)
     const cost = {
       input: rates ? displayed.inputTokens * rates.inputCostPerToken : 0,
       output: rates ? displayed.outputTokens * rates.outputCostPerToken : 0,

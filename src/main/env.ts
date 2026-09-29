@@ -19,6 +19,21 @@ import { join } from 'path'
  *    `Env` is for values an Effect consumer can ACTUALLY read. A field no
  *    Effect consumer reads is dead weight here, not a config value.
  *
+ *    (pricing-correctness, TTL default.) The Wave 4 TTL parser returned
+ *    `Infinity` for absent / unparseable / non-positive input, on the reading
+ *    that "unset" meant "the operator opted out of expiry". It meant the
+ *    opposite in practice: `Infinity` was the value NOBODY set, so the default
+ *    install shipped a pricing cache that could never go stale, and the only
+ *    way out was the manual `pricing:refresh` IPC. A machine observed during
+ *    that work had a four-day-old cache and no `WATCHTOWER_PRICING_TTL_HOURS`,
+ *    so it could not revalidate on its own. The parser now returns a finite
+ *    `DEFAULT_PRICING_CACHE_TTL_MS`, and the `Infinity` opt-out is GONE: no
+ *    caller in the repo set it and no doc asked for it, so carrying the branch
+ *    only left a permanent way for the default install to rot. The cost of
+ *    expiry is bounded — `loadPricingEffect` never fails and falls back to the
+ *    bundled snapshot (ADR 0010), so an offline machine that loses an expired
+ *    cache degrades to shipped prices for that launch instead of throwing.
+ *
  * 2. `appPaths()` — the **sync** startup snapshot for the ~25 provider-home /
  *    platform-path `process.env` readers. Those readers sit on sync discovery /
  *    parse paths (`createCodexProvider`, `getAgentTracesDbPath`,
@@ -73,13 +88,49 @@ export function resolveGatewayKey(primaryRaw: string | undefined, fallbackRaw: s
 const MS_PER_HOUR: number = 60 * 60 * 1000
 
 /**
- * Pure TTL parser preserving `getPricingCacheTtlMs` semantics exactly:
- * absent/unparseable/non-positive → `Infinity` (disables expiry).
+ * The on-disk pricing cache (`<cacheDir>/litellm-pricing.json`) is revalidated
+ * at most this often. Overridden by `WATCHTOWER_PRICING_TTL_HOURS` (hours, any
+ * positive number); consumed by `loadPricingEffect` in
+ * `src/main/pipeline/models.ts` as `Env.pricingCacheTtlMs`.
+ *
+ * 24 hours, deliberately, and it is the same interval the FX rates already use
+ * (ADR 0009 caches them "for 24 hours"), so a launch re-fetches at most once a
+ * day no matter how often the app is opened — a normal user's second launch of
+ * the morning never touches the network. The other half of the trade is that a
+ * vendor price correction has to reach users without a release, and a daily
+ * bound is the shortest window that still survives an app opened many times a
+ * day. Anything shorter starts paying a network round-trip (or a timeout, on an
+ * offline machine) per launch; anything longer means a correction ships as a
+ * release or not at all.
+ *
+ * Previously this was `Infinity` for every input that was not a positive
+ * number, which made "unset" and "never expire" the same thing. That conflated
+ * an absent value with a deliberate opt-out nobody makes: the result was a
+ * cache that was authoritative forever, with the manual `pricing:refresh` IPC
+ * as the only recovery. A finite default needs no opt-out branch, so
+ * {@link resolvePricingCacheTtlMs} now folds every non-positive, unparseable or
+ * absent value into this one number.
+ */
+export const DEFAULT_PRICING_CACHE_TTL_MS: number = 24 * MS_PER_HOUR
+
+/**
+ * Pure TTL parser: one raw string in, milliseconds out. No I/O, no env read, no
+ * `Effect` — the live layer is the only thing that touches `Config`, and
+ * `Env.layerWithValues` stays the seam tests inject.
+ *
+ * Anything that is not a positive, finite number of hours — absent, empty,
+ * unparseable, zero, negative, `Infinity` spelled out — resolves to
+ * {@link DEFAULT_PRICING_CACHE_TTL_MS}. There is deliberately no branch that
+ * returns `Infinity`: the old one is what made the default install's cache
+ * permanent, and a fresh-offline-machine opt-out is not worth a branch every
+ * future reader has to reason about (the fetch path already degrades to the
+ * bundled snapshot when the network is gone, so the scenario it protected
+ * against does not need protecting).
  */
 export function resolvePricingCacheTtlMs(raw: string | undefined): number {
-  if (!raw) return Infinity
+  if (!raw) return DEFAULT_PRICING_CACHE_TTL_MS
   const hours = Number(raw)
-  if (!Number.isFinite(hours) || hours <= 0) return Infinity
+  if (!Number.isFinite(hours) || hours <= 0) return DEFAULT_PRICING_CACHE_TTL_MS
   return hours * MS_PER_HOUR
 }
 
@@ -341,10 +392,7 @@ function readOptionalEnv(name: string): Effect.Effect<string | undefined, never>
  *  copy-pasted 3-line `Effect.gen`. Multi-variable seams (the gateway key) keep
  *  their own explicit read. */
 function readEnvFieldLive<A>(name: string, resolve: (raw: string | undefined) => A): Effect.Effect<A, never> {
-  return Effect.gen(function* () {
-    const raw = yield* readOptionalEnv(name)
-    return resolve(raw)
-  })
+  return readOptionalEnv(name).pipe(Effect.map(resolve))
 }
 
 const readGatewayKeyLive: Effect.Effect<string | null, never> = Effect.gen(function* () {
@@ -360,6 +408,11 @@ const readPricingCacheTtlMsLive = readEnvFieldLive('WATCHTOWER_PRICING_TTL_HOURS
  * `cursorCacheSuppressWrites` were carried here in Wave 8 and are removed: their
  * only readers are sync discovery paths, so no `yield* Env` consumer existed
  * and the fields were dead weight. They live in `AppPaths` now.
+ *
+ * `pricingCacheTtlMs` arrives from the live layer through
+ * {@link resolvePricingCacheTtlMs}, so the live default is
+ * {@link DEFAULT_PRICING_CACHE_TTL_MS} and not `Infinity`; the two fakes below
+ * pin their own value because they bypass the parser on purpose.
  */
 export class Env extends Context.Service<
   Env,
@@ -379,6 +432,13 @@ export class Env extends Context.Service<
 
   static readonly layerWithValues = (values: Env['Service']): Layer.Layer<Env> => Layer.succeed(Env, Env.of(values))
 
+  /**
+   * The gateway-key-only convenience fake, for consumers that never touch the
+   * pricing cache. Its `Infinity` is a hand-pinned value, NOT the default: a
+   * gateway-key consumer does not want expiry semantics either way, and
+   * threading the real default through here would couple this fake to a number
+   * it has no reason to assert on.
+   */
   static readonly layerWithGatewayKey = (vercelGatewayApiKey: string | null): Layer.Layer<Env> =>
     Env.layerWithValues({
       vercelGatewayApiKey,

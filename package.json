@@ -21,6 +21,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "pricing:bundle": "node scripts/bundle-litellm.mjs",
     "icons": "node scripts/generate-icons.cjs",
     "package": "electron-vite build && electron-builder --publish never",
     "package:win": "electron-vite build && electron-builder --win --publish never",

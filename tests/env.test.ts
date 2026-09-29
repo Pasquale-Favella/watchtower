@@ -17,6 +17,7 @@ import {
   PROVIDER_ENV_KEYS,
   type ProviderOverrides,
   resolveCacheDir,
+  DEFAULT_PRICING_CACHE_TTL_MS,
   resolveCodexHome,
   resolveCursorCacheSuppressWrites,
   resolveGatewayKey,
@@ -189,12 +190,19 @@ describe('gateway/TTL seams unaffected by the snapshot', () => {
     expect(resolveGatewayKey('', 'fallback')).toBeNull()
   })
 
-  it('resolvePricingCacheTtlMs keeps absent/unparseable/non-positive → Infinity', () => {
-    expect(resolvePricingCacheTtlMs(undefined)).toBe(Infinity)
-    expect(resolvePricingCacheTtlMs('nope')).toBe(Infinity)
-    expect(resolvePricingCacheTtlMs('-2')).toBe(Infinity)
-    expect(resolvePricingCacheTtlMs('0')).toBe(Infinity)
+  it('resolvePricingCacheTtlMs falls back to the finite default, and a positive value converts', () => {
+    // Absent/unparseable/non-positive all resolve to the default rather than
+    // `Infinity`. An immortal price cache was the defect: a machine that first
+    // launched offline kept the bundled snapshot forever with no way to
+    // revalidate. ADR 0033.
+    expect(resolvePricingCacheTtlMs(undefined)).toBe(DEFAULT_PRICING_CACHE_TTL_MS)
+    expect(resolvePricingCacheTtlMs('nope')).toBe(DEFAULT_PRICING_CACHE_TTL_MS)
+    expect(resolvePricingCacheTtlMs('-2')).toBe(DEFAULT_PRICING_CACHE_TTL_MS)
+    expect(resolvePricingCacheTtlMs('0')).toBe(DEFAULT_PRICING_CACHE_TTL_MS)
+    // The default is a default, not a ceiling: an operator wanting a longer
+    // cache still gets one.
     expect(resolvePricingCacheTtlMs('2')).toBe(2 * 60 * 60 * 1000)
+    expect(DEFAULT_PRICING_CACHE_TTL_MS).toBeLessThan(Infinity)
   })
 })
 
