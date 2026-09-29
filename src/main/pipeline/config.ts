@@ -5,14 +5,14 @@
 // - devin.acuUsdRate (i provider Devin restano ma niente config)
 // - currency (solo USD)
 //
-// Rimane in questa forma solo per compatibilità API con i moduli portati
-// (models.ts non lo importa, ma alcuni provider potrebbero).
+// Rimane in questa forma solo per compatibilità API con i moduli portati:
+// `readConfig` è importato da providers/claude.ts e providers/devin.ts.
+// La risoluzione delle directory Claude NON sta qui: l'unico resolver è
+// `getClaudeConfigDirs` in providers/claude.ts.
 
 import { readFile } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
-
-import { type AppPaths, overrideFor } from '../env.js'
 
 export type WatchtowerConfig = {
   modelAliases?: Record<string, string>
@@ -39,45 +39,6 @@ export async function readConfig(): Promise<WatchtowerConfig> {
   } catch {
     return {}
   }
-}
-
-/**
- * Restituisce l'elenco di directory Claude Code da aggregare.
- * Rispetta le stesse env var di Claude Code + un fallback su `~/.claude`.
- *
- * `paths` è il trailing seam dell'AppPaths snapshot: le due env var passano da
- * `overrideFor`, mentre la normalizzazione resta qui (split / trim / filter
- * Boolean). `overrideFor` riporta la stringa grezza, quindi un valore definito
- * ma vuoto resta `''` e viene scartato dal truthy check esattamente come
- * prima. Chiamato senza `paths` legge `appPaths()`, cioè la stessa `process.env`
- * di sempre.
- *
- * ⚠️ DUPLICATE, AND THIS ONE IS THE DEAD TWIN. The live resolver is
- * `getClaudeConfigDirs` in `providers/claude.ts` (imported by
- * `db-worker/context.ts` and by `discoverClaudeConfigSources`). It is NOT a
- * rename: the two disagree — this one splits on `/[,;]/` and does not resolve or
- * dedupe, `providers/claude.ts` splits on `path.delimiter` and does both — so
- * they can answer differently for the same env var. No production caller imports
- * this function; the only importer is a test. Deletion is a follow-up, tracked in
- * issue #148, not done here because it predates the rollout and removing an
- * exported function is not something a seam migration should do silently.
- */
-export async function getClaudeConfigDirs(paths?: AppPaths): Promise<string[]> {
-  const envDirs = overrideFor(paths, 'CLAUDE_CONFIG_DIRS')
-  if (envDirs) {
-    return envDirs
-      .split(/[,;]/)
-      .map(s => s.trim())
-      .filter(Boolean)
-  }
-  const envDir = overrideFor(paths, 'CLAUDE_CONFIG_DIR')
-  if (envDir) return [envDir]
-
-  const config = await readConfig()
-  if (config.claudeConfigDirs && config.claudeConfigDirs.length > 0) {
-    return config.claudeConfigDirs
-  }
-  return [join(homedir(), '.claude')]
 }
 
 /**

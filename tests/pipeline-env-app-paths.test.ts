@@ -3,7 +3,6 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type AppPaths, appPaths, type ProviderOverrides } from '../src/main/env.js'
-import { getClaudeConfigDirs } from '../src/main/pipeline/config.js'
 import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
 import { readSessionFileSync } from '../src/main/pipeline/fs-utils.js'
 import { calculateCost } from '../src/main/pipeline/models.js'
@@ -15,71 +14,15 @@ import { renderTable, type SessionRow } from '../src/main/pipeline/sessions-repo
 // passed as the trailing `paths` argument, and the unthreaded cases read the
 // ambient value in the assertion instead of writing to it.
 //
-// Every var these seams read is a `ProviderEnvKey` — `CLAUDE_CONFIG_DIRS` /
-// `CLAUDE_CONFIG_DIR` (config.ts), `WATCHTOWER_VERBOSE` (models.ts, fs-utils.ts),
-// `WATCHTOWER_PROGRESS` (parser.ts) and `COLUMNS` (sessions-report.ts) — so each
-// seam reads it through `overrideFor` and honors the threaded value. What stays
-// per-seam, and is what the parity cases below pin, is each reader's OWN
-// normalization on top of the snapshot: the `=== '1'` flags, the split/trim/
-// filter chain, the `?? ''` cache-key fingerprint, and the parseInt/NaN width
-// chain.
+// Every var these seams read is a `ProviderEnvKey` — `WATCHTOWER_VERBOSE`
+// (models.ts, fs-utils.ts), `WATCHTOWER_PROGRESS` (parser.ts) and `COLUMNS`
+// (sessions-report.ts) — so each seam reads it through `overrideFor` and honors
+// the threaded value. What stays per-seam, and is what the parity cases below
+// pin, is each reader's OWN normalization on top of the snapshot: the `=== '1'`
+// flags, the `?? ''` cache-key fingerprint, and the parseInt/NaN width chain.
 function pathsWith(overrides: ProviderOverrides): AppPaths {
   return { ...appPaths(), overrides }
 }
-
-// ── config.ts: the shared Claude config-dir resolver ──
-describe('getClaudeConfigDirs (CLAUDE_CONFIG_DIRS / CLAUDE_CONFIG_DIR seams)', () => {
-  it('a threaded CLAUDE_CONFIG_DIRS list is split, trimmed, and blank-filtered by the seam', async () => {
-    const paths = pathsWith({ CLAUDE_CONFIG_DIRS: ' /home/a , /home/b ;; , ' })
-    await expect(getClaudeConfigDirs(paths)).resolves.toEqual(['/home/a', '/home/b'])
-  })
-
-  it('CLAUDE_CONFIG_DIRS wins over CLAUDE_CONFIG_DIR (both threaded)', async () => {
-    const paths = pathsWith({ CLAUDE_CONFIG_DIRS: '/multi', CLAUDE_CONFIG_DIR: '/single' })
-    await expect(getClaudeConfigDirs(paths)).resolves.toEqual(['/multi'])
-  })
-
-  it('a defined-empty DIRS list is falsy and falls through to the single dir', async () => {
-    // The snapshot records `''` verbatim; the seam's own truthy check is what
-    // turns it into "unset", exactly as the bare `process.env` read did.
-    const paths = pathsWith({ CLAUDE_CONFIG_DIRS: '', CLAUDE_CONFIG_DIR: '/single' })
-    await expect(getClaudeConfigDirs(paths)).resolves.toEqual(['/single'])
-  })
-
-  it('a threaded single dir is used verbatim (no trim, no resolve)', async () => {
-    const paths = pathsWith({ CLAUDE_CONFIG_DIR: '/single/dir' })
-    await expect(getClaudeConfigDirs(paths)).resolves.toEqual(['/single/dir'])
-  })
-
-  it('no keys on the record falls through to the config file / ~/.claude default', async () => {
-    // The tail of the chain reads `~/.config/watchtower/config.json`, so the
-    // result is machine-dependent by design; what is pinned here is that a
-    // record with no Claude keys never invents a dir and never yields `''`.
-    const dirs = await getClaudeConfigDirs(pathsWith({}))
-    expect(dirs.length).toBeGreaterThan(0)
-    expect(dirs.every(dir => dir.length > 0)).toBe(true)
-  })
-
-  it('unthreaded resolves exactly what the two process.env reads resolved', async () => {
-    const ambientDirs = process.env['CLAUDE_CONFIG_DIRS']
-    if (ambientDirs) {
-      await expect(getClaudeConfigDirs()).resolves.toEqual(
-        ambientDirs
-          .split(/[,;]/)
-          .map(s => s.trim())
-          .filter(Boolean),
-      )
-      return
-    }
-    const ambientDir = process.env['CLAUDE_CONFIG_DIR']
-    if (ambientDir) {
-      await expect(getClaudeConfigDirs()).resolves.toEqual([ambientDir])
-      return
-    }
-    // Neither ambient key is set: the config-file default owns the result.
-    await expect(getClaudeConfigDirs()).resolves.toEqual(await getClaudeConfigDirs(pathsWith({})))
-  })
-})
 
 // ── parser.ts: WATCHTOWER_PROGRESS ──
 const tickEvent: ScanProgressEvent = { kind: 'tick', provider: 'codex', done: 1, total: 2 }
