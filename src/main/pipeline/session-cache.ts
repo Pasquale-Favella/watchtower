@@ -101,7 +101,17 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
   codex: 'mcp-attribution-v2-est-cost-rich-capture-v1-cross-provider-pr-v1',
   cursor: 'composer-anchored-crediting-v1-est-cost',
   'cursor-agent': 'workspaceless-transcript-v1',
-  copilot: 'cli-shutdown-cost-v1-skills',
+  // cli-shutdown-cost-v1: the `session.shutdown` rollup became the only source
+  // of input/cache tokens for a Copilot CLI session.
+  // skills: per-call skill attribution.
+  // session-store-v1: the CLI's own `~/.copilot/session-store.db` is now a
+  // telemetry source, and its per-request rows take precedence over the
+  // shutdown rollup for any (session, model) they cover. That precedence is
+  // decided INSIDE the parser, by a provider-lifetime set the store parser
+  // populates — so a turn served straight from this cache keeps its rollup and
+  // the skip never runs, double-counting the CLI's input and cache tokens.
+  // The bump forces the one-time re-parse that makes the skip take effect.
+  copilot: 'cli-shutdown-cost-v1-skills-session-store-v1',
   grok: 'estimated-cost-v1',
   hermes: 'reasoning-output-accounting-v1-est-cost',
   'lingtai-tui': 'token-ledger-registry-activity-v3',
