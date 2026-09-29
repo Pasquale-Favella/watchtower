@@ -1282,19 +1282,37 @@ function sessionStoreContentHash(row: {
  * own recorded label wins, then the workspace basename, then one honest bucket
  * — never a chat-thread title, which would pollute By-Project.
  */
+/**
+ * The last segment of a project path, whichever separator style it uses.
+ *
+ * A Copilot store is written by whichever machine ran the CLI, so a `cwd` or
+ * `repository` can arrive carrying the other platform's separators — a
+ * Windows path read on a POSIX host, or a synced database read on Windows.
+ * The platform's own `basename` is correct only for its own style and returns
+ * the whole string for the other, which files a session under a project
+ * literally named `C:\work\no-repo`.
+ *
+ * Pure string handling on purpose: it calls no `path` helper, so the result
+ * cannot depend on the host platform. The `.git` suffix is stripped by the
+ * caller before the segment is taken, as before.
+ */
+function lastPathSegment(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return cut >= 0 ? trimmed.slice(cut + 1) : trimmed
+}
+
 function resolveStoreProject(cwd: string | null, repository: string | null): string {
   const repo = readString(repository)
     .trim()
     .replace(/\.git$/, '')
   if (repo) {
-    const name = basename(repo.replace(/\/+$/, ''))
+    const name = lastPathSegment(repo)
     if (name) return name
   }
-  const dir = readString(cwd)
-    .trim()
-    .replace(/[\\/]+$/, '')
+  const dir = readString(cwd).trim()
   if (dir) {
-    const name = basename(dir)
+    const name = lastPathSegment(dir)
     if (name) return name
   }
   return 'copilot-cli'
