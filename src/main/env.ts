@@ -193,14 +193,42 @@ export interface AppPaths {
  * The single place a provider env var is registered: the exhaustive key list
  * `resolveProviderOverrides` reads, sorted so a new var is added in one place
  * (and the sort is pinned by a test, so the list stays reviewable).
+ *
+ * A registered key is not a promise that its reader is threaded yet. Several
+ * entries here (`CODEWHALE_HOME`, `HERMES_HOME`, `FACTORY_DIR`, `WARP_DB_PATH`,
+ * `QWEN_DATA_DIR`, `QUICKWORK_HOME`, `KIMI_CODE_HOME`, the three `LINGTAI_*`)
+ * were added because the session-cache env fingerprint names them, and each one
+ * still has a live direct `process.env` read in its provider
+ * (`providers/codewhale.ts`, `hermes.ts`, `droid.ts`, `warp.ts`, `qwen.ts`,
+ * `quickdesk.ts`, `kimicode.ts`, `lingtai-tui.ts`). Those readers migrate one
+ * slice at a time, so an unthreaded key is a MIGRATION IN PROGRESS, not a
+ * mistake: registering the var is what lets the fingerprint answer from the
+ * snapshot instead of from a second inventory.
+ *
+ * The list is per-provider DISCOVERY overrides, so it carries override-shaped
+ * vars only. `APPDATA` / `LOCALAPPDATA` / `XDG_CONFIG_HOME` / `XDG_DATA_HOME`
+ * are platform roots, and `WATCHTOWER_CACHE_DIR` / `CODEX_HOME` are answered by
+ * a resolved snapshot FIELD — none of them is an override, so none of them
+ * belongs here. `ENV_VAR_SOURCES` below is the one table of which of the three
+ * answers a given name.
  */
 export const PROVIDER_ENV_KEYS = [
   'CLAUDE_CONFIG_DIR',
   'CLAUDE_CONFIG_DIRS',
+  'CODEWHALE_HOME',
   'COLUMNS',
   'CRUSH_GLOBAL_DATA',
+  'FACTORY_DIR',
+  'HERMES_HOME',
+  'KIMI_CODE_HOME',
+  'LINGTAI_HOME',
+  'LINGTAI_TUI_GLOBAL_DIR',
+  'LINGTAI_TUI_HOME',
   'OPENCODE_DATA_DIR',
   'OPENCODE_DB_PREFIX',
+  'QUICKWORK_HOME',
+  'QWEN_DATA_DIR',
+  'WARP_DB_PATH',
   'WATCHTOWER_COPILOT_DISABLE_OTEL',
   'WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR',
   'WATCHTOWER_COPILOT_JETBRAINS_DIR',
@@ -235,13 +263,26 @@ export type ProviderEnvKey = (typeof PROVIDER_ENV_KEYS)[number]
  * comment. Anything listed here must resolve through `overrideFor` /
  * `platformFor` / a snapshot FIELD, never a bare read.
  *
- * Known gap while this list is not empty:
- * `providers/opencode-family-sqlite.ts` still reads `WATCHTOWER_VERBOSE` directly
- * for its "no yields parsed" notice, so a threaded record opens the
- * `models.ts` warning gate while leaving that one shut.
+ * An entry is therefore a REGISTERED key whose reader is not threaded YET: the
+ * value the seam reads is the ambient one (identical to what the snapshot would
+ * report), so the list is the work-order for the seam rollout and not a defect.
+ * `tests/env.test.ts` walks it and fails if a listed site is no longer a direct
+ * read, so a migrated seam cannot leave a stale entry behind.
+ *
+ * `providers/opencode-family-sqlite.ts`'s `WATCHTOWER_VERBOSE` read left this
+ * list when its notice moved onto the `paths` seam (the last of the
+ * `models.ts`-family verbose gates to migrate). `WATCHTOWER_VERBOSE` itself stays
+ * a key — the gate is read, so it is threaded; the direct read is what left.
  */
 export const REMAINING_DIRECT_ENV_READS: Readonly<Record<string, readonly string[]>> = {
-  'providers/opencode-family-sqlite.ts': ['WATCHTOWER_VERBOSE'],
+  'providers/codewhale.ts': ['CODEWHALE_HOME'],
+  'providers/droid.ts': ['FACTORY_DIR'],
+  'providers/hermes.ts': ['HERMES_HOME'],
+  'providers/kimicode.ts': ['KIMI_CODE_HOME'],
+  'providers/lingtai-tui.ts': ['LINGTAI_HOME', 'LINGTAI_TUI_GLOBAL_DIR', 'LINGTAI_TUI_HOME'],
+  'providers/quickdesk.ts': ['QUICKWORK_HOME'],
+  'providers/qwen.ts': ['QWEN_DATA_DIR'],
+  'providers/warp.ts': ['WARP_DB_PATH'],
 }
 
 export type ProviderOverrides = Readonly<Partial<Record<ProviderEnvKey, string>>>
@@ -279,6 +320,169 @@ export function overrideFor(paths: AppPaths | undefined, key: ProviderEnvKey): s
 /** Same one-liner for the platform roots (`APPDATA`, `XDG_*`, …). */
 export function platformFor(paths: AppPaths | undefined): PlatformPaths {
   return (paths ?? appPaths()).platform
+}
+
+/**
+ * The two snapshot fields that carry an ALREADY RESOLVED value — the
+ * `process.env` fallback plus their own default — as opposed to `overrides` /
+ * `platform`, which report the raw string and leave normalization to the seam.
+ * A reader of one of these vars reads the field, not the var.
+ */
+export type SnapshotFieldName = 'cacheDir' | 'codexHome'
+
+/**
+ * The env var names each platform root answers, and the `PlatformPaths` field
+ * that holds it — the mapping `resolvePlatformPaths` already encodes, named so
+ * the inventory's `satisfies` clause can require one row per pair instead of
+ * trusting the table to stay in sync with the resolver.
+ */
+export type PlatformEnvVar = 'APPDATA' | 'LOCALAPPDATA' | 'XDG_CONFIG_HOME' | 'XDG_DATA_HOME'
+export type PlatformPathsField = 'appData' | 'localAppData' | 'xdgConfigHome' | 'xdgDataHome'
+
+/**
+ * The two env var names whose seam reads a resolved snapshot FIELD. Each maps
+ * 1:1 onto a `SnapshotFieldName`; a var here is NOT a `ProviderEnvKey` (an
+ * override carries the raw var, not the resolved value), which is exactly why
+ * the fingerprint has to ask the inventory instead of looking the name up in
+ * `overrides`.
+ */
+export type FieldEnvVar = 'WATCHTOWER_CACHE_DIR' | 'CODEX_HOME'
+
+/**
+ * Which snapshot source answers one env var NAME. The three shapes are not
+ * interchangeable, which is the whole reason this inventory exists:
+ * - `override` — a per-provider discovery override. `overrides[name]`, raw
+ *   string, `undefined` when unset. The name IS the key, so the row carries no
+ *   key of its own.
+ * - `platform` — one of the four platform roots. `platform[field]`, raw
+ *   string, `null` when unset.
+ * - `field` — a seam that reads the RESOLVED snapshot field
+ *   (`WATCHTOWER_CACHE_DIR` → `cacheDir`, `CODEX_HOME` → `codexHome`). The
+ *   value is the answer even when the env var is unset, because the seam's own
+ *   `??` chain has already fallen back to a default by the time the fingerprint
+ *   could ask.
+ */
+export type EnvVarSource =
+  | { readonly kind: 'override' }
+  | { readonly kind: 'platform'; readonly field: PlatformPathsField }
+  | { readonly kind: 'field'; readonly field: SnapshotFieldName }
+
+/**
+ * The ONE inventory of "which snapshot source answers this env var name", and
+ * the type every snapshot-driven var reader is checked against: a name that is
+ * not a key here is a COMPILE error at {@link resolveSnapshotEnvVar}, so a typo
+ * cannot pass silently as `undefined`. Sorted, so the table stays reviewable
+ * (pinned by a test, like `PROVIDER_ENV_KEYS`).
+ *
+ * The `satisfies` clause is what makes it EXHAUSTIVE at compile time: every
+ * `ProviderEnvKey` must have an `override` row, and the two non-override groups
+ * must each answer with their own source. So registering a new var in
+ * `PROVIDER_ENV_KEYS` without adding its row here does not compile, and the two
+ * inventories cannot drift apart quietly.
+ *
+ * It exists because the env fingerprint has to report what a seam READS, not
+ * what the var currently holds: with a threaded record, `overrides` / `platform`
+ * / the resolved fields are the only three things a seam can answer from, and
+ * each names a different slice of the environment. Before this table the
+ * fingerprint kept a second, unlinked inventory of the same var names
+ * (`session-cache.PROVIDER_ENV_VARS`) and read `process.env` directly, which is
+ * exactly the pairing that lets a threaded record change what a provider parses
+ * without invalidating its cached rows.
+ */
+export const ENV_VAR_SOURCES = {
+  APPDATA: { kind: 'platform', field: 'appData' },
+  CLAUDE_CONFIG_DIR: { kind: 'override' },
+  CLAUDE_CONFIG_DIRS: { kind: 'override' },
+  CODEWHALE_HOME: { kind: 'override' },
+  CODEX_HOME: { kind: 'field', field: 'codexHome' },
+  COLUMNS: { kind: 'override' },
+  CRUSH_GLOBAL_DATA: { kind: 'override' },
+  FACTORY_DIR: { kind: 'override' },
+  HERMES_HOME: { kind: 'override' },
+  KIMI_CODE_HOME: { kind: 'override' },
+  LINGTAI_HOME: { kind: 'override' },
+  LINGTAI_TUI_GLOBAL_DIR: { kind: 'override' },
+  LINGTAI_TUI_HOME: { kind: 'override' },
+  LOCALAPPDATA: { kind: 'platform', field: 'localAppData' },
+  OPENCODE_DATA_DIR: { kind: 'override' },
+  OPENCODE_DB_PREFIX: { kind: 'override' },
+  QUICKWORK_HOME: { kind: 'override' },
+  QWEN_DATA_DIR: { kind: 'override' },
+  WARP_DB_PATH: { kind: 'override' },
+  WATCHTOWER_CACHE_DIR: { kind: 'field', field: 'cacheDir' },
+  WATCHTOWER_COPILOT_DISABLE_OTEL: { kind: 'override' },
+  WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR: { kind: 'override' },
+  WATCHTOWER_COPILOT_JETBRAINS_DIR: { kind: 'override' },
+  WATCHTOWER_COPILOT_OTEL_DB: { kind: 'override' },
+  WATCHTOWER_COPILOT_SESSION_STATE_DIR: { kind: 'override' },
+  WATCHTOWER_COPILOT_SESSION_STORE_DB: { kind: 'override' },
+  WATCHTOWER_COPILOT_WS_STORAGE_DIR: { kind: 'override' },
+  WATCHTOWER_DESKTOP_SESSIONS_DIR: { kind: 'override' },
+  WATCHTOWER_PROGRESS: { kind: 'override' },
+  WATCHTOWER_VERBOSE: { kind: 'override' },
+  XDG_CONFIG_HOME: { kind: 'platform', field: 'xdgConfigHome' },
+  XDG_DATA_HOME: { kind: 'platform', field: 'xdgDataHome' },
+} as const satisfies Readonly<Record<ProviderEnvKey, EnvVarSource>> &
+  Readonly<Record<PlatformEnvVar, { kind: 'platform'; field: PlatformPathsField }>> &
+  Readonly<Record<FieldEnvVar, { kind: 'field'; field: SnapshotFieldName }>>
+
+/**
+ * Every env var name the snapshot can answer, derived from the inventory — the
+ * union a caller has to be inside of. Exported as the iterable form so the
+ * coverage tests can walk the inventory without re-deriving its keys.
+ */
+export type SnapshotEnvVar = keyof typeof ENV_VAR_SOURCES
+
+export const SNAPSHOT_ENV_VARS: readonly SnapshotEnvVar[] = Object.freeze(
+  Object.keys(ENV_VAR_SOURCES) as SnapshotEnvVar[],
+)
+
+/**
+ * The `overrides` lookup every `override` row shares. The one cast WIDENS the
+ * overrides map's key type (`ProviderEnvKey`) to the inventory's union (which
+ * also carries the platform and field names) so one lookup serves every row; the
+ * inventory rows themselves are what keep a name from being mis-typed here,
+ * because only a name with an `override` row reaches this function.
+ */
+function overrideValue(record: AppPaths, name: SnapshotEnvVar): string | undefined {
+  return (record.overrides as Readonly<Partial<Record<SnapshotEnvVar, string>>>)[name]
+}
+
+/**
+ * The expression a snapshot-driven INVENTORY READ uses — the third and last
+ * `(paths ?? appPaths())` one-liner beside `overrideFor` / `platformFor`. Pure
+ * and injectable like the two `resolve*` resolvers above: pass a record and it
+ * answers from that record with no `process.env` at all, pass nothing and it
+ * resolves the same ambient value the seam read before.
+ *
+ * It is the value the SEAM reads, so a `field`-shaped name answers with the
+ * resolved field (never `''` for an unset var) while an `override` / `platform`
+ * name answers with the raw string or `undefined`. A caller that has to hash the
+ * answer — the session-cache env fingerprint — owns that `?? ''` choice
+ * itself, because the choice differs per shape and is not this function's to
+ * make.
+ *
+ * `overrideFor` / `platformFor` stay as they are: those are the two expressions
+ * the provider seams use, and a seam never needs this one.
+ */
+export function resolveSnapshotEnvVar(name: SnapshotEnvVar, paths?: AppPaths): string | undefined {
+  const record = paths ?? appPaths()
+  const source: EnvVarSource | undefined = ENV_VAR_SOURCES[name]
+  switch (source?.kind) {
+    case 'platform':
+      // `null` means "unset" and only `null` may mean that; the caller decides
+      // what "unset" hashes as, so the raw `undefined` goes out.
+      return record.platform[source.field] ?? undefined
+    case 'field':
+      return record[source.field]
+    default:
+      // `override`, and an unregistered name (reachable only through a cast):
+      // the override map is the default lookup, so the answer is at worst the
+      // same `undefined` an unset var gives — never a throw mid-scan. The
+      // inventory-completeness test is what turns a real omission into a
+      // failure rather than a quietly mis-hashed cache row.
+      return overrideValue(record, name)
+  }
 }
 
 /** The one injectable reader the pure platform resolver takes: `process.env`

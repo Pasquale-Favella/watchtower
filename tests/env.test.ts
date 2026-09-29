@@ -9,22 +9,26 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   type AppPaths,
   appPaths,
+  DEFAULT_PRICING_CACHE_TTL_MS,
   Env,
+  ENV_VAR_SOURCES,
   initAppPaths,
   overrideFor,
   platformFor,
   type PlatformPaths,
   PROVIDER_ENV_KEYS,
   type ProviderOverrides,
+  REMAINING_DIRECT_ENV_READS,
   resolveCacheDir,
-  DEFAULT_PRICING_CACHE_TTL_MS,
   resolveCodexHome,
   resolveCursorCacheSuppressWrites,
   resolveGatewayKey,
-  REMAINING_DIRECT_ENV_READS,
   resolvePlatformPaths,
   resolvePricingCacheTtlMs,
   resolveProviderOverrides,
+  resolveSnapshotEnvVar,
+  SNAPSHOT_ENV_VARS,
+  type SnapshotEnvVar,
 } from '../src/main/env.js'
 
 /** Repo root, for the one case that reads a source file to check a claim. */
@@ -400,6 +404,30 @@ describe('resolveProviderOverrides + overrideFor/platformFor (rollout step 1)', 
     expect(platformFor(undefined)).toEqual(appPaths().platform)
   })
 
+  it('the fingerprint-only vars are registered, so the union covers what seams read', () => {
+    // `PROVIDER_ENV_VARS` in session-cache named fourteen vars that no
+    // `ProviderEnvKey` registered, which is why the fingerprint needed its own
+    // inventory. These are the ten override-shaped ones; the four that are NOT
+    // override-shaped (`XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `CODEX_HOME`,
+    // `WATCHTOWER_CACHE_DIR`) are platform roots or resolved snapshot fields,
+    // asserted separately below.
+    for (const key of [
+      'CODEWHALE_HOME',
+      'FACTORY_DIR',
+      'HERMES_HOME',
+      'KIMI_CODE_HOME',
+      'LINGTAI_HOME',
+      'LINGTAI_TUI_GLOBAL_DIR',
+      'LINGTAI_TUI_HOME',
+      'QWEN_DATA_DIR',
+      'QUICKWORK_HOME',
+      'WARP_DB_PATH',
+    ] as const) {
+      expect(PROVIDER_ENV_KEYS).toContain(key)
+      expect(ENV_VAR_SOURCES[key]).toEqual({ kind: 'override' })
+    }
+  })
+
   it('every listed remaining direct read really is a direct read (the list is not a wish)', () => {
     // The registry is the seam's honesty check: an entry that no longer matches
     // the file makes this fail, so the snapshot can never quietly stop being
@@ -412,6 +440,125 @@ describe('resolveProviderOverrides + overrideFor/platformFor (rollout step 1)', 
         expect(PROVIDER_ENV_KEYS).toContain(key)
       }
     }
+  })
+})
+
+// ── ENV_VAR_SOURCES + resolveSnapshotEnvVar (one inventory, three sources) ──
+describe('ENV_VAR_SOURCES + resolveSnapshotEnvVar (which source answers a name)', () => {
+  /** A record carrying only what the case plants. The answer comes from the
+   *  PLANTED fields, so this file writes no env var and no case depends on what
+   *  the host machine happens to export. */
+  function recordOf(fields: Partial<AppPaths> = {}): AppPaths {
+    return { ...appPaths(), ...fields }
+  }
+
+  it('the inventory is sorted, unique, and holds a row per registered key', () => {
+    expect([...SNAPSHOT_ENV_VARS]).toEqual([...SNAPSHOT_ENV_VARS].slice().sort())
+    expect(new Set(SNAPSHOT_ENV_VARS).size).toBe(SNAPSHOT_ENV_VARS.length)
+    // Compile-time exhaustive (the `satisfies` clause on ENV_VAR_SOURCES); this
+    // is the runtime half of the same claim.
+    for (const key of PROVIDER_ENV_KEYS) expect(ENV_VAR_SOURCES[key]).toEqual({ kind: 'override' })
+  })
+
+  it('the three groups are disjoint: a name answers from exactly one source', () => {
+    const overrideNames = SNAPSHOT_ENV_VARS.filter(name => ENV_VAR_SOURCES[name].kind === 'override')
+    const platformNames = SNAPSHOT_ENV_VARS.filter(name => ENV_VAR_SOURCES[name].kind === 'platform')
+    const fieldNames = SNAPSHOT_ENV_VARS.filter(name => ENV_VAR_SOURCES[name].kind === 'field')
+    // An override name is a `ProviderEnvKey`, so it can never also be a
+    // platform root or a field var: the groups partition the inventory.
+    expect(overrideNames.slice().sort()).toEqual([...PROVIDER_ENV_KEYS].sort())
+    expect(platformNames.slice().sort()).toEqual(['APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME'].sort())
+    expect(fieldNames.slice().sort()).toEqual(['CODEX_HOME', 'WATCHTOWER_CACHE_DIR'])
+    expect(new Set([...platformNames, ...fieldNames]).size).toBe(platformNames.length + fieldNames.length)
+  })
+
+  it('an override-shaped name answers from `overrides`, verbatim', () => {
+    const record = recordOf({ overrides: { CLAUDE_CONFIG_DIR: '/threaded/claude', COLUMNS: '' } })
+    expect(resolveSnapshotEnvVar('CLAUDE_CONFIG_DIR', record)).toBe('/threaded/claude')
+    // An empty override is DEFINED, not "unset": the snapshot reports the raw
+    // string and the consumer decides (the `?? ''` in the fingerprint is its
+    // own choice, the `!== ''` in claude.ts is the seam's).
+    expect(resolveSnapshotEnvVar('COLUMNS', record)).toBe('')
+    // A threaded record REPLACES the overrides map, so a key it does not carry
+    // is `undefined` even if the ambient env has it.
+    expect(resolveSnapshotEnvVar('WATCHTOWER_VERBOSE', record)).toBeUndefined()
+  })
+
+  it('a platform-shaped name answers from `platform`, with null meaning unset', () => {
+    const record = recordOf({ platform: { ...NO_PLATFORM, xdgDataHome: '/threaded/xdg-data' } })
+    expect(resolveSnapshotEnvVar('XDG_DATA_HOME', record)).toBe('/threaded/xdg-data')
+    // `null` is "unset" and only `null` may be — the resolver reports it as
+    // `undefined` (not `''`), leaving the consumer to choose. Which is what
+    // keeps an unset platform root hashing as `''` in the fingerprint.
+    expect(resolveSnapshotEnvVar('XDG_CONFIG_HOME', record)).toBeUndefined()
+    // An empty platform value is a real value (every reader reaches it with
+    // `??`), so it survives.
+    expect(resolveSnapshotEnvVar('APPDATA', recordOf({ platform: { ...NO_PLATFORM, appData: '' } }))).toBe('')
+  })
+
+  it('a field-shaped name answers from the RESOLVED field, not the raw var', () => {
+    // This is the shape the pre-snapshot fingerprint could not express: these
+    // two seams read the resolved field, so a threaded `cacheDir` / `codexHome`
+    // must move the answer even with no env var set.
+    const record = recordOf({ cacheDir: '/threaded/cache', codexHome: '/threaded/codex' })
+    expect(resolveSnapshotEnvVar('WATCHTOWER_CACHE_DIR', record)).toBe('/threaded/cache')
+    expect(resolveSnapshotEnvVar('CODEX_HOME', record)).toBe('/threaded/codex')
+    // A field is never "unset": the resolver has already applied the default.
+    const defaulted = recordOf({ codexHome: join(homedir(), '.codex') })
+    expect(resolveSnapshotEnvVar('CODEX_HOME', defaulted)).toBe(join(homedir(), '.codex'))
+  })
+
+  it('each platform/field var maps to the field its own seam reads', () => {
+    // The pairs are the claim: a `PlatformPaths` / `AppPaths` field renamed
+    // without updating the inventory fails the `satisfies` clause first and
+    // this case second.
+    const expected: Readonly<Record<string, { kind: string; field: string }>> = {
+      APPDATA: { kind: 'platform', field: 'appData' },
+      LOCALAPPDATA: { kind: 'platform', field: 'localAppData' },
+      XDG_CONFIG_HOME: { kind: 'platform', field: 'xdgConfigHome' },
+      XDG_DATA_HOME: { kind: 'platform', field: 'xdgDataHome' },
+      CODEX_HOME: { kind: 'field', field: 'codexHome' },
+      WATCHTOWER_CACHE_DIR: { kind: 'field', field: 'cacheDir' },
+    }
+    for (const [name, source] of Object.entries(expected)) {
+      expect(ENV_VAR_SOURCES[name as SnapshotEnvVar], name).toEqual(source)
+    }
+  })
+
+  it('a threaded record answers with no ambient env at all (the seam reads the record)', () => {
+    // The strongest form of the claim: every inventory name resolves from this
+    // one planted record, so a stale ambient value cannot leak into any of them.
+    const planted: AppPaths = {
+      cacheDir: '/p/cacheDir',
+      codexHome: '/p/codexHome',
+      suppressCacheWrites: true,
+      platform: {
+        appData: '/p/appData',
+        localAppData: '/p/localAppData',
+        xdgConfigHome: '/p/xdgConfigHome',
+        xdgDataHome: '/p/xdgDataHome',
+      },
+      overrides: Object.fromEntries(PROVIDER_ENV_KEYS.map(key => [key, `/p/${key}`])) as ProviderOverrides,
+    }
+    for (const name of SNAPSHOT_ENV_VARS) {
+      const source = ENV_VAR_SOURCES[name]
+      const expected = source.kind === 'override' ? `/p/${name}` : `/p/${source.field}`
+      expect(resolveSnapshotEnvVar(name, planted), name).toBe(expected)
+    }
+  })
+
+  it('an unregistered name falls through to the override map rather than throwing', () => {
+    // Unreachable through the typed surface (`name: SnapshotEnvVar`), reachable
+    // through a cast from a `string[]`. A mid-scan throw would be worse than a
+    // value the coverage test flags, so the default branch answers `undefined`.
+    const record = recordOf({ overrides: {} })
+    expect(resolveSnapshotEnvVar('TOTALLY_UNREGISTERED_VAR' as SnapshotEnvVar, record)).toBeUndefined()
+  })
+
+  it('overrideFor/platformFor are unchanged (the inventory does not refactor the seams)', () => {
+    const record = appPathsOf({ CLAUDE_CONFIG_DIR: '/threaded' }, NO_PLATFORM)
+    expect(overrideFor(record, 'CLAUDE_CONFIG_DIR')).toBe('/threaded')
+    expect(platformFor(record)).toEqual(NO_PLATFORM)
   })
 })
 

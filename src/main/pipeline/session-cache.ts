@@ -1,9 +1,8 @@
-import { readFile, stat, open, rename, unlink, readdir, mkdir } from 'fs/promises'
-import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { createHash, randomBytes } from 'crypto'
+import { existsSync, readFileSync, unlinkSync } from 'fs'
+import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises'
 import { join } from 'path'
 
-import { resolveCacheDir } from '../env.js'
 import type {
   CachedCall,
   CachedFile,
@@ -13,6 +12,7 @@ import type {
   ProviderSection,
   SessionCache,
 } from '../../shared/schemas/session-cache.js'
+import { type AppPaths, resolveCacheDir, resolveSnapshotEnvVar, type SnapshotEnvVar } from '../env.js'
 
 export type {
   CachedCall,
@@ -150,19 +150,31 @@ export function sessionCachePath(): string {
  * The per-provider env fingerprint: which vars a provider's cached parse depends
  * on, so a config change invalidates its cache entries.
  *
- * NOT yet on the `AppPaths` snapshot (issue #148): the list below is a
- * second, independent inventory of the same env vars that
- * `env.ts:PROVIDER_ENV_KEYS` registers, and this function reads `process.env`
- * directly. That is correct today because nothing threads a record into the
- * cache path, so both sides see the same ambient env. It becomes wrong the moment
- * a seam IS threaded: a snapshot-driven config change would then change what the
- * provider reads without changing the fingerprint, and stale rows would survive
- * it. A test asserting the two lists agree on their overlap, and a slice moving
- * this onto the snapshot, are both follow-ups.
+ * Each var now resolves through `env.ts:ENV_VAR_SOURCES` — the one inventory of
+ * which snapshot source answers a given name — instead of reading `process.env`
+ * directly, so a threaded `AppPaths` record moves the hash with the seam it
+ * fingerprints. That was the hard precondition for threading records into the
+ * provider seams: while this function read the ambient env, a snapshot-driven
+ * config change would change what the provider parses without invalidating its
+ * cached rows.
+ *
+ * `PROVIDER_ENV_VARS` stays as the per-provider LIST (which vars this provider
+ * depends on) and is now covered by the snapshot's var union, pinned by
+ * `tests/session-cache-env-fingerprint.test.ts`; the untyped `v as SnapshotEnvVar`
+ * is safe only because that test fails if a name is not in the inventory.
+ *
+ * ONE deliberate divergence from the pre-snapshot hash: the two FIELD-shaped vars
+ * — `WATCHTOWER_CACHE_DIR` (antigravity) and `CODEX_HOME` (codex) — resolve to
+ * the snapshot's RESOLVED field, so they hash the effective value rather than
+ * `''` when the env var is unset. That costs those two providers exactly one
+ * re-parse on upgrade, and it is the point: keeping `''` would let a threaded
+ * `cacheDir` / `codexHome` change what the seam reads while the fingerprint stood
+ * still. Every other var is override- or platform-shaped, so it still hashes `''`
+ * when unset and no other cached row moves.
  */
-export function computeEnvFingerprint(provider: string): string {
+export function computeEnvFingerprint(provider: string, paths?: AppPaths): string {
   const vars = PROVIDER_ENV_VARS[provider] ?? []
-  const parts = vars.map(v => `${v}=${process.env[v] ?? ''}`)
+  const parts = vars.map(v => `${v}=${resolveSnapshotEnvVar(v as SnapshotEnvVar, paths) ?? ''}`)
   const parseVersion = PROVIDER_PARSE_VERSIONS[provider]
   if (parseVersion) parts.push(`parser=${parseVersion}`)
   return createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 16)
