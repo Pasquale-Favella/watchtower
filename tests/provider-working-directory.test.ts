@@ -10,7 +10,8 @@ import {
 import {
   createSqliteSessionParser,
   discoverSqliteSessions,
-} from '../src/main/pipeline/providers/sqlite-session-parser.js'
+  OPENCODE_FAMILY_1X,
+} from '../src/main/pipeline/providers/opencode-family-sqlite.js'
 import {
   clearCursorWorkspaceMapCache,
   createCursorProvider,
@@ -81,7 +82,13 @@ describe('opencode sqlite sessions', () => {
       .run('sess-1', 'm1', 'p1', JSON.stringify({ type: 'text', text: 'hi' }))
     setup.close()
 
-    const config = { providerName: 'opencode', displayName: 'OpenCode', dbDir, dbFilePrefix: 'opencode' }
+    const config = {
+      providerName: 'opencode',
+      displayName: 'OpenCode',
+      dbDir,
+      dbFilePrefix: 'opencode',
+      generations: [OPENCODE_FAMILY_1X],
+    }
     const sources = await discoverSqliteSessions(config)
     expect(sources).toHaveLength(1)
     expect(sources[0]!.workingDirectory).toBe(DIR)
@@ -110,7 +117,13 @@ describe('opencode sqlite sessions', () => {
       .run('sess-1', 'm1', 'p1', JSON.stringify({ type: 'text', text: 'hi' }))
     setup.close()
 
-    const config = { providerName: 'opencode', displayName: 'OpenCode', dbDir, dbFilePrefix: 'opencode' }
+    const config = {
+      providerName: 'opencode',
+      displayName: 'OpenCode',
+      dbDir,
+      dbFilePrefix: 'opencode',
+      generations: [OPENCODE_FAMILY_1X],
+    }
     const parser = createSqliteSessionParser(
       { path: `${dbPath}:sess-1`, project: 't', provider: 'opencode' },
       new Set(),

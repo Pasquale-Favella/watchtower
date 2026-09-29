@@ -236,12 +236,12 @@ export type ProviderEnvKey = (typeof PROVIDER_ENV_KEYS)[number]
  * `platformFor` / a snapshot FIELD, never a bare read.
  *
  * Known gap while this list is not empty:
- * `providers/sqlite-session-parser.ts` still reads `WATCHTOWER_VERBOSE` directly
+ * `providers/opencode-family-sqlite.ts` still reads `WATCHTOWER_VERBOSE` directly
  * for its "no yields parsed" notice, so a threaded record opens the
  * `models.ts` warning gate while leaving that one shut.
  */
 export const REMAINING_DIRECT_ENV_READS: Readonly<Record<string, readonly string[]>> = {
-  'providers/sqlite-session-parser.ts': ['WATCHTOWER_VERBOSE'],
+  'providers/opencode-family-sqlite.ts': ['WATCHTOWER_VERBOSE'],
 }
 
 export type ProviderOverrides = Readonly<Partial<Record<ProviderEnvKey, string>>>

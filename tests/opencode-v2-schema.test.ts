@@ -9,10 +9,13 @@ import {
   createSqliteSessionParser,
   detectGeneration,
   discoverSqliteSessions,
+  OPENCODE_FAMILY_1X,
+  OPENCODE_FAMILY_2X,
+  type SqliteGeneration,
   type SqliteProviderConfig,
   type V2MessageRow,
   v2RowsToLegacyShape,
-} from '../src/main/pipeline/providers/sqlite-session-parser.js'
+} from '../src/main/pipeline/providers/opencode-family-sqlite.js'
 import type { ParsedProviderCall, SessionParser } from '../src/main/pipeline/providers/types.js'
 import { openDatabase, type SqliteDatabase } from '../src/main/pipeline/sqlite.js'
 
@@ -48,11 +51,17 @@ function writable(dbPath: string): DatabaseSync {
   return new DatabaseSync(dbPath)
 }
 
+/// OpenCode's own declaration: both generations, 2.x preferred. Every case in
+/// this file that resolves a generation is exercising OpenCode's policy, so the
+/// list is stated once here rather than inline per fixture.
+const OPENCODE_GENERATIONS: readonly SqliteGeneration[] = [OPENCODE_FAMILY_2X, OPENCODE_FAMILY_1X]
+
 const CONFIG = (dbDir: string, providerName = 'opencode'): SqliteProviderConfig => ({
   providerName,
   displayName: 'OpenCode',
   dbDir,
   dbFilePrefix: 'opencode',
+  generations: OPENCODE_GENERATIONS,
 })
 
 /** The 1.x schema, exactly as the legacy path expects it. */
@@ -154,7 +163,7 @@ async function parseAll(
 }
 
 describe('detectGeneration', () => {
-  it('returns v2 when both session_v2 and session_message exist', () => {
+  it('returns the 2.x generation when both session_v2 and session_message exist', () => {
     const dir = tempDir('oc-v2-only-')
     const dbPath = join(dir, 'opencode-test.db')
     const db = writable(dbPath)
@@ -163,13 +172,13 @@ describe('detectGeneration', () => {
 
     const read = openDatabase(dbPath)
     try {
-      expect(detectGeneration(read)).toBe('v2')
+      expect(detectGeneration(read, OPENCODE_GENERATIONS)?.label).toBe('2.x')
     } finally {
       read.close()
     }
   })
 
-  it('returns legacy on a 1.x DB', () => {
+  it('returns the 1.x generation on a 1.x DB', () => {
     const dir = tempDir('oc-legacy-only-')
     const dbPath = join(dir, 'opencode-test.db')
     const db = writable(dbPath)
@@ -178,7 +187,7 @@ describe('detectGeneration', () => {
 
     const read = openDatabase(dbPath)
     try {
-      expect(detectGeneration(read)).toBe('legacy')
+      expect(detectGeneration(read, OPENCODE_GENERATIONS)?.label).toBe('1.x')
     } finally {
       read.close()
     }
@@ -193,15 +202,15 @@ describe('detectGeneration', () => {
 
     const read = openDatabase(dbPath)
     try {
-      expect(detectGeneration(read)).toBeNull()
+      expect(detectGeneration(read, OPENCODE_GENERATIONS)).toBeNull()
     } finally {
       read.close()
     }
   })
 
-  it('returns legacy — not v2 — when only ONE of the two v2 tables exists', () => {
-    // Half a migration is a legacy DB. Reading it through the v2 path would
-    // find no messages at all and silently zero out the session.
+  it('returns 1.x — not 2.x — when only ONE of the two 2.x tables exists', () => {
+    // Half a migration is not a readable 2.x generation. Reading through the
+    // 2.x path would find no messages at all and silently zero out the session.
     for (const partial of [
       'CREATE TABLE session_v2 (id TEXT, directory TEXT, title TEXT, time_created REAL, time_archived REAL, parent_id TEXT)',
       'CREATE TABLE session_message (session_id TEXT, id TEXT, type TEXT, seq INTEGER, time_created REAL, data BLOB)',
@@ -215,14 +224,14 @@ describe('detectGeneration', () => {
 
       const read = openDatabase(dbPath)
       try {
-        expect(detectGeneration(read)).toBe('legacy')
+        expect(detectGeneration(read, OPENCODE_GENERATIONS)?.label).toBe('1.x')
       } finally {
         read.close()
       }
     }
   })
 
-  it('returns v2 on an upgraded DB, where the legacy tables are still valid', () => {
+  it('returns 2.x on an upgraded DB, where the 1.x tables are still valid', () => {
     const dir = tempDir('oc-upgraded-')
     const dbPath = join(dir, 'opencode-test.db')
     const db = writable(dbPath)
@@ -232,7 +241,7 @@ describe('detectGeneration', () => {
 
     const read = openDatabase(dbPath)
     try {
-      expect(detectGeneration(read)).toBe('v2')
+      expect(detectGeneration(read, OPENCODE_GENERATIONS)?.label).toBe('2.x')
     } finally {
       read.close()
     }
@@ -669,6 +678,7 @@ describe('legacy parity', () => {
       displayName: 'OpenCode',
       dbDir,
       dbFilePrefix: 'opencode',
+      generations: OPENCODE_GENERATIONS,
     }
     const sources = await discoverSqliteSessions(config)
     expect(sources).toHaveLength(1)
@@ -759,6 +769,6 @@ describe('unreadable databases', () => {
       },
       close: () => {},
     } as unknown as SqliteDatabase
-    expect(() => detectGeneration(db)).toThrow(/locked/i)
+    expect(() => detectGeneration(db, OPENCODE_GENERATIONS)).toThrow(/locked/i)
   })
 })

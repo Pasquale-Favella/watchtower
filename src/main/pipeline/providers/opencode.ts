@@ -6,8 +6,10 @@ import { getShortModelName } from '../models.js'
 import {
   discoverSqliteSessions,
   createSqliteSessionParser,
+  OPENCODE_FAMILY_1X,
+  OPENCODE_FAMILY_2X,
   type SqliteProviderConfig,
-} from './sqlite-session-parser.js'
+} from './opencode-family-sqlite.js'
 import { discoverOpenCodeFileSessions, createOpenCodeFileSessionParser } from './opencode-file-parser.js'
 import type { Provider, ProbeRoot, SessionSource, SessionParser } from './types.js'
 
@@ -48,7 +50,10 @@ function getDataDir(dataDir?: string, paths?: AppPaths): string {
   return join(base, 'opencode')
 }
 
-function getSqliteConfig(dataDir?: string, paths?: AppPaths): SqliteProviderConfig {
+/// Exported as OpenCode's own declaration of which schema generations it may be
+/// read as — the seam ADR 0006 wants checkable, so a test can assert the list
+/// without reading this file as text.
+export function getSqliteConfig(dataDir?: string, paths?: AppPaths): SqliteProviderConfig {
   return {
     providerName: 'opencode',
     displayName: 'OpenCode',
@@ -63,6 +68,11 @@ function getSqliteConfig(dataDir?: string, paths?: AppPaths): SqliteProviderConf
     // `||` against the snapshot keeps that: `''` is a DEFINED value there too
     // (the resolver records raw strings), and it must reach the same default.
     dbFilePrefix: overrideFor(paths, 'OPENCODE_DB_PREFIX') || 'opencode',
+    // OpenCode's own migration policy, declared here rather than inside the
+    // shared reader: 2.x is preferred, and the 1.x tables stay declared because
+    // 2.x FREEZES them at the upgrade, so a DB carries both and a session that
+    // never migrated is still read where its rows live. Most-preferred first.
+    generations: [OPENCODE_FAMILY_2X, OPENCODE_FAMILY_1X],
   }
 }
 
