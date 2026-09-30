@@ -1,9 +1,7 @@
 import { create } from 'zustand'
-
 import { fetchAnalytics, fetchScan, fetchScanStatus } from '@/shared/lib/api'
-
-import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
 import type { ScanMetadata } from '../../../../shared/schemas/scan.js'
+import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
 
 /** Rows/blobs the last scan skipped because a declared field failed the
  * extraction schema — the drift signal ADR 0003 says must be visible. */
@@ -67,79 +65,66 @@ function notifyRefreshListeners(): void {
   for (const listener of refreshListeners) listener()
 }
 
-export const useScanStore = create<ScanState>()((set, get) => {
-  let refreshing: Promise<void> | undefined
-  let refreshAgain = false
-
-  return {
-    hydrated: false,
-    scanning: false,
-    scanError: null,
-    unparsedTotal: 0,
-    detectedProviders: [],
-    progress: [],
-    refreshVersion: 0,
-    fdaNeeded: false,
-    applyChange: () => {
-      if (refreshing) {
-        refreshAgain = true
-        return refreshing
-      }
-
-      refreshing = (async () => {
-        const statusResult = await fetchScanStatus()
-        if (!statusResult.ok) return
-        set({
-          hydrated: statusResult.data.scanned,
-          unparsedTotal: unparsedCount(statusResult.data.metadata),
-          scanError: statusResult.data.scanned ? null : get().scanError,
-          scanning: false,
-          progress: [],
-          fdaNeeded: needsFullDiskAccess(statusResult.data.metadata),
-        })
-        const analytics = await fetchAnalytics()
-        // A bad analytics fetch clears providers, matching AppRoot.
-        set({ detectedProviders: analytics.ok && analytics.data ? analytics.data.providers.map(p => p.name) : [] })
-        set(state => ({ refreshVersion: state.refreshVersion + 1 }))
-        notifyRefreshListeners()
-      })().finally(() => {
-        const runAgain = refreshAgain
-        refreshAgain = false
-        refreshing = undefined
-        if (runAgain) return get().applyChange()
+export const useScanStore = create<ScanState>()((set, get) => ({
+  hydrated: false,
+  scanning: false,
+  scanError: null,
+  unparsedTotal: 0,
+  detectedProviders: [],
+  progress: [],
+  refreshVersion: 0,
+  fdaNeeded: false,
+  applyChange: async () => {
+    const statusResult = await fetchScanStatus()
+    if (!statusResult.ok) return
+    set({
+      hydrated: statusResult.data.scanned,
+      unparsedTotal: unparsedCount(statusResult.data.metadata),
+      scanError: statusResult.data.scanned ? null : get().scanError,
+      scanning: false,
+      progress: [],
+      fdaNeeded: needsFullDiskAccess(statusResult.data.metadata),
+    })
+    const analytics = await fetchAnalytics()
+    // Parity with AppRoot: a bad analytics fetch clears the provider list
+    // rather than leaving last scan's stale list painted.
+    if (analytics.ok && analytics.data) {
+      set({ detectedProviders: analytics.data.providers.map(provider => provider.name) })
+    } else {
+      set({ detectedProviders: [] })
+    }
+    set(state => ({ refreshVersion: state.refreshVersion + 1 }))
+    notifyRefreshListeners()
+  },
+  refresh: async () => {
+    set({ scanning: true, scanError: null })
+    const result = await fetchScan()
+    if (!result.ok) {
+      set({ scanError: result.error, scanning: false })
+      return
+    }
+    // A scan is already in flight (background cadence or a concurrent call):
+    // not a failure — its progress events will arrive and the store:changed
+    // broadcast will hydrate the shell. Keep `scanning` set.
+    if (result.data.alreadyRunning) return
+    if (!result.data.ok && !result.data.aborted) {
+      set({
+        scanError: result.data.error ?? 'Scan failed. Check your provider sources and try again.',
+        scanning: false,
       })
-      return refreshing
-    },
-    refresh: async () => {
-      set({ scanning: true, scanError: null })
-      const result = await fetchScan()
-      if (!result.ok) {
-        set({ scanError: result.error, scanning: false })
-        return
-      }
-      // A scan is already in flight (background cadence or a concurrent call):
-      // not a failure — its progress events will arrive and the store:changed
-      // broadcast will hydrate the shell. Keep `scanning` set.
-      if (result.data.alreadyRunning) return
-      if (!result.data.ok && !result.data.aborted) {
-        set({
-          scanError: result.data.error ?? 'Scan failed. Check your provider sources and try again.',
-          scanning: false,
-        })
-      }
-    },
-    onProgress: (provider, processed, total, done) => {
-      // Parity with AppRoot's handler: every progress event marks the shell as
-      // scanning, but only provider-carrying events paint a row — a bare
-      // `{ stage: 'pricing' }` event must not draw an empty provider entry.
-      if (!provider) {
-        set({ scanning: true })
-        return
-      }
-      const next = get().progress.filter(p => p.provider !== provider)
-      set({ progress: [...next, { provider, processed, total, done }], scanning: true })
-    },
-    onError: message => set({ scanError: message, scanning: false }),
-    onIdle: () => set({ scanning: false, progress: [] }),
-  }
-})
+    }
+  },
+  onProgress: (provider, processed, total, done) => {
+    // Parity with AppRoot's handler: every progress event marks the shell as
+    // scanning, but only provider-carrying events paint a row — a bare
+    // `{ stage: 'pricing' }` event must not draw an empty provider entry.
+    if (!provider) {
+      set({ scanning: true })
+      return
+    }
+    const next = get().progress.filter(p => p.provider !== provider)
+    set({ progress: [...next, { provider, processed, total, done }], scanning: true })
+  },
+  onError: message => set({ scanError: message, scanning: false }),
+  onIdle: () => set({ scanning: false, progress: [] }),
+}))

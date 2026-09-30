@@ -1,7 +1,5 @@
 import { create } from 'zustand'
-
 import type { ApiResult } from '@/shared/lib/api'
-
 import type { OverviewScope } from '../../../../shared/schemas/overview.js'
 import { subscribeToRefresh } from './scan-store'
 
@@ -37,7 +35,6 @@ export function scopedDataSlice<T>(
   set: (patch: Partial<ScopedDataSlice<T>>) => void,
   get: () => ScopedDataSlice<T>,
 ): ScopedDataSlice<T> {
-  let latestFetch: Promise<ApiResult<T | null>> | undefined
   const slice: ScopedDataSlice<T> = {
     data: null,
     error: null,
@@ -49,11 +46,8 @@ export function scopedDataSlice<T>(
       if (get().dataKey === '' || get().dataKey !== dataKey) {
         set({ data: null, error: null, status: 'loading', scope, dataKey })
       }
-      latestFetch = undefined
-      const request = fetch(scope)
-      latestFetch = request
-      const result = await request
-      if (latestFetch !== request || get().dataKey !== dataKey) return
+      const result = await fetch(scope)
+      if (get().dataKey !== dataKey) return
       if (result.ok) set({ data: result.data, error: null, status: 'ready' })
       else set({ error: result.error, status: 'ready' })
     },
@@ -61,10 +55,7 @@ export function scopedDataSlice<T>(
       if (get().dataKey === '') return
       await get().load(get().scope)
     },
-    clear: () => {
-      latestFetch = undefined
-      set({ data: null, error: null, status: 'idle', scope: EMPTY_SCOPE, dataKey: '' })
-    },
+    clear: () => set({ data: null, error: null, status: 'idle', scope: EMPTY_SCOPE, dataKey: '' }),
   }
   return slice
 }
