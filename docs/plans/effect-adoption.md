@@ -489,6 +489,41 @@ area and should not run concurrently. 9, 10, 13 are independent of everything.
 
 ## 7. Decisions needed from the owner
 
+0. **Schema consolidation (Zod → Effect Schema): HELD pending the `unstable/rpc`
+   verdict — 2026-09-30.** The owner authorised replacing Zod outright, so the
+   scope was measured rather than argued. Zod here is not a backend utility: it
+   **is** the shared contract layer. 161 `z.*` definitions in `src`, **159** of
+   them in `src/shared/schemas` (24 files); **51 of 123 renderer files** import
+   it, across 18 renderer-facing modules (`renderer` 12, `models` 11, `overview`
+   10, `agents` 7, …); 83 `.safeParse` and 214 `.parse` call sites in
+   src+tests; only **4** `src/main` files import Zod directly. The renderer
+   imports `effect` in **0** files today.
+
+   The blocker is structural, not technical: `architecture.md` says the renderer
+   consumes the "Zod-validated IPC facade" _and_ records "Renderer 0% by design"
+   — the same decision stated twice. Converting `shared/schemas` to Effect
+   Schema **is** putting Effect in the renderer, so the two rules move together.
+   Nothing tests the 0% rule today, and `effect/Schema` is a pure synchronous
+   validator rather than an orchestration runtime, so the honest amendment is
+   "0% Effect _runtime_ in the renderer; `effect/Schema` permitted for wire
+   validation" — ADR 0005's sandbox boundary is unaffected either way.
+
+   **Why held rather than started:** Effect Schema is a _prerequisite_ for
+   `Rpc` (which needs it for payloads) and for `SqlModel`/`SqlSchema`. Those are
+   the only things that make a 159-schema migration pay for itself; without them
+   the payoff is "one library instead of two" against a real risk, since
+   `effect@4.0.0-rc.115` is a **release candidate** and this prerelease has
+   already cost four gaps (no `fromStandardSchemaV1`, no `cachedFunction`, no
+   platform `FileSystem` implementation, uninterruptible
+   `Stream.fromAsyncIterable`). A Schema-module gap would take the whole app
+   rather than one slice. **Fork:** if the rpc spike says adopt, migrate
+   immediately — Wave A (the 4 main-only files + the row schemas in
+   `shared/schemas/ledger.ts`; no renderer impact, one commit to revert) then
+   Wave B (the 18 renderer-facing modules, after the ADR amendment), per
+   contract and never both libraries for one. If it says decline, recommend
+   Wave A only, or deferring entirely. Wave A also cannot start before the
+   repository split lands — it is editing those exact row schemas.
+
 1. **§5.3 step 2 (`FileSystem`): close as "no"** with a permanent `node:fs`
    exception for sync discovery (A4), or fund the hand-written transport. The
    evidence points to closing it.
