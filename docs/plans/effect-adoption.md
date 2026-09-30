@@ -135,11 +135,23 @@ intent, not state.
 
 ### F14 — The observability bridge is not connected.
 
+> **HALF-CLOSED 2026-09-30.** The **Logger** half is done: `OperationalLogLoggerLayer`
+> is now installed in `WorkerLive` (`worker-runtime.ts:101`), so `Effect.log` reaches
+> the main-owned pino sink. `Effect.log` still has 0 call sites, which is a separate
+> (unused-API) question, not a broken-bridge one. The **Tracer** half is untouched
+> and is slice A7 below.
+
 - `OperationalLogLoggerLayer` (`operational-log.ts:346`): referenced only by
   `tests/operational-log.test.ts:405,422,441`. Installed in no production layer.
 - `OperationalLogLogger` (`:314`) documents that **spans are intentionally
-  ignored**. There are 67 `Effect.fn('…')` call sites (31 of them
-  `LedgerRepository.*`). Every one of those spans is constructed and discarded.
+  ignored**. There are **35** `Effect.fn('…')` call sites, **all in `src/main`**
+  (the renderer is 0% Effect by design, per ADR 0032). Every one of those spans is
+  constructed and discarded.
+  - _Correction:_ this finding originally said **67** sites, 31 of them
+    `LedgerRepository.*`. Re-counted against the tree on 2026-09-30 it is **35**.
+    I cannot reconstruct what the 67 counted — most likely `Effect.fnUntraced`
+    and the `LedgerRepository.*` method names folded together. The number that
+    matters for A7's sizing is 35.
 - `Effect.log` has **0** call sites in `src/main`.
 - `recordGauge` (`:250`) has 0 production call sites.
 - The three counters that _are_ wired (`scan.duration`, `fetch.timeout`,
@@ -148,7 +160,8 @@ intent, not state.
   `HarnessSnapshotCounters` (`snapshot.ts:25`) — not through the `R` channel. An
   omitted seam argument silently no-ops; an unmet `R` requirement is a type error.
 
-§5.4 decided "bridge, no exporter". The bridge was built and never connected.
+§5.4 decided "bridge, no exporter". The bridge was built; the logger end is now
+connected, the tracer end is not.
 
 ### F15 — No retry anywhere the user can feel it. (highest resilience value in this assessment)
 
@@ -279,6 +292,11 @@ real-clock race in the same file are both invisible to every gate in
 
 ### F23 — No Windows CI runner, and the Windows code we just wrote is ungated.
 
+> **OWNER DECISION 2026-09-30: log it, do not schedule it.** No Windows runner
+> added to CI. The finding stands and the case below is unchanged; it is simply
+> not worth per-push runner minutes until a Windows-only failure has actually cost
+> time. Revisit if that changes — the evidence for it is real, not speculative.
+
 CI runs `ubuntu-latest` only. Five Wave-9 tests are `skipIf(win32)`-guarded, so
 no platform branch of the migrated seams is exercised anywhere. Meanwhile
 `CONTEXT.md` rule 1 makes Windows a first-class packaging target (ADR 0015), and
@@ -286,6 +304,20 @@ the win32-specific code is exactly the risky kind: the `.cmd` shim
 (`command-runner.ts`), `killProcessTreeSync` (`process-tree.ts`), `APPDATA` /
 `USERPROFILE` platform roots (`ibm-bob.ts:22`, `open-design.ts:89`), the EPERM
 workspace delete (`ipc.ts:171`), and the `x-apple`/`process.platform` arms.
+
+> **Corroborated 2026-09-30, accidentally.** While integrating slice 8, a single
+> locked `%TEMP%\watchtower-coach-*` directory — left by a crashed test run, held
+> by a process nobody could identify — took **53 tests** in `tests/agents-ipc.test.ts`
+> red, on the assertion that no coach temp dirs remain. Every one of those tests
+> passed on a machine where nothing happened to be holding a handle. The fix was
+> to scope the assertion to the directory the test itself created (`67c1e79`),
+> which is the right fix regardless — but the failure mode is precisely F23:
+> **this is a Windows-only, timing-dependent, handle-holding failure that CI on
+> Linux cannot reproduce and that only surfaced by accident on a dev machine.**
+
+**What this decision does NOT say:** that the Windows-specific code is fine. It
+says the gate for it is a developer's machine, which is where slice 8's failure
+was found and where it will be found again.
 
 ### F24 — 24 `throw` sites live inside the 23 Effect-importing files.
 
@@ -446,13 +478,44 @@ already uses) wrapping the SDK stream. Deletes the `AsyncGenerator` cast at
 the `Promise.race` + `setTimeout(3000)` reset barrier at `ipc.ts:451` — replaced
 by interruption plus a `Scope` drain. Closes F18.
 
-### A7 — Decide spans, don't leave them dangling (1 line, or 1 slice)
+### A7 — Pino `Tracer` for the 35 dangling spans (1 slice) — **owner decision 2026-09-30: BUILD**
 
-Either install `OperationalLogLoggerLayer` in both runtimes so `Effect.log`
-reaches pino (1 line, closes half of F14), or amend §5.4 to say "spans stay off"
-and delete the `Effect.fn('…')` names that imply otherwise. The current state —
-67 spans constructed and discarded, a Logger written and never installed — is
-worse than either.
+The Logger half landed with Wave 1 (`OperationalLogLoggerLayer` installed at
+`worker-runtime.ts:101`). The **Tracer** half is untouched, so the 35
+`Effect.fn('…')` spans in `src/main` are still constructed and discarded.
+
+Two options were on the table. The owner chose to **build the ~30-line pino
+`Tracer`**, declining the alternative of amending §5.4 to say spans stay off.
+The deciding argument is that §5.4 already promises observability and the app does
+not deliver it; amending the doc makes the promise match the code, but 35 named
+spans are the most direct read on where time actually goes in the query and
+ingest paths — and slice 5a's whole thesis is that those paths are too slow.
+
+**Shape.** `Tracer.make({ span })` returning a `NativeSpan` subclass that
+overrides `end()` to emit one pino record through the existing allowlisted seam
+(`safeLogOperationalEvent`), plus a `TracerLayer` installed in `WorkerLive` beside
+the logger. A span **end** is the only write — a start-per-span log line doubles
+the file volume for no diagnostic gain, and duration is what the record carries.
+Attributes and events ride along on the end record; no span is ever sampled
+in-band.
+
+**Constraints.**
+
+- **Never throws**, including before `initOperationalLog` and including inside a
+  fiber finalizer. `OperationalLogLogger` is the shape to copy (`:314`), and the
+  `OperationalLog` class's own `if (!active) return` mirror.
+- **Records go through `sanitizeOperationalRecord`**, so only allowlisted keys
+  survive. Span attributes are Effect-internal (fiber annotations, log
+  annotations) and are not vetted ledger facts — same contract as `Effect.log`
+  call sites: never log prompts, paths, or ledger facts.
+- **`Exit` must not be stringified wholesale.** A failed span's exit carries the
+  error channel; render `errorCodeFor(Cause.squash(...))` into `code` exactly as
+  the Logger does, never the message.
+- `MainLive` gets the layer too, or A7 leaves the main isolate's spans dangling
+  and merely relocates the problem.
+
+**Sizing correction:** F14 said 67 span sites. It is **35**, all in `src/main` —
+the renderer is 0% Effect by design, so there is no second population to count.
 
 ### A8 — `@effect/vitest` + `it.effect` (1 dependency, migrate 20 files opportunistically)
 
