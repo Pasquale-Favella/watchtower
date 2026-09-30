@@ -21,7 +21,8 @@ import type {
   TaskCategory,
   TokenUsage,
 } from '../pipeline/types.js'
-import type { LedgerCallRow, LedgerSessionRow, LedgerStore, LedgerTurnRow } from './ledger.js'
+import type { LedgerSessionRow, LedgerStore, LedgerTurnRow } from './ledger.js'
+import type { LedgerCallFactsRow } from './read-projections.js'
 
 /**
  * Query-time aggregation (ADR 0002). The ledger stores only transcript
@@ -34,8 +35,14 @@ import type { LedgerCallRow, LedgerSessionRow, LedgerStore, LedgerTurnRow } from
 /** Default window when a caller supplies no explicit range (30 days). */
 export const DEFAULT_RANGE_DAYS = 30
 
-/** A flat ledger call plus query-time pricing/identity resolution. */
-export type ScopedCall = LedgerCallRow & {
+/** A flat ledger call plus query-time pricing/identity resolution. The row is
+ *  the seam's own `ledger_call` projection (`LedgerCallFactsRow`, 29 of the
+ *  table's 38 columns) rather than the maximal `LedgerCallRow`: the nine
+ *  omitted columns have no reader in `src/main`, and the per-column map with a
+ *  `file:line` for every kept one is on `ledgerCallFactsRowSchema`
+ *  (`./read-projections.ts`). `LedgerStore.getCalls` remains the wide read — the
+ *  fallback, and the measurement harness's baseline. */
+export type ScopedCall = LedgerCallFactsRow & {
   /** `model` after a configured `model_alias` rewrite (identity for display/grouping). */
   resolvedModel: string
   /** Query-time cost mirroring the Models lens: a Price override on the
@@ -78,7 +85,7 @@ function loadConfig(store: LedgerStore): void {
  * renames a model — identity comes from `pricingConfig.resolveAlias`, not from here.
  * Override names match verbatim first, then by normalized key (same spelling
  * tolerance as aliases). */
-function resolveDisplayCost(call: LedgerCallRow, resolvedModel: string): number {
+function resolveDisplayCost(call: LedgerCallFactsRow, resolvedModel: string): number {
   const override = pricingConfig.findOverride(resolvedModel)
   if (override) {
     const input = call.inputTokens * (override.inputPricePerMillion / 1_000_000)
@@ -99,7 +106,16 @@ function resolveDisplayCost(call: LedgerCallRow, resolvedModel: string): number 
   return call.baseCostUSD
 }
 
-/** SQL read seam: flat rows for the scope, provider-filtered, priced/aliased on read. */
+/** SQL read seam: flat rows for the scope, provider-filtered, priced/aliased on read.
+ *
+ *  The call read is the narrow `getCallFacts` projection, not `getCalls`. This is
+ *  the ONE place the re-pointing happens: every Section builder reaches the
+ *  ledger through here, so this single line is what stops `store:views`,
+ *  `store:analytics`, `overview:query`, the Sessions/Models/Spend/Compare/PR/
+ *  Skills/Yield/Optimize payloads and the export read from paying for nine
+ *  columns none of them read. The MCP drill-down's `ledger_calls` tool is the
+ *  other `queryScope` consumer and stays on the same projection, which is why
+ *  `project` and `working_directory` are two of the twenty-nine kept. */
 export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerScope {
   loadConfig(store)
 
@@ -115,7 +131,7 @@ export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerSco
   const sessions = store.getSessions().filter(s => keepSource(s.sourceId))
   const turns = store.getTurns().filter(t => keepSource(t.sourceId))
   const calls: ScopedCall[] = []
-  for (const call of store.getCalls()) {
+  for (const call of store.getCallFacts()) {
     if (!keepSource(call.sourceId)) continue
     const resolvedModel = pricingConfig.resolveAlias(call.model)
     calls.push({ ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel) })

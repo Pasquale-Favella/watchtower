@@ -26,6 +26,7 @@ import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../sha
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { DEFAULT_CADENCE } from '../cadence.js'
 import { mapFileToLedgerRows, type PortInput } from './port.js'
+import { type LedgerCallFactsRow, ledgerCallFactsRowSchema } from './read-projections.js'
 
 type SourceInput = ReturnType<typeof mapFileToLedgerRows>['source']
 type RunResult = { changes: number | bigint; lastInsertRowid: number | bigint }
@@ -57,13 +58,16 @@ export interface LedgerIngestPort {
   clear(): Effect.Effect<void, SqlError>
 }
 
-/** Read port (4 members): the four bulk reads the query-time aggregation seam
- *  consumes (ADR 0002/0008). Every row is Zod-validated at this boundary. */
+/** Read port (5 members): the four bulk reads the query-time aggregation seam
+ *  consumes (ADR 0002/0008) plus `getCallFacts`, the same `ledger_call` rows
+ *  shaped to what those consumers actually read. Every row is Zod-validated at
+ *  this boundary. */
 export interface LedgerQueriesPort {
   getSources(): Effect.Effect<LedgerSourceRow[], SqlError>
   getSessions(): Effect.Effect<LedgerSessionRow[], SqlError>
   getTurns(): Effect.Effect<LedgerTurnRow[], SqlError>
   getCalls(): Effect.Effect<LedgerCallRow[], SqlError>
+  getCallFacts(): Effect.Effect<LedgerCallFactsRow[], SqlError>
 }
 
 /** Config port (16 members): the user settings that are NOT scan data and must
@@ -196,6 +200,33 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
           FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
         `)
         return z.array(ledgerCallRowSchema).parse(rows)
+      })
+
+      /** The same rows, shaped to what the query-time aggregation seam reads:
+       *  29 of `getCalls`'s 38 columns, in the same order, over the same index
+       *  path. The nine it drops have no reader anywhere in `src/main` — the
+       *  per-column consumption map with `file:line` for every kept column is
+       *  the doc comment on `ledgerCallFactsRowSchema` (`./read-projections.ts`),
+       *  and `tests/ledger-narrow-reads.test.ts` re-derives the dropped half by
+       *  scanning the consumer files. `getCalls` itself is unchanged: it is the
+       *  fallback, and `scripts/measure-query-path.cjs` measures it as the
+       *  comparison baseline, so the two stay independently checkable.
+       *
+       *  Measured effect on a 500k-call ledger: the dropped columns are 126 B of
+       *  a 710 B call row (17.7%, derived from a 2,000-row clone sample), of
+       *  which `call_key` alone is 34.1 B — a STORED generated column SQLite has
+       *  to materialise for every row. */
+      const getCallFacts = Effect.fn('LedgerQueries.getCallFacts')(function* () {
+        const rows = yield* sql.unsafe(`
+          SELECT source_id, session_id, turn_index, call_index, dedup_key, provider, model, timestamp, speed,
+                 project, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
+                 input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
+                 reasoning_tokens, web_search_requests, cache_creation_one_hour_tokens,
+                 tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
+                 tool_sequence_json
+          FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
+        `)
+        return z.array(ledgerCallFactsRowSchema).parse(rows)
       })
 
       const getCurrencyRate = Effect.fn('LedgerConfig.getCurrencyRate')(function* (code: string) {
@@ -558,6 +589,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
         getSessions,
         getTurns,
         getCalls,
+        getCallFacts,
         getCurrencyRate,
         getDisplayCurrency,
         getRefreshCadence,
@@ -591,7 +623,7 @@ export class LedgerIngest extends Context.Service<LedgerIngest, LedgerIngestPort
 }
 
 /**
- * `LedgerQueries` — the ledger's read port (4 members), the one the query-time
+ * `LedgerQueries` — the ledger's read port (5 members), the one the query-time
  * view builders will take through `R` so `LedgerStore` loses its last callers.
  */
 export class LedgerQueries extends Context.Service<LedgerQueries, LedgerQueriesPort>()(
@@ -605,6 +637,7 @@ export class LedgerQueries extends Context.Service<LedgerQueries, LedgerQueriesP
         getSessions: implementation.getSessions,
         getTurns: implementation.getTurns,
         getCalls: implementation.getCalls,
+        getCallFacts: implementation.getCallFacts,
       }),
     ),
   )

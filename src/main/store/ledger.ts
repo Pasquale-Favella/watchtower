@@ -21,6 +21,7 @@ import { DEFAULT_CADENCE, isValidCadence } from '../cadence.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from './ledger-repository.js'
 import { NodeSqliteDatabase } from './node-sqlite-client.js'
 import type { PortInput } from './port.js'
+import type { LedgerCallFactsRow } from './read-projections.js'
 import { executeSqliteScript } from './sqlite-migrations.js'
 
 export type {
@@ -251,6 +252,20 @@ export class LedgerStore {
 
   getCalls(): LedgerCallRow[] {
     return this.runQueriesSync(queries => queries.getCalls())
+  }
+
+  /**
+   * The same `ledger_call` rows as `getCalls`, shaped to what the query-time
+   * aggregation seam reads: 29 of the 38 columns, with the nine no consumer
+   * reads omitted (`store/read-projections.ts` carries the per-column map).
+   * `getCalls` stays as the wide fallback; this is the one the Section builders
+   * read, through `store/aggregate.ts`.
+   *
+   * Same removal condition as the runners below: deleted with the facade, once
+   * the view builders take `LedgerQueries` through the worker runtime's `R`.
+   */
+  getCallFacts(): LedgerCallFactsRow[] {
+    return this.runQueriesSync(queries => queries.getCallFacts())
   }
 
   // ── Schema introspection (green-field verification) ───────────────────

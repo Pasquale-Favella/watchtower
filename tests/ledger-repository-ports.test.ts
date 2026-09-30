@@ -94,17 +94,24 @@ describe('each port is providable in isolation, with the other two absent', () =
         getSessions: () => Effect.sync(() => (calls.push('getSessions'), [])),
         getTurns: () => Effect.sync(() => (calls.push('getTurns'), [])),
         getCalls: () => Effect.sync(() => (calls.push('getCalls'), [])),
+        getCallFacts: () => Effect.sync(() => (calls.push('getCallFacts'), [])),
       }),
     )
 
     await expect(
       Effect.runPromise(
         Effect.flatMap(LedgerQueries, queries =>
-          Effect.all([queries.getSources(), queries.getSessions(), queries.getTurns(), queries.getCalls()]),
+          Effect.all([
+            queries.getSources(),
+            queries.getSessions(),
+            queries.getTurns(),
+            queries.getCalls(),
+            queries.getCallFacts(),
+          ]),
         ).pipe(Effect.provide(fakeQueries)),
       ),
-    ).resolves.toEqual([[], [], [], []])
-    expect(calls).toEqual(['getSources', 'getSessions', 'getTurns', 'getCalls'])
+    ).resolves.toEqual([[], [], [], [], []])
+    expect(calls).toEqual(['getSources', 'getSessions', 'getTurns', 'getCalls', 'getCallFacts'])
 
     // Absence is OBSERVED. Pre-split there was one tag, so "the other two are
     // missing" was not a state this could express at all.
