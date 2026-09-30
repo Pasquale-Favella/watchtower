@@ -320,13 +320,27 @@ in a test without touching the arm.
 
 ### A3 — Split `LedgerRepository` (mechanical, 1–2 slices)
 
-`LedgerIngest` (`portIn`, `deleteSource`) · `LedgerConfig` (aliases, prices,
-currency, cadence, MCP startup, dismissals — 14 members) · `LedgerQueries`
-(`getSources/Sessions/Turns/Calls`). Same implementation, three tags, so the diff
-is a signature change. Closes F12, makes each independently fakeable, and — the
-real prize — lets the view builders take `LedgerQueries` through the `R` channel
-so `LedgerStore` loses its last callers and the facade dies as a _consequence_
-rather than as a queue item.
+`LedgerIngest` (`portIn`, `deleteSource`, `clear`) · `LedgerConfig` (aliases,
+prices, currency, cadence, MCP startup, dismissals — 14 members) ·
+`LedgerQueries` (`getSources/Sessions/Turns/Calls`). Same implementation, three
+tags, so the diff is a signature change. Closes F12, makes each independently
+fakeable, and — the real prize — lets the view builders take `LedgerQueries`
+through the `R` channel so `LedgerStore` loses its last callers and the facade
+dies as a _consequence_ rather than as a queue item.
+
+> **Decision 2026-09-30: hand-split, NOT `SqlModel.makeRepository`.** Checked
+> before starting, as this section originally required.
+> `SqlModel.makeRepository` is constrained to `S extends Model.Any` — a
+> `Model.Class` declaration — and this repo has **zero**
+> `Model.Class`/`Schema.Class`; it has 36 raw `sql.unsafe` template calls and 14
+> hand-written Zod row schemas instead. Adopting it would mean authoring Model
+> declarations and migrating every read and write off Zod, which
+> `docs/architecture.md` locks as the single wire and contract truth. It is also
+> the wrong shape: it generates single-table CRUD (`insert`/`update`/`findById`/
+> `delete` plus `makeResolvers`), whereas the repository's centre of gravity is
+> `portIn` — a multi-table transactional ingest a generated CRUD repository
+> cannot express at all. The split stays a signature change over one
+> hand-written implementation.
 
 ### A4 — Close platform step 2 (`FileSystem`) as "no", in writing
 
