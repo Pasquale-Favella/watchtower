@@ -1,5 +1,10 @@
+import { mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
+
 import { initAppPaths } from '../env.js'
+import { LedgerStore } from '../store/ledger.js'
+import { makeWorkerRuntime } from '../worker-runtime.js'
 import { DbWorkerContext } from './context.js'
 import type { DbWorkerData, DbWorkerRequest, DbWorkerResponse } from './protocol.js'
 
@@ -30,7 +35,17 @@ try {
   // back to the same pure resolvers the `process.env` readers already use.
   initAppPaths({ cacheDir: init.cacheDir })
 
-  const ctx = new DbWorkerContext(init, event => port.postMessage(event))
+  // The worker composition root (ADR 0032): the single-writer `LedgerStore` is
+  // constructed HERE, together with the `WorkerLive` runtime built from it,
+  // because `FxRates.layerWithRepository` is bound to that store instance.
+  // Both are then handed to `DbWorkerContext`, which never composes a layer of
+  // its own — every Effect program in this isolate runs against this runtime.
+  mkdirSync(dirname(init.dbPath), { recursive: true })
+  const ledger = new LedgerStore(init.dbPath)
+  const ctx = new DbWorkerContext(init, event => port.postMessage(event), {
+    ledger,
+    runtime: makeWorkerRuntime(ledger),
+  })
 
   // Deliberately no dispatch queue: every ledger call is synchronous
   // (`node:sqlite`), so each one is atomic — no two store operations can

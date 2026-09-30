@@ -1,11 +1,10 @@
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
-import * as Layer from 'effect/Layer'
 import * as Schedule from 'effect/Schedule'
 import * as Scope from 'effect/Scope'
-import { mkdirSync, readdirSync, statSync } from 'fs'
-import { dirname, join } from 'path'
+import { readdirSync, statSync } from 'fs'
+import { join } from 'path'
 
 import {
   DEFAULT_SKILLS_THRESHOLDS,
@@ -14,7 +13,7 @@ import {
 } from '../../shared/schemas/skills.js'
 import { resolveCadenceMs } from '../cadence.js'
 import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from '../compare-view.js'
-import { Env } from '../env.js'
+import type { Env } from '../env.js'
 import type { ExportResult } from '../export.js'
 import { exportCsv, exportJson } from '../export.js'
 import {
@@ -22,16 +21,15 @@ import {
   type CurrencyOption,
   FxRates,
   getActiveCurrency,
-  type FxRatesRepositoryRunner,
   isValidCurrencyCode,
   listCurrencies,
   refreshFxRateWithRates,
 } from '../fx.js'
 import { buildModelsViewFromLedger, type ModelsPayload } from '../models-view.js'
-import { OperationalLog } from '../operational-log.js'
+import type { OperationalLog } from '../operational-log.js'
 import { buildOptimizeViewFromLedger, type OptimizePayload } from '../optimize-view.js'
 import { buildOverviewFromLedger, type OverviewScope } from '../overview.js'
-import { HttpFetch } from '../pipeline/fetch-utils.js'
+import type { HttpFetch } from '../pipeline/fetch-utils.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
 import { getRepoUrl } from '../pipeline/git-remote.js'
 import { refreshPricingNowEffect } from '../pipeline/models.js'
@@ -61,6 +59,7 @@ import {
   type SessionRow,
 } from '../views.js'
 import { buildYieldViewFromLedger, type YieldPayload } from '../yield-view.js'
+import type { WorkerRuntime } from '../worker-runtime.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 
 export type DbWorkerEmit = (event: DbWorkerEvent) => void
@@ -95,33 +94,30 @@ function abortedScanError(): ScanAbortedError {
   return new ScanAbortedError({ message: 'scan aborted' })
 }
 
-/** Live HttpFetch, resolved at run time so tests stubbing global fetch drive
- * the same path as production (layer is stateless, safe per-effect). */
-function liveFetchLayer(): Layer.Layer<HttpFetch> {
-  return HttpFetch.layerWithFetch(globalThis.fetch)
-}
-
-/** Worker-local live layer (ADR 0032): flat `HttpFetch` + repository-direct
- * `FxRates` composition, mirroring `MainLive`'s `Layer.mergeAll` shape at
- * worker scope. Provided once at the `run*` boundary in `startBackgroundFx`,
- * so FX call sites depend on the ports, never the concrete `LedgerStore`. The
- * parameter is typed as the `FxRatesRepositoryRunner` SEAM (a worker-owned
- * `LedgerStore` satisfies it), so the type says what the layer actually needs —
- * background FX writes go straight to `LedgerRepository`, same as the
- * `currency:set` arm. */
-function liveFxLayer(store: FxRatesRepositoryRunner): Layer.Layer<HttpFetch | FxRates> {
-  return Layer.mergeAll(liveFetchLayer(), FxRates.layerWithRepository(store))
+/**
+ * What the composition root (`db-worker/entry.ts`, ADR 0023) hands in: the
+ * single-writer ledger this thread owns, and the worker's application runtime
+ * built from it. They are constructed together because `WorkerLive`'s `FxRates`
+ * layer is bound to that store instance — the runtime is the ONLY place worker
+ * workflows obtain their capabilities now (no per-call `Effect.provide`), so a
+ * test can substitute any of them by handing in a differently-composed runtime.
+ */
+export interface DbWorkerDeps {
+  readonly ledger: LedgerStore
+  readonly runtime: WorkerRuntime
 }
 
 /**
  * Everything the old main process owned around the ledger, now running on the
- * db-worker thread: the store itself, the scan lifecycle, the background
- * cadence, and every query-time view builder. The main process only forwards
- * renderer IPC here and relays the emitted broadcasts to windows — so a scan
- * or a heavy aggregation blocks this thread, never the main event loop.
+ * db-worker thread: the scan lifecycle, the background cadence, and every
+ * query-time view builder over the store the root hands in. The main process
+ * only forwards renderer IPC here and relays the emitted broadcasts to
+ * windows — so a scan or a heavy aggregation blocks this thread, never the main
+ * event loop.
  */
 export class DbWorkerContext {
   private ledger: LedgerStore
+  private runtime: WorkerRuntime
   private dataDir: string
   private cacheDir: string
   private emit: DbWorkerEmit
@@ -151,12 +147,12 @@ export class DbWorkerContext {
   private closeFiber: Fiber.Fiber<void> | null = null
   private closed = false
 
-  constructor(init: DbWorkerData, emit: DbWorkerEmit) {
+  constructor(init: DbWorkerData, emit: DbWorkerEmit, deps: DbWorkerDeps) {
     this.dataDir = init.dataDir
     this.cacheDir = init.cacheDir
     this.emit = emit
-    mkdirSync(dirname(init.dbPath), { recursive: true })
-    this.ledger = new LedgerStore(init.dbPath)
+    this.ledger = deps.ledger
+    this.runtime = deps.runtime
     void this.scheduleCadence()
     // Prime the FX side-table for the persisted display currency at startup,
     // non-blocking: readers use the cached rate (or USD) meanwhile, and an
@@ -171,11 +167,22 @@ export class DbWorkerContext {
    * `saveReport`. Shared by the manual ⌘R-triggered path and the
    * background-cadence timer, so both go through identical port-in + broadcast
    * semantics. Repo URLs are resolved per unique project cwd (memoized) so the
-   * ledger's per-source `repo_url` is captured at port-in without a rescan. */
+   * ledger's per-source `repo_url` is captured at port-in without a rescan.
+   *
+   * `HttpFetch | Env | OperationalLog` are UNSATISFIED requirements (ADR 0032
+   * P2: a workflow widens its `R`; it never provides a layer). `runTrackedScan`
+   * supplies them from the worker runtime — which used to be a per-call
+   * `Effect.provide(Layer.mergeAll(liveFetchLayer(), Env.layer,
+   * OperationalLog.layer))` here, so `Env` was rebuilt on every scan. The
+   * `R`-channel `OperationalLog` over the snapshot-style optional value-seam is
+   * unchanged: the live layer still delegates to the main-owned pino singleton
+   * (same sink/allowlist/`main` context, never a second sink), tests still
+   * substitute `OperationalLog.layerWithSink`, and never-throw filing lives in
+   * `runScan`'s `onExit` (`catchCause`) so forked scan fibers stay green. */
   private performScan(
     options: { provider?: string } | undefined,
     emit: (progress: ScanProgress) => void,
-  ): Effect.Effect<ScanMetadata, unknown> {
+  ): Effect.Effect<ScanMetadata, unknown, HttpFetch | Env | OperationalLog> {
     const range = lifetimeRange()
     const repoUrlCache = new Map<string, Promise<string | undefined>>()
     const portIn = async (delta: PortInput): Promise<void> => {
@@ -204,34 +211,31 @@ export class DbWorkerContext {
       // to the ledger while the parse runs. The scan's delta wrapper already
       // gates out failed parses; `unchanged` is a no-op inside portIn.
       portIn,
-    ).pipe(
       // Effect-native typed-abort proof (Wave 5 §2): `catchTag` on the `_tag`
       // (NOT `instanceof`, NOT `either`). No `either` here, so no span-inside
       // trap — any future `withSpan` must wrap OUTSIDE this `catchTag`, never
       // inside a branch. Re-fails unchanged so envelopes/flag semantics stay
       // byte-identical downstream (Promise-boundary `instanceof` + flag in the
       // `scan:start`/background catches). Defects stay in Cause (no catchAll).
-      Effect.catchTag('ScanAbortedError', err => Effect.fail(err)),
-      // Duration-counter live provision (Wave 5): `R`-channel `OperationalLog`
-      // merged here (mirrors `liveFxLayer`'s `mergeAll` shape at worker scope:
-      // fetch + the repository-direct `FxRates` port, no store facade).
-      // Chosen over the snapshot-style optional value-seam because grep proves
-      // `runScan` has exactly one caller (`performScan`; zero direct callers in
-      // `src`/`tests`/`renderer`/`e2e`/`scripts`, incl. all FORBIDDEN tests), so
-      // no forbidden direct caller needs a zero-edit default. Live layer
-      // delegates to the main-owned pino singleton (same sink/allowlist/`main`
-      // context, never a second sink); tests substitute
-      // `OperationalLog.layerWithSink` fake. Never-throw filing lives in
-      // `runScan`'s `onExit` (`catchCause`), so forked scan fibers stay green.
-      Effect.provide(Layer.mergeAll(liveFetchLayer(), Env.layer, OperationalLog.layer)),
-    )
+    ).pipe(Effect.catchTag('ScanAbortedError', err => Effect.fail(err)))
   }
 
+  /**
+   * Forks the scan into `scanScope` and joins it.
+   *
+   * `runtime.runSync(Effect.forkIn(...))` — NOT `Effect.runSync`: forking is the
+   * only reason this is synchronous, and the runtime supplies `performScan`'s
+   * `HttpFetch | Env | OperationalLog` requirements from the memoised
+   * `WorkerLive` context (it used to build a fresh layer per scan). The join
+   * stays Promise-returning at the `dispatch` boundary: the scan fiber's own
+   * lifecycle is owned by `scanScope` and is deliberately unchanged by this
+   * slice, interruption and all.
+   */
   private async runTrackedScan(
     options: { provider?: string } | undefined,
     emit: (progress: ScanProgress) => void,
   ): Promise<ScanMetadata> {
-    const fiber = Effect.runSync(
+    const fiber = this.runtime.runSync(
       Effect.forkIn(this.performScan(options, emit), this.scanScope, { startImmediately: true }),
     )
     this.scanFiber = fiber
@@ -242,10 +246,15 @@ export class DbWorkerContext {
     }
   }
 
+  /**
+   * Forks non-blocking background FX work into `backgroundScope` (startup prime,
+   * cadence tick, post-`currency:set` refresh). Runs through the runtime, so
+   * `HttpFetch | FxRates` come from the one memoised `WorkerLive` graph instead
+   * of a per-call `liveFxLayer(this.ledger)` rebuild.
+   */
   private startBackgroundFx(work: Effect.Effect<void, never, HttpFetch | FxRates>): void {
     if (this.closed) return
-    const provided = Effect.provide(work, liveFxLayer(this.ledger))
-    Effect.runSync(Effect.forkIn(provided, this.backgroundScope, { startImmediately: true }))
+    this.runtime.runSync(Effect.forkIn(work, this.backgroundScope, { startImmediately: true }))
   }
 
   /** Operational-log forwards (#128): scan lifecycle over the existing host
@@ -537,18 +546,28 @@ export class DbWorkerContext {
         await this.close()
         return null
 
+      /** Persisted cadence read. Plain sync store call: the `Effect.runPromise(
+       * Effect.sync(...))` wrapper this used to wear added a microtask and a
+       * `never`-typed `R` around a synchronous `node:sqlite` read, and rejected
+       * with the SAME squashed error when it threw — so the wrapper was
+       * ceremony with no composition in it. `dispatch` is already Promise-
+       * returning (a `worker_threads` handler IS a composition root, ADR 0023),
+       * so the arm stays async with no Effect at all. */
       case 'cadence:get': {
-        return Effect.runPromise(Effect.sync(() => ledger.getRefreshCadence()))
+        return ledger.getRefreshCadence()
       }
 
       case 'cadence:set': {
         const value = args[0] as string
         const reschedule = this.scheduleCadenceEffect()
-        return Effect.runPromise(
+        // Only `reschedule` is genuinely effectful (it interrupts the prior
+        // cadence fiber and forks the new one into `backgroundScope`), so only
+        // it stays an Effect, run through the worker runtime.
+        return this.runtime.runPromise(
           Effect.gen(function* () {
-            yield* Effect.sync(() => ledger.setRefreshCadence(value))
+            ledger.setRefreshCadence(value)
             yield* reschedule
-            return yield* Effect.sync(() => ledger.getRefreshCadence())
+            return ledger.getRefreshCadence()
           }),
         )
       }
@@ -764,11 +783,12 @@ export class DbWorkerContext {
       /** Pricing-table live refresh. NOTE: the pricing table is module-level
        * in-memory state (pipeline/models.ts), so the refresh MUST run on the
        * thread that scans — this worker — or it would update a copy nothing
-       * reads. */
+       * reads. `HttpFetch` and `Env` come from the worker runtime, so a test can
+       * substitute either without touching this arm; the `{ok:true}` /
+       * `{ok:false, error}` envelopes are unchanged. */
       case 'pricing:refresh': {
-        return Effect.runPromise(
+        return this.runtime.runPromise(
           refreshPricingNowEffect().pipe(
-            Effect.provide(Layer.mergeAll(liveFetchLayer(), Env.layer)),
             Effect.map(() => ({ ok: true as const })),
             Effect.catch(err => Effect.succeed({ ok: false as const, error: err.message })),
           ),
@@ -792,13 +812,10 @@ export class DbWorkerContext {
         }
         // Repository-direct write (ADR 0032 follow-up): through the `FxRates`
         // port straight to `LedgerRepository`, bypassing the store facade —
-        // `LedgerStore.setDisplayCurrency` is gone. The background FX refresh
-        // below reuses the same repository-direct layer via `liveFxLayer`.
-        Effect.runSync(
-          Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(
-            Effect.provide(FxRates.layerWithRepository(ledger)),
-          ),
-        )
+        // `LedgerStore.setDisplayCurrency` is gone. The port comes from the
+        // worker runtime, so the SAME `FxRates` instance serves this write, the
+        // background FX refresh below, and the cadence tick.
+        this.runtime.runSync(Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)))
         const emit = this.emit
         const isClosed = (): boolean => this.closed
         this.startBackgroundFx(
@@ -840,12 +857,18 @@ export class DbWorkerContext {
     const scanScope = this.scanScope
     const currentScan = (): Fiber.Fiber<ScanMetadata, unknown> | null => this.scanFiber
     const closeLedger = (): void => this.ledger.close()
+    const disposeRuntime = this.runtime.disposeEffect
     const shutdown = Effect.gen(function* () {
       yield* Scope.close(backgroundScope, Exit.void)
       const scan = yield* Effect.sync(currentScan)
       if (scan) yield* Fiber.join(scan).pipe(Effect.catch(() => Effect.void))
       yield* Scope.close(scanScope, Exit.void)
       yield* Effect.sync(closeLedger)
+      // Release the worker runtime's layer resources LAST — after both worker
+      // scopes are closed and the writer connection is gone. `WorkerLive` is
+      // the isolate's composition root, so its teardown belongs to the same
+      // shutdown path that retires the things its layers were built over.
+      yield* disposeRuntime
     })
     this.closeFiber = Effect.runFork(shutdown)
     return Effect.runPromise(Fiber.join(this.closeFiber))

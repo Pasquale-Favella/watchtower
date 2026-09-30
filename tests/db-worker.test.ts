@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import * as Layer from 'effect/Layer'
 import * as Schedule from 'effect/Schedule'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -24,6 +25,8 @@ import { Env } from '../src/main/env.js'
 import { OperationalLog, type OperationalLogSink, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { runScan, ScanAbortedError, type ScanMetadata } from '../src/main/pipeline/scan.js'
+import { LedgerStore } from '../src/main/store/ledger.js'
+import { makeWorkerRuntime, type WorkerServices } from '../src/main/worker-runtime.js'
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'watchtower-dbworker-'))
@@ -48,12 +51,21 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   let ctx: DbWorkerContext | null = null
   const events: DbWorkerEvent[] = []
 
-  function open(): DbWorkerContext {
+  /** Mirrors the worker composition root (`db-worker/entry.ts`): the
+   * single-writer store, then the `WorkerLive` runtime built from it. */
+  function openWith(runtimeLayer?: Layer.Layer<WorkerServices>): DbWorkerContext {
     dir = tempDataDir()
-    ctx = new DbWorkerContext({ dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }, event => {
-      events.push(event)
+    const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
+    const ledger = new LedgerStore(init.dbPath)
+    ctx = new DbWorkerContext(init, event => events.push(event), {
+      ledger,
+      runtime: runtimeLayer ? makeWorkerRuntime(ledger, runtimeLayer) : makeWorkerRuntime(ledger),
     })
     return ctx
+  }
+
+  function open(): DbWorkerContext {
+    return openWith()
   }
 
   afterEach(async () => {
@@ -170,7 +182,22 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
 
   it('emits oplog scan lifecycle records over the host channel (#128)', async () => {
     const c = open()
-    await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: true })
+    // Scoped to a provider that matches nothing, the same idiom
+    // `lifetimeOptions()` already uses below. This test asserts the SHAPE of the
+    // lifecycle records over the host channel, not any count, so real provider
+    // discovery bought it nothing — while making it the slowest test in the
+    // suite: an unscoped scan walks every real provider dir on the host, which
+    // measured 116.6s here against the 120s `testTimeout`. That is 2.8% of
+    // headroom on an idle machine, so it tipped over under the full suite's
+    // parallel load and failed on machines that had nothing wrong with them. The
+    // cost also grew with however many sessions the host had accumulated, which
+    // is exactly the direction this test should not move in. A bounded scan
+    // still emits `scan.start` -> progress -> `scan.finish` and still exercises
+    // the host-channel relay; the per-provider counters are 0, and the shape
+    // assertions below hold unchanged.
+    await expect(c.dispatch('scan:start', [{ provider: '__oplog-lifecycle-no-such-provider__' }])).resolves.toEqual({
+      ok: true,
+    })
     const oplogs = events.filter(event => event.event === 'oplog')
     expect(oplogs[0]).toMatchObject({ level: 'info', logEvent: 'scan.start', fields: { op: 'scan' } })
     // Discovery reads the real provider dirs, so counts vary per machine —
@@ -816,10 +843,9 @@ describe('DbWorkerContext cadence jitter (Wave 7 §4.4)', () => {
   it('spaces repeat ticks within ±20% of the preset and holds the nominal count', async () => {
     vi.useFakeTimers()
     const dir = tempDataDir()
-    const ctx = new DbWorkerContext(
-      { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') },
-      () => {},
-    )
+    const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
+    const ledger = new LedgerStore(init.dbPath)
+    const ctx = new DbWorkerContext(init, () => {}, { ledger, runtime: makeWorkerRuntime(ledger) })
     const tickTimes: number[] = []
     const triggerScan = vi
       .spyOn(ctx as unknown as { triggerBackgroundScan: () => Promise<void> }, 'triggerBackgroundScan')
