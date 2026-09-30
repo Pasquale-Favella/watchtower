@@ -581,6 +581,56 @@ area and should not run concurrently. 9, 10, 13 are independent of everything.
 > Schema is not faster than Zod 4, and the 47%-of-`getCalls` decode cost is
 > fixed by _reading less_, which is slice 5's job, not by changing libraries.
 
+#### Migration rules — measured, 2026-09-30
+
+A differential parity harness walked every exported Zod schema in the tree,
+synthesised a probe corpus from each schema's own structure, and compared
+verdicts against candidate Effect Schemas. **Its artefacts are deliberately not
+committed** — the golden was 3.2 MB and the harness is a proving instrument, not
+a deliverable. What it produced is this rule set, and every rule below was
+re-verified directly against `effect@4.0.0-rc.115` before being written down.
+
+**Census.** **169** exported Zod schemas across 24 modules — not the 159 first
+counted (that figure counted definition sites, not exports). **Zero**
+`.refine()`, `.superRefine()`, `z.preprocess`, `z.tuple`, `.catch()`, `.brand()`.
+The non-pure-validator surface is **15 sites**, all enumerated: the JSON-column
+pipes and the snake→camel row transforms in `ledger.ts`, `z.coerce.number()` at
+`ledger.ts:18`, two `.default()`s in `skills.ts:20-21`, the union-of-enums and
+the `z.record().and()` in `renderer.ts`, two `z.custom<T>()` at `renderer.ts:41,58`,
+and `.trim().min().max()` at `ipc.ts:65-66`.
+
+**Module split.** 19 modules are renderer-facing; **5 are main-only** — `ledger`,
+`pipeline`, `port`, `providers`, `session-cache`. Exact, not approximate: zero
+files under `src/renderer` or `src/preload` import them. Those five are Wave A;
+the other nineteen are Wave B and need the ADR 0032 amendment first.
+
+| #      | Rule                                                                                                  | Why it matters                                                                                                                                                                                                                                                                                                                                                    |
+| ------ | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **R1** | `z.enum([...])` → `Schema.Literals([...])`. **NEVER `Schema.Literal(a, b, c)`.**                      | Verified: `Schema.Literal.length` is **1** and the AST of a 3-argument call holds `literal: "overview"` only — the rest are **silently dropped**. A 3-member Section enum accepted 1 of 3. 16 sites, up to 16 members. Written blind, the renderer rejects `"sessions"` and every Section switch breaks.                                                          |
+| **R2** | `z.number()` → `Schema.Number.pipe(Schema.check(Schema.isFinite()))`. **Never bare `Schema.Number`.** | Verified: Zod rejects `NaN`/`±Infinity`, `Schema.Number` accepts all three. A `NaN` that slips through renders as `{"cost":null}`. **309 sites** — the largest single rule.                                                                                                                                                                                       |
+| **R3** | `z.coerce.number()` must be translated explicitly, never implicitly.                                  | Diverges on `""`, `null`, `true`, numeric strings — all of which Zod coerces to a number. Scoped to **24 fields**, all via `num` at `ledger.ts:18`.                                                                                                                                                                                                               |
+| **R4** | `.trim()` → a _transforming_ trim. `isTrimmed()` only **checks**.                                     | `ipc.ts:65-66`. Zod accepts `"  a  "` and decodes to `"a"`; the naive translation rejects it. Order matters in Zod too: `.min(1).trim()` accepts `"   "` and decodes it to `""`.                                                                                                                                                                                  |
+| **R5** | `.default(x)` → `Schema.withDecodingDefault(Effect.succeed(x))`.                                      | A bare value dies with `Not a valid effect: 5` — a **defect**, so it never surfaces as a wrong verdict, only as a crash. `skills.ts:20-21`.                                                                                                                                                                                                                       |
+| **R6** | `z.record(...).and(z.object({...}))` **keeps unknown keys**.                                          | `renderer.ts:90-93`. Every other object in the tree strips. Depends on which side of `.and()` is the record.                                                                                                                                                                                                                                                      |
+| **R7** | Do **not** reach for `Schema.Struct(fields, { onExcessProperty: 'fail' })`.                           | Silently ignored in rc.115. The obvious escape hatch for a strict read does not work — a version-pinned landmine.                                                                                                                                                                                                                                                 |
+| **R8** | The throwing JSON `.transform()` is a deliberate behaviour change.                                    | `ledger.ts:9`. Today a malformed JSON cell makes `safeParse` **throw** — verified `SyntaxError: Unexpected token 'o'` — so there is no verdict at all and the read dies as a defect. Effect rejects cleanly. This is the same fix as Wave A's `decodeUnknownEffect` (defect channel → error channel), but it is a **change** and is owner-approved on that basis. |
+| **R9** | Excess/unknown properties need **no** action.                                                         | Verified equivalent: both decode `{"a":"x","notAField":1}` to `{"a":"x"}`. This was the largest worry about the frozen wire and it is a non-issue.                                                                                                                                                                                                                |
+
+**Verified equivalent — translate freely:** `z.discriminatedUnion` ↔ tagged
+`Schema.Union` of `Struct`s (4/4 including extra-key stripping); `z.union`;
+`.or()` of enums (6/6); `z.boolean`, `z.array`, `z.record` element checks;
+`z.date()` ↔ `Schema.Date` (3/3); `z.string().min(1)` ↔ `Schema.NonEmptyString`;
+optional/nullable composition; and `z.custom<T>()` ↔ `Schema.Any`
+(required-key-but-accepts-anything matches exactly).
+
+**Harness limitations, stated so the rules are not oversold.** The corpus is
+synthetic — derived from the schemas, not from production payloads. A divergence
+needing an input outside the synthesised vocabulary (a specific malformed JSON
+cell, a `__proto__` key) would not be caught. The harness bounds the space it
+**explores**; it does not bound the space of possible bugs. Rejection _messages_
+are not compared, by design: Zod's issue format and Effect's `SchemaError` differ,
+and nothing in the frozen contract depends on them.
+
 1. **§5.3 step 2 (`FileSystem`): close as "no"** with a permanent `node:fs`
    exception for sync discovery (A4), or fund the hand-written transport. The
    evidence points to closing it.
