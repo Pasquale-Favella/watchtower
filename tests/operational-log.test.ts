@@ -291,6 +291,42 @@ describe('sanitizeOperationalRecord closed-vocabulary dimensions (#148 Wave 9 Sl
     }
   })
 
+  it('keeps a finite non-negative `durationMs` and drops a hostile one (A7 span record)', () => {
+    expect(clean({ durationMs: 2.5 })).toMatchObject({ durationMs: 2.5 })
+    expect(clean({ durationMs: 0 })).toMatchObject({ durationMs: 0 })
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, -1, '2.5', null, {}]) {
+      expect(clean({ durationMs: value })).toEqual({ context: 'main', event: 'scan.duration' })
+    }
+  })
+
+  it('keeps hex span ids only, and drops anything that is not one (A7 span record)', () => {
+    // Effect mints these with `Encoding.randomHex`: 32 / 16 lower-case hex chars.
+    // Deliberately NOT the free-form string rules — trim + cap would accept a
+    // prompt under `traceId`, so the pattern is the whole allowlist.
+    expect(clean({ traceId: 'a'.repeat(32), spanId: '0f'.repeat(8), parentSpanId: 'deadbeef' })).toEqual({
+      context: 'main',
+      event: 'scan.duration',
+      traceId: 'a'.repeat(32),
+      spanId: '0f'.repeat(8),
+      parentSpanId: 'deadbeef',
+    })
+    // Short hex is KEPT (an external span's opaque id need not be 8-char
+    // granular); anything that is not lower-case hex of at most 64 chars is not.
+    expect(clean({ traceId: 'abc' })).toMatchObject({ traceId: 'abc' })
+    for (const value of [
+      'A'.repeat(32),
+      'g'.repeat(16),
+      'a'.repeat(65),
+      'user asked: what did I spend on gpt-5?',
+      'C:\\Users\\alice\\sessions.json',
+      '  a'.repeat(16),
+      42,
+      null,
+    ]) {
+      expect(clean({ traceId: value })).toEqual({ context: 'main', event: 'scan.duration' })
+    }
+  })
+
   it('leaves `kind` a free-form allowlisted string (capped, not enumerated)', () => {
     // Deliberate: `kind` is allowlisted by name today, so it keeps the string
     // rules (trim + 200-char cap, no basename rewrite) instead of joining the

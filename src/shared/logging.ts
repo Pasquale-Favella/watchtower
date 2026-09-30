@@ -15,6 +15,21 @@ const ALLOWED_STRING_FIELDS = [
   'model',
 ] as const
 const ALLOWED_COUNT_FIELDS = ['count', 'ported', 'unparsed', 'failed'] as const
+/** Measurements are numbers too, but they are not tallies: `durationMs` is the
+ * Effect span's millisecond duration (A7). It gets its own name rather than
+ * riding `count` because `count` is a tally everywhere else in this file, and a
+ * reader must never have to infer the unit. Same finite / non-negative rule. */
+const ALLOWED_MEASURE_FIELDS = ['durationMs'] as const
+const ALLOWED_NUMERIC_FIELDS = [...ALLOWED_COUNT_FIELDS, ...ALLOWED_MEASURE_FIELDS] as const
+
+/** Effect span identity (A7). Hex only, up to 64 chars: Effect mints `traceId`
+ * and `spanId` with `Encoding.randomHex` (32 and 16 lower-case hex characters,
+ * verified against `effect/dist/Encoding.js:371`), so anything else under these
+ * keys is not a span id. Deliberately NOT in `ALLOWED_STRING_FIELDS` — trim +
+ * cap would accept a prompt; an external span with an opaque id simply loses
+ * its link instead of widening the door. */
+const ALLOWED_SPAN_ID_FIELDS = ['traceId', 'spanId', 'parentSpanId'] as const
+const SPAN_ID_PATTERN = /^[0-9a-f]{1,64}$/
 
 /**
  * Closed-vocabulary fields (#148, Wave 9 Slice E): allowlisted BY VALUE, not
@@ -79,9 +94,15 @@ export function sanitizeOperationalRecord(
     const capped = safeValue.slice(0, 200)
     if (capped) record[key] = capped
   }
-  for (const key of ALLOWED_COUNT_FIELDS) {
+  for (const key of ALLOWED_NUMERIC_FIELDS) {
     const value = fields[key]
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) record[key] = value
+  }
+  // After the string rules so a future name collision can only tighten the
+  // record: the id pattern is narrower than trim + cap.
+  for (const key of ALLOWED_SPAN_ID_FIELDS) {
+    const value = fields[key]
+    if (typeof value === 'string' && SPAN_ID_PATTERN.test(value)) record[key] = value
   }
   // Last, so a future name collision between the lists can only tighten the
   // record: this loop writes vocabulary members or nothing.

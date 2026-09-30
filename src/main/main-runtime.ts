@@ -3,6 +3,7 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 
 import { HarnessProbe } from './agents/snapshot.js'
 import { Env } from './env.js'
+import { OperationalLogTracerLayer } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 
 /**
@@ -26,12 +27,19 @@ import { HttpFetch } from './pipeline/fetch-utils.js'
  * boundary + `onChange` IPC push never cross into Effect), and the run
  * seam stays injectable via `HarnessSdk` fakes — platform adoption
  * (`@effect/platform` HttpClient/FileSystem/Command) stays a sequenced
- * follow-up, pinned + asar-proven like ADR 0030.
+ * follow-up, pinned + asar-proven like ADR 0030. `OperationalLogTracerLayer`
+ * is a `Context.Reference`, not a `Context.Service`, so it adds nothing to `R`
+ * and the declared service set is unchanged.
  */
 export const MainLive: Layer.Layer<HttpFetch | HarnessProbe | Env> = Layer.mergeAll(
   HttpFetch.layer,
   HarnessProbe.layer,
   Env.layer,
+  // A7: the main isolate gets the tracer too. Worker-only would leave every
+  // `Effect.fn('…')` span built here dangling — the problem relocated, not
+  // solved. Unlike the worker's copy, these records DO reach the file: main owns
+  // the pino sink (ADR 0029).
+  OperationalLogTracerLayer('main'),
 )
 
 export const mainRuntime = ManagedRuntime.make(MainLive)

@@ -2,10 +2,13 @@ import { join } from 'node:path'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as EffectLogger from 'effect/Logger'
 import type * as EffectLogLevel from 'effect/LogLevel'
 import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
 import * as References from 'effect/References'
+import * as Tracer from 'effect/Tracer'
 import pino, { type Logger } from 'pino'
 import pretty from 'pino-pretty'
 import { errorCodeFor, sanitizeOperationalRecord, type LogContext, type LogLevel } from '../shared/logging.js'
@@ -307,9 +310,10 @@ function renderEffectMessage(message: unknown): string {
  * ledger facts, same contract as direct pino calls); fiber annotations pass
  * through `sanitizeOperationalRecord` so only allowlisted keys survive; a
  * non-empty cause files its `code` only via `errorCodeFor` (never the
- * message). Spans are intentionally ignored here — span enrichment is a
- * follow-up. Never throws, including without `initOperationalLog`
- * (mirrors `if (!active) return`).
+ * message). Spans are NOT this logger's business — they are the `Tracer`
+ * half's (`OperationalLogTracerLayer` below), because a span end is a
+ * different write at a different point in a fiber's life. Never throws,
+ * including without `initOperationalLog` (mirrors `if (!active) return`).
  */
 export const OperationalLogLogger: EffectLogger.Logger<unknown, void> = EffectLogger.make(options => {
   try {
@@ -346,3 +350,101 @@ export const OperationalLogLogger: EffectLogger.Logger<unknown, void> = EffectLo
 export const OperationalLogLoggerLayer = EffectLogger.layer([OperationalLogLogger]).pipe(
   Layer.provideMerge(Layer.succeed(References.MinimumLogLevel, 'Debug')),
 )
+
+/**
+ * `Tracer` half of the bridge (A7). `OperationalLogLogger` above is the
+ * `Effect.log` half; without a `Tracer` the reference resolves to
+ * `Tracer.nativeTracer`, which builds a `NativeSpan` and drops it — so every
+ * `Effect.fn('…')` in `src/main` was paying for a span nobody could read. This
+ * is the missing half: one `debug` record per span END, carrying the name,
+ * duration, kind and trace/span identity.
+ *
+ * Same sink, same rotation, same allowlist as the logger: records go through
+ * `safeLogOperationalEvent` (never pino directly), so `sanitizeOperationalRecord`
+ * is the enforcement point and span attributes — Effect-internal annotations,
+ * never vetted ledger facts — are dropped unless they name an allowlisted key,
+ * exactly as at an `Effect.log` call site. Never throws, including before
+ * `initOperationalLog` and inside a fiber finalizer, and files at `debug` so
+ * high-volume spans never compete with real events (pino drops `debug` in
+ * packaged builds, which is the intended ceiling).
+ */
+export const SPAN_EVENT = 'effect.span' as const
+
+/** Effect's span clocks are bigint nanoseconds; the record carries
+ * milliseconds at three decimals (microsecond precision), so a `debug` line
+ * stays readable in a JSON-lines file. */
+const NANOS_PER_MS = 1_000_000
+const MS_DECIMALS = 3
+
+function spanDurationMs(startTime: bigint, endTime: bigint): number {
+  const nanos = Number(endTime - startTime)
+  if (!Number.isFinite(nanos) || nanos <= 0) return 0
+  return Number((nanos / NANOS_PER_MS).toFixed(MS_DECIMALS))
+}
+
+class OperationalLogSpan extends Tracer.NativeSpan {
+  readonly logContext: LogContext
+
+  constructor(options: ConstructorParameters<typeof Tracer.NativeSpan>[0], logContext: LogContext) {
+    super(options)
+    this.logContext = logContext
+  }
+
+  override end(endTime: bigint, exit: Exit.Exit<unknown, unknown>): void {
+    // A span END is the only write: no start line, because a start record per
+    // span doubles the file volume and duration is the whole diagnostic. The
+    // runtime ends a span exactly once (`endSpan` returns early when
+    // `status._tag === 'Ended'`, `internal/effect.js:2734`), so the end record
+    // IS the record.
+    emitSpanEnd(this, endTime, exit)
+    super.end(endTime, exit)
+  }
+}
+
+function emitSpanEnd(span: OperationalLogSpan, endTime: bigint, exit: Exit.Exit<unknown, unknown>): void {
+  try {
+    const fields: Record<string, unknown> = {}
+    // Attributes ride the same unvetted bag as the logger's log annotations —
+    // the sanitizer decides, not this loop. The span's own identity is written
+    // AFTER them so an attribute can never overwrite the name, ids or duration
+    // of the record it rides on.
+    for (const [key, value] of span.attributes) fields[key] = value
+    fields['op'] = span.name
+    fields['kind'] = span.kind
+    fields['durationMs'] = spanDurationMs(span.startTime, endTime)
+    fields['traceId'] = span.traceId
+    fields['spanId'] = span.spanId
+    const parent = Option.getOrUndefined(span.parent)
+    if (parent) fields['parentSpanId'] = parent.spanId
+    // The failure channel carries user and ledger data, so an `Exit` is NEVER
+    // rendered: a failed span files the same `errorCodeFor` slug the Logger
+    // files, and nothing else — no message, no squashed value. Guarded on its
+    // own so an unreadable exit costs the `code`, never the whole record.
+    try {
+      if (Exit.isFailure(exit)) fields['code'] = errorCodeFor(Cause.squash(exit.cause))
+    } catch {
+      /* cause code is best-effort */
+    }
+    safeLogOperationalEvent('debug', SPAN_EVENT, fields, span.logContext)
+  } catch {
+    /* tracing must never break callers, including inside fibers */
+  }
+}
+
+/** The pino-backed `Tracer` for one emitting isolate. `context` is the
+ * `LogContext` its records are stamped with: `'worker'` for the db-worker
+ * runtime, `'main'` for the main isolate. */
+export const makeOperationalLogTracer = (context: LogContext): Tracer.Tracer =>
+  Tracer.make({
+    span: options => new OperationalLogSpan(options, context),
+  })
+
+/**
+ * Installs the pino tracer as the `Tracer.Tracer` reference — the tracing twin
+ * of `OperationalLogLoggerLayer`, and like it a Reference rather than a
+ * `Context.Service`, so it adds nothing to `R` and the graph stays exactly the
+ * services it declares. Install it in BOTH runtimes: worker-only would leave
+ * the main isolate's spans dangling and merely relocate the problem.
+ */
+export const OperationalLogTracerLayer = (context: LogContext) =>
+  Layer.succeed(Tracer.Tracer, makeOperationalLogTracer(context))

@@ -423,10 +423,22 @@ describe('F14: OperationalLogLoggerLayer is installed in a production root', () 
     ledger.close()
     rmSync(dir, { recursive: true, force: true })
 
-    expect(source).toContain('OperationalLogLoggerLayer,')
     // The bridge is composed, not merely re-exported: it is inside `mergeAll`.
-    expect(source.indexOf('OperationalLogLoggerLayer,')).toBeGreaterThan(source.indexOf('Layer.mergeAll('))
+    // Scoped to the merge body, because the import line also names it (and a
+    // sibling layer, `OperationalLogTracerLayer`, sorts right after it there).
+    const mergeBody = source.slice(source.indexOf('Layer.mergeAll('))
+    expect(mergeBody).toContain('OperationalLogLoggerLayer,')
     expect(live).toBeDefined()
+  })
+
+  it('A7: the Tracer layer is installed in BOTH production roots', () => {
+    // The `Tracer` half of the same bridge. A worker-only install would leave
+    // every main-isolate span dangling and merely relocate the problem, so
+    // BOTH roots are asserted — each names its own `LogContext`.
+    const workerSource = readFileSync(join(repoRoot, 'src', 'main', 'worker-runtime.ts'), 'utf8')
+    const mainSource = readFileSync(join(repoRoot, 'src', 'main', 'main-runtime.ts'), 'utf8')
+    expect(workerSource.slice(workerSource.indexOf('Layer.mergeAll('))).toContain("OperationalLogTracerLayer('worker')")
+    expect(mainSource.slice(mainSource.indexOf('Layer.mergeAll('))).toContain("OperationalLogTracerLayer('main')")
   })
 })
 

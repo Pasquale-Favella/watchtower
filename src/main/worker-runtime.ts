@@ -3,7 +3,7 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 
 import { Env } from './env.js'
 import { FxRates, type FxRatesRepositoryRunner } from './fx.js'
-import { OperationalLog, OperationalLogLoggerLayer } from './operational-log.js'
+import { OperationalLog, OperationalLogLoggerLayer, OperationalLogTracerLayer } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from './store/ledger-repository.js'
 
@@ -99,6 +99,12 @@ export const makeWorkerLive = (store: WorkerLedger): Layer.Layer<WorkerServices>
     // file, ADR 0029), so the logger is a never-throwing no-op here — the point
     // is that the bridge is CONNECTED, not that this thread writes the file.
     OperationalLogLoggerLayer,
+    // A7's tracer half: the `Effect.fn('…')` spans this isolate builds were
+    // constructed and discarded, so one `debug` record per span end is the only
+    // read on where the worker's time goes. Stamped `worker` for the same reason
+    // the logger above is: in this thread `active` is null (main owns the file,
+    // ADR 0029), so the bridge is CONNECTED here and writes nothing.
+    OperationalLogTracerLayer('worker'),
     Env.layer,
     OperationalLog.layer,
     liveFetchLayer,
