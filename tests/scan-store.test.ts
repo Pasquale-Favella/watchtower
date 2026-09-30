@@ -10,6 +10,32 @@ function mockWindow(api: unknown, platform = 'win32'): void {
   }
 }
 
+function deferred<T>() {
+  let resolve: ((value: T) => void) | undefined
+  let reject: ((reason: unknown) => void) | undefined
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return {
+    promise,
+    resolve: (value: T) => {
+      if (!resolve) throw new Error('Deferred resolver is unavailable')
+      resolve(value)
+    },
+    reject: (reason: unknown) => {
+      if (!reject) throw new Error('Deferred rejecter is unavailable')
+      reject(reason)
+    },
+  }
+}
+
+function at<T>(values: readonly T[], index: number): T {
+  const value = values[index]
+  if (value === undefined) throw new Error(`Missing value at index ${index}`)
+  return value
+}
+
 const statusScanned = {
   scanned: true,
   metadata: {
@@ -79,7 +105,7 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
 
   it('onProgress marks a port-in stage as done', () => {
     useScanStore.getState().onProgress('openai', 100, 100, true)
-    expect(useScanStore.getState().progress[0]!.done).toBe(true)
+    expect(useScanStore.getState().progress[0]?.done).toBe(true)
   })
 
   it('onProgress with no provider only marks scanning (parity with AppRoot)', () => {
@@ -208,5 +234,80 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
     const s = useScanStore.getState()
     expect(s.scanning).toBe(false)
     expect(s.scanError).toMatch(/Invalid scan payload/)
+  })
+
+  it('coalesces a burst into one refresh and runs one follow-up for changes during hydration', async () => {
+    const statuses = [deferred<typeof statusScanned>(), deferred<typeof statusScanned>()]
+    let statusIndex = 0
+    const getScanStatus = vi.fn(() => at(statuses, statusIndex++).promise)
+    mockWindow({ getScanStatus, getAnalytics: () => Promise.resolve(analytics) })
+
+    const first = useScanStore.getState().applyChange()
+    const burstOne = useScanStore.getState().applyChange()
+    const burstTwo = useScanStore.getState().applyChange()
+    expect(getScanStatus).toHaveBeenCalledTimes(1)
+
+    at(statuses, 0).resolve(statusScanned)
+    await vi.waitFor(() => expect(getScanStatus).toHaveBeenCalledTimes(2))
+    at(statuses, 1).resolve(statusScanned)
+    await Promise.all([first, burstOne, burstTwo])
+
+    expect(getScanStatus).toHaveBeenCalledTimes(2)
+    expect(useScanStore.getState().refreshVersion).toBe(2)
+  })
+
+  it('keeps one queued refresh when another change arrives during the follow-up', async () => {
+    const statuses = [
+      deferred<typeof statusScanned>(),
+      deferred<typeof statusScanned>(),
+      deferred<typeof statusScanned>(),
+    ]
+    let statusIndex = 0
+    const getScanStatus = vi.fn(() => at(statuses, statusIndex++).promise)
+    mockWindow({ getScanStatus, getAnalytics: () => Promise.resolve(analytics) })
+
+    const first = useScanStore.getState().applyChange()
+    const second = useScanStore.getState().applyChange()
+    at(statuses, 0).resolve(statusScanned)
+    await vi.waitFor(() => expect(getScanStatus).toHaveBeenCalledTimes(2))
+
+    const duringFollowUp = useScanStore.getState().applyChange()
+    at(statuses, 1).resolve(statusScanned)
+    await vi.waitFor(() => expect(getScanStatus).toHaveBeenCalledTimes(3))
+    at(statuses, 2).resolve(statusScanned)
+    await Promise.all([first, second, duringFollowUp])
+
+    expect(useScanStore.getState().refreshVersion).toBe(3)
+  })
+
+  it('runs queued work after a listener throws and accepts later changes', async () => {
+    mockWindow({
+      getScanStatus: () => Promise.resolve(statusScanned),
+      getAnalytics: () => Promise.resolve(analytics),
+    })
+    const listener = vi.fn().mockImplementationOnce(() => {
+      throw new Error('refresh listener failed')
+    })
+    const unsubscribe = subscribeToRefresh(listener)
+
+    const first = useScanStore.getState().applyChange()
+    const firstResult = first.then(
+      () => ({ ok: true as const }),
+      error => ({ ok: false as const, error }),
+    )
+    const queued = useScanStore.getState().applyChange()
+    const queuedResult = queued.then(
+      () => ({ ok: true as const }),
+      error => ({ ok: false as const, error }),
+    )
+
+    await expect(firstResult).resolves.toMatchObject({ ok: false })
+    await expect(queuedResult).resolves.toMatchObject({ ok: false })
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(useScanStore.getState().refreshVersion).toBe(2)
+
+    unsubscribe()
+    await useScanStore.getState().applyChange()
+    expect(useScanStore.getState().refreshVersion).toBe(3)
   })
 })

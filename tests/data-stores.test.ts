@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createScopedDataStore } from '../src/renderer/src/app/stores/data-store.js'
 import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
-import { useOverviewStore } from '../src/renderer/src/features/overview/store.js'
-import { useSessionsStore } from '../src/renderer/src/features/sessions/store.js'
-import { usePullRequestsStore } from '../src/renderer/src/features/pull-requests/store.js'
-import { useSpendStore } from '../src/renderer/src/features/spend/store.js'
-import { useOptimizeStore } from '../src/renderer/src/features/optimize/store.js'
-import { useModelsStore } from '../src/renderer/src/features/models/store.js'
 import { useCompareStore } from '../src/renderer/src/features/compare/store.js'
+import { useModelsStore } from '../src/renderer/src/features/models/store.js'
+import { useOptimizeStore } from '../src/renderer/src/features/optimize/store.js'
+import { useOverviewStore } from '../src/renderer/src/features/overview/store.js'
+import { usePullRequestsStore } from '../src/renderer/src/features/pull-requests/store.js'
+import { useSessionsStore } from '../src/renderer/src/features/sessions/store.js'
+import { useSpendStore } from '../src/renderer/src/features/spend/store.js'
 
 /** Stub the preload surface for the fetch wrappers' IPC-call sites. */
 function mockWindow(api: unknown): void {
@@ -37,23 +37,24 @@ const analytics = {
   subagents: [],
 }
 
-const stores = [
-  useOverviewStore,
-  useSessionsStore,
-  usePullRequestsStore,
-  useSpendStore,
-  useOptimizeStore,
-  useModelsStore,
-  useCompareStore,
-]
-
 beforeEach(() => {
   useScanStore.setState(useScanStore.getInitialState(), true)
-  for (const store of stores) store.setState(store.getInitialState(), true)
+  useOverviewStore.setState(useOverviewStore.getInitialState(), true)
+  useSessionsStore.setState(useSessionsStore.getInitialState(), true)
+  usePullRequestsStore.setState(usePullRequestsStore.getInitialState(), true)
+  useSpendStore.setState(useSpendStore.getInitialState(), true)
+  useOptimizeStore.setState(useOptimizeStore.getInitialState(), true)
+  useModelsStore.setState(useModelsStore.getInitialState(), true)
+  useCompareStore.setState(useCompareStore.getInitialState(), true)
 })
 
 describe('createScopedDataStore — SWR semantics (ADR 0011)', () => {
   type Pending = { resolve: (r: { ok: true; data: { n: number } }) => void }
+  const resolveAt = (resolvers: readonly Pending[], index: number, value: { ok: true; data: { n: number } }) => {
+    const pending = resolvers[index]
+    if (!pending) throw new Error(`Missing pending fetch at index ${index}`)
+    pending.resolve(value)
+  }
   const deferred = (resolvers: Pending[]) => (): Promise<{ ok: true; data: { n: number } }> =>
     new Promise(resolve => {
       resolvers.push({ resolve })
@@ -75,7 +76,7 @@ describe('createScopedDataStore — SWR semantics (ADR 0011)', () => {
     const useSwr = createScopedDataStore<{ n: number }>(deferred(resolvers))
 
     const first = useSwr.getState().load({ period: 'week' })
-    resolvers[0]!.resolve({ ok: true, data: { n: 1 } })
+    resolveAt(resolvers, 0, { ok: true, data: { n: 1 } })
     await first
     expect(useSwr.getState().data).toEqual({ n: 1 })
     expect(useSwr.getState().status).toBe('ready')
@@ -86,7 +87,7 @@ describe('createScopedDataStore — SWR semantics (ADR 0011)', () => {
     expect(useSwr.getState().status).toBe('ready')
     expect(useSwr.getState().error).toBeNull()
 
-    resolvers[1]!.resolve({ ok: true, data: { n: 2 } })
+    resolveAt(resolvers, 1, { ok: true, data: { n: 2 } })
     await second
     expect(useSwr.getState().data).toEqual({ n: 2 })
   })
@@ -96,14 +97,14 @@ describe('createScopedDataStore — SWR semantics (ADR 0011)', () => {
     const useStore = createScopedDataStore<{ n: number }>(deferred(resolvers))
 
     const first = useStore.getState().load({ period: 'week' })
-    resolvers[0]!.resolve({ ok: true, data: { n: 4 } })
+    resolveAt(resolvers, 0, { ok: true, data: { n: 4 } })
     await first
 
     const second = useStore.getState().load({ period: '30days' })
     expect(useStore.getState().data).toBeNull()
     expect(useStore.getState().status).toBe('loading')
 
-    resolvers[1]!.resolve({ ok: true, data: { n: 6 } })
+    resolveAt(resolvers, 1, { ok: true, data: { n: 6 } })
     await second
     expect(useStore.getState().data).toEqual({ n: 6 })
   })
@@ -114,12 +115,43 @@ describe('createScopedDataStore — SWR semantics (ADR 0011)', () => {
 
     const loadWeek = useStore.getState().load({ period: 'week' })
     const loadMonth = useStore.getState().load({ period: 'month' })
-    resolvers[1]!.resolve({ ok: true, data: { n: 6 } })
+    resolveAt(resolvers, 1, { ok: true, data: { n: 6 } })
     await loadMonth
-    resolvers[0]!.resolve({ ok: true, data: { n: 4 } })
+    resolveAt(resolvers, 0, { ok: true, data: { n: 4 } })
     await loadWeek
 
     expect(useStore.getState().data).toEqual({ n: 6 })
+  })
+
+  it('publishes only the newest response when same-scope loads finish out of order', async () => {
+    const resolvers: Pending[] = []
+    const useStore = createScopedDataStore<{ n: number }>(deferred(resolvers))
+
+    const older = useStore.getState().load({ period: 'week' })
+    const newer = useStore.getState().load({ period: 'week' })
+    resolveAt(resolvers, 1, { ok: true, data: { n: 2 } })
+    await newer
+    resolveAt(resolvers, 0, { ok: true, data: { n: 1 } })
+    await older
+
+    expect(useStore.getState().data).toEqual({ n: 2 })
+  })
+
+  it('clear invalidates pending same-scope results, including after a same-key reload', async () => {
+    const resolvers: Pending[] = []
+    const useStore = createScopedDataStore<{ n: number }>(deferred(resolvers))
+
+    const beforeClear = useStore.getState().load({ period: 'week' })
+    useStore.getState().clear()
+    const afterClear = useStore.getState().load({ period: 'week' })
+
+    resolveAt(resolvers, 0, { ok: true, data: { n: 1 } })
+    await beforeClear
+    expect(useStore.getState().data).toBeNull()
+    resolveAt(resolvers, 1, { ok: true, data: { n: 2 } })
+    await afterClear
+
+    expect(useStore.getState().data).toEqual({ n: 2 })
   })
 
   it('surfaces a fetch error for a scope change', async () => {
