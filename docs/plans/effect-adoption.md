@@ -227,6 +227,39 @@ scope and is recorded here rather than folded in. **This is a correctness bug, n
 a migration opportunity:** the honest fix is a `FinalizationRegistry` or an
 explicit per-run timeout, neither of which is an Effect adoption.
 
+### F26 — TestClock tests burn the full timeout instead of failing, so contention is indistinguishable from a regression.
+
+Found 2026-09-30 by wrongly suspecting slice A7. Recorded because the
+false accusation is the useful part: I ran a full suite, saw one timeout, saw
+A7's tracer in the same tree, and stated that A7 was implicated. Re-running
+with A7 present: **green, 38.5s**. Re-running with A7 reverted: **green,
+37.6s**. The 0.9s delta is noise. The first run's 139.8s and single failure were
+machine contention, and I had no reproduction before making the claim.
+
+**The real defect is the shape of the failure.** `vercel-gateway-effect.test.ts`
+
+> "timeout via TestClock returns []" forks a fiber, advances a `TestClock` by
+> `worstCaseRetryWindowMs(8_000)`, and joins. Its own comment records the hazard:
+> _"A window sized for one attempt parks the fiber on a virtual sleep, so the test
+> hangs to the 120s timeout instead of failing on its assertion."_ Under CPU
+> contention the fiber is not scheduled, the virtual window is not consumed in
+> time, and the test **hangs for the full 120s rather than failing**. The same
+> symptom appeared in `tests/yield-view.test.ts` (which builds and shells out to
+> its own temp git repos) during the same window. Two unrelated files, one
+> mechanism, no shared cause.
+
+So a loaded machine produces a 120s stall and a red suite, and the red is
+indistinguishable from a real failure. That is the worst possible property for a
+gate, and it is a direct consequence of F19: with 113 `Effect.runPromise` calls
+and no `it.effect`, virtual-time tests are hand-rolled, and a hand-rolled
+virtual-time test fails by hanging.
+
+**Not fixed here** — it is not A7's, and the fix (A8's `it.effect`, or bounding
+these two tests with a `describe`-level timeout well under the global 120s so a
+hang reads as a fast failure) deserves its own slice rather than a drive-by in a
+tracer commit. Recorded so the next person who sees a 120s stall knows to
+reproduce before believing it.
+
 ### F18 — The coach run seam is a raw `AsyncGenerator` with a hand-rolled cancel path.
 
 `runtime.ts:383` (`async *run`), consumed by `for await` at `ipc.ts:376`,
