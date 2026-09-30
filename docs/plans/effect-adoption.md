@@ -341,15 +341,46 @@ are last, and only because of the renderer work above.
 > been told about was a real thing to check and I checked it only after
 > declaring victory.
 >
-> What is actually established: the flake is **pre-existing and
-> load-independent-looking**. Slice 5a's agent saw it in `fx-effect.test.ts`
-> before A12 existed, and the rate spans pre-A12 and post-A12 trees alike. It is
-> not a property of any slice. What is _not_ established is the mechanism —
-> `isolate: true` means no cross-file singleton leak, and the pool is vitest
-> defaults, so the remaining explanation is scheduler starvation of a fiber
-> parked on virtual time. **Undiagnosed, and it reddens CI roughly 1 run in 3.**
-> That is no longer a curiosity; it is the most valuable unowned defect in the
-> programme, because every future gate is untrustworthy while it stands.
+> What is actually established: the flake is **pre-existing**. Slice 5a's agent
+> saw it in `fx-effect.test.ts` before A12 existed, and the rate spans pre-A12 and
+> post-A12 trees alike. It is not a property of any slice.
+>
+> **NARROWED the same evening. Four hypotheses tested, three falsified.** I could
+> not make it reproduce in isolation, which is the useful result:
+>
+> - **Falsified — A12's `writeSync`-per-record hot path.** The suite ran green at
+>   31.0s with A12 in place.
+> - **Falsified — the fork/adjust race.** A standalone repro of the documented
+>   pattern (`forkChild` → `TestClock.adjust` → `Fiber.join`), 40 iterations on a
+>   box loaded with 12 spinners, never stalled. Adding `Effect.yieldNow` first
+>   changed nothing.
+> - **Falsified — "one `adjust` cannot drive a multi-step retry".** A modelled
+>   3-attempt retry with two 1s backoffs fired _both_ sleeps off a single
+>   `adjust(5s)`, timestamps 1s apart. 0/30 stalls.
+> - **Falsified — a real-time dependency inside the test.** `fx-effect`'s flaky
+>   case calls `makeStore()`, which opens a real SQLite database, so real I/O
+>   _is_ on the path — and still cannot hang.
+>
+> **What survives:** it does not reproduce outside a whole-suite run. 24 runs of
+> the three files that flaked, on a deliberately loaded box, with `testTimeout`
+> lowered to 15s so a stall would surface in seconds — **all green**. Vitest sets
+> only `testTimeout: 120_000`; pool and `isolate` are defaults, and
+> `isolate: true` rules out a cross-file singleton leak. The surviving
+> explanation is **whole-suite oversubscription**: 99 files across a fork pool on
+> 20 logical CPUs, summed `collect` reaching 215s, starving a worker until a
+> fiber parked on virtual time never resumes. That also explains why "the machine
+> is idle" kept reading clean — no competing _processes_, while the suite itself
+> saturates the CPU.
+>
+> **Two mitigations, neither applied, because each trades something the owner
+> should weigh.** (1) Bound the ten fork+adjust files — `agents-effect-primitives`,
+> `command-runner`, `db-worker`, `fetch-retry`, `fx-effect`, `http-fetch`,
+> `ledger-mcp-pool`, `pricing-effect`, `updates-effect`, `vercel-gateway-effect` —
+> with a per-file timeout far below 120s, so a stall reads as a fast obvious
+> failure. Buys diagnosability. (2) Cap the pool's worker count to stop
+> oversubscribing. Buys reliability at some wall-clock cost. **Diagnosability
+> first**: until (1) exists, a future occurrence costs 2 minutes and still tells
+> us nothing.
 
 ### F18 — The coach run seam is a raw `AsyncGenerator` with a hand-rolled cancel path.
 
