@@ -254,14 +254,26 @@ the win32-specific code is exactly the risky kind: the `.cmd` shim
 `USERPROFILE` platform roots (`ibm-bob.ts:22`, `open-design.ts:89`), the EPERM
 workspace delete (`ipc.ts:171`), and the `x-apple`/`process.platform` arms.
 
-### F24 — 19 `throw` sites live inside the 23 Effect-importing files.
+### F24 — 24 `throw` sites live inside the 23 Effect-importing files.
 
-`context.ts` 7 · `runtime.ts` 4 · `sidecar.ts` 3 · `node-sqlite-client.ts` 2 ·
-`scan.ts` 1 · `snapshot.ts` 1 · `probe.ts` 1 · `sqlite-migrations.ts` 1. Plus 63
+`context.ts` 8 · `runtime.ts` 4 · `sidecar.ts` 4 · `node-sqlite-client.ts` 2 ·
+`sqlite-migrations.ts` 2 · `probe.ts` 2 · `snapshot.ts` 1 · `scan.ts` 1. Plus ~63
 `catch` blocks in the same files. The typed-failure discipline is real
 (6 `Schema.TaggedError` types, `catchTag` where it matters) but the largest
 Effect consumer is still the one with the most unmodelled defects, all of which
 land in `Cause` as defects rather than typed failures.
+
+> **Corrected 2026-09-29.** This finding originally said 19, with a per-file
+> breakdown that summed to 20 — internally inconsistent. The count came from a
+> line-anchored `^\s*throw ` grep, which structurally cannot see an inline
+> `if (cond) throw new Error(…)` one-liner; four such sites exist
+> (`probe.ts:77`, `sidecar.ts:58`, `sidecar.ts:61`, `sqlite-migrations.ts:31`).
+> The correct figure is an AST count — `ThrowStatement` nodes in
+> `src/main` files that value-import `effect` — which is **24**, now
+> mechanised as a lint rule (see slice 4). Three of the 24 are deliberate
+> re-throws of a caught value (`node-sqlite-client.ts:66`, `snapshot.ts:243`,
+> `sidecar.ts:317`); they are flagged rather than carved out, because a
+> `throw <identifier>` can equally be an unmodelled cached error.
 
 ---
 
@@ -392,7 +404,7 @@ identifier, typed failures via `Schema.TaggedError` + `catchTag`, spans outside
   cannot be omitted.
 - **P4 — `it.effect` for anything with a layer**; `TestClock` through
   `it.effect(TestClock)` rather than by hand.
-- **P5 — no `throw` in a file that imports Effect.** 19 sites today. A defect in
+- **P5 — no `throw` in a file that imports Effect.** 24 sites today (F24). A defect in
   a typed-failure codebase is a modelling bug; the linter can flag `throw` in
   files that import `effect`, same mechanism as P1.
 - **P6 — `Predicate` for runtime type guards** (already mandated; unenforced).

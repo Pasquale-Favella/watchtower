@@ -79,7 +79,8 @@ the product, and it is invisible to every gate in the repo.
 
 1. `LedgerRepository`'s four bulk reads have **zero `WHERE` clauses and zero
    `LIMIT`s** (`ledger-repository.ts:111-153`).
-2. `getCalls` selects **37 columns** per row, of which **six are JSON blobs**:
+2. `getCalls` selects **38 columns** per row, of which **six are JSON blobs**
+   (37 until §3.1 caught the missing `call_key`):
    `tools_json`, `mcp_tools_json`, `skills_json`, `subagent_types_json`,
    `bash_commands_json`, `tool_sequence_json` (`:143-150`).
 3. `getTurns` selects **`user_message`** — full prompt text — for every turn in
@@ -104,10 +105,9 @@ the product, and it is invisible to every gate in the repo.
    (`client.ts:260-268`) only collapses _concurrent identical_ reads — it does not
    cache across requests.
 
-So: every Section render is ~7 unbounded full-table scans, each structured-cloned
-across the `worker_threads` boundary and Zod-parsed in full, feeding 4,905 lines
-of view builders that aggregate in JavaScript over data SQLite could have
-grouped.
+So: every Section render is ~8 unbounded full-table reads, each Zod-parsed in
+full, feeding 4,905 lines of view builders that aggregate in JavaScript over data
+SQLite could have grouped.
 
 **What I cannot claim without measuring:** actual latency or memory on a
 populated ledger. I have no `ledger.db` with real data in this tree, so I am not
@@ -115,12 +115,83 @@ asserting a number. Slice 0 below exists to produce one.
 
 **Why it belongs in an Effect evaluation:** the fix has two halves and both are
 in-package in rc.115. Push the aggregation into SQL with `SqlResolver.grouped` /
-`ordered` and `SqlSchema.findAll` so only aggregates cross the thread boundary;
-and put the surviving reads behind an `RcMap`-or-`ScopedCache`-keyed
-`Effect<A, E, LedgerQueries>` so the seven reads per request become one, scoped
-and interruptible. It is simultaneously the biggest product win available, the
-strongest argument for the repository split (Part I A3), and the first place the
-`WorkerLive` root (A2) would pay for itself.
+`ordered` and `SqlSchema.findAll`; and put the surviving reads behind an
+`RcMap`-or-`ScopedCache`-keyed `Effect<A, E, LedgerQueries>` so the reads per
+request become one, scoped and interruptible. It is simultaneously the biggest
+product win available, the strongest argument for the repository split (Part I
+A3), and the first place the `WorkerLive` root (A2) pays for itself.
+
+### 3.1 MEASURED — and partly refuted (slice 0, 2026-09-29)
+
+`scripts/measure-query-path.cjs` (1,180 lines) builds a synthetic ledger through
+the real `LedgerStore` + real `portIn` + real `SqlClient` + real `z.array(...).parse`,
+with a `PRAGMA table_xinfo` guard that aborts on schema drift. Median of 5 runs,
+one operation per `--expose-gc` child process, after an explicit `global.gc()`.
+Machine: Windows 11, i7-12700H (14c/20t), 31.7 GiB, Node v24.13.0, NVMe.
+
+| operation                       | 1,008 calls | 50,004 calls | 500,004 calls |
+| ------------------------------- | ----------: | -----------: | ------------: |
+| `read:getCalls`                 |     16.9 ms |     1,886 ms | **11,464 ms** |
+| `read:getTurns`                 |      4.1 ms |     362.9 ms |  **7,249 ms** |
+| `read:getSessions`              |      1.5 ms |      16.6 ms |        205 ms |
+| `read:getSources`               |      1.1 ms |       9.9 ms |       70.9 ms |
+| `buildSessionSummaries` (alone) |     67.8 ms |     1,967 ms | **20,085 ms** |
+| **`store:views`**               |     55.4 ms |     2,299 ms | **19,258 ms** |
+| **`store:analytics`**           |     92.5 ms |     4,863 ms | **38,226 ms** |
+| **`overview:query`**            |    120.9 ms |     2,924 ms | **40,814 ms** |
+
+Peak heap Δ at 500k: `overview:query` **6.12 GiB**, `store:analytics` 5.92 GiB,
+`store:views` 2.79 GiB. Ledger on disk 1.0 / 42.2 / 423.7 MiB.
+
+**Confirmed and quantified.**
+
+- Zero `WHERE`/`LIMIT` — now machine-checked on every run, not a grep.
+- `user_message` is **73.2%** of a `ledger_turn` row's bytes. The prompt text is
+  the single largest item in the table.
+- Zod validation is **47% of `getCalls`** at 500k (6,067 ms SQL-only → 11,464 ms
+  parsed), 23% of `getTurns`, 28% of `getSessions`.
+- No memoisation: `store:analytics` and `overview:query` are each exactly
+  **2.0×** `buildSessionSummaries`; `store:views` is 8 repository round-trips.
+
+**Refuted: the structured-clone claim.** The reads never cross the
+`worker_threads` boundary — they run _inside_ the worker, and only the assembled
+payload crosses. Measured clone bytes at 500k: `store:views` **22.4 KiB**,
+`store:analytics` **1.5 KiB**, `overview:query` **38.9 KiB** — against the
+456 MiB that `getCalls` materialises internally. The cost is worker CPU and
+worker heap, not bytes on a wire. This also revises the `unstable/rpc`
+evaluation: those payloads are 1–39 KiB, so a typed RPC layer is cheaper than
+assumed, but the volume is not what made it interesting.
+
+**Corrected: `getCalls` selects 38 columns, not 37** — this section said 37.
+Now machine-checked, so it cannot drift silently again.
+
+**Corrected: "seven reads" overstates the problem.** `getSources` + `getSessions`
+are 0.28 s of a 19.3 s `store:views` — **1.4%**. `getCalls` + `getTurns` are
+**97%** of the time. The finding is real but it is two reads, not seven.
+
+**Corrected: the SQL-side-aggregation payoff is capped.** The five reads sum to
+19.06 s and `buildSessionSummaries` measures 18.7–20.1 s, so
+`queryScope` + reconstruct + `assembleSession` + identity attach cost **0–1 s,
+under 6%**. In _memory_ the JS is not free (+0.6–1.8 GiB over `getCalls` alone),
+but on time, `SqlResolver.grouped` buys at most ~6%.
+
+**This re-specifies slice 5.** Ranked by measured share of the 19.3 s:
+
+1. **Stop reading `user_message` in `getTurns`** — 73.2% of a turn row, and only
+   the Skills/Optimize detectors plausibly want prompt text. Needs a narrower
+   read shape, not a schema change.
+2. **Stop validating the whole ledger on every read.** Zod is 47% of `getCalls`.
+   `LedgerQueries` should return the aggregate a Section needs, not a
+   fully-parsed lifetime table.
+3. **Trim `getCalls`' column set** — 38 columns including six JSON blobs whose
+   combined per-row cost is the largest in the table (`tools` 94.4 B,
+   `mcpTools` 40 B, `toolSequence` 39.5 B).
+4. **Memoise across the Sections** — the 2.0× multipliers are pure waste.
+5. **Only then** consider `SqlResolver.grouped` for the remaining 6%.
+
+Full method, per-size spreads (±13% at 500k, 1.8× run-to-run swing on
+`read:getCalls` at 50k), the eight caveats, and the reproducibility table are in
+[`docs/research/query-path-measurement.md`](./query-path-measurement.md).
 
 ---
 
