@@ -2,9 +2,12 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import { afterEach, describe, expect, it } from 'vitest'
+
 import { LedgerStore } from '../src/main/store/ledger.js'
-import { buildFixtureCachedFile } from './fixtures/cached-file.js'
 import {
   ledgerCallRowSchema,
   ledgerSessionRowSchema,
@@ -12,6 +15,7 @@ import {
   ledgerTurnRowSchema,
 } from '../src/shared/schemas/ledger.js'
 import { mappedFileSchema } from '../src/shared/schemas/port.js'
+import { buildFixtureCachedFile } from './fixtures/cached-file.js'
 
 const tempDirs: string[] = []
 
@@ -38,9 +42,9 @@ function rawDb(store: LedgerStore): DatabaseSync {
   return new DatabaseSync(store.dbPath)
 }
 
-describe('store seam under zod (ADR 0003: read-back parsing)', () => {
+describe('store seam under Effect Schema (ADR 0003: read-back parsing)', () => {
   it('a raw SQL row parses through the schema and transforms to the camelCase shape', () => {
-    // The schema's input is the snake_case SQL row; its transform produces the
+    // The schema's input is the snake_case SQL row; its codec produces the
     // camelCase shape with JSON columns parsed. Asserted against a literal
     // raw row so the expected value is independent of the store.
     const rawRow = {
@@ -83,7 +87,7 @@ describe('store seam under zod (ADR 0003: read-back parsing)', () => {
       tool_errors: 0,
       edit_failed: 0,
     }
-    const parsed = ledgerCallRowSchema.parse(rawRow)
+    const parsed = Schema.decodeUnknownSync(ledgerCallRowSchema)(rawRow)
     expect(parsed).toMatchObject({
       sourceId: 1,
       sessionId: 'sess-0',
@@ -95,8 +99,23 @@ describe('store seam under zod (ADR 0003: read-back parsing)', () => {
       toolSequence: [],
       speed: 'standard',
     })
-    // And the whole-set parse accepts an array of such rows in one pass.
-    expect(ledgerCallRowSchema.array().safeParse([rawRow]).success).toBe(true)
+    // And the whole-set decode accepts an array of such rows in one pass.
+    expect(Schema.decodeUnknownSync(Schema.Array(ledgerCallRowSchema))([rawRow])).toHaveLength(1)
+  })
+
+  it('a malformed row fails in the ERROR channel, not as a defect', () => {
+    // The point of the Wave A migration: `Schema.decodeUnknownEffect` puts a bad
+    // row on `E` as a `SchemaError`, where the old `z.array(...).parse` threw
+    // into `Cause` as an unmodelled defect.
+    const rawRow = { source_id: 1, session_id: 'sess-0', speed: 'turbo' }
+    const result = Schema.decodeUnknownResult(ledgerCallRowSchema)(rawRow)
+    expect(result._tag).toBe('Failure')
+    if (result._tag === 'Failure') expect(Schema.isSchemaError(result.failure)).toBe(true)
+
+    const effect = Schema.decodeUnknownEffect(ledgerCallRowSchema)(rawRow)
+    const decoded = Effect.runSync(Effect.result(effect))
+    expect(decoded._tag).toBe('Failure')
+    if (decoded._tag === 'Failure') expect(Schema.isSchemaError(decoded.failure)).toBe(true)
   })
 
   it('a corrupted read-back row fails loudly (bad JSON in a *_json column)', () => {

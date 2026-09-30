@@ -3,6 +3,7 @@ import { dirname } from 'node:path'
 
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import type { SchemaError } from 'effect/Schema'
 import { SqlError } from 'effect/unstable/sql/SqlError'
 
 import {
@@ -407,7 +408,7 @@ export class LedgerStore {
    * runners are named after their ports so each port's `R` is exactly what it
    * needs rather than a widened union.
    */
-  runRepositorySync<A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError>): A {
+  runRepositorySync<A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError | SchemaError>): A {
     return this.db.runSync(
       Effect.gen(function* () {
         const config = yield* LedgerConfig
@@ -431,7 +432,7 @@ export class LedgerStore {
 
   /** `LedgerQueries` analogue of `runIngestSync` (the four bulk reads).
    *  Same removal condition as `runIngestSync`. */
-  runQueriesSync<A>(operation: (queries: LedgerQueries['Service']) => Effect.Effect<A, SqlError>): A {
+  runQueriesSync<A>(operation: (queries: LedgerQueries['Service']) => Effect.Effect<A, SqlError | SchemaError>): A {
     return this.db.runSync(
       Effect.gen(function* () {
         const queries = yield* LedgerQueries

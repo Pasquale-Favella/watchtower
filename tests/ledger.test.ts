@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import * as Effect from 'effect/Effect'
+import * as SchemaAST from 'effect/SchemaAST'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { FxRates } from '../src/main/fx.js'
@@ -49,36 +50,51 @@ function withTempLedgerReadOnly(fn: (ro: DatabaseSync) => void): void {
   }
 }
 
-// Zod shape introspection for the parity gates below. The row schemas are
-// `z.object().transform()` pipes in Zod v4, so the storage-side input shape
-// lives at `.def.in`. JSON columns are the pipe fields (string through
-// `JSON.parse`); every other column is a scalar.
-type ZodInputField = { def: { type: string } }
-type ZodPipedObject = {
-  def: {
-    in?: { def: { shape?: Record<string, ZodInputField> } }
-    shape?: Record<string, ZodInputField>
-  }
+// Effect Schema shape introspection for the parity gates below. The row schemas
+// are `Schema.Struct` schemas composed with `Schema.encodeKeys` (or, for
+// `ledgerSourceRowSchema`, a `Schema.decodeTo` pair), so the storage-side input
+// shape is `SchemaAST.toEncoded(schema.ast)` — the encoded AST, carrying the
+// snake_case DDL column names and each column's stored AST. A JSON column is one
+// stored as TEXT that decodes to something which is not text.
+type RowSchemaAst = { readonly ast: SchemaAST.AST }
+
+interface RowColumn {
+  column: string
+  encodedType: SchemaAST.AST
+  decodedType: SchemaAST.AST | null
 }
 
-function zodInputShape(schema: unknown): Record<string, ZodInputField> {
-  const piped = schema as ZodPipedObject
-  const pipedShape = piped.def.in?.def.shape
-  if (pipedShape !== undefined) return pipedShape
-  const directShape = piped.def.shape
-  if (directShape !== undefined) return directShape
-  return {}
+function rowColumns(schema: RowSchemaAst): RowColumn[] {
+  if (!SchemaAST.isObjects(schema.ast)) throw new Error('row schema AST is not a struct')
+  const encoded = SchemaAST.toEncoded(schema.ast)
+  if (!SchemaAST.isObjects(encoded)) throw new Error('encoded row schema AST is not a struct')
+  const decoded = schema.ast.propertySignatures
+  // `encodeKeys` builds the encoded struct in the decoded field order, so the two
+  // lists pair by position. `ledgerSourceRowSchema` also GROUPS four flat
+  // `fingerprint_*` columns into one nested field, so it has no pair; its JSON
+  // set is then decided by the `_json` suffix, which the DDL column list below
+  // independently confirms.
+  const pairs = encoded.propertySignatures.length === decoded.length
+  return encoded.propertySignatures.map((property, index) => {
+    const decodedField = pairs ? decoded[index] : undefined
+    return { column: String(property.name), encodedType: property.type, decodedType: decodedField?.type ?? null }
+  })
 }
 
-function zodInputKeys(schema: unknown): string[] {
-  return Object.keys(zodInputShape(schema)).sort()
+function rowInputKeys(schema: RowSchemaAst): string[] {
+  return rowColumns(schema)
+    .map(f => f.column)
+    .sort()
 }
 
-function zodJsonKeys(schema: unknown): string[] {
-  const shape = zodInputShape(schema)
-  return Object.entries(shape)
-    .filter(([, field]) => field.def.type === 'pipe')
-    .map(([name]) => name)
+function rowJsonKeys(schema: RowSchemaAst): string[] {
+  return rowColumns(schema)
+    .filter(f =>
+      f.decodedType === null
+        ? f.column.endsWith('_json')
+        : SchemaAST.isString(f.encodedType) && !SchemaAST.isString(f.decodedType),
+    )
+    .map(f => f.column)
     .sort()
 }
 
@@ -660,7 +676,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
   })
 })
 
-describe('DDL-Zod parity: table and column shape (#97)', () => {
+describe('DDL-schema parity: table and column shape (#97)', () => {
   // The ledger's database shape is defined twice by hand: the DDL in
   // LedgerStore and the validation schemas in shared/schemas/ledger. This
   // gate locks the two together at the observable seam — a temporary store's
@@ -892,13 +908,13 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     })
   })
 
-  it('locks the Zod row schemas to the column catalog (schema-only drift fails)', () => {
+  it('locks the row schemas to the column catalog (schema-only drift fails)', () => {
     // The shape gate above locks live DDL against EXPECTED_COLUMNS. This
-    // locks EXPECTED_COLUMNS against the Zod input shapes, so a column added
-    // or renamed on either side alone turns red. JSON helper coverage (S8) is
-    // locked the same way: every `*_json` DDL column must be a JSON-parsing
-    // pipe in Zod, and vice versa. Behavioural proof plus the per-column
-    // exercise forcing live in #99.
+    // locks EXPECTED_COLUMNS against the row schemas' encoded (storage-side)
+    // shapes, so a column added or renamed on either side alone turns red. JSON
+    // helper coverage (S8) is locked the same way: every `*_json` DDL column
+    // must be a JSON-parsing schema, and vice versa. Behavioural proof plus the
+    // per-column exercise forcing live in #99.
     const linked = {
       ledger_source: ledgerSourceRowSchema,
       ledger_session: ledgerSessionRowSchema,
@@ -910,17 +926,17 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     }
     for (const [table, schema] of Object.entries(linked)) {
       const dbColumns = EXPECTED_COLUMNS[table]!.map(c => c.name).sort()
-      expect(zodInputKeys(schema), `[${table}] Zod input keys match DDL columns`).toEqual(dbColumns)
+      expect(rowInputKeys(schema), `[${table}] encoded keys match DDL columns`).toEqual(dbColumns)
       const dbJson = dbColumns.filter(name => name.endsWith('_json'))
-      expect(zodJsonKeys(schema), `[${table}] JSON columns use JSON helpers`).toEqual(dbJson)
+      expect(rowJsonKeys(schema), `[${table}] JSON columns use JSON helpers`).toEqual(dbJson)
     }
     // refresh_cadence_config, display_currency_config, ledger_mcp_config and
-    // skills_dismissal_config have no Zod row schemas (scalar reads); the
-    // shape gate above owns them.
+    // skills_dismissal_config have no row schemas (scalar reads); the shape gate
+    // above owns them.
   })
 })
 
-describe('DDL-Zod parity: indexes and constraints (#98)', () => {
+describe('DDL-schema parity: indexes and constraints (#98)', () => {
   // The constraint gate: performance indexes, uniqueness and primary-key
   // coverage, plus the spots introspection cannot see. Named (`origin = 'c'`)
   // indexes are distinguished from implicit constraint auto-indexes
@@ -1043,7 +1059,7 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
   })
 })
 
-describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
+describe('DDL-schema parity: adversarial round-trip (#99)', () => {
   // The behavioral proof for what shape assertions cannot see: one fixture
   // ports non-default payloads through every `*_json` column, exercises
   // nullable columns both empty and set plus both speed values, and asserts
@@ -1294,8 +1310,8 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
       const probe = new DatabaseSync(store.dbPath, { readOnly: true })
       try {
         for (const [table, schema] of Object.entries(jsonTables)) {
-          for (const column of zodJsonKeys(schema)) {
-            // Identifiers come from the fixed table map above plus Zod shape
+          for (const column of rowJsonKeys(schema)) {
+            // Identifiers come from the fixed table map above plus the encoded shape
             // keys — never from fixture input.
             const values = probe.prepare(`SELECT "${column}" AS v FROM "${table}"`).all() as Array<{ v: string }>
             expect(values.length, `[${table}.${column}] rows probed`).toBeGreaterThan(0)
@@ -1328,7 +1344,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
   })
 })
 
-describe('DDL-Zod parity: targeted edge tests (#100)', () => {
+describe('DDL-schema parity: targeted edge tests (#100)', () => {
   // What neither the shape gates (#97/#98) nor the round trip (#99) reach:
   // platform identifier precision, enum closedness, and read-query column
   // coverage. Test-only, same seams as the file's existing tests.

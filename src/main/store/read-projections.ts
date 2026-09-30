@@ -1,7 +1,7 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
+import * as SchemaGetter from 'effect/SchemaGetter'
 
 import type { LedgerCallRow } from '../../shared/schemas/ledger.js'
-import { toolCallSchema } from '../../shared/schemas/pipeline.js'
 
 /**
  * Purpose-shaped read projections for the ledger's bulk reads.
@@ -16,39 +16,53 @@ import { toolCallSchema } from '../../shared/schemas/pipeline.js'
  *
  * That cut is a DATA-ACCESS change with internal consumers only, so the shapes
  * live here rather than in the shared wire schemas: a parallel programme owns
- * `src/shared/schemas/ledger.ts` and is migrating it to Effect Schema, and an
- * edit from this side would collide with it for no benefit. Nothing here is a
- * wire contract — the wire is whatever the Section builders emit, and it is
+ * `src/shared/schemas/ledger.ts` and was migrating it to Effect Schema, and an
+ * edit from this side would have collided with it for no benefit. Nothing here
+ * is a wire contract — the wire is whatever the Section builders emit, and it is
  * unchanged by these reads.
  *
- * The row schemas stay Zod, matching the four existing reads. The measured win
- * here is BYTES READ, not decode speed: `docs/plans/effect-adoption.md` §7
- * already records that "Effect Schema is not faster than Zod 4, and the
- * 47%-of-`getCalls` decode cost is fixed by _reading less_". Switching libraries
- * would also widen `LedgerQueriesPort`'s error channel from `SqlError` to
- * `SqlError | ParseError` and force every fake to change, for no measured gain;
- * the library decision belongs to the schema-migration programme.
+ * The row schema moved to Effect Schema WITH `ledger.ts` (the migration landed
+ * together, rather than leaving a Zod/Zod split across the two halves of one
+ * read path). The measured win here is still BYTES READ, not decode speed:
+ * `docs/plans/effect-adoption.md` §7 already records that "Effect Schema is not
+ * faster than Zod 4, and the 47%-of-`getCalls` decode cost is fixed by _reading
+ * less_". What the library swap buys is the ERROR CHANNEL: `SchemaError` is a
+ * typed failure the caller can degrade past, where the old `z.array(...).parse`
+ * threw into `Cause` as a defect.
  */
 
 // ── Column helpers, mirrored from the shared row schemas ───────────────────
-// `src/shared/schemas/ledger.ts` keeps its JSON helpers private, and this file
-// may not modify it, so the two are restated here. Same semantics, same order:
-// a `*_json` column is TEXT holding `JSON.stringify` output and is parsed AND
-// validated in one pipe.
+// `src/shared/schemas/ledger.ts` keeps its helpers private, and this file
+// restates them rather than editing it: same semantics, same order. A `*_json`
+// column is TEXT holding `JSON.stringify` output and is parsed AND validated in
+// one schema — `Schema.fromJsonString`, the rc.115 form of the old
+// `z.string().transform(JSON.parse).pipe(...)`.
 
-const jsonParse = z.string().transform(s => JSON.parse(s) as unknown)
+const stringArrayJson = Schema.fromJsonString(Schema.mutable(Schema.Array(Schema.String)))
+const toolCall = Schema.Struct({
+  tool: Schema.String,
+  file: Schema.optional(Schema.String),
+  command: Schema.optional(Schema.String),
+})
+const toolCallMatrixJson = Schema.fromJsonString(Schema.mutable(Schema.Array(Schema.mutable(Schema.Array(toolCall)))))
 
-const stringArrayJson = jsonParse.pipe(z.array(z.string()))
-const toolCallMatrixJson = jsonParse.pipe(z.array(z.array(toolCallSchema)))
-
-/** Coerce an INTEGER/REAL column to a JS number, as the shared row schemas do. */
-const num = z.coerce.number()
+/** Coerce an INTEGER/REAL column to a JS number, as the shared row schemas do:
+ *  `Number(input)` followed by a finite check, which is exactly what
+ *  `z.coerce.number()` accepted. The symbol guard keeps that verdict: Zod
+ *  rejects a `Symbol` cleanly, and a bare `Number(sym)` would be a defect. */
+const num = Schema.Unknown.pipe(
+  Schema.decodeTo(Schema.Number.pipe(Schema.check(Schema.isFinite())), {
+    decode: SchemaGetter.transform((value: unknown) => (typeof value === 'symbol' ? Number.NaN : Number(value))),
+    encode: SchemaGetter.transform((value: number) => value),
+  }),
+)
 
 /**
  * The `ledger_call` columns this read selects, as a type. The compile-time
  * half of "the narrow row is a strict subset of the wide row": the schema's
- * transform is annotated with exactly this type, so a renamed or mistyped
- * column in the transform is a type error rather than a silently absent field.
+ * decoded side is bound to exactly this type (see
+ * `ledgerCallFactsShapeIsTheNarrowRow` below), so a renamed or mistyped column
+ * is a type error rather than a silently absent field.
  */
 export type LedgerCallFactsRow = Omit<
   LedgerCallRow,
@@ -171,66 +185,85 @@ export type LedgerCallFactsRow = Omit<
  *    with nothing in the type system objecting. Recorded as a follow-up, not
  *    taken here.
  */
-export const ledgerCallFactsRowSchema = z
-  .object({
-    source_id: num,
-    session_id: z.string(),
-    turn_index: num,
-    call_index: num,
-    dedup_key: z.string().nullable(),
-    provider: z.string(),
-    model: z.string(),
-    timestamp: z.string(),
-    speed: z.enum(['standard', 'fast']),
-    project: z.string().nullable(),
-    working_directory: z.string().nullable(),
-    base_cost_usd: num,
-    is_estimated: num,
-    savings_usd: num,
-    savings_baseline_model: z.string().nullable(),
-    input_tokens: num,
-    output_tokens: num,
-    cache_creation_input_tokens: num,
-    cache_read_input_tokens: num,
-    cached_input_tokens: num,
-    reasoning_tokens: num,
-    web_search_requests: num,
-    cache_creation_one_hour_tokens: num,
-    tools_json: stringArrayJson,
-    mcp_tools_json: stringArrayJson,
-    skills_json: stringArrayJson,
-    subagent_types_json: stringArrayJson,
-    bash_commands_json: stringArrayJson,
-    tool_sequence_json: toolCallMatrixJson,
-  })
-  .transform((r): LedgerCallFactsRow => ({
-    sourceId: r.source_id,
-    sessionId: r.session_id,
-    turnIndex: r.turn_index,
-    callIndex: r.call_index,
-    dedupKey: r.dedup_key,
-    provider: r.provider,
-    model: r.model,
-    timestamp: r.timestamp,
-    speed: r.speed,
-    project: r.project,
-    workingDirectory: r.working_directory,
-    baseCostUSD: r.base_cost_usd,
-    isEstimated: r.is_estimated,
-    savingsUSD: r.savings_usd,
-    savingsBaselineModel: r.savings_baseline_model,
-    inputTokens: r.input_tokens,
-    outputTokens: r.output_tokens,
-    cacheCreationInputTokens: r.cache_creation_input_tokens,
-    cacheReadInputTokens: r.cache_read_input_tokens,
-    cachedInputTokens: r.cached_input_tokens,
-    reasoningTokens: r.reasoning_tokens,
-    webSearchRequests: r.web_search_requests,
-    cacheCreationOneHourTokens: r.cache_creation_one_hour_tokens,
-    tools: r.tools_json,
-    mcpTools: r.mcp_tools_json,
-    skills: r.skills_json,
-    subagentTypes: r.subagent_types_json,
-    bashCommands: r.bash_commands_json,
-    toolSequence: r.tool_sequence_json,
-  }))
+/** The decoded (camelCase) shape `getCallFacts` produces — 29 of `getCalls`'
+ *  38 columns. `Schema.encodeKeys` turns it into the storage-side snake_case
+ *  schema below, so the mapping is one line per column rather than a 29-field
+ *  hand-written transform.
+ *
+ *  The `ledgerCallFactsShapeIsTheNarrowRow` binding below is the compile-time
+ *  half of "the narrow row is a strict subset of the wide row" that the old
+ *  `z.transform((r): LedgerCallFactsRow => …)` annotation provided: a renamed or
+ *  mistyped column is a type error there, not a silently absent field. The
+ *  run-time half — that all 29 columns really reach the `encodeKeys` map —
+ *  is `tests/ledger-schema-parity.test.ts`.
+ *
+ *  The annotation is deliberately NOT on the exported schema itself:
+ *  `Schema.Schema<LedgerCallFactsRow>` widens `DecodingServices` to `unknown`,
+ *  which would push `getCallFacts` into the port's requirements `R`. */
+const ledgerCallFactsShape = Schema.Struct({
+  sourceId: num,
+  sessionId: Schema.String,
+  turnIndex: num,
+  callIndex: num,
+  dedupKey: Schema.NullOr(Schema.String),
+  provider: Schema.String,
+  model: Schema.String,
+  timestamp: Schema.String,
+  speed: Schema.Literals(['standard', 'fast']),
+  project: Schema.NullOr(Schema.String),
+  workingDirectory: Schema.NullOr(Schema.String),
+  baseCostUSD: num,
+  isEstimated: num,
+  savingsUSD: num,
+  savingsBaselineModel: Schema.NullOr(Schema.String),
+  inputTokens: num,
+  outputTokens: num,
+  cacheCreationInputTokens: num,
+  cacheReadInputTokens: num,
+  cachedInputTokens: num,
+  reasoningTokens: num,
+  webSearchRequests: num,
+  cacheCreationOneHourTokens: num,
+  tools: stringArrayJson,
+  mcpTools: stringArrayJson,
+  skills: stringArrayJson,
+  subagentTypes: stringArrayJson,
+  bashCommands: stringArrayJson,
+  toolSequence: toolCallMatrixJson,
+})
+
+/** Compile-time half of the subset guarantee: this binding stops compiling the
+ *  moment a key of `ledgerCallFactsShape` drifts from `LedgerCallFactsRow`. */
+const ledgerCallFactsShapeIsTheNarrowRow: LedgerCallFactsRow = null as unknown as Schema.Schema.Type<
+  typeof ledgerCallFactsShape
+>
+void ledgerCallFactsShapeIsTheNarrowRow
+
+export const ledgerCallFactsRowSchema = ledgerCallFactsShape.pipe(
+  Schema.encodeKeys({
+    sourceId: 'source_id',
+    sessionId: 'session_id',
+    turnIndex: 'turn_index',
+    callIndex: 'call_index',
+    dedupKey: 'dedup_key',
+    workingDirectory: 'working_directory',
+    baseCostUSD: 'base_cost_usd',
+    isEstimated: 'is_estimated',
+    savingsUSD: 'savings_usd',
+    savingsBaselineModel: 'savings_baseline_model',
+    inputTokens: 'input_tokens',
+    outputTokens: 'output_tokens',
+    cacheCreationInputTokens: 'cache_creation_input_tokens',
+    cacheReadInputTokens: 'cache_read_input_tokens',
+    cachedInputTokens: 'cached_input_tokens',
+    reasoningTokens: 'reasoning_tokens',
+    webSearchRequests: 'web_search_requests',
+    cacheCreationOneHourTokens: 'cache_creation_one_hour_tokens',
+    tools: 'tools_json',
+    mcpTools: 'mcp_tools_json',
+    skills: 'skills_json',
+    subagentTypes: 'subagent_types_json',
+    bashCommands: 'bash_commands_json',
+    toolSequence: 'tool_sequence_json',
+  }),
+)

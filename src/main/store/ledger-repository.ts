@@ -1,9 +1,9 @@
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { SqlError } from 'effect/unstable/sql/SqlError'
-import { z } from 'zod'
 
 import {
   type CurrencyRate,
@@ -30,6 +30,21 @@ import { type LedgerCallFactsRow, ledgerCallFactsRowSchema } from './read-projec
 
 type SourceInput = ReturnType<typeof mapFileToLedgerRows>['source']
 type RunResult = { changes: number | bigint; lastInsertRowid: number | bigint }
+
+/**
+ * Every bulk read decodes its rows with `Schema.decodeUnknownEffect`, so a
+ * malformed row — a truncated `*_json` cell, a schema drift, a `NaN` where the
+ * DDL promised a number — fails with a `SchemaError` in the typed error
+ * channel. The old `z.array(<rowSchema>).parse(rows)` THREW, and inside
+ * `Effect.gen` a throw is a DEFECT in `Cause`, not a modelled failure: one bad
+ * row took a whole Section down with an error the operational log has no code
+ * for. `catchTag('SchemaError', …)` can now degrade past it.
+ *
+ * This is an internal signature change and not a wire change. Every channel
+ * name, payload shape and byte is unchanged; only the ports' `E` widened.
+ */
+const decodeRows = <S extends Schema.Constraint>(schema: S) =>
+  Schema.decodeUnknownEffect(Schema.mutable(Schema.Array(schema)))
 
 /**
  * The ledger's THREE PORTS, split by concern (ADR 0032 §A3, plan F12).
@@ -60,14 +75,15 @@ export interface LedgerIngestPort {
 
 /** Read port (5 members): the four bulk reads the query-time aggregation seam
  *  consumes (ADR 0002/0008) plus `getCallFacts`, the same `ledger_call` rows
- *  shaped to what those consumers actually read. Every row is Zod-validated at
- *  this boundary. */
+ *  shaped to what those consumers actually read. Every row is schema-validated
+ *  at this boundary, and a row that fails to decode is a `SchemaError` in `E`
+ *  rather than a defect (see `decodeRows`). */
 export interface LedgerQueriesPort {
-  getSources(): Effect.Effect<LedgerSourceRow[], SqlError>
-  getSessions(): Effect.Effect<LedgerSessionRow[], SqlError>
-  getTurns(): Effect.Effect<LedgerTurnRow[], SqlError>
-  getCalls(): Effect.Effect<LedgerCallRow[], SqlError>
-  getCallFacts(): Effect.Effect<LedgerCallFactsRow[], SqlError>
+  getSources(): Effect.Effect<LedgerSourceRow[], SqlError | Schema.SchemaError>
+  getSessions(): Effect.Effect<LedgerSessionRow[], SqlError | Schema.SchemaError>
+  getTurns(): Effect.Effect<LedgerTurnRow[], SqlError | Schema.SchemaError>
+  getCalls(): Effect.Effect<LedgerCallRow[], SqlError | Schema.SchemaError>
+  getCallFacts(): Effect.Effect<LedgerCallFactsRow[], SqlError | Schema.SchemaError>
 }
 
 /** Config port (16 members): the user settings that are NOT scan data and must
@@ -75,13 +91,13 @@ export interface LedgerQueriesPort {
  *  rates, display currency, refresh cadence, local MCP startup mode, and
  *  not-a-skill dismissals. */
 export interface LedgerConfigPort {
-  getModelAliases(): Effect.Effect<ModelAlias[], SqlError>
+  getModelAliases(): Effect.Effect<ModelAlias[], SqlError | Schema.SchemaError>
   setModelAlias(model: string, aliasOf: string): Effect.Effect<void, SqlError>
   removeModelAlias(model: string): Effect.Effect<void, SqlError>
-  getPriceOverrides(): Effect.Effect<PriceOverride[], SqlError>
+  getPriceOverrides(): Effect.Effect<PriceOverride[], SqlError | Schema.SchemaError>
   setPriceOverride(model: string, override: Omit<PriceOverride, 'model'>): Effect.Effect<void, SqlError>
   removePriceOverride(model: string): Effect.Effect<void, SqlError>
-  getCurrencyRate(code: string): Effect.Effect<CurrencyRate | null, SqlError>
+  getCurrencyRate(code: string): Effect.Effect<CurrencyRate | null, SqlError | Schema.SchemaError>
   setCurrencyRate(rate: CurrencyRate): Effect.Effect<void, SqlError>
   getDisplayCurrency(): Effect.Effect<string, SqlError>
   setDisplayCurrency(code: string): Effect.Effect<void, SqlError>
@@ -131,7 +147,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
 
       const getModelAliases = Effect.fn('LedgerConfig.getModelAliases')(function* () {
         const rows = yield* sql.unsafe('SELECT model, alias_of FROM model_alias')
-        return z.array(modelAliasRowSchema).parse(rows)
+        return yield* decodeRows(modelAliasRowSchema)(rows)
       })
 
       const setPriceOverride = Effect.fn('LedgerConfig.setPriceOverride')(function* (
@@ -155,7 +171,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
         const rows = yield* sql.unsafe(
           'SELECT model, input_price_per_million, output_price_per_million FROM price_override',
         )
-        return z.array(priceOverrideRowSchema).parse(rows)
+        return yield* decodeRows(priceOverrideRowSchema)(rows)
       })
 
       const getSources = Effect.fn('LedgerQueries.getSources')(function* () {
@@ -166,7 +182,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
                  fingerprint_mtime_ms, fingerprint_size_bytes, last_ported_at
           FROM ledger_source ORDER BY id ASC
         `)
-        return z.array(ledgerSourceRowSchema).parse(rows)
+        return yield* decodeRows(ledgerSourceRowSchema)(rows)
       })
 
       const getSessions = Effect.fn('LedgerQueries.getSessions')(function* () {
@@ -176,7 +192,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
                  mcp_inventory_json, ambiguous_spawn_agent_ids_json, ever_had_branch
           FROM ledger_session ORDER BY session_id ASC
         `)
-        return z.array(ledgerSessionRowSchema).parse(rows)
+        return yield* decodeRows(ledgerSessionRowSchema)(rows)
       })
 
       const getTurns = Effect.fn('LedgerQueries.getTurns')(function* () {
@@ -185,7 +201,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
                  spawn_tool_use_ids_json, category, sub_category, retries, has_edits
           FROM ledger_turn ORDER BY session_id ASC, turn_index ASC
         `)
-        return z.array(ledgerTurnRowSchema).parse(rows)
+        return yield* decodeRows(ledgerTurnRowSchema)(rows)
       })
 
       const getCalls = Effect.fn('LedgerQueries.getCalls')(function* () {
@@ -199,7 +215,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
                  loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
           FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
         `)
-        return z.array(ledgerCallRowSchema).parse(rows)
+        return yield* decodeRows(ledgerCallRowSchema)(rows)
       })
 
       /** The same rows, shaped to what the query-time aggregation seam reads:
@@ -226,7 +242,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
                  tool_sequence_json
           FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
         `)
-        return z.array(ledgerCallFactsRowSchema).parse(rows)
+        return yield* decodeRows(ledgerCallFactsRowSchema)(rows)
       })
 
       const getCurrencyRate = Effect.fn('LedgerConfig.getCurrencyRate')(function* (code: string) {
@@ -234,7 +250,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
           code,
         ])
         const row = rows[0]
-        return row ? currencyRateRowSchema.parse(row) : null
+        return row ? yield* Schema.decodeUnknownEffect(currencyRateRowSchema)(row) : null
       })
 
       const getDisplayCurrency = Effect.fn('LedgerConfig.getDisplayCurrency')(function* () {

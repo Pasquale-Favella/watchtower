@@ -2,6 +2,7 @@ import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import type { SchemaError } from 'effect/Schema'
 import type { SqlError } from 'effect/unstable/sql/SqlError'
 
 import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
@@ -177,7 +178,7 @@ export interface RefreshFxRateEffectOptions {
  * thread, main never touches the connection.
  */
 export interface FxRatesRepositoryRunner {
-  runRepositorySync<A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError>): A
+  runRepositorySync<A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError | SchemaError>): A
 }
 
 /**
@@ -209,7 +210,7 @@ export class FxRates extends Context.Service<
    * behavior change.
    */
   static readonly layerWithRepository = (runner: FxRatesRepositoryRunner): Layer.Layer<FxRates> => {
-    const run = <A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError>) =>
+    const run = <A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError | SchemaError>) =>
       Effect.sync(() => runner.runRepositorySync(operation))
 
     return FxRates.layerWithRates({
