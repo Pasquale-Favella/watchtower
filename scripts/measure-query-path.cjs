@@ -491,13 +491,21 @@ function loadRealModules() {
 
 /** Pulls the SQL template literal out of a repository read verbatim, so the
  * "no WHERE / no LIMIT / N columns" facts are measured from the tree rather
- * than transcribed, and the SQL-only attribution runs use the real text. */
+ * than transcribed, and the SQL-only attribution runs use the real text.
+ *
+ * The anchor is the method's `Effect.fn` span name, matched by PATTERN rather
+ * than by the full `LedgerRepository.<name>` string this used to hard-code: the
+ * repository was split into `LedgerIngest`/`LedgerQueries`/`LedgerConfig` and
+ * every span renamed with it, which would have broken a literal anchor.
+ * Tolerating the port prefix keeps this working across further splits, and if a
+ * read disappears entirely the `throw` below fails loudly rather than letting
+ * the harness quietly measure something else — which is what it did. */
 function extractReadSql(name) {
   const source = readFileSync(REPOSITORY_SOURCE, 'utf8')
-  const marker = `const ${name} = Effect.fn('LedgerRepository.${name}')`
-  const at = source.indexOf(marker)
-  if (at === -1) throw new Error(`could not find ${name} in ${REPOSITORY_SOURCE}`)
-  const open = source.indexOf('`', at)
+  const marker = new RegExp(`Effect\\.fn\\('Ledger\\w+\\.${name}'\\)`)
+  const match = marker.exec(source)
+  if (match === null) throw new Error(`could not find the ${name} read in ${REPOSITORY_SOURCE}`)
+  const open = source.indexOf('`', match.index)
   const close = source.indexOf('`', open + 1)
   if (open === -1 || close === -1) throw new Error(`could not find the SQL literal of ${name}`)
   return source.slice(open + 1, close)

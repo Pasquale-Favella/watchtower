@@ -98,9 +98,9 @@ repository runtime, MCP-sidecar repository runtime, and no worker runtime at all
 `docs/architecture.md`'s "each isolate owns one application runtime" is not yet
 true of any isolate.
 
-### F12 — `LedgerRepository` is a 21-member god interface reached through a double sync round-trip.
+### F12 — `LedgerRepository` is a 23-member god interface reached through a double sync round-trip.
 
-`ledger-repository.ts:33` declares 21 methods spanning six concerns (ingest,
+`ledger-repository.ts:33` declares **23** methods spanning six concerns (ingest,
 source lifecycle, model aliases, price overrides, currency, cadence, MCP startup,
 skill dismissals, and four bulk reads). Every one of them is reached only through
 a `LedgerStore` method that does
@@ -111,6 +111,18 @@ to obtain a plain value. The real cost: every ledger read is
 two runtimes, and an `SqlError` channel that is discarded at the boundary. This
 is SRP and ISP violated, and it is the reason `LedgerStore` cannot be retired:
 the facade is not a legacy shim, it is load-bearing.
+
+> **RESOLVED — split landed as three ports.** The split is
+> `LedgerIngest` (3: `portIn`, `deleteSource`, `clear`) · `LedgerQueries`
+> (4: the bulk reads) · `LedgerConfig` (**16**, not the 14 first estimated). One
+> private `LedgerImplementation` service is projected into all three, and a
+> normalised line-by-line diff of the 454-line `Effect.gen` body reports exactly
+> one difference — the tag name — so every `sql.unsafe` and every
+> `z.array(...).parse` is byte-identical. The 23-member count and the 16-member
+> config concern are what the tree actually declared; the original 21/14 was
+> miscounted. `LedgerStore` and the double round-trip survive by design, with
+> named conditions recorded: the facade dies when the 11 view builders take
+> `LedgerQueries` through the worker's `R`, which is slice 7.
 
 ### F13 — `HarnessProbe` has zero consumers, and main has exactly one Effect call site.
 
@@ -321,7 +333,7 @@ in a test without touching the arm.
 ### A3 — Split `LedgerRepository` (mechanical, 1–2 slices)
 
 `LedgerIngest` (`portIn`, `deleteSource`, `clear`) · `LedgerConfig` (aliases,
-prices, currency, cadence, MCP startup, dismissals — 14 members) ·
+prices, currency, cadence, MCP startup, dismissals - 16 members) ·
 `LedgerQueries` (`getSources/Sessions/Turns/Calls`). Same implementation, three
 tags, so the diff is a signature change. Closes F12, makes each independently
 fakeable, and — the real prize — lets the view builders take `LedgerQueries`

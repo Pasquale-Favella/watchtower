@@ -43,9 +43,10 @@ import { join } from 'path'
  *    `init.cacheDir`; the main isolate from the same `join(dataDir, 'cache')`
  *    it hands the worker) and `appPaths()` is the single sync reader.
  *
- * Persisted settings stay in `LedgerRepository` — this file is env-only by
- * design (locked: #148 §5.2, restated in `docs/architecture.md`). No unified
- * `AppConfig`, no `@effect/platform`, no Zod, no renderer/IPC involvement.
+ * Persisted settings stay in the ledger's `LedgerConfig` port — this file is
+ * env-only by design (locked: #148 §5.2, restated in `docs/architecture.md`).
+ * No unified `AppConfig`, no `@effect/platform`, no Zod, no renderer/IPC
+ * involvement.
  *
  * ── SEAM CONVENTION (binding for the provider-seam slices) ──
  *
