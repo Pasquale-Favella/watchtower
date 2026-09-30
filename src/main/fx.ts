@@ -8,7 +8,7 @@ import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 import type { CurrencyRate } from '../shared/schemas/ledger.js'
 import { HttpFetch, retryTransientFetch } from './pipeline/fetch-utils.js'
 import type { LedgerStore } from './store/ledger.js'
-import type { LedgerRepository } from './store/ledger-repository.js'
+import type { LedgerConfig } from './store/ledger-repository.js'
 
 export type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 
@@ -167,14 +167,17 @@ export interface RefreshFxRateEffectOptions {
 
 /**
  * Structural seam for the repository-direct `FxRates` layer: anything that can
- * run `LedgerRepository` effects synchronously on the owning thread
- * (`LedgerStore.runRepositorySync`, public for exactly this). Keeps `fx.ts`
- * free of the concrete store while preserving the single-writer SQLite
- * invariant — the worker still owns the ledger on its thread; main never
- * touches the connection.
+ * run `LedgerConfig` effects synchronously on the owning thread
+ * (`LedgerStore.runRepositorySync`, public for exactly this). FX persists only
+ * currency rates and the display currency, and BOTH live on the config port
+ * (ADR 0032 §A3) — so this seam names `LedgerConfig` rather than the retired
+ * 23-member `LedgerRepository`. It stays structural, not a `LedgerStore` import,
+ * which keeps `fx.ts` free of the concrete store while preserving the
+ * single-writer SQLite invariant: the worker still owns the ledger on its
+ * thread, main never touches the connection.
  */
 export interface FxRatesRepositoryRunner {
-  runRepositorySync<A>(operation: (repository: LedgerRepository['Service']) => Effect.Effect<A, SqlError>): A
+  runRepositorySync<A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError>): A
 }
 
 /**
@@ -197,8 +200,8 @@ export class FxRates extends Context.Service<
     Layer.succeed(FxRates, FxRates.of(rates))
 
   /**
-   * Repository-direct `FxRates` layer (ADR 0032 follow-up): reaches
-   * `LedgerRepository` through the runner instead of the `LedgerStore` facade,
+   * Repository-direct `FxRates` layer (ADR 0032 follow-up): reaches the
+   * `LedgerConfig` PORT through the runner instead of the `LedgerStore` facade,
    * so no FX call site routes through a store-facade write — the single live
    * persistence layer for the port, production and pinned tests alike.
    * Display-code sanitization happens here (see `sanitizeDisplayCurrencyCode`),
@@ -206,7 +209,7 @@ export class FxRates extends Context.Service<
    * behavior change.
    */
   static readonly layerWithRepository = (runner: FxRatesRepositoryRunner): Layer.Layer<FxRates> => {
-    const run = <A>(operation: (repository: LedgerRepository['Service']) => Effect.Effect<A, SqlError>) =>
+    const run = <A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError>) =>
       Effect.sync(() => runner.runRepositorySync(operation))
 
     return FxRates.layerWithRates({

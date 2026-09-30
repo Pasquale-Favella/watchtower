@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import { SqlError } from 'effect/unstable/sql/SqlError'
 
 import {
@@ -17,7 +18,7 @@ import {
 import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../shared/schemas/ledger-mcp.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { DEFAULT_CADENCE, isValidCadence } from '../cadence.js'
-import { LedgerRepository } from './ledger-repository.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from './ledger-repository.js'
 import { NodeSqliteDatabase } from './node-sqlite-client.js'
 import type { PortInput } from './port.js'
 import { executeSqliteScript } from './sqlite-migrations.js'
@@ -225,31 +226,31 @@ export class LedgerStore {
    * `unchanged` file falls through to the full port below and the `call_key`
    * constraint keeps any partial re-port idempotent. */
   portIn(input: PortInput): PortResult {
-    return this.runRepositorySync(repository => repository.portIn(input))
+    return this.runIngestSync(ingest => ingest.portIn(input))
   }
 
   /** Removes a source and all of its ledger rows (per-file provenance is the
    * `modified`-replace and eviction deletion unit). */
   deleteSource(provider: string, envFingerprint: string, filePath: string): void {
-    this.runRepositorySync(repository => repository.deleteSource(provider, envFingerprint, filePath))
+    this.runIngestSync(ingest => ingest.deleteSource(provider, envFingerprint, filePath))
   }
 
   // ── Read-back (the aggregation layer's input) ─────────────────────────
 
   getSources(): LedgerSourceRow[] {
-    return this.runRepositorySync(repository => repository.getSources())
+    return this.runQueriesSync(queries => queries.getSources())
   }
 
   getSessions(): LedgerSessionRow[] {
-    return this.runRepositorySync(repository => repository.getSessions())
+    return this.runQueriesSync(queries => queries.getSessions())
   }
 
   getTurns(): LedgerTurnRow[] {
-    return this.runRepositorySync(repository => repository.getTurns())
+    return this.runQueriesSync(queries => queries.getTurns())
   }
 
   getCalls(): LedgerCallRow[] {
-    return this.runRepositorySync(repository => repository.getCalls())
+    return this.runQueriesSync(queries => queries.getCalls())
   }
 
   // ── Schema introspection (green-field verification) ───────────────────
@@ -269,61 +270,61 @@ export class LedgerStore {
   // ── Config tables: not scan data, survive clear() ─────────────────────
 
   setModelAlias(model: string, aliasOf: string): void {
-    this.runRepositorySync(repository => repository.setModelAlias(model, aliasOf))
+    this.runRepositorySync(config => config.setModelAlias(model, aliasOf))
   }
 
   removeModelAlias(model: string): void {
-    this.runRepositorySync(repository => repository.removeModelAlias(model))
+    this.runRepositorySync(config => config.removeModelAlias(model))
   }
 
   getModelAliases(): ModelAlias[] {
-    return this.runRepositorySync(repository => repository.getModelAliases())
+    return this.runRepositorySync(config => config.getModelAliases())
   }
 
   /** Pure config write: the display cost is computed query-time from tokens
    * via a LEFT JOIN onto `price_override`, so changing an override needs no
    * row updates, no `rebuildDailySpend`, and no rescan. */
   setPriceOverride(model: string, override: Omit<PriceOverride, 'model'>): void {
-    this.runRepositorySync(repository => repository.setPriceOverride(model, override))
+    this.runRepositorySync(config => config.setPriceOverride(model, override))
   }
 
   removePriceOverride(model: string): void {
-    this.runRepositorySync(repository => repository.removePriceOverride(model))
+    this.runRepositorySync(config => config.removePriceOverride(model))
   }
 
   getPriceOverrides(): PriceOverride[] {
-    return this.runRepositorySync(repository => repository.getPriceOverrides())
+    return this.runRepositorySync(config => config.getPriceOverrides())
   }
 
   setCurrencyRate(rate: CurrencyRate): void {
-    this.runRepositorySync(repository => repository.setCurrencyRate(rate))
+    this.runRepositorySync(config => config.setCurrencyRate(rate))
   }
 
   getCurrencyRate(code: string): CurrencyRate | null {
-    return this.runRepositorySync(repository => repository.getCurrencyRate(code))
+    return this.runRepositorySync(config => config.getCurrencyRate(code))
   }
 
   getDisplayCurrency(): string {
-    return this.runRepositorySync(repository => repository.getDisplayCurrency())
+    return this.runRepositorySync(config => config.getDisplayCurrency())
   }
 
   getRefreshCadence(): string {
-    return this.runRepositorySync(repository => repository.getRefreshCadence())
+    return this.runRepositorySync(config => config.getRefreshCadence())
   }
 
   setRefreshCadence(value: string): void {
     const cadence = isValidCadence(value) ? value : DEFAULT_CADENCE
-    this.runRepositorySync(repository => repository.setRefreshCadence(cadence))
+    this.runRepositorySync(config => config.setRefreshCadence(cadence))
   }
 
   getLedgerMcpStartupMode(): LedgerMcpStartupMode {
-    return this.runRepositorySync(repository => repository.getLedgerMcpStartupMode())
+    return this.runRepositorySync(config => config.getLedgerMcpStartupMode())
   }
 
   setLedgerMcpStartupMode(value: unknown): LedgerMcpStartupMode {
     const parsed = ledgerMcpStartupModeSchema.safeParse(value)
     const startupMode = parsed.success ? parsed.data : 'on-demand'
-    this.runRepositorySync(repository => repository.setLedgerMcpStartupMode(startupMode))
+    this.runRepositorySync(config => config.setLedgerMcpStartupMode(startupMode))
     return startupMode
   }
 
@@ -331,11 +332,11 @@ export class LedgerStore {
    *  filtered out of the Skills payload on every fetch. A config table (user
    *  setting), so dismissals survive `clear()`. */
   getSkillDismissals(): SkillsDismissal[] {
-    return this.runRepositorySync(repository => repository.getSkillDismissals())
+    return this.runRepositorySync(config => config.getSkillDismissals())
   }
 
   dismissSkill(source: SkillsDismissal['source'], name: string, reason: string): void {
-    this.runRepositorySync(repository => repository.dismissSkill(source, name, reason, new Date().toISOString()))
+    this.runRepositorySync(config => config.dismissSkill(source, name, reason, new Date().toISOString()))
   }
 
   /** Clears all scan-derived ledger data. Config tables are user settings and
@@ -350,7 +351,7 @@ export class LedgerStore {
    * committed, so the data is gone regardless and only the size display lags
    * until the next successful reclaim. */
   clear(): void {
-    this.runRepositorySync(repository => repository.clear())
+    this.runIngestSync(ingest => ingest.clear())
     try {
       this.db.exec(`VACUUM;`)
       this.db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`)
@@ -364,18 +365,62 @@ export class LedgerStore {
   }
 
   /**
-   * Synchronous repository runner for Effect-native callers on the owning
-   * thread (currently `FxRates.layerWithRepository`). Public so the
-   * repository-direct `FxRates` layer can reach `LedgerRepository` without
-   * going through this facade's per-method adapters — the single-writer
-   * invariant is unchanged: only the worker thread that owns this store may
-   * call it; main never touches the ledger connection.
+   * The three ledger ports (ADR 0032 §A3) as a `Layer`, for a composition root
+   * that must supply them. They are projections of THIS store's own writer
+   * connection (`NodeSqliteDatabase.portsLayer`), not a second `SqliteClient` —
+   * which is what keeps ADR 0023's single-writer invariant true while the
+   * db-worker root composes them into `WorkerLive`.
+   *
+   * Removal condition: deleted with the facade, once the view builders take
+   * `LedgerQueries` through `R` and the worker root builds the ports over the
+   * worker's own client (the facade-retirement slice).
    */
-  runRepositorySync<A>(operation: (repository: LedgerRepository['Service']) => Effect.Effect<A, SqlError>): A {
+  get portsLayer(): Layer.Layer<LedgerIngest | LedgerQueries | LedgerConfig> {
+    return this.db.portsLayer
+  }
+
+  /**
+   * Synchronous `LedgerConfig` runner for Effect-native callers on the owning
+   * thread (`FxRates.layerWithRepository`, the one production consumer). Public
+   * so the repository-direct `FxRates` layer reaches the `LedgerConfig` PORT
+   * without going through this facade's per-method adapters — the single-writer
+   * invariant is unchanged: only the worker thread that owns this store may call
+   * it; main never touches the ledger connection.
+   *
+   * `runRepositorySync` is the historical name and the one
+   * `FxRatesRepositoryRunner` names structurally, so it stays; the sibling
+   * runners are named after their ports so each port's `R` is exactly what it
+   * needs rather than a widened union.
+   */
+  runRepositorySync<A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError>): A {
     return this.db.runSync(
       Effect.gen(function* () {
-        const repository = yield* LedgerRepository
-        return yield* operation(repository)
+        const config = yield* LedgerConfig
+        return yield* operation(config)
+      }),
+    )
+  }
+
+  /** `LedgerIngest` analogue (port-in / deleteSource / clear). The double
+   *  `runSync` round-trip it performs is the F12 finding's other half, and it
+   *  dies with the facade: removal condition is the same — the dispatch arms
+   *  reach `LedgerIngest` through the worker runtime's `R`. */
+  runIngestSync<A>(operation: (ingest: LedgerIngest['Service']) => Effect.Effect<A, SqlError>): A {
+    return this.db.runSync(
+      Effect.gen(function* () {
+        const ingest = yield* LedgerIngest
+        return yield* operation(ingest)
+      }),
+    )
+  }
+
+  /** `LedgerQueries` analogue of `runIngestSync` (the four bulk reads).
+   *  Same removal condition as `runIngestSync`. */
+  runQueriesSync<A>(operation: (queries: LedgerQueries['Service']) => Effect.Effect<A, SqlError>): A {
+    return this.db.runSync(
+      Effect.gen(function* () {
+        const queries = yield* LedgerQueries
+        return yield* operation(queries)
       }),
     )
   }

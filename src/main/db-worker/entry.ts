@@ -37,9 +37,12 @@ try {
 
   // The worker composition root (ADR 0032): the single-writer `LedgerStore` is
   // constructed HERE, together with the `WorkerLive` runtime built from it,
-  // because `FxRates.layerWithRepository` is bound to that store instance.
-  // Both are then handed to `DbWorkerContext`, which never composes a layer of
-  // its own — every Effect program in this isolate runs against this runtime.
+  // because `FxRates.layerWithRepository` is bound to that store instance and
+  // the three `Ledger*` ports are supplied from that store's OWN connection
+  // (`store.portsLayer` — a second `SqliteClient` would be a second writer,
+  // ADR 0023). Both are then handed to `DbWorkerContext`, which never composes
+  // a layer of its own — every Effect program in this isolate runs against this
+  // runtime.
   mkdirSync(dirname(init.dbPath), { recursive: true })
   const ledger = new LedgerStore(init.dbPath)
   const ctx = new DbWorkerContext(init, event => port.postMessage(event), {

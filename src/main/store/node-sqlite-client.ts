@@ -4,7 +4,7 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { LedgerRepository } from './ledger-repository.js'
+import { LedgerConfig, LedgerIngest, LedgerPortsLayer, LedgerQueries } from './ledger-repository.js'
 import { makeSqliteMigrationLoader, type SqliteMigration } from './sqlite-migrations.js'
 
 type RunResult = {
@@ -18,20 +18,34 @@ type SqliteStatement = {
   run(...params: unknown[]): RunResult
 }
 
+/** The three ledger ports (ADR 0032 §A3) — the shape every ledger consumer
+ *  should depend on, and the only `R` a `runSync` caller needs. */
+export type LedgerPorts = LedgerIngest | LedgerQueries | LedgerConfig
+
 /** Effect SQL-backed SQLite access with the ledger's synchronous store contract. */
 export class NodeSqliteDatabase {
   private readonly runtime: ManagedRuntime.ManagedRuntime<
-    Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient | LedgerRepository,
+    Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient | LedgerIngest | LedgerQueries | LedgerConfig,
     never
   >
 
   constructor(filename: string, options: { readonly readonly?: boolean } = {}) {
     const sqliteLayer = Sqlite.SqliteClient.layer({ filename, readonly: options.readonly })
-    this.runtime = ManagedRuntime.make(LedgerRepository.layer.pipe(Layer.provideMerge(sqliteLayer)))
+    this.runtime = ManagedRuntime.make(LedgerPortsLayer.pipe(Layer.provideMerge(sqliteLayer)))
   }
 
-  runSync<A, E>(effect: Effect.Effect<A, E, LedgerRepository>): A {
+  runSync<A, E>(effect: Effect.Effect<A, E, LedgerPorts>): A {
     return this.runtime.runSync(effect)
+  }
+
+  /** The three ports as a `Layer`, for a composition root that already owns THIS
+   *  connection — the db-worker's `WorkerLive` supplies them this way rather
+   *  than building a second `SqliteClient` over the same file. The single-writer
+   *  invariant (ADR 0023) is why this is a projection of the existing runtime
+   *  rather than a fresh repository build; the ports are therefore the SAME
+   *  instances `runSync` already reaches, sharing one connection. */
+  get portsLayer(): Layer.Layer<LedgerPorts> {
+    return Layer.unwrap(Effect.map(this.runtime.contextEffect, context => Layer.succeedContext(context)))
   }
 
   exec(script: string): void {

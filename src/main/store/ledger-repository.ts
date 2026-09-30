@@ -30,61 +30,107 @@ import { mapFileToLedgerRows, type PortInput } from './port.js'
 type SourceInput = ReturnType<typeof mapFileToLedgerRows>['source']
 type RunResult = { changes: number | bigint; lastInsertRowid: number | bigint }
 
-export class LedgerRepository extends Context.Service<
-  LedgerRepository,
-  {
-    portIn(input: PortInput): Effect.Effect<PortResult, SqlError>
-    clear(): Effect.Effect<void, SqlError>
-    deleteSource(provider: string, envFingerprint: string, filePath: string): Effect.Effect<void, SqlError>
-    setModelAlias(model: string, aliasOf: string): Effect.Effect<void, SqlError>
-    removeModelAlias(model: string): Effect.Effect<void, SqlError>
-    setPriceOverride(model: string, override: Omit<PriceOverride, 'model'>): Effect.Effect<void, SqlError>
-    removePriceOverride(model: string): Effect.Effect<void, SqlError>
-    getModelAliases(): Effect.Effect<ModelAlias[], SqlError>
-    getPriceOverrides(): Effect.Effect<PriceOverride[], SqlError>
-    getSources(): Effect.Effect<LedgerSourceRow[], SqlError>
-    getSessions(): Effect.Effect<LedgerSessionRow[], SqlError>
-    getTurns(): Effect.Effect<LedgerTurnRow[], SqlError>
-    getCalls(): Effect.Effect<LedgerCallRow[], SqlError>
-    getCurrencyRate(code: string): Effect.Effect<CurrencyRate | null, SqlError>
-    getDisplayCurrency(): Effect.Effect<string, SqlError>
-    getRefreshCadence(): Effect.Effect<string, SqlError>
-    getLedgerMcpStartupMode(): Effect.Effect<LedgerMcpStartupMode, SqlError>
-    getSkillDismissals(): Effect.Effect<SkillsDismissal[], SqlError>
-    setCurrencyRate(rate: CurrencyRate): Effect.Effect<void, SqlError>
-    setDisplayCurrency(code: string): Effect.Effect<void, SqlError>
-    setRefreshCadence(value: string): Effect.Effect<void, SqlError>
-    setLedgerMcpStartupMode(mode: LedgerMcpStartupMode): Effect.Effect<void, SqlError>
-    dismissSkill(
-      source: SkillsDismissal['source'],
-      name: string,
-      reason: string,
-      created: string,
-    ): Effect.Effect<void, SqlError>
-  }
->()('watchtower/store/LedgerRepository') {
+/**
+ * The ledger's THREE PORTS, split by concern (ADR 0032 §A3, plan F12).
+ *
+ * The interface used to be one 23-member `LedgerRepository` spanning ingest,
+ * source lifecycle, model aliases, price overrides, currency, cadence, MCP
+ * startup, skill dismissals and four bulk reads — SRP and ISP violated, and
+ * unreachable except through `LedgerStore`'s per-method sync adapters. The SQL
+ * did not change: ONE implementation (`LedgerImplementation` below) is still
+ * built over ONE `SqlClient`, and the three tags project their members out of
+ * it. This is a signature change, not a rewrite.
+ *
+ * `LedgerStore` and the double `runSync` round-trip are deliberately still here
+ * — both die in the facade-retirement slice, which needs the view builders to
+ * take `LedgerQueries` through `R` first. The ports exist now so that retirement
+ * is mechanical.
+ */
+
+/** Ingest port (3 members): the scan-derived fact write path and the two
+ *  deletions that belong to the same transactional unit. `portIn` is the
+ *  ledger's centre of gravity — one file's whole port-in in one transaction
+ *  (ADR 0002, ADR 0032). */
+export interface LedgerIngestPort {
+  portIn(input: PortInput): Effect.Effect<PortResult, SqlError>
+  deleteSource(provider: string, envFingerprint: string, filePath: string): Effect.Effect<void, SqlError>
+  clear(): Effect.Effect<void, SqlError>
+}
+
+/** Read port (4 members): the four bulk reads the query-time aggregation seam
+ *  consumes (ADR 0002/0008). Every row is Zod-validated at this boundary. */
+export interface LedgerQueriesPort {
+  getSources(): Effect.Effect<LedgerSourceRow[], SqlError>
+  getSessions(): Effect.Effect<LedgerSessionRow[], SqlError>
+  getTurns(): Effect.Effect<LedgerTurnRow[], SqlError>
+  getCalls(): Effect.Effect<LedgerCallRow[], SqlError>
+}
+
+/** Config port (16 members): the user settings that are NOT scan data and must
+ *  survive `clear()` (ADR 0002) — model aliases, price overrides, currency
+ *  rates, display currency, refresh cadence, local MCP startup mode, and
+ *  not-a-skill dismissals. */
+export interface LedgerConfigPort {
+  getModelAliases(): Effect.Effect<ModelAlias[], SqlError>
+  setModelAlias(model: string, aliasOf: string): Effect.Effect<void, SqlError>
+  removeModelAlias(model: string): Effect.Effect<void, SqlError>
+  getPriceOverrides(): Effect.Effect<PriceOverride[], SqlError>
+  setPriceOverride(model: string, override: Omit<PriceOverride, 'model'>): Effect.Effect<void, SqlError>
+  removePriceOverride(model: string): Effect.Effect<void, SqlError>
+  getCurrencyRate(code: string): Effect.Effect<CurrencyRate | null, SqlError>
+  setCurrencyRate(rate: CurrencyRate): Effect.Effect<void, SqlError>
+  getDisplayCurrency(): Effect.Effect<string, SqlError>
+  setDisplayCurrency(code: string): Effect.Effect<void, SqlError>
+  getRefreshCadence(): Effect.Effect<string, SqlError>
+  setRefreshCadence(value: string): Effect.Effect<void, SqlError>
+  getLedgerMcpStartupMode(): Effect.Effect<LedgerMcpStartupMode, SqlError>
+  setLedgerMcpStartupMode(mode: LedgerMcpStartupMode): Effect.Effect<void, SqlError>
+  getSkillDismissals(): Effect.Effect<SkillsDismissal[], SqlError>
+  dismissSkill(
+    source: SkillsDismissal['source'],
+    name: string,
+    reason: string,
+    created: string,
+  ): Effect.Effect<void, SqlError>
+}
+
+/** All 23 members, un-split: the shape the three ports project from. */
+export interface LedgerImplementationShape extends LedgerIngestPort, LedgerQueriesPort, LedgerConfigPort {}
+
+/**
+ * The ONE implementation all three ports project from — the whole hand-written
+ * SQL, unchanged, over whatever `SqlClient` the owning runtime provides. Kept
+ * as its own service so `LedgerIngest`/`LedgerQueries`/`LedgerConfig` can be
+ * provided independently while sharing a single instance (and therefore a
+ * single connection) instead of triplicating the SQL.
+ *
+ * Not a consumer-facing port: nothing outside this file should `yield*` it.
+ */
+export class LedgerImplementation extends Context.Service<LedgerImplementation, LedgerImplementationShape>()(
+  'watchtower/store/LedgerImplementation',
+) {
   static readonly layer = Layer.effect(
-    LedgerRepository,
+    LedgerImplementation,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
 
-      const setModelAlias = Effect.fn('LedgerRepository.setModelAlias')(function* (model: string, aliasOf: string) {
+      const setModelAlias = Effect.fn('LedgerConfig.setModelAlias')(function* (model: string, aliasOf: string) {
         yield* sql.unsafe(
           'INSERT INTO model_alias (model, alias_of) VALUES (?, ?) ON CONFLICT(model) DO UPDATE SET alias_of = excluded.alias_of',
           [model, aliasOf],
         )
       })
 
-      const removeModelAlias = Effect.fn('LedgerRepository.removeModelAlias')(function* (model: string) {
+      const removeModelAlias = Effect.fn('LedgerConfig.removeModelAlias')(function* (model: string) {
         yield* sql.unsafe('DELETE FROM model_alias WHERE model = ?', [model])
       })
 
-      const getModelAliases = Effect.fn('LedgerRepository.getModelAliases')(function* () {
+      const getModelAliases = Effect.fn('LedgerConfig.getModelAliases')(function* () {
         const rows = yield* sql.unsafe('SELECT model, alias_of FROM model_alias')
         return z.array(modelAliasRowSchema).parse(rows)
       })
 
-      const setPriceOverride = Effect.fn('LedgerRepository.setPriceOverride')(function* (
+      const setPriceOverride = Effect.fn('LedgerConfig.setPriceOverride')(function* (
         model: string,
         override: Omit<PriceOverride, 'model'>,
       ) {
@@ -97,18 +143,18 @@ export class LedgerRepository extends Context.Service<
         )
       })
 
-      const removePriceOverride = Effect.fn('LedgerRepository.removePriceOverride')(function* (model: string) {
+      const removePriceOverride = Effect.fn('LedgerConfig.removePriceOverride')(function* (model: string) {
         yield* sql.unsafe('DELETE FROM price_override WHERE model = ?', [model])
       })
 
-      const getPriceOverrides = Effect.fn('LedgerRepository.getPriceOverrides')(function* () {
+      const getPriceOverrides = Effect.fn('LedgerConfig.getPriceOverrides')(function* () {
         const rows = yield* sql.unsafe(
           'SELECT model, input_price_per_million, output_price_per_million FROM price_override',
         )
         return z.array(priceOverrideRowSchema).parse(rows)
       })
 
-      const getSources = Effect.fn('LedgerRepository.getSources')(function* () {
+      const getSources = Effect.fn('LedgerQueries.getSources')(function* () {
         const rows = yield* sql.unsafe(`
           SELECT id, provider, env_fingerprint, file_path, repo_url, project,
                  CAST(fingerprint_dev AS TEXT) AS fingerprint_dev,
@@ -119,7 +165,7 @@ export class LedgerRepository extends Context.Service<
         return z.array(ledgerSourceRowSchema).parse(rows)
       })
 
-      const getSessions = Effect.fn('LedgerRepository.getSessions')(function* () {
+      const getSessions = Effect.fn('LedgerQueries.getSessions')(function* () {
         const rows = yield* sql.unsafe(`
           SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
                  agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
@@ -129,7 +175,7 @@ export class LedgerRepository extends Context.Service<
         return z.array(ledgerSessionRowSchema).parse(rows)
       })
 
-      const getTurns = Effect.fn('LedgerRepository.getTurns')(function* () {
+      const getTurns = Effect.fn('LedgerQueries.getTurns')(function* () {
         const rows = yield* sql.unsafe(`
           SELECT source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
                  spawn_tool_use_ids_json, category, sub_category, retries, has_edits
@@ -138,7 +184,7 @@ export class LedgerRepository extends Context.Service<
         return z.array(ledgerTurnRowSchema).parse(rows)
       })
 
-      const getCalls = Effect.fn('LedgerRepository.getCalls')(function* () {
+      const getCalls = Effect.fn('LedgerQueries.getCalls')(function* () {
         const rows = yield* sql.unsafe(`
           SELECT source_id, session_id, turn_index, call_index, call_key, dedup_key, provider, model, timestamp, speed,
                  project, project_path, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
@@ -152,7 +198,7 @@ export class LedgerRepository extends Context.Service<
         return z.array(ledgerCallRowSchema).parse(rows)
       })
 
-      const getCurrencyRate = Effect.fn('LedgerRepository.getCurrencyRate')(function* (code: string) {
+      const getCurrencyRate = Effect.fn('LedgerConfig.getCurrencyRate')(function* (code: string) {
         const rows = yield* sql.unsafe('SELECT code, symbol, rate, updated_at FROM currency_rate WHERE code = ?', [
           code,
         ])
@@ -160,31 +206,31 @@ export class LedgerRepository extends Context.Service<
         return row ? currencyRateRowSchema.parse(row) : null
       })
 
-      const getDisplayCurrency = Effect.fn('LedgerRepository.getDisplayCurrency')(function* () {
+      const getDisplayCurrency = Effect.fn('LedgerConfig.getDisplayCurrency')(function* () {
         const rows = yield* sql.unsafe('SELECT code FROM display_currency_config WHERE id = 1')
         const row = rows[0] as { code: string } | undefined
         return row?.code ?? 'USD'
       })
 
-      const getRefreshCadence = Effect.fn('LedgerRepository.getRefreshCadence')(function* () {
+      const getRefreshCadence = Effect.fn('LedgerConfig.getRefreshCadence')(function* () {
         const rows = yield* sql.unsafe('SELECT value FROM refresh_cadence_config WHERE id = 1')
         const row = rows[0] as { value: string } | undefined
         return row?.value ?? DEFAULT_CADENCE
       })
 
-      const getLedgerMcpStartupMode = Effect.fn('LedgerRepository.getLedgerMcpStartupMode')(function* () {
+      const getLedgerMcpStartupMode = Effect.fn('LedgerConfig.getLedgerMcpStartupMode')(function* () {
         const rows = yield* sql.unsafe('SELECT startup_mode FROM ledger_mcp_config WHERE id = 1')
         const row = rows[0] as { startup_mode: unknown } | undefined
         const parsed = ledgerMcpStartupModeSchema.safeParse(row?.startup_mode)
         return parsed.success ? parsed.data : 'on-demand'
       })
 
-      const getSkillDismissals = Effect.fn('LedgerRepository.getSkillDismissals')(function* () {
+      const getSkillDismissals = Effect.fn('LedgerConfig.getSkillDismissals')(function* () {
         const rows = yield* sql.unsafe('SELECT source, name, reason, created FROM skills_dismissal_config')
         return [...rows] as SkillsDismissal[]
       })
 
-      const setCurrencyRate = Effect.fn('LedgerRepository.setCurrencyRate')(function* (rate: CurrencyRate) {
+      const setCurrencyRate = Effect.fn('LedgerConfig.setCurrencyRate')(function* (rate: CurrencyRate) {
         yield* sql.unsafe(
           `
           INSERT INTO currency_rate (code, symbol, rate, updated_at) VALUES (?, ?, ?, ?)
@@ -194,7 +240,7 @@ export class LedgerRepository extends Context.Service<
         )
       })
 
-      const setDisplayCurrency = Effect.fn('LedgerRepository.setDisplayCurrency')(function* (code: string) {
+      const setDisplayCurrency = Effect.fn('LedgerConfig.setDisplayCurrency')(function* (code: string) {
         yield* sql.unsafe(
           `
           INSERT INTO display_currency_config (id, code) VALUES (1, ?)
@@ -204,7 +250,7 @@ export class LedgerRepository extends Context.Service<
         )
       })
 
-      const setRefreshCadence = Effect.fn('LedgerRepository.setRefreshCadence')(function* (value: string) {
+      const setRefreshCadence = Effect.fn('LedgerConfig.setRefreshCadence')(function* (value: string) {
         yield* sql.unsafe(
           `
           INSERT INTO refresh_cadence_config (id, value) VALUES (1, ?)
@@ -214,7 +260,7 @@ export class LedgerRepository extends Context.Service<
         )
       })
 
-      const setLedgerMcpStartupMode = Effect.fn('LedgerRepository.setLedgerMcpStartupMode')(function* (
+      const setLedgerMcpStartupMode = Effect.fn('LedgerConfig.setLedgerMcpStartupMode')(function* (
         mode: LedgerMcpStartupMode,
       ) {
         yield* sql.unsafe(
@@ -226,7 +272,7 @@ export class LedgerRepository extends Context.Service<
         )
       })
 
-      const dismissSkill = Effect.fn('LedgerRepository.dismissSkill')(function* (
+      const dismissSkill = Effect.fn('LedgerConfig.dismissSkill')(function* (
         source: SkillsDismissal['source'],
         name: string,
         reason: string,
@@ -313,7 +359,7 @@ export class LedgerRepository extends Context.Service<
         yield* sql.unsafe('DELETE FROM ledger_session WHERE source_id = ?', [sourceId])
       })
 
-      const deleteSource = Effect.fn('LedgerRepository.deleteSource')(function* (
+      const deleteSource = Effect.fn('LedgerIngest.deleteSource')(function* (
         provider: string,
         envFingerprint: string,
         filePath: string,
@@ -458,7 +504,7 @@ export class LedgerRepository extends Context.Service<
         return inserted
       })
 
-      const clear = Effect.fn('LedgerRepository.clear')(function* (): Effect.fn.Return<void, SqlError> {
+      const clear = Effect.fn('LedgerIngest.clear')(function* (): Effect.fn.Return<void, SqlError> {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql.unsafe('DELETE FROM ledger_call')
@@ -469,7 +515,7 @@ export class LedgerRepository extends Context.Service<
         )
       })
 
-      const portIn = Effect.fn('LedgerRepository.portIn')(function* (
+      const portIn = Effect.fn('LedgerIngest.portIn')(function* (
         input: PortInput,
       ): Effect.fn.Return<PortResult, SqlError> {
         const { provider, envFingerprint, filePath, verdict, cachedFile, repoUrl, durable } = input
@@ -498,7 +544,7 @@ export class LedgerRepository extends Context.Service<
         )
       })
 
-      return LedgerRepository.of({
+      return LedgerImplementation.of({
         portIn,
         clear,
         deleteSource,
@@ -526,3 +572,84 @@ export class LedgerRepository extends Context.Service<
     }),
   )
 }
+
+/**
+ * `LedgerIngest` — the ledger's write port (3 members). Independently providable
+ * and independently fakeable; the implementation is shared, not copied.
+ */
+export class LedgerIngest extends Context.Service<LedgerIngest, LedgerIngestPort>()('watchtower/store/LedgerIngest') {
+  static readonly layer = Layer.effect(
+    LedgerIngest,
+    Effect.map(LedgerImplementation, implementation =>
+      LedgerIngest.of({
+        portIn: implementation.portIn,
+        deleteSource: implementation.deleteSource,
+        clear: implementation.clear,
+      }),
+    ),
+  )
+}
+
+/**
+ * `LedgerQueries` — the ledger's read port (4 members), the one the query-time
+ * view builders will take through `R` so `LedgerStore` loses its last callers.
+ */
+export class LedgerQueries extends Context.Service<LedgerQueries, LedgerQueriesPort>()(
+  'watchtower/store/LedgerQueries',
+) {
+  static readonly layer = Layer.effect(
+    LedgerQueries,
+    Effect.map(LedgerImplementation, implementation =>
+      LedgerQueries.of({
+        getSources: implementation.getSources,
+        getSessions: implementation.getSessions,
+        getTurns: implementation.getTurns,
+        getCalls: implementation.getCalls,
+      }),
+    ),
+  )
+}
+
+/**
+ * `LedgerConfig` — the ledger's settings port (16 members), the tables that
+ * survive `clear()` (ADR 0002) and repaint every view with no rescan.
+ */
+export class LedgerConfig extends Context.Service<LedgerConfig, LedgerConfigPort>()('watchtower/store/LedgerConfig') {
+  static readonly layer = Layer.effect(
+    LedgerConfig,
+    Effect.map(LedgerImplementation, implementation =>
+      LedgerConfig.of({
+        getModelAliases: implementation.getModelAliases,
+        setModelAlias: implementation.setModelAlias,
+        removeModelAlias: implementation.removeModelAlias,
+        getPriceOverrides: implementation.getPriceOverrides,
+        setPriceOverride: implementation.setPriceOverride,
+        removePriceOverride: implementation.removePriceOverride,
+        getCurrencyRate: implementation.getCurrencyRate,
+        setCurrencyRate: implementation.setCurrencyRate,
+        getDisplayCurrency: implementation.getDisplayCurrency,
+        setDisplayCurrency: implementation.setDisplayCurrency,
+        getRefreshCadence: implementation.getRefreshCadence,
+        setRefreshCadence: implementation.setRefreshCadence,
+        getLedgerMcpStartupMode: implementation.getLedgerMcpStartupMode,
+        setLedgerMcpStartupMode: implementation.setLedgerMcpStartupMode,
+        getSkillDismissals: implementation.getSkillDismissals,
+        dismissSkill: implementation.dismissSkill,
+      }),
+    ),
+  )
+}
+
+/**
+ * All three ports from ONE `LedgerImplementation`, with the implementation kept
+ * private (ADR 0032 §A3) and the `SqlClient` left as the layer's requirement —
+ * the connection is the caller's to own, so this composes over whatever single
+ * writer the owning runtime already has. `NodeSqliteDatabase` builds it over the
+ * ledger's writer connection and re-projects the resulting instances through
+ * `portsLayer` for a second composition root, rather than opening another
+ * connection.
+ */
+export const LedgerPortsLayer: Layer.Layer<LedgerIngest | LedgerQueries | LedgerConfig, never, SqlClient.SqlClient> =
+  Layer.mergeAll(LedgerIngest.layer, LedgerQueries.layer, LedgerConfig.layer).pipe(
+    Layer.provide(LedgerImplementation.layer),
+  )

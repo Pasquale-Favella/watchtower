@@ -811,7 +811,7 @@ export class DbWorkerContext {
           throw new Error('invalid ISO 4217 currency code')
         }
         // Repository-direct write (ADR 0032 follow-up): through the `FxRates`
-        // port straight to `LedgerRepository`, bypassing the store facade —
+        // port straight to `LedgerConfig`, bypassing the store facade —
         // `LedgerStore.setDisplayCurrency` is gone. The port comes from the
         // worker runtime, so the SAME `FxRates` instance serves this write, the
         // background FX refresh below, and the cadence tick.
