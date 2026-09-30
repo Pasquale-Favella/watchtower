@@ -260,6 +260,73 @@ hang reads as a fast failure) deserves its own slice rather than a drive-by in a
 tracer commit. Recorded so the next person who sees a 120s stall knows to
 reproduce before believing it.
 
+### A10 — Effect is the logging API; pino is the transport (owner decision 2026-09-30) — NEW
+
+The owner asked to embrace Effect logging fully. Taken literally that means
+adopting Effect's observability modules, and **every one of them is a network
+exporter** — in rc.115 `effect/unstable/observability` ships `Otlp`,
+`OtlpExporter`, `OtlpLogger`, `OtlpMetrics`, `OtpResource`, `OtpSerialization`,
+`OtpTracer`, `PrometheusMetrics`, and **no file sink at all**. ADR 0012 is
+explicit that the app adds no network path of its own, so adopting them means
+amending a privacy ADR. That is the owner's call and it was put to them.
+
+**Decided: Effect is the API, pino is the transport.** No domain code touches
+pino; `Logger.make` / `Tracer.make` are the only surfaces, and one JSON-lines
+file under `userData/logs` remains the destination. ADR 0029 is untouched, the
+passing `e2e/operational-log.spec.ts` keeps passing, and no telemetry leaves the
+machine. Adopting an OTLP exporter later is a one-transport swap — which is the
+point of having the API Effect-shaped now.
+
+**What is left is the call sites, and the split is not even.** Measured across
+all 40:
+
+|                                              | sites  | disposition                                                             |
+| -------------------------------------------- | ------ | ----------------------------------------------------------------------- |
+| implementation (`operational-log.ts` itself) | 8      | the sink; stays                                                         |
+| **in files that already import Effect**      | **19** | become `Effect.log*` / spans                                            |
+| composition seams (`index.ts` 8, `ipc.ts` 5) | 13     | **stay** — no runtime, and they are the boundary ADR 0032 already names |
+
+The 13 are not a compromise. `index.ts` and `ipc.ts` are the `Promise`-shaped
+edges where external callbacks enter and leave Effect; a bare logger call there
+is the correct shape, and forcing `Effect.runSync` to reach one would be exactly
+the F10 violation this programme exists to remove.
+
+_Count correction:_ I first said 27 migratable sites. That double-counted the
+sink's own 8. It is **19**.
+
+**The load-bearing reason this is not a no-op:** `Effect.log` has **0** call
+sites in `src/main`, so the `OperationalLogLoggerLayer` installed at
+`worker-runtime.ts:101` currently forwards nothing at all. Nineteen sites is the
+whole distance between "the logger is installed" and "the logger is used".
+
+### A11 — Effect Schema in the renderer, to close the Zod drop (owner decision 2026-09-30) — NEW
+
+The owner authorised Effect in the renderer **if needed to drop Zod**. It is
+needed, and the cost is far lower than "adopting Effect in the renderer" sounds,
+because the two are separable:
+
+- **`effect/Schema` is pure and synchronous.** Verified by direct probe against
+  rc.115, with no `Effect` import, no runtime and no fiber: `decodeUnknownSync`
+  validates, `Schema.Literals([...])` accepts every member, and
+  `.pipe(Schema.check(Schema.isFinite()))` rejects `NaN` where bare
+  `Schema.Number` accepts it — R1 and R2 confirmed live a second time.
+- So the renderer can take `effect/Schema` **in place of Zod** at the ADR 0005
+  tripwire and change nothing else: still Promise/React-shaped, no
+  `ManagedRuntime`, no layers, no fiber cancellation across the React tree.
+
+**The renderer therefore still has 0% Effect _runtime_.** What changes is its
+validation library. ADR 0032 needs amending to say that precisely — and the
+amendment is small, because the architecture is not moving.
+
+**Known migration cost, not yet sized:** Zod's `.parse` throws `ZodError`;
+Effect's throws with a `cause` of `SchemaError`. There are **214** `.parse`
+sites and **83** `.safeParse` sites tree-wide, and any code catching `ZodError`
+by name has to change. Grep for `ZodError` before estimating this as mechanical.
+
+**Sequencing:** Wave A (the 5 main-only modules) needs neither this nor an ADR
+amendment, and is blocked only on slice 5a. Wave B's 19 renderer-facing modules
+are last, and only because of the renderer work above.
+
 ### F18 — The coach run seam is a raw `AsyncGenerator` with a hand-rolled cancel path.
 
 `runtime.ts:383` (`async *run`), consumed by `for await` at `ipc.ts:376`,
