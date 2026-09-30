@@ -116,7 +116,8 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
    * take out the synchronous prefix `deps.spawn` runs in, which two
    * `ledger-mcp-pool` tests pin as load-bearing (see the RcMap rejection note
    * above). Left as-is until the pool's Promise seam is retired, at which point
-   * this becomes `yield* emitOperationalRecord(...)` for free.
+   * this becomes `yield* Effect.logError('sidecar.error').pipe(Effect.annotateLogs({...}))`
+   * for free.
    */
   function logHealthFailure(): void {
     safeLogOperationalEvent('error', 'sidecar.error', { op: 'ledger-mcp-health', code: 'unhealthy' }, 'sidecar')

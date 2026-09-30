@@ -3,7 +3,7 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 
 import { HarnessProbe } from './agents/snapshot.js'
 import { Env } from './env.js'
-import { OperationalLogTracerLayer } from './operational-log.js'
+import { OperationalLogLoggerLayer, OperationalLogTracerLayer } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 
 /**
@@ -28,17 +28,24 @@ import { HttpFetch } from './pipeline/fetch-utils.js'
  * seam stays injectable via `HarnessSdk` fakes — platform adoption
  * (`@effect/platform` HttpClient/FileSystem/Command) stays a sequenced
  * follow-up, pinned + asar-proven like ADR 0030. `OperationalLogTracerLayer`
- * is a `Context.Reference`, not a `Context.Service`, so it adds nothing to `R`
- * and the declared service set is unchanged.
+ * and `OperationalLogLoggerLayer` are References, not `Context.Service`s, so
+ * they add nothing to `R` and the declared service set is unchanged.
  */
 export const MainLive: Layer.Layer<HttpFetch | HarnessProbe | Env> = Layer.mergeAll(
   HttpFetch.layer,
   HarnessProbe.layer,
   Env.layer,
+  // A12: the Logger half, and the reason the operational records in this
+  // isolate reach the file at all. `Effect.log*` is the one logging path, so a
+  // converted site only files when the `Logger` reference is installed here —
+  // exactly as the worker root has installed it since A7. It also REPLACES
+  // Effect's default console loggers, so main's logs land in the Operational
+  // file and nowhere else (no console duplication).
+  OperationalLogLoggerLayer,
   // A7: the main isolate gets the tracer too. Worker-only would leave every
   // `Effect.fn('…')` span built here dangling — the problem relocated, not
   // solved. Unlike the worker's copy, these records DO reach the file: main owns
-  // the pino sink (ADR 0029).
+  // the Operational-log writer (ADR 0029).
   OperationalLogTracerLayer('main'),
 )
 

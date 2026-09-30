@@ -7,7 +7,7 @@ import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 
-import { emitOperationalRecord, logCodeFor, safeLogOperationalEvent } from '../../operational-log.js'
+import { logCodeFor, safeLogOperationalEvent } from '../../operational-log.js'
 import type { AcpMcpServer } from '../harnesses/types.js'
 import { bearerHeaderValue } from './auth.js'
 import type { LedgerMcpSpawnContext } from './config.js'
@@ -335,12 +335,16 @@ export async function startLedgerMcpHttp(ctx: LedgerMcpSpawnContext): Promise<St
         yield* Effect.sync(() => child.kill())
         // `code` stays an explicit `logCodeFor(err)`: this is an observation of
         // a failed boot, not a typed failure being reported through a channel,
-        // so there is no `Cause` for a `Logger` to squash.
-        yield* emitOperationalRecord(
-          'error',
-          'sidecar.error',
-          { op: 'ledger-mcp-spawn', code: logCodeFor(err) },
-          'sidecar',
+        // so there is no `Cause` for a `Logger` to squash. `event` / `context`
+        // ride the annotation bag because they are not Effect concepts — the
+        // `Logger` pulls both out before the allowlist runs.
+        yield* Effect.logError('sidecar.error').pipe(
+          Effect.annotateLogs({
+            event: 'sidecar.error',
+            context: 'sidecar',
+            op: 'ledger-mcp-spawn',
+            code: logCodeFor(err),
+          }),
         )
       }),
     ),

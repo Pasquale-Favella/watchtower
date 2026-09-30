@@ -13,6 +13,7 @@ import {
   closeOperationalLog,
   FETCH_TIMEOUT_COUNTER,
   initOperationalLog,
+  OperationalLogLoggerLayer,
   safeLogOperationalEvent,
 } from '../src/main/operational-log.js'
 import { HttpFetch, type HttpFetchCounters, HttpFetchError } from '../src/main/pipeline/fetch-utils.js'
@@ -53,8 +54,15 @@ function fetchError(fetchImpl: typeof fetch, url = 'https://example.test/x'): Pr
 // Live-layer runner: HttpFetch.layer over FetchHttpClient with an explicit
 // Fetch transport. The Fetch reference caches its default process-wide, so
 // tests must provide it per-effect — stubbing global fetch is not enough.
+// `OperationalLogLoggerLayer` is the reference production installs in
+// `MainLive` / `WorkerLive`; without it the live counter's `Effect.log*` would
+// reach Effect's default logger instead of the Operational log.
 function provideLiveFetch<A, E>(effect: Effect.Effect<A, E, HttpFetch>, fetchImpl: typeof fetch): Effect.Effect<A, E> {
-  return effect.pipe(Effect.provide(HttpFetch.layer), Effect.provideService(FetchHttpClient.Fetch, fetchImpl))
+  return effect.pipe(
+    Effect.provide(OperationalLogLoggerLayer),
+    Effect.provide(HttpFetch.layer),
+    Effect.provideService(FetchHttpClient.Fetch, fetchImpl),
+  )
 }
 
 describe('HttpFetch (Effect-native fetch boundary)', () => {

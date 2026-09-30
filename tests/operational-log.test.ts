@@ -47,7 +47,7 @@ function readLines(logDir: string): string[] {
   return lines
 }
 
-describe('Operational log main sink (pino, slice 1)', () => {
+describe('Operational log main sink (JSON-lines writer, slice 1)', () => {
   it('writes parseable JSON lines with level, context, event and fields', async () => {
     const logDir = tempLogDir()
     await initOperationalLog({ logDir, isPackaged: true })
@@ -192,9 +192,10 @@ describe('Operational log main sink (pino, slice 1)', () => {
 
   it('keeps interleaved forwarder records parseable across a forced rotation (#131)', async () => {
     const logDir = tempLogDir()
-    // pino-roll parses bare numbers as megabytes — test sizes need a unit.
-    // Rotation itself is async (write → drain → flush → reopen), so the burst
-    // settles before close, mirroring pino-roll's own tests.
+    // The writer's size grammar treats a bare number as megabytes, so test
+    // sizes need a unit. Rotation is synchronous now (append → check → shift →
+    // reopen), and the settle wait is kept so a rotation mid-burst has the same
+    // chance to land as it did under the previous asynchronous roll.
     await initOperationalLog({ logDir, isPackaged: true, size: '2k', count: 2 })
     const contexts = ['worker', 'sidecar', 'renderer', 'main'] as const
     for (let i = 0; i < 120; i += 1) {

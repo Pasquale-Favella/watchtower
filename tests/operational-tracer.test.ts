@@ -18,11 +18,12 @@ import {
 } from '../src/main/operational-log.js'
 
 /**
- * A7: the pino `Tracer`. The proof is the FILE, not a spy — every case reads
- * the emitted JSON lines back, so each one also proves `sanitizeOperationalRecord`
- * ran on the way out. `isPackaged: false` everywhere because pino is the
- * file-level enforcement point and a packaged build drops `debug` (spans file at
- * `debug` on purpose); the dev sink is the one that can show them.
+ * A7: the Operational-log `Tracer`. The proof is the FILE, not a spy — every
+ * case reads the emitted JSON lines back, so each one also proves
+ * `sanitizeOperationalRecord` ran on the way out. `isPackaged: false`
+ * everywhere because the writer is the file-level enforcement point and a
+ * packaged build drops `debug` (spans file at `debug` on purpose); the dev
+ * echo is the one that can show them.
  */
 
 let dir = ''
@@ -87,7 +88,7 @@ function startSpan(
   return span
 }
 
-describe('A7 pino Tracer: one record per span END', () => {
+describe('A7 Operational-log Tracer: one record per span END', () => {
   it('files exactly one debug record per ended span, with name, kind, ids and duration', async () => {
     const logDir = tempLogDir()
     await initOperationalLog({ logDir, isPackaged: false })
@@ -187,7 +188,7 @@ describe('A7: the layer is what a fiber actually reads', () => {
     expect(record?.['durationMs'] as number).toBeGreaterThanOrEqual(0)
   })
 
-  it('NON-VACUITY: the same program files 0 records on the native tracer and 1 on the pino tracer', async () => {
+  it('NON-VACUITY: the same program files 0 records on the native tracer and 1 on the operational tracer', async () => {
     const logDir = tempLogDir()
     await initOperationalLog({ logDir, isPackaged: false })
     const work = Effect.fn('CommandRunner.start')(function* () {

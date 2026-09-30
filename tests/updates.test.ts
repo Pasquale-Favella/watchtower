@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
-import { closeOperationalLog, initOperationalLog } from '../src/main/operational-log.js'
+import { closeOperationalLog, initOperationalLog, OperationalLogLoggerLayer } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import {
   compareSemver,
@@ -45,7 +45,14 @@ function makeChecker(version: string = CURRENT): Promise<UpdateCheckerEffect> {
 }
 
 function runCheck(checker: UpdateCheckerEffect, fetchImpl: typeof fetch): Promise<UpdateStatus> {
-  return Effect.runPromise(checker.check().pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))))
+  // `OperationalLogLoggerLayer` is what production installs in `MainLive`; this
+  // test builds its own graph, so it installs the `Logger` reference itself.
+  // Without it the `update.offline` record would go to Effect's default logger.
+  return Effect.runPromise(
+    checker
+      .check()
+      .pipe(Effect.provide(OperationalLogLoggerLayer), Effect.provide(HttpFetch.layerWithFetch(fetchImpl))),
+  )
 }
 
 describe('compareSemver', () => {

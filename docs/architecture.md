@@ -145,8 +145,9 @@ Locked decisions carried over from the adoption follow-up:
   (`CommandRunner` is the existing example). No new dependency is needed for
   steps 1 or 3, and the packaged artifact needs no new external.
 - Observability is a bridge, not a second pipeline: Effect logs, metrics,
-  and spans feed the existing pino-backed Operational log. There is no
-  separate exporter.
+  and spans feed the existing Effect-`Logger`/`Tracer`-backed Operational log
+  (ADR 0029). There is no separate exporter and no third-party logging
+  dependency.
 
 ## Architecture decisions
 

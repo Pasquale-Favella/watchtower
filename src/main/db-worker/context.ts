@@ -175,7 +175,7 @@ export class DbWorkerContext {
    * `Effect.provide(Layer.mergeAll(liveFetchLayer(), Env.layer,
    * OperationalLog.layer))` here, so `Env` was rebuilt on every scan. The
    * `R`-channel `OperationalLog` over the snapshot-style optional value-seam is
-   * unchanged: the live layer still delegates to the main-owned pino singleton
+   * unchanged: the live layer still delegates to the main-owned Operational-log writer
    * (same sink/allowlist/`main` context, never a second sink), tests still
    * substitute `OperationalLog.layerWithSink`, and never-throw filing lives in
    * `runScan`'s `onExit` (`catchCause`) so forked scan fibers stay green. */

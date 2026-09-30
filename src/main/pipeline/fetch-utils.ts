@@ -13,7 +13,7 @@ import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/unstable/http/HttpClientResponse'
 import type { HttpMethod } from 'effect/unstable/http/HttpMethod'
 
-import { emitOperationalRecord, FETCH_TIMEOUT_COUNTER, type OperationalLogCounter } from '../operational-log.js'
+import { FETCH_TIMEOUT_COUNTER, type OperationalLogCounter } from '../operational-log.js'
 
 // Default ceiling for outbound HTTP. Every CLI command awaits loadPricingEffect(),
 // and the macOS menubar shells out to the CLI and blocks on its exit — so an
@@ -190,16 +190,17 @@ export interface HttpFetchCounters {
 
 /**
  * Live counter delegation for the fetch-timeout slice (Wave 5, issue #148):
- * files `FETCH_TIMEOUT_COUNTER` through the main-owned pino singleton via
- * `emitOperationalRecord` — the Effect-facing sink seam, so same sink, same
- * allowlist, same `main` context, never a second sink, never OTLP. The
- * never-throw guard now lives in ONE place (inside the seam's `emitSafely`)
- * rather than being re-declared here, so every call site that omits `counters`
- * files counters with zero edits and no duplicated try/`catch`.
+ * files `FETCH_TIMEOUT_COUNTER` through the main-owned writer via
+ * `Effect.log*` + `annotateLogs` — same sink, same allowlist, same `main`
+ * context, never a second sink, never OTLP. `event` and `context` ride the
+ * annotation bag because they are not Effect concepts. The never-throw guard
+ * lives in ONE place (inside the `Logger`) rather than being re-declared here,
+ * so every call site that omits `counters` files counters with zero edits and
+ * no duplicated try/`catch`.
  */
 const liveFetchCounters: HttpFetchCounters = {
   incrementCounter: (name, amount = 1, fields = {}) =>
-    emitOperationalRecord('info', name, { ...fields, count: amount }, 'main'),
+    Effect.logInfo(name).pipe(Effect.annotateLogs({ event: name, context: 'main', ...fields, count: amount })),
 }
 
 // Timeout-only counter: filed AFTER the deadline race resolves (the race

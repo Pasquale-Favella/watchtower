@@ -22,7 +22,6 @@ import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 
 import type { UpdateStatus } from '../shared/schemas/updates.js'
-import { emitOperationalRecord } from './operational-log.js'
 import { HttpFetch, retryTransientFetch } from './pipeline/fetch-utils.js'
 
 export type { UpdateStatus } from '../shared/schemas/updates.js'
@@ -179,7 +178,7 @@ export interface UpdateCheckerEffect {
  * `check()` calls share one flight via a shared `Deferred`, the last-known
  * status is cached in a `Ref`, and any fetch failure degrades to the cached
  * status with the `update.offline` informational operational-log note (via
- * `emitOperationalRecord`, the Effect-facing sink seam). Pure helpers
+ * `Effect.logInfo` + `annotateLogs`, the one Effect logging path). Pure helpers
  * (`compareSemver`, `pickLatestDesktopVersion`) stay plain functions. */
 export const createUpdateCheckerEffect = Effect.fn('createUpdateCheckerEffect')(function* (opts: {
   currentVersion: string
@@ -217,7 +216,14 @@ export const createUpdateCheckerEffect = Effect.fn('createUpdateCheckerEffect')(
       }).pipe(
         Effect.catch(() =>
           Effect.gen(function* () {
-            yield* emitOperationalRecord('info', 'update.offline', { op: 'updates:check', code: 'unavailable' })
+            yield* Effect.logInfo('update.offline').pipe(
+              Effect.annotateLogs({
+                event: 'update.offline',
+                context: 'main',
+                op: 'updates:check',
+                code: 'unavailable',
+              }),
+            )
             return prevCached
           }),
         ),

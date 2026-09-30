@@ -7,7 +7,7 @@ import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
 
 import type { CoachHarnessRow } from '../../shared/schemas/agents.js'
-import { emitOperationalRecord, type OperationalLogCounter, PROBE_OUTCOME_COUNTER } from '../operational-log.js'
+import { OperationalLogLoggerLayer, type OperationalLogCounter, PROBE_OUTCOME_COUNTER } from '../operational-log.js'
 import type { HarnessInfo } from './detect.js'
 import { harnessSpecs } from './harnesses/index.js'
 import { probeHarness, type ProbeResult, type ProbeStatus } from './probe.js'
@@ -101,17 +101,30 @@ export class HarnessProbe extends Context.Service<
 
 /**
  * Live counter delegation for the probe-outcome slice (Wave 4, issue #148):
- * files `PROBE_OUTCOME_COUNTER` through the main-owned pino singleton via
- * `emitOperationalRecord` — the Effect-facing sink seam, so same sink, same
- * allowlist, same `main` context as the legacy `harness.probe` record, never a
- * second sink, never OTLP. The never-throw guard now lives in ONE place
- * (inside the seam's `emitSafely`) rather than being re-declared here, so the
- * forbidden `ipc.ts` call site (no `counters` dep) still files counters with
- * zero edits.
+ * files `PROBE_OUTCOME_COUNTER` through the main-owned writer via
+ * `Effect.log*` + `annotateLogs` — same sink, same allowlist, same `main`
+ * context as the legacy `harness.probe` record, never a second sink, never
+ * OTLP. `event` and `context` ride the annotation bag because they are not
+ * Effect concepts; `Effect.logInfo(name)` is the message, and a message equal
+ * to the event name is not filed a second time as `label`. The never-throw
+ * guard lives in ONE place (inside the `Logger`) rather than being re-declared
+ * here, so the forbidden `ipc.ts` call site (no `counters` dep) still files
+ * counters with zero edits.
  */
 const liveSnapshotCounters: HarnessSnapshotCounters = {
   incrementCounter: (name, amount = 1, fields = {}) =>
-    emitOperationalRecord('info', name, { ...fields, count: amount }, 'main'),
+    Effect.logInfo(name).pipe(Effect.annotateLogs({ event: name, context: 'main', ...fields, count: amount })),
+}
+
+/**
+ * One `harness.probe` record. The level is the only thing the two branches
+ * disagree on, so it is spelled out rather than looked up.
+ */
+function logProbeOutcome(kind: HarnessInfo['kind'], status: ProbeResult['status']): Effect.Effect<void> {
+  const record = { event: 'harness.probe', context: 'main', kind, status }
+  return status === 'error'
+    ? Effect.logError('harness.probe').pipe(Effect.annotateLogs(record))
+    : Effect.logInfo('harness.probe').pipe(Effect.annotateLogs(record))
 }
 
 export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): HarnessSnapshotStore {
@@ -164,10 +177,7 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
    * which is the F10 composition-root violation this slice removes. */
   function settle(info: HarnessInfo, result: ProbeResult): Effect.Effect<void> {
     return Effect.gen(function* () {
-      yield* emitOperationalRecord(result.status === 'error' ? 'error' : 'info', 'harness.probe', {
-        kind: info.kind,
-        status: result.status,
-      })
+      yield* logProbeOutcome(info.kind, result.status)
       // `status` is allowlisted BY VALUE in `sanitizeOperationalRecord`
       // (`ALLOWED_ENUM_FIELDS.status`, transcribed from the
       // `ProbeResult['status']` union — no `pending`, since a settled probe is
@@ -201,7 +211,18 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
     // `Effect.all` with bounded concurrency, forked in the background: the
     // handle interrupts it on the next launch (or `dispose()`). `deps.detect`
     // stays a Promise boundary; `deps.probe` stays the Effect seam.
-    const fiber = Effect.runFork(Effect.yieldNow.pipe(Effect.andThen(Effect.all(effects, { concurrency }))))
+    //
+    // This fork is its own composition root — the store is Promise-bound, so it
+    // builds no runtime from `MainLive` — which means it must install the
+    // `Logger` reference itself or the records `settle` files would go to
+    // Effect's default logger instead of the Operational log. Same reason the
+    // worker root installs the same layer.
+    const fiber = Effect.runFork(
+      Effect.yieldNow.pipe(
+        Effect.andThen(Effect.all(effects, { concurrency })),
+        Effect.provide(OperationalLogLoggerLayer),
+      ),
+    )
     FiberHandle.setUnsafe(probeHandle, fiber)
   }
 

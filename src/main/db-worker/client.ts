@@ -4,7 +4,7 @@ import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Schedule from 'effect/Schedule'
 
-import { emitOperationalRecord, logCodeFor } from '../operational-log.js'
+import { logCodeFor } from '../operational-log.js'
 import {
   type DbWorkerData,
   type DbWorkerEvent,
@@ -312,16 +312,18 @@ export class DbWorkerClient {
       if (this.intentionalTeardown) return Effect.void
       // `Effect.sync` turns a `spawn()` throw into a defect (it is not a
       // typed failure), so `catchDefect` is the recovery that matches the
-      // `try`/`catch` this replaced — and the record is byte-identical:
+      // `try`/`catch` this replaced — and the record is unchanged:
       // `code` stays an explicit `logCodeFor(spawnErr, 'restart-failed')`
       // rather than a `Cause` the Logger would have to squash.
       return Effect.sync(() => this.spawn()).pipe(
         Effect.catchDefect(spawnErr =>
-          emitOperationalRecord(
-            'error',
-            'worker.error',
-            { op: 'worker-restart', code: logCodeFor(spawnErr, 'restart-failed') },
-            'worker',
+          Effect.logError('worker.error').pipe(
+            Effect.annotateLogs({
+              event: 'worker.error',
+              context: 'worker',
+              op: 'worker-restart',
+              code: logCodeFor(spawnErr, 'restart-failed'),
+            }),
           ),
         ),
       )
@@ -329,16 +331,17 @@ export class DbWorkerClient {
     return Effect.gen(function* () {
       const delay = yield* respawnBackoffDelayForAttempt(attempt)
       const backoffMs = Math.round(Duration.toMillis(delay))
-      yield* emitOperationalRecord(
-        'error',
-        'worker.error',
-        {
+      yield* Effect.logError('worker.error').pipe(
+        Effect.annotateLogs({
+          event: 'worker.error',
+          context: 'worker',
           op: 'worker-restart',
           code: `exit-${exitCode}`,
+          // An explicit `label` rides the same bag and wins over the message:
+          // the message here IS the event name, so there is no prose to file.
           label: `attempt ${attempt} backoff ${backoffMs}ms`,
           count: attempt,
-        },
-        'worker',
+        }),
       )
       yield* Effect.sleep(delay)
       yield* respawnIfLive()

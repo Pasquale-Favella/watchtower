@@ -93,7 +93,7 @@ export interface WorkerLedger extends FxRatesRepositoryRunner {
 export const makeWorkerLive = (store: WorkerLedger): Layer.Layer<WorkerServices> =>
   Layer.mergeAll(
     // F14's dead bridge, installed at a root: `Effect.log` records now reach
-    // the main-owned pino sink through `OperationalLogLogger` instead of being
+    // the main-owned Operational-log writer through `OperationalLogLogger` instead of being
     // dropped, and the default console loggers no longer duplicate them on the
     // worker's stdout. In the worker thread `active` is null (main owns the
     // file, ADR 0029), so the logger is a never-throwing no-op here — the point
