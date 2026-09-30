@@ -327,6 +327,30 @@ by name has to change. Grep for `ZodError` before estimating this as mechanical.
 amendment, and is blocked only on slice 5a. Wave B's 19 renderer-facing modules
 are last, and only because of the renderer work above.
 
+> **UPDATED 2026-09-30, later the same day. Rate: ~2 failures in 7 full-suite
+> runs, and I blamed the wrong slice TWICE.** The first was A7 (above). The
+> second was A12, the pino removal, and the way I got there is the part worth
+> keeping. Two consecutive runs came back at 124.3s and 126.1s, each with one
+> TestClock file timing out and each a _different_ file
+> (`pricing-effect`, then `fx-effect`). I then reverted A12's twenty files,
+> ran the control, got **36.78s green**, and wrote "A12 IS the cause — this time
+> I have the control I lacked for the A7 accusation." The very next run, with
+> A12 restored, was **31.03s green**. One control run is not a control; it is a
+> sample, and I treated it as proof in the same breath as I had denied myself
+> the evidence the first time. The `writeSync`-per-record hot path I had already
+> been told about was a real thing to check and I checked it only after
+> declaring victory.
+>
+> What is actually established: the flake is **pre-existing and
+> load-independent-looking**. Slice 5a's agent saw it in `fx-effect.test.ts`
+> before A12 existed, and the rate spans pre-A12 and post-A12 trees alike. It is
+> not a property of any slice. What is _not_ established is the mechanism —
+> `isolate: true` means no cross-file singleton leak, and the pool is vitest
+> defaults, so the remaining explanation is scheduler starvation of a fiber
+> parked on virtual time. **Undiagnosed, and it reddens CI roughly 1 run in 3.**
+> That is no longer a curiosity; it is the most valuable unowned defect in the
+> programme, because every future gate is untrustworthy while it stands.
+
 ### F18 — The coach run seam is a raw `AsyncGenerator` with a hand-rolled cancel path.
 
 `runtime.ts:383` (`async *run`), consumed by `for await` at `ipc.ts:376`,
