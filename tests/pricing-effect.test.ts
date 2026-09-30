@@ -8,7 +8,7 @@ import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Env } from '../src/main/env.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
+import { HttpFetch, worstCaseRetryWindowMs } from '../src/main/pipeline/fetch-utils.js'
 import {
   getModelCosts,
   loadPricingEffect,
@@ -185,7 +185,14 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
         // single adjust lands before the timeout is scheduled and the join
         // hangs.
         yield* Effect.tryPromise(() => fetchStarted)
-        yield* TestClock.adjust(500)
+        // Sized for the WORST case the bounded transient retry can reach,
+        // derived by stepping the real schedule rather than re-deriving its
+        // closed form. A window sized for one attempt parks the fiber on a
+        // virtual sleep, so the test hangs to the 120s timeout instead of
+        // failing on its assertion - exactly how this window silently
+        // under-counted the retry. The behaviour asserted below is unchanged: a
+        // timeout still falls back to the snapshot and never writes the cache.
+        yield* TestClock.adjust(yield* worstCaseRetryWindowMs(100))
         return yield* Fiber.join(fiber)
       }).pipe(Effect.provide(TestClock.layer())),
     )

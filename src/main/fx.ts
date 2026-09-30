@@ -6,7 +6,7 @@ import type { SqlError } from 'effect/unstable/sql/SqlError'
 
 import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 import type { CurrencyRate } from '../shared/schemas/ledger.js'
-import { HttpFetch } from './pipeline/fetch-utils.js'
+import { HttpFetch, retryTransientFetch } from './pipeline/fetch-utils.js'
 import type { LedgerStore } from './store/ledger.js'
 import type { LedgerRepository } from './store/ledger-repository.js'
 
@@ -244,7 +244,14 @@ export const refreshFxRateWithRates = Effect.fnUntraced(function* (
 
   const http = yield* HttpFetch
   return yield* Effect.gen(function* () {
-    const response = yield* http.fetch(`${FRANKFURTER_URL}${safe}`, {}, options.timeoutMs)
+    // Bounded transient retry (F15/A1) on the fetch only — the rate is either
+    // persisted or not, never half-written. Without it, one blip on this
+    // refresh left the previous rate in place for the full `FX_CACHE_TTL_MS`
+    // (24h), so every currency figure in every Section read wrong for a day.
+    // An abort (scan cancelled mid-flight) is never retried, and the
+    // `fallback()` arm below is still exactly the same "a stale rate beats no
+    // rate" degrade — it just runs after the retries are spent.
+    const response = yield* http.fetch(`${FRANKFURTER_URL}${safe}`, {}, options.timeoutMs).pipe(retryTransientFetch)
     if (!response.ok) return fallback()
     const data = yield* Effect.tryPromise({
       try: () => response.json() as Promise<{ rates?: Record<string, unknown> }>,

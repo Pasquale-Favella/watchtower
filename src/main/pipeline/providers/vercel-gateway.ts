@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
 
 import { Env } from '../../env.js'
-import { HttpFetch, HttpFetchError } from '../fetch-utils.js'
+import { HttpFetch, HttpFetchError, retryTransientFetch } from '../fetch-utils.js'
 import { fileErrorCode, queueLogRecord } from '../file-errors.js'
 import type { DateRange } from '../types.js'
 import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
@@ -68,13 +68,20 @@ export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
 
   const http = yield* HttpFetch
   return yield* Effect.gen(function* () {
-    const res = yield* http.fetch(`${REPORT_URL}?${params}`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        Accept: 'application/json',
-      },
-    })
+    // Bounded transient retry (F15/A1) on the fetch only: discovery used to
+    // answer "no sessions" (plus one `unreachable` warn) off a single blip,
+    // which silently zeroes a whole provider's cost for the scan. The
+    // non-2xx arm below stays OUTSIDE the retry — a 401/500 is a real answer,
+    // and the warn code it logs is byte-identical to today's.
+    const res = yield* http
+      .fetch(`${REPORT_URL}?${params}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          Accept: 'application/json',
+        },
+      })
+      .pipe(retryTransientFetch)
 
     if (!res.ok) {
       // The gateway error body can carry request echoes — status only.

@@ -23,7 +23,7 @@ import * as Schema from 'effect/Schema'
 
 import type { UpdateStatus } from '../shared/schemas/updates.js'
 import { safeLogOperationalEvent } from './operational-log.js'
-import { HttpFetch } from './pipeline/fetch-utils.js'
+import { HttpFetch, retryTransientFetch } from './pipeline/fetch-utils.js'
 
 export type { UpdateStatus } from '../shared/schemas/updates.js'
 
@@ -120,7 +120,15 @@ interface UpdateCheckDecision {
  * TestClock controllable) and fiber interruption aborts the underlying
  * fetch, replacing manual `AbortController`+`setTimeout` plumbing. No auth,
  * no app-identifying headers (see the file header). Non-array JSON still
- * yields `[]`. */
+ * yields `[]`.
+ *
+ * Bounded transient retry (F15/A1) on the fetch only: the manual check used
+ * to report "unable to check" off a single two-second blip. It stays
+ * manual-only, still sends nothing, and still never blocks — the
+ * `update.offline` degrade in `createUpdateCheckerEffect` is unchanged, it
+ * just runs after the retries are spent. A 404 (private/unpublished repo) is
+ * a real answer, not a transient failure, so the non-2xx arm below stays
+ * outside the retry. */
 export const fetchReleasesEffect = Effect.fn('fetchReleasesEffect')(function* (): Effect.fn.Return<
   GitHubRelease[],
   UpdateFetchError,
@@ -128,6 +136,7 @@ export const fetchReleasesEffect = Effect.fn('fetchReleasesEffect')(function* ()
 > {
   const http = yield* HttpFetch
   const response = yield* http.fetch(RELEASES_URL, {}, FETCH_TIMEOUT_MS).pipe(
+    retryTransientFetch,
     Effect.mapError(
       cause =>
         new UpdateFetchError({

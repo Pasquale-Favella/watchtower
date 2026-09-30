@@ -6,7 +6,7 @@ import { join } from 'path'
 import { type AppPaths, Env, overrideFor, resolveCacheDir } from '../env.js'
 import snapshotData from './data/litellm-snapshot.json'
 import fallbackData from './data/pricing-fallback.json'
-import { DEFAULT_FETCH_TIMEOUT_MS, HttpFetch } from './fetch-utils.js'
+import { DEFAULT_FETCH_TIMEOUT_MS, HttpFetch, retryTransientFetch } from './fetch-utils.js'
 import { queueLogRecord } from './file-errors.js'
 
 export type ModelCosts = {
@@ -1589,9 +1589,15 @@ const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(funct
   timeoutMs?: number,
 ): Effect.fn.Return<Map<string, ModelCosts>, PricingRefreshError, HttpFetch> {
   const http = yield* HttpFetch
-  const response = yield* http
-    .fetch(LITELLM_URL, {}, timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS)
-    .pipe(Effect.mapError(cause => new PricingRefreshError({ reason: 'fetch', message: cause.message })))
+  // Bounded transient retry (F15/A1), applied BEFORE the `mapError` so the
+  // schedule sees the raw `HttpFetchError` and its `reason`. Without it a blip
+  // sent the whole refresh to the on-disk cache for its full TTL. The non-2xx
+  // arm below is deliberately OUTSIDE the retry: a 500 is a real answer, not a
+  // transient failure, so it fails fast exactly as before.
+  const response = yield* http.fetch(LITELLM_URL, {}, timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS).pipe(
+    retryTransientFetch,
+    Effect.mapError(cause => new PricingRefreshError({ reason: 'fetch', message: cause.message })),
+  )
   if (!response.ok) {
     return yield* new PricingRefreshError({ reason: 'http', message: `HTTP ${response.status}` })
   }

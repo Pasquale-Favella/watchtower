@@ -16,7 +16,7 @@ import {
   type RefreshFxRateEffectOptions,
   refreshFxRateWithRates,
 } from '../src/main/fx.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
+import { HttpFetch, worstCaseRetryWindowMs } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import type { CurrencyRate } from '../src/shared/schemas/ledger.js'
 
@@ -161,10 +161,19 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
   it('times out via TestClock and falls back without persisting', async () => {
     const store = makeStore()
     const neverFetch = (() => new Promise<Response>(() => {})) as typeof fetch
+    // Sized for the WORST case the bounded transient retry can reach, derived by
+    // stepping the real schedule rather than re-deriving its closed form. A
+    // window sized for a single attempt parks the fiber on a virtual sleep, so
+    // the test hangs to the 120s timeout instead of failing on its assertion -
+    // which is exactly how this window silently under-counted the retry. The
+    // behaviour asserted below is unchanged: a timeout still degrades to rate 1
+    // and persists nothing.
+    const timeoutMs = 100
     const active = await Effect.runPromise(
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(fxEffect(store, 'EUR', neverFetch, { timeoutMs: 100 }))
-        yield* TestClock.adjust(500)
+        const windowMs = yield* worstCaseRetryWindowMs(timeoutMs)
+        const fiber = yield* Effect.forkChild(fxEffect(store, 'EUR', neverFetch, { timeoutMs }))
+        yield* TestClock.adjust(windowMs)
         return yield* Fiber.join(fiber)
       }).pipe(Effect.provide(TestClock.layer())),
     )
