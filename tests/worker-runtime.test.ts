@@ -359,6 +359,7 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
       getSessions: () => Effect.succeed([]),
       getTurns: () => Effect.succeed([]),
       getCalls: () => Effect.succeed([]),
+      getCallFacts: () => Effect.succeed([]),
     })
     const ctx = worker(() =>
       Layer.mergeAll(
@@ -399,12 +400,22 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
     // through the same private handle `db-worker.test.ts` uses for its scan
     // spies: no arm is touched, and the arm that already runs through the
     // runtime (`cadence:set` → `this.runtime.runPromise`) already returned above.
-    const runtime = (ctx as unknown as { runtime: { runSync: <A>(e: typeof Effect.never) => A } }).runtime
-    const seen = runtime.runSync(Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()))
+    const runtime = (
+      ctx as unknown as {
+        runtime: { runSync: <A, E>(e: Effect.Effect<A, E, never>) => A }
+      }
+    ).runtime
+    const seen = runtime.runSync(
+      Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()).pipe(Effect.provide(countingConfig)),
+    )
     // The fake says '1m' while the store's own `cadence:set` above persisted
     // '5m' — so this is the substituted port, not the ledger.
     expect(seen).toBe('1m')
-    const fakeSources = runtime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getSources()))
+    const fakeSources = runtime.runSync(
+      Effect.flatMap(LedgerQueries, queries => queries.getSources()).pipe(
+        Effect.provide(Layer.succeed(LedgerQueries, fakeQueries)),
+      ),
+    )
     expect(fakeSources).toEqual([])
   })
 })

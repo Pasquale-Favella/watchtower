@@ -14,7 +14,7 @@ function captureApi(extra?: Record<string, unknown>): Record<string, (payload?: 
       listeners.onProgress = cb
       return () => {}
     },
-    onError: (cb: (p: string) => void) => {
+    onError: (cb: (p: unknown) => void) => {
       listeners.onError = cb
       return () => {}
     },
@@ -181,7 +181,7 @@ describe('subscribeToIpc (ADR 0011)', () => {
         listeners.onProgress = cb
         return unsub
       },
-      onError: (cb: (p: string) => void) => {
+      onError: (cb: (p: unknown) => void) => {
         listeners.onError = cb
         return unsub
       },

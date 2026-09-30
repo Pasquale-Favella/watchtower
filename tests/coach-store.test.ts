@@ -224,7 +224,10 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     useCoachSkillsStore.setState({
       activeRunId: 'run-1',
       runMessageIds: { 'run-1': 'm1' },
-      messages: [{ id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true }],
+      messages: [
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+      ],
     })
     useCoachSkillsStore.getState().onEvent({
       runId: 'run-1',
@@ -429,8 +432,8 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
       runMessageIds: { 'run-1': 'm1' },
       running: true,
       messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
       ],
     })
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'reasoning', delta: 'Let me ' }))
@@ -460,8 +463,8 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
       runMessageIds: { 'run-1': 'm1' },
       running: true,
       messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
       ],
     })
     // The ACP provider opens the call via tool-input-start, then re-announces
@@ -485,8 +488,8 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
       runMessageIds: { 'run-1': 'm1' },
       running: true,
       messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
       ],
     })
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'WebFetch', state: 'started' }))
@@ -522,8 +525,16 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
       runMessageIds: { 'run-1': 'm1' },
       running: true,
       messages: [
-        { id: 'm0', role: 'user', content: 'advice please', thinking: '', tools: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: 'Here is some advice…', thinking: '', tools: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'advice please', thinking: '', tools: [], notices: [], streaming: false },
+        {
+          id: 'm1',
+          role: 'assistant',
+          content: 'Here is some advice…',
+          thinking: '',
+          tools: [],
+          notices: [],
+          streaming: true,
+        },
       ],
     })
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'status', state: 'done' }))
@@ -545,8 +556,8 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
       runMessageIds: { 'run-1': 'm1' },
       running: true,
       messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
       ],
     })
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'error', message: 'CLI not logged in' }))
@@ -563,8 +574,8 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
       runMessageIds: { 'run-1': 'm1' },
       running: true,
       messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
       ],
     })
     useCoachSkillsStore.getState().cancel()
@@ -585,8 +596,16 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
       harnessKind: 'claude',
       resumeCursor: 'cursor_prev',
       messages: [
-        { id: 'm0', role: 'user', content: 'Summarise my spend', thinking: '', tools: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: 'old answer', thinking: '', tools: [], streaming: false },
+        {
+          id: 'm0',
+          role: 'user',
+          content: 'Summarise my spend',
+          thinking: '',
+          tools: [],
+          notices: [],
+          streaming: false,
+        },
+        { id: 'm1', role: 'assistant', content: 'old answer', thinking: '', tools: [], notices: [], streaming: false },
       ],
     })
 
@@ -615,8 +634,8 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     useCoachSkillsStore.setState({
       harnessKind: 'claude',
       messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: 'half…', thinking: '', tools: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: 'half…', thinking: '', tools: [], notices: [], streaming: true },
       ],
     })
 
@@ -632,10 +651,10 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     useCoachSkillsStore.setState({
       harnessKind: 'claude',
       messages: [
-        { id: 'm0', role: 'user', content: 'a', thinking: '', tools: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: 'x', thinking: '', tools: [], streaming: false },
-        { id: 'm2', role: 'user', content: 'b', thinking: '', tools: [], streaming: false },
-        { id: 'm3', role: 'assistant', content: 'y', thinking: '', tools: [], streaming: false },
+        { id: 'm0', role: 'user', content: 'a', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: 'x', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm2', role: 'user', content: 'b', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm3', role: 'assistant', content: 'y', thinking: '', tools: [], notices: [], streaming: false },
       ],
     })
 
@@ -698,7 +717,6 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
       modelId: 'opus',
       modeId: 'plan',
       modelsByKind: { claude: { models, modes, modelId: 'opus', modeId: 'plan' } },
-      messages: [{ id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false }],
       error: 'boom',
     })
     useCoachSkillsStore.getState().resetSession()
@@ -741,7 +759,7 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
         claude: { models, modes, modelId: 'opus', modeId: 'plan' },
         gemini: { models: null, modes: null, modelId: null, modeId: null },
       },
-      messages: [{ id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false }],
+      messages: [{ id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false }],
     })
 
     // The composer's confirmHarnessSwitch sequence, exactly: switch + reset.
@@ -807,7 +825,10 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
       running: true,
       activeRunId: 'run-1',
       runMessageIds: { 'run-1': 'm1' },
-      messages: [{ id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true }],
+      messages: [
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+      ],
       sessionModels: models,
       sessionModes: modes,
       modelId: 'opus',
@@ -816,7 +837,6 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
       modelsByKind: {
         claude: { models, modes, modelId: 'opus', modeId: 'plan' },
       },
-      messages: [{ id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false }],
     })
 
     await useCoachSkillsStore.getState().loadHarnesses()
@@ -1057,7 +1077,7 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
         claude: { models, modes, modelId: 'opus', modeId: 'plan' },
         gemini: { models: null, modes: null, modelId: null, modeId: null },
       },
-      messages: [{ id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false }],
+      messages: [{ id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false }],
     })
 
     useCoachSkillsStore.getState().resetSession()

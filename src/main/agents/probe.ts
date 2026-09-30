@@ -81,7 +81,11 @@ function defaultConnectionFactory(child: ProbeChild): ProbeConnection {
     },
     sessionUpdate: async () => {},
   }
-  const stream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout))
+  // Node's declaration adds iterator members the ACP SDK's DOM stream type omits.
+  const stream = ndJsonStream(
+    Writable.toWeb(child.stdin),
+    Readable.toWeb(child.stdout) as Parameters<typeof ndJsonStream>[1],
+  )
   return new ClientSideConnection(() => client, stream)
 }
 

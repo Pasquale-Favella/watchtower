@@ -1,5 +1,7 @@
+import * as childProcess from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { Readable, Writable } from 'node:stream'
+import type { InitializeResponse } from '@agentclientprotocol/sdk'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -44,7 +46,10 @@ const claude: HarnessInfo = {
   bin: 'C:\\bin\\claude-agent-acp.exe',
 }
 
-const initialized = { protocolVersion: 1, agentInfo: { version: '1.2.3' } } as never
+const initialized: InitializeResponse = {
+  protocolVersion: 1,
+  agentInfo: { name: 'test-agent', version: '1.2.3' },
+}
 
 function runProbe(info: HarnessInfo, options: Parameters<typeof probeHarness>[1] = {}): Promise<ProbeResult> {
   return Effect.runPromise(probeHarness(info, options))
@@ -182,10 +187,15 @@ describe('probeHarness', () => {
   })
 
   it('uses taskkill tree termination on win32 when a PID is available', async () => {
-    const execFile = vi.fn(((_file, _args, _options, callback) => {
-      if (typeof callback === 'function') callback(null, '', '')
-      return undefined as never
-    }) as Parameters<NonNullable<Parameters<typeof probeHarness>[1]>['execFile']>[0])
+    const calls: unknown[][] = []
+    const execFile = new Proxy(childProcess.execFile, {
+      apply(_target, _thisArg, args) {
+        calls.push(args)
+        const callback = args[3]
+        if (typeof callback === 'function') Reflect.apply(callback, undefined, [null, '', ''])
+        return new childProcess.ChildProcess()
+      },
+    })
     const child = new FakeChild()
     await runProbe(codex, {
       platform: 'win32',
@@ -193,12 +203,9 @@ describe('probeHarness', () => {
       connectionFactory: () => ({ initialize: async () => initialized }),
       execFile,
     })
-    expect(execFile).toHaveBeenCalledWith(
-      'taskkill',
-      ['/pid', '4321', '/T', '/F'],
-      { windowsHide: true },
-      expect.any(Function),
-    )
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.slice(0, 3)).toEqual(['taskkill', ['/pid', '4321', '/T', '/F'], { windowsHide: true }])
+    expect(calls[0]?.[3]).toEqual(expect.any(Function))
     expect(child.killed).toBe(0)
   })
 })

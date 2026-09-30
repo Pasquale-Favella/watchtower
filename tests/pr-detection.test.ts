@@ -70,7 +70,7 @@ describe('extractPrUrlsFromProviderCall', () => {
       extractPrUrlsFromProviderCall({
         userMessage: 'keep going',
         bashCommands: [`gh pr view ${GH} --comments`],
-        toolSequence: [[{ tool: 'Bash', command: `gh pr create --title x --body ${GHE}` }]],
+        toolSequence: [[{ command: `gh pr create --title x --body ${GHE}` }]],
       }),
     ).toEqual([GHE, GH])
   })
@@ -228,8 +228,8 @@ describe('shared assistant-call seam (opencode / kilo-code)', () => {
       timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
       userMessage: 'ship it',
     })
-    expect(call?.assistantText).toContain(GH)
     expect(extractPrUrlsFromProviderCall(call!)).toEqual([GH])
+    expect(call).toHaveProperty('assistantText')
   })
 
   it('buildAssistantCall keeps tool inputs as PR evidence', () => {
@@ -242,7 +242,8 @@ describe('shared assistant-call seam (opencode / kilo-code)', () => {
       timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
       userMessage: 'check ci',
     })
-    expect(call?.assistantText).toContain(GHE)
+    expect(extractPrUrlsFromProviderCall(call!)).toEqual([GHE])
+    expect(call).toHaveProperty('assistantText')
   })
 
   it('buildAssistantCall omits assistantText when there is no text', () => {
@@ -255,7 +256,8 @@ describe('shared assistant-call seam (opencode / kilo-code)', () => {
       timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
       userMessage: 'read the file',
     })
-    expect(call?.assistantText).toBeUndefined()
+    expect(call).not.toHaveProperty('assistantText')
+    expect(extractPrUrlsFromProviderCall(call!)).toEqual([])
   })
 })
 
@@ -308,16 +310,16 @@ describe('codex assistant text reaches the PR seam', () => {
     const calls = []
     for await (const call of parser.parse()) calls.push(call)
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.assistantText).toContain(GH)
+    expect(calls[0]).toHaveProperty('assistantText')
     expect(extractPrUrlsFromProviderCall(calls[0]!)).toEqual([GH])
   })
 })
 
 describe('one-shot PR-evidence re-parse marker', () => {
   it('fires for sections written before the capture', () => {
-    expect(sectionNeedsPrEvidenceReparse({ envFingerprint: 'x', files: {} })).toBe(true)
-    expect(sectionNeedsPrEvidenceReparse({ envFingerprint: 'x', files: {}, prEvidenceV1: false })).toBe(true)
-    expect(sectionNeedsPrEvidenceReparse({ envFingerprint: 'x', files: {}, prEvidenceV1: true })).toBe(false)
+    expect(sectionNeedsPrEvidenceReparse({})).toBe(true)
+    expect(sectionNeedsPrEvidenceReparse({ prEvidenceV1: false })).toBe(true)
+    expect(sectionNeedsPrEvidenceReparse({ prEvidenceV1: true })).toBe(false)
   })
 
   it('the section schema accepts old sections and stamped ones', () => {

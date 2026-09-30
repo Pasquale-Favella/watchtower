@@ -14,6 +14,7 @@
     "preview": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "vitest",
     "test:e2e": "npm run build && playwright test",

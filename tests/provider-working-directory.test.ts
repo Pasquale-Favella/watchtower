@@ -18,6 +18,7 @@ import {
   workspaceFsPath,
 } from '../src/main/pipeline/providers/cursor.js'
 import { attachWorkspacePaths } from '../src/main/pipeline/providers/cursor.js'
+import type { ParsedProviderCall } from '../src/main/pipeline/providers/types.js'
 
 // Provider working-directory emission (#104): sessions from providers that
 // currently emit no path carry their working directory through discovery
@@ -147,27 +148,23 @@ describe('workspaceFsPath', () => {
 })
 
 describe('attachWorkspacePaths', () => {
-  const call = {
+  const call: ParsedProviderCall = {
     sessionId: 'composer-aaa',
     provider: 'cursor',
     model: 'gpt-4o',
+    inputTokens: 1,
+    outputTokens: 1,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    cachedInputTokens: 0,
+    reasoningTokens: 0,
+    webSearchRequests: 0,
+    costUSD: 0,
+    tools: [],
+    bashCommands: [],
     timestamp: '2025-01-01T00:00:00.000Z',
     speed: 'standard' as const,
     project: '-Users-tester-proj',
-    usage: {
-      inputTokens: 1,
-      outputTokens: 1,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-      reasoningTokens: 0,
-    },
-    tools: [],
-    mcpTools: [],
-    skills: [],
-    subagentTypes: [],
-    bashCommands: [],
-    toolSequence: [],
-    costUSD: 0,
     userMessage: '',
     deduplicationKey: 'k1',
   }

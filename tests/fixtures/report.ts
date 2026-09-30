@@ -45,6 +45,7 @@ function buildSession(index: number): SessionSummary {
     totalReasoningTokens: 5,
     totalCacheReadTokens: 20,
     totalCacheWriteTokens: 0,
+    subagentBreakdown: {},
     apiCalls: 1,
     turns: [
       {

@@ -470,7 +470,7 @@ describe('models lib helpers', () => {
         costUSD: 4,
         savingsUSD: 0,
       },
-    ] as unknown as ReturnType<typeof buildModelsView>['byTask']
+    ] as unknown as ReturnType<typeof buildModelsViewFromLedger>['byTask']
 
     const groups = groupTaskRows(rows)
     expect(groups).toHaveLength(2)

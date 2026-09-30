@@ -59,7 +59,7 @@ describe('effect: probe with timeout (pain 1 — inspect() hangs forever today)'
     const flaky = Effect.suspend(() => {
       attempts += 1
       return attempts < 3
-        ? Effect.fail<readonly string[], ProbeError>({ _tag: 'SpawnFailed', message: 'ENOENT (transient)' })
+        ? Effect.fail<ProbeError>({ _tag: 'SpawnFailed', message: 'ENOENT (transient)' })
         : Effect.succeed(['model-0'] as const)
     })
     const models = await Effect.runPromise(flaky.pipe(Effect.retry(Schedule.recurs(3)), Effect.timeout(1000)))

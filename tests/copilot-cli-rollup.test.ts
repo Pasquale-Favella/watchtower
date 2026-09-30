@@ -4,7 +4,8 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { copilot, type SessionSource } from '../src/main/pipeline/providers/copilot.js'
+import { copilot } from '../src/main/pipeline/providers/copilot.js'
+import type { SessionSource } from '../src/main/pipeline/providers/types.js'
 
 /**
  * The Copilot CLI writes a per-model input/cache rollup on `session.shutdown`,

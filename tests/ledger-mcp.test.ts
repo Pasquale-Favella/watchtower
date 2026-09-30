@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { z } from 'zod'
 
 import { buildLedgerPrompts } from '../src/main/agents/ledger-mcp/prompts.js'
 import { buildLedgerResources } from '../src/main/agents/ledger-mcp/resources.js'
@@ -260,13 +261,15 @@ describe('Ledger MCP server (ADR 0020) — official SDK over an in-memory transp
     ])
 
     const result = await client.callTool({ name: 'ledger_overview', arguments: {} })
-    const text = result.content.find(c => c.type === 'text')?.text ?? ''
+    const content = z.array(z.object({ type: z.string(), text: z.string().optional() })).parse(result.content)
+    const text = content.find(c => c.type === 'text')?.text ?? ''
     const payload = JSON.parse(text) as unknown
     expect(overviewPayloadSchema.safeParse(payload).success).toBe(true)
 
     // Scoped over the wire: the harness filters autonomously via `scope`.
     const scopeResult = await client.callTool({ name: 'ledger_scope', arguments: { scope } })
-    const scopeText = scopeResult.content.find(c => c.type === 'text')?.text ?? ''
+    const scopeContent = z.array(z.object({ type: z.string(), text: z.string().optional() })).parse(scopeResult.content)
+    const scopeText = scopeContent.find(c => c.type === 'text')?.text ?? ''
     expect(JSON.parse(scopeText)).toMatchObject({ calls: 3, sessions: 2 })
 
     await client.close()

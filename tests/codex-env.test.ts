@@ -5,6 +5,12 @@ import { describe, expect, it } from 'vitest'
 
 import { type AppPaths, appPaths, initAppPaths } from '../src/main/env.js'
 import { codex, createCodexProvider } from '../src/main/pipeline/providers/codex.js'
+import type { Provider } from '../src/main/pipeline/providers/types.js'
+
+async function probeRoots(provider: Provider) {
+  if (!provider.probeRoots) throw new Error(`${provider.name} does not expose probe roots`)
+  return provider.probeRoots()
+}
 
 // CODEX_HOME exemplar seam: `createCodexProvider(codexDir?, paths?)` takes ONE
 // trailing `AppPaths` parameter — never a per-env-var argument — and reads only
@@ -22,7 +28,7 @@ describe('createCodexProvider (CODEX_HOME seam)', () => {
 
   it('explicit dir wins over everything', async () => {
     const provider = createCodexProvider('/explicit/codex')
-    await expect(provider.probeRoots()).resolves.toEqual([
+    await expect(probeRoots(provider)).resolves.toEqual([
       { path: join('/explicit/codex', 'sessions'), label: 'sessions' },
       { path: join('/explicit/codex', 'archived_sessions'), label: 'archived' },
     ])
@@ -30,20 +36,20 @@ describe('createCodexProvider (CODEX_HOME seam)', () => {
 
   it('threaded AppPaths value is honored when no override is given', async () => {
     const provider = createCodexProvider(undefined, snapshotOf('/threaded/codex-home'))
-    const roots = await provider.probeRoots()
+    const roots = await probeRoots(provider)
     expect(roots[0]?.path).toBe(join('/threaded/codex-home', 'sessions'))
     expect(roots[1]?.path).toBe(join('/threaded/codex-home', 'archived_sessions'))
   })
 
   it('explicit override beats the threaded value', async () => {
     const provider = createCodexProvider('/explicit/codex', snapshotOf('/threaded/codex-home'))
-    const roots = await provider.probeRoots()
+    const roots = await probeRoots(provider)
     expect(roots[0]?.path).toBe(join('/explicit/codex', 'sessions'))
   })
 
   it('an empty string in the snapshot is a real value, never skipped', async () => {
     const provider = createCodexProvider(undefined, snapshotOf(''))
-    const roots = await provider.probeRoots()
+    const roots = await probeRoots(provider)
     // `join('', 'sessions')` — the empty home is used verbatim, not replaced
     // by the homedir default the way a `.trim() || default` reader would.
     expect(roots[0]?.path).toBe(join('', 'sessions'))
@@ -57,7 +63,7 @@ describe('createCodexProvider (CODEX_HOME seam)', () => {
     // resolves through the same pure resolver.
     const envRaw = process.env['CODEX_HOME']
     const expected = envRaw ?? join(homedir(), '.codex')
-    const roots = await createCodexProvider().probeRoots()
+    const roots = await probeRoots(createCodexProvider())
     expect(roots[0]?.path).toBe(join(expected, 'sessions'))
     expect(roots[1]?.path).toBe(join(expected, 'archived_sessions'))
   })
@@ -72,7 +78,7 @@ describe('createCodexProvider (CODEX_HOME seam)', () => {
     // re-init restores the default record for any later case in this file.
     try {
       initAppPaths({ cacheDir: appPaths().cacheDir, codexHome: '/fake/env/codex-home' })
-      const roots = await createCodexProvider(undefined, appPaths()).probeRoots()
+      const roots = await probeRoots(createCodexProvider(undefined, appPaths()))
       expect(roots[0]?.path).toBe(join('/fake/env/codex-home', 'sessions'))
     } finally {
       initAppPaths({ cacheDir: appPaths().cacheDir })
@@ -82,7 +88,7 @@ describe('createCodexProvider (CODEX_HOME seam)', () => {
   it('an explicit dir still beats a boot-pinned snapshot (precedence is not resolution timing)', async () => {
     try {
       initAppPaths({ cacheDir: appPaths().cacheDir, codexHome: '/fake/env/codex-home' })
-      const roots = await createCodexProvider('/explicit/codex').probeRoots()
+      const roots = await probeRoots(createCodexProvider('/explicit/codex'))
       expect(roots[0]?.path).toBe(join('/explicit/codex', 'sessions'))
     } finally {
       initAppPaths({ cacheDir: appPaths().cacheDir })
@@ -90,7 +96,7 @@ describe('createCodexProvider (CODEX_HOME seam)', () => {
   })
 
   it('the module singleton the provider registry imports still resolves roots', async () => {
-    const roots = await codex.probeRoots()
+    const roots = await probeRoots(codex)
     // No machine path asserted: the singleton resolves whatever the snapshot
     // reports on this machine, and only its shape is a contract. That it reports
     // the CURRENT snapshot, rather than one frozen at import time, is pinned in

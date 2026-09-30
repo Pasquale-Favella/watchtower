@@ -5,6 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { appPaths, initAppPaths } from '../src/main/env.js'
 import { codex } from '../src/main/pipeline/providers/codex.js'
+import type { Provider } from '../src/main/pipeline/providers/types.js'
+
+async function probeRoots(provider: Provider) {
+  if (!provider.probeRoots) throw new Error(`${provider.name} does not expose probe roots`)
+  return provider.probeRoots()
+}
 
 // The `codex` module singleton resolves its dir LAZILY, like every other seam
 // (`opencode`, `crush`, `claude`): `probeRoots()` reads `appPaths()` per call, so
@@ -30,21 +36,21 @@ describe('codex singleton (lazy AppPaths resolution)', () => {
     // What the uninitialized snapshot reports: the `process.env` value used
     // verbatim, else the homedir default. Read-only, never written.
     const ambient = process.env['CODEX_HOME'] ?? join(homedir(), '.codex')
-    const before = await codex.probeRoots()
+    const before = await probeRoots(codex)
     expect(before[0]?.path).toBe(join(ambient, 'sessions'))
 
     initAppPaths({ cacheDir: appPaths().cacheDir, codexHome: '/pinned/codex-home' })
-    const after = await codex.probeRoots()
+    const after = await probeRoots(codex)
     expect(after[0]?.path).toBe(join('/pinned/codex-home', 'sessions'))
     expect(after[1]?.path).toBe(join('/pinned/codex-home', 'archived_sessions'))
   })
 
   it('honours a re-pin, so the dir is resolved per call and not memoized after the first', async () => {
     initAppPaths({ cacheDir: appPaths().cacheDir, codexHome: '/first/codex-home' })
-    expect((await codex.probeRoots())[0]?.path).toBe(join('/first/codex-home', 'sessions'))
+    expect((await probeRoots(codex))[0]?.path).toBe(join('/first/codex-home', 'sessions'))
 
     initAppPaths({ cacheDir: appPaths().cacheDir, codexHome: '/second/codex-home' })
-    expect((await codex.probeRoots())[0]?.path).toBe(join('/second/codex-home', 'sessions'))
+    expect((await probeRoots(codex))[0]?.path).toBe(join('/second/codex-home', 'sessions'))
   })
 
   it('uses a defined-empty pinned home verbatim (?? parity, never the homedir default)', async () => {
@@ -52,7 +58,7 @@ describe('codex singleton (lazy AppPaths resolution)', () => {
     // the seam's `??` must keep it, exactly as it keeps a defined-empty
     // `process.env['CODEX_HOME']`.
     initAppPaths({ cacheDir: appPaths().cacheDir, codexHome: '' })
-    const roots = await codex.probeRoots()
+    const roots = await probeRoots(codex)
     expect(roots[0]?.path).toBe(join('', 'sessions'))
     expect(roots[1]?.path).toBe(join('', 'archived_sessions'))
   })

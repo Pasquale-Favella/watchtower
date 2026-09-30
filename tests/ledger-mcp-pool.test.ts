@@ -181,7 +181,7 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
 
     expect(next?.server).toEqual(httpServer(9_999))
     expect(spawns).toBe(2)
-    expect(lastReleased?.released).toBe(true)
+    expect(lastReleased).toMatchObject({ released: true })
   })
 
   it('respawns when the health probe itself throws', async () => {

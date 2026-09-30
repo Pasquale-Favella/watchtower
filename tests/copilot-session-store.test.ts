@@ -643,7 +643,7 @@ describe('session-store.db: discovery', () => {
     const provider = providerFor(dirs)
     const sources = await provider.discoverSessions()
 
-    const kinds = sources.map(s => (s as { sourceType: string }).sourceType)
+    const kinds = sources.map(s => ('sourceType' in s ? s.sourceType : undefined))
     expect(kinds[0]).toBe('sessionstore')
     expect(sources[0]!.path).toBe(join(dirname(dirs.sessionState), 'session-store.db'))
     expect(kinds).toContain('jsonl')
@@ -653,7 +653,7 @@ describe('session-store.db: discovery', () => {
   it('discovers nothing when there is no store beside the session-state dir', async () => {
     const provider = providerFor(isolatedDirs('tr-store-none-dirs-'))
     const sources = await provider.discoverSessions()
-    expect(sources.some(s => (s as { sourceType: string }).sourceType === 'sessionstore')).toBe(false)
+    expect(sources.some(s => 'sourceType' in s && s.sourceType === 'sessionstore')).toBe(false)
   })
 
   it('getCopilotSessionStoreDbPath derives the store from the CLI home and gates on existence', () => {

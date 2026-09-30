@@ -131,7 +131,7 @@ function countingAttachmentSource(counter: { released: number }): {
 } {
   return {
     ledgerMcpServer: async () => ({
-      server: { name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js', '--ledger-mcp'] },
+      server: { name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js', '--ledger-mcp'], env: [] },
       release: () => {
         counter.released++
       },

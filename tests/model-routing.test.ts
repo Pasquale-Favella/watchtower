@@ -89,7 +89,9 @@ const routingCases = [
 ] as const
 
 describe('model-routing catalogs and policies', () => {
-  it.each(routingCases)('$name', ({ kind, session, id, expected, appliedId, mode }) => {
+  it.each(routingCases)('$name', testCase => {
+    const { kind, session, id, expected, appliedId } = testCase
+    const mode = 'mode' in testCase && testCase.mode
     const policy = routingPolicyFor(kind)
     const plan = mode
       ? planModeSelection(policy, catalog(session), id)

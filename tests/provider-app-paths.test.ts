@@ -43,6 +43,7 @@ function platformBranch(localAppData: string | null, xdgDataHome: string | null)
 }
 
 async function probeRootPath(provider: Provider): Promise<string> {
+  if (!provider.probeRoots) throw new Error(`${provider.name} does not expose probe roots`)
   const roots = await provider.probeRoots()
   expect(roots).toHaveLength(1)
   return roots[0]!.path

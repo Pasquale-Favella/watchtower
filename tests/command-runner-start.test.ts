@@ -302,7 +302,7 @@ describe('CommandRunner.start live layer (real child, scope-bound lifetime)', ()
           // Wait for the child to be REALLY up before closing anything: a
           // child killed before it started would prove nothing.
           const startedPid = yield* Effect.promise(() => readChildPid(pidFile))
-          Deferred.doneUnsafe(release, Effect.void)
+          Deferred.doneUnsafe(release, Effect.succeed(undefined))
           yield* Fiber.join(fiber).pipe(Effect.exit)
           return startedPid
         }),

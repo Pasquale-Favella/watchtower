@@ -28,7 +28,7 @@ function pathsWith(overrides: ProviderOverrides): AppPaths {
 const tickEvent: ScanProgressEvent = { kind: 'tick', provider: 'codex', done: 1, total: 2 }
 const progressIsOn = process.env['WATCHTOWER_PROGRESS'] === '1'
 
-function captureStderr(): { spy: ReturnType<typeof vi.spyOn>; lines: () => string[] } {
+function captureStderr() {
   const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
   return { spy, lines: () => spy.mock.calls.map(call => String(call[0])) }
 }

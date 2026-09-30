@@ -249,7 +249,7 @@ describe('detectGeneration', () => {
 })
 
 describe('v2RowsToLegacyShape', () => {
-  const row = (over: Partial<V2MessageRow> & { type: string; data: unknown }): V2MessageRow => ({
+  const row = (over: Omit<Partial<V2MessageRow>, 'data'> & { type: string; data: unknown }): V2MessageRow => ({
     session_id: 'ses-1',
     id: 'msg-1',
     seq: 0,

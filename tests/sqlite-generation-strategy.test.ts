@@ -248,7 +248,7 @@ describe('no SQL in the shared mechanism is built by interpolation', () => {
       const record = (generations: readonly SqliteGeneration[]): string[] => {
         const seen: string[] = []
         const recorder: SqliteDatabase = {
-          query<T>(sql: string, params?: unknown[]): T[] {
+          query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): T[] {
             seen.push(sql)
             return read.query<T>(sql, params)
           },
@@ -694,12 +694,17 @@ describe('the tolerant reads degrade, they do not abort the parse', () => {
     db.exec('CREATE TABLE plain_session (id TEXT, title TEXT, time_created REAL, time_archived REAL, parent_id TEXT)')
     db.exec('CREATE TABLE plain_message (session_id TEXT, id TEXT, time_created REAL, data BLOB)')
 
-    const insert = (id: string, time: number): void =>
+    const insert = (id: string, time: number): void => {
       db.prepare('INSERT INTO plain_session (id, title, time_created) VALUES (?, ?, ?)').run(id, 't', time)
-    const message = (sessionId: string, id: string, data: unknown): void =>
-      db
-        .prepare('INSERT INTO plain_message (session_id, id, time_created, data) VALUES (?, ?, ?, ?)')
-        .run(sessionId, id, 1, JSON.stringify(data))
+    }
+    const message = (sessionId: string, id: string, data: unknown): void => {
+      db.prepare('INSERT INTO plain_message (session_id, id, time_created, data) VALUES (?, ?, ?, ?)').run(
+        sessionId,
+        id,
+        1,
+        JSON.stringify(data),
+      )
+    }
 
     insert('ses-messages', 1)
     // The text part is what survives `buildAssistantCall`'s all-zero rule: no

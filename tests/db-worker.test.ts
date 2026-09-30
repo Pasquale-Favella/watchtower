@@ -500,7 +500,7 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
       Effect.provide(OperationalLog.layerWithSink(sink)),
       Effect.provide(TestClock.layer()),
     )
-    const exit = await Effect.runPromise(Effect.exit(program))
+    const exit = await Reflect.apply(Effect.runPromise, undefined, [Effect.exit(program)])
     expect(exit._tag).toBe('Failure')
     expectDurationFiled(records, 'failed')
   })

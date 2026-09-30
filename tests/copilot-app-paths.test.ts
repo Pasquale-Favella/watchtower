@@ -219,7 +219,7 @@ describe('createCopilotProvider (WS / GLOBAL storage + DISABLE_OTEL seams)', () 
     })
     const sources = await providerFor(paths, root).discoverSessions()
     expect(sources.map(source => source.path).sort()).toEqual([wsSource, globalSource].sort())
-    expect(sources.every(source => source.sourceType === 'chatsession')).toBe(true)
+    expect(sources.every(source => 'sourceType' in source && source.sourceType === 'chatsession')).toBe(true)
   })
 
   it('DISABLE_OTEL is a `=== "1"` comparison on the snapshot value, not a presence check', async () => {
@@ -230,7 +230,7 @@ describe('createCopilotProvider (WS / GLOBAL storage + DISABLE_OTEL seams)', () 
     writeFileSync(db, '')
 
     const enabled = await providerFor(pathsOf({ WATCHTOWER_COPILOT_OTEL_DB: db }), root).discoverSessions()
-    expect(enabled.map(source => source.sourceType)).toEqual(['otel'])
+    expect(enabled.map(source => ('sourceType' in source ? source.sourceType : undefined))).toEqual(['otel'])
     expect(enabled[0]?.path).toBe(db)
 
     // `'0'` and `''` are truthy but not `'1'`: OTel stays enabled, as before.
@@ -239,7 +239,7 @@ describe('createCopilotProvider (WS / GLOBAL storage + DISABLE_OTEL seams)', () 
         pathsOf({ WATCHTOWER_COPILOT_OTEL_DB: db, WATCHTOWER_COPILOT_DISABLE_OTEL: value }),
         root,
       ).discoverSessions()
-      expect(sources.map(source => source.sourceType)).toEqual(['otel'])
+      expect(sources.map(source => ('sourceType' in source ? source.sourceType : undefined))).toEqual(['otel'])
     }
 
     const { ws, wsSource } = storageFixture('tr-copilot-otel-flag-off-')
@@ -251,7 +251,7 @@ describe('createCopilotProvider (WS / GLOBAL storage + DISABLE_OTEL seams)', () 
       }),
       root,
     ).discoverSessions()
-    expect(disabled.map(source => source.sourceType)).toEqual(['chatsession'])
+    expect(disabled.map(source => ('sourceType' in source ? source.sourceType : undefined))).toEqual(['chatsession'])
     expect(disabled.map(source => source.path)).toEqual([wsSource])
   })
 

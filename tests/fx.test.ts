@@ -47,11 +47,11 @@ function throwingFetch(message: string = 'offline'): typeof fetch {
 function fakeCountingFetch(rates: Record<string, unknown>): { fetch: typeof fetch; getCalls: () => number } {
   let calls = 0
   const inner = fakeFetchOk(rates)
-  const fetch = (async (...args: Parameters<typeof fetch>) => {
+  const fetchImpl: typeof fetch = async (input, init) => {
     calls += 1
-    return inner(...args)
-  }) as typeof fetch
-  return { fetch, getCalls: () => calls }
+    return inner(input, init)
+  }
+  return { fetch: fetchImpl, getCalls: () => calls }
 }
 
 function fxEffect(

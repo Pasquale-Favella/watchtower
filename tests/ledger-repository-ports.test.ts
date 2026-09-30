@@ -78,8 +78,13 @@ afterEach(() => {
  * never answer with `undefined`; anything short of a failure would make the
  * sibling "is absent" claims unfalsifiable.
  */
-function reachable<A>(program: Effect.Effect<A, unknown, never>, layer: Layer.Layer<never>): Promise<boolean> {
-  return Effect.runPromise(Effect.exit(Effect.provide(program, layer)).pipe(Effect.map(exit => Exit.isSuccess(exit))))
+function reachable<A, R, L>(program: Effect.Effect<A, unknown, R>, layer: Layer.Layer<L>): Promise<boolean> {
+  // This deliberate dynamic provision asks Effect to look up a port omitted by
+  // the supplied fake. The static `Effect.provide` overload rejects that graph,
+  // so invoke the same runtime entry through Reflect.apply at this test seam.
+  const provided = Reflect.apply(Effect.provide, undefined, [program, layer]) as Effect.Effect<A, unknown, never>
+  const exited = Effect.exit(provided).pipe(Effect.map(exit => Exit.isSuccess(exit)))
+  return Reflect.apply(Effect.runPromise, undefined, [exited]) as Promise<boolean>
 }
 
 // ── 1. Independence ────────────────────────────────────────────────────────

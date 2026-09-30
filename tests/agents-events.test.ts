@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 
-import type { CoachStreamPart } from '../src/main/agents/events.js'
 import { createCoachEventNormalizer, deriveCoachEvents } from '../src/main/agents/events.js'
 
 describe('deriveCoachEvents — AI SDK stream part → CoachEvent (seam: pure logic)', () => {
@@ -144,11 +143,16 @@ describe('deriveCoachEvents — AI SDK stream part → CoachEvent (seam: pure lo
   })
 
   it('ignores parts outside the Coach surface (step boundaries, raw chunks)', () => {
-    expect(deriveCoachEvents({ type: 'start-step' } as CoachStreamPart)).toEqual([])
-    expect(deriveCoachEvents({ type: 'finish-step' } as CoachStreamPart)).toEqual([])
-    expect(deriveCoachEvents({ type: 'raw', rawValue: '{"type":"diff"}' } as CoachStreamPart)).toEqual([])
-    expect(deriveCoachEvents({ type: 'abort' } as CoachStreamPart)).toEqual([])
-    expect(deriveCoachEvents({ type: 'text-start' } as CoachStreamPart)).toEqual([])
+    const malformedStreamParts: unknown[] = [
+      { type: 'start-step' },
+      { type: 'finish-step' },
+      { type: 'raw', rawValue: '{"type":"diff"}' },
+      { type: 'abort' },
+      { type: 'text-start' },
+    ]
+    for (const part of malformedStreamParts) {
+      expect(Reflect.apply(deriveCoachEvents, undefined, [part])).toEqual([])
+    }
   })
 })
 

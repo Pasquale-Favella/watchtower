@@ -513,7 +513,7 @@ function zodVerdict(schema: z.ZodType, input: unknown): ZodVerdict {
   }
 }
 
-function effectVerdict(schema: Schema.Constraint, input: unknown): ZodVerdict {
+function effectVerdict(schema: Schema.ConstraintDecoder<unknown, never>, input: unknown): ZodVerdict {
   try {
     return { verdict: 'accept', value: Schema.decodeUnknownSync(schema)(input) }
   } catch {
@@ -569,7 +569,7 @@ function omit(row: Record<string, unknown>, key: string): Record<string, unknown
 interface ParityCase {
   schema: string
   zod: z.ZodType
-  effect: Schema.Constraint
+  effect: Schema.ConstraintDecoder<unknown, never>
   row: Record<string, unknown>
   /** A coerced-number column, for the NaN/±Infinity and coercion probes. */
   numericColumn: string
