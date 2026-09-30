@@ -4,7 +4,7 @@ import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Schedule from 'effect/Schedule'
 
-import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
+import { emitOperationalRecord, logCodeFor } from '../operational-log.js'
 import {
   type DbWorkerData,
   type DbWorkerEvent,
@@ -303,38 +303,45 @@ export class DbWorkerClient {
    */
   respawnAfterCrashEffect(attempt: number, exitCode: string): Effect.Effect<void> {
     // Arrow closure (NOT a `self` alias): lexical `this`, same shape as
-    // `terminateWorkerEffect`'s `takeWorker` below.
-    const respawnIfLive = (): void => {
-      if (this.intentionalTeardown) return
-      try {
-        this.spawn()
-      } catch (spawnErr) {
-        safeLogOperationalEvent(
-          'error',
-          'worker.error',
-          { op: 'worker-restart', code: logCodeFor(spawnErr, 'restart-failed') },
-          'worker',
-        )
-      }
+    // `terminateWorkerEffect`'s `takeWorker` below. Returns an Effect rather
+    // than running itself so the spawn-failure record is `yield*`ed in Effect
+    // context — a `() => void` handed to `Effect.sync` could not be, and
+    // reaching for a logger without an Effect there is the composition-root
+    // violation this slice exists to remove.
+    const respawnIfLive = (): Effect.Effect<void> => {
+      if (this.intentionalTeardown) return Effect.void
+      // `Effect.sync` turns a `spawn()` throw into a defect (it is not a
+      // typed failure), so `catchDefect` is the recovery that matches the
+      // `try`/`catch` this replaced — and the record is byte-identical:
+      // `code` stays an explicit `logCodeFor(spawnErr, 'restart-failed')`
+      // rather than a `Cause` the Logger would have to squash.
+      return Effect.sync(() => this.spawn()).pipe(
+        Effect.catchDefect(spawnErr =>
+          emitOperationalRecord(
+            'error',
+            'worker.error',
+            { op: 'worker-restart', code: logCodeFor(spawnErr, 'restart-failed') },
+            'worker',
+          ),
+        ),
+      )
     }
     return Effect.gen(function* () {
       const delay = yield* respawnBackoffDelayForAttempt(attempt)
       const backoffMs = Math.round(Duration.toMillis(delay))
-      yield* Effect.sync(() =>
-        safeLogOperationalEvent(
-          'error',
-          'worker.error',
-          {
-            op: 'worker-restart',
-            code: `exit-${exitCode}`,
-            label: `attempt ${attempt} backoff ${backoffMs}ms`,
-            count: attempt,
-          },
-          'worker',
-        ),
+      yield* emitOperationalRecord(
+        'error',
+        'worker.error',
+        {
+          op: 'worker-restart',
+          code: `exit-${exitCode}`,
+          label: `attempt ${attempt} backoff ${backoffMs}ms`,
+          count: attempt,
+        },
+        'worker',
       )
       yield* Effect.sleep(delay)
-      yield* Effect.sync(respawnIfLive)
+      yield* respawnIfLive()
     })
   }
 

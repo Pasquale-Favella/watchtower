@@ -7,7 +7,7 @@ import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
 
 import type { CoachHarnessRow } from '../../shared/schemas/agents.js'
-import { PROBE_OUTCOME_COUNTER, safeLogOperationalEvent, type OperationalLogCounter } from '../operational-log.js'
+import { emitOperationalRecord, type OperationalLogCounter, PROBE_OUTCOME_COUNTER } from '../operational-log.js'
 import type { HarnessInfo } from './detect.js'
 import { harnessSpecs } from './harnesses/index.js'
 import { probeHarness, type ProbeResult, type ProbeStatus } from './probe.js'
@@ -102,21 +102,16 @@ export class HarnessProbe extends Context.Service<
 /**
  * Live counter delegation for the probe-outcome slice (Wave 4, issue #148):
  * files `PROBE_OUTCOME_COUNTER` through the main-owned pino singleton via
- * `safeLogOperationalEvent` — same sink, same allowlist, same `main`
- * context as the legacy `harness.probe` record, never a second sink, never
- * OTLP. Mirrors `OperationalLog.layer`'s `liveEmit` + never-throw guard so
- * the forbidden `ipc.ts` call site (no `counters` dep) files counters with
+ * `emitOperationalRecord` — the Effect-facing sink seam, so same sink, same
+ * allowlist, same `main` context as the legacy `harness.probe` record, never a
+ * second sink, never OTLP. The never-throw guard now lives in ONE place
+ * (inside the seam's `emitSafely`) rather than being re-declared here, so the
+ * forbidden `ipc.ts` call site (no `counters` dep) still files counters with
  * zero edits.
  */
 const liveSnapshotCounters: HarnessSnapshotCounters = {
   incrementCounter: (name, amount = 1, fields = {}) =>
-    Effect.sync(() => {
-      try {
-        safeLogOperationalEvent('info', name, { ...fields, count: amount }, 'main')
-      } catch {
-        /* logging must never break callers, including inside fibers */
-      }
-    }),
+    emitOperationalRecord('info', name, { ...fields, count: amount }, 'main'),
 }
 
 export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): HarnessSnapshotStore {
@@ -162,40 +157,47 @@ export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): Harn
     }
   }
 
-  function settle(info: HarnessInfo, result: ProbeResult): void {
-    safeLogOperationalEvent(result.status === 'error' ? 'error' : 'info', 'harness.probe', {
-      kind: info.kind,
-      status: result.status,
+  /** Returns an Effect rather than running itself so both records it files are
+   * `yield*`ed in Effect context. The previous shape called the sink directly
+   * and reached the counter through `Effect.runSync` from inside an
+   * `Effect.sync(() => settle(...))` — a `run*` used only to make a log call,
+   * which is the F10 composition-root violation this slice removes. */
+  function settle(info: HarnessInfo, result: ProbeResult): Effect.Effect<void> {
+    return Effect.gen(function* () {
+      yield* emitOperationalRecord(result.status === 'error' ? 'error' : 'info', 'harness.probe', {
+        kind: info.kind,
+        status: result.status,
+      })
+      // `status` is allowlisted BY VALUE in `sanitizeOperationalRecord`
+      // (`ALLOWED_ENUM_FIELDS.status`, transcribed from the
+      // `ProbeResult['status']` union — no `pending`, since a settled probe is
+      // never pending), so the counter breaks down by probe status instead of
+      // losing the dimension. `kind` stays a free-form allowlisted string, and a
+      // status the union cannot produce is still dropped, not filed.
+      // `catchDefect` is the `try`/`catch` this replaced, in Effect terms: the
+      // seam's declared channel is `never`, so a throwing counter sink can only
+      // arrive as a defect, and it must still not stop `settle` from publishing
+      // (pinned by `agents-snapshot.test.ts`).
+      yield* counters
+        .incrementCounter(PROBE_OUTCOME_COUNTER, 1, { kind: info.kind, status: result.status })
+        .pipe(Effect.catchDefect(() => Effect.void))
+      if (isClosed()) return
+      const instanceId = instanceIdFor(info)
+      const current = instances.get(instanceId)
+      if (!current) return
+      instances.set(instanceId, {
+        ...current,
+        status: result.status,
+        auth: result.auth,
+        version: result.version,
+        message: result.message,
+      })
+      publish()
     })
-    // `status` is allowlisted BY VALUE in `sanitizeOperationalRecord`
-    // (`ALLOWED_ENUM_FIELDS.status`, transcribed from the
-    // `ProbeResult['status']` union — no `pending`, since a settled probe is
-    // never pending), so the counter breaks down by probe status instead of
-    // losing the dimension. `kind` stays a free-form allowlisted string, and a
-    // status the union cannot produce is still dropped, not filed.
-    try {
-      Effect.runSync(counters.incrementCounter(PROBE_OUTCOME_COUNTER, 1, { kind: info.kind, status: result.status }))
-    } catch {
-      /* logging must never break callers, including inside fibers */
-    }
-    if (isClosed()) return
-    const instanceId = instanceIdFor(info)
-    const current = instances.get(instanceId)
-    if (!current) return
-    instances.set(instanceId, {
-      ...current,
-      status: result.status,
-      auth: result.auth,
-      version: result.version,
-      message: result.message,
-    })
-    publish()
   }
 
   function launchProbes(infos: HarnessInfo[]): void {
-    const effects = infos.map(info =>
-      deps.probe(info).pipe(Effect.tap(result => Effect.sync(() => settle(info, result)))),
-    )
+    const effects = infos.map(info => deps.probe(info).pipe(Effect.tap(result => settle(info, result))))
     // `Effect.all` with bounded concurrency, forked in the background: the
     // handle interrupts it on the next launch (or `dispose()`). `deps.detect`
     // stays a Promise boundary; `deps.probe` stays the Effect seam.

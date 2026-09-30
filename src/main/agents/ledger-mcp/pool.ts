@@ -101,6 +101,23 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
   const spawnHandle = Effect.runSync(Scope.provide(poolScope)(FiberHandle.make<StartedLedgerMcpHttp | null, unknown>()))
   let flight: Deferred.Deferred<StartedLedgerMcpHttp | null, unknown> | null = null
 
+  /**
+   * The health-gate record, deliberately still a direct call to the sink's
+   * never-throwing helper.
+   *
+   * Both call sites (`acquire`, `status`) are `async function`s on the
+   * `Promise`-shaped `SidecarPool` seam, and every in-repo caller of them is
+   * the forbidden `index.ts` (an `ipcMain.handle` body at lines 105/310/317/
+   * 324/417/497) — there is no Effect context on any path to here, now or once
+   * that file is untangled. The two ways to change it are both worse: an
+   * `Effect.runSync`/`runPromise` wrapper would be a `run*` whose only job is
+   * to reach a log call, which is the F10 composition-root violation this
+   * programme exists to remove; and rebuilding `acquire` as a generator would
+   * take out the synchronous prefix `deps.spawn` runs in, which two
+   * `ledger-mcp-pool` tests pin as load-bearing (see the RcMap rejection note
+   * above). Left as-is until the pool's Promise seam is retired, at which point
+   * this becomes `yield* emitOperationalRecord(...)` for free.
+   */
   function logHealthFailure(): void {
     safeLogOperationalEvent('error', 'sidecar.error', { op: 'ledger-mcp-health', code: 'unhealthy' }, 'sidecar')
   }

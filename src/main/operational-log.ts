@@ -231,6 +231,44 @@ function makeOperationalLogImpl(sink: OperationalLogSink) {
   return { log, incrementCounter, recordGauge }
 }
 
+/** The live impl, built once: `OperationalLog.layer` hands it out AND
+ * `emitOperationalRecord` below IS its `log`, so the two faces are provably
+ * the same function rather than two code paths that must be kept in step. */
+const liveOperationalLog = makeOperationalLogImpl({ emit: liveEmit })
+
+/**
+ * Effect-returning face of the single sink, and the ONLY logging call shape
+ * domain code uses (A10: "Effect is the logging API, pino is the transport").
+ *
+ * Why this is not `Effect.log*`: in `effect@4.0.0-rc.115` the only thing a log
+ * message can carry is a message — `Effect.log: (...message: ReadonlyArray<any>)
+ * => Effect<void>` and `Logger.Options = { message, logLevel, cause, fiber }`
+ * (both verified in `effect/dist/Effect.d.ts:17930` and `effect/dist/Logger.d.ts:79`).
+ * There is no event name, no structured field bag, and no `LogContext` in that
+ * channel, and `OperationalLogLogger` above resolves all three itself
+ * (`event: 'effect.log'`, fields flattened into one 200-capped `label`,
+ * `context: 'main'`). Routing the operational records through it would rename
+ * every event, flatten every allowlisted field into free text, and drop the
+ * `sidecar` / `worker` context — i.e. it would break, not preserve, the records
+ * this log exists to file. So the Effect-facing API is an Effect, not the
+ * global Logger: call sites `yield*` a description of the record and the sink
+ * owns the transport, the allowlist, the rotation, and the never-throw guard
+ * (`Effect.fnUntraced` — a log must not open a span of its own).
+ *
+ * `R = never` on purpose: this face adds no service to any graph, so no
+ * composition root changes and `OperationalLog`'s `Context.Service` shape
+ * (which tests substitute with `layerWithSink`) is untouched. The `code`
+ * argument stays an explicit `logCodeFor(err)` at the call site rather than
+ * being derived from a squashed `Cause`: these are ordinary observations, not
+ * typed failures in a channel, and a `Cause` is not available here.
+ */
+export const emitOperationalRecord: (
+  level: LogLevel,
+  event: string,
+  fields?: Record<string, unknown>,
+  context?: LogContext,
+) => Effect.Effect<void> = liveOperationalLog.log
+
 /**
  * Main-owned operational log as an Effect service (`HttpFetch.layer` /
  * Wave-1 `HarnessProbe` shape). The live layer delegates to the `active`
@@ -253,7 +291,7 @@ export class OperationalLog extends Context.Service<
     readonly recordGauge: (name: string, value: number, fields?: Record<string, unknown>) => Effect.Effect<void>
   }
 >()('watchtower/main/OperationalLog') {
-  static readonly layer = Layer.succeed(OperationalLog, OperationalLog.of(makeOperationalLogImpl({ emit: liveEmit })))
+  static readonly layer = Layer.succeed(OperationalLog, OperationalLog.of(liveOperationalLog))
 
   static readonly layerWithSink = (sink: OperationalLogSink): Layer.Layer<OperationalLog> =>
     Layer.succeed(OperationalLog, OperationalLog.of(makeOperationalLogImpl(sink)))

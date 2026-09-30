@@ -7,7 +7,7 @@ import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 
-import { logCodeFor, safeLogOperationalEvent } from '../../operational-log.js'
+import { emitOperationalRecord, logCodeFor, safeLogOperationalEvent } from '../../operational-log.js'
 import type { AcpMcpServer } from '../harnesses/types.js'
 import { bearerHeaderValue } from './auth.js'
 import type { LedgerMcpSpawnContext } from './config.js'
@@ -175,7 +175,20 @@ export function parseSidecarLogLine(line: string): SidecarRequestRecord | null {
   return record
 }
 
-/** Files one parsed stderr line via the shared seam (never throws). */
+/**
+ * Files one parsed stderr line via the shared seam (never throws).
+ *
+ * A deliberate non-Effect boundary, and one of only two left in `src/main`
+ * besides the Promise-shaped edges in `index.ts` / `agents/ipc.ts`: this runs
+ * as a `readline` `line` listener on a child process's stderr, which is not an
+ * Effect fiber and has no runtime anywhere near it. The stream outlives every
+ * Effect that could own it (the sidecar is app-scoped, ADR 0027), so putting
+ * these records behind a fiber would mean giving a diagnostic stream its own
+ * long-lived runtime to keep two never-throwing lines in the log. Reaching the
+ * logger through `Effect.runSync` here instead is exactly the composition-root
+ * violation the Effect-is-the-logging-API programme exists to remove, so the
+ * direct call to the sink module's never-throwing helper is the honest answer.
+ */
 function recordSidecarLine(line: string): void {
   const parsed = parseSidecarLogLine(line)
   if (!parsed) return
@@ -297,8 +310,12 @@ export async function startLedgerMcpHttp(ctx: LedgerMcpSpawnContext): Promise<St
     throw new Error('ledger MCP HTTP server has no stdout for its ready announcement')
   }
   const stdout = child.stdout
-  let port: number
-  try {
+  // The boot rides ONE Effect so the spawn-failure record can be `yield*`ed in
+  // Effect context instead of being emitted from a `catch` block (a `catch` has
+  // no Effect to yield into, and reaching for the logger with `Effect.runSync`
+  // there would manufacture the composition root this slice removes). `tapError`
+  // runs the kill and the record, in that order, exactly as the old `catch` did.
+  const bootPort = Effect.gen(function* () {
     // The child binds its own ephemeral port and announces it — no
     // parent-side probe, no bind race. The listen callback precedes the
     // announcement, so the confirming health check below passes first try on
@@ -308,14 +325,27 @@ export async function startLedgerMcpHttp(ctx: LedgerMcpSpawnContext): Promise<St
     // instead of burning the health timeout; `Effect.race` would ignore the
     // fast failure and hang). Removal: `Promise.race([waitForHealth,
     // earlyExit])` removed when boot rides this Effect race + Clock.
-    port = await Effect.runPromise(readReadyPortEffect(child, stdout) as Effect.Effect<number, Error>)
-    stdout.resume()
-    await Effect.runPromise(Effect.raceFirst(waitForHealthEffect(port, token), earlyExitEffect(child)))
-  } catch (err) {
-    child.kill()
-    safeLogOperationalEvent('error', 'sidecar.error', { op: 'ledger-mcp-spawn', code: logCodeFor(err) }, 'sidecar')
-    throw err
-  }
+    const port = yield* readReadyPortEffect(child, stdout) as Effect.Effect<number, Error>
+    yield* Effect.sync(() => stdout.resume())
+    yield* Effect.raceFirst(waitForHealthEffect(port, token), earlyExitEffect(child))
+    return port
+  }).pipe(
+    Effect.tapError(err =>
+      Effect.gen(function* () {
+        yield* Effect.sync(() => child.kill())
+        // `code` stays an explicit `logCodeFor(err)`: this is an observation of
+        // a failed boot, not a typed failure being reported through a channel,
+        // so there is no `Cause` for a `Logger` to squash.
+        yield* emitOperationalRecord(
+          'error',
+          'sidecar.error',
+          { op: 'ledger-mcp-spawn', code: logCodeFor(err) },
+          'sidecar',
+        )
+      }),
+    ),
+  )
+  const port = await Effect.runPromise(bootPort)
   return {
     server: {
       type: 'http',
