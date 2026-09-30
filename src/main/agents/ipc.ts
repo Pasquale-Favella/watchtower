@@ -2,36 +2,46 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import { BrowserWindow, ipcMain } from 'electron'
-import { detectHarnesses, type HarnessInfo } from './detect.js'
-import { createHarnessRuntime, isAuthFailureMessage, loadHarnessSdk, type HarnessRuntime } from './runtime.js'
-import { probeHarness } from './probe.js'
-import { createHarnessSnapshotStore, type HarnessInstance, type HarnessSnapshotStore } from './snapshot.js'
-import { resolveBundledEntry } from './harnesses/bundled.js'
-import { harnessSpecs } from './harnesses/index.js'
-import { openLoginTerminal } from './login-terminal.js'
-import { buildCoachPrompt, buildLedgerBriefing, buildScopeUpdate } from './prompts.js'
-import { decodeResumeCursor } from './resume-cursor.js'
-import type { AcpMcpServer } from './harnesses/types.js'
-import type { OverviewScope } from '../../shared/schemas/overview.js'
+
 import {
-  coachInspectRequestSchema,
-  coachOpenLoginTerminalRequestSchema,
-  coachRunRequestSchema,
   type CoachEvent,
   type CoachEventEnvelope,
   type CoachHarnessRow,
+  coachInspectRequestSchema,
   type CoachInspectResult,
   type CoachLoginTerminalResult,
+  coachOpenLoginTerminalRequestSchema,
   type CoachRunRequest,
+  coachRunRequestSchema,
   type CoachRunResult,
 } from '../../shared/schemas/agents.js'
+import type { OverviewScope } from '../../shared/schemas/overview.js'
 import {
-  skillsDismissalRequestSchema,
   type SkillsDismissal,
+  skillsDismissalRequestSchema,
   type SkillsDismissalResult,
 } from '../../shared/schemas/skills.js'
 import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
+import { detectHarnesses } from './detect.js'
+import { resolveBundledEntry } from './harnesses/bundled.js'
+import { harnessSpecs } from './harnesses/index.js'
+import type { AcpMcpServer } from './harnesses/types.js'
+import { openLoginTerminal } from './login-terminal.js'
+import { probeHarness } from './probe.js'
+import { buildCoachPrompt, buildLedgerBriefing, buildScopeUpdate } from './prompts.js'
+import { decodeResumeCursor } from './resume-cursor.js'
+import {
+  type ControlledHarnessInspection,
+  type ControlledHarnessRun,
+  createHarnessRuntime,
+  type HarnessInspectResult,
+  type HarnessRuntime,
+  isAuthFailureMessage,
+  loadHarnessSdk,
+} from './runtime.js'
+import { createHarnessSnapshotStore, type HarnessInstance, type HarnessSnapshotStore } from './snapshot.js'
 
 /**
  * Coach & Skills IPC (ADR 0017, reshaped by map 53): the wire between the
@@ -51,7 +61,7 @@ import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
  * Wire contract (frozen, shared schemas): `coach:harnesses` (invoke → rows),
  * `coach:run` (invoke → immediate `{ ok: true, runId }` ack, events pushed on
  * `coach:event` as runId-enveloped CoachEvents), `coach:cancel` (send →
- * interrupts the active run's SDK iterator so the harness gets a native stop),
+ * stops the active run through its owned cancellation handle),
  * `coach:reset` (send → cancels all runs + cleans the conversation workspace).
  * The renderer revalidates every payload against the same schemas (ADR 0005).
  */
@@ -70,7 +80,7 @@ import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
  *  failure mode.
  *  Removal: when every `release` is provably unreachable-by-design (the
  *  sidecar stays app-scoped and stdio stays harness-owned), this interface
- *  collapses back to a bare `AcpMcpServer` and the set below with it. */
+ *  collapses back to a bare `AcpMcpServer` and the map below with it. */
 export interface LedgerMcpAttachment {
   server: AcpMcpServer
   release: () => void
@@ -91,7 +101,8 @@ export interface CoachRunnerDeps {
    *  nothing scanned) — the run then has no data tools, which is correct:
    *  there is no data to serve. A spawn failure degrades the same way (the
    *  turn still runs, just without data tools) rather than failing the turn.
-   *  The runner releases every acquired attachment when its run settles. */
+   *  The runner releases each claim when its run settles, and reset/dispose
+   *  release any claims left by a stalled run. */
   ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
 }
 
@@ -116,10 +127,9 @@ export interface CoachRunner {
    *  as they arrive. A `{ ok: false }` ack means the request never launched
    *  (unknown harness, malformed request). */
   start(request: unknown, emit: (runId: string, event: CoachEvent) => void): Promise<CoachRunResult>
-  /** Interrupts the active run's generator so the harness's cleanup runs.
-   *  Resolves once the generator's finally (the ACP child-process teardown)
-   *  has completed — callers that delete the workspace must await it, or
-   *  Windows can still hold the dir via the child's CWD (EPERM). */
+  /** Stops the active run through its owned handle. Resolves after provider
+   *  cleanup or forced child teardown, even if an SDK pull or generator
+   *  cleanup remains pending. Callers deleting its workspace must await it. */
   cancel(runId: string): Promise<void>
   /** Cancels all active runs, AWAITS their teardown, and deletes the
    *  conversation's temp workspace (renderer `resetSession` fires
@@ -146,11 +156,8 @@ function toProbeInput(request: unknown): ProbeInput | null {
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   const harnessSource = deps.harnesses
-  const activeRuns = new Map<string, AsyncGenerator<CoachEvent>>()
+  const activeRuns = new Map<string, { run: ControlledHarnessRun; kind: string }>()
   const cancelPromises = new Map<string, Promise<void>>()
-  /** Runs cancelled by the user before their stream settled — the settle path
-   * logs `harness.cancel` instead of `harness.finish` for these (#130). */
-  const cancelledRuns = new Set<string>()
   /** The conversation's private temp workspace (map 53 ticket 56): created on
    *  the first run, reused while the session resumes, deleted on reset/quit. */
   let workspace: string | null = null
@@ -162,38 +169,44 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
    *  a 'superseded' arm when a newer request replaced it before its spawn);
    *  the renderer's stale-guard drops anything it has moved past. */
   let probedChain: Promise<CoachInspectResult> | null = null
+  interface ProbeAttempt {
+    generation: number
+    cancelled: boolean
+    resultOnCancel: Promise<CoachInspectResult>
+    resolveCancelled: (result: CoachInspectResult) => void
+    inspection?: ControlledHarnessInspection
+    legacyInspectSettled?: Promise<void>
+    stopPromise?: Promise<void>
+  }
+  let activeProbe: ProbeAttempt | undefined
   let probedQueued: {
     input: ProbeInput
+    generation: number
     resolve: (result: CoachInspectResult | Promise<CoachInspectResult>) => void
   } | null = null
   /** Scope the agent was last briefed with (full briefing or scope update) — a
    *  resumed turn under a different scope gets a one-line update. */
   let briefedScopeKey: string | null = null
-  /** Every ledger MCP attachment this conversation handed out and has not yet
-   *  released. The per-run settle path is the FAST path, not the only path: a
-   *  run whose generator never settles — a wedged ACP child, an interruption
-   *  that never reaches the `finally` — never reaches it, and its claim would
-   *  then outlive the conversation that made it. `reset` (a new conversation)
-   *  and `dispose` (app quit) drain this set, so the conversation's teardown —
-   *  not the abandoned run — is what ends the claim. The set is also the
-   *  once-guard: an attachment is released at most once, whichever path gets
-   *  there first. Deliberately a plain Set and not a `Scope`: this module is a
-   *  `Promise`-shaped runner with no runtime, and `ipc.ts` is not on the
-   * `Effect.run*` composition-root allowlist (`eslint.config.mjs`) — a runner
-   *  that grows a `run*` would be the finding plan F10 names, not a fix. */
-  const runAttachments = new Set<LedgerMcpAttachment>()
+  /** Unreleased attachments by run. A run releases its claim when it settles;
+   *  reset and dispose release any claims left by a stalled run. The generation
+   *  identifies claims from earlier conversations. */
+  const runAttachments = new Map<string, { attachment: LedgerMcpAttachment; generation: number }>()
 
   /** Releases one attachment exactly once, from either owner. */
-  function releaseAttachment(attachment: LedgerMcpAttachment | null): void {
+  function releaseAttachment(runId: string, attachment?: LedgerMcpAttachment | null): void {
     if (!attachment) return
-    if (!runAttachments.delete(attachment)) return
+    const owned = runAttachments.get(runId)
+    if (!owned || owned.attachment !== attachment) return
+    runAttachments.delete(runId)
     try {
-      attachment.release()
+      owned.attachment.release()
     } catch {
       // A release that threw must not become an unhandled rejection in a
       // `finally` or in a teardown path; the claim is dropped either way.
     }
   }
+
+  let conversationGeneration = 0
 
   /** Deletes a conversation workspace with Windows-aware retries, swallowing a
    *  final failure. The ACP child process's CWD holds the dir until it has
@@ -214,29 +227,54 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   /** ONE catalog probe spawn: resolve the instance, run the handshake in the
    *  conversation workspace for its declared models/modes, and tear it down —
    *  the session is never reused by a run. */
-  async function runProbe(input: ProbeInput): Promise<CoachInspectResult> {
+  const cancelledProbeResult: CoachInspectResult = { ok: false, error: 'conversation reset' }
+  const probeIsCurrent = (attempt: ProbeAttempt): boolean =>
+    !attempt.cancelled && attempt.generation === conversationGeneration && activeProbe === attempt
+
+  async function runProbe(input: ProbeInput, attempt: ProbeAttempt): Promise<CoachInspectResult> {
     try {
       const instance = await harnessSource.get(input.kind)
+      if (!probeIsCurrent(attempt)) return cancelledProbeResult
       const harness = instance?.info
       if (!harness) {
         return { ok: false, error: `harness not detected: ${input.kind}` }
       }
       const runtime = await deps.getRuntime()
-      // The conversation workspace as the probe's cwd — created lazily, the
-      // same way the first run would; a probe must still spawn the agent
-      // somewhere real (reset/quit cleans it up).
+      if (!probeIsCurrent(attempt)) return cancelledProbeResult
+      // No await separates the generation check from acquiring the workspace.
       const probeWorkspace = (workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-')))
-      const result = await runtime.inspect({
+      const probeInput = {
         harness,
         workspacePath: probeWorkspace,
         ...(input.allowApiKeyEnv ? { allowApiKeyEnv: true as const } : {}),
-      })
+      }
+      const inspection = runtime.inspectControlled?.(probeInput)
+      let result: HarnessInspectResult
+      if (inspection) {
+        attempt.inspection = inspection
+        if (!probeIsCurrent(attempt)) {
+          await stopProbe(attempt)
+          return cancelledProbeResult
+        }
+        result = await inspection.result
+      } else {
+        // Transitional support for injected runtimes; production runtime has
+        // an owned inspect handle. Remove when all runtime callers migrate.
+        const inspectResult = runtime.inspect(probeInput)
+        attempt.legacyInspectSettled = inspectResult.then(
+          () => undefined,
+          () => undefined,
+        )
+        result = await inspectResult
+      }
+      if (!probeIsCurrent(attempt)) return cancelledProbeResult
       return {
         ok: true,
         ...(result.models ? { models: result.models } : {}),
         ...(result.modes ? { modes: result.modes } : {}),
       }
     } catch (err) {
+      if (!probeIsCurrent(attempt)) return cancelledProbeResult
       // Everything (detect included) becomes an ok:false arm — a rejection
       // must NEVER propagate: the chain's slot-release depends on runProbe
       // settling, and a wedged slot would hang every later probe.
@@ -244,31 +282,48 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
     }
   }
 
+  function stopProbe(attempt: ProbeAttempt): Promise<void> {
+    if (attempt.stopPromise) return attempt.stopPromise
+    attempt.cancelled = true
+    attempt.resolveCancelled(cancelledProbeResult)
+    attempt.stopPromise = attempt.inspection?.stop() ?? Promise.resolve()
+    return attempt.stopPromise
+  }
+
   /** Frees the single probe slot after the active probe settles — starting
    *  the queued newer kind if one arrived. */
-  function releaseProbeSlot(): void {
+  function releaseProbeSlot(attempt: ProbeAttempt): void {
+    if (activeProbe !== attempt) return
+    activeProbe = undefined
     probedChain = null
     const queued = probedQueued
     if (queued) {
       probedQueued = null
-      queued.resolve(startProbe(queued.input))
+      if (queued.generation === conversationGeneration) queued.resolve(startProbe(queued.input, queued.generation))
+      else queued.resolve(cancelledProbeResult)
     }
   }
 
   /** Starts the probe chain (or continues it after the active probe settles):
    *  the chain is the single spawn slot — when it frees up, a queued newer
    *  kind is probed next and its caller resolves with its own result. */
-  function startProbe(input: ProbeInput): Promise<CoachInspectResult> {
-    probedChain = runProbe(input).then(
+  function startProbe(input: ProbeInput, generation = conversationGeneration): Promise<CoachInspectResult> {
+    let resolveCancelled!: (result: CoachInspectResult) => void
+    const resultOnCancel = new Promise<CoachInspectResult>(resolve => {
+      resolveCancelled = resolve
+    })
+    const attempt: ProbeAttempt = { generation, cancelled: false, resultOnCancel, resolveCancelled }
+    activeProbe = attempt
+    probedChain = Promise.race([runProbe(input, attempt), resultOnCancel]).then(
       result => {
-        releaseProbeSlot()
+        releaseProbeSlot(attempt)
         return result
       },
       // Belt-and-braces: runProbe catches everything, so this should never
       // fire — but if it ever did, the slot must still free or every later
       // probe would queue onto a dead chain forever.
       error => {
-        releaseProbeSlot()
+        releaseProbeSlot(attempt)
         return { ok: false, error: error instanceof Error ? error.message : String(error) }
       },
     )
@@ -298,16 +353,18 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       }
       if (probedQueued) probedQueued.resolve({ ok: false, error: 'superseded' })
       return new Promise(resolve => {
-        probedQueued = { input, resolve }
+        probedQueued = { input, generation: conversationGeneration, resolve }
       })
     },
 
     async start(request: unknown, emit): Promise<CoachRunResult> {
+      const runGeneration = conversationGeneration
       const parsed = coachRunRequestSchema.safeParse(request)
       if (!parsed.success) {
         return { ok: false, error: 'invalid coach run request' }
       }
       const req: CoachRunRequest = parsed.data
+      const runId = randomUUID()
 
       // The conversation's UI scope snapshot (map 53): no longer baked into
       // the MCP server (it serves the full lifetime ledger) — it now rides the
@@ -324,6 +381,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       }
 
       const instance = await harnessSource.get(req.harnessKind)
+      if (runGeneration !== conversationGeneration) return { ok: false, error: 'conversation reset' }
       const harness = instance?.info
       if (!harness) {
         return { ok: false, error: `harness not detected: ${req.harnessKind}` }
@@ -335,7 +393,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // prompts carry no briefing (the agent must not be told to call tools
       // that do not exist). Acquired only AFTER the harness check: a run that
       // never launches must not spawn anything. Registered on the
-      // conversation's attachment set so BOTH owners can end the claim — the
+      // conversation's attachment map so BOTH owners can end the claim — the
       // run's stream settling (see the two release sites below) and the
       // conversation's teardown (`reset`/`dispose`).
       let attachment: LedgerMcpAttachment | null = null
@@ -344,7 +402,14 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       } catch {
         attachment = null
       }
-      if (attachment) runAttachments.add(attachment)
+      if (runGeneration !== conversationGeneration) {
+        if (attachment) {
+          runAttachments.set(runId, { attachment, generation: runGeneration })
+          releaseAttachment(runId, attachment)
+        }
+        return { ok: false, error: 'conversation reset' }
+      }
+      if (attachment) runAttachments.set(runId, { attachment, generation: runGeneration })
       const ledgerServer = attachment?.server ?? null
       const instanceId = instance.instanceId
       const sessionId = req.resumeCursor ? decodeResumeCursor(req.resumeCursor, instanceId) : undefined
@@ -364,7 +429,10 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
 
       try {
         const runtime = await deps.getRuntime()
-        const runId = randomUUID()
+        if (runGeneration !== conversationGeneration) {
+          releaseAttachment(runId, attachment)
+          return { ok: false, error: 'conversation reset' }
+        }
 
         // Per-conversation temp workspace: created on the conversation's first
         // run and REUSED for the whole conversation — a resumed run (sessionId
@@ -374,7 +442,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         // on-disk path — the seam's own workspace validation still runs.
         workspace ??= mkdtempSync(join(tmpdir(), 'watchtower-coach-'))
 
-        const gen = runtime.run({
+        const runInput = {
           harness,
           workspacePath: workspace,
           prompt,
@@ -389,56 +457,81 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
           // Merged after any spec-level servers. Null on a fresh install (no
           // ledger.db yet) — then no data tools.
           mcpServers: [...(ledgerServer ? [ledgerServer] : [])],
-        })
-        activeRuns.set(runId, gen)
+        }
+        // createHarnessRuntime always provides this bounded stop path in
+        // production. Keep a separately bounded adapter for older injected
+        // runtimes while their callers migrate.
+        const run =
+          runtime.runControlled?.(runInput) ??
+          (() => {
+            const events = runtime.run(runInput)
+            return {
+              events,
+              stop: () =>
+                new Promise<void>(resolve => {
+                  let settled = false
+                  const finish = (): void => {
+                    if (settled) return
+                    settled = true
+                    clearTimeout(timer)
+                    resolve()
+                  }
+                  const timer = setTimeout(finish, 3_000)
+                  try {
+                    void events.return(undefined).then(finish, finish)
+                  } catch {
+                    finish()
+                  }
+                }),
+            }
+          })()
+        activeRuns.set(runId, { run, kind: req.harnessKind })
 
         // Stream in the background — the ack returns immediately; events land
         // on the push channel as they stream. A generator throw (SDK failure)
         // becomes an error event, never a crash. Lifecycle lands in the
         // Operational log by harness kind only — never prompts (#130).
         safeLogOperationalEvent('info', 'harness.start', { kind: req.harnessKind })
+        const canPublish = (): boolean => activeRuns.get(runId)?.run === run && runGeneration === conversationGeneration
         void (async () => {
           let settled = false
           try {
-            if (resumeLost)
+            if (resumeLost && canPublish())
               emit(runId, {
                 kind: 'notice',
                 message: 'The previous session could not be restored — continuing in a fresh session.',
               })
-            if (firstRun && !ledgerServer)
+            if (firstRun && !ledgerServer && canPublish())
               emit(runId, {
                 kind: 'notice',
                 message:
                   'Ledger data is not available yet (no scan found) — answers will not be grounded in your usage data.',
               })
-            for await (const event of gen) {
+            for await (const event of run.events) {
+              if (!canPublish()) break
               if (event.kind === 'status' && event.state === 'done')
                 harnessSource.reportAuth?.(instance.instanceId, 'configured')
               if (event.kind === 'error' && isAuthFailureMessage(event.message))
                 harnessSource.reportAuth?.(instance.instanceId, 'unauthenticated')
-              emit(runId, event)
+              if (canPublish()) emit(runId, event)
             }
             settled = true
           } catch (err) {
-            emit(runId, { kind: 'error', message: err instanceof Error ? err.message : String(err) })
-            safeLogOperationalEvent('error', 'harness.error', { kind: req.harnessKind, code: logCodeFor(err) })
-          } finally {
-            const wasCancelled = cancelledRuns.delete(runId)
-            if (settled) {
-              if (wasCancelled) {
-                safeLogOperationalEvent('info', 'harness.cancel', { kind: req.harnessKind })
-              } else {
-                safeLogOperationalEvent('info', 'harness.finish', { kind: req.harnessKind })
-              }
+            if (canPublish()) {
+              emit(runId, { kind: 'error', message: err instanceof Error ? err.message : String(err) })
+              safeLogOperationalEvent('error', 'harness.error', { kind: req.harnessKind, code: logCodeFor(err) })
             }
-            activeRuns.delete(runId)
-            releaseAttachment(attachment)
+          } finally {
+            const wasOwned = activeRuns.get(runId)?.run === run
+            if (settled && wasOwned) safeLogOperationalEvent('info', 'harness.finish', { kind: req.harnessKind })
+            if (wasOwned) activeRuns.delete(runId)
+            releaseAttachment(runId, attachment)
           }
         })()
 
         return { ok: true, runId }
       } catch (err) {
-        releaseAttachment(attachment)
+        releaseAttachment(runId, attachment)
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
@@ -446,25 +539,22 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
     cancel(runId) {
       const existing = cancelPromises.get(runId)
       if (existing) return existing
-      const gen = activeRuns.get(runId)
-      if (gen && typeof gen.return === 'function') {
-        // Marked so the stream settle path logs `harness.cancel` instead of
-        // `harness.finish` (#130). UUID runIds never repeat, and the settle
-        // path deletes the mark — no leak.
-        cancelledRuns.add(runId)
-        // Same-iterator interruption: the finally in the seam's run() then
-        // tears the ACP provider's child process down (ADR 0016). The promise
-        // resolves when that teardown completes — reset() awaits it so the
-        // workspace is never deleted under a live child (Windows EPERM).
-        // return() can reject if the generator's finally (provider cleanup)
-        // throws — that must not become an unhandled rejection; the stream is
-        // already being torn down by the caller's intent.
-        const cancelPromise = gen
-          .return(undefined)
-          .catch(() => {
-            /* teardown already in flight */
+      const active = activeRuns.get(runId)
+      if (active) {
+        // Remove ownership before stopping so late stream events cannot be
+        // published. The controlled handle owns bounded teardown independently
+        // of whether the generator pump settles.
+        const { run, kind } = active
+        activeRuns.delete(runId)
+        releaseAttachment(runId)
+        const cancelPromise = run
+          .stop()
+          .then(() => {
+            safeLogOperationalEvent('info', 'harness.cancel', { kind })
           })
-          .finally(() => cancelPromises.delete(runId)) as Promise<void>
+          .finally(() => {
+            cancelPromises.delete(runId)
+          }) as Promise<void>
         cancelPromises.set(runId, cancelPromise)
         return cancelPromise
       }
@@ -472,6 +562,12 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
     },
 
     async reset() {
+      const currentGeneration = ++conversationGeneration
+      const runsToStop = [...activeRuns.entries()]
+      const probeToStop = activeProbe
+      const attachmentsToRelease = [...runAttachments.entries()].filter(
+        ([, owner]) => owner.generation < currentGeneration,
+      )
       // Snapshot and release the workspace BEFORE awaiting teardown: a new run
       // or probe racing in during the wait would otherwise hit
       // `workspace ??= mkdtempSync(...)` and REUSE the old (about-to-be
@@ -479,25 +575,34 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       const target = workspace
       workspace = null
       briefedScopeKey = null
-      // The conversation's own end of every ledger MCP claim it handed out —
-      // BEFORE the teardown wait, not after it. A wedged generator never
-      // reaches its settle path, so the 3s barrier below would otherwise be
-      // the only thing standing between an abandoned run and a claim that
-      // outlives the conversation (this is also the app-quit path: `dispose`
-      // resets, so nothing can be left holding one). The sidecar itself
-      // survives a reset on purpose — ADR 0027 keeps it app-scoped for local
-      // MCP clients — so this releases the CLAIM, not the process.
-      for (const outstanding of [...runAttachments]) releaseAttachment(outstanding)
-      // Stop every active run and AWAIT the teardown before deleting: the ACP
+      // Release claims before waiting for teardown so a stalled run cannot
+      // keep them past reset. The sidecar remains app-scoped across resets.
+      for (const [runId, owner] of attachmentsToRelease) releaseAttachment(runId, owner.attachment)
+      if (probedQueued) {
+        probedQueued.resolve(cancelledProbeResult)
+        probedQueued = null
+      }
+      let probeTeardown: Promise<void> = Promise.resolve()
+      if (probeToStop) {
+        void stopProbe(probeToStop)
+        probeTeardown = probeToStop.inspection
+          ? (probeToStop.stopPromise ?? Promise.resolve())
+          : (probeToStop.legacyInspectSettled ?? Promise.resolve())
+        if (activeProbe === probeToStop) activeProbe = undefined
+        probedChain = null
+      }
+      // Stop every active run and probe, then await their bounded teardown
+      // handles before deleting: the ACP
       // child process's CWD is the workspace, and deleting it while the child
-      // is still alive fails on Windows with EPERM — as an uncaught exception
-      // in the IPC handler it pops the main-process error dialog. AllSettled:
-      // one wedged teardown must not block the others; the timeout is cheap
-      // insurance so a wedged generator can never hold the delete hostage (a
-      // leftover scratch dir beats a hung reset).
-      await Promise.race([
-        Promise.allSettled([...activeRuns.keys()].map(runId => this.cancel(runId))),
-        new Promise(resolve => setTimeout(resolve, 3_000)),
+      // is still alive fails on Windows with EPERM. AllSettled
+      // lets one teardown fail without skipping workspace cleanup. Controlled
+      // production handles resolve only after provider cleanup has
+      // completed or forced teardown has run. The legacy runtime adapter above
+      // has its own ceiling for injected runtimes that only expose run().
+      await Promise.allSettled([
+        ...runsToStop.map(([runId]) => this.cancel(runId)),
+        ...cancelPromises.values(),
+        probeTeardown,
       ])
       if (target) deleteWorkspace(target)
     },

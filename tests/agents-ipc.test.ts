@@ -1,19 +1,28 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import type { Mock } from 'vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HarnessInfo } from '../src/main/agents/detect.js'
+import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
 import {
-  createCoachRunner,
   type CoachRunner,
+  createCoachRunner,
   type HarnessSource,
   type LedgerMcpAttachment,
 } from '../src/main/agents/ipc.js'
-import { closeOperationalLog, initOperationalLog } from '../src/main/operational-log.js'
-import type { HarnessInfo } from '../src/main/agents/detect.js'
-import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
-import type { HarnessRuntime } from '../src/main/agents/runtime.js'
 import { encodeResumeCursor } from '../src/main/agents/resume-cursor.js'
+import type {
+  ControlledHarnessInspection,
+  ControlledHarnessRun,
+  HarnessInspectResult,
+  HarnessProviderInput,
+  HarnessRunInput,
+  HarnessRuntime,
+} from '../src/main/agents/runtime.js'
+import { closeOperationalLog, initOperationalLog } from '../src/main/operational-log.js'
 import type { CoachEvent } from '../src/shared/schemas/agents.js'
 
 /** A fake detect result: one configured claude harness (ADR 0016 shape). */
@@ -184,7 +193,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     const runner = makeRunner(
       scriptedRuntime([
         { kind: 'status', state: 'starting' },
-        { kind: 'session', sessionId: 'sess_1' },
+        { kind: 'session', resumeCursor: encodeResumeCursor({ instanceId: 'claude', sessionId: 'sess_1' }) },
         { kind: 'text', delta: 'Hello' },
         { kind: 'tool', tool: 'Bash' },
         { kind: 'status', state: 'done' },
@@ -202,7 +211,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
 
     expect(events.map(e => e.event)).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'session', sessionId: 'sess_1' },
+      { kind: 'session', resumeCursor: encodeResumeCursor({ instanceId: 'claude', sessionId: 'sess_1' }) },
       { kind: 'text', delta: 'Hello' },
       { kind: 'tool', tool: 'Bash' },
       { kind: 'status', state: 'done' },
@@ -211,10 +220,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('runs the harness in a real temp workspace under the OS temp dir (map 53)', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start(request, () => {})
 
@@ -225,10 +239,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('injects the in-app ledger MCP server into the run — scope-free, serving the full lifetime ledger', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, () => {})
 
@@ -239,10 +258,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('prepends the MCP briefing to the FIRST coach run — naming the tools and the suggested window', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, () => {})
 
@@ -261,10 +285,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('does NOT restate the briefing on a resumed turn with the same scope', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     const scope = { period: '30days', provider: 'claude' as const }
     await runner.start({ ...request, scope }, () => {})
@@ -278,10 +307,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('rebriefs a resumed turn when its scope differs from the last briefing', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, () => {})
     await runner.start(
@@ -300,11 +334,16 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('emits a notice before a fresh full-briefing run when the resume cursor is invalid', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       yield { kind: 'status', state: 'done' }
     })
     const events: CoachEvent[] = []
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start({ ...request, resumeCursor: 'not-a-valid-cursor' }, (_runId, event) => {
       events.push(event)
@@ -321,11 +360,16 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
 
   it('runs with NO data tools and NO briefing when the ledger source returns null (fresh install, no ledger.db yet)', async () => {
     ledgerMcpServer.mockResolvedValueOnce(null)
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
     const events: CoachEvent[] = []
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, (_runId, event) => {
       events.push(event)
@@ -343,10 +387,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('injects the ledger MCP server with NO scope when the request carries none (lifetime serving)', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start(request, () => {})
 
@@ -380,10 +429,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
 
   it('degrades to NO data tools and NO briefing when attachment acquisition throws (sidecar failed to boot)', async () => {
     ledgerMcpServer.mockRejectedValueOnce(new Error('spawn failed'))
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start(request, () => {})
 
@@ -393,10 +447,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('forwards the decoded resume session id AND reuses the same temp workspace', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start(
       { ...request, resumeCursor: encodeResumeCursor({ instanceId: 'claude', sessionId: 'sess_prev' }) },
@@ -414,10 +473,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('a session-less run REUSES the conversation workspace instead of deleting it', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start(request, () => {})
     const firstPath = (run.mock.calls[0]![0] as { workspacePath: string }).workspacePath
@@ -465,11 +529,66 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     void runId
   })
 
+  it('awaits a concurrent cancel before deleting the workspace and releases its attachment once', async () => {
+    releaseLedgerMcp.mockClear()
+    let releaseStop!: () => void
+    let releaseEvents!: () => void
+    const stop = vi.fn(
+      () =>
+        new Promise<void>(resolve => {
+          releaseStop = resolve
+        }),
+    )
+    let workspacePath = ''
+    const runtime: HarnessRuntime = {
+      run: async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {},
+      runControlled(input: HarnessRunInput): ControlledHarnessRun {
+        workspacePath = input.workspacePath
+        return {
+          events: (async function* () {
+            await new Promise<void>(resolve => {
+              releaseEvents = resolve
+            })
+            yield { kind: 'text', delta: 'late' }
+          })(),
+          stop,
+        }
+      },
+      async inspect() {
+        return {}
+      },
+    }
+    const runner = makeRunner(runtime)
+    const events: CoachEvent[] = []
+    const result = await runner.start(request, (_runId, event) => events.push(event))
+    const runId = (result as { ok: true; runId: string }).runId
+    const workspace = workspacePath
+
+    const cancellation = runner.cancel(runId)
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce())
+    const reset = runner.reset()
+    await flush()
+    expect(existsSync(workspace)).toBe(true)
+
+    releaseStop()
+    releaseEvents()
+    await Promise.all([cancellation, reset])
+
+    expect(existsSync(workspace)).toBe(false)
+    expect(releaseLedgerMcp).toHaveBeenCalledOnce()
+    expect(events).not.toContainEqual({ kind: 'text', delta: 'late' })
+  })
+
   it('after reset, the next run starts a brand-new conversation workspace', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start(request, () => {})
     const firstPath = (run.mock.calls[0]![0] as { workspacePath: string }).workspacePath
@@ -484,11 +603,76 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect(existsSync(secondPath)).toBe(true)
   })
 
+  it('keeps a new run started during reset on its own workspace', async () => {
+    let releaseOldStop!: () => void
+    let releaseOldEvents!: () => void
+    const stopOld = vi.fn(
+      () =>
+        new Promise<void>(resolve => {
+          releaseOldStop = resolve
+        }),
+    )
+    const stopNew = vi.fn(async () => {})
+    const paths: string[] = []
+    const runtime: HarnessRuntime = {
+      run: async function* () {},
+      runControlled(input: HarnessRunInput): ControlledHarnessRun {
+        paths.push(input.workspacePath)
+        if (paths.length === 1) {
+          return {
+            events: (async function* () {
+              await new Promise<void>(resolve => {
+                releaseOldEvents = resolve
+              })
+              yield { kind: 'text', delta: 'late' }
+            })(),
+            stop: stopOld,
+          }
+        }
+        return {
+          events: (async function* () {
+            yield { kind: 'status', state: 'done' }
+          })(),
+          stop: stopNew,
+        }
+      },
+      async inspect() {
+        return {}
+      },
+    }
+    const runner = makeRunner(runtime)
+    const oldEvents: CoachEvent[] = []
+    await runner.start(request, (_runId, event) => oldEvents.push(event))
+    const reset = runner.reset()
+    await vi.waitFor(() => expect(stopOld).toHaveBeenCalledOnce())
+
+    const newEvents: CoachEvent[] = []
+    const second = await runner.start(request, (_runId, event) => newEvents.push(event))
+    expect(second.ok).toBe(true)
+    expect(paths).toHaveLength(2)
+    expect(paths[1]).not.toBe(paths[0])
+
+    releaseOldStop()
+    releaseOldEvents()
+    await reset
+    await vi.waitFor(() => expect(newEvents).toContainEqual({ kind: 'status', state: 'done' }))
+
+    expect(oldEvents).not.toContainEqual({ kind: 'text', delta: 'late' })
+    expect(existsSync(paths[0]!)).toBe(false)
+    expect(existsSync(paths[1]!)).toBe(true)
+    expect(stopNew).not.toHaveBeenCalled()
+  })
+
   it('rejects a harness kind that detection did not find', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     const result = await runner.start({ ...request, harnessKind: 'ghost' }, () => {})
 
@@ -497,10 +681,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('forwards modelId and modeId into the runtime run input (progressive selection)', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start({ ...request, modelId: 'sonnet', modeId: 'plan' }, () => {})
 
@@ -508,12 +697,17 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('omits modelId/modeId from the run input when the request has none', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
-    const { modelId, modeId, ...without } = request
+    const without = { harnessKind: request.harnessKind, prompt: request.prompt }
     await runner.start(without, () => {})
 
     expect(run).toHaveBeenCalledWith(
@@ -522,10 +716,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('forwards the API-key passthrough opt-in into the runtime run input', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start({ ...request, allowApiKeyEnv: true }, () => {})
 
@@ -533,10 +732,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('omits allowApiKeyEnv from the run input when the request has none (stored-login default)', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start(request, () => {})
 
@@ -544,11 +748,11 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('does not resume a probe-warmed session under a different API-key opt-in', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const inspect = vi.fn(async () => ({ sessionId: 'sess_warm' }))
-    const runner = makeRunner({ run, inspect } as unknown as HarnessRuntime)
+    const inspect = vi.fn(async (_input: HarnessProviderInput) => ({}))
+    const runner = makeRunner({ run, inspect })
 
     // Probe warms a session WITHOUT the opt-in …
     await runner.inspect('claude')
@@ -560,11 +764,11 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('does NOT resume a probe-warmed session even when the API-key opt-in matches', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const inspect = vi.fn(async () => ({ sessionId: 'sess_warm' }))
-    const runner = makeRunner({ run, inspect } as unknown as HarnessRuntime)
+    const inspect = vi.fn(async (_input: HarnessProviderInput) => ({}))
+    const runner = makeRunner({ run, inspect })
 
     await runner.inspect({ kind: 'claude', allowApiKeyEnv: true })
     await runner.start({ ...request, allowApiKeyEnv: true }, () => {})
@@ -573,10 +777,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('rejects a malformed request against the frozen wire schema', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     const result = await runner.start({ prompt: 'p' }, () => {})
 
@@ -585,10 +794,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('refuses a run without a prompt — before any spawn', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     const result = await runner.start({ ...request, prompt: '   ' }, () => {})
 
@@ -650,15 +864,15 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
 
 describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe for the pickers', () => {
   it('returns the agent-declared models/modes from the runtime probe', async () => {
-    const inspect = vi.fn(async () => ({
+    const inspect = vi.fn(async (_input: HarnessProviderInput) => ({
       models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' },
     }))
     const runner = makeRunner({
-      run: vi.fn(async function* () {
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
         /* no-op */
       }),
       inspect,
-    } as unknown as HarnessRuntime)
+    })
 
     const result = await runner.inspect('claude')
 
@@ -671,13 +885,13 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
   })
 
   it('accepts the object inspect request and forwards the env flag to the probe', async () => {
-    const inspect = vi.fn(async () => ({}))
+    const inspect = vi.fn(async (_input: HarnessProviderInput) => ({}))
     const runner = makeRunner({
-      run: vi.fn(async function* () {
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
         /* no-op */
       }),
       inspect,
-    } as unknown as HarnessRuntime)
+    })
 
     const result = await runner.inspect({ kind: 'claude', allowApiKeyEnv: true })
 
@@ -688,11 +902,11 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
   it('rejects a malformed inspect request without spawning', async () => {
     const inspect = vi.fn()
     const runner = makeRunner({
-      run: vi.fn(async function* () {
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
         /* no-op */
       }),
       inspect,
-    } as unknown as HarnessRuntime)
+    })
 
     const result = await runner.inspect({ kind: '' })
 
@@ -701,13 +915,15 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
   })
 
   it('probes in the conversation workspace (a real dir under the OS temp dir)', async () => {
-    const inspect = vi.fn(async () => ({ models: { availableModels: [], currentModelId: '' } }))
+    const inspect = vi.fn(async (_input: HarnessProviderInput) => ({
+      models: { availableModels: [], currentModelId: '' },
+    }))
     const runner = makeRunner({
-      run: vi.fn(async function* () {
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
         /* no-op */
       }),
       inspect,
-    } as unknown as HarnessRuntime)
+    })
 
     const result = await runner.inspect('claude')
 
@@ -720,11 +936,11 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
   it('returns an ok:false arm for a harness the detector did not find', async () => {
     const inspect = vi.fn()
     const runner = makeRunner({
-      run: vi.fn(async function* () {
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
         /* no-op */
       }),
       inspect,
-    } as unknown as HarnessRuntime)
+    })
 
     const result = await runner.inspect('ghost')
 
@@ -733,15 +949,15 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
   })
 
   it('wraps a runtime probe failure into the ok:false arm (pickers stay absent, chat unaffected)', async () => {
-    const inspect = vi.fn(async () => {
+    const inspect = vi.fn(async (_input: HarnessProviderInput) => {
       throw new Error('agent binary not found')
     })
     const runner = makeRunner({
-      run: vi.fn(async function* () {
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
         /* no-op */
       }),
       inspect,
-    } as unknown as HarnessRuntime)
+    })
 
     const result = await runner.inspect('claude')
 
@@ -750,19 +966,20 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
 })
 
 describe('Coach IPC inspect — probes never create reusable sessions', () => {
-  const runProbe = (inspect: ReturnType<typeof vi.fn>): { run: ReturnType<typeof vi.fn>; runner: CoachRunner } => {
-    const run = vi.fn(async function* () {
+  type RunSpy = Mock<(input: HarnessRunInput) => AsyncGenerator<CoachEvent>>
+  const runProbe = (
+    inspect: (input: HarnessProviderInput) => Promise<HarnessInspectResult>,
+  ): { run: RunSpy; runner: CoachRunner } => {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       yield { kind: 'status', state: 'done' }
     })
-    return { run, runner: makeRunner({ run, inspect } as unknown as HarnessRuntime) }
+    return { run, runner: makeRunner({ run, inspect }) }
   }
-  const lastRunInput = (run: ReturnType<typeof vi.fn>, index = 0): { sessionId?: string; prompt: string } =>
-    run.mock.calls[index]![0]
+  const lastRunInput = (run: RunSpy, index = 0): HarnessRunInput => run.mock.calls[index]![0]
 
   it('the conversation FIRST run starts without a probe session', async () => {
     const { run, runner } = runProbe(
       vi.fn(async () => ({
-        sessionId: 'sess_probe',
         models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' },
       })),
     )
@@ -774,7 +991,7 @@ describe('Coach IPC inspect — probes never create reusable sessions', () => {
   })
 
   it('the first run still gets the ledger briefing after inspect', async () => {
-    const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
+    const { run, runner } = runProbe(vi.fn(async (_input: HarnessProviderInput) => ({})))
 
     await runner.inspect('claude')
     await runner.start({ ...request, scope: { period: '30days', provider: 'claude' } }, () => {})
@@ -784,7 +1001,7 @@ describe('Coach IPC inspect — probes never create reusable sessions', () => {
   })
 
   it('successive session-less runs remain session-less', async () => {
-    const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
+    const { run, runner } = runProbe(vi.fn(async (_input: HarnessProviderInput) => ({})))
 
     await runner.inspect('claude')
     await runner.start(request, () => {})
@@ -804,7 +1021,7 @@ describe('Coach IPC inspect — probes never create reusable sessions', () => {
       authStatus: 'configured',
     }
     detect.mockImplementation(async () => [harnesses[0]!, codexHarness])
-    const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_claude' })))
+    const { run, runner } = runProbe(vi.fn(async (_input: HarnessProviderInput) => ({})))
 
     await runner.inspect('claude')
     await runner.start({ ...request, harnessKind: 'codex' }, () => {})
@@ -814,7 +1031,7 @@ describe('Coach IPC inspect — probes never create reusable sessions', () => {
   })
 
   it('reset keeps probes from affecting the next conversation', async () => {
-    const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
+    const { run, runner } = runProbe(vi.fn(async (_input: HarnessProviderInput) => ({})))
 
     await runner.inspect('claude')
     await runner.reset()
@@ -824,42 +1041,132 @@ describe('Coach IPC inspect — probes never create reusable sessions', () => {
   })
 
   it('a probe that outlives a reset does not affect the next conversation', async () => {
-    let resolveProbe!: (value: { sessionId: string }) => void
-    const inspect = vi.fn(
+    let resolveProbe!: (value: HarnessInspectResult) => void
+    let resolveStop!: () => void
+    let probeWorkspace = ''
+    let runWorkspace = ''
+    const stop = vi.fn(
       () =>
-        new Promise(resolve => {
-          resolveProbe = resolve
+        new Promise<void>(resolve => {
+          resolveStop = () => {
+            resolve()
+            resolveProbe({})
+          }
         }),
     )
-    const { run, runner } = runProbe(inspect)
+    const run = vi.fn(async function* (input: HarnessRunInput): AsyncGenerator<CoachEvent> {
+      runWorkspace = input.workspacePath
+      yield { kind: 'status', state: 'done' }
+    })
+    const runtime: HarnessRuntime = {
+      run,
+      async inspect() {
+        return {}
+      },
+      inspectControlled(input) {
+        probeWorkspace = input.workspacePath
+        return {
+          result: new Promise<HarnessInspectResult>(resolve => {
+            resolveProbe = resolve
+          }),
+          stop,
+        }
+      },
+    }
+    const runner = makeRunner(runtime)
 
     const pending = runner.inspect('claude')
-    void runner.reset() // workspace deleted while the probe is in flight
-    await flush() // let the probe reach runtime.inspect before resolving it
-    resolveProbe({ sessionId: 'sess_old' })
-    await pending
+    await vi.waitFor(() => expect(probeWorkspace).not.toBe(''))
+    const reset = runner.reset()
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce())
+    expect(existsSync(probeWorkspace)).toBe(true)
+    await expect(pending).resolves.toEqual({ ok: false, error: 'conversation reset' })
 
     await runner.start(request, () => {})
-    // The stale session belongs to the deleted workspace — never resumed.
+    expect(runWorkspace).not.toBe(probeWorkspace)
+    expect(existsSync(runWorkspace)).toBe(true)
+    resolveStop()
+    await reset
+    expect(existsSync(probeWorkspace)).toBe(false)
+    expect(existsSync(runWorkspace)).toBe(true)
     expect(lastRunInput(run).sessionId).toBeUndefined()
   })
 
+  it('does not acquire a probe workspace when reset wins before getRuntime settles', async () => {
+    let resolveFirstRuntime!: (runtime: HarnessRuntime) => void
+    let runtimeRequests = 0
+    let runWorkspace = ''
+    const controlledInspect = vi.fn((_input: HarnessProviderInput): ControlledHarnessInspection => ({
+      result: Promise.resolve({}),
+      stop: vi.fn(async () => {}),
+    }))
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
+      /* The controlled path below captures the path. */
+    })
+    const runtime: HarnessRuntime = {
+      run,
+      async inspect() {
+        return {}
+      },
+      inspectControlled: controlledInspect,
+      runControlled(input) {
+        runWorkspace = input.workspacePath
+        return {
+          events: (async function* () {
+            yield { kind: 'status', state: 'done' }
+          })(),
+          stop: async () => {},
+        }
+      },
+    }
+    const runner = createCoachRunner({
+      getRuntime: () => {
+        runtimeRequests++
+        if (runtimeRequests === 1) {
+          return new Promise(resolve => {
+            resolveFirstRuntime = resolve
+          })
+        }
+        return Promise.resolve(runtime)
+      },
+      harnesses: harnessSource,
+      ledgerMcpServer,
+    })
+
+    const pendingProbe = runner.inspect('claude')
+    await vi.waitFor(() => expect(runtimeRequests).toBe(1))
+    await runner.reset()
+    await runner.start(request, () => {})
+    const newWorkspace = runWorkspace
+    resolveFirstRuntime(runtime)
+
+    await expect(pendingProbe).resolves.toEqual({ ok: false, error: 'conversation reset' })
+    expect(controlledInspect).not.toHaveBeenCalled()
+    expect(newWorkspace).not.toBe('')
+    expect(existsSync(newWorkspace)).toBe(true)
+  })
+
   it('always passes freshPrompt for resume recovery', async () => {
-    const { run, runner } = runProbe(vi.fn(async () => ({ sessionId: 'sess_probe' })))
+    const { run, runner } = runProbe(vi.fn(async (_input: HarnessProviderInput) => ({})))
 
     await runner.inspect('claude')
     await runner.start(request, () => {})
 
-    const input = lastRunInput(run) as { sessionId?: string; freshPrompt: string }
+    const input = lastRunInput(run)
     expect(input.sessionId).toBeUndefined()
     expect(input.freshPrompt).toContain('watchtower-ledger')
   })
 
   it('reset clears the briefed scope before the next resumed run', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
     const scope = { period: '30days', provider: 'claude' as const }
 
     await runner.start({ ...request, scope }, () => {})
@@ -873,25 +1180,30 @@ describe('Coach IPC inspect — probes never create reusable sessions', () => {
       () => {},
     )
 
-    const input = run.mock.calls[1]?.[0] as { prompt: string }
+    const input = run.mock.calls[1]?.[0]
     expect(input.prompt).toContain('The user has switched their view to Last 30 days · claude')
     expect(input.prompt).toContain("The user's question:\nSummarise my spend")
   })
 
   it('forwards a genuine resume cursor as a session id without expendable plumbing', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       yield { kind: 'status', state: 'done' }
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start(
       { ...request, resumeCursor: encodeResumeCursor({ instanceId: 'claude', sessionId: 'sess_prev' }) },
       () => {},
     )
 
-    const input = run.mock.calls[0]![0] as { sessionId?: string; resumeIsExpendable?: boolean }
+    const input = run.mock.calls[0]![0]
     expect(input.sessionId).toBe('sess_prev')
-    expect(input.resumeIsExpendable).toBeUndefined()
+    expect(input).not.toHaveProperty('resumeIsExpendable')
   })
 })
 
@@ -922,7 +1234,7 @@ describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () 
       concurrent--
       return { sessionId: `sess_${harness.kind}` }
     })
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       yield { kind: 'status', state: 'done' }
     })
     return { run, inspect, order, maxConcurrent: () => max }
@@ -938,11 +1250,11 @@ describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () 
   it('rapid inspect calls run SEQUENTIALLY — never two ACP spawns at once', async () => {
     const { inspect, order, maxConcurrent } = trackedRuntime()
     const runner = makeRunner({
-      run: vi.fn(async function* () {
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
         /* no-op */
       }),
       inspect,
-    } as unknown as HarnessRuntime)
+    })
 
     const [claude, codex] = await Promise.all([runner.inspect('claude'), runner.inspect('codex')])
 
@@ -956,11 +1268,11 @@ describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () 
   it('skips an intermediate harness superseded before its spawn', async () => {
     const { inspect, order, maxConcurrent } = trackedRuntime()
     const runner = makeRunner({
-      run: vi.fn(async function* () {
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
         /* no-op */
       }),
       inspect,
-    } as unknown as HarnessRuntime)
+    })
 
     const [claude, codex, gemini] = await Promise.all([
       runner.inspect('claude'),
@@ -980,11 +1292,11 @@ describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () 
     detect.mockRejectedValueOnce(new Error('fs boom'))
     const { inspect, order } = trackedRuntime()
     const runner = makeRunner({
-      run: vi.fn(async function* () {
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
         /* no-op */
       }),
       inspect,
-    } as unknown as HarnessRuntime)
+    })
 
     const [failed, next] = await Promise.all([runner.inspect('claude'), runner.inspect('codex')])
 
@@ -1002,10 +1314,15 @@ describe('Ledger MCP config (map 53) — the self-serve stdio server the agent s
   })
 
   it('is not spawned by the runner for a harness the detector did not find', async () => {
-    const run = vi.fn(async function* () {
+    const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       /* no-op */
     })
-    const runner = makeRunner({ run } as unknown as HarnessRuntime)
+    const runner = makeRunner({
+      run,
+      async inspect() {
+        return {}
+      },
+    })
 
     await runner.start({ ...request, harnessKind: 'ghost' }, () => {})
 

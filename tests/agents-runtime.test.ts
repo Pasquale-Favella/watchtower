@@ -1,19 +1,20 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { CoachStreamPart } from '../src/main/agents/events.js'
+import { harnessSpecs } from '../src/main/agents/harnesses/index.js'
+import { decodeResumeCursor } from '../src/main/agents/resume-cursor.js'
 import {
   acpSpawnCommand,
   createHarnessRuntime,
+  type HarnessSdk,
   isAuthFailureMessage,
   killTreeBeforeForceCleanup,
-  type HarnessSdk,
 } from '../src/main/agents/runtime.js'
-import { harnessSpecs } from '../src/main/agents/harnesses/index.js'
-import { decodeResumeCursor } from '../src/main/agents/resume-cursor.js'
 
 const claudeHarness: HarnessInfo = {
   name: 'claude',
@@ -434,7 +435,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     expect(streamText).toHaveBeenCalledOnce()
 
     // Consumer cancels the outer generator mid-run.
-    await gen.return()
+    await gen.return(undefined)
     const exhausted = await gen.next()
     expect(exhausted.done).toBe(true)
     expect(provider.cleanup).toHaveBeenCalledOnce()
@@ -451,7 +452,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const signal = streamText.mock.calls[0]![0].abortSignal as AbortSignal
     expect(signal.aborted).toBe(false)
 
-    await gen.return()
+    await gen.return(undefined)
 
     expect(signal.aborted).toBe(true)
   })
@@ -469,8 +470,93 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     await gen.next()
     await gen.next()
     await gen.next()
-    await expect(gen.return()).resolves.toMatchObject({ done: true })
+    await expect(gen.return(undefined)).resolves.toMatchObject({ done: true })
     expect(provider.cleanup).toHaveBeenCalledOnce()
+  })
+
+  it('stops a pending pull through the independent handle and forces cleanup once', async () => {
+    const { sdk, provider } = fakeSdk([])
+    const iterator = {
+      next: vi
+        .fn()
+        .mockResolvedValueOnce({ done: false as const, value: { type: 'text-delta' as const, text: 'live' } })
+        .mockImplementation(() => new Promise<never>(() => {})),
+      return: vi.fn(() => new Promise<never>(() => {})),
+    }
+    let capturedSignal: AbortSignal | undefined
+    const controlledStreamText = vi.fn((options: { abortSignal?: AbortSignal }) => {
+      capturedSignal = options.abortSignal
+      return { [Symbol.asyncIterator]: () => iterator }
+    })
+    sdk.streamText = controlledStreamText
+    const forceCleanup = vi.fn()
+    Object.assign(provider, { cleanup: vi.fn(() => new Promise<never>(() => {})), forceCleanup })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux', cancelDrainMs: 15 })
+    const run = runtime.runControlled!({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+
+    await expect(run.events.next()).resolves.toMatchObject({ value: { kind: 'status', state: 'starting' } })
+    await expect(run.events.next()).resolves.toMatchObject({ value: { kind: 'session' } })
+    await expect(run.events.next()).resolves.toMatchObject({ value: { kind: 'text', delta: 'live' } })
+    const pendingPull = run.events.next()
+    const stopping = run.stop()
+    expect(run.stop()).toBe(stopping)
+    await stopping
+
+    await expect(pendingPull).resolves.toEqual({ value: undefined, done: true })
+    expect(capturedSignal?.aborted).toBe(true)
+    expect(iterator.return).toHaveBeenCalledOnce()
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+    expect(forceCleanup).toHaveBeenCalledOnce()
+  })
+
+  it('forces cleanup once when a naturally completed stream has stalled provider cleanup', async () => {
+    const { sdk, provider } = fakeSdk([{ type: 'finish', finishReason: 'stop' }])
+    const forceCleanup = vi.fn()
+    Object.assign(provider, { cleanup: vi.fn(() => new Promise<never>(() => {})), forceCleanup })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux', cancelDrainMs: 15 })
+    const run = runtime.runControlled!({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+
+    const events: unknown[] = []
+    for await (const event of run.events) events.push(event)
+
+    expect(events.at(-1)).toEqual({ kind: 'status', state: 'done' })
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+    expect(forceCleanup).toHaveBeenCalledOnce()
+  })
+
+  it('does not create a fresh provider when stop races stale-resume cleanup', async () => {
+    const { sdk, provider, createACPProvider } = fakeSdk([])
+    let markCleanupStarted!: () => void
+    const cleanupStarted = new Promise<void>(resolve => {
+      markCleanupStarted = resolve
+    })
+    Object.assign(provider, {
+      initSession: vi.fn(async () => {
+        throw new Error('stale session')
+      }),
+      cleanup: vi.fn(() => {
+        markCleanupStarted()
+        return new Promise<never>(() => {})
+      }),
+    })
+    const forceCleanup = vi.fn()
+    Object.assign(provider, { forceCleanup })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux', cancelDrainMs: 15 })
+    const run = runtime.runControlled!({
+      harness: claudeHarness,
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+      sessionId: 'expired-session',
+    })
+
+    await expect(run.events.next()).resolves.toMatchObject({ value: { kind: 'status', state: 'starting' } })
+    const recovering = run.events.next()
+    await cleanupStarted
+    await run.stop()
+
+    await expect(recovering).resolves.toEqual({ value: undefined, done: true })
+    expect(createACPProvider).toHaveBeenCalledOnce()
+    expect(forceCleanup).toHaveBeenCalledOnce()
   })
 
   it('kills the Windows agent tree before the provider kills its shim', () => {
@@ -494,6 +580,26 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
 })
 
 describe('createHarnessRuntime — inspect (the pre-flight handshake probe, map 47 ticket 50)', () => {
+  it('stops a stalled inspection handshake and forces provider cleanup', async () => {
+    const { sdk, provider } = fakeSdk([])
+    Object.assign(provider, {
+      initSession: vi.fn(() => new Promise<never>(() => {})),
+      cleanup: vi.fn(() => new Promise<never>(() => {})),
+    })
+    const forceCleanup = vi.fn()
+    Object.assign(provider, { forceCleanup })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux', cancelDrainMs: 15 })
+    const inspection = runtime.inspectControlled!({ harness: claudeHarness, workspacePath: realWorkspace() })
+
+    await vi.waitFor(() => expect(provider.initSession).toHaveBeenCalledOnce())
+    const result = expect(inspection.result).rejects.toThrow('cancelled')
+    await inspection.stop()
+    await result
+
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+    expect(forceCleanup).toHaveBeenCalledOnce()
+  })
+
   it('returns the agent-declared models/modes from initSession without streaming a prompt', async () => {
     const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
     sessionResponse.models = {
@@ -792,7 +898,7 @@ describe('createHarnessRuntime — stale resume fallback', () => {
     const { sdk, provider, createACPProvider } = fakeSdk([])
     provider.initSession.mockRejectedValueOnce(new Error('loadSession failed'))
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
-    const mcpServers = [{ name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js'] }]
+    const mcpServers = [{ name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js'], env: [] }]
 
     const events = []
     for await (const event of runtime.run({
@@ -890,6 +996,7 @@ describe('registry → seam integration — every ACP spec maps to a provider co
     ).toBe(true)
 
     for (const spec of harnessSpecs) {
+      if (spec.adapter.kind !== 'acp') throw new Error(`${spec.kind} has no ACP adapter`)
       const { sdk, createACPProvider } = fakeSdk([])
       const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
       const harness: HarnessInfo = {
@@ -1007,6 +1114,7 @@ describe('createHarnessRuntime — win32 spawn wrapping end-to-end', () => {
       bundledEntry: '/app/node_modules/acp/bin/gemini.js',
     }
     const spec = harnessSpecs.find(s => s.kind === 'gemini')!
+    if (spec.adapter.kind !== 'acp') throw new Error('Gemini has no ACP adapter')
 
     for await (const _event of runtime.run({
       harness: bundledHarness,
