@@ -34,6 +34,39 @@ import type { StartedLedgerMcpHttp } from './sidecar.js'
  * Removal: `inflight: Promise` slot + `generation` counter juggling removed
  * when coalescing rides this `Deferred` flight + `FiberHandle` + flight-
  * identity staleness.
+ *
+ * REJECTED 2026-09-30 — `RcMap` (plan A5 / research §2 + §4), measured, not
+ * assumed. Three properties of THIS pool that the primitive cannot express:
+ *
+ * 1. The boot must start inside the caller's own frame. `acquire` is an async
+ *    function whose synchronous prefix calls `deps.spawn`, and two existing
+ *    tests pin what that buys: two same-tick acquires provably share ONE boot,
+ *    and a `releaseAll` in that same tick orphans a boot that WAS adopted (so
+ *    the orphan is released, never pooled). `RcMap.get` runs `lookup` in a
+ *    forked fiber (`Effect.runForkWith(...).pipe(Fiber.runIn(entry.scope))`),
+ *    so `deps.spawn` runs a scheduler turn later: the release races a boot
+ *    that was never adopted, and the second same-tick acquire starts a second
+ *    boot. Both tests go red. Making the boot eager to restore it means
+ *    keeping the flight marker to coalesce it — i.e. keeping the machinery the
+ *    RcMap was meant to replace, one level up.
+ * 2. The refcount is constant, so its semantics are unreachable. The sidecar
+ *    is APP-scoped (ADR 0027) and the app's claim on it is implicit and
+ *    permanent, so the count is `1 + live runs` and can never reach zero —
+ *    which is the only state `RcMap`'s release-at-the-last-reference ever acts
+ *    on. An infinite `idleTimeToLive` would then be load-bearing: the entry
+ *    must stay at zero references, so `invalidate` — the one RcMap teardown
+ *    that respects outstanding references — can never be the health gate, and
+ *    the gate would have to kill through a hand-rolled path anyway.
+ * 3. Killing an unhealthy or replaced sidecar must be immediate, not deferred
+ *    to the last holder: it is already dead (health gate) or its token is
+ *    already invalid (ADR 0027's regenerate deliberately disconnects existing
+ *    clients). Waiting for holders buys nothing and risks a live process
+ *    holding an invalidated token.
+ *
+ * The per-RUN contract is still hardened where it can be: the runner releases
+ * every attachment from the CONVERSATION's teardown as well as from each run's
+ * settle path (`agents/ipc.ts`), so a run whose generator never settles cannot
+ * retain an attachment past the conversation that asked for it.
  */
 
 export interface SidecarPoolDeps {
@@ -192,6 +225,18 @@ export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
         if (settled) return
         settled = true
         completeFlightSync(myFlight, null)
+        // A FAILED boot must not stay the pool's flight. The rejection arm
+        // wins the `settled` race against the spawn fiber on a microtask
+        // (whichever settles first), and the spawn fiber's own tail - the only
+        // other place that clears `flight` - is then skipped by its own
+        // `if (settled) return`. Without this, the completed-with-null flight
+        // stayed in the slot and EVERY later acquire joined it: one failed boot
+        // (a missing binary, a rejected spawn) silently degraded every later
+        // http-transport Coach turn to no-tools for the rest of the app's life,
+        // with `releaseAll` on app quit as the only cure.
+        // Removal: this arm disappears with the flight slot itself (see the
+        // `RcMap` rejection note in this module's header).
+        if (flight === myFlight) flight = null
       },
     )
 

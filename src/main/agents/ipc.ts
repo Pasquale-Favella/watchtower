@@ -56,11 +56,21 @@ import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
  * The renderer revalidates every payload against the same schemas (ADR 0005).
  */
 
-/** An acquired ledger MCP attachment: the session server config plus its
- *  release. Stdio attachments are agent-spawned (release is a no-op); HTTP
- *  attachments are pooled per conversation (release is a pool no-op — the
- *  app quits). Either way the runner releases every attachment when its run
- *  settles. */
+/** An acquired ledger MCP attachment: the session server config plus the
+ *  release that ends this holder's claim on it. TODAY both implementations of
+ *  that claim are a no-op — stdio servers are agent-spawned and harness-owned
+ *  (ADR 0027), and the HTTP sidecar is app-scoped and released by the pool on
+ *  app quit — so the release is a contract, not yet a resource. What the
+ *  contract must survive is the runner: it ends the claim from BOTH owners,
+ *  the run's settle path (the fast path) and the conversation's teardown on
+ *  `reset`/`dispose`. A run whose generator never settles — a wedged ACP child,
+ *  an interruption that never reaches the `finally` — therefore cannot keep a
+ *  claim past the conversation that asked for it, so the first `release` that
+ *  is not a no-op is already covered by a test rather than being a new
+ *  failure mode.
+ *  Removal: when every `release` is provably unreachable-by-design (the
+ *  sidecar stays app-scoped and stdio stays harness-owned), this interface
+ *  collapses back to a bare `AcpMcpServer` and the set below with it. */
 export interface LedgerMcpAttachment {
   server: AcpMcpServer
   release: () => void
@@ -159,6 +169,31 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
   /** Scope the agent was last briefed with (full briefing or scope update) — a
    *  resumed turn under a different scope gets a one-line update. */
   let briefedScopeKey: string | null = null
+  /** Every ledger MCP attachment this conversation handed out and has not yet
+   *  released. The per-run settle path is the FAST path, not the only path: a
+   *  run whose generator never settles — a wedged ACP child, an interruption
+   *  that never reaches the `finally` — never reaches it, and its claim would
+   *  then outlive the conversation that made it. `reset` (a new conversation)
+   *  and `dispose` (app quit) drain this set, so the conversation's teardown —
+   *  not the abandoned run — is what ends the claim. The set is also the
+   *  once-guard: an attachment is released at most once, whichever path gets
+   *  there first. Deliberately a plain Set and not a `Scope`: this module is a
+   *  `Promise`-shaped runner with no runtime, and `ipc.ts` is not on the
+   * `Effect.run*` composition-root allowlist (`eslint.config.mjs`) — a runner
+   *  that grows a `run*` would be the finding plan F10 names, not a fix. */
+  const runAttachments = new Set<LedgerMcpAttachment>()
+
+  /** Releases one attachment exactly once, from either owner. */
+  function releaseAttachment(attachment: LedgerMcpAttachment | null): void {
+    if (!attachment) return
+    if (!runAttachments.delete(attachment)) return
+    try {
+      attachment.release()
+    } catch {
+      // A release that threw must not become an unhandled rejection in a
+      // `finally` or in a teardown path; the claim is dropped either way.
+    }
+  }
 
   /** Deletes a conversation workspace with Windows-aware retries, swallowing a
    *  final failure. The ACP child process's CWD holds the dir until it has
@@ -299,14 +334,17 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       // when the sidecar fails to boot — then there are no data tools and the
       // prompts carry no briefing (the agent must not be told to call tools
       // that do not exist). Acquired only AFTER the harness check: a run that
-      // never launches must not spawn anything. Released when the run's
-      // stream settles (see both finallys below).
+      // never launches must not spawn anything. Registered on the
+      // conversation's attachment set so BOTH owners can end the claim — the
+      // run's stream settling (see the two release sites below) and the
+      // conversation's teardown (`reset`/`dispose`).
       let attachment: LedgerMcpAttachment | null = null
       try {
         attachment = await deps.ledgerMcpServer(req.harnessKind)
       } catch {
         attachment = null
       }
+      if (attachment) runAttachments.add(attachment)
       const ledgerServer = attachment?.server ?? null
       const instanceId = instance.instanceId
       const sessionId = req.resumeCursor ? decodeResumeCursor(req.resumeCursor, instanceId) : undefined
@@ -394,13 +432,13 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
               }
             }
             activeRuns.delete(runId)
-            attachment?.release()
+            releaseAttachment(attachment)
           }
         })()
 
         return { ok: true, runId }
       } catch (err) {
-        attachment?.release()
+        releaseAttachment(attachment)
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
@@ -441,6 +479,15 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       const target = workspace
       workspace = null
       briefedScopeKey = null
+      // The conversation's own end of every ledger MCP claim it handed out —
+      // BEFORE the teardown wait, not after it. A wedged generator never
+      // reaches its settle path, so the 3s barrier below would otherwise be
+      // the only thing standing between an abandoned run and a claim that
+      // outlives the conversation (this is also the app-quit path: `dispose`
+      // resets, so nothing can be left holding one). The sidecar itself
+      // survives a reset on purpose — ADR 0027 keeps it app-scoped for local
+      // MCP clients — so this releases the CLAIM, not the process.
+      for (const outstanding of [...runAttachments]) releaseAttachment(outstanding)
       // Stop every active run and AWAIT the teardown before deleting: the ACP
       // child process's CWD is the workspace, and deleting it while the child
       // is still alive fails on Windows with EPERM — as an uncaught exception

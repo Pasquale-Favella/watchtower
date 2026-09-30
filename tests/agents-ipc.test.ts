@@ -113,7 +113,17 @@ const flush = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0)
 afterEach(() => {
   for (const dir of readdirSync(tmpdir())) {
     if (dir.startsWith('watchtower-coach-')) {
-      rmSync(join(tmpdir(), dir), { recursive: true, force: true })
+      // Same tolerance as the runner's own `deleteWorkspace`
+      // (`src/main/agents/ipc.ts`): a wedged ACP child can still hold its temp
+      // dir, and an unguarded `rmSync` then fails the hook — taking every test
+      // in this file red for a scratch directory nobody is asserting on. A
+      // leftover under the OS temp root is harmless and cleaned on reboot;
+      // 53 failing tests are not.
+      try {
+        rmSync(join(tmpdir(), dir), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+      } catch {
+        /* best effort — see the comment above */
+      }
     }
   }
 })
@@ -423,6 +433,10 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('reset cancels active runs and deletes the conversation temp workspace', async () => {
+    // Whatever is already under the temp root belongs to some other process and
+    // is none of this test's business. Snapshot it before the run so the
+    // post-reset check can scope itself to the dir this run creates.
+    const preExisting = new Set(readdirSync(tmpdir()).filter(d => d.startsWith('watchtower-coach-')))
     const { runtime, interrupted } = streamingRuntime()
     const runner = makeRunner(runtime)
     const events: CoachEvent[] = []
@@ -434,15 +448,20 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     await vi.waitFor(() => expect(events.some(e => e.kind === 'text')).toBe(true))
 
     const workspaceBefore = readdirSync(tmpdir()).filter(d => d.startsWith('watchtower-coach-'))
-    expect(workspaceBefore.length).toBeGreaterThan(0)
+    expect(workspaceBefore.some(d => !preExisting.has(d))).toBe(true)
 
     // reset AWAITS the run's teardown (the generator's finally) before
     // deleting the workspace — the delete must never race a live child.
     await runner.reset()
 
     expect(interrupted()).toBe(true)
-    const after = readdirSync(tmpdir()).filter(d => d.startsWith('watchtower-coach-'))
-    expect(after).toEqual([])
+    // Scoped to the workspace THIS run created. Asserting the whole temp root
+    // came back empty couples this test to every other process on the machine:
+    // a single locked `watchtower-coach-*` dir left by an unrelated run took
+    // all 53 tests in this file red (2026-09-30). `reset()`'s contract is "it
+    // deletes its own workspace", and that is what this checks.
+    const survivors = readdirSync(tmpdir()).filter(d => d.startsWith('watchtower-coach-') && !preExisting.has(d))
+    expect(survivors).toEqual([])
     void runId
   })
 
