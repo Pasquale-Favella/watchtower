@@ -1,18 +1,21 @@
-import { describe, expect, it } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import { describe, expect, it, vi } from 'vitest'
+
+import { buildOverviewFromLedger } from '../src/main/overview.js'
+import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import {
+  buildAnalyticalViewsFromLedger,
   buildDashboardViewsFromLedger,
   buildProjectRowsFromLedger,
-  querySessionRowsFromLedger,
   getSessionDetailFromLedger,
-  buildAnalyticalViewsFromLedger,
+  querySessionRowsFromLedger,
   searchSessionsFromLedger,
 } from '../src/main/views.js'
-import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 // ── Ledger-backed views family (map 03) ─────────────────────────────────────
 // The dashboard/projects/session-rows/detail/analytics/search builders consume
@@ -113,6 +116,116 @@ const VIEWS_SPECS: ViewsSessionSpec[] = [
     bashCommands: ['npm run build'],
   },
 ]
+
+function trackSnapshotReads(store: LedgerStore) {
+  const counts: Record<string, number> = {}
+  const runQueriesSync = store.runQueriesSync.bind(store)
+  const runRepositorySync = store.runRepositorySync.bind(store)
+  vi.spyOn(store, 'runQueriesSync').mockImplementation(operation =>
+    runQueriesSync(queries =>
+      operation(
+        new Proxy(queries, {
+          get(target, property, receiver) {
+            const member = Reflect.get(target, property, receiver)
+            if (typeof member !== 'function') return member
+            return (...args: unknown[]) => {
+              const name = String(property)
+              counts[name] = (counts[name] ?? 0) + 1
+              return member(...args)
+            }
+          },
+        }),
+      ),
+    ),
+  )
+  vi.spyOn(store, 'runRepositorySync').mockImplementation(operation =>
+    runRepositorySync(config =>
+      operation(
+        new Proxy(config, {
+          get(target, property, receiver) {
+            const member = Reflect.get(target, property, receiver)
+            if (typeof member !== 'function') return member
+            return (...args: unknown[]) => {
+              const name = String(property)
+              counts[name] = (counts[name] ?? 0) + 1
+              return member(...args)
+            }
+          },
+        }),
+      ),
+    ),
+  )
+  return counts
+}
+
+describe('request snapshots', () => {
+  it('loads analytics provenance, facts, and pricing once for both payloads', () => {
+    const store = makeLedger()
+    portViews(store, VIEWS_SPECS)
+    const reads = trackSnapshotReads(store)
+
+    buildAnalyticalViewsFromLedger(store)
+
+    expect(reads).toMatchObject({
+      getSources: 1,
+      getSessions: 1,
+      getTurns: 1,
+      getCallFacts: 1,
+      getModelAliases: 1,
+      getPriceOverrides: 1,
+    })
+    store.close()
+  })
+
+  it('reuses one snapshot for lifetime data start and the scoped overview', () => {
+    const store = makeLedger()
+    portViews(store, VIEWS_SPECS)
+    const reads = trackSnapshotReads(store)
+
+    buildOverviewFromLedger(
+      store,
+      { period: 'all', range: { since: '2026-07-01', until: '2026-08-01' } },
+      new Date('2026-08-02T00:00:00.000Z'),
+    )
+
+    expect(reads).toMatchObject({
+      getSources: 1,
+      getSessions: 1,
+      getTurns: 1,
+      getCallFacts: 1,
+      getModelAliases: 1,
+      getPriceOverrides: 1,
+    })
+    store.close()
+  })
+
+  it('keeps project provenance reads constant as the source count grows', () => {
+    for (const sourceCount of [2, 8]) {
+      const store = makeLedger()
+      portViews(
+        store,
+        Array.from({ length: sourceCount }, (_, index) => ({
+          ...VIEWS_SPECS[0]!,
+          sessionId: `session-${sourceCount}-${index}`,
+        })),
+      )
+      expect(store.getSources()).toHaveLength(sourceCount)
+      const reads = trackSnapshotReads(store)
+
+      buildProjectRowsFromLedger(store)
+
+      expect(reads).toMatchObject({
+        getSources: 1,
+        getSessions: 1,
+        getTurns: 1,
+        getCallFacts: 1,
+        getModelAliases: 1,
+        getPriceOverrides: 1,
+      })
+      store.close()
+    }
+  })
+})
 
 describe('ledger-backed views family (aggregation seam)', () => {
   it('derives dashboard KPIs and buckets from ledger rows', () => {

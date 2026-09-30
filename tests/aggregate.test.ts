@@ -1,13 +1,22 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import { afterEach, describe, expect, it } from 'vitest'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { buildSessionRows, buildSessionSummaries, defaultRange, queryScope } from '../src/main/store/aggregate.js'
+
 import { calculateCost } from '../src/main/pipeline/models.js'
 import { buildSessionSummary, cachedTurnToClassified } from '../src/main/pipeline/parser.js'
 import { aggregateSessions } from '../src/main/pipeline/sessions-report.js'
 import type { ClassifiedTurn } from '../src/main/pipeline/types.js'
+import {
+  buildSessionRows,
+  buildSessionSummaries,
+  buildSessionSummariesFromSnapshot,
+  defaultRange,
+  queryScope,
+} from '../src/main/store/aggregate.js'
+import { LedgerStore } from '../src/main/store/ledger.js'
+import { loadLedgerQuerySnapshot } from '../src/main/store/query-snapshot.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
 const tempDirs: string[] = []
@@ -380,6 +389,25 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
       endedAt: '2026-07-01T09:00:00.000Z',
     })
 
+    store.close()
+  })
+})
+
+describe('query-time pricing snapshots', () => {
+  it('keeps each request on the aliases and overrides it captured', () => {
+    const store = makeStore()
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+
+    store.setPriceOverride('demo-model', { inputPricePerMillion: 1_000_000, outputPricePerMillion: 0 })
+    const firstSnapshot = loadLedgerQuerySnapshot(store)
+    const firstSummary = buildSessionSummariesFromSnapshot(firstSnapshot, { range: FULL_RANGE })
+
+    store.setPriceOverride('demo-model', { inputPricePerMillion: 2_000_000, outputPricePerMillion: 0 })
+    const secondSnapshot = loadLedgerQuerySnapshot(store)
+    const secondSummary = buildSessionSummariesFromSnapshot(secondSnapshot, { range: FULL_RANGE })
+
+    expect(buildSessionSummariesFromSnapshot(firstSnapshot, { range: FULL_RANGE })).toEqual(firstSummary)
+    expect(secondSummary[0]!.totalCostUSD).toBeCloseTo(firstSummary[0]!.totalCostUSD * 2, 9)
     store.close()
   })
 })

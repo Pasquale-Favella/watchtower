@@ -1,30 +1,32 @@
-import { sessionRowFromSummary, type SessionRow as ReportSessionRow } from './pipeline/sessions-report.js'
+import {
+  type AnalyticalViews,
+  analyticalViewsSchema,
+  type DashboardViews,
+  dashboardViewsSchema,
+  type ProjectRow,
+  projectRowSchema,
+  type SearchHit,
+  searchHitSchema,
+  type SessionDetail,
+  sessionDetailSchema,
+  type SessionRow,
+  sessionRowSchema,
+  type SkillRow,
+  type SubagentRow,
+} from '../shared/schemas/views.js'
 import { isProxiedPath } from './pipeline/models.js'
-import { CATEGORY_LABELS } from './pipeline/types.js'
+import { type SessionRow as ReportSessionRow, sessionRowFromSummary } from './pipeline/sessions-report.js'
 import type { ProjectSummary, SessionSummary, TaskCategory } from './pipeline/types.js'
+import { CATEGORY_LABELS } from './pipeline/types.js'
 import {
   buildSessionRows,
   buildSessionSummaries,
+  buildSessionSummariesFromSnapshot,
   groupSummariesIntoProjects,
   sessionProjectKey,
 } from './store/aggregate.js'
 import type { LedgerStore } from './store/ledger.js'
-import {
-  analyticalViewsSchema,
-  dashboardViewsSchema,
-  projectRowSchema,
-  searchHitSchema,
-  sessionDetailSchema,
-  sessionRowSchema,
-  type AnalyticalViews,
-  type DashboardViews,
-  type ProjectRow,
-  type SearchHit,
-  type SessionDetail,
-  type SessionRow,
-  type SkillRow,
-  type SubagentRow,
-} from '../shared/schemas/views.js'
+import { loadLedgerQuerySnapshot } from './store/query-snapshot.js'
 
 export type {
   AnalyticalViews,
@@ -82,8 +84,10 @@ function analyticalFrom(dashboard: DashboardViews, sessions: SessionSummary[]): 
 }
 
 export function buildAnalyticalViewsFromLedger(store: LedgerStore): AnalyticalViews {
-  const summaries = buildSessionSummaries(store, { range: ALL_TIME_RANGE })
-  return analyticalViewsSchema.parse(analyticalFrom(buildDashboardViewsFromLedger(store), summaries))
+  const snapshot = loadLedgerQuerySnapshot(store)
+  const summaries = buildSessionSummariesFromSnapshot(snapshot, { range: ALL_TIME_RANGE })
+  const dashboard = buildDashboardCoreFromSummaries(summaries, snapshot.sessions)
+  return analyticalViewsSchema.parse(analyticalFrom(dashboard, summaries))
 }
 
 /**
@@ -136,22 +140,15 @@ function searchSessionsCore(store: LedgerStore, term: string): SearchHit[] {
  * cost, calls, session count, and time span.
  */
 export function buildProjectRowsFromLedger(store: LedgerStore): ProjectRow[] {
-  return projectRowSchema.array().parse(buildProjectRowsCore(store))
+  const snapshot = loadLedgerQuerySnapshot(store)
+  return projectRowSchema.array().parse(buildProjectRowsCore(snapshot))
 }
 
-function buildProjectRowsCore(store: LedgerStore): ProjectRow[] {
-  const summaries = buildSessionSummaries(store, { range: ALL_TIME_RANGE })
+function buildProjectRowsCore(snapshot: ReturnType<typeof loadLedgerQuerySnapshot>): ProjectRow[] {
+  const summaries = buildSessionSummariesFromSnapshot(snapshot, { range: ALL_TIME_RANGE })
   const projectPathBySession = new Map<string, string>()
-  const repoUrlBySession = new Map<string, string>()
-  for (const s of store.getSessions()) {
+  for (const s of snapshot.sessions) {
     if (!projectPathBySession.has(s.sessionId)) projectPathBySession.set(s.sessionId, s.projectPath ?? '')
-  }
-  for (const source of store.getSources()) {
-    for (const s of store.getSessions()) {
-      if (s.sourceId === source.id && source.repoUrl && !repoUrlBySession.has(s.sessionId)) {
-        repoUrlBySession.set(s.sessionId, source.repoUrl)
-      }
-    }
   }
   const byProject = new Map<string, ProjectRow>()
   for (const s of summaries) {
@@ -176,7 +173,7 @@ function buildProjectRowsCore(store: LedgerStore): ProjectRow[] {
     row.sessions += 1
     if (!row.firstTimestamp || s.firstTimestamp < row.firstTimestamp) row.firstTimestamp = s.firstTimestamp
     if (!row.lastTimestamp || s.lastTimestamp > row.lastTimestamp) row.lastTimestamp = s.lastTimestamp
-    if (!row.repoUrl) row.repoUrl = repoUrlBySession.get(s.sessionId)
+    if (!row.repoUrl) row.repoUrl = s.repoUrl
   }
   return Array.from(byProject.values()).sort((a, b) => b.cost - a.cost)
 }
@@ -375,13 +372,17 @@ function buildDashboardCore(
  * already-shaped rows over IPC and never touches the filesystem or the pipeline.
  */
 export function buildDashboardViewsFromLedger(store: LedgerStore): DashboardViews {
-  return dashboardViewsSchema.parse(buildDashboardCoreFromLedger(store))
+  const snapshot = loadLedgerQuerySnapshot(store)
+  const summaries = buildSessionSummariesFromSnapshot(snapshot, { range: ALL_TIME_RANGE })
+  return dashboardViewsSchema.parse(buildDashboardCoreFromSummaries(summaries, snapshot.sessions))
 }
 
-function buildDashboardCoreFromLedger(store: LedgerStore): DashboardViews {
-  const summaries = buildSessionSummaries(store, { range: ALL_TIME_RANGE })
+function buildDashboardCoreFromSummaries(
+  summaries: SessionSummary[],
+  ledgerSessions: ReturnType<typeof loadLedgerQuerySnapshot>['sessions'],
+): DashboardViews {
   const projectPathBySession = new Map<string, string>()
-  for (const s of store.getSessions()) {
+  for (const s of ledgerSessions) {
     if (!projectPathBySession.has(s.sessionId)) projectPathBySession.set(s.sessionId, s.projectPath ?? '')
   }
 

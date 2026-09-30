@@ -1,9 +1,4 @@
-import {
-  calculateCost,
-  createPricingConfigLookup,
-  getShortModelName,
-  type PricingConfigLookup,
-} from '../pipeline/models.js'
+import { calculateCost, getShortModelName, type PricingConfigLookup } from '../pipeline/models.js'
 import {
   buildSpawnPrSets,
   deriveCanonicalProjectKey,
@@ -11,7 +6,7 @@ import {
   isAbsoluteProjectPath,
   projectNameFromPath,
 } from '../pipeline/parser.js'
-import { sessionRowFromSummary, type SessionRow } from '../pipeline/sessions-report.js'
+import { type SessionRow, sessionRowFromSummary } from '../pipeline/sessions-report.js'
 import type {
   ClassifiedTurn,
   DateRange,
@@ -22,6 +17,7 @@ import type {
   TokenUsage,
 } from '../pipeline/types.js'
 import type { LedgerSessionRow, LedgerStore, LedgerTurnRow } from './ledger.js'
+import { type LedgerQuerySnapshot, loadLedgerQuerySnapshot } from './query-snapshot.js'
 import type { LedgerCallFactsRow } from './read-projections.js'
 
 /**
@@ -68,15 +64,6 @@ export function defaultRange(end: Date = new Date(), days: number = DEFAULT_RANG
   return { start, end }
 }
 
-/** Preload pricing/alias config once per scope read so per-row resolution is
- * a map hit. One shared lookup (also used by the Models lens) so every
- * Section resolves identical identities and rates. */
-let pricingConfig: PricingConfigLookup = createPricingConfigLookup([], [])
-
-function loadConfig(store: LedgerStore): void {
-  pricingConfig = createPricingConfigLookup(store.getModelAliases(), store.getPriceOverrides())
-}
-
 /** The cost a call contributes to its session aggregate. Mirrors the Models
  * lens exactly (models-view `resolveCallCost`) so every Section reconciles:
  * a Price override on the EFFECTIVE (aliased) model wins; otherwise an
@@ -85,7 +72,11 @@ function loadConfig(store: LedgerStore): void {
  * renames a model — identity comes from `pricingConfig.resolveAlias`, not from here.
  * Override names match verbatim first, then by normalized key (same spelling
  * tolerance as aliases). */
-function resolveDisplayCost(call: LedgerCallFactsRow, resolvedModel: string): number {
+function resolveDisplayCost(
+  call: LedgerCallFactsRow,
+  resolvedModel: string,
+  pricingConfig: PricingConfigLookup,
+): number {
   const override = pricingConfig.findOverride(resolvedModel)
   if (override) {
     const input = call.inputTokens * (override.inputPricePerMillion / 1_000_000)
@@ -117,10 +108,12 @@ function resolveDisplayCost(call: LedgerCallFactsRow, resolvedModel: string): nu
  *  other `queryScope` consumer and stays on the same projection, which is why
  *  `project` and `working_directory` are two of the twenty-nine kept. */
 export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerScope {
-  loadConfig(store)
+  return queryScopeFromSnapshot(loadLedgerQuerySnapshot(store), scope)
+}
 
+export function queryScopeFromSnapshot(snapshot: LedgerQuerySnapshot, scope: AggregateScope): LedgerScope {
   const providerBySource = new Map<number, string>()
-  for (const source of store.getSources()) providerBySource.set(source.id, source.provider)
+  for (const source of snapshot.sources) providerBySource.set(source.id, source.provider)
 
   const providerFilter = scope.provider
   const keepSource = (sourceId: number): boolean => {
@@ -128,13 +121,13 @@ export function queryScope(store: LedgerStore, scope: AggregateScope): LedgerSco
     return providerBySource.get(sourceId) === providerFilter
   }
 
-  const sessions = store.getSessions().filter(s => keepSource(s.sourceId))
-  const turns = store.getTurns().filter(t => keepSource(t.sourceId))
+  const sessions = snapshot.sessions.filter(s => keepSource(s.sourceId))
+  const turns = snapshot.turns.filter(t => keepSource(t.sourceId))
   const calls: ScopedCall[] = []
-  for (const call of store.getCallFacts()) {
+  for (const call of snapshot.calls) {
     if (!keepSource(call.sourceId)) continue
-    const resolvedModel = pricingConfig.resolveAlias(call.model)
-    calls.push({ ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel) })
+    const resolvedModel = snapshot.pricing.resolveAlias(call.model)
+    calls.push({ ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel, snapshot.pricing) })
   }
 
   return { sessions, turns, calls }
@@ -507,7 +500,14 @@ function attachCanonicalIdentity(summary: SessionSummary, session: LedgerSession
  * produced. Empty when the scope has no in-range data.
  */
 export function buildSessionSummaries(store: LedgerStore, scope: AggregateScope): SessionSummary[] {
-  const data = queryScope(store, scope)
+  return buildSessionSummariesFromSnapshot(loadLedgerQuerySnapshot(store), scope)
+}
+
+export function buildSessionSummariesFromSnapshot(
+  snapshot: LedgerQuerySnapshot,
+  scope: AggregateScope,
+): SessionSummary[] {
+  const data = queryScopeFromSnapshot(snapshot, scope)
 
   const sessionKey = (sourceId: number, sessionId: string): string => `${sourceId}\0${sessionId}`
 
@@ -533,7 +533,7 @@ export function buildSessionSummaries(store: LedgerStore, scope: AggregateScope)
 
   const repoUrlBySource = new Map<number, string>()
   const providerBySource = new Map<number, string>()
-  for (const source of store.getSources()) {
+  for (const source of snapshot.sources) {
     providerBySource.set(source.id, source.provider)
     if (source.repoUrl) repoUrlBySource.set(source.id, source.repoUrl)
   }

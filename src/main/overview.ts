@@ -1,10 +1,4 @@
-import { EDIT_TOOLS } from './pipeline/classifier.js'
-import { findUnpricedModels, getShortModelName, isExpectedFreeModel } from './pipeline/models.js'
-import { CATEGORY_LABELS, type DateRange, type SessionSummary, type TaskCategory } from './pipeline/types.js'
-import { buildSessionSummaries } from './store/aggregate.js'
-import type { LedgerStore } from './store/ledger.js'
 import {
-  overviewPayloadSchema,
   type EfficiencyGrade,
   type OverviewActivityRow,
   type OverviewDailyEntry,
@@ -16,6 +10,7 @@ import {
   type OverviewMcpRow,
   type OverviewModelRow,
   type OverviewPayload,
+  overviewPayloadSchema,
   type OverviewPeriod,
   type OverviewRetryTax,
   type OverviewRetryTaxRow,
@@ -29,6 +24,12 @@ import {
   type OverviewUnpricedModel,
   type OverviewWorkflow,
 } from '../shared/schemas/overview.js'
+import { EDIT_TOOLS } from './pipeline/classifier.js'
+import { findUnpricedModels, getShortModelName, isExpectedFreeModel } from './pipeline/models.js'
+import { CATEGORY_LABELS, type DateRange, type SessionSummary, type TaskCategory } from './pipeline/types.js'
+import { buildSessionSummariesFromSnapshot } from './store/aggregate.js'
+import type { LedgerStore } from './store/ledger.js'
+import { loadLedgerQuerySnapshot } from './store/query-snapshot.js'
 
 export type {
   EfficiencyGrade,
@@ -723,10 +724,11 @@ export function dataStartForSessions(sessions: SessionSummary[]): string | null 
  * the old `dataStartFor(report)` provided.
  */
 export function buildOverviewFromLedger(store: LedgerStore, scope: OverviewScope, now = new Date()): OverviewPayload {
-  const allSessions = buildSessionSummaries(store, {
+  const snapshot = loadLedgerQuerySnapshot(store)
+  const allSessions = buildSessionSummariesFromSnapshot(snapshot, {
     range: overviewDateRange({ period: 'lifetime' }, now),
   })
-  const scoped = buildSessionSummaries(store, {
+  const scoped = buildSessionSummariesFromSnapshot(snapshot, {
     range: overviewDateRange(scope, now),
     provider: scope.provider,
   })
