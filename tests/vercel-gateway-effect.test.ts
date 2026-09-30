@@ -13,6 +13,7 @@ import {
   vercelGateway,
 } from '../src/main/pipeline/providers/vercel-gateway.js'
 import type { DateRange } from '../src/main/pipeline/types.js'
+import { runEffectTest } from './helpers/run-effect-test.js'
 
 const RANGE: DateRange = {
   start: new Date('2026-01-01T00:00:00.000Z'),
@@ -113,7 +114,7 @@ describe('fetchVercelGatewayReportEffect (Effect-native gateway boundary)', () =
   })
 
   it('timeout via TestClock returns []', async () => {
-    const rows = await Effect.runPromise(
+    const rows = await runEffectTest(
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(
           fetchVercelGatewayReportEffect(RANGE).pipe(
@@ -121,13 +122,8 @@ describe('fetchVercelGatewayReportEffect (Effect-native gateway boundary)', () =
             Effect.provide(Env.layerWithGatewayKey('test-key')),
           ),
         )
-        // Sized for the WORST case the bounded transient retry can reach,
-        // derived by stepping the real schedule rather than re-deriving its
-        // closed form. A window sized for one attempt parks the fiber on a
-        // virtual sleep, so the test hangs to the 120s timeout instead of
-        // failing on its assertion - exactly how this window silently
-        // under-counted the retry. The behaviour asserted below is unchanged: a
-        // timeout still returns [] and logs exactly one `timeout`.
+        // Use the schedule-derived worst-case retry window so TestClock
+        // reaches the request timeout before the test joins the fiber.
         yield* TestClock.adjust(yield* worstCaseRetryWindowMs(8_000))
         return yield* Fiber.join(fiber)
       }).pipe(Effect.provide(TestClock.layer())),

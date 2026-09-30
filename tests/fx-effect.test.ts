@@ -19,6 +19,7 @@ import {
 import { HttpFetch, worstCaseRetryWindowMs } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import type { CurrencyRate } from '../src/shared/schemas/ledger.js'
+import { runEffectTest } from './helpers/run-effect-test.js'
 
 function makeStore(): LedgerStore {
   const dir = mkdtempSync(join(tmpdir(), 'tr-fx-effect-'))
@@ -161,15 +162,10 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
   it('times out via TestClock and falls back without persisting', async () => {
     const store = makeStore()
     const neverFetch = (() => new Promise<Response>(() => {})) as typeof fetch
-    // Sized for the WORST case the bounded transient retry can reach, derived by
-    // stepping the real schedule rather than re-deriving its closed form. A
-    // window sized for a single attempt parks the fiber on a virtual sleep, so
-    // the test hangs to the 120s timeout instead of failing on its assertion -
-    // which is exactly how this window silently under-counted the retry. The
-    // behaviour asserted below is unchanged: a timeout still degrades to rate 1
-    // and persists nothing.
+    // Use the schedule-derived worst-case retry window so TestClock reaches the
+    // request timeout before the test joins the fiber.
     const timeoutMs = 100
-    const active = await Effect.runPromise(
+    const active = await runEffectTest(
       Effect.gen(function* () {
         const windowMs = yield* worstCaseRetryWindowMs(timeoutMs)
         const fiber = yield* Effect.forkChild(fxEffect(store, 'EUR', neverFetch, { timeoutMs }))

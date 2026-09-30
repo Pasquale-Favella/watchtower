@@ -17,6 +17,7 @@ import {
   UpdateFetchError,
   type UpdateStatus,
 } from '../src/main/updates.js'
+import { runEffectTest } from './helpers/run-effect-test.js'
 
 const CURRENT = '0.1.0'
 
@@ -110,7 +111,7 @@ describe('fetchReleasesEffect (Effect-native releases boundary)', () => {
   })
 
   it('times out via the Effect Clock (TestClock-controllable)', async () => {
-    const error = await Effect.runPromise(
+    const error = await runEffectTest(
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(
           fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(neverFetch))),
@@ -202,7 +203,7 @@ describe('createUpdateCheckerEffect (Effect-native check)', () => {
 
   it('times out via TestClock and falls back to cached status', async () => {
     const checker = await makeChecker()
-    const status = await Effect.runPromise(
+    const status = await runEffectTest(
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(
           checker.check().pipe(Effect.provide(HttpFetch.layerWithFetch(neverFetch))),
