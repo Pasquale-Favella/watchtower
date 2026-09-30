@@ -200,10 +200,15 @@ Full method, per-size spreads (±13% at 500k, 1.8× run-to-run swing on
 Stated plainly, because a second evaluation that quietly revises the first is
 worth less than one that does not:
 
-1. **A5 was wrong.** I proposed `LayerMap.Service` for the sidecar pool. `LayerMap`
-   builds _layers_ keyed by identifier; the actual semantic is a refcounted
-   _value_ per conversation. The right primitive is **`RcMap`** (+ `Pool` for the
-   TTL/health axis). Corrected in §2 above and in the slice list below.
+1. **A5 was wrong, twice, and the correction was also wrong.** I proposed
+   `LayerMap.Service` for the sidecar pool, then corrected it to `RcMap`. Both
+   were prescriptions from vocabulary rather than from the code: "keyed
+   resource", then "reference counting". The rewrite was built and measured, and
+   **`RcMap` is rejected too** — both `release` implementations are already
+   no-ops because ADR 0027 makes the sidecar app-scoped, so the refcount never
+   reaches zero and `RcMap`'s only meaningful state is unreachable. Decision 6
+   has the full reasoning. What I should have asked before proposing either:
+   _does this resource's lifetime end?_
 2. **F17's first row was wrong.** I claimed `DbWorkerClient`'s
    `Map<string, Promise>` read-dedup should become `Effect.cachedFunction`.
    **rc.115 has no `cachedFunction`** — `Cache` exposes only `make/get/set/has`.
@@ -254,9 +259,10 @@ SQL — and that path is the one a user actually feels.
    request collapse to one `LedgerQueries` read behind an `RcMap`/`ScopedCache`
    keyed by (scope, ledger version). **This is the slice that makes the product
    feel fast; the rest make the code clean.**
-4. **`RcMap` for the MCP attachment + `Pool` for the sidecar** (corrected A5),
-   `Stream` for the coach run, `tests/` into a tsconfig, `Predicate`, the
-   `FileSystem` amendment, `it.effect`, Windows CI — unchanged in relative order.
+4. ~~**`RcMap` for the MCP attachment + `Pool` for the sidecar** (corrected A5)~~
+   **→ rejected after measurement, see decision 6 below**; `Stream` for the coach
+   run, `tests/` into a tsconfig, `Predicate`, the `FileSystem` amendment,
+   `it.effect`, Windows CI — unchanged in relative order.
 5. **`unstable/rpc` for the worker protocol: deferred, not declined.** Evaluate
    it _after_ slice 5, when the payload volumes are known - a typed RPC layer is
    only worth its cost if it is typed over data that stays small.
@@ -279,11 +285,25 @@ SQL — and that path is the one a user actually feels.
    an Effect-adoption question — it is a data-layer question that Effect's SQL
    modules make cheap. My recommendation: a separate issue, opened now, with
    slices 0 and 5 in it, referenced from #148.
-6. **`RcMap` or hand-rolled for the MCP attachment?** `RcMap` is the documented
-   primitive and the refcount semantics are exactly right, but the current
-   generation-counter code is tested and correct. If `RcMap` wins, it should win
-   on a slice that also has a test proving no sidecar is left running after a
-   crashed conversation — that property is what refcounting is for.
+6. ~~**`RcMap` or hand-rolled for the MCP attachment?**~~ **ANSWERED — no
+   `RcMap`, and the premise was false.** I asked for a test proving no sidecar is
+   left running after a crashed conversation, on the theory that this is what
+   refcounting is for. It is not what is happening: **both `release`
+   implementations are already no-ops** (`pool.ts:85,112`, `index.ts:424` —
+   literally `release: () => {}`), because ADR 0027 makes the sidecar app-scoped
+   with an implicit permanent claim. The count is `1 + live runs` and never
+   reaches zero, so `RcMap`'s release-at-the-last-reference — the only state it
+   acts on — is **unreachable**. On top of that, `RcMap.get` forks its lookup
+   into a separate fiber, so `deps.spawn` lands a scheduler turn after
+   `acquire`'s synchronous frame, and two existing tests pin that frame as
+   load-bearing.
+
+   The `RcMap` rewrite was written, measured, and reverted. What survived
+   (`67c1e79`) is better than the original ask: a real bug (a failed boot
+   poisoned the pool for the app's life) and a hardened attachment contract, both
+   RED-verified. See the plan's A5 for the full reasoning and the standing rule
+   I should have applied the first time.
+
 7. **Span sink (revised A7): pino, or no spans?** `Tracer`/`Span` are in-package;
    a pino sink is ~30 lines and honours §5.4. Or amend §5.4 to say spans stay off
    and stop naming `Effect.fn` spans that go nowhere.

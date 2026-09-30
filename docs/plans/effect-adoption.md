@@ -193,6 +193,27 @@ assessment named, now at 2× the size it was then.
 Each is correct and each is a place where cancellation, wake-up-on-completion
 and fairness have to be re-derived by hand.
 
+### F25 — An unbounded retention leak in the coach run registry, found while measuring F17.
+
+`ipc.ts` keeps `activeRuns` and `cancelledRuns` as module-closure maps. A run is
+removed from `activeRuns` at the end of the stream pump's `finally` — the only
+place — so a run whose generator never settles (a wedged ACP child; an
+interruption that never reaches the `finally`) is **retained forever**. Its entry
+holds the request, the run id, and the live generator.
+
+`reset()` and `dispose()` both drain attachments now (`67c1e79`) and both wait
+on a 3s teardown barrier, so the _conversation_ cannot strand a claim. What they
+cannot do is reach a `finally` that a wedged child will never enter. The
+app-scoped sidecar keeps serving, so nothing user-visible is stranded, but the
+map grows without bound for the app's lifetime and each entry is a live
+generator.
+
+Separate from, and adjacent to, the attachment contract just hardened — same
+file, same failure mode, different map. It was out of the measuring slice's
+scope and is recorded here rather than folded in. **This is a correctness bug, not
+a migration opportunity:** the honest fix is a `FinalizationRegistry` or an
+explicit per-run timeout, neither of which is an Effect adoption.
+
 ### F18 — The coach run seam is a raw `AsyncGenerator` with a hand-rolled cancel path.
 
 `runtime.ts:383` (`async *run`), consumed by `for await` at `ipc.ts:376`,
@@ -370,13 +391,52 @@ port (`CommandRunner` is the existing example). This closes an item that has bee
 open for three waves instead of leaving it dangling, and it is the honest
 counterpart to the two frictions W9 recorded on the child-process transport.
 
-### A5 — `LayerMap.Service` for the sidecar pool and the harness snapshot store (2 slices)
+### A5 — ~~`LayerMap.Service` for the sidecar pool and the harness snapshot store~~ — **the pool half REJECTED after measurement; the snapshot half stands**
 
-Both are "resources keyed by an identifier" — the documented `LayerMap` use case
-(`AGENTS.md` → _Dynamic resources with LayerMap_). Replaces `pool.ts`'s
-generation + `Deferred` flight identity and `snapshot.ts`'s `storeScope` +
-`probeHandle` pair, and gets keyed acquire/release/refcount semantics from the
-library rather than from hand-derived generation counters. Closes half of F17.
+I got this one wrong three times, in a way worth recording because the pattern
+is the lesson. `LayerMap.Service` → `RcMap` → rejected, all three in one
+afternoon. Each time I picked the primitive from the _shape of the words_ — "keyed
+resource", "reference counting" — without checking whether the thing being
+counted has a lifetime that can end. The sidecar pool's does not.
+
+The `RcMap` rewrite was written in full, measured, and reverted. Three reasons,
+in `pool.ts`'s header where the next reader will hit them:
+
+1. **`RcMap.get` runs its lookup in a FORKED FIBER**
+   (`Effect.runForkWith(...).pipe(Fiber.runIn(entry.scope))`), so `deps.spawn`
+   runs a scheduler turn _after_ `acquire`'s synchronous frame. That frame is
+   load-bearing: two existing tests pin that two same-tick acquires provably
+   share ONE boot, and that a `releaseAll` in that same tick orphans a boot that
+   _was_ adopted (so the orphan is released, never pooled). Both go red. Making
+   the boot eager to restore it means keeping a flight marker to coalesce it —
+   i.e. keeping the machinery `RcMap` was meant to replace, one level up.
+2. **The refcount is CONSTANT.** ADR 0027 makes the sidecar app-scoped with an
+   implicit permanent claim, so the count is `1 + live runs` and never reaches
+   zero — which is the only state `RcMap`'s release-at-the-last-reference ever
+   acts on. An infinite `idleTimeToLive` would then be load-bearing, and
+   `invalidate` (the one teardown that respects outstanding references) could
+   never be the health gate.
+3. **Killing an unhealthy sidecar must be immediate, not deferred to the last
+   holder.** It is already dead (health gate) or its token is already invalid
+   (ADR 0027's regenerate deliberately disconnects existing clients).
+
+**What the attempt did produce, and is kept** (`67c1e79`): a genuine bug fix — a
+failed boot no longer poisons the pool for the app's life — and a hardened
+per-run attachment contract, so a conversation's teardown releases what its runs
+hold and a wedged generator cannot retain a claim past it. Both RED-verified
+against pre-slice. Neither needs `RcMap`; both are the kind of defect the
+`Deferred` flight machinery was hiding, which is an argument for the hand-rolled
+code being _read_, not replaced.
+
+**`snapshot.ts` is untouched and the half-claim on F17 stands.** Its
+`storeScope` + `probeHandle` pair is a real scoped resource with a real end,
+which is exactly the distinction the pool half failed.
+
+**Standing rule, added because I broke it twice:** before prescribing a
+concurrency primitive from Effect, establish that the resource's lifetime can
+actually end. "Reference counting" is only a problem if references reach zero.
+`activeRuns`/`cancelledRuns` in `ipc.ts` is where that question is still open
+and unanswered — see F25.
 
 ### A6 — `Stream` for the coach run (1 slice)
 
@@ -487,7 +547,7 @@ a test rather than a claim.
 | 5   | `DbWorkerContext` split: `ScanSupervisor` + `ViewQueries` + `Dispatch` | F16             | three files, dispatch arm count unchanged, wire payloads byte-identical                                                                                                    |
 | 6   | `LedgerQueries` behind the view builders; `LedgerStore` deleted        | F12 F16         | zero `LedgerStore` references repo-wide (grep-proven), one runtime in the worker                                                                                           |
 | 7   | `Stream` for the coach run                                             | F18             | interruption + drain under `Scope`; the 3s `Promise.race` is gone; the `agents-effect-primitives` real-clock race is gone with it                                          |
-| 8   | `LayerMap` for sidecar pool + snapshot store                           | F17             | generation counters deleted; a keyed release test                                                                                                                          |
+| 8   | ~~`LayerMap`/`RcMap` for sidecar pool~~ **rejected** + snapshot store  | F17 (half)      | **DONE `67c1e79`** — pool half rejected after measurement (A5); snapshot half still open                                                                                   |
 | 9   | `tests/` into `tsconfig.node.json` + fix the surfaced errors           | F22             | `npm run typecheck` covers `tests/`; the `Effect.fail` arity error is fixed; CI goes red if it returns                                                                     |
 | 10  | `Predicate` sweep                                                      | F20             | 9 `isRecord` copies → 1; `parser.ts` guards on the hot path converted                                                                                                      |
 | 11  | A4 `FileSystem` amendment to §5.3 + `architecture.md`                  | §5.3            | decision recorded with the sync-discovery measurement as its evidence                                                                                                      |
