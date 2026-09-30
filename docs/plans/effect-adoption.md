@@ -517,12 +517,57 @@ area and should not run concurrently. 9, 10, 13 are independent of everything.
    platform `FileSystem` implementation, uninterruptible
    `Stream.fromAsyncIterable`). A Schema-module gap would take the whole app
    rather than one slice. **Fork:** if the rpc spike says adopt, migrate
-   immediately — Wave A (the 4 main-only files + the row schemas in
+   immediately - Wave A (the 4 main-only files + the row schemas in
    `shared/schemas/ledger.ts`; no renderer impact, one commit to revert) then
    Wave B (the 18 renderer-facing modules, after the ADR amendment), per
    contract and never both libraries for one. If it says decline, recommend
    Wave A only, or deferring entirely. Wave A also cannot start before the
-   repository split lands — it is editing those exact row schemas.
+   repository split lands - it is editing those exact row schemas.
+
+> **RESOLVED 2026-09-30 - `unstable/rpc`: DECLINE.** See
+> [`docs/research/effect-unstable-rpc-spike.md`](../research/effect-unstable-rpc-spike.md).
+> The decisive finding is not a feature gap - it is that the Zod bridge works and
+> is **completely type-blind**: a `Schema.declareConstructor` shim over
+> `ZodAliases.safeParse` validates, round-trips, rejects malformed payloads and
+> carries typed errors and streams through a real `RpcGroup` over `RpcTest` - and
+> reports `Type`, `Encoded` and `~type.make.in` all `undefined`. `~type.make.in`
+> is what the client method parameter is typed from (`RpcClient.ts:86`), so all
+> **38** ops would be `unknown -> unknown`: today's `args: unknown[]` plus ~450
+> lines and a per-contract adapter whose only job is the `safeParse` the arms
+> already do at `context.ts:651`. `Rpc` is only worth having when it is typed,
+> and typed is unavailable to it here. Separately, **0 of 9** `DbWorkerEvent`
+> variants are expressible (`RpcClient` exports no notify/push/subscribe), the
+> `ready`/`init-error` handshake has no home (`RpcServer.make` is
+> `Effect<never, never, ...>` - a boot failure cannot be reported), the
+> `inflightReads` dedup cannot cross a thread boundary, and `RpcClient`'s respawn
+> is _worse_ than ours (unbounded `Effect.retry(Schedule.spaced(1000))` at
+> `RpcClient.ts:1337` vs a capped, jittered, streak-resetting, TestClock-pinned
+> schedule at `client.ts:80-100`).
+>
+> **Consequence: Wave B is declined.** Nothing downstream wants it, and it is the
+> half that costs 51 renderer files and an ADR amendment. Zod stays the wire
+> contract.
+>
+> **Wave A is recommended - but on entirely different grounds than "one library
+> instead of two", which the verdict does not support.** The real argument is a
+> defect the wave made visible: the six `z.array(<rowSchema>).parse(rows)` calls
+> in `ledger-repository.ts` (`:130`, `:154`, `:165`, `:175`, `:184`, `:198`)
+> **throw**. Inside `Effect.gen` a `ZodError` becomes an unmodelled **defect** in
+> `Cause`, not a typed failure in `E` - so one corrupt row, a schema drift or a
+> truncated JSON column takes a whole Section down with a defect the operational
+> log has no code for, instead of a recoverable error the Section can degrade
+> past. Effect Schema's `decodeUnknownEffect` puts the decode failure in the
+> error channel, where `catchTag` and the allowlisted `OperationalLog` can handle
+> it. That is the same typed-failure discipline P5 exists to enforce - and the
+> new lint rule **cannot** catch these, because `no-restricted-syntax` matches
+> `ThrowStatement` and a `.parse()` throw is not one. Banning `.parse()` inside a
+> `src/main` Effect file is the follow-up that keeps the fix from regressing.
+>
+> Wave A's justification is therefore independent of `Rpc` and of `SqlModel`: it
+> moves 6 call sites from the defect channel to the error channel, touches no
+> renderer file, and needs no ADR change. Explicitly not a speed play - Effect
+> Schema is not faster than Zod 4, and the 47%-of-`getCalls` decode cost is
+> fixed by _reading less_, which is slice 5's job, not by changing libraries.
 
 1. **§5.3 step 2 (`FileSystem`): close as "no"** with a permanent `node:fs`
    exception for sync discovery (A4), or fund the hand-written transport. The

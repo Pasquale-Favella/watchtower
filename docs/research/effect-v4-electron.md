@@ -258,8 +258,17 @@ SQL — and that path is the one a user actually feels.
    `Stream` for the coach run, `tests/` into a tsconfig, `Predicate`, the
    `FileSystem` amendment, `it.effect`, Windows CI — unchanged in relative order.
 5. **`unstable/rpc` for the worker protocol: deferred, not declined.** Evaluate
-   it _after_ slice 5, when the payload volumes are known — a typed RPC layer is
+   it _after_ slice 5, when the payload volumes are known - a typed RPC layer is
    only worth its cost if it is typed over data that stays small.
+
+   > **RESOLVED 2026-09-30: DECLINE.** See
+   > [`effect-unstable-rpc-spike.md`](./effect-unstable-rpc-spike.md). The
+   > measured payloads (1-39 KiB) removed the volume argument, and the spike then
+   > removed the only remaining one: the Zod bridge validates and runs, but
+   > reports `Type`/`Encoded`/`~type.make.in` all `undefined`, so all 38 ops
+   > would be `unknown -> unknown`. 0 of 9 `DbWorkerEvent` variants are
+   > expressible, and `RpcClient`'s respawn is weaker than the pinned schedule
+   > already in `db-worker/client.ts`.
 
 ---
 
