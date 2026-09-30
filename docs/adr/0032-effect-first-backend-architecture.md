@@ -53,13 +53,16 @@ behavior and IPC contracts remain stable while slices move.
   at that boundary; do not introduce Promise yields inside a transaction. The
   SQLite driver continues to own its connection and statement cache; do not
   add a second pool or statement registry.
-- Keep Zod as the existing shared extraction and IPC contract source of truth
-  (ADRs 0003/0005) during adoption. Effect values and service types never cross
-  IPC. Do not maintain parallel Zod and Effect Schema definitions for one
-  contract; a future schema migration must be a separate, explicit decision.
+- Use Effect Schema as the target extraction, persistence and IPC contract
+  authority under ADR 0034. Migrate one contract and its consumers together;
+  each unmigrated contract continues to use its existing Zod definition until
+  that slice lands. Derive TypeScript types from the authoritative schema and
+  distinguish encoded rows from decoded domain values and wire payloads.
+  Effect values, services and fibers never cross IPC.
 - Keep React and its local state/data-fetching patterns as the renderer's UI
-  runtime. The renderer consumes the existing Promise-based, Zod-validated IPC
-  facade rather than receiving Effect runtimes or fibers.
+  runtime. The renderer consumes the Promise-based validated IPC facade and
+  uses synchronous Effect Schema decoding for migrated contracts. Renderer
+  validation needs no application runtime, layer, fiber or effectful decoder.
 - Build service tests with test Layers and fakes; use Effect's test clock for
   time-dependent behavior and test failure, interruption, cleanup, and
   transaction rollback where relevant. Preserve integration tests against the
@@ -84,8 +87,10 @@ remain authoritative unless separately changed.
 3. Apply the same service/layer and lifecycle approach to main-process-owned
    asynchronous capabilities and consolidate the existing harness integration
    around its process-level runtime.
-4. Revisit schema representation only as a separate decision. Do not block
-   backend Effect adoption on replacing Zod.
+4. Replace Zod under ADR 0034 in contract dependency order, including the
+   renderer tripwire adapters. Coordinate shared files with active query work;
+   backend ownership improvements can advance independently of contracts that
+   have no shared implementation dependency.
 
 At every stage, keep the db-worker ownership and renderer IPC surface intact.
 Remove compatibility adapters when their callers have migrated; do not make
@@ -105,4 +110,4 @@ them a permanent second API.
 - Effect is not required in pure domain code or React components; those areas
   stay simple until an actual effectful workflow benefits from the runtime.
 
-Related: ADR 0003, ADR 0005, ADR 0023, ADR 0030, ADR 0031.
+Related: ADR 0003, ADR 0005, ADR 0023, ADR 0030, ADR 0031, ADR 0034.

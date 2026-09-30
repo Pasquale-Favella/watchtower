@@ -1,5 +1,15 @@
 # Effect adoption: second precise evaluation
 
+> **Current assessment, 2026-09-30:** use [the updated assessment](../research/effect-adoption-assessment-2026-09-30.md)
+> and [section 6](#6-current-execution-order) for status and execution order.
+> They start from issue #148's penultimate comment and incorporate the latest
+> comment and commits through `a917305`. The September 29 findings below are
+> historical evidence; their counts, open decisions, and completion claims are
+> not the current schedule. Query and ledger Schema edits in the working tree
+> are still in flight. Later owner decisions authorize Schema in the renderer,
+> replace pino with the Effect logging API and local writer, decline RPC and
+> SqlModel, and leave Windows CI recorded but unscheduled.
+
 > Plan only, no implementation. Measured 2026-09-29 against
 > `146-ledger-schema-migrations` @ `aa81aa5`; companion to
 > [`docs/research/effect-v4-electron.md`](../research/effect-v4-electron.md),
@@ -208,6 +218,11 @@ and fairness have to be re-derived by hand.
 
 ### F25 — An unbounded retention leak in the coach run registry, found while measuring F17.
 
+> **Correction, 2026-09-30:** FinalizationRegistry cannot reclaim a generator
+> strongly retained by activeRuns. A timeout on return() does not stop pending
+> work. The fix needs an independently callable stop handle and bounded cleanup.
+> See F30 in [the current assessment](../research/effect-adoption-assessment-2026-09-30.md#f30-f25-needs-cancellation-that-can-run-while-event-pulling-is-stuck).
+
 `ipc.ts` keeps `activeRuns` and `cancelledRuns` as module-closure maps. A run is
 removed from `activeRuns` at the end of the stream pump's `finally` — the only
 place — so a run whose generator never settles (a wedged ACP child; an
@@ -224,7 +239,7 @@ generator.
 Separate from, and adjacent to, the attachment contract just hardened — same
 file, same failure mode, different map. It was out of the measuring slice's
 scope and is recorded here rather than folded in. **This is a correctness bug, not
-a migration opportunity:** the honest fix is a `FinalizationRegistry` or an
+a migration opportunity:** the original proposal was a `FinalizationRegistry` or an
 explicit per-run timeout, neither of which is an Effect adoption.
 
 ### F26 — TestClock tests burn the full timeout instead of failing, so contention is indistinguishable from a regression.
@@ -720,6 +735,11 @@ identifier, typed failures via `Schema.TaggedError` + `catchTag`, spans outside
 
 ## 5. Clean architecture: the end state
 
+> **Superseded by the current assessment:** view loading has IO and should be an
+> Effect workflow; calculation accepts explicit data. The MCP isolate still needs
+> its own scoped read-only SQLite runtime. Repository tag splitting did not
+> remove the worker's nested runtime. Use F27 and F29 for the revised design.
+
 ```
 main isolate      ManagedRuntime(MainLive)      ← IPC handlers (Promise + Zod façade)
                   MainLive = HttpFetch · HarnessProbe · Env · OperationalLogLoggerLayer
@@ -751,33 +771,89 @@ surface unchanged — which is the correct shape for this product.
 
 ---
 
-## 6. Proposed slices
+## 6. Current execution order
 
-Ordered, each independently mergeable, each with an acceptance criterion that is
-a test rather than a claim.
+The expanded [target architecture](./effect-target-architecture.md) makes full
+Schema replacement, dependency direction, request reuse and refresh freshness
+explicit completion criteria. ADR 0034 now records the authorized Schema target;
+ADRs 0003, 0005 and 0032 are amended. Further findings F33-F37 extend the assessment, including the SDK registration dependency.
 
-| #   | Slice                                                                  | Closes          | Acceptance                                                                                                                                                                 |
-| --- | ---------------------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `WorkerLive` composition root + `OperationalLogLoggerLayer` installed  | F10 F11 F13 F14 | `Env.layer` built once per worker lifetime (counting fake); every `Effect.provide` in `context.ts` gone; `it.effect` proof that a substituted layer reaches a dispatch arm |
-| 2   | Retry policy on the four fetch call sites, abort-guarded               | F15             | TestClock test: a `network` failure retries twice then falls back; an `abort` failure retries zero times; the 24h stale-rate window is unchanged                           |
-| 3   | `LedgerRepository` → `Ledger{Ingest,Config,Queries}`                   | F12             | three tags, one implementation; a test per slice with a fake; the double `runSync` round-trip removed from at least the config slice                                       |
-| 4   | ESLint P1 + P5 (`run*` and `throw` in Effect files)                    | F10-class P1 P5 | the rules are in `eslint.config.mjs`, run over the tree, and the wave's own code is compliant                                                                              |
-| 5   | `DbWorkerContext` split: `ScanSupervisor` + `ViewQueries` + `Dispatch` | F16             | three files, dispatch arm count unchanged, wire payloads byte-identical                                                                                                    |
-| 6   | `LedgerQueries` behind the view builders; `LedgerStore` deleted        | F12 F16         | zero `LedgerStore` references repo-wide (grep-proven), one runtime in the worker                                                                                           |
-| 7   | `Stream` for the coach run                                             | F18             | interruption + drain under `Scope`; the 3s `Promise.race` is gone; the `agents-effect-primitives` real-clock race is gone with it                                          |
-| 8   | ~~`LayerMap`/`RcMap` for sidecar pool~~ **rejected** + snapshot store  | F17 (half)      | **DONE `67c1e79`** — pool half rejected after measurement (A5); snapshot half still open                                                                                   |
-| 9   | `tests/` into `tsconfig.node.json` + fix the surfaced errors           | F22             | `npm run typecheck` covers `tests/`; the `Effect.fail` arity error is fixed; CI goes red if it returns                                                                     |
-| 10  | `Predicate` sweep                                                      | F20             | 9 `isRecord` copies → 1; `parser.ts` guards on the hot path converted                                                                                                      |
-| 11  | A4 `FileSystem` amendment to §5.3 + `architecture.md`                  | §5.3            | decision recorded with the sync-discovery measurement as its evidence                                                                                                      |
-| 12  | `@effect/vitest` (add) + `it.effect` for new effect tests              | F19             | one migrated file per slice; interruption/finalizer assertions expressed in `it.effect`                                                                                    |
-| 13  | Windows CI runner (or a `vitest` project split)                        | F23             | the 5 `skipIf(win32)` arms execute somewhere                                                                                                                               |
+This schedule supersedes the original table and the penultimate issue comment's
+queue. Finding identifiers remain stable. Numbers 6 and 7 below use that issue
+comment's order, where the context split precedes facade retirement. The source
+assessment and rationale are in [the September 30 assessment](../research/effect-adoption-assessment-2026-09-30.md).
 
-Slices 1–4 are the high-value block and touch disjoint files. 5–6 are the same
-area and should not run concurrently. 9, 10, 13 are independent of everything.
+The implementation baseline is local commit `ce81593`, which includes the
+ledger Schema conversion after the call projection in `b7f47e7`. Current wave
+ownership and verification are recorded in the target architecture's execution
+record. Coordinate shared ledger files between sequential slices. Historical
+gate results in issue comments do not verify the current working tree.
+
+### Completed or decided
+
+| Item                 | Disposition                                                                            |
+| -------------------- | -------------------------------------------------------------------------------------- |
+| 0, query measurement | Historical baseline complete; rerun after query changes before claiming an improvement |
+| 1, WorkerLive        | Root implemented; F27 connection ownership and F28 forwarding remain                   |
+| 2, transient retry   | Implemented on four fetch callers with abort guard                                     |
+| 3, repository split  | Three ports implemented; nested runtime and facade remain                              |
+| 4, lint              | Composition and throw rules implemented, warn-only                                     |
+| 8, sidecar pool      | RcMap/Pool replacement declined; attachment hardening implemented                      |
+| 12, FileSystem       | Sync discovery remains a documented Node exception                                     |
+| A7/A10               | Tracer and Effect logging implemented; pino removed; forwarding remains                |
+| SqlModel/RPC         | Declined under recorded decisions; not prerequisites for Schema                        |
+| 14, Windows CI       | Finding retained, intentionally unscheduled                                            |
+
+### Work to execute
+
+| Order               | Work                                                                                       | Depends on                                                                     | Acceptance                                                                                                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First, independent  | F26 mitigation and Effect test support                                                     | None                                                                           | A parked virtual-time test fails under a bounded real-time ceiling; scheduler and retry assumptions are explicit. Verify rc.115 compatibility before adding `@effect/vitest`; migrating to `it.effect` alone is not proof |
+| First, independent  | F25 controlled run cancellation, F30                                                       | None                                                                           | Stop can abort a run while `next()` is pending; hanging `return()` cannot retain registry entries or prevent process teardown; reset/new-run races preserve workspace ownership and suppress late events                  |
+| 5a, in flight       | Complete narrow query reads and ledger row decoding                                        | Current file owner                                                             | Updated measurement reports rows, columns, wall time, heap and payload parity; committed call projection and uncommitted Schema edits are reported separately                                                             |
+| Observation         | Worker sink injection for Logger, Tracer and OperationalLog, F28                           | Existing root and `oplog` event                                                | A real worker Effect log, counter and repository span arrive at main once, with worker context and allowlisted data; default console output is not duplicated                                                             |
+| Query reuse         | Request snapshot and constant provenance/session reads, F29/F33                            | 5a settled; coordinate with 6                                                  | Analytics loads summaries once; project session reads remain constant as source count grows; provenance is loaded once; pricing/config are explicit inputs                                                                |
+| Renderer assessment | F35/F36 assessment of actual IPC ordering and backend hydration work                       | Preserve existing stores under the owner's implementation correction           | Keep the original renderer stores and eager refresh policy; no counters, Promise ownership or refresh coordination variables added there; consider a separate shell metadata query                                        |
+| Phase 1             | Preserve typed SQL/decode failures through migrated callers, F32                           | Ledger schema edits settled                                                    | Corrupt row failures remain typed through loading; dispatch maps them to existing failure responses and an operational code; no successful empty-ledger fallback                                                          |
+| Ownership           | One SQLite layer graph in WorkerLive, F27                                                  | Config/query callers prepared for direct ports                                 | One writer connection and one worker runtime; initialization precedes `ready`; rollback and future-version rejection preserved; teardown drains scopes before closing connection; MCP retains its own read-only root      |
+| 6                   | Split DbWorkerContext and separate loading from calculation, F16/F29                       | 5a, Phase 1; coordinate with Ownership                                         | Loader obtains rows/config explicitly; calculations accept data without database reads or mutable module pricing state; operation set and payload semantics preserved                                                     |
+| 7                   | Retire LedgerStore and inner database runtime, F12/F27                                     | Ownership and 6                                                                | All worker, FX, export, MCP, measurement and test consumers migrated; no remaining facade calls or inner runtime; retained sync execution is only at named external boundaries                                            |
+| Query follow-up     | Summary/detail/search reads and measured SQL reduction; cache decision under ADR 0008, F29 | 6 and current measurement                                                      | Duplicate reads avoided within requests first; complete-turn scope and pricing parity preserved; any cache is bounded and invalidates on relevant writes/config/pricing; MCP freshness has an explicit policy             |
+| Scan follow-up      | Per-scan cancellation and parser drain, F31                                                | Coordinate with 6 and 7                                                        | Delayed lookup, abort/new-scan and shutdown cases make no late writes/progress; SQLite outlives underlying parser work, not only its Effect adapter                                                                       |
+| Main follow-up      | Scoped snapshot and live HarnessProbe dependency, F13/F17                                  | Independent of ledger; coordinate with Coach changes                           | Actual clientVersion reaches the probe; disposal interrupts owned work; no scope-internal state cast or unmanaged snapshot runs; coalescing and superseded responses preserved                                            |
+| A6                  | Stream-based Coach workflow if it simplifies the controlled run                            | F25 stop handle and drain policy                                               | Interruption can invoke stop independently; finalizers have bounded drain; no raw `fromAsyncIterable` replacement accepted as sufficient evidence                                                                         |
+| 10                  | Dedicated test tsconfig and CI typecheck, F22                                              | Can proceed independently                                                      | Tests importing Node and renderer code typecheck with required aliases/types; production configs remain separate; fix the actual surfaced errors                                                                          |
+| MCP schema adapter  | Evaluate SDK registration boundary for Effect tool schemas, F37                            | Before converting shared MCP request inputs                                    | Official SDK handlers preserve tools/resources/prompts and protocol errors; metadata derives from Effect contracts; no cast to ZodRawShape or parallel hand-written contract; transitive Zod distinguished from app usage |
+| Wave A              | Complete remaining main-only schema contracts                                              | Ledger work settled and contract dependency inventory                          | Convert each contract and consumers atomically using recorded parity rules; preserve typed decode errors; maintain one authoritative schema                                                                               |
+| Wave B              | Convert shared wire and renderer schemas                                                   | Required dependencies, renderer decoder seam, MCP adapter where used, ADR 0034 | Accepted inputs, decoded outputs and IPC behavior preserved; renderer uses synchronous Schema validation with React/Promise runtime; remove Zod after its final consumers leave                                           |
+| 11, later           | Predicate cleanup and final documentation                                                  | Touch only settled files                                                       | Replace appropriate duplicated guards without introducing schemas for pure trusted data; update architecture status and preserve ADR 0029 ownership/privacy requirements                                                  |
+
+F25, F26 and test typechecking do not need to wait for ledger work. The ledger
+rows, runtime ownership, context split and facade retirement share files and
+must proceed under coordinated sequential ownership. Main snapshot and Coach
+work also need coordinated ownership of `agents/ipc.ts` and `agents/runtime.ts`.
+These boundaries do not require parallel agents.
+
+Phase 1 already overlaps the in-flight ledger edits. Verify what lands before
+starting it; do not repeat a completed conversion under another slice name.
+Schema Wave B is authorized by A11, superseding the earlier decline in section 7.
+The waves describe consumer groups; a ready leaf contract can advance without
+waiting for unrelated main-only modules. The shared renderer decoder seam has
+a named removal condition once its final Zod consumer migrates.
+RPC and SqlModel remain declined even after Schema changes.
+
+Completion uses the behavior and ownership checklist in the assessment, rather
+than an Effect LOC percentage. Once remaining work is complete, update the
+architecture status and PR description with verified results. While #148 tracks
+open work, tracker maintenance should remove the PR's existing `Closes #148` line.
 
 ---
 
 ## 7. Decisions needed from the owner
+
+> This section preserves the historical discussion and schema parity rules.
+> Current decisions and dependencies are in section 6. Schema Wave B is
+> authorized; RPC and SqlModel are declined; Windows CI is unscheduled.
 
 0. **Schema consolidation (Zod → Effect Schema): HELD pending the `unstable/rpc`
    verdict — 2026-09-30.** The owner authorised replacing Zod outright, so the
@@ -834,9 +910,10 @@ area and should not run concurrently. 9, 10, 13 are independent of everything.
 > `RpcClient.ts:1337` vs a capped, jittered, streak-resetting, TestClock-pinned
 > schedule at `client.ts:80-100`).
 >
-> **Consequence: Wave B is declined.** Nothing downstream wants it, and it is the
-> half that costs 51 renderer files and an ADR amendment. Zod stays the wire
-> contract.
+> **Historical recommendation, superseded by A11 and section 6:** this RPC verdict
+> originally recommended declining Wave B. The owner subsequently authorized
+> replacing Zod, including synchronous Effect Schema validation in the renderer.
+> Wave B is now scheduled independently of RPC, which remains declined.
 >
 > **Wave A is recommended - but on entirely different grounds than "one library
 > instead of two", which the verdict does not support.** The real argument is a
