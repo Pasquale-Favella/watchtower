@@ -930,12 +930,19 @@ function singleOperation(context, id) {
 
 /** Does this operation's RETURN VALUE cross the `worker_threads` boundary?
  *
- * Measured, not assumed, and the answer is `no` for almost everything. The
- * worker posts `{id, op, args}` inward and the op's return value outward
- * (`db-worker/client.ts:253`), so the four bulk reads and the 447 MiB
- * `ProjectSummary[]` never travel — they are built, Zod-validated and
- * aggregated on the same thread that read them. Only the finished view
- * payload is cloned back to the main process, and that payload is small.
+ * Be precise about what this is: the predicate below is a HAND-WRITTEN LABEL
+ * per operation, not a measurement. What IS measured is `cloneBytes`
+ * (`v8.serialize` of the return value), and the label only says which value to
+ * attribute that measurement to. So the answer is an ASSERTION about the code's
+ * shape, backed by a real byte count - not a probe of the boundary itself.
+ *
+ * The assertion is `no` for almost everything, and it is checkable by reading
+ * the arm rather than by running it: the worker posts `{id, op, args}` inward
+ * and the op's return value outward (`db-worker/client.ts:253`), so the four
+ * bulk reads and the 447 MiB `ProjectSummary[]` never travel - they are built,
+ * Zod-validated and aggregated on the same thread that read them. Only the
+ * finished view payload is cloned back to the main process, and that payload
+ * measures in the single-digit-to-low-tens KiB.
  *
  * The label is per operation, not per value: `export:read` times
  * `buildProjectsFromLedger` in isolation (that is the expensive half of the

@@ -123,7 +123,7 @@ A3), and the first place the `WorkerLive` root (A2) pays for itself.
 
 ### 3.1 MEASURED — and partly refuted (slice 0, 2026-09-29)
 
-`scripts/measure-query-path.cjs` (1,180 lines) builds a synthetic ledger through
+`scripts/measure-query-path.cjs` (1,270 lines) builds a synthetic ledger through
 the real `LedgerStore` + real `portIn` + real `SqlClient` + real `z.array(...).parse`,
 with a `PRAGMA table_xinfo` guard that aborts on schema drift. Median of 5 runs,
 one operation per `--expose-gc` child process, after an explicit `global.gc()`.

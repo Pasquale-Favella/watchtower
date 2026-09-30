@@ -41,13 +41,25 @@ export type WorkerServices = OperationalLog | Env | HttpFetch | FxRates
 
 /**
  * Live `HttpFetch` for the worker, still over the bespoke `makeFetch` transport
- * and NOT the platform-client `HttpFetch.layer`: the worker's FX and pricing
- * reads keep the late-bound `globalThis.fetch` resolution that the per-call
- * `liveFetchLayer()` had (the test suite stubs `globalThis.fetch` to drive the
- * same path production does), and the platform client's `Response` rebuild
- * would drop `url`/`redirected`/`type`/`statusText` and buffer the body once.
- * The layer value is a singleton here, so late binding is what preserves the
- * "tests stub global fetch" property, not re-resolution per call.
+ * and NOT the platform-client `HttpFetch.layer`.
+ *
+ * The bespoke transport keeps the worker's FX and pricing reads on the
+ * late-bound `globalThis.fetch` resolution the per-call `liveFetchLayer()` had.
+ * That property is load-bearing for exactly ONE test file:
+ * `tests/db-worker.test.ts` stubs `globalThis.fetch` in its three FX-teardown
+ * tests to drive the same path production does. Every other test in the repo
+ * substitutes at the `HttpFetch.layerWithFetch` seam instead and would not
+ * notice the difference.
+ *
+ * The mechanism: `layerWithFetch` stores the function reference in a closure
+ * and calls it per invocation, so the thunk below re-reads `globalThis.fetch` on
+ * every request. A captured `globalThis.fetch` would have frozen the first
+ * stubbing test's function into the layer singleton for the rest of the
+ * process. The layer value is a singleton here, so late binding - not
+ * re-resolution per call - is what preserves the property.
+ *
+ * Against the alternative: the platform client's `Response` rebuild would drop
+ * `url`/`redirected`/`type`/`statusText` and buffer the body once.
  *
  * Removal condition: compose `HttpFetch.layer` here once every
  * `globalThis.fetch`-stubbing test in the repo drives the platform client
