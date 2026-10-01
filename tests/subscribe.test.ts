@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
 import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
@@ -48,7 +48,7 @@ function captureApi(extra?: Record<string, unknown>): Record<string, (payload?: 
 }
 
 function mockWindow(api: unknown): void {
-  ;(globalThis as { window?: unknown }).window = { api }
+  vi.stubGlobal('window', { api })
 }
 
 const statusScanned = {
@@ -88,6 +88,10 @@ beforeEach(() => {
   useScanStore.setState(useScanStore.getInitialState(), true)
   useSettingsStore.setState(useSettingsStore.getInitialState(), true)
   useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
 describe('subscribeToIpc (ADR 0011)', () => {
@@ -161,6 +165,8 @@ describe('subscribeToIpc (ADR 0011)', () => {
   })
 
   it('feeds a currency:changed broadcast into the settings store, dropping malformed ones', () => {
+    const notifyNotice = vi.fn<(label: string, location: string) => Promise<void>>(() => Promise.resolve())
+    vi.stubGlobal('api', { notifyNotice })
     const listeners = captureApi()
     const teardown = subscribeToIpc()
 
@@ -169,6 +175,8 @@ describe('subscribeToIpc (ADR 0011)', () => {
 
     listeners.onCurrencyChanged!({ code: 123 })
     expect(useSettingsStore.getState().activeCurrency.code).toBe('EUR')
+    expect(notifyNotice).toHaveBeenCalledWith('currency changed', 'code')
+    expect(notifyNotice).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything())
 
     teardown()
   })

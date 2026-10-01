@@ -1,5 +1,5 @@
-import { parseZodEvent } from '@/shared/lib/api'
-import { onCoachHarnessesChanged } from '@/shared/lib/api'
+import { onCoachHarnessesChanged, parseEvent, parseZodEvent } from '@/shared/lib/api'
+import { effectSchemaDecoder } from '@/shared/lib/schema-decoder'
 
 import { coachEventEnvelopeSchema } from '../../../../shared/schemas/agents.js'
 import { activeCurrencySchema } from '../../../../shared/schemas/fx.js'
@@ -43,7 +43,7 @@ export function subscribeToIpc(): () => void {
   // values with it, replacing the fallback rate the selection returned.
   unsubs.push(
     window.api.onCurrencyChanged(next => {
-      const parsed = parseZodEvent(activeCurrencySchema, 'currency changed', next)
+      const parsed = parseEvent(effectSchemaDecoder(activeCurrencySchema), 'currency changed', next)
       if (!parsed) return
       useSettingsStore.getState().onCurrencyChanged(parsed)
     }),

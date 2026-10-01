@@ -28,7 +28,7 @@ import {
   type ActiveCurrency,
   activeCurrencySchema,
   type CurrencyOption,
-  currencyOptionSchema,
+  currencyOptionsSchema,
 } from '../../../../shared/schemas/fx.js'
 import {
   type PricingRefreshResult,
@@ -288,19 +288,19 @@ export function fetchRefreshPricing(): Promise<ApiResult<PricingRefreshResult>> 
 }
 
 export function fetchCheckForUpdates(): Promise<ApiResult<UpdateStatus>> {
-  return fetchZodPayload('update status', updateStatusSchema, () => window.api.checkForUpdates())
+  return fetchPayload('update status', effectSchemaDecoder(updateStatusSchema), () => window.api.checkForUpdates())
 }
 
 export function fetchCurrency(): Promise<ApiResult<ActiveCurrency>> {
-  return fetchZodPayload('currency', activeCurrencySchema, () => window.api.getCurrency())
+  return fetchPayload('currency', effectSchemaDecoder(activeCurrencySchema), () => window.api.getCurrency())
 }
 
 export function fetchSetCurrency(code: string): Promise<ApiResult<ActiveCurrency>> {
-  return fetchZodPayload('currency', activeCurrencySchema, () => window.api.setCurrency(code))
+  return fetchPayload('currency', effectSchemaDecoder(activeCurrencySchema), () => window.api.setCurrency(code))
 }
 
 export function fetchCurrencies(): Promise<ApiResult<CurrencyOption[]>> {
-  return fetchZodPayload('currency options', z.array(currencyOptionSchema), () => window.api.getCurrencies())
+  return fetchPayload('currency options', effectSchemaDecoder(currencyOptionsSchema), () => window.api.getCurrencies())
 }
 
 export function fetchCadence(): Promise<ApiResult<CadenceValue>> {
@@ -312,7 +312,7 @@ export function fetchSetCadence(value: string): Promise<ApiResult<CadenceValue>>
 }
 
 export function fetchAppVersion(): Promise<ApiResult<AppVersion>> {
-  return fetchZodPayload('app version', appVersionSchema, () => window.api.getAppVersion())
+  return fetchPayload('app version', effectSchemaDecoder(appVersionSchema), () => window.api.getAppVersion())
 }
 
 export function fetchSearch(query: string): Promise<ApiResult<SearchHit[]>> {
@@ -320,7 +320,9 @@ export function fetchSearch(query: string): Promise<ApiResult<SearchHit[]>> {
 }
 
 export function fetchExport(format: 'csv' | 'json', destination?: string): Promise<ApiResult<ExportResult>> {
-  return fetchZodPayload('export', exportResultSchema, () => window.api.exportData(format, destination))
+  return fetchPayload('export', effectSchemaDecoder(exportResultSchema), () =>
+    window.api.exportData(format, destination),
+  )
 }
 
 export function fetchScan(options?: { provider?: string }): Promise<ApiResult<ScanResult>> {
