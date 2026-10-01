@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
 import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
-import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
+import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
 import { useCoachSkillsStore } from '../src/renderer/src/features/coach-skills/store.js'
+import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
 
 /** Stub the preload surface: capture each on* callback for manual firing,
  * merging any extra (fetch) methods onto the same `window.api`. */

@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
-import { fetchScanStatus, fetchViews, fetchPayload, parsePayload } from '../src/renderer/src/shared/lib/api.js'
+import {
+  fetchCadence,
+  fetchPayload,
+  fetchScanStatus,
+  fetchSetCadence,
+  fetchViews,
+  parsePayload,
+} from '../src/renderer/src/shared/lib/api.js'
+import { zodDecoder } from '../src/renderer/src/shared/lib/schema-decoder.js'
 
 const scanStatusSchema = z.object({ scanned: z.boolean() })
 
@@ -14,12 +22,12 @@ function mockWindow(api: unknown): void {
 
 describe('renderer parse seam (ADR 0005)', () => {
   it('parsePayload passes a valid payload through untouched', () => {
-    const result = parsePayload(scanStatusSchema, 'scan status', { scanned: true })
+    const result = parsePayload(zodDecoder(scanStatusSchema), 'scan status', { scanned: true })
     expect(result).toEqual({ ok: true, data: { scanned: true } })
   })
 
   it('parsePayload names the channel and failing field on a bad payload', () => {
-    const result = parsePayload(scanStatusSchema, 'scan status', { scanned: 'nope' })
+    const result = parsePayload(zodDecoder(scanStatusSchema), 'scan status', { scanned: 'nope' })
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.error).toMatch(/Invalid scan status payload/)
@@ -28,7 +36,9 @@ describe('renderer parse seam (ADR 0005)', () => {
   })
 
   it('fetchPayload turns an IPC rejection into an error state, never a throw', async () => {
-    const result = await fetchPayload('scan status', scanStatusSchema, () => Promise.reject(new Error('boom')))
+    const result = await fetchPayload('scan status', zodDecoder(scanStatusSchema), () =>
+      Promise.reject(new Error('boom')),
+    )
     expect(result).toEqual({ ok: false, error: 'boom' })
   })
 
@@ -51,5 +61,21 @@ describe('renderer parse seam (ADR 0005)', () => {
     mockWindow({ getViews: () => Promise.resolve(null) })
     const result = await fetchViews()
     expect(result).toEqual({ ok: true, data: null })
+  })
+
+  it('cadence get and set wrappers reject non-string IPC values', async () => {
+    mockWindow({ getCadence: () => Promise.resolve(5), setCadence: () => Promise.resolve(null) })
+
+    const getResult = await fetchCadence()
+    const setResult = await fetchSetCadence('anything')
+
+    expect(getResult).toEqual({
+      ok: false,
+      error: 'Invalid cadence payload (payload: has an unexpected type)',
+    })
+    expect(setResult).toEqual({
+      ok: false,
+      error: 'Invalid cadence payload (payload: has an unexpected type)',
+    })
   })
 })

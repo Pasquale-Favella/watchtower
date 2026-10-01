@@ -1,6 +1,6 @@
 /**
  * Renderer fetch library (ADR 0005) — the renderer-side tripwire over
- * the preload's IPC surface. Every payload-bearing channel is `safeParse`d
+ * the preload's IPC surface. Every payload-bearing channel is decoded
  * against the same shared schema the main process validates against, so a
  * malformed payload becomes a `{ ok: false }` result the views render as an
  * error state instead of a crash or garbage. The wire contract is frozen: no
@@ -8,118 +8,128 @@
  */
 import { z } from 'zod'
 
-import { overviewPayloadSchema, type OverviewPayload, type OverviewScope } from '../../../../shared/schemas/overview.js'
 import {
-  analyticalViewsSchema,
-  dashboardViewsSchema,
-  projectRowSchema,
-  searchHitSchema,
-  sessionDetailSchema,
-  sessionRowSchema,
-  type AnalyticalViews,
-  type DashboardViews,
-  type ProjectRow,
-  type SearchHit,
-  type SessionDetail,
-  type SessionRow,
-} from '../../../../shared/schemas/views.js'
-import { spendPayloadSchema, type SpendPayload } from '../../../../shared/schemas/spend.js'
-import {
-  modelAliasSchema,
-  modelsPayloadSchema,
-  priceOverrideSchema,
-  type ModelAlias,
-  type ModelsPayload,
-  type PriceOverride,
-} from '../../../../shared/schemas/models.js'
-import { comparePayloadSchema, type ComparePair, type ComparePayload } from '../../../../shared/schemas/compare.js'
-import { optimizePayloadSchema, type OptimizePayload } from '../../../../shared/schemas/optimize.js'
-import { yieldPayloadSchema, type YieldPayload } from '../../../../shared/schemas/yield.js'
-import {
-  skillsDismissalResultSchema,
-  skillsPayloadSchema,
-  skillsSaveResultSchema,
-  type SkillsDismissalRequest,
-  type SkillsDismissalResult,
-  type SkillsPayload,
-  type SkillsSaveRequest,
-  type SkillsSaveResult,
-  type SkillsThresholds,
-} from '../../../../shared/schemas/skills.js'
-import { pullRequestsPayloadSchema, type PullRequestsPayload } from '../../../../shared/schemas/pull-requests.js'
-import {
-  pricingRefreshResultSchema,
-  scanResultSchema,
-  scanStatusSchema,
-  settingsInfoSchema,
-  type PricingRefreshResult,
-  type ScanResult,
-  type ScanStatus,
-  type SettingsInfo,
-} from '../../../../shared/schemas/ipc.js'
-import {
-  updateStatusSchema,
-  appVersionSchema,
-  type AppVersion,
-  type UpdateStatus,
-} from '../../../../shared/schemas/updates.js'
-import {
-  activeCurrencySchema,
-  currencyOptionSchema,
-  type ActiveCurrency,
-  type CurrencyOption,
-} from '../../../../shared/schemas/fx.js'
-import { cadenceValueSchema, type CadenceValue } from '../../../../shared/schemas/cadence.js'
-import { exportResultSchema, type ExportResult } from '../../../../shared/schemas/export.js'
-import {
-  ledgerMcpConnectionSchema,
-  ledgerMcpStatusSchema,
-  type LedgerMcpStartupMode,
-  type LedgerMcpStatus,
-  type LedgerMcpConnection,
-} from '../../../../shared/schemas/ledger-mcp.js'
-import {
-  coachHarnessesResultSchema,
-  coachLoginTerminalResultSchema,
-  coachInspectResultSchema,
-  coachRunResultSchema,
-  type CoachHarnessRow,
   type CoachHarnessesResult,
-  type CoachLoginTerminalResult,
+  coachHarnessesResultSchema,
+  type CoachHarnessRow,
   type CoachInspectRequest,
   type CoachInspectResult,
+  coachInspectResultSchema,
+  type CoachLoginTerminalResult,
+  coachLoginTerminalResultSchema,
   type CoachRunRequest,
   type CoachRunResult,
+  coachRunResultSchema,
 } from '../../../../shared/schemas/agents.js'
+import { type CadenceValue, cadenceValueSchema } from '../../../../shared/schemas/cadence.js'
+import { type ComparePair, type ComparePayload, comparePayloadSchema } from '../../../../shared/schemas/compare.js'
+import { type ExportResult, exportResultSchema } from '../../../../shared/schemas/export.js'
+import {
+  type ActiveCurrency,
+  activeCurrencySchema,
+  type CurrencyOption,
+  currencyOptionSchema,
+} from '../../../../shared/schemas/fx.js'
+import {
+  type PricingRefreshResult,
+  pricingRefreshResultSchema,
+  type ScanResult,
+  scanResultSchema,
+  type ScanStatus,
+  scanStatusSchema,
+  type SettingsInfo,
+  settingsInfoSchema,
+} from '../../../../shared/schemas/ipc.js'
+import {
+  type LedgerMcpConnection,
+  ledgerMcpConnectionSchema,
+  type LedgerMcpStartupMode,
+  type LedgerMcpStatus,
+  ledgerMcpStatusSchema,
+} from '../../../../shared/schemas/ledger-mcp.js'
+import {
+  type ModelAlias,
+  modelAliasSchema,
+  type ModelsPayload,
+  modelsPayloadSchema,
+  type PriceOverride,
+  priceOverrideSchema,
+} from '../../../../shared/schemas/models.js'
+import { type OptimizePayload, optimizePayloadSchema } from '../../../../shared/schemas/optimize.js'
+import { type OverviewPayload, overviewPayloadSchema, type OverviewScope } from '../../../../shared/schemas/overview.js'
+import { type PullRequestsPayload, pullRequestsPayloadSchema } from '../../../../shared/schemas/pull-requests.js'
+import {
+  type SkillsDismissalRequest,
+  type SkillsDismissalResult,
+  skillsDismissalResultSchema,
+  type SkillsPayload,
+  skillsPayloadSchema,
+  type SkillsSaveRequest,
+  type SkillsSaveResult,
+  skillsSaveResultSchema,
+  type SkillsThresholds,
+} from '../../../../shared/schemas/skills.js'
+import { type SpendPayload, spendPayloadSchema } from '../../../../shared/schemas/spend.js'
+import {
+  type AppVersion,
+  appVersionSchema,
+  type UpdateStatus,
+  updateStatusSchema,
+} from '../../../../shared/schemas/updates.js'
+import {
+  type AnalyticalViews,
+  analyticalViewsSchema,
+  type DashboardViews,
+  dashboardViewsSchema,
+  type ProjectRow,
+  projectRowSchema,
+  type SearchHit,
+  searchHitSchema,
+  type SessionDetail,
+  sessionDetailSchema,
+  type SessionRow,
+  sessionRowSchema,
+} from '../../../../shared/schemas/views.js'
+import { type YieldPayload, yieldPayloadSchema } from '../../../../shared/schemas/yield.js'
+import { type Decoder, effectSchemaDecoder, zodDecoder } from './schema-decoder.js'
 
 /** The shared renderer error shape for an IPC payload: either validated data
  * or a human-readable message naming the channel and the failing field. */
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string }
 
-/** `safeParse`s a raw IPC payload against its shared schema. Invalid payloads
+/** Decodes a raw IPC payload against its shared contract. Invalid payloads
  * become a visible error naming the channel and first failing field/path —
  * never garbage the views would render. */
-export function parsePayload<T>(schema: z.ZodType<T>, label: string, raw: unknown): ApiResult<T> {
-  const parsed = schema.safeParse(raw)
-  if (parsed.success) return { ok: true, data: parsed.data }
-  const issue = parsed.error.issues[0]
-  const where = issue && issue.path.length ? issue.path.join('.') : 'payload'
-  const detail = issue ? issue.message : 'does not match the expected shape'
-  return { ok: false, error: `Invalid ${label} payload (${where}: ${detail})` }
+export function parsePayload<T>(decoder: Decoder<T>, label: string, raw: unknown): ApiResult<T> {
+  const parsed = decodeSafely(decoder, raw)
+  if (parsed.ok) return { ok: true, data: parsed.value }
+  return { ok: false, error: `Invalid ${label} payload (${parsed.path}: ${parsed.message})` }
 }
 
-/** Runs an IPC invoke and safeParses its resolution; a rejected IPC call also
+/** Runs an IPC invoke and decodes its resolution; a rejected IPC call also
  * surfaces as a `{ ok: false }` result (never an unhandled rejection). */
 export async function fetchPayload<T>(
+  label: string,
+  decoder: Decoder<T>,
+  invoke: () => Promise<unknown>,
+): Promise<ApiResult<T>> {
+  try {
+    return parsePayload(decoder, label, await invoke())
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * Temporary adapter for contracts still authored in Zod. Remove it after the
+ * last Zod-backed renderer fetch contract migrates to Effect Schema.
+ */
+export function fetchZodPayload<T>(
   label: string,
   schema: z.ZodType<T>,
   invoke: () => Promise<unknown>,
 ): Promise<ApiResult<T>> {
-  try {
-    return parsePayload(schema, label, await invoke())
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
-  }
+  return fetchPayload(label, zodDecoder(schema), invoke)
 }
 
 /** The subscription-event tripwire (ADR 0005): broadcast channels carry
@@ -127,13 +137,27 @@ export async function fetchPayload<T>(
  * Operational log with its label + location only (never contents) — a bad
  * `scan:progress` or `currency:changed` can't paint garbage, it just falls
  * back to the last good value. The forward never breaks rendering. */
-export function parseEvent<T>(schema: z.ZodType<T>, label: string, raw: unknown): T | null {
-  const parsed = schema.safeParse(raw)
-  if (parsed.success) return parsed.data
-  const issue = parsed.error.issues[0]
-  const where = issue && issue.path.length ? issue.path.join('.') : 'payload'
-  forwardTripwireNotice(label, where)
+export function parseEvent<T>(decoder: Decoder<T>, label: string, raw: unknown): T | null {
+  const parsed = decodeSafely(decoder, raw)
+  if (parsed.ok) return parsed.value
+  forwardTripwireNotice(label, parsed.path)
   return null
+}
+
+function decodeSafely<T>(decoder: Decoder<T>, raw: unknown): ReturnType<Decoder<T>> {
+  try {
+    return decoder(raw)
+  } catch {
+    return { ok: false, path: 'payload', message: 'could not be validated' }
+  }
+}
+
+/**
+ * Temporary adapter for events still authored in Zod. Remove it after the
+ * last Zod-backed renderer event contract migrates to Effect Schema.
+ */
+export function parseZodEvent<T>(schema: z.ZodType<T>, label: string, raw: unknown): T | null {
+  return parseEvent(zodDecoder(schema), label, raw)
 }
 
 function forwardTripwireNotice(label: string, location: string): void {
@@ -151,15 +175,15 @@ const okEnvelopeSchema = z.object({ ok: z.literal(true) })
 export type OkEnvelope = z.infer<typeof okEnvelopeSchema>
 
 export function fetchScanStatus(): Promise<ApiResult<ScanStatus>> {
-  return fetchPayload('scan status', scanStatusSchema, () => window.api.getScanStatus())
+  return fetchZodPayload('scan status', scanStatusSchema, () => window.api.getScanStatus())
 }
 
 export function fetchViews(): Promise<ApiResult<DashboardViews | null>> {
-  return fetchPayload('dashboard views', dashboardViewsSchema.nullable(), () => window.api.getViews())
+  return fetchZodPayload('dashboard views', dashboardViewsSchema.nullable(), () => window.api.getViews())
 }
 
 export function fetchProjects(): Promise<ApiResult<ProjectRow[]>> {
-  return fetchPayload('projects', z.array(projectRowSchema), () => window.api.getProjects())
+  return fetchZodPayload('projects', z.array(projectRowSchema), () => window.api.getProjects())
 }
 
 export function fetchSessions(filter?: {
@@ -167,146 +191,148 @@ export function fetchSessions(filter?: {
   since?: string
   until?: string
 }): Promise<ApiResult<SessionRow[]>> {
-  return fetchPayload('sessions', z.array(sessionRowSchema), () => window.api.getSessions(filter))
+  return fetchZodPayload('sessions', z.array(sessionRowSchema), () => window.api.getSessions(filter))
 }
 
 export function fetchSession(sessionId: string): Promise<ApiResult<SessionDetail | null>> {
-  return fetchPayload('session detail', sessionDetailSchema.nullable(), () => window.api.getSession(sessionId))
+  return fetchZodPayload('session detail', sessionDetailSchema.nullable(), () => window.api.getSession(sessionId))
 }
 
 export function fetchAnalytics(): Promise<ApiResult<AnalyticalViews | null>> {
-  return fetchPayload('analytics', analyticalViewsSchema.nullable(), () => window.api.getAnalytics())
+  return fetchZodPayload('analytics', analyticalViewsSchema.nullable(), () => window.api.getAnalytics())
 }
 
 export function fetchOverview(scope: OverviewScope): Promise<ApiResult<OverviewPayload | null>> {
-  return fetchPayload('overview', overviewPayloadSchema.nullable(), () => window.api.getOverview(scope))
+  return fetchZodPayload('overview', overviewPayloadSchema.nullable(), () => window.api.getOverview(scope))
 }
 
 export function fetchSessionRows(scope: OverviewScope): Promise<ApiResult<SessionRow[]>> {
-  return fetchPayload('session rows', z.array(sessionRowSchema), () => window.api.getSessionRows(scope))
+  return fetchZodPayload('session rows', z.array(sessionRowSchema), () => window.api.getSessionRows(scope))
 }
 
 export function fetchPullRequests(scope: OverviewScope): Promise<ApiResult<PullRequestsPayload | null>> {
-  return fetchPayload('pull requests', pullRequestsPayloadSchema.nullable(), () => window.api.getPullRequests(scope))
+  return fetchZodPayload('pull requests', pullRequestsPayloadSchema.nullable(), () => window.api.getPullRequests(scope))
 }
 
 export function fetchSpend(scope: OverviewScope): Promise<ApiResult<SpendPayload | null>> {
-  return fetchPayload('spend', spendPayloadSchema.nullable(), () => window.api.getSpend(scope))
+  return fetchZodPayload('spend', spendPayloadSchema.nullable(), () => window.api.getSpend(scope))
 }
 
 export function fetchModels(scope: OverviewScope): Promise<ApiResult<ModelsPayload | null>> {
-  return fetchPayload('models', modelsPayloadSchema.nullable(), () => window.api.getModels(scope))
+  return fetchZodPayload('models', modelsPayloadSchema.nullable(), () => window.api.getModels(scope))
 }
 
 export function fetchCompare(scope: OverviewScope, pair?: ComparePair): Promise<ApiResult<ComparePayload | null>> {
-  return fetchPayload('compare', comparePayloadSchema.nullable(), () => window.api.getCompare(scope, pair))
+  return fetchZodPayload('compare', comparePayloadSchema.nullable(), () => window.api.getCompare(scope, pair))
 }
 
 export function fetchOptimize(scope: OverviewScope): Promise<ApiResult<OptimizePayload | null>> {
-  return fetchPayload('optimize', optimizePayloadSchema.nullable(), () => window.api.getOptimize(scope))
+  return fetchZodPayload('optimize', optimizePayloadSchema.nullable(), () => window.api.getOptimize(scope))
 }
 
 export function fetchYield(scope: OverviewScope): Promise<ApiResult<YieldPayload | null>> {
-  return fetchPayload('yield', yieldPayloadSchema.nullable(), () => window.api.getYield(scope))
+  return fetchZodPayload('yield', yieldPayloadSchema.nullable(), () => window.api.getYield(scope))
 }
 
 export function fetchSkills(
   scope: OverviewScope,
   thresholds?: SkillsThresholds,
 ): Promise<ApiResult<SkillsPayload | null>> {
-  return fetchPayload('skills', skillsPayloadSchema.nullable(), () => window.api.getSkills(scope, thresholds))
+  return fetchZodPayload('skills', skillsPayloadSchema.nullable(), () => window.api.getSkills(scope, thresholds))
 }
 
 export function fetchDismissSkill(request: SkillsDismissalRequest): Promise<ApiResult<SkillsDismissalResult>> {
-  return fetchPayload('skills dismissal', skillsDismissalResultSchema, () => window.api.dismissSkill(request))
+  return fetchZodPayload('skills dismissal', skillsDismissalResultSchema, () => window.api.dismissSkill(request))
 }
 
 export function fetchSaveSkill(request: SkillsSaveRequest): Promise<ApiResult<SkillsSaveResult>> {
-  return fetchPayload('skills save', skillsSaveResultSchema, () => window.api.saveSkill(request))
+  return fetchZodPayload('skills save', skillsSaveResultSchema, () => window.api.saveSkill(request))
 }
 
 export function fetchModelAliases(): Promise<ApiResult<ModelAlias[]>> {
-  return fetchPayload('model aliases', z.array(modelAliasSchema), () => window.api.getModelAliases())
+  return fetchZodPayload('model aliases', z.array(modelAliasSchema), () => window.api.getModelAliases())
 }
 
 export function fetchPriceOverrides(): Promise<ApiResult<PriceOverride[]>> {
-  return fetchPayload('price overrides', z.array(priceOverrideSchema), () => window.api.getPriceOverrides())
+  return fetchZodPayload('price overrides', z.array(priceOverrideSchema), () => window.api.getPriceOverrides())
 }
 
 export function fetchSettings(): Promise<ApiResult<SettingsInfo>> {
-  return fetchPayload('settings', settingsInfoSchema, () => window.api.getSettings())
+  return fetchZodPayload('settings', settingsInfoSchema, () => window.api.getSettings())
 }
 
 export function fetchClearData(): Promise<ApiResult<SettingsInfo>> {
-  return fetchPayload('cleared settings', settingsInfoSchema, () => window.api.clearData())
+  return fetchZodPayload('cleared settings', settingsInfoSchema, () => window.api.clearData())
 }
 
 export function fetchLedgerMcpStatus(): Promise<ApiResult<LedgerMcpStatus>> {
-  return fetchPayload('ledger MCP status', ledgerMcpStatusSchema, () => window.api.getLedgerMcpStatus())
+  return fetchZodPayload('ledger MCP status', ledgerMcpStatusSchema, () => window.api.getLedgerMcpStatus())
 }
 
 export function fetchSetLedgerMcpStartupMode(mode: LedgerMcpStartupMode): Promise<ApiResult<LedgerMcpStatus>> {
-  return fetchPayload('ledger MCP startup mode', ledgerMcpStatusSchema, () => window.api.setLedgerMcpStartupMode(mode))
+  return fetchZodPayload('ledger MCP startup mode', ledgerMcpStatusSchema, () =>
+    window.api.setLedgerMcpStartupMode(mode),
+  )
 }
 
 export function fetchLedgerMcpConnection(): Promise<ApiResult<LedgerMcpConnection>> {
-  return fetchPayload('ledger MCP connection', ledgerMcpConnectionSchema, () => window.api.getLedgerMcpConnection())
+  return fetchZodPayload('ledger MCP connection', ledgerMcpConnectionSchema, () => window.api.getLedgerMcpConnection())
 }
 
 export function fetchRegenerateLedgerMcpToken(): Promise<ApiResult<LedgerMcpStatus>> {
-  return fetchPayload('ledger MCP token', ledgerMcpStatusSchema, () => window.api.regenerateLedgerMcpToken())
+  return fetchZodPayload('ledger MCP token', ledgerMcpStatusSchema, () => window.api.regenerateLedgerMcpToken())
 }
 
 export function fetchRefreshPricing(): Promise<ApiResult<PricingRefreshResult>> {
-  return fetchPayload('pricing refresh', pricingRefreshResultSchema, () => window.api.refreshPricing())
+  return fetchZodPayload('pricing refresh', pricingRefreshResultSchema, () => window.api.refreshPricing())
 }
 
 export function fetchCheckForUpdates(): Promise<ApiResult<UpdateStatus>> {
-  return fetchPayload('update status', updateStatusSchema, () => window.api.checkForUpdates())
+  return fetchZodPayload('update status', updateStatusSchema, () => window.api.checkForUpdates())
 }
 
 export function fetchCurrency(): Promise<ApiResult<ActiveCurrency>> {
-  return fetchPayload('currency', activeCurrencySchema, () => window.api.getCurrency())
+  return fetchZodPayload('currency', activeCurrencySchema, () => window.api.getCurrency())
 }
 
 export function fetchSetCurrency(code: string): Promise<ApiResult<ActiveCurrency>> {
-  return fetchPayload('currency', activeCurrencySchema, () => window.api.setCurrency(code))
+  return fetchZodPayload('currency', activeCurrencySchema, () => window.api.setCurrency(code))
 }
 
 export function fetchCurrencies(): Promise<ApiResult<CurrencyOption[]>> {
-  return fetchPayload('currency options', z.array(currencyOptionSchema), () => window.api.getCurrencies())
+  return fetchZodPayload('currency options', z.array(currencyOptionSchema), () => window.api.getCurrencies())
 }
 
 export function fetchCadence(): Promise<ApiResult<CadenceValue>> {
-  return fetchPayload('cadence', cadenceValueSchema, () => window.api.getCadence())
+  return fetchPayload('cadence', effectSchemaDecoder(cadenceValueSchema), () => window.api.getCadence())
 }
 
 export function fetchSetCadence(value: string): Promise<ApiResult<CadenceValue>> {
-  return fetchPayload('cadence', cadenceValueSchema, () => window.api.setCadence(value))
+  return fetchPayload('cadence', effectSchemaDecoder(cadenceValueSchema), () => window.api.setCadence(value))
 }
 
 export function fetchAppVersion(): Promise<ApiResult<AppVersion>> {
-  return fetchPayload('app version', appVersionSchema, () => window.api.getAppVersion())
+  return fetchZodPayload('app version', appVersionSchema, () => window.api.getAppVersion())
 }
 
 export function fetchSearch(query: string): Promise<ApiResult<SearchHit[]>> {
-  return fetchPayload('search', z.array(searchHitSchema), () => window.api.search(query))
+  return fetchZodPayload('search', z.array(searchHitSchema), () => window.api.search(query))
 }
 
 export function fetchExport(format: 'csv' | 'json', destination?: string): Promise<ApiResult<ExportResult>> {
-  return fetchPayload('export', exportResultSchema, () => window.api.exportData(format, destination))
+  return fetchZodPayload('export', exportResultSchema, () => window.api.exportData(format, destination))
 }
 
 export function fetchScan(options?: { provider?: string }): Promise<ApiResult<ScanResult>> {
-  return fetchPayload('scan', scanResultSchema, () => window.api.scan(options))
+  return fetchZodPayload('scan', scanResultSchema, () => window.api.scan(options))
 }
 
 export function fetchAddModelAlias(model: string, aliasOf: string): Promise<ApiResult<OkEnvelope>> {
-  return fetchPayload('model alias write', okEnvelopeSchema, () => window.api.addModelAlias(model, aliasOf))
+  return fetchZodPayload('model alias write', okEnvelopeSchema, () => window.api.addModelAlias(model, aliasOf))
 }
 
 export function fetchRemoveModelAlias(model: string): Promise<ApiResult<OkEnvelope>> {
-  return fetchPayload('model alias remove', okEnvelopeSchema, () => window.api.removeModelAlias(model))
+  return fetchZodPayload('model alias remove', okEnvelopeSchema, () => window.api.removeModelAlias(model))
 }
 
 export function fetchSetModelPrice(
@@ -314,32 +340,34 @@ export function fetchSetModelPrice(
   inputPricePerMillion: number,
   outputPricePerMillion: number,
 ): Promise<ApiResult<OkEnvelope>> {
-  return fetchPayload('price write', okEnvelopeSchema, () =>
+  return fetchZodPayload('price write', okEnvelopeSchema, () =>
     window.api.setModelPrice(model, inputPricePerMillion, outputPricePerMillion),
   )
 }
 
 export function fetchRemovePriceOverride(model: string): Promise<ApiResult<OkEnvelope>> {
-  return fetchPayload('price remove', okEnvelopeSchema, () => window.api.removePriceOverride(model))
+  return fetchZodPayload('price remove', okEnvelopeSchema, () => window.api.removePriceOverride(model))
 }
 
 export function fetchCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>> {
-  return fetchPayload('coach harnesses', coachHarnessesResultSchema, () => window.api.getCoachHarnesses())
+  return fetchZodPayload('coach harnesses', coachHarnessesResultSchema, () => window.api.getCoachHarnesses())
 }
 
 export function refreshCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>> {
-  return fetchPayload('coach harnesses refresh', coachHarnessesResultSchema, () => window.api.refreshCoachHarnesses())
+  return fetchZodPayload('coach harnesses refresh', coachHarnessesResultSchema, () =>
+    window.api.refreshCoachHarnesses(),
+  )
 }
 
 export function openCoachLoginTerminal(instanceId: string): Promise<ApiResult<CoachLoginTerminalResult>> {
-  return fetchPayload('coach login terminal', coachLoginTerminalResultSchema, () =>
+  return fetchZodPayload('coach login terminal', coachLoginTerminalResultSchema, () =>
     window.api.openCoachLoginTerminal(instanceId),
   )
 }
 
 export function onCoachHarnessesChanged(callback: (rows: CoachHarnessRow[]) => void): () => void {
   return window.api.onCoachHarnessesChanged(rows => {
-    const parsed = parseEvent(coachHarnessesResultSchema, 'coach harnesses changed', rows)
+    const parsed = parseZodEvent(coachHarnessesResultSchema, 'coach harnesses changed', rows)
     if (parsed) callback(parsed)
   })
 }
@@ -350,9 +378,9 @@ export function onCoachHarnessesChanged(callback: (rows: CoachHarnessRow[]) => v
  *  request carries the API-key passthrough flag so the probe spawns the agent
  *  exactly like a run would (probes never warm a resumable session). */
 export function fetchCoachInspect(request: CoachInspectRequest): Promise<ApiResult<CoachInspectResult>> {
-  return fetchPayload('coach inspect', coachInspectResultSchema, () => window.api.inspectCoachHarness(request))
+  return fetchZodPayload('coach inspect', coachInspectResultSchema, () => window.api.inspectCoachHarness(request))
 }
 
 export function fetchCoachRun(request: CoachRunRequest): Promise<ApiResult<CoachRunResult>> {
-  return fetchPayload('coach run', coachRunResultSchema, () => window.api.startCoachRun(request))
+  return fetchZodPayload('coach run', coachRunResultSchema, () => window.api.startCoachRun(request))
 }

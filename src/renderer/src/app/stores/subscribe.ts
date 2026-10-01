@@ -1,11 +1,12 @@
-import { parseEvent } from '@/shared/lib/api'
+import { parseZodEvent } from '@/shared/lib/api'
+import { onCoachHarnessesChanged } from '@/shared/lib/api'
+
+import { coachEventEnvelopeSchema } from '../../../../shared/schemas/agents.js'
 import { activeCurrencySchema } from '../../../../shared/schemas/fx.js'
 import { scanProgressMessageSchema, storeChangedMessageSchema } from '../../../../shared/schemas/ipc.js'
-import { useScanStore } from './scan-store'
 import { useCoachSkillsStore } from '../../features/coach-skills/store'
 import { useSettingsStore } from '../../features/settings/store'
-import { coachEventEnvelopeSchema } from '../../../../shared/schemas/agents.js'
-import { onCoachHarnessesChanged } from '@/shared/lib/api'
+import { useScanStore } from './scan-store'
 
 /** The central IPC wiring (ADR 0011): all six `window.api.on*`
  * subscriptions feed store actions, never component state. Call once from the
@@ -18,7 +19,7 @@ export function subscribeToIpc(): () => void {
   unsubs.push(
     window.api.onProgress(progress => {
       // Tripwire (ADR 0005): a malformed broadcast is dropped, never painted.
-      const parsed = parseEvent(scanProgressMessageSchema, 'scan progress', progress)
+      const parsed = parseZodEvent(scanProgressMessageSchema, 'scan progress', progress)
       if (!parsed) return
       useScanStore
         .getState()
@@ -30,7 +31,7 @@ export function subscribeToIpc(): () => void {
 
   unsubs.push(
     window.api.onChanged(message => {
-      const parsed = parseEvent(storeChangedMessageSchema, 'store changed', message)
+      const parsed = parseZodEvent(storeChangedMessageSchema, 'store changed', message)
       if (!parsed) return
       void useScanStore.getState().applyChange()
     }),
@@ -42,7 +43,7 @@ export function subscribeToIpc(): () => void {
   // values with it, replacing the fallback rate the selection returned.
   unsubs.push(
     window.api.onCurrencyChanged(next => {
-      const parsed = parseEvent(activeCurrencySchema, 'currency changed', next)
+      const parsed = parseZodEvent(activeCurrencySchema, 'currency changed', next)
       if (!parsed) return
       useSettingsStore.getState().onCurrencyChanged(parsed)
     }),
@@ -60,7 +61,7 @@ export function subscribeToIpc(): () => void {
   // Coach & Skills store so the thread accumulates text/tools/session live.
   unsubs.push(
     window.api.onCoachEvent(message => {
-      const parsed = parseEvent(coachEventEnvelopeSchema, 'coach event', message)
+      const parsed = parseZodEvent(coachEventEnvelopeSchema, 'coach event', message)
       if (!parsed) return
       useCoachSkillsStore.getState().onEvent(parsed)
     }),
