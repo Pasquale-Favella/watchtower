@@ -3,7 +3,13 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 
 import { Env } from './env.js'
 import { FxRates, type FxRatesRepositoryRunner } from './fx.js'
-import { OperationalLog, OperationalLogLoggerLayer, OperationalLogTracerLayer } from './operational-log.js'
+import {
+  OperationalLog,
+  OperationalLogLoggerLayer,
+  operationalLogLoggerLayerWithSink,
+  type OperationalLogSink,
+  OperationalLogTracerLayer,
+} from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from './store/ledger-repository.js'
 
@@ -90,23 +96,14 @@ export interface WorkerLedger extends FxRatesRepositoryRunner {
 }
 
 /** `WorkerLive` — the worker's flat live layer graph, built once per runtime. */
-export const makeWorkerLive = (store: WorkerLedger): Layer.Layer<WorkerServices> =>
+export const makeWorkerLive = (store: WorkerLedger, sink?: OperationalLogSink): Layer.Layer<WorkerServices> =>
   Layer.mergeAll(
-    // F14's dead bridge, installed at a root: `Effect.log` records now reach
-    // the main-owned Operational-log writer through `OperationalLogLogger` instead of being
-    // dropped, and the default console loggers no longer duplicate them on the
-    // worker's stdout. In the worker thread `active` is null (main owns the
-    // file, ADR 0029), so the logger is a never-throwing no-op here — the point
-    // is that the bridge is CONNECTED, not that this thread writes the file.
-    OperationalLogLoggerLayer,
-    // A7's tracer half: the `Effect.fn('…')` spans this isolate builds were
-    // constructed and discarded, so one `debug` record per span end is the only
-    // read on where the worker's time goes. Stamped `worker` for the same reason
-    // the logger above is: in this thread `active` is null (main owns the file,
-    // ADR 0029), so the bridge is CONNECTED here and writes nothing.
-    OperationalLogTracerLayer('worker'),
+    // The worker root injects a forwarding sink. The default preserves the
+    // in-process composition seam used by existing tests.
+    sink ? operationalLogLoggerLayerWithSink(sink, 'worker') : OperationalLogLoggerLayer,
+    OperationalLogTracerLayer('worker', sink),
     Env.layer,
-    OperationalLog.layer,
+    sink ? OperationalLog.layerWithSink(sink, 'worker') : OperationalLog.layer,
     liveFetchLayer,
     FxRates.layerWithRepository(store),
     // ADR 0032 §A3: the three ledger ports join the worker's graph, supplied

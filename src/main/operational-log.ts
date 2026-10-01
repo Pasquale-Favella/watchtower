@@ -327,7 +327,7 @@ function liveEmit(level: LogLevel, event: string, fields: Record<string, unknown
   safeLogOperationalEvent(level, event, fields, context)
 }
 
-function makeOperationalLogImpl(sink: OperationalLogSink) {
+function makeOperationalLogImpl(sink: OperationalLogSink, defaultContext: LogContext = 'main') {
   const emitSafely = (
     level: LogLevel,
     event: string,
@@ -346,7 +346,7 @@ function makeOperationalLogImpl(sink: OperationalLogSink) {
     level: LogLevel,
     event: string,
     fields: Record<string, unknown> = {},
-    context: LogContext = 'main',
+    context: LogContext = defaultContext,
   ) {
     yield* emitSafely(level, event, fields, context)
   })
@@ -356,18 +356,19 @@ function makeOperationalLogImpl(sink: OperationalLogSink) {
     amount = 1,
     fields: Record<string, unknown> = {},
   ) {
-    yield* emitSafely('info', name, { ...fields, count: amount }, 'main')
+    yield* emitSafely('info', name, { ...fields, count: amount }, defaultContext)
   })
 
   const recordGauge = Effect.fnUntraced(function* (name: string, value: number, fields: Record<string, unknown> = {}) {
-    yield* emitSafely('info', name, { ...fields, count: value }, 'main')
+    yield* emitSafely('info', name, { ...fields, count: value }, defaultContext)
   })
 
   return { log, incrementCounter, recordGauge }
 }
 
 /** The live impl, built once and handed out by `OperationalLog.layer`. */
-const liveOperationalLog = makeOperationalLogImpl({ emit: liveEmit })
+const liveSink: OperationalLogSink = { emit: liveEmit }
+const liveOperationalLog = makeOperationalLogImpl(liveSink)
 
 /**
  * Main-owned operational log as an Effect service (`HttpFetch.layer` /
@@ -393,8 +394,11 @@ export class OperationalLog extends Context.Service<
 >()('watchtower/main/OperationalLog') {
   static readonly layer = Layer.succeed(OperationalLog, OperationalLog.of(liveOperationalLog))
 
-  static readonly layerWithSink = (sink: OperationalLogSink): Layer.Layer<OperationalLog> =>
-    Layer.succeed(OperationalLog, OperationalLog.of(makeOperationalLogImpl(sink)))
+  static readonly layerWithSink = (
+    sink: OperationalLogSink,
+    context: LogContext = 'main',
+  ): Layer.Layer<OperationalLog> =>
+    Layer.succeed(OperationalLog, OperationalLog.of(makeOperationalLogImpl(sink, context)))
 }
 
 export type OperationalLogService = OperationalLog['Service']
@@ -493,35 +497,42 @@ function annotationString(value: unknown): string | undefined {
  * span end is a different write at a different point in a fiber's life. Never
  * throws, including without `initOperationalLog`.
  */
-export const OperationalLogLogger: EffectLogger.Logger<unknown, void> = EffectLogger.make(options => {
-  try {
-    const level = mapEffectLogLevel(options.logLevel)
-    if (level === null) return
-    const annotations = currentLogAnnotations(options.fiber)
-    const event = annotationString(annotations['event']) ?? DEFAULT_LOG_EVENT
-    const fields: Record<string, unknown> = {}
-    const label = renderEffectMessage(options.message)
-    if (label && label !== event) fields['label'] = label
-    for (const [key, value] of Object.entries(annotations)) {
-      if (key === 'event' || key === 'context') continue
-      fields[key] = value
-    }
+export function makeOperationalLogLogger(
+  sink: OperationalLogSink = liveSink,
+  defaultContext: LogContext = 'main',
+): EffectLogger.Logger<unknown, void> {
+  return EffectLogger.make(options => {
     try {
-      if (options.cause && options.cause.reasons.length > 0) {
-        fields['code'] = errorCodeFor(Cause.squash(options.cause))
+      const level = mapEffectLogLevel(options.logLevel)
+      if (level === null) return
+      const annotations = currentLogAnnotations(options.fiber)
+      const event = annotationString(annotations['event']) ?? DEFAULT_LOG_EVENT
+      const fields: Record<string, unknown> = {}
+      const label = renderEffectMessage(options.message)
+      if (label && label !== event) fields['label'] = label
+      for (const [key, value] of Object.entries(annotations)) {
+        if (key === 'event' || key === 'context') continue
+        fields[key] = value
       }
+      try {
+        if (options.cause && options.cause.reasons.length > 0) {
+          fields['code'] = errorCodeFor(Cause.squash(options.cause))
+        }
+      } catch {
+        /* cause code is best-effort */
+      }
+      // `sanitizeOperationalRecord` is the validator for `context`: an
+      // unrecognised annotation falls back to `main` there, exactly as it does
+      // for the forwarder seams that stamp their own.
+      const context = (annotationString(annotations['context']) ?? defaultContext) as LogContext
+      sink.emit(level, event, fields, context)
     } catch {
-      /* cause code is best-effort */
+      /* logging must never break callers, including inside fibers */
     }
-    // `sanitizeOperationalRecord` is the validator for `context`: an
-    // unrecognised annotation falls back to `main` there, exactly as it does
-    // for the forwarder seams that stamp their own.
-    const context = (annotationString(annotations['context']) ?? 'main') as LogContext
-    logOperationalEvent(level, event, fields, context)
-  } catch {
-    /* logging must never break callers, including inside fibers */
-  }
-})
+  })
+}
+
+export const OperationalLogLogger = makeOperationalLogLogger()
 
 /** Installs `OperationalLogLogger`, replacing the default loggers so Effect
  * logs land only in the operational file (no console duplication). Lowers the
@@ -530,6 +541,12 @@ export const OperationalLogLogger: EffectLogger.Logger<unknown, void> = EffectLo
 export const OperationalLogLoggerLayer = EffectLogger.layer([OperationalLogLogger]).pipe(
   Layer.provideMerge(Layer.succeed(References.MinimumLogLevel, 'Debug')),
 )
+
+export function operationalLogLoggerLayerWithSink(sink: OperationalLogSink, context: LogContext): Layer.Layer<never> {
+  return EffectLogger.layer([makeOperationalLogLogger(sink, context)]).pipe(
+    Layer.provideMerge(Layer.succeed(References.MinimumLogLevel, 'Debug')),
+  )
+}
 
 /**
  * `Tracer` half of the bridge (A7). `OperationalLogLogger` above is the
@@ -564,10 +581,16 @@ function spanDurationMs(startTime: bigint, endTime: bigint): number {
 
 class OperationalLogSpan extends Tracer.NativeSpan {
   readonly logContext: LogContext
+  readonly sink: OperationalLogSink
 
-  constructor(options: ConstructorParameters<typeof Tracer.NativeSpan>[0], logContext: LogContext) {
+  constructor(
+    options: ConstructorParameters<typeof Tracer.NativeSpan>[0],
+    logContext: LogContext,
+    sink: OperationalLogSink,
+  ) {
     super(options)
     this.logContext = logContext
+    this.sink = sink
   }
 
   override end(endTime: bigint, exit: Exit.Exit<unknown, unknown>): void {
@@ -605,7 +628,7 @@ function emitSpanEnd(span: OperationalLogSpan, endTime: bigint, exit: Exit.Exit<
     } catch {
       /* cause code is best-effort */
     }
-    safeLogOperationalEvent('debug', SPAN_EVENT, fields, span.logContext)
+    span.sink.emit('debug', SPAN_EVENT, fields, span.logContext)
   } catch {
     /* tracing must never break callers, including inside fibers */
   }
@@ -614,9 +637,9 @@ function emitSpanEnd(span: OperationalLogSpan, endTime: bigint, exit: Exit.Exit<
 /** The writer-backed `Tracer` for one emitting isolate. `context` is the
  * `LogContext` its records are stamped with: `'worker'` for the db-worker
  * runtime, `'main'` for the main isolate. */
-export const makeOperationalLogTracer = (context: LogContext): Tracer.Tracer =>
+export const makeOperationalLogTracer = (context: LogContext, sink: OperationalLogSink = liveSink): Tracer.Tracer =>
   Tracer.make({
-    span: options => new OperationalLogSpan(options, context),
+    span: options => new OperationalLogSpan(options, context, sink),
   })
 
 /**
@@ -626,5 +649,5 @@ export const makeOperationalLogTracer = (context: LogContext): Tracer.Tracer =>
  * services it declares. Install it in BOTH runtimes: worker-only would leave
  * the main isolate's spans dangling and merely relocate the problem.
  */
-export const OperationalLogTracerLayer = (context: LogContext) =>
-  Layer.succeed(Tracer.Tracer, makeOperationalLogTracer(context))
+export const OperationalLogTracerLayer = (context: LogContext, sink: OperationalLogSink = liveSink) =>
+  Layer.succeed(Tracer.Tracer, makeOperationalLogTracer(context, sink))

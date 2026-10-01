@@ -17,7 +17,7 @@
  *     drive `currency:set` or `pricing:refresh` against a fake. This is the
  *     whole point of the slice, and it is the case that would have caught a
  *     regression immediately.
- *  4. `OperationalLogLoggerLayer` is installed in a production root (F14: it was
+ *  4. the operational Effect logger is installed in a production root (F14: it was
  *     referenced only by `tests/operational-log.test.ts`).
  *
  * Fakes come from the existing seams — `Env.layerWithValues`,
@@ -139,7 +139,7 @@ describe('WorkerLive: Env is constructed once per worker lifetime', () => {
     expect(builds).toBe(1)
   })
 
-  it('the live graph exposes exactly the four worker capabilities and no R', async () => {
+  it('the live graph exposes its application capabilities and ledger ports with no R', async () => {
     const dir = tempDir()
     const ledger = new LedgerStore(join(dir, 'ledger.db'))
     const live = makeWorkerLive(ledger)
@@ -420,11 +420,11 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
   })
 })
 
-describe('F14: OperationalLogLoggerLayer is installed in a production root', () => {
+describe('F14: the operational Effect logger is installed in a production root', () => {
   it('WorkerLive provides the Effect logger refs, not just the loggers', async () => {
     const dir = tempDir()
     const ledger = new LedgerStore(join(dir, 'ledger.db'))
-    // `OperationalLogLoggerLayer` adds NO service to `R` (it sets the
+    // The operational logger layer adds NO service to `R` (it sets the
     // `CurrentLoggers` / `MinimumLogLevel` references), so the check is
     // structural: the live graph is still exactly `WorkerServices`, and the
     // layer is in the merge. A comment cannot prove that; the exported symbol
@@ -438,7 +438,7 @@ describe('F14: OperationalLogLoggerLayer is installed in a production root', () 
     // Scoped to the merge body, because the import line also names it (and a
     // sibling layer, `OperationalLogTracerLayer`, sorts right after it there).
     const mergeBody = source.slice(source.indexOf('Layer.mergeAll('))
-    expect(mergeBody).toContain('OperationalLogLoggerLayer,')
+    expect(mergeBody).toContain("operationalLogLoggerLayerWithSink(sink, 'worker')")
     expect(live).toBeDefined()
   })
 
@@ -448,7 +448,9 @@ describe('F14: OperationalLogLoggerLayer is installed in a production root', () 
     // BOTH roots are asserted — each names its own `LogContext`.
     const workerSource = readFileSync(join(repoRoot, 'src', 'main', 'worker-runtime.ts'), 'utf8')
     const mainSource = readFileSync(join(repoRoot, 'src', 'main', 'main-runtime.ts'), 'utf8')
-    expect(workerSource.slice(workerSource.indexOf('Layer.mergeAll('))).toContain("OperationalLogTracerLayer('worker')")
+    expect(workerSource.slice(workerSource.indexOf('Layer.mergeAll('))).toContain(
+      "OperationalLogTracerLayer('worker', sink)",
+    )
     expect(mainSource.slice(mainSource.indexOf('Layer.mergeAll('))).toContain("OperationalLogTracerLayer('main')")
   })
 })

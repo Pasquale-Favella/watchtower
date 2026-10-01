@@ -4,8 +4,9 @@ import { parentPort, workerData } from 'node:worker_threads'
 
 import { initAppPaths } from '../env.js'
 import { LedgerStore } from '../store/ledger.js'
-import { makeWorkerRuntime } from '../worker-runtime.js'
+import { makeWorkerLive, makeWorkerRuntime } from '../worker-runtime.js'
 import { DbWorkerContext } from './context.js'
+import { makeWorkerOperationalLogSink } from './operational-log-sink.js'
 import type { DbWorkerData, DbWorkerRequest, DbWorkerResponse } from './protocol.js'
 
 /**
@@ -45,9 +46,10 @@ try {
   // runtime.
   mkdirSync(dirname(init.dbPath), { recursive: true })
   const ledger = new LedgerStore(init.dbPath)
+  const logSink = makeWorkerOperationalLogSink(event => port.postMessage(event))
   const ctx = new DbWorkerContext(init, event => port.postMessage(event), {
     ledger,
-    runtime: makeWorkerRuntime(ledger),
+    runtime: makeWorkerRuntime(ledger, makeWorkerLive(ledger, logSink)),
   })
 
   // Deliberately no dispatch queue: every ledger call is synchronous
