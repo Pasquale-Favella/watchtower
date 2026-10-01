@@ -553,7 +553,7 @@ export function operationalLogLoggerLayerWithSink(sink: OperationalLogSink, cont
  * `Effect.log` half; without a `Tracer` the reference resolves to
  * `Tracer.nativeTracer`, which builds a `NativeSpan` and drops it — so every
  * `Effect.fn('…')` in `src/main` was paying for a span nobody could read. This
- * is the missing half: one `debug` record per span END, carrying the name,
+ * is the missing half: one `debug` record per application/repository span END, carrying the name,
  * duration, kind and trace/span identity.
  *
  * Same writer, same rotation, same allowlist as the logger: records go through
@@ -561,9 +561,8 @@ export function operationalLogLoggerLayerWithSink(sink: OperationalLogSink, cont
  * point and span attributes — Effect-internal annotations, never vetted ledger
  * facts — are dropped unless they name an allowlisted key, exactly as at an
  * `Effect.log` call site. Never throws, including before
- * `initOperationalLog` and inside a fiber finalizer, and files at `debug` so
- * high-volume spans never compete with real events (the writer drops `debug` in
- * packaged builds, which is the intended ceiling).
+ * `initOperationalLog` and inside a fiber finalizer. It files at `debug`; the
+ * writer drops `debug` in packaged builds.
  */
 export const SPAN_EVENT = 'effect.span' as const
 
@@ -594,12 +593,9 @@ class OperationalLogSpan extends Tracer.NativeSpan {
   }
 
   override end(endTime: bigint, exit: Exit.Exit<unknown, unknown>): void {
-    // A span END is the only write: no start line, because a start record per
-    // span doubles the file volume and duration is the whole diagnostic. The
-    // runtime ends a span exactly once (`endSpan` returns early when
-    // `status._tag === 'Ended'`, `internal/effect.js:2734`), so the end record
-    // IS the record.
-    emitSpanEnd(this, endTime, exit)
+    // Keep repository/application spans; per-statement SQL spans are too granular
+    // for the bounded operational log. Parent spans retain timing and failures.
+    if (this.name !== 'sql.execute') emitSpanEnd(this, endTime, exit)
     super.end(endTime, exit)
   }
 }

@@ -10,7 +10,7 @@ The file, the rotation, the allowlist and the forwarding topology are all unchan
 
 - **Effect's own `Logger` is the one Effect-facing API.** `Effect.logInfo('scan.provider').pipe(Effect.annotateLogs({ event: 'scan.provider', provider: 'x', unparsed: 4 }))` is the call shape. Effect owns levels, annotations and spans; nothing else does.
 - **A ~110-line writer in `src/main/operational-log.ts` owns the file**: `JSON.stringify(record) + '\n'`, `new Date().toISOString()`, a level ceiling, size-triggered rotation with N rotated generations beside the active file, prune on boot, and a dev-only console echo. Same 5MB x3 quota, same `count`, same `size` grammar (a bare number is MB).
-- **Spans** ride a `Tracer` on the same writer (one record per span end).
+- **Spans** ride a `Tracer` on the same writer, with one record per application or repository operation end. The SQL driver's per-statement `sql.execute` spans end normally but are not forwarded. Enclosing operation spans retain timing and sanitized failure codes without a log record for every statement in a scan.
 - **The security reasoning is untouched and is the reason the change is safe.** `sanitizeOperationalRecord` (`src/shared/logging.ts`) is the single enforcement point between a call site and the disk, and it is pino-independent. The `redact` path list the old logger was configured with named only keys (`prompt`, `token`, `headers`, `body`, `fileContent`, …) that the allowlist had already dropped, so it was unreachable; removing it loosens nothing. Three dependencies leave `package.json` and no third-party logger is introduced in exchange.
 
 ## Considered options

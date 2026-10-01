@@ -88,7 +88,7 @@ function startSpan(
   return span
 }
 
-describe('A7 Operational-log Tracer: one record per span END', () => {
+describe('A7 Operational-log Tracer: one record per application/repository span END', () => {
   it('files exactly one debug record per ended span, with name, kind, ids and duration', async () => {
     const logDir = tempLogDir()
     await initOperationalLog({ logDir, isPackaged: false })
@@ -142,6 +142,33 @@ describe('A7 Operational-log Tracer: one record per span END', () => {
     expect(raw).not.toContain('456.78')
     expect(raw).not.toContain('alice')
     expect(JSON.stringify(records[0])).not.toContain(secret)
+  })
+
+  it('suppresses a SQL statement span while retaining its enclosing operation failure and timing', async () => {
+    const logDir = tempLogDir()
+    await initOperationalLog({ logDir, isPackaged: false })
+    const tracer = makeOperationalLogTracer('worker')
+    const operation = startSpan(tracer, 'LedgerConfig.getCurrencyRate', 1_000_000n)
+    const sql = startSpan(tracer, 'sql.execute', 1_500_000n, {}, operation)
+    const failure = new TypeError('private SQL detail')
+
+    sql.end(2_000_000n, Exit.fail(failure))
+    operation.end(3_500_000n, Exit.fail(failure))
+    closeOperationalLog()
+
+    expect(sql.status._tag).toBe('Ended')
+    const records = readRecords(logDir)
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      context: 'worker',
+      event: SPAN_EVENT,
+      op: 'LedgerConfig.getCurrencyRate',
+      durationMs: 2.5,
+      code: 'type',
+      level: 'debug',
+    })
+    expect(readRaw(logDir)).not.toContain('sql.execute')
+    expect(readRaw(logDir)).not.toContain('private SQL detail')
   })
 
   it('never throws before initOperationalLog (mirrors if (!active) return)', async () => {

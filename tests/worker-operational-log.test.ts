@@ -119,6 +119,9 @@ describe('worker operational log forwarding', () => {
           return event.logEvent === 'effect.span' && event.fields.op === 'LedgerConfig.getRefreshCadence'
         }),
       ).toBe(true)
+      expect(
+        events.slice(sqlTraceStart).filter(event => event.event === 'oplog' && event.fields.op === 'sql.execute'),
+      ).toEqual([])
     } finally {
       await runtime.dispose()
       rmSync(directory, { recursive: true, force: true })
