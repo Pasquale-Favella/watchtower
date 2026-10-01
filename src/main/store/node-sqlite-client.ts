@@ -21,10 +21,8 @@ type SqliteStatement = {
 /** The three ledger ports (ADR 0032 §A3) — the shape every ledger consumer
  *  should depend on, and the only `R` a `runSync` caller needs. */
 export type LedgerPorts = LedgerIngest | LedgerQueries | LedgerConfig
-export type LedgerRuntime = ManagedRuntime.ManagedRuntime<
-  Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient | LedgerPorts,
-  never
->
+type LedgerRuntimeServices = Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient | LedgerPorts
+export type LedgerRuntime = ManagedRuntime.ManagedRuntime<LedgerRuntimeServices, never>
 
 /**
  * Effect SQL-backed SQLite access with the ledger's synchronous store contract.
@@ -54,7 +52,7 @@ export class NodeSqliteDatabase {
     }
   }
 
-  runSync<A, E>(effect: Effect.Effect<A, E, LedgerPorts>): A {
+  runSync<A, E, R extends LedgerRuntimeServices>(effect: Effect.Effect<A, E, R>): A {
     return this.runtime.runSync(effect)
   }
 
@@ -114,7 +112,7 @@ export class NodeSqliteDatabase {
   }
 
   close(): void {
-    if (this.ownsRuntime) this.runtime.runSync(this.runtime.disposeEffect)
+    if (this.ownsRuntime) Effect.runSync(this.runtime.disposeEffect)
   }
 
   private execute(query: string, params: readonly unknown[] = [], raw = false): unknown {

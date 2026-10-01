@@ -1,3 +1,6 @@
+import { mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+
 import * as Sqlite from '@effect/sql-sqlite-node'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -15,6 +18,7 @@ import {
 } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 import { LedgerStore } from './store/ledger.js'
+import { initializeLedger } from './store/ledger-initialization.js'
 import { LedgerConfig, LedgerIngest, LedgerPortsLayer, LedgerQueries } from './store/ledger-repository.js'
 
 export type WorkerServices =
@@ -65,9 +69,9 @@ export function makeWorkerRuntime(
 /**
  * The db-worker's one-owner factory. LedgerStore is a temporary synchronous
  * facade over the runtime's very same SqliteClient; it owns neither another
- * connection nor another runtime. Constructing it runs migrations before this
- * factory returns, so callers cannot publish `ready` early. On failed boot the
- * runtime scope closes the real driver exactly once.
+ * connection nor another runtime. The root runs the shared schema initializer
+ * before constructing the facade, so callers cannot publish `ready` early.
+ * On failed boot the runtime scope closes the real driver exactly once.
  */
 export function openWorkerOwner<Overrides extends WorkerOverrides = never>(
   dbPath: string,
@@ -78,10 +82,12 @@ export function openWorkerOwner<Overrides extends WorkerOverrides = never>(
     readonly makeRuntime?: typeof makeWorkerRuntime
   } = {},
 ): { ledger: LedgerStore; runtime: WorkerRuntime } {
+  mkdirSync(dirname(dbPath), { recursive: true })
   const layer = makeWorkerLive(dbPath, sink, overrides, options.sqliteLayer)
   const runtime = (options.makeRuntime ?? makeWorkerRuntime)(dbPath, layer)
   try {
-    const ledger = new LedgerStore(dbPath, { runtime })
+    runtime.runSync(initializeLedger)
+    const ledger = new LedgerStore(dbPath, { runtime, initialize: false })
     return { ledger, runtime }
   } catch (error) {
     try {

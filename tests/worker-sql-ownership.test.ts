@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import * as Sqlite from '@effect/sql-sqlite-node'
@@ -68,10 +68,11 @@ describe('db-worker SQL ownership', () => {
   })
 
   it('constructs one runtime and closes the real driver once after the worker lifetime', () => {
-    const path = databasePath()
+    const path = join(dirname(databasePath()), 'nested', 'db', 'ledger.db')
     const driver = observedDriver(path)
     const runtimes: WorkerRuntime[] = []
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
+    const prepare = vi.spyOn(DatabaseSync.prototype, 'prepare')
     const owner = openWorkerOwner(path, undefined, undefined, {
       sqliteLayer: driver.layer,
       makeRuntime: recordRuntime(runtimes),
@@ -81,6 +82,9 @@ describe('db-worker SQL ownership', () => {
       expect(driver.counts).toEqual({ acquisitions: 1, finalizers: 0 })
       expect(close).not.toHaveBeenCalled()
       expect(owner.ledger.getTableNames()).toContain('ledger_source')
+      expect(
+        prepare.mock.calls.filter(([query]) => query.includes('COALESCE(MAX(migration_id), 0) AS version')),
+      ).toHaveLength(1)
       // The facade borrows the root; closing it cannot retire the client.
       owner.ledger.close()
       expect(owner.runtime.runSync(Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()))).toBe('1m')
