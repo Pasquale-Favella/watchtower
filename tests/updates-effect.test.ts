@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { closeOperationalLog, initOperationalLog, OperationalLogLoggerLayer } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
+import { runWithTestClockWindow } from './helpers/run-effect-test.js'
 import {
   createUpdateCheckerEffect,
   fetchReleasesEffect,
@@ -113,11 +114,10 @@ describe('fetchReleasesEffect (Effect-native releases boundary)', () => {
   it('times out via the Effect Clock (TestClock-controllable)', async () => {
     const error = await runEffectTest(
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
+        return yield* runWithTestClockWindow(
           fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(neverFetch))),
-        )
-        yield* TestClock.adjust(60_000)
-        return yield* Fiber.join(fiber).pipe(Effect.flip)
+          60_000,
+        ).pipe(Effect.flip)
       }).pipe(Effect.provide(TestClock.layer())),
     )
     expect(error).toBeInstanceOf(UpdateFetchError)
@@ -205,11 +205,10 @@ describe('createUpdateCheckerEffect (Effect-native check)', () => {
     const checker = await makeChecker()
     const status = await runEffectTest(
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
+        return yield* runWithTestClockWindow(
           checker.check().pipe(Effect.provide(HttpFetch.layerWithFetch(neverFetch))),
+          60_000,
         )
-        yield* TestClock.adjust(60_000)
-        return yield* Fiber.join(fiber)
       }).pipe(Effect.provide(TestClock.layer())),
     )
     expect(status).toEqual({

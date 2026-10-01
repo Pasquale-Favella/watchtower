@@ -23,6 +23,7 @@ import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
+import * as Random from 'effect/Random'
 import * as Schedule from 'effect/Schedule'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -35,6 +36,7 @@ import {
   isTransientFetchError,
   TRANSIENT_RETRY_RETRIES,
   transientRetrySchedule,
+  worstCaseRetryWindowMs,
 } from '../src/main/pipeline/fetch-utils.js'
 import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
 import { PricingRefreshError, refreshPricingNowEffect } from '../src/main/pipeline/models.js'
@@ -176,6 +178,35 @@ describe('transientRetrySchedule (the shared bounded policy)', () => {
     expect(bounds.first).toBeLessThanOrEqual(300)
     expect(bounds.second).toBeGreaterThanOrEqual(400)
     expect(bounds.second).toBeLessThanOrEqual(600)
+  })
+
+  it('derives the retry window from nominal delays, so low jitter samples cannot undercount it', async () => {
+    for (const [sample, expectedDelays] of [
+      [0, [200, 400]],
+      [1, [300, 600]],
+    ] as const) {
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const step = yield* Schedule.toStep(transientRetrySchedule)
+          const error = new HttpFetchError({ reason: 'network', message: 'x', url: 'https://x.test' })
+          const first = yield* step(0, error)
+          const second = yield* step(0, error)
+          return {
+            sampledDelays: [Duration.toMillis(first[1]), Duration.toMillis(second[1])],
+            window: yield* worstCaseRetryWindowMs(100),
+          }
+        }).pipe(
+          Effect.provideService(Random.Random, {
+            nextIntUnsafe: () => 0,
+            nextDoubleUnsafe: () => sample,
+          }),
+        ),
+      )
+
+      expect(result.sampledDelays).toEqual(expectedDelays)
+      expect(result.window).toBe(1_200)
+      expect(result.window).toBeGreaterThanOrEqual(300 + result.sampledDelays[0] + result.sampledDelays[1])
+    }
   })
 
   it('isTransientFetchError retries timeout and network, never abort', () => {

@@ -19,7 +19,7 @@ import {
 import { HttpFetch, worstCaseRetryWindowMs } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import type { CurrencyRate } from '../src/shared/schemas/ledger.js'
-import { runEffectTest } from './helpers/run-effect-test.js'
+import { runEffectTest, runWithTestClockWindow } from './helpers/run-effect-test.js'
 
 function makeStore(): LedgerStore {
   const dir = mkdtempSync(join(tmpdir(), 'tr-fx-effect-'))
@@ -162,15 +162,13 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
   it('times out via TestClock and falls back without persisting', async () => {
     const store = makeStore()
     const neverFetch = (() => new Promise<Response>(() => {})) as typeof fetch
-    // Use the schedule-derived worst-case retry window so TestClock reaches the
-    // request timeout before the test joins the fiber.
     const timeoutMs = 100
     const active = await runEffectTest(
       Effect.gen(function* () {
-        const windowMs = yield* worstCaseRetryWindowMs(timeoutMs)
-        const fiber = yield* Effect.forkChild(fxEffect(store, 'EUR', neverFetch, { timeoutMs }))
-        yield* TestClock.adjust(windowMs)
-        return yield* Fiber.join(fiber)
+        return yield* runWithTestClockWindow(
+          fxEffect(store, 'EUR', neverFetch, { timeoutMs }),
+          yield* worstCaseRetryWindowMs(timeoutMs),
+        )
       }).pipe(Effect.provide(TestClock.layer())),
     )
     expect(active.rate).toBe(1)

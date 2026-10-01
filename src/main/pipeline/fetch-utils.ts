@@ -78,10 +78,13 @@ const JITTER_CEILING = 1.2
  * `retryTransientFetch` below, which is the single call-site spelling of the
  * policy.
  */
-export const transientRetrySchedule: Schedule.Schedule<Duration.Duration, HttpFetchError> = Schedule.min([
+const transientRetryBaseSchedule: Schedule.Schedule<Duration.Duration, HttpFetchError> = Schedule.min([
   Schedule.exponential(Duration.millis(TRANSIENT_RETRY_BASE_MS)),
   Schedule.spaced(Duration.millis(TRANSIENT_RETRY_CAP_MS)),
-]).pipe(Schedule.upTo({ times: TRANSIENT_RETRY_RETRIES }), Schedule.jittered)
+]).pipe(Schedule.upTo({ times: TRANSIENT_RETRY_RETRIES }))
+
+export const transientRetrySchedule: Schedule.Schedule<Duration.Duration, HttpFetchError> =
+  transientRetryBaseSchedule.pipe(Schedule.jittered)
 
 /**
  * The abort guard paired with `transientRetrySchedule` — the `while` half of
@@ -140,30 +143,30 @@ export function retryTransientFetch<A, R>(
  * `TRANSIENT_RETRY_CAP_MS`: correct while the cap does not bite, and safely
  * over-estimating if `RETRIES` is raised — but if someone LOWERED the cap below
  * `BASE * 2^n` it would under-count and the suite would hang again. Stepping
- * the real `min`/exponential/`jittered` pipeline has no such blind spot: it is
- * the schedule's own worst case by construction.
+ * the shared base schedule preserves the real cap and retry count.
  *
- * Jitter is ±20% (`Schedule.jittered`'s default), so each stepped delay is
- * scaled by `JITTER_CEILING` to take the ceiling. Over-shooting is free — virtual
- * time costs no wall clock — while under-shooting is the only failure mode.
+ * Jitter is ±20% (`Schedule.jittered`'s default). The base delays are scaled
+ * by the upper factor to take a true ceiling; scaling a random sample from the
+ * already-jittered schedule can still under-count when that sample is low.
  */
-export const worstCaseRetryWindowMs = (perAttemptTimeoutMs: number): Effect.Effect<number> =>
-  Effect.gen(function* () {
-    const step = yield* Schedule.toStep(transientRetrySchedule)
-    // The schedule is attempt-driven, not input-driven: a capped exponential
-    // bounded by `upTo` never reads the value it is stepped with, so any
-    // `HttpFetchError` advances it identically. Only the delay matters here.
-    const probe = new HttpFetchError({ reason: 'network', message: 'worst-case window probe', url: 'https://x.test' })
-    let scheduleMs = 0
-    for (let i = 0; i < TRANSIENT_RETRY_RETRIES; i++) {
-      // `orDie`: the schedule only completes after the final step, and that
-      // `Done` is never read here — a completion mid-loop would be a bug, so
-      // fail loud rather than silently return a short window.
-      const duration: Duration.Duration = (yield* Effect.orDie(step(0, probe)))[1]
-      scheduleMs += Duration.toMillis(duration) * JITTER_CEILING
-    }
-    return (TRANSIENT_RETRY_RETRIES + 1) * perAttemptTimeoutMs + scheduleMs
-  })
+export const worstCaseRetryWindowMs = Effect.fnUntraced(function* (
+  perAttemptTimeoutMs: number,
+): Effect.fn.Return<number> {
+  const step = yield* Schedule.toStep(transientRetryBaseSchedule)
+  // The schedule is attempt-driven, not input-driven: a capped exponential
+  // bounded by `upTo` never reads the value it is stepped with, so any
+  // `HttpFetchError` advances it identically. Only the delay matters here.
+  const probe = new HttpFetchError({ reason: 'network', message: 'worst-case window probe', url: 'https://x.test' })
+  let scheduleMs = 0
+  for (let i = 0; i < TRANSIENT_RETRY_RETRIES; i++) {
+    // `orDie`: the schedule only completes after the final step, and that
+    // `Done` is never read here — a completion mid-loop would be a bug, so
+    // fail loud rather than silently return a short window.
+    const duration: Duration.Duration = (yield* Effect.orDie(step(0, probe)))[1]
+    scheduleMs += Duration.toMillis(duration) * JITTER_CEILING
+  }
+  return (TRANSIENT_RETRY_RETRIES + 1) * perAttemptTimeoutMs + scheduleMs
+})
 
 function isAbortError(cause: unknown): boolean {
   if (cause instanceof DOMException) return cause.name === 'AbortError'

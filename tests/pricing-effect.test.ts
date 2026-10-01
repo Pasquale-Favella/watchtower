@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import * as Effect from 'effect/Effect'
-import * as Fiber from 'effect/Fiber'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -15,7 +14,7 @@ import {
   PricingRefreshError,
   refreshPricingNowEffect,
 } from '../src/main/pipeline/models.js'
-import { runEffectTest } from './helpers/run-effect-test.js'
+import { runEffectTest, runWithTestClockWindow } from './helpers/run-effect-test.js'
 
 function okResponse(body: unknown): Response {
   return {
@@ -65,13 +64,6 @@ function runLoadPricing(fetchImpl: typeof fetch, timeoutMs?: number, ttlMs: numb
 
 function expectSnapshotMerged(): void {
   expect(getModelCosts('gpt-4o')).not.toBeNull()
-}
-
-function hangingFetch(onStart: () => void): typeof fetch {
-  return (() => {
-    onStart()
-    return new Promise<Response>(() => {})
-  }) as unknown as typeof fetch
 }
 
 afterEach(() => {
@@ -168,28 +160,16 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
 
   it('times out via TestClock with fallback and no cache write', async () => {
     const dir = freshCacheDir()
-    let notifyFetchStarted: () => void = () => {}
-    const fetchStarted = new Promise<void>(resolve => {
-      notifyFetchStarted = resolve
-    })
-    const neverFetch = hangingFetch(notifyFetchStarted)
+    const neverFetch = (() => new Promise<Response>(() => {})) as typeof fetch
     await runEffectTest(
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
+        return yield* runWithTestClockWindow(
           loadPricingEffect({ timeoutMs: 100 }).pipe(
             Effect.provide(HttpFetch.layerWithFetch(neverFetch)),
             Effect.provide(pricingEnv()),
           ),
+          yield* worstCaseRetryWindowMs(100),
         )
-        // Wait until the child has finished the disk-cache read and entered
-        // the network fetch before advancing the virtual clock; otherwise the
-        // single adjust lands before the timeout is scheduled and the join
-        // hangs.
-        yield* Effect.tryPromise(() => fetchStarted)
-        // Use the schedule-derived worst-case retry window so TestClock
-        // reaches the request timeout before the test joins the fiber.
-        yield* TestClock.adjust(yield* worstCaseRetryWindowMs(100))
-        return yield* Fiber.join(fiber)
       }).pipe(Effect.provide(TestClock.layer())),
     )
     // Fallback to the snapshot, and the timed-out fetch never wrote the cache.

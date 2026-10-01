@@ -13,7 +13,7 @@ import {
   vercelGateway,
 } from '../src/main/pipeline/providers/vercel-gateway.js'
 import type { DateRange } from '../src/main/pipeline/types.js'
-import { runEffectTest } from './helpers/run-effect-test.js'
+import { runEffectTest, runWithTestClockWindow } from './helpers/run-effect-test.js'
 
 const RANGE: DateRange = {
   start: new Date('2026-01-01T00:00:00.000Z'),
@@ -116,16 +116,13 @@ describe('fetchVercelGatewayReportEffect (Effect-native gateway boundary)', () =
   it('timeout via TestClock returns []', async () => {
     const rows = await runEffectTest(
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
+        return yield* runWithTestClockWindow(
           fetchVercelGatewayReportEffect(RANGE).pipe(
             Effect.provide(HttpFetch.layerWithFetch(neverFetch())),
             Effect.provide(Env.layerWithGatewayKey('test-key')),
           ),
+          yield* worstCaseRetryWindowMs(8_000),
         )
-        // Use the schedule-derived worst-case retry window so TestClock
-        // reaches the request timeout before the test joins the fiber.
-        yield* TestClock.adjust(yield* worstCaseRetryWindowMs(8_000))
-        return yield* Fiber.join(fiber)
       }).pipe(Effect.provide(TestClock.layer())),
     )
     expect(rows).toEqual([])
