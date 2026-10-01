@@ -20,7 +20,7 @@ import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../sha
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { DEFAULT_CADENCE, isValidCadence } from '../cadence.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from './ledger-repository.js'
-import { NodeSqliteDatabase } from './node-sqlite-client.js'
+import { type LedgerRuntime, NodeSqliteDatabase } from './node-sqlite-client.js'
 import type { PortInput } from './port.js'
 import type { LedgerCallFactsRow } from './read-projections.js'
 import { executeSqliteScript } from './sqlite-migrations.js'
@@ -51,8 +51,12 @@ export interface LedgerStoreOptions {
   /** Open the ledger READ-ONLY (the in-app ledger MCP server's second
    *  connection, map 53). Skips the DDL — a read-only connection cannot run
    *  CREATE TABLE, and this instance must never write: only the owning
-   *  main process ports data in (ADR 0002). */
+   *  db-worker ports data in (ADR 0002, ADR 0023). */
   readOnly?: boolean
+  /** Borrow the application-owned worker runtime and its writer connection.
+   *  This is used only by the db-worker compatibility facade; standalone
+   *  callers keep owning the database runtime they construct. */
+  runtime?: LedgerRuntime
 }
 
 export class LedgerStore {
@@ -63,9 +67,8 @@ export class LedgerStore {
     const { readOnly = false } = options
     if (!readOnly) mkdirSync(dirname(dbPath), { recursive: true })
     this.dbPath = dbPath
-    this.db = new NodeSqliteDatabase(dbPath, { readonly: readOnly })
+    this.db = new NodeSqliteDatabase(dbPath, { readonly: readOnly, runtime: options.runtime })
     if (readOnly) return
-    this.db.exec('PRAGMA journal_mode = WAL')
     this.db.migrate([
       {
         version: 1,
@@ -381,32 +384,23 @@ export class LedgerStore {
   }
 
   /**
-   * The three ledger ports (ADR 0032 §A3) as a `Layer`, for a composition root
-   * that must supply them. They are projections of THIS store's own writer
-   * connection (`NodeSqliteDatabase.portsLayer`), not a second `SqliteClient` —
-   * which is what keeps ADR 0023's single-writer invariant true while the
-   * db-worker root composes them into `WorkerLive`.
+   * The three ledger ports (ADR 0032 §A3) as a `Layer`, retained for standalone
+   * compatibility callers. The db-worker now composes `LedgerPortsLayer` over
+   * its application-owned SQLite layer directly; it does not use this getter.
    *
-   * Removal condition: deleted with the facade, once the view builders take
-   * `LedgerQueries` through `R` and the worker root builds the ports over the
-   * worker's own client (the facade-retirement slice).
+   * Removal condition: deleted with the facade after worker dispatch, view
+   * builders and standalone adapters no longer depend on its synchronous
+   * methods or compatibility layer.
    */
   get portsLayer(): Layer.Layer<LedgerIngest | LedgerQueries | LedgerConfig> {
     return this.db.portsLayer
   }
 
   /**
-   * Synchronous `LedgerConfig` runner for Effect-native callers on the owning
-   * thread (`FxRates.layerWithRepository`, the one production consumer). Public
-   * so the repository-direct `FxRates` layer reaches the `LedgerConfig` PORT
-   * without going through this facade's per-method adapters — the single-writer
-   * invariant is unchanged: only the worker thread that owns this store may call
-   * it; main never touches the ledger connection.
-   *
-   * `runRepositorySync` is the historical name and the one
-   * `FxRatesRepositoryRunner` names structurally, so it stays; the sibling
-   * runners are named after their ports so each port's `R` is exactly what it
-   * needs rather than a widened union.
+   * Temporary synchronous `LedgerConfig` runner for facade methods and the
+   * standalone FX adapter. Production FX composes the config port directly.
+   * Retain the historical name until those callers migrate, then delete this
+   * runner with LedgerStore. Each runner executes on its owning thread.
    */
   runRepositorySync<A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError | SchemaError>): A {
     return this.db.runSync(

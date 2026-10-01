@@ -1,10 +1,9 @@
-import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
 
+import * as Effect from 'effect/Effect'
+
 import { initAppPaths } from '../env.js'
-import { LedgerStore } from '../store/ledger.js'
-import { makeWorkerLive, makeWorkerRuntime } from '../worker-runtime.js'
+import { openWorkerOwner } from '../worker-runtime.js'
 import { DbWorkerContext } from './context.js'
 import { makeWorkerOperationalLogSink } from './operational-log-sink.js'
 import type { DbWorkerData, DbWorkerRequest, DbWorkerResponse } from './protocol.js'
@@ -36,21 +35,19 @@ try {
   // back to the same pure resolvers the `process.env` readers already use.
   initAppPaths({ cacheDir: init.cacheDir })
 
-  // The worker composition root (ADR 0032): the single-writer `LedgerStore` is
-  // constructed HERE, together with the `WorkerLive` runtime built from it,
-  // because `FxRates.layerWithRepository` is bound to that store instance and
-  // the three `Ledger*` ports are supplied from that store's OWN connection
-  // (`store.portsLayer` — a second `SqliteClient` would be a second writer,
-  // ADR 0023). Both are then handed to `DbWorkerContext`, which never composes
-  // a layer of its own — every Effect program in this isolate runs against this
-  // runtime.
-  mkdirSync(dirname(init.dbPath), { recursive: true })
-  const ledger = new LedgerStore(init.dbPath)
   const logSink = makeWorkerOperationalLogSink(event => port.postMessage(event))
-  const ctx = new DbWorkerContext(init, event => port.postMessage(event), {
-    ledger,
-    runtime: makeWorkerRuntime(ledger, makeWorkerLive(ledger, logSink)),
-  })
+  const owner = openWorkerOwner(init.dbPath, logSink)
+  let ctx: DbWorkerContext
+  try {
+    ctx = new DbWorkerContext(init, event => port.postMessage(event), owner)
+  } catch (error) {
+    try {
+      Effect.runSync(owner.runtime.disposeEffect)
+    } catch {
+      // Keep the context-construction failure as the boot error.
+    }
+    throw error
+  }
 
   // Deliberately no dispatch queue: every ledger call is synchronous
   // (`node:sqlite`), so each one is atomic — no two store operations can

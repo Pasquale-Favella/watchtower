@@ -2,22 +2,67 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
-import { describe, expect, it } from 'vitest'
+import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import { describe, expect, it, vi } from 'vitest'
 
+import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { makeWorkerOperationalLogSink } from '../src/main/db-worker/operational-log-sink.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { OperationalLog, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { makeWorkerLive, makeWorkerRuntime } from '../src/main/worker-runtime.js'
+import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
+import { LedgerConfig } from '../src/main/store/ledger-repository.js'
+import { openWorkerOwner } from '../src/main/worker-runtime.js'
 
 describe('worker operational log forwarding', () => {
+  it('logs a malformed FX cache once without fetching or publishing a successful currency', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-fx-error-'))
+    const events: DbWorkerEvent[] = []
+    const failure = Deferred.makeUnsafe<DbWorkerEvent>()
+    const emit = (event: DbWorkerEvent): void => {
+      events.push(event)
+      if (event.event === 'oplog' && event.logEvent === 'currency.refresh.error') {
+        Effect.runSync(Deferred.succeed(failure, event))
+      }
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    const dbPath = join(directory, 'ledger.db')
+    const owner = openWorkerOwner(dbPath, makeWorkerOperationalLogSink(emit), HttpFetch.layerWithFetch(fetch))
+    owner.runtime.runSync(
+      Effect.gen(function* () {
+        const config = yield* LedgerConfig
+        const sql = yield* SqlClient.SqlClient
+        yield* config.setDisplayCurrency('EUR')
+        yield* sql.unsafe(
+          "INSERT INTO currency_rate (code, symbol, rate, updated_at) VALUES ('EUR', '€', 'malformed', 'old')",
+        )
+      }),
+    )
+    const context = new DbWorkerContext({ dbPath, dataDir: directory, cacheDir: join(directory, 'cache') }, emit, owner)
+    try {
+      expect(await Effect.runPromise(Deferred.await(failure))).toMatchObject({
+        event: 'oplog',
+        level: 'error',
+        logEvent: 'currency.refresh.error',
+        fields: { op: 'currency.refresh', code: 'SchemaError' },
+      })
+      expect(fetch).not.toHaveBeenCalled()
+      expect(events.filter(event => event.event === 'currency:changed')).toEqual([])
+      expect(
+        events.filter(event => event.event === 'oplog' && event.logEvent === 'currency.refresh.error'),
+      ).toHaveLength(1)
+    } finally {
+      await context.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('forwards Effect logs, spans and service counters without a worker file writer', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-log-'))
-    const ledger = new LedgerStore(join(directory, 'ledger.db'))
     const events: DbWorkerEvent[] = []
     const sink = makeWorkerOperationalLogSink(event => events.push(event))
-    const runtime = makeWorkerRuntime(ledger, makeWorkerLive(ledger, sink))
+    const { runtime } = openWorkerOwner(join(directory, 'ledger.db'), sink)
     try {
       await runtime.runPromise(
         Effect.gen(function* () {
@@ -35,7 +80,17 @@ describe('worker operational log forwarding', () => {
           yield* Effect.void.pipe(Effect.withSpan('worker.test.span', { attributes: { prompt: 'secret' } }))
         }),
       )
-      const records = events.filter(event => event.event === 'oplog')
+      const sqlTraceStart = events.length
+      runtime.runSync(Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()))
+      const records = events
+        .slice(0, sqlTraceStart)
+        .filter(
+          event =>
+            event.event === 'oplog' &&
+            (event.logEvent === 'worker.test' ||
+              event.logEvent === SCAN_DURATION_COUNTER ||
+              (event.logEvent === 'effect.span' && event.fields.op === 'worker.test.span')),
+        )
       expect(records).toHaveLength(3)
       expect(records[0]).toEqual({
         event: 'oplog',
@@ -57,21 +112,25 @@ describe('worker operational log forwarding', () => {
       })
       expect(JSON.stringify(records)).not.toContain('secret')
       expect(JSON.stringify(records)).not.toContain('/private')
-      expect(records.every(record => !('context' in record.fields))).toBe(true)
+      expect(records.every(record => record.event !== 'oplog' || !('context' in record.fields))).toBe(true)
+      expect(
+        events.slice(sqlTraceStart).some(event => {
+          if (event.event !== 'oplog') return false
+          return event.logEvent === 'effect.span' && event.fields.op === 'LedgerConfig.getRefreshCadence'
+        }),
+      ).toBe(true)
     } finally {
       await runtime.dispose()
-      ledger.close()
       rmSync(directory, { recursive: true, force: true })
     }
   })
 
   it('contains forwarding failures in all three observation paths', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-log-'))
-    const ledger = new LedgerStore(join(directory, 'ledger.db'))
     const sink = makeWorkerOperationalLogSink(() => {
       throw new Error('closed port')
     })
-    const runtime = makeWorkerRuntime(ledger, makeWorkerLive(ledger, sink))
+    const { runtime } = openWorkerOwner(join(directory, 'ledger.db'), sink)
     try {
       await expect(
         runtime.runPromise(
@@ -84,7 +143,6 @@ describe('worker operational log forwarding', () => {
       ).resolves.toBeUndefined()
     } finally {
       await runtime.dispose()
-      ledger.close()
       rmSync(directory, { recursive: true, force: true })
     }
   })

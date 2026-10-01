@@ -23,7 +23,7 @@ import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { runOwnedScanPromise } from '../src/main/pipeline/scan.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
-import { makeWorkerRuntime } from '../src/main/worker-runtime.js'
+import { openWorkerOwner } from '../src/main/worker-runtime.js'
 import type { ScanDelta } from '../src/shared/schemas/scan.js'
 import { buildFixtureCachedFile } from './fixtures/cached-file.js'
 
@@ -54,11 +54,12 @@ describe('scan lifetime ownership', () => {
   function open(): DbWorkerContext {
     dir = mkdtempSync(join(tmpdir(), 'watchtower-scan-lifetime-'))
     const dbPath = join(dir, 'ledger.db')
-    const ledger = new LedgerStore(dbPath)
-    context = new DbWorkerContext({ dbPath, dataDir: dir, cacheDir: join(dir, 'cache') }, event => events.push(event), {
-      ledger,
-      runtime: makeWorkerRuntime(ledger),
-    })
+    const owner = openWorkerOwner(dbPath)
+    context = new DbWorkerContext(
+      { dbPath, dataDir: dir, cacheDir: join(dir, 'cache') },
+      event => events.push(event),
+      owner,
+    )
     return context
   }
 

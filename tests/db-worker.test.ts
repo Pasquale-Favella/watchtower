@@ -25,8 +25,7 @@ import { Env } from '../src/main/env.js'
 import { OperationalLog, type OperationalLogSink, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { runScan, ScanAbortedError, type ScanMetadata } from '../src/main/pipeline/scan.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { makeWorkerRuntime, type WorkerServices } from '../src/main/worker-runtime.js'
+import { openWorkerOwner, type WorkerOverrides } from '../src/main/worker-runtime.js'
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'watchtower-dbworker-'))
@@ -51,16 +50,12 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   let ctx: DbWorkerContext | null = null
   const events: DbWorkerEvent[] = []
 
-  /** Mirrors the worker composition root (`db-worker/entry.ts`): the
-   * single-writer store, then the `WorkerLive` runtime built from it. */
-  function openWith(runtimeLayer?: Layer.Layer<WorkerServices>): DbWorkerContext {
+  /** Uses the same runtime, client, migrations and facade owner as worker boot. */
+  function openWith<Overrides extends WorkerOverrides = never>(runtimeLayer?: Layer.Layer<Overrides>): DbWorkerContext {
     dir = tempDataDir()
     const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
-    const ledger = new LedgerStore(init.dbPath)
-    ctx = new DbWorkerContext(init, event => events.push(event), {
-      ledger,
-      runtime: runtimeLayer ? makeWorkerRuntime(ledger, runtimeLayer) : makeWorkerRuntime(ledger),
-    })
+    const owner = openWorkerOwner(init.dbPath, undefined, runtimeLayer)
+    ctx = new DbWorkerContext(init, event => events.push(event), owner)
     return ctx
   }
 
@@ -844,8 +839,8 @@ describe('DbWorkerContext cadence jitter (Wave 7 §4.4)', () => {
     vi.useFakeTimers()
     const dir = tempDataDir()
     const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
-    const ledger = new LedgerStore(init.dbPath)
-    const ctx = new DbWorkerContext(init, () => {}, { ledger, runtime: makeWorkerRuntime(ledger) })
+    const owner = openWorkerOwner(init.dbPath)
+    const ctx = new DbWorkerContext(init, () => {}, owner)
     const tickTimes: number[] = []
     const triggerScan = vi
       .spyOn(ctx as unknown as { triggerBackgroundScan: () => Promise<void> }, 'triggerBackgroundScan')

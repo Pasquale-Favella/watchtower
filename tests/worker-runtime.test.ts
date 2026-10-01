@@ -39,9 +39,13 @@ import { Env } from '../src/main/env.js'
 import { FxRates } from '../src/main/fx.js'
 import { OperationalLog, type OperationalLogSink } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
-import { makeWorkerLive, makeWorkerRuntime, type WorkerServices } from '../src/main/worker-runtime.js'
+import {
+  makeWorkerLive,
+  openWorkerOwner,
+  type WorkerOverrides,
+  type WorkerServices,
+} from '../src/main/worker-runtime.js'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -71,16 +75,10 @@ afterEach(async () => {
   while (open.length > 0) await open.pop()!()
 })
 
-/** Mirrors the worker composition root (`db-worker/entry.ts`): a fresh
- * single-writer store per case, and the runtime built from it. The layer is
- * overridable so a case can substitute capabilities. The factory receives the
- * store, because a substituted graph still has to supply the three `Ledger*`
- * ports (`WorkerServices` includes them since ADR 0032 §A3) and the live ones
- * come from the store's own writer connection via `ledger.portsLayer`. */
-function worker(layerFor?: (ledger: LedgerStore) => Layer.Layer<WorkerServices>) {
+/** Same canonical owner factory used by db-worker boot, with optional service overrides. */
+function worker<Overrides extends WorkerOverrides = never>(layerFor?: () => Layer.Layer<Overrides>) {
   const dir = tempDir()
-  const ledger = new LedgerStore(join(dir, 'ledger.db'))
-  const runtime = makeWorkerRuntime(ledger, layerFor ? layerFor(ledger) : makeWorkerLive(ledger))
+  const { ledger, runtime } = openWorkerOwner(join(dir, 'ledger.db'), undefined, layerFor?.())
   const ctx = new DbWorkerContext({ dbPath: ledger.dbPath, dataDir: dir, cacheDir: join(dir, 'cache') }, () => {}, {
     ledger,
     runtime,
@@ -109,7 +107,7 @@ describe('WorkerLive: Env is constructed once per worker lifetime', () => {
         return Env.of({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })
       }),
     )
-    const ctx = worker(ledger =>
+    const ctx = worker(() =>
       Layer.mergeAll(
         countingEnv,
         OperationalLog.layer,
@@ -120,7 +118,6 @@ describe('WorkerLive: Env is constructed once per worker lifetime', () => {
           getDisplayCurrency: () => Effect.succeed('USD'),
           setDisplayCurrency: () => Effect.void,
         }),
-        ledger.portsLayer,
       ),
     )
 
@@ -141,8 +138,7 @@ describe('WorkerLive: Env is constructed once per worker lifetime', () => {
 
   it('the live graph exposes its application capabilities and ledger ports with no R', async () => {
     const dir = tempDir()
-    const ledger = new LedgerStore(join(dir, 'ledger.db'))
-    const live = makeWorkerLive(ledger)
+    const live = makeWorkerLive(join(dir, 'ledger.db'))
     // `Layer.Layer<WorkerServices>` has `never` in the R slot, so this only
     // compiles if the flat merge needs nothing from the outside.
     const services: Layer.Layer<WorkerServices, never, never> = live
@@ -159,7 +155,6 @@ describe('WorkerLive: Env is constructed once per worker lifetime', () => {
         }
       }).pipe(Effect.provide(services)),
     )
-    ledger.close()
     rmSync(dir, { recursive: true, force: true })
     // `Env`'s two live values are env-derived, so assert their TYPES and the
     // real parser default rather than a value this test cannot control without
@@ -185,14 +180,13 @@ describe('the runtime is released with the worker', () => {
 describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
   it('currency:set writes through a fake FxRates, never the ledger', async () => {
     const writes: string[] = []
-    const ctx = worker(ledger =>
+    const ctx = worker(() =>
       Layer.mergeAll(
         Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity }),
         OperationalLog.layer,
         HttpFetch.layerWithFetch(okFetch({ rates: { EUR: 0.9 } })),
-        // The substituted port: `currency:set` reaches the R channel, so the
-        // fake IS the write path. Pre-slice the arm built its own
-        // `FxRates.layerWithRepository(ledger)` and this was impossible.
+        // Currency writes resolve FxRates from the worker graph, so replacing
+        // that service changes the dispatch path.
         FxRates.layerWithRates({
           getCurrencyRate: () => Effect.succeed(null),
           setCurrencyRate: () => Effect.void,
@@ -202,7 +196,6 @@ describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
             return Effect.void
           },
         }),
-        ledger.portsLayer,
       ),
     )
 
@@ -217,7 +210,7 @@ describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
 
   it('pricing:refresh drives a substituted HttpFetch, and its failure envelope is unchanged', async () => {
     const seen: string[] = []
-    const ctx = worker(ledger =>
+    const ctx = worker(() =>
       Layer.mergeAll(
         Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity }),
         OperationalLog.layer,
@@ -235,7 +228,6 @@ describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
           getDisplayCurrency: () => Effect.succeed('USD'),
           setDisplayCurrency: () => Effect.void,
         }),
-        ledger.portsLayer,
       ),
     )
 
@@ -245,7 +237,7 @@ describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
 
   it('the scan duration counter files through a substituted OperationalLog sink', async () => {
     const { sink, records } = recordingSink()
-    const ctx = worker(ledger =>
+    const ctx = worker(() =>
       Layer.mergeAll(
         Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity }),
         OperationalLog.layerWithSink(sink),
@@ -256,7 +248,6 @@ describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
           getDisplayCurrency: () => Effect.succeed('USD'),
           setDisplayCurrency: () => Effect.void,
         }),
-        ledger.portsLayer,
       ),
     )
 
@@ -272,13 +263,12 @@ describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
 describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => {
   it("the live graph provides LedgerIngest, LedgerQueries and LedgerConfig over the store's own connection", async () => {
     const dir = tempDir()
-    const ledger = new LedgerStore(join(dir, 'ledger.db'))
-    const live = makeWorkerLive(ledger)
+    const { ledger, runtime } = openWorkerOwner(join(dir, 'ledger.db'))
 
     // If any of the three were missing from the merge, the `yield*` below DIES
     // with `Service not found: watchtower/store/<Name>` — so reaching all three
     // is the proof, not a comment claiming they are there.
-    const resolved = await Effect.runPromise(
+    const resolved = await runtime.runPromise(
       Effect.gen(function* () {
         const ingest = yield* LedgerIngest
         const queries = yield* LedgerQueries
@@ -293,7 +283,7 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
           // source, which must not throw.
           cleared: yield* ingest.deleteSource('opencode', 'env-none', 'never-ported.jsonl'),
         }
-      }).pipe(Effect.provide(live)),
+      }),
     )
 
     // Same connection: the write through `LedgerConfig` is visible to the
@@ -308,7 +298,7 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
 
     // The exported `R` union names all seven capabilities; the counted set is
     // asserted through the graph, since `tests/` is in neither tsconfig.
-    const ports = await Effect.runPromise(
+    const ports = await runtime.runPromise(
       Effect.gen(function* () {
         const [env, log, http, rates, ing, qry, cfg] = yield* Effect.all([
           Env,
@@ -320,16 +310,18 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
           LedgerConfig,
         ])
         return [env, log, http, rates, ing, qry, cfg].length
-      }).pipe(Effect.provide(live)),
+      }),
     )
     expect(ports).toBe(7)
 
+    await runtime.dispose()
     ledger.close()
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('a counting LedgerConfig port is built exactly once, and a substituted one reaches the dispatch path', async () => {
+  it('builds a substituted LedgerConfig once and uses it through the canonical FX dispatch', async () => {
     let builds = 0
+    const writes: string[] = []
     const countingConfig = Layer.effect(
       LedgerConfig,
       Effect.sync(() => {
@@ -344,7 +336,10 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
           getCurrencyRate: () => Effect.succeed(null),
           setCurrencyRate: () => Effect.void,
           getDisplayCurrency: () => Effect.succeed('USD'),
-          setDisplayCurrency: () => Effect.void,
+          setDisplayCurrency: code =>
+            Effect.sync(() => {
+              writes.push(code)
+            }),
           getRefreshCadence: () => Effect.succeed('1m'),
           setRefreshCadence: () => Effect.void,
           getLedgerMcpStartupMode: () => Effect.succeed('on-demand'),
@@ -366,12 +361,6 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
         Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity }),
         OperationalLog.layer,
         HttpFetch.layerWithFetch(okFetch({})),
-        FxRates.layerWithRates({
-          getCurrencyRate: () => Effect.succeed(null),
-          setCurrencyRate: () => Effect.void,
-          getDisplayCurrency: () => Effect.succeed('USD'),
-          setDisplayCurrency: () => Effect.void,
-        }),
         // The three ports are substitutable at the SAME seam as every other
         // worker capability — the property §A3 exists for.
         countingConfig,
@@ -394,44 +383,22 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
     await ctx.dispatch('cadence:get', [])
     await ctx.dispatch('cadence:set', ['5m'])
     await ctx.dispatch('currency:get', [])
+    await expect(ctx.dispatch('currency:set', ['EUR'])).resolves.toMatchObject({ code: 'USD' })
+    expect(writes).toEqual(['EUR'])
     expect(builds).toBe(1)
-
-    // The SUBSTITUTED ports are the ones the dispatch path runs against. Reached
-    // through the same private handle `db-worker.test.ts` uses for its scan
-    // spies: no arm is touched, and the arm that already runs through the
-    // runtime (`cadence:set` → `this.runtime.runPromise`) already returned above.
-    const runtime = (
-      ctx as unknown as {
-        runtime: { runSync: <A, E>(e: Effect.Effect<A, E, never>) => A }
-      }
-    ).runtime
-    const seen = runtime.runSync(
-      Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()).pipe(Effect.provide(countingConfig)),
-    )
-    // The fake says '1m' while the store's own `cadence:set` above persisted
-    // '5m' — so this is the substituted port, not the ledger.
-    expect(seen).toBe('1m')
-    const fakeSources = runtime.runSync(
-      Effect.flatMap(LedgerQueries, queries => queries.getSources()).pipe(
-        Effect.provide(Layer.succeed(LedgerQueries, fakeQueries)),
-      ),
-    )
-    expect(fakeSources).toEqual([])
   })
 })
 
 describe('F14: the operational Effect logger is installed in a production root', () => {
   it('WorkerLive provides the Effect logger refs, not just the loggers', async () => {
     const dir = tempDir()
-    const ledger = new LedgerStore(join(dir, 'ledger.db'))
     // The operational logger layer adds NO service to `R` (it sets the
     // `CurrentLoggers` / `MinimumLogLevel` references), so the check is
     // structural: the live graph is still exactly `WorkerServices`, and the
     // layer is in the merge. A comment cannot prove that; the exported symbol
     // list and the `R` type can.
-    const live: Layer.Layer<WorkerServices, never, never> = makeWorkerLive(ledger)
+    const live: Layer.Layer<WorkerServices, never, never> = makeWorkerLive(join(dir, 'ledger.db'))
     const source = readFileSync(join(repoRoot, 'src', 'main', 'worker-runtime.ts'), 'utf8')
-    ledger.close()
     rmSync(dir, { recursive: true, force: true })
 
     // The bridge is composed, not merely re-exported: it is inside `mergeAll`.

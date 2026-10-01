@@ -21,29 +21,46 @@ type SqliteStatement = {
 /** The three ledger ports (ADR 0032 §A3) — the shape every ledger consumer
  *  should depend on, and the only `R` a `runSync` caller needs. */
 export type LedgerPorts = LedgerIngest | LedgerQueries | LedgerConfig
+export type LedgerRuntime = ManagedRuntime.ManagedRuntime<
+  Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient | LedgerPorts,
+  never
+>
 
-/** Effect SQL-backed SQLite access with the ledger's synchronous store contract. */
+/**
+ * Effect SQL-backed SQLite access with the ledger's synchronous store contract.
+ * Standalone LedgerStore/MCP/test adapters may own this runtime. The db-worker
+ * passes its application runtime instead, so this wrapper never creates or
+ * disposes a second worker runtime. Remove the owned-runtime path after the
+ * synchronous LedgerStore facade and its standalone adapters are retired.
+ */
 export class NodeSqliteDatabase {
-  private readonly runtime: ManagedRuntime.ManagedRuntime<
-    Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient | LedgerIngest | LedgerQueries | LedgerConfig,
-    never
-  >
+  private readonly runtime: LedgerRuntime
+  private readonly ownsRuntime: boolean
 
-  constructor(filename: string, options: { readonly readonly?: boolean } = {}) {
-    const sqliteLayer = Sqlite.SqliteClient.layer({ filename, readonly: options.readonly })
-    this.runtime = ManagedRuntime.make(LedgerPortsLayer.pipe(Layer.provideMerge(sqliteLayer)))
+  constructor(
+    filename: string,
+    options: {
+      readonly readonly?: boolean
+      readonly runtime?: LedgerRuntime
+    } = {},
+  ) {
+    if (options.runtime) {
+      this.runtime = options.runtime
+      this.ownsRuntime = false
+    } else {
+      const sqliteLayer = Sqlite.SqliteClient.layer({ filename, readonly: options.readonly })
+      this.runtime = ManagedRuntime.make(LedgerPortsLayer.pipe(Layer.provideMerge(sqliteLayer)))
+      this.ownsRuntime = true
+    }
   }
 
   runSync<A, E>(effect: Effect.Effect<A, E, LedgerPorts>): A {
     return this.runtime.runSync(effect)
   }
 
-  /** The three ports as a `Layer`, for a composition root that already owns THIS
-   *  connection — the db-worker's `WorkerLive` supplies them this way rather
-   *  than building a second `SqliteClient` over the same file. The single-writer
-   *  invariant (ADR 0023) is why this is a projection of the existing runtime
-   *  rather than a fresh repository build; the ports are therefore the SAME
-   *  instances `runSync` already reaches, sharing one connection. */
+  /** Temporary compatibility layer for standalone callers. It reuses this
+   * runtime's ports and connection. The db-worker composes its own ports over
+   * its root-owned client directly. Delete with the synchronous facade. */
   get portsLayer(): Layer.Layer<LedgerPorts> {
     return Layer.unwrap(Effect.map(this.runtime.contextEffect, context => Layer.succeedContext(context)))
   }
@@ -97,7 +114,7 @@ export class NodeSqliteDatabase {
   }
 
   close(): void {
-    this.runtime.runSync(this.runtime.disposeEffect)
+    if (this.ownsRuntime) this.runtime.runSync(this.runtime.disposeEffect)
   }
 
   private execute(query: string, params: readonly unknown[] = [], raw = false): unknown {
