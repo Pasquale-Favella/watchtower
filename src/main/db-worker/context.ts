@@ -58,8 +58,8 @@ import {
   searchSessionsFromLedger,
   type SessionRow,
 } from '../views.js'
-import { buildYieldViewFromLedger, type YieldPayload } from '../yield-view.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
+import { buildYieldViewFromLedger, type YieldPayload } from '../yield-view.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 
 export type DbWorkerEmit = (event: DbWorkerEvent) => void
@@ -107,6 +107,12 @@ export interface DbWorkerDeps {
   readonly runtime: WorkerRuntime
 }
 
+interface ActiveScan {
+  readonly manual: boolean
+  aborted: boolean
+  fiber: Fiber.Fiber<ScanMetadata, unknown> | null
+}
+
 /**
  * Everything the old main process owned around the ledger, now running on the
  * db-worker thread: the scan lifecycle, the background cadence, and every
@@ -124,20 +130,10 @@ export class DbWorkerContext {
   /** The most recent completed scan's metadata — the `getScanStatus()` answer
    * and the `store:changed` payload (ADR 0004). In-memory only. */
   private lastScanMetadata: ScanMetadata | null = null
-  /** Single-flight scan fiber in `scanScope`: null = idle. Coalescing checks
-   * this ref synchronously — check and install happen with no await in
-   * between, so concurrent `scan:start`/background ticks cannot double-fork. */
-  private scanFiber: Fiber.Fiber<ScanMetadata, unknown> | null = null
-  /** Cooperative abort flag ONLY for `runScan`'s Promise-boundary seam
-   * (`scan.ts` requires `isAborted()`; its `parseAllSessions` Promise cannot
-   * observe fiber interruption). Set alongside fiber interruption in
-   * `scan:abort`/`close`, cleared on scan start. Removal condition: delete
-   * when `runScan` accepts fiber interruption / AbortSignal instead of the
-   * callback (requires `scan.ts` change, out of this slice). */
-  private scanAbortFlag = false
-  /** True while the in-flight scan was started manually (⌘R): its progress
-   * and error events belong to the requesting window only. */
-  private manualScan = false
+  /** The single-flight owner remains installed until its fiber finishes
+   * draining parser Promises. Its abort state cannot leak into a replacement
+   * scan, and its manual/background event ownership travels with that run. */
+  private activeScan: ActiveScan | null = null
   private cadenceFiber: Fiber.Fiber<unknown, never> | null = null
   private cadenceGeneration = 0
   private readonly backgroundScope = Scope.makeUnsafe()
@@ -182,11 +178,13 @@ export class DbWorkerContext {
   private performScan(
     options: { provider?: string } | undefined,
     emit: (progress: ScanProgress) => void,
+    owner: ActiveScan,
   ): Effect.Effect<ScanMetadata, unknown, HttpFetch | Env | OperationalLog> {
     const range = lifetimeRange()
     const repoUrlCache = new Map<string, Promise<string | undefined>>()
     const portIn = async (delta: PortInput): Promise<void> => {
       if (delta.cachedFile.failed) return
+      if (owner.aborted) throw abortedScanError()
       // Repository badge (#106): resolve from the canonical project path for
       // every provider — the worktree-folded cwd when the parser derived one,
       // else the provider's exact working directory. Same memoized-per-scan,
@@ -201,12 +199,15 @@ export class DbWorkerContext {
         }
         repoUrl = await lookup
       }
+      // The git lookup is an external Promise and may outlive interruption.
+      // Check on both sides so an old scan can never write after cancellation.
+      if (owner.aborted) throw abortedScanError()
       this.ledger.portIn({ ...delta, repoUrl })
     }
     return runScan(
       { range, provider: options?.provider },
       emit,
-      { isAborted: () => this.scanAbortFlag },
+      { isAborted: () => owner.aborted },
       // Ledger port-in seam (ADR 0002): every settled session file is streamed
       // to the ledger while the parse runs. The scan's delta wrapper already
       // gates out failed parses; `unchanged` is a no-op inside portIn.
@@ -232,17 +233,18 @@ export class DbWorkerContext {
    * slice, interruption and all.
    */
   private async runTrackedScan(
+    owner: ActiveScan,
     options: { provider?: string } | undefined,
     emit: (progress: ScanProgress) => void,
   ): Promise<ScanMetadata> {
     const fiber = this.runtime.runSync(
-      Effect.forkIn(this.performScan(options, emit), this.scanScope, { startImmediately: true }),
+      Effect.forkIn(this.performScan(options, emit, owner), this.scanScope, { startImmediately: true }),
     )
-    this.scanFiber = fiber
+    owner.fiber = fiber
     try {
       return await Effect.runPromise(Fiber.join(fiber))
     } finally {
-      if (this.scanFiber === fiber) this.scanFiber = null
+      if (this.activeScan === owner) this.activeScan = null
     }
   }
 
@@ -308,13 +310,13 @@ export class DbWorkerContext {
    * as intrusively as a user-initiated one would. Coalesces with any
    * already-running scan rather than overlapping it. */
   private async triggerBackgroundScan(): Promise<void> {
-    if (this.closed || this.scanFiber !== null) return
-    this.manualScan = false
-    this.scanAbortFlag = false
+    if (this.closed || this.activeScan !== null) return
+    const owner: ActiveScan = { manual: false, aborted: false, fiber: null }
+    this.activeScan = owner
     this.emitScanStart()
     try {
-      const metadata = await this.runTrackedScan(undefined, progress =>
-        this.emit({ event: 'scan:progress', manual: false, progress }),
+      const metadata = await this.runTrackedScan(owner, undefined, progress =>
+        this.emit({ event: 'scan:progress', manual: owner.manual, progress }),
       )
       this.lastScanMetadata = metadata
       this.emit({ event: 'store:changed', metadata })
@@ -327,7 +329,7 @@ export class DbWorkerContext {
       // not an Effect); the Effect-native `catchTag` proof lives in
       // `performScan`.
       this.emit({ event: 'scan:idle' })
-      this.emitScanFailure(this.scanAbortFlag ? abortedScanError() : err)
+      this.emitScanFailure(owner.aborted ? abortedScanError() : err)
     }
   }
 
@@ -493,14 +495,14 @@ export class DbWorkerContext {
         // This is NOT a failure: its progress and store:changed events will land
         // on their own, so the renderer must not surface an error box or a retry
         // button for it — hence the explicit flag instead of an error string.
-        // Coalescing reads the single-flight `scanFiber` ref.
-        if (this.scanFiber !== null) return { ok: false, alreadyRunning: true }
-        this.manualScan = true
-        this.scanAbortFlag = false
+        // Coalescing retains ownership through parser Promise drainage.
+        if (this.activeScan !== null) return { ok: false, alreadyRunning: true }
+        const owner: ActiveScan = { manual: true, aborted: false, fiber: null }
+        this.activeScan = owner
         this.emitScanStart(options?.provider)
         try {
-          const metadata = await this.runTrackedScan(options, progress =>
-            this.emit({ event: 'scan:progress', manual: true, progress }),
+          const metadata = await this.runTrackedScan(owner, options, progress =>
+            this.emit({ event: 'scan:progress', manual: owner.manual, progress }),
           )
           this.lastScanMetadata = metadata
           this.emit({ event: 'store:changed', metadata })
@@ -517,7 +519,7 @@ export class DbWorkerContext {
           // — this is `await runTrackedScan`, not an Effect); the Effect-native
           // `catchTag` proof lives in `performScan`. `store:changed` only on
           // success (this `catch` never emits it).
-          const aborted = err instanceof ScanAbortedError || this.scanAbortFlag
+          const aborted = err instanceof ScanAbortedError || owner.aborted
           const normalized = aborted && !(err instanceof ScanAbortedError) ? abortedScanError() : err
           const message = aborted ? 'scan aborted' : err instanceof Error ? err.message : String(err)
           this.emit({ event: 'scan:error', manual: true, message })
@@ -531,11 +533,11 @@ export class DbWorkerContext {
       }
 
       case 'scan:abort': {
-        // Fiber interruption is the abort mechanism (not just the flag): the
-        // flag remains ONLY as the `runScan` Promise-boundary seam. No-op
-        // when idle.
-        this.scanAbortFlag = true
-        const fiber = this.scanFiber
+        // Set the cooperative stop state before interruption. The scan owner
+        // remains active until the underlying parser Promise has drained.
+        const owner = this.activeScan
+        if (owner) owner.aborted = true
+        const fiber = owner?.fiber
         if (fiber) await Effect.runPromise(Fiber.interrupt(fiber))
         return null
       }
@@ -852,10 +854,11 @@ export class DbWorkerContext {
     this.closed = true
     this.cadenceGeneration++
     this.cadenceFiber = null
-    this.scanAbortFlag = true
+    const activeScan = this.activeScan
+    if (activeScan) activeScan.aborted = true
     const backgroundScope = this.backgroundScope
     const scanScope = this.scanScope
-    const currentScan = (): Fiber.Fiber<ScanMetadata, unknown> | null => this.scanFiber
+    const currentScan = (): Fiber.Fiber<ScanMetadata, unknown> | null => activeScan?.fiber ?? null
     const closeLedger = (): void => this.ledger.close()
     const disposeRuntime = this.runtime.disposeEffect
     const shutdown = Effect.gen(function* () {

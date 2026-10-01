@@ -33,6 +33,29 @@ function abortedScanError(): ScanAbortedError {
   return new ScanAbortedError({ message: 'scan aborted' })
 }
 
+/** Owns parser work across interruption. F31 is partial: there is no parser
+ * stop handle, so release waits indefinitely if the parser never settles. */
+export function runOwnedScanPromise<A>(start: () => Promise<A>): Effect.Effect<A, ScanAbortedError | Error> {
+  return Effect.acquireUseRelease(
+    Effect.try({
+      try: start,
+      catch: cause => cause as ScanAbortedError | Error,
+    }),
+    promise =>
+      Effect.tryPromise({
+        try: () => promise,
+        catch: cause => cause as ScanAbortedError | Error,
+      }),
+    promise =>
+      Effect.promise(() =>
+        promise.then(
+          () => undefined,
+          () => undefined,
+        ),
+      ),
+  )
+}
+
 function isScanAbortedError(err: unknown): boolean {
   if (err instanceof ScanAbortedError) return true
   return typeof err === 'object' && err !== null && (err as { _tag?: unknown })._tag === 'ScanAbortedError'
@@ -149,26 +172,9 @@ export const runScan = Effect.fnUntraced(function* (
       ensureProvider(provider).unparsed += count
     }
 
-    // parseAllSessions decision (ADR 0032): kept as the documented Promise
-    // boundary. Evaluation: one-shot filesystem reads own no lifecycle worth
-    // managing (no background ownership, no retry schedule, abort is a
-    // caller-owned flag, not fiber cancellation); parsers stay pure
-    // mapping/aggregation; substitution has no value (tests already drive the
-    // onDelta/onUnparsed seams, no fake filesystem service needed). Promoting
-    // to a focused service would add a layer without lifecycle or substitution
-    // benefit, so the call stays in tryPromise with identical abort, progress,
-    // metadata, and port-in semantics. `catch` preserves the typed abort in
-    // the failure channel (defects stay in Cause); the `as` cast is
-    // type-only (no runtime wrapping, envelopes byte-identical) so the error
-    // channel stays `ScanAbortedError | Error` — a tagged union `catchTag`
-    // accepts (`Tags<unknown>` is `never`, so `unknown` would reject
-    // `'ScanAbortedError'` at type level even though the runtime `_tag`
-    // matches). Non-`Error` rejections (practically impossible here) still
-    // propagate unchanged at runtime.
-    yield* Effect.tryPromise({
-      try: () => parseAllSessions(options.range, options.provider, countingDelta, onUnparsed),
-      catch: cause => cause as ScanAbortedError | Error,
-    })
+    // The parser Promise API does not observe fiber interruption. Start it only
+    // after acquireUseRelease has installed ownership, then drain it on release.
+    yield* runOwnedScanPromise(() => parseAllSessions(options.range, options.provider, countingDelta, onUnparsed))
 
     if (onDelta && abort?.isAborted()) {
       aborted = true

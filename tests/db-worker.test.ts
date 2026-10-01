@@ -12,12 +12,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   DbWorkerClient,
+  type DbWorkerPort,
   nextRespawnAttempt,
   RESPAWN_BACKOFF_BASE_MS,
   RESPAWN_BACKOFF_CAP_MS,
   RESPAWN_BACKOFF_RESET_AFTER_MS,
   respawnBackoffDelayForAttempt,
-  type DbWorkerPort,
 } from '../src/main/db-worker/client.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
@@ -273,7 +273,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
       'performScan',
     ).mockReturnValue(scanEffect)
     const request = c.dispatch('scan:start', [])
-    await vi.waitFor(() => expect((c as unknown as { scanFiber: unknown }).scanFiber).not.toBeNull())
+    await vi.waitFor(() => expect((c as unknown as { activeScan: unknown }).activeScan).not.toBeNull())
     await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: false, alreadyRunning: true })
     await expect(c.dispatch('scan:abort', [])).resolves.toBeNull()
     await expect(request).resolves.toMatchObject({ ok: false, aborted: true })
@@ -295,11 +295,11 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     expect(rethrowsByName(new Error('boom'))).toBe(false)
   })
 
-  it('typed ScanAbortedError without the flag maps to envelope (catchTag path, no cooperative seam)', async () => {
+  it('typed ScanAbortedError maps to the unchanged envelope without aborting the owner', async () => {
     const c = open()
     // Fail with the TAGGED error directly — flag stays false, proving the typed
-    // `_tag` path (Effect-native `catchTag` in `performScan`) maps without the
-    // cooperative `scanAbortFlag` seam. Envelopes stay byte-identical.
+    // `_tag` path (Effect-native `catchTag` in `performScan`) maps without
+    // setting the per-scan owner abort state. Envelopes stay byte-identical.
     vi.spyOn(
       c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
       'performScan',
@@ -307,7 +307,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     const result = (await c.dispatch('scan:start', [])) as { ok: boolean; aborted: boolean; error: string }
     expect(result).toMatchObject({ ok: false, aborted: true })
     expect(result.error).toBe('scan aborted')
-    expect((c as unknown as { scanAbortFlag: boolean }).scanAbortFlag).toBe(false)
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
     expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
     expect(events).toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.abort', level: 'warn' }))
     expect(events.filter(event => event.event === 'store:changed')).toHaveLength(0)
