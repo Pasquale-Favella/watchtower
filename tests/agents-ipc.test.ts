@@ -89,10 +89,16 @@ function scriptedRuntime(events: CoachEvent[]): HarnessRuntime {
 
 /** A runtime that streams continuously and records whether its generator's
  *  finally ran — i.e. whether cancel's return() actually reached it. */
-function streamingRuntime(): { runtime: HarnessRuntime; interrupted: () => boolean } {
+function streamingRuntime(): {
+  runtime: HarnessRuntime
+  interrupted: () => boolean
+  workspacePath: () => string
+} {
   let interrupted = false
+  let workspacePath = ''
   const runtime: HarnessRuntime = {
-    async *run() {
+    async *run(input: HarnessRunInput) {
+      workspacePath = input.workspacePath
       try {
         let i = 0
         yield { kind: 'status', state: 'starting' }
@@ -108,33 +114,29 @@ function streamingRuntime(): { runtime: HarnessRuntime; interrupted: () => boole
       return {}
     },
   }
-  return { runtime, interrupted: () => interrupted }
+  return { runtime, interrupted: () => interrupted, workspacePath: () => workspacePath }
+}
+
+const ownedRunners = new Set<CoachRunner>()
+
+function ownRunner(options: Parameters<typeof createCoachRunner>[0]): CoachRunner {
+  const runner = createCoachRunner(options)
+  ownedRunners.add(runner)
+  return runner
 }
 
 function makeRunner(runtime: HarnessRuntime): CoachRunner {
-  return createCoachRunner({ getRuntime: async () => runtime, harnesses: harnessSource, ledgerMcpServer })
+  return ownRunner({ getRuntime: async () => runtime, harnesses: harnessSource, ledgerMcpServer })
 }
 
 /** Yields to the event loop so the fire-and-forget stream pump lands. */
 const flush = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0))
 
-/** Clean up any temp workspace the runner may have left behind. */
-afterEach(() => {
-  for (const dir of readdirSync(tmpdir())) {
-    if (dir.startsWith('watchtower-coach-')) {
-      // Same tolerance as the runner's own `deleteWorkspace`
-      // (`src/main/agents/ipc.ts`): a wedged ACP child can still hold its temp
-      // dir, and an unguarded `rmSync` then fails the hook — taking every test
-      // in this file red for a scratch directory nobody is asserting on. A
-      // leftover under the OS temp root is harmless and cleaned on reboot;
-      // 53 failing tests are not.
-      try {
-        rmSync(join(tmpdir(), dir), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-      } catch {
-        /* best effort — see the comment above */
-      }
-    }
-  }
+/** Reset only runners created by this test file. */
+afterEach(async () => {
+  const runners = [...ownedRunners]
+  ownedRunners.clear()
+  await Promise.all(runners.map(runner => runner.reset()))
 })
 
 /** A valid run request — no workspace path anymore (map 53). */
@@ -164,7 +166,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     const reportAuth = vi.fn()
     const source: HarnessSource = { ...harnessSource, reportAuth }
     const run = async (events: CoachEvent[]): Promise<void> => {
-      const runner = createCoachRunner({
+      const runner = ownRunner({
         getRuntime: async () => scriptedRuntime(events),
         harnesses: source,
         ledgerMcpServer,
@@ -413,7 +415,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
 
   it('releases the ledger attachment when the run fails to launch (no stream to settle it)', async () => {
     releaseLedgerMcp.mockClear()
-    const runner = createCoachRunner({
+    const runner = ownRunner({
       getRuntime: async () => {
         throw new Error('no sdk')
       },
@@ -497,11 +499,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 
   it('reset cancels active runs and deletes the conversation temp workspace', async () => {
-    // Whatever is already under the temp root belongs to some other process and
-    // is none of this test's business. Snapshot it before the run so the
-    // post-reset check can scope itself to the dir this run creates.
-    const preExisting = new Set(readdirSync(tmpdir()).filter(d => d.startsWith('watchtower-coach-')))
-    const { runtime, interrupted } = streamingRuntime()
+    const { runtime, interrupted, workspacePath: getWorkspacePath } = streamingRuntime()
     const runner = makeRunner(runtime)
     const events: CoachEvent[] = []
 
@@ -511,21 +509,16 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     const runId = (result as { ok: true; runId: string }).runId
     await vi.waitFor(() => expect(events.some(e => e.kind === 'text')).toBe(true))
 
-    const workspaceBefore = readdirSync(tmpdir()).filter(d => d.startsWith('watchtower-coach-'))
-    expect(workspaceBefore.some(d => !preExisting.has(d))).toBe(true)
+    const workspacePath = getWorkspacePath()
+    expect(workspacePath).not.toBe('')
+    expect(existsSync(workspacePath)).toBe(true)
 
     // reset AWAITS the run's teardown (the generator's finally) before
     // deleting the workspace — the delete must never race a live child.
     await runner.reset()
 
     expect(interrupted()).toBe(true)
-    // Scoped to the workspace THIS run created. Asserting the whole temp root
-    // came back empty couples this test to every other process on the machine:
-    // a single locked `watchtower-coach-*` dir left by an unrelated run took
-    // all 53 tests in this file red (2026-09-30). `reset()`'s contract is "it
-    // deletes its own workspace", and that is what this checks.
-    const survivors = readdirSync(tmpdir()).filter(d => d.startsWith('watchtower-coach-') && !preExisting.has(d))
-    expect(survivors).toEqual([])
+    expect(existsSync(workspacePath)).toBe(false)
     void runId
   })
 
@@ -1119,7 +1112,7 @@ describe('Coach IPC inspect — probes never create reusable sessions', () => {
         }
       },
     }
-    const runner = createCoachRunner({
+    const runner = ownRunner({
       getRuntime: () => {
         runtimeRequests++
         if (runtimeRequests === 1) {

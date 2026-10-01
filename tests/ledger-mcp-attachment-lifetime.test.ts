@@ -1,12 +1,13 @@
-import { readdirSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
-import { createCoachRunner, type HarnessSource, type LedgerMcpAttachment } from '../src/main/agents/ipc.js'
+import {
+  type CoachRunner,
+  createCoachRunner,
+  type HarnessSource,
+  type LedgerMcpAttachment,
+} from '../src/main/agents/ipc.js'
 import type { LedgerMcpSpawnContext } from '../src/main/agents/ledger-mcp/config.js'
 import { createSidecarPool } from '../src/main/agents/ledger-mcp/pool.js'
 import type { StartedLedgerMcpHttp } from '../src/main/agents/ledger-mcp/sidecar.js'
@@ -139,24 +140,24 @@ function countingAttachmentSource(counter: { released: number }): {
   }
 }
 
-afterEach(() => {
-  // Same shape as the runner's own `deleteWorkspace`: a wedged run can still be
-  // holding its temp dir, and an unguarded rm would fail the test for that.
-  for (const dir of readdirSync(tmpdir())) {
-    if (dir.startsWith('watchtower-coach-')) {
-      try {
-        rmSync(join(tmpdir(), dir), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-      } catch {
-        /* best effort */
-      }
-    }
-  }
+const ownedRunners = new Set<CoachRunner>()
+
+function ownRunner(options: Parameters<typeof createCoachRunner>[0]): CoachRunner {
+  const runner = createCoachRunner(options)
+  ownedRunners.add(runner)
+  return runner
+}
+
+afterEach(async () => {
+  const runners = [...ownedRunners]
+  ownedRunners.clear()
+  await Promise.all(runners.map(runner => runner.reset()))
 })
 
 describe('ledger MCP attachment lifetime — a run the app stopped waiting for cannot keep its claim', () => {
   it('releases the attachment of an ABANDONED run when the conversation is torn down', async () => {
     const counter = { released: 0 }
-    const runner = createCoachRunner({
+    const runner = ownRunner({
       getRuntime: async () => wedgedRuntime(() => {}),
       harnesses: harnessSource,
       ...countingAttachmentSource(counter),
@@ -186,7 +187,7 @@ describe('ledger MCP attachment lifetime — a run the app stopped waiting for c
 
   it('still releases an INTERRUPTED run from its own settle path (the fast path is unchanged)', async () => {
     const counter = { released: 0 }
-    const runner = createCoachRunner({
+    const runner = ownRunner({
       getRuntime: async () => streamingRuntime(),
       harnesses: harnessSource,
       ...countingAttachmentSource(counter),
@@ -205,7 +206,7 @@ describe('ledger MCP attachment lifetime — a run the app stopped waiting for c
 
   it('releases every claim a crashed conversation made, not just the first', async () => {
     const counter = { released: 0 }
-    const runner = createCoachRunner({
+    const runner = ownRunner({
       getRuntime: async () => wedgedRuntime(() => {}),
       harnesses: harnessSource,
       ...countingAttachmentSource(counter),
@@ -224,7 +225,7 @@ describe('ledger MCP attachment lifetime — a run the app stopped waiting for c
 
   it('does NOT claim the sidecar is dead: a reset releases the claim, ADR 0027 keeps the process', async () => {
     const { pool, state } = trackedPool()
-    const runner = createCoachRunner({
+    const runner = ownRunner({
       getRuntime: async () => wedgedRuntime(() => {}),
       harnesses: harnessSource,
       ledgerMcpServer: async () => pool.acquire(CTX),
