@@ -138,14 +138,34 @@ ADR 0034 requires one authority per contract, explicit Type/Encoded representati
 
 ### F35. Shell hydration forces full analytics and broad refresh
 
-`applyChange` in `src/renderer/src/app/stores/scan-store.ts` awaits scan status, fetches full analytics for provider names, then notifies initialized Section stores. A fast config edit can therefore trigger several ledger queries even when most Sections are inactive. First reduce the analytics query's repeated reads and coalesce refresh notifications while preserving one follow-up refresh for changes arriving in flight. A small shell metadata query is a separately specified additive IPC contract, rather than a reinterpretation of store:analytics. Changing eager refresh to invalidation and on-demand reload requires reconciling ADR 0011.
+`applyChange` in `src/renderer/src/app/stores/scan-store.ts` awaits scan status, fetches full analytics for provider names, then notifies initialized Section stores. A fast config edit can therefore trigger several ledger queries even when most Sections are inactive. Reduce the analytics query's repeated backend reads. The owner rejected refresh coalescing and coordination variables; retain the original store implementation and assess actual IPC ordering. A small shell metadata query is a separately specified additive IPC contract, rather than a reinterpretation of store:analytics. Changing eager refresh to invalidation and on-demand reload requires reconciling ADR 0011.
 
 ### F36. A same-scope old response can overwrite newer data
 
-`scopedDataSlice.load` in `src/renderer/src/app/stores/data-store.ts` checks only dataKey after awaiting fetch. Two loads for the same scope have the same key, so both may publish; the older request may resolve last. Scope guards correctly reject different-scope results but cannot distinguish refresh generations. Give each load a monotonically increasing request identity, invalidate it on clear, and publish only the newest operation. This is a source-level race finding, not a reproduced failing test. Future acceptance covers reverse completion order, clear and refresh while a request is pending.
+`scopedDataSlice.load` in `src/renderer/src/app/stores/data-store.ts` checks only dataKey after awaiting fetch. Two loads for the same scope have the same key, so both may publish; the older request may resolve last. Scope guards correctly reject different-scope results but cannot distinguish refresh generations. This is a source-level limitation, not a reproduced failure under the actual IPC path. The owner rejected request identities and Promise ownership variables. Both production stores were restored to `ce81593` in `709207e`; preserve them and assess actual ordering before proposing further changes. The source-level limitation is not claimed fixed.
 
 ### F37. MCP high-level registration requires Zod shapes
 
 The installed SDK declares `AnySchema = z3.ZodTypeAny | z4.$ZodType` in `server/zod-compat.d.ts`. Watchtower's `ledger-mcp/tools.ts` and `prompts.ts` expose ZodRawShape and the server registers those shapes directly. Shared overview/request schema conversion therefore needs an MCP adapter slice; Effect Schema is not accepted by that API merely because it implements Standard Schema.
 
 Evaluate the official SDK Server handler API with SDK-owned protocol schemas, generated JSON Schema tool metadata, and Effect argument decoding. Preserve ADR 0020's official transport and complete tools/resources/prompts behavior. Require a concrete compatibility verdict before replacing registration. The SDK's own Zod dependency remains distinct from Watchtower-owned schemas: application migration can remove its direct contracts/imports without proving a Zod-free transitive package tree. The target architecture records both the dependency and its acceptance criteria.
+
+## Implementation census, 2026-10-01
+
+This source snapshot is `21826d2`. It follows the internal Schema group, request reuse, Coach cancellation, clock fixes and worker observation forwarding. TypeScript AST import counting excludes type-only imports, declarations and test/spec files under `src`. Line coverage counts nonblank lines in importing files against nonblank area lines; it remains an upper bound on adoption, not a workflow completion percentage.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     2 / 5 |         40.0% |                     1,185 / 1,367 |         86.7% |
+| Store                              |                     7 / 8 |         87.5% |                     1,678 / 2,237 |         75.0% |
+| Agents                             |                    8 / 44 |         18.2% |                     2,839 / 5,857 |         48.5% |
+| Pipeline                           |                    5 / 67 |          7.5% |                    3,061 / 27,562 |         11.1% |
+| View builders ending in `-view.ts` |                     0 / 8 |          0.0% |                         0 / 3,953 |          0.0% |
+| All main-process code              |                  28 / 143 |         19.6% |                   10,649 / 44,870 |         23.7% |
+| Shared schema modules              |                    7 / 24 |         29.2% |                       762 / 1,946 |         39.2% |
+| Renderer                           |                   0 / 122 |          0.0% |                        0 / 12,980 |          0.0% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+Five of 23 contract modules now use Effect Schema throughout: ledger, pipeline, providers, session-cache and port. That module measure is 21.7%, excluding the extraction helper. The broader 7/24 import count also includes the Effect extraction helper and partially migrated scan module; it must not be called seven completed contract modules. The added worker forwarding module imports sink types only, so its addition changes that area's denominator without indicating a regression.
+
+The target architecture's execution record records passed integration gates for this increment. Full contract migration, runtime consolidation, facade retirement, scan lifetime, purpose-specific queries and comparable performance measurements remain open. No post-migration speedup is claimed.
