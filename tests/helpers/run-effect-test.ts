@@ -20,7 +20,7 @@ export const runWithTestClockWindow = Effect.fnUntraced(function* <A, E, R>(
   const startTime = testClock.currentTimeMillisUnsafe()
   const windowMs = Duration.toMillis(Duration.fromInputUnsafe(duration))
   const sleeps = yield* Queue.unbounded<number>()
-  const completed = yield* Deferred.make<void>()
+  const completed = yield* Deferred.make<undefined>()
   const observedClock: Clock.Clock = {
     ...testClock,
     sleep: sleepDuration =>
