@@ -9,7 +9,7 @@ import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 import type { CurrencyRate } from '../shared/schemas/ledger.js'
 import { HttpFetch, retryTransientFetch } from './pipeline/fetch-utils.js'
 import type { LedgerStore } from './store/ledger.js'
-import type { LedgerConfig } from './store/ledger-repository.js'
+import { LedgerConfig } from './store/ledger-repository.js'
 
 export type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
 
@@ -24,8 +24,8 @@ export type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
  * display/export boundary (`convertCost` / `roundForActiveCurrency` /
  * `formatCost`). If a fetch fails (offline/blocked/rate missing from ECB),
  * the app falls back to the last successfully cached rate, or USD if none
- * has ever been cached — and that fallback must never block any other part
- * of the app, so all fetch paths are fire-and-forget and never throw.
+ * has ever been cached. Repository failures remain typed failures; storage
+ * corruption is never converted into a successful fallback.
  */
 
 export const FX_CACHE_TTL_MS = 24 * 60 * 60 * 1000
@@ -114,9 +114,8 @@ function displayCurrencyCode(store: LedgerStore): string {
 
 /** Write-side display-code sanitization (uppercase a 3-letter code, else
  * `USD`) — the rule the now-deleted `LedgerStore.setDisplayCurrency` used to
- * own, so the write stays byte-identical. Kept local rather than imported:
- * `fx.ts` reaches the ledger only through the `FxRatesRepositoryRunner` seam,
- * never through the concrete store. */
+ * own, so the write stays byte-identical across the live port and the
+ * temporary standalone adapter. */
 function sanitizeDisplayCurrencyCode(code: string): string {
   return /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'
 }
@@ -142,10 +141,9 @@ function activeFromCachedRate(code: string, cached: CurrencyRate | null | undefi
  * when nothing has ever been cached. Never fetches; this is the renderer's
  * single read path.
  *
- * This stays a plain sync read permanently: the db-worker IPC dispatch answers
- * `currency:get` with this value inline, and Effect values never cross IPC —
- * Effect-ifying the read would push every sync caller (dispatch, cadence
- * snapshot, exports) through a runtime for no gain. */
+ * Temporary synchronous adapter for dispatch, cadence and export callers.
+ * Remove it when those application workflows read through the composed FX
+ * port. Their IPC result remains an ordinary serializable value. */
 export function getActiveCurrency(store: LedgerStore): ActiveCurrency {
   const code = displayCurrencyCode(store)
   if (code === 'USD') return { ...USD_CURRENCY }
@@ -167,15 +165,9 @@ export interface RefreshFxRateEffectOptions {
 }
 
 /**
- * Structural seam for the repository-direct `FxRates` layer: anything that can
- * run `LedgerConfig` effects synchronously on the owning thread
- * (`LedgerStore.runRepositorySync`, public for exactly this). FX persists only
- * currency rates and the display currency, and BOTH live on the config port
- * (ADR 0032 §A3) — so this seam names `LedgerConfig` rather than the retired
- * 23-member `LedgerRepository`. It stays structural, not a `LedgerStore` import,
- * which keeps `fx.ts` free of the concrete store while preserving the
- * single-writer SQLite invariant: the worker still owns the ledger on its
- * thread, main never touches the connection.
+ * Temporary runner seam for `layerWithRepository` callers that still use
+ * `LedgerStore.runRepositorySync`. Delete it with that adapter once the
+ * remaining standalone and test callers compose `FxRates.layer` directly.
  */
 export interface FxRatesRepositoryRunner {
   runRepositorySync<A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError | SchemaError>): A
@@ -191,23 +183,35 @@ export interface FxRatesRepositoryRunner {
 export class FxRates extends Context.Service<
   FxRates,
   {
-    readonly getCurrencyRate: (code: string) => Effect.Effect<CurrencyRate | null>
-    readonly setCurrencyRate: (rate: CurrencyRate) => Effect.Effect<void>
-    readonly getDisplayCurrency: () => Effect.Effect<string>
-    readonly setDisplayCurrency: (code: string) => Effect.Effect<void>
+    readonly getCurrencyRate: (code: string) => Effect.Effect<CurrencyRate | null, SqlError | SchemaError>
+    readonly setCurrencyRate: (rate: CurrencyRate) => Effect.Effect<void, SqlError | SchemaError>
+    readonly getDisplayCurrency: () => Effect.Effect<string, SqlError | SchemaError>
+    readonly setDisplayCurrency: (code: string) => Effect.Effect<void, SqlError | SchemaError>
   }
 >()('watchtower/fx/FxRates') {
+  /** Live FX adapter over the composed ledger config port. Service methods
+   * stay as Effects so SQL and row-decoding failures reach callers unchanged. */
+  static readonly layer: Layer.Layer<FxRates, never, LedgerConfig> = Layer.effect(
+    FxRates,
+    Effect.gen(function* () {
+      const config = yield* LedgerConfig
+      return FxRates.of({
+        getCurrencyRate: code => config.getCurrencyRate(code),
+        setCurrencyRate: rate => config.setCurrencyRate(rate),
+        getDisplayCurrency: () => config.getDisplayCurrency(),
+        setDisplayCurrency: code => config.setDisplayCurrency(sanitizeDisplayCurrencyCode(code)),
+      })
+    }),
+  )
+
   static readonly layerWithRates = (rates: FxRates['Service']): Layer.Layer<FxRates> =>
     Layer.succeed(FxRates, FxRates.of(rates))
 
   /**
-   * Repository-direct `FxRates` layer (ADR 0032 follow-up): reaches the
-   * `LedgerConfig` PORT through the runner instead of the `LedgerStore` facade,
-   * so no FX call site routes through a store-facade write — the single live
-   * persistence layer for the port, production and pinned tests alike.
-   * Display-code sanitization happens here (see `sanitizeDisplayCurrencyCode`),
-   * which is what let `LedgerStore.setDisplayCurrency` be deleted without a
-   * behavior change.
+   * Temporary standalone adapter for callers that still own a LedgerStore.
+   * Production composition uses `FxRates.layer` with `LedgerConfig`.
+   * Remove this adapter and its runner seam once all test/standalone callers
+   * compose the canonical port layer.
    */
   static readonly layerWithRepository = (runner: FxRatesRepositoryRunner): Layer.Layer<FxRates> => {
     const run = <A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError | SchemaError>) =>
@@ -224,8 +228,9 @@ export class FxRates extends Context.Service<
 
 /** Port-based USD→code refresh core (ADR 0032 slice 2).
  *
- * Never fails, falls back to the last cached rate (or USD rate 1) on
- * offline/blocked/non-2xx/invalid-rate. The network enters through the
+ * Falls back to the last cached rate (or USD rate 1) on
+ * offline/blocked/non-2xx/invalid-rate. SQL and schema failures propagate.
+ * The network enters through the
  * `HttpFetch` service and persistence through the `FxRates` port — timeout
  * via the Effect Clock (TestClock-controllable) and fiber interruption aborts
  * the underlying fetch, replacing the manual `signal` plumbing. Staleness
@@ -236,7 +241,7 @@ export class FxRates extends Context.Service<
 export const refreshFxRateWithRates = Effect.fnUntraced(function* (
   code: string,
   options: RefreshFxRateEffectOptions = {},
-): Effect.fn.Return<ActiveCurrency, never, HttpFetch | FxRates> {
+): Effect.fn.Return<ActiveCurrency, SqlError | SchemaError, HttpFetch | FxRates> {
   const safe = isValidCurrencyCode(code) ? code : 'USD'
   if (safe === 'USD') return { ...USD_CURRENCY }
 
@@ -271,7 +276,7 @@ export const refreshFxRateWithRates = Effect.fnUntraced(function* (
     })
     const latest = yield* rates.getCurrencyRate(safe)
     return activeFromCachedRate(safe, latest)
-  }).pipe(Effect.catch(() => Effect.succeed(fallback())))
+  }).pipe(Effect.catchTag('HttpFetchError', () => Effect.succeed(fallback())))
 })
 
 // --- Display/export-boundary conversion. Costs in the store are always USD;

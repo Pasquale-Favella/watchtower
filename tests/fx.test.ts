@@ -63,6 +63,7 @@ function fxEffect(
   return refreshFxRateWithRates(code, options).pipe(
     Effect.provide(FxRates.layerWithRepository(store)),
     Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+    Effect.orDie,
   )
 }
 
@@ -82,6 +83,7 @@ function pinDisplayCurrency(store: LedgerStore, code: string): void {
   Effect.runSync(
     Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(
       Effect.provide(FxRates.layerWithRepository(store)),
+      Effect.orDie,
     ),
   )
 }

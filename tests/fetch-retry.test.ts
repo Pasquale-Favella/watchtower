@@ -25,7 +25,9 @@ import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as Random from 'effect/Random'
 import * as Schedule from 'effect/Schedule'
+import type { SchemaError } from 'effect/Schema'
 import * as TestClock from 'effect/testing/TestClock'
+import type { SqlError } from 'effect/unstable/sql/SqlError'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { Env } from '../src/main/env.js'
@@ -136,7 +138,7 @@ function fakeRates(seed?: CurrencyRate): { saved: Map<string, CurrencyRate>; lay
 function fxProgram(
   ratesLayer: Layer.Layer<FxRates>,
   fetchImpl: typeof fetch,
-): Effect.Effect<ActiveCurrency, never, never> {
+): Effect.Effect<ActiveCurrency, SqlError | SchemaError, never> {
   return refreshFxRateWithRates('EUR').pipe(
     Effect.provide(ratesLayer),
     Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),

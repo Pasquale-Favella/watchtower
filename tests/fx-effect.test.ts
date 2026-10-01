@@ -49,6 +49,7 @@ function fxEffect(
   return refreshFxRateWithRates(code, options).pipe(
     Effect.provide(FxRates.layerWithRepository(store)),
     Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+    Effect.orDie,
   )
 }
 
@@ -68,6 +69,7 @@ function pinDisplayCurrency(store: LedgerStore, code: string): void {
   Effect.runSync(
     Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(
       Effect.provide(FxRates.layerWithRepository(store)),
+      Effect.orDie,
     ),
   )
 }
@@ -257,7 +259,7 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
           rates.setDisplayCurrency('EUR'),
           rates.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: '2026-08-01T00:00:00.000Z' }),
         ),
-      ).pipe(Effect.provide(layer)),
+      ).pipe(Effect.provide(layer), Effect.orDie),
     )
     expect(store.getDisplayCurrency()).toBe('EUR')
     expect(store.getCurrencyRate('EUR')).toMatchObject({ code: 'EUR', rate: 0.9 })
@@ -268,7 +270,9 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
     const store = makeStore()
     const layer = FxRates.layerWithRepository(store)
     const pin = (code: string): void => {
-      Effect.runSync(Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(Effect.provide(layer)))
+      Effect.runSync(
+        Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(Effect.provide(layer), Effect.orDie),
+      )
     }
     pin('eur')
     expect(store.getDisplayCurrency()).toBe('EUR')

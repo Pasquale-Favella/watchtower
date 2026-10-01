@@ -2,7 +2,9 @@ import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Schedule from 'effect/Schedule'
+import type { SchemaError } from 'effect/Schema'
 import * as Scope from 'effect/Scope'
+import type { SqlError } from 'effect/unstable/sql/SqlError'
 import { readdirSync, statSync } from 'fs'
 import { join } from 'path'
 
@@ -254,9 +256,16 @@ export class DbWorkerContext {
    * `HttpFetch | FxRates` come from the one memoised `WorkerLive` graph instead
    * of a per-call `liveFxLayer(this.ledger)` rebuild.
    */
-  private startBackgroundFx(work: Effect.Effect<void, never, HttpFetch | FxRates>): void {
+  private startBackgroundFx(work: Effect.Effect<void, SqlError | SchemaError, HttpFetch | FxRates>): void {
     if (this.closed) return
-    this.runtime.runSync(Effect.forkIn(work, this.backgroundScope, { startImmediately: true }))
+    const observed = work.pipe(
+      Effect.catch(failure =>
+        Effect.logError('Currency refresh failed').pipe(
+          Effect.annotateLogs({ event: 'currency.refresh.error', op: 'currency.refresh', code: failure._tag }),
+        ),
+      ),
+    )
+    this.runtime.runSync(Effect.forkIn(observed, this.backgroundScope, { startImmediately: true }))
   }
 
   /** Operational-log forwards (#128): scan lifecycle over the existing host
@@ -381,8 +390,8 @@ export class DbWorkerContext {
       //   staleness, and manual=null are untouched.
       // The FX background job rides the same repurposed cadence as the scan
       // trigger (ADR 0009): each tick also refreshes the selected currency's
-      // rate when it is missing or older than 24h. refreshFxRateWithRates never
-      // throws, so a Frankfurter outage can never disturb the scan itself.
+      // rate when it is missing or older than 24h. HTTP failures retain their
+      // cached fallback; storage failures are logged by startBackgroundFx.
       const cadence = Effect.sleep(ms).pipe(
         Effect.andThen(Effect.repeat(tick, Schedule.spaced(ms).pipe(Schedule.jittered))),
       )
@@ -401,16 +410,15 @@ export class DbWorkerContext {
    * spam re-renders while the 24h cache is still fresh. Fiber interruption
    * (backgroundScope close) aborts the underlying fetch via HttpFetch —
    * no manual AbortSignal plumbing. */
-  private refreshFxOnCadence(): Effect.Effect<void, never, HttpFetch | FxRates> {
-    const ledger = this.ledger
+  private refreshFxOnCadence(): Effect.Effect<void, SqlError | SchemaError, HttpFetch | FxRates> {
     const emit = this.emit
     const isClosed = (): boolean => this.closed
     return Effect.gen(function* () {
-      const before = yield* Effect.sync(() => getActiveCurrency(ledger))
       const rates = yield* FxRates
       const code = yield* rates.getDisplayCurrency()
+      const before = isValidCurrencyCode(code) && code !== 'USD' ? yield* rates.getCurrencyRate(code) : null
       const after = yield* refreshFxRateWithRates(code)
-      if (!isClosed() && (after.rate !== before.rate || after.updatedAt !== before.updatedAt)) {
+      if (!isClosed() && (after.rate !== (before?.rate ?? 1) || after.updatedAt !== before?.updatedAt)) {
         yield* Effect.sync(() => emit({ event: 'currency:changed', currency: after }))
       }
     })
@@ -867,10 +875,8 @@ export class DbWorkerContext {
       if (scan) yield* Fiber.join(scan).pipe(Effect.catch(() => Effect.void))
       yield* Scope.close(scanScope, Exit.void)
       yield* Effect.sync(closeLedger)
-      // Release the worker runtime's layer resources LAST — after both worker
-      // scopes are closed and the writer connection is gone. `WorkerLive` is
-      // the isolate's composition root, so its teardown belongs to the same
-      // shutdown path that retires the things its layers were built over.
+      // The borrowed facade's close does not own the connection. Release the
+      // root scope and its SQLite driver only after background and scan work drain.
       yield* disposeRuntime
     })
     this.closeFiber = Effect.runFork(shutdown)
