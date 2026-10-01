@@ -14,6 +14,7 @@
  * Every termination case asserts an OS FACT — the child the port started is
  * gone afterwards — rather than that the port stopped waiting for it.
  */
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
@@ -24,7 +25,20 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as Stream from 'effect/Stream'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+const spawnControl = vi.hoisted(() => ({ child: undefined as unknown }))
+
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return {
+    ...actual,
+    spawn: (...args: Parameters<typeof actual.spawn>) =>
+      spawnControl.child !== undefined
+        ? (spawnControl.child as ReturnType<typeof actual.spawn>)
+        : actual.spawn(...args),
+  }
+})
 
 import {
   CommandError,
@@ -418,6 +432,65 @@ describe('CommandRunner.start live layer (real child, scope-bound lifetime)', ()
     const error = await Effect.runPromise(Effect.scoped(liveStart('watchtower-no-such-cli-9f3a', []).pipe(Effect.flip)))
     expect(error).toBeInstanceOf(CommandError)
     expect(error.reason).toBe('spawn')
+  })
+
+  it('waits for the OS spawn result and fails on an invalid cwd on every platform', async () => {
+    const { path, cleanup } = tempDir()
+    try {
+      const error = await Effect.runPromise(
+        Effect.scoped(liveStart(process.execPath, [], { cwd: join(path, 'missing-cwd') }).pipe(Effect.flip)),
+      )
+      expect(error).toBeInstanceOf(CommandError)
+      expect(error.reason).toBe('spawn')
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('keeps observing a pending spawn error after startup is interrupted', async () => {
+    const command = 'watchtower-delayed-spawn-error'
+    let markErrorListenerReady: (() => void) | undefined
+    const errorListenerReady = new Promise<void>(resolve => {
+      markErrorListenerReady = resolve
+    })
+    const child = new EventEmitter() as EventEmitter & {
+      pid: undefined
+      exitCode: number | null
+      signalCode: NodeJS.Signals | null
+      kill: () => boolean
+      on: (event: string | symbol, listener: (...args: Array<unknown>) => void) => typeof child
+    }
+    child.pid = undefined
+    child.exitCode = null
+    child.signalCode = null
+    child.kill = () => false
+    const originalOn = child.on.bind(child)
+    child.on = (event: string | symbol, listener: (...args: Array<unknown>) => void) => {
+      const result = originalOn(event, listener)
+      if (event === 'error') markErrorListenerReady?.()
+      return result
+    }
+    spawnControl.child = child
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const startup = yield* Effect.forkChild(Effect.scoped(liveStart(command, [])))
+            yield* Effect.promise(() => errorListenerReady)
+            yield* Fiber.interrupt(startup)
+          }),
+        ),
+      )
+
+      expect(child.listenerCount('error')).toBe(1)
+      expect(() => child.emit('error', Object.assign(new Error('delayed ENOENT'), { code: 'ENOENT' }))).not.toThrow()
+      child.emit('close', null)
+      expect(child.listenerCount('error')).toBe(0)
+      expect(child.listenerCount('spawn')).toBe(0)
+      expect(child.listenerCount('close')).toBe(0)
+    } finally {
+      spawnControl.child = undefined
+    }
   })
 })
 

@@ -250,21 +250,29 @@ function nodeSpawn(
         }),
       )
     }
+    const executable = command.command
+    const started = yield* Deferred.make<undefined, PlatformError.PlatformError>()
+    const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode, PlatformError.PlatformError>()
     // `acquireRelease` is what makes the deadline work: the kill is a SCOPE
     // finalizer, so interrupting the run (Clock deadline, or the caller
     // interrupting the fiber) closes the scope and terminates the child
-    // instead of leaking it. It is the same finalizer that makes a `start`
-    // handle scope-bound: closing (or being interrupted out of) the caller's
-    // scope runs it.
+    // instead of leaking it. The event listeners are installed in the same
+    // synchronous acquisition that creates the child, before interruption can
+    // leave an unobserved `error` event behind.
     const child = yield* Effect.acquireRelease(
       Effect.try({
-        try: () => spawnProcess(command.command, [...command.args], toSpawnOptions(command.options)),
+        try: () => {
+          const spawned = spawnProcess(command.command, [...command.args], toSpawnOptions(command.options))
+          observeProcess(spawned, started, exit, executable)
+          return spawned
+        },
         catch: cause => spawnFailure(command.command, cause),
       }),
       spawned => Effect.sync(() => killQuietly(spawned, command.options)),
     )
-    const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode, PlatformError.PlatformError>()
-    yield* Effect.sync(() => observeExit(child, exit, command.command))
+    // Node returns a ChildProcess before the OS spawn result is known. Waiting
+    // for `spawn` keeps an asynchronous `error` in the start failure channel.
+    yield* Deferred.await(started)
     // Built ONCE: the capture below forks a pump per pipe, so a second
     // evaluation would be a second reader on the same pipe.
     const outputs = yield* pipedOutputs(child, command.command)
@@ -502,17 +510,33 @@ function notPiped(command: string, label: 'stdout' | 'stderr'): PlatformError.Pl
  *  A signal death reports `code: null`; the port's contract is a number, so it
  *  surfaces as `1` ("did not exit cleanly") with the signal detail in the
  *  message-free code field the callers already ignore. */
-function observeExit(
+function observeProcess(
   child: NodeChildProcess,
+  started: Deferred.Deferred<undefined, PlatformError.PlatformError>,
   exit: Deferred.Deferred<ChildProcessSpawner.ExitCode, PlatformError.PlatformError>,
   command: string,
 ): void {
-  child.once('error', (cause: Error) => {
-    Deferred.doneUnsafe(exit, Effect.fail(spawnFailure(command, cause)))
-  })
-  child.once('close', (code: number | null) => {
+  const cleanup = (): void => {
+    child.off('spawn', onSpawn)
+    child.off('error', onError)
+    child.off('close', onClose)
+  }
+  function onSpawn(): void {
+    Deferred.doneUnsafe(started, Effect.succeed(undefined))
+    child.off('spawn', onSpawn)
+  }
+  function onError(cause: Error): void {
+    const failure = spawnFailure(command, cause)
+    Deferred.doneUnsafe(started, Effect.fail(failure))
+    Deferred.doneUnsafe(exit, Effect.fail(failure))
+  }
+  function onClose(code: number | null): void {
     Deferred.doneUnsafe(exit, Effect.succeed(ChildProcessSpawner.ExitCode(code ?? 1)))
-  })
+    cleanup()
+  }
+  child.once('spawn', onSpawn)
+  child.on('error', onError)
+  child.once('close', onClose)
 }
 
 /** Teardown must never throw: a child that already exited, or a platform that
@@ -522,7 +546,9 @@ function observeExit(
  *  later slice. */
 function killQuietly(child: NodeChildProcess, options: ChildProcess.KillOptions | undefined): void {
   try {
-    if (child.exitCode === null && child.signalCode === null) child.kill(options?.killSignal ?? 'SIGTERM')
+    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+      child.kill(options?.killSignal ?? 'SIGTERM')
+    }
   } catch {
     /* teardown must not fail the run */
   }
