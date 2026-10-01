@@ -152,16 +152,16 @@ Evaluate the official SDK Server handler API with SDK-owned protocol schemas, ge
 
 ## Implementation census, 2026-10-01
 
-This source snapshot is `0cd0ef7`. It adds currency, update and export contract conversion and explicit request pricing catalogue input to the preceding internal Schema, request reuse, cancellation, observation and renderer decoder work. TypeScript AST import counting excludes type-only imports, declarations and test/spec files under `src`. Line coverage counts nonblank lines in importing files against nonblank area lines; it remains an upper bound on adoption, not a workflow completion percentage.
+This source snapshot is `1ac883d`. It adds one worker-owned SQL/runtime graph, direct FX config-port composition and operation-level trace forwarding to the preceding contract, request pricing, cancellation and renderer decoder work. TypeScript AST import counting excludes type-only imports, declarations and test/spec files under `src`. Line coverage counts nonblank lines in importing files against nonblank area lines; it remains an upper bound on adoption, not a workflow completion percentage.
 
 | Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
 | ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
-| DB worker                          |                     2 / 5 |         40.0% |                     1,187 / 1,369 |         86.7% |
-| Store                              |                     7 / 8 |         87.5% |                     1,687 / 2,245 |         75.1% |
+| DB worker                          |                     3 / 5 |         60.0% |                     1,261 / 1,371 |         92.0% |
+| Store                              |                     7 / 8 |         87.5% |                     1,698 / 2,256 |         75.3% |
 | Agents                             |                    8 / 44 |         18.2% |                     2,865 / 5,883 |         48.7% |
 | Pipeline                           |                    5 / 68 |          7.4% |                    2,806 / 27,606 |         10.2% |
 | View builders ending in `-view.ts` |                     0 / 8 |          0.0% |                         0 / 3,957 |          0.0% |
-| All main-process code              |                  28 / 144 |         19.4% |                   10,431 / 44,954 |         23.2% |
+| All main-process code              |                  29 / 144 |         20.1% |                   10,485 / 44,936 |         23.3% |
 | Shared schema modules              |                   11 / 24 |         45.8% |                       810 / 1,952 |         41.5% |
 | Renderer                           |                   1 / 123 |          0.8% |                       83 / 13,090 |          0.6% |
 | Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
@@ -170,4 +170,10 @@ Nine of 23 contract modules now use Effect Schema throughout: ledger, pipeline, 
 
 The new pricing calculation module deliberately imports no runtime Effect value. Moving calculation out of the IO module reduces the pipeline's importing-line percentage; that is the intended dependency separation, rather than an orchestration regression. A request captures pricing once and shares it across aggregation and the Models lens. Provider adapters still capture from live state until scan-boundary inputs migrate. Query diagnostics remain in a temporary outer adapter to preserve verbose unpriced-alias warnings; direct-port loading and complete query/calculation separation remain open.
 
-The target architecture's execution record records passed integration gates for this increment. Full contract migration, runtime consolidation, facade retirement, scan lifetime, purpose-specific queries and comparable performance measurements remain open. No post-migration speedup is claimed.
+`41d5ea5` composes the actual worker SQLite client, repository ports and FX service under one ManagedRuntime. The temporary LedgerStore facade borrows that runtime; it runs migration initialization synchronously before the owner factory returns. Successful shutdown drains parser/callback and background work before the root scope closes the driver. Tests count actual SQLite close calls on success, future-version rejection, graph-build failure and context-construction failure. Repository spans reach the worker observation sink through the same graph.
+
+`86215fd` supplies the canonical FX layer through LedgerConfig directly. SQL and Schema failures stay typed, while HTTP failures retain the existing fallback. Background FX failures are logged once using the existing bounded code field, without fetching or emitting a successful currency for a malformed cache. The temporary standalone runner adapter still turns synchronous failures into defects; delete it when its remaining test/standalone callers compose the canonical layer. Legacy currency response reads also remain until their application workflows migrate.
+
+`1ac883d` forwards application and repository operation spans, omitting the SQL driver's per-statement `sql.execute` records. Suppressed spans still end normally. Timing and sanitized failure codes remain on enclosing operations. The writer, quota and privacy allowlist are unchanged.
+
+The target architecture's execution record records passed integration gates for this increment. Full contract migration, application query and failure mapping, facade retirement and initialization extraction, bounded parser stop, purpose-specific queries, packaging and comparable performance measurements remain open. No post-migration speedup is claimed.
