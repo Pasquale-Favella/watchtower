@@ -1,7 +1,9 @@
-import { buildSessionRows } from './store/aggregate.js'
+import * as Schema from 'effect/Schema'
+
+import { type SessionRow, sessionRowSchema } from '../shared/schemas/views.js'
 import { overviewDateRange, type OverviewScope } from './overview.js'
+import { buildSessionRows } from './store/aggregate.js'
 import type { LedgerStore } from './store/ledger.js'
-import { sessionRowSchema, type SessionRow } from '../shared/schemas/views.js'
 
 export type { SessionRow } from '../shared/schemas/views.js'
 
@@ -17,5 +19,5 @@ export function buildSessionsViewFromLedger(store: LedgerStore, scope: OverviewS
   const rows = buildSessionRows(store, { range: overviewDateRange(scope, now), provider: scope.provider }).sort(
     (a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0),
   )
-  return sessionRowSchema.array().parse(rows)
+  return Schema.decodeUnknownSync(Schema.mutable(Schema.Array(sessionRowSchema)))(rows)
 }

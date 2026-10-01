@@ -1,3 +1,5 @@
+import * as Schema from 'effect/Schema'
+
 import {
   type AnalyticalViews,
   analyticalViewsSchema,
@@ -26,7 +28,7 @@ import {
   sessionProjectKey,
 } from './store/aggregate.js'
 import type { LedgerStore } from './store/ledger.js'
-import { loadLedgerQuerySnapshot } from './store/query-snapshot.js'
+import { type LedgerQuerySnapshot, loadLedgerQuerySnapshot } from './store/query-snapshot.js'
 
 export type {
   AnalyticalViews,
@@ -84,10 +86,15 @@ function analyticalFrom(dashboard: DashboardViews, sessions: SessionSummary[]): 
 }
 
 export function buildAnalyticalViewsFromLedger(store: LedgerStore): AnalyticalViews {
-  const snapshot = loadLedgerQuerySnapshot(store)
+  return Schema.decodeUnknownSync(analyticalViewsSchema)(
+    buildAnalyticalViewsFromSnapshot(loadLedgerQuerySnapshot(store)),
+  )
+}
+
+export function buildAnalyticalViewsFromSnapshot(snapshot: LedgerQuerySnapshot): AnalyticalViews {
   const summaries = buildSessionSummariesFromSnapshot(snapshot, { range: ALL_TIME_RANGE })
   const dashboard = buildDashboardCoreFromSummaries(summaries, snapshot.sessions)
-  return analyticalViewsSchema.parse(analyticalFrom(dashboard, summaries))
+  return analyticalFrom(dashboard, summaries)
 }
 
 /**
@@ -97,7 +104,7 @@ export function buildAnalyticalViewsFromLedger(store: LedgerStore): AnalyticalVi
 export function searchSessionsFromLedger(store: LedgerStore, query: string): SearchHit[] {
   const term = query.trim().toLowerCase()
   if (!term) return []
-  return searchHitSchema.array().parse(searchSessionsCore(store, term))
+  return Schema.decodeUnknownSync(Schema.mutable(Schema.Array(searchHitSchema)))(searchSessionsCore(store, term))
 }
 
 function searchSessionsCore(store: LedgerStore, term: string): SearchHit[] {
@@ -141,7 +148,7 @@ function searchSessionsCore(store: LedgerStore, term: string): SearchHit[] {
  */
 export function buildProjectRowsFromLedger(store: LedgerStore): ProjectRow[] {
   const snapshot = loadLedgerQuerySnapshot(store)
-  return projectRowSchema.array().parse(buildProjectRowsCore(snapshot))
+  return Schema.decodeUnknownSync(Schema.mutable(Schema.Array(projectRowSchema)))(buildProjectRowsCore(snapshot))
 }
 
 function buildProjectRowsCore(snapshot: ReturnType<typeof loadLedgerQuerySnapshot>): ProjectRow[] {
@@ -197,7 +204,7 @@ export function querySessionRowsFromLedger(
       return true
     })
     .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))
-  return sessionRowSchema.array().parse(rows)
+  return Schema.decodeUnknownSync(Schema.mutable(Schema.Array(sessionRowSchema)))(rows)
 }
 
 /**
@@ -262,7 +269,7 @@ function sessionDetailFromSummary(session: SessionSummary): SessionDetail {
 export function getSessionDetailFromLedger(store: LedgerStore, sessionId: string): SessionDetail | null {
   const summaries = buildSessionSummaries(store, { range: ALL_TIME_RANGE })
   const session = summaries.find(s => s.sessionId === sessionId)
-  return session ? sessionDetailSchema.parse(sessionDetailFromSummary(session)) : null
+  return session ? Schema.decodeUnknownSync(sessionDetailSchema)(sessionDetailFromSummary(session)) : null
 }
 
 /**
@@ -372,9 +379,12 @@ function buildDashboardCore(
  * already-shaped rows over IPC and never touches the filesystem or the pipeline.
  */
 export function buildDashboardViewsFromLedger(store: LedgerStore): DashboardViews {
-  const snapshot = loadLedgerQuerySnapshot(store)
+  return Schema.decodeUnknownSync(dashboardViewsSchema)(buildDashboardViewsFromSnapshot(loadLedgerQuerySnapshot(store)))
+}
+
+export function buildDashboardViewsFromSnapshot(snapshot: LedgerQuerySnapshot): DashboardViews {
   const summaries = buildSessionSummariesFromSnapshot(snapshot, { range: ALL_TIME_RANGE })
-  return dashboardViewsSchema.parse(buildDashboardCoreFromSummaries(summaries, snapshot.sessions))
+  return buildDashboardCoreFromSummaries(summaries, snapshot.sessions)
 }
 
 function buildDashboardCoreFromSummaries(

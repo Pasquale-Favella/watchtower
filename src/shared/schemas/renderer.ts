@@ -1,106 +1,74 @@
-import { z } from 'zod'
-import type { ComponentType } from 'react'
 import type { Hotkey } from '@tanstack/react-hotkeys'
+import type { ComponentType } from 'react'
 
-import { modelReportRowSchema } from './models.js'
-import { sessionRowSchema } from './views.js'
+import type { ModelReportRow } from './models.js'
+import type { SessionRow } from './views.js'
 
-/** Renderer-local UI shapes (ADR 0005): schemas for shapes that have no IPC
- * wire counterpart — date ranges, splash progress, shortcut definitions,
- * onboarding steps, sankey nodes/links, session groups, and the like. Their
- * inferred types are the only thing consumed (they have no parse site by
- * definition). */
+/** Renderer-local UI shapes have no IPC wire counterpart and no parse site. */
+export interface DateRange {
+  since: string
+  until: string
+}
 
-export const dateRangeSchema = z.object({
-  since: z.string(),
-  until: z.string(),
-})
-export type DateRange = z.infer<typeof dateRangeSchema>
+export interface SplashProviderProgress {
+  provider: string
+  processed?: number
+  total?: number
+  done: boolean
+}
 
-export const splashProviderProgressSchema = z.object({
-  provider: z.string(),
-  processed: z.number().optional(),
-  total: z.number().optional(),
-  done: z.boolean(),
-})
-export type SplashProviderProgress = z.infer<typeof splashProviderProgressSchema>
+export type Section =
+  'overview' | 'sessions' | 'pullRequests' | 'spend' | 'optimize' | 'models' | 'compare' | 'coachSkills' | 'settings'
 
-export const sectionSchema = z.enum([
-  'overview',
-  'sessions',
-  'pullRequests',
-  'spend',
-  'optimize',
-  'models',
-  'compare',
-  'coachSkills',
-  'settings',
-])
-export type Section = z.infer<typeof sectionSchema>
+export type ShortcutAction = Section | 'refresh' | 'toggleSidebar' | 'commandPalette'
 
-export const shortcutActionSchema = sectionSchema.or(z.enum(['refresh', 'toggleSidebar', 'commandPalette']))
-export type ShortcutAction = z.infer<typeof shortcutActionSchema>
+export type Platform = 'mac' | 'windows' | 'linux'
 
-export const platformSchema = z.enum(['mac', 'windows', 'linux'])
-export type Platform = z.infer<typeof platformSchema>
+export interface ShortcutDef {
+  action: ShortcutAction
+  hotkey: Hotkey
+  label: string
+}
 
-export const shortcutDefSchema = z.object({
-  action: shortcutActionSchema,
-  hotkey: z.custom<Hotkey>(),
-  label: z.string(),
-})
-export type ShortcutDef = z.infer<typeof shortcutDefSchema>
+export interface OnboardingStep {
+  id: string
+  title: string
+  body: string
+  icon: ComponentType<{ className?: string; strokeWidth?: number }>
+}
 
-export const onboardingStepSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  body: z.string(),
-  icon: z.custom<ComponentType<{ className?: string; strokeWidth?: number }>>(),
-})
-export type OnboardingStep = z.infer<typeof onboardingStepSchema>
+export interface ModelTaskGroup {
+  provider: string
+  model: string
+  modelDisplayName: string
+  rows: ModelReportRow[]
+}
 
-export const modelTaskGroupSchema = z.object({
-  provider: z.string(),
-  model: z.string(),
-  modelDisplayName: z.string(),
-  rows: z.array(modelReportRowSchema),
-})
-export type ModelTaskGroup = z.infer<typeof modelTaskGroupSchema>
+export type SessionSort = 'cost' | 'recent' | 'turns' | 'tokens'
 
-export const sessionSortSchema = z.enum(['cost', 'recent', 'turns', 'tokens'])
-export type SessionSort = z.infer<typeof sessionSortSchema>
+export interface SessionGroup {
+  provider: string
+  count: number
+  cost: number
+  rows: SessionRow[]
+}
 
-export const sessionGroupSchema = z.object({
-  provider: z.string(),
-  count: z.number(),
-  cost: z.number(),
-  rows: z.array(sessionRowSchema),
-})
-export type SessionGroup = z.infer<typeof sessionGroupSchema>
+export interface ProviderOption {
+  value: string
+  label: string
+}
 
-export const providerOptionSchema = z.object({
-  value: z.string(),
-  label: z.string(),
-})
-export type ProviderOption = z.infer<typeof providerOptionSchema>
+export type Theme = 'light' | 'dark' | 'system'
 
-export const themeSchema = z.enum(['light', 'dark', 'system'])
-export type Theme = z.infer<typeof themeSchema>
+export type SpendRow = Record<string, string | number> & { date: string }
 
-export const spendRowSchema = z
-  .record(z.string(), z.union([z.string(), z.number()]))
-  .and(z.object({ date: z.string() }))
-export type SpendRow = z.infer<typeof spendRowSchema>
+export interface SankeyNodeData {
+  name: string
+  kind: 'model' | 'project'
+}
 
-export const sankeyNodeDataSchema = z.object({
-  name: z.string(),
-  kind: z.enum(['model', 'project']),
-})
-export type SankeyNodeData = z.infer<typeof sankeyNodeDataSchema>
-
-export const sankeyLinkDataSchema = z.object({
-  source: z.number(),
-  target: z.number(),
-  value: z.number(),
-})
-export type SankeyLinkData = z.infer<typeof sankeyLinkDataSchema>
+export interface SankeyLinkData {
+  source: number
+  target: number
+  value: number
+}

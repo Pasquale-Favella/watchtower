@@ -6,6 +6,7 @@
  * error state instead of a crash or garbage. The wire contract is frozen: no
  * channel name, request shape, or payload byte changes here.
  */
+import * as Schema from 'effect/Schema'
 import { z } from 'zod'
 
 import {
@@ -179,11 +180,15 @@ export function fetchScanStatus(): Promise<ApiResult<ScanStatus>> {
 }
 
 export function fetchViews(): Promise<ApiResult<DashboardViews | null>> {
-  return fetchZodPayload('dashboard views', dashboardViewsSchema.nullable(), () => window.api.getViews())
+  return fetchPayload('dashboard views', effectSchemaDecoder(Schema.NullOr(dashboardViewsSchema)), () =>
+    window.api.getViews(),
+  )
 }
 
 export function fetchProjects(): Promise<ApiResult<ProjectRow[]>> {
-  return fetchZodPayload('projects', z.array(projectRowSchema), () => window.api.getProjects())
+  return fetchPayload('projects', effectSchemaDecoder(Schema.mutable(Schema.Array(projectRowSchema))), () =>
+    window.api.getProjects(),
+  )
 }
 
 export function fetchSessions(filter?: {
@@ -191,15 +196,21 @@ export function fetchSessions(filter?: {
   since?: string
   until?: string
 }): Promise<ApiResult<SessionRow[]>> {
-  return fetchZodPayload('sessions', z.array(sessionRowSchema), () => window.api.getSessions(filter))
+  return fetchPayload('sessions', effectSchemaDecoder(Schema.mutable(Schema.Array(sessionRowSchema))), () =>
+    window.api.getSessions(filter),
+  )
 }
 
 export function fetchSession(sessionId: string): Promise<ApiResult<SessionDetail | null>> {
-  return fetchZodPayload('session detail', sessionDetailSchema.nullable(), () => window.api.getSession(sessionId))
+  return fetchPayload('session detail', effectSchemaDecoder(Schema.NullOr(sessionDetailSchema)), () =>
+    window.api.getSession(sessionId),
+  )
 }
 
 export function fetchAnalytics(): Promise<ApiResult<AnalyticalViews | null>> {
-  return fetchZodPayload('analytics', analyticalViewsSchema.nullable(), () => window.api.getAnalytics())
+  return fetchPayload('analytics', effectSchemaDecoder(Schema.NullOr(analyticalViewsSchema)), () =>
+    window.api.getAnalytics(),
+  )
 }
 
 export function fetchOverview(scope: OverviewScope): Promise<ApiResult<OverviewPayload | null>> {
@@ -207,7 +218,9 @@ export function fetchOverview(scope: OverviewScope): Promise<ApiResult<OverviewP
 }
 
 export function fetchSessionRows(scope: OverviewScope): Promise<ApiResult<SessionRow[]>> {
-  return fetchZodPayload('session rows', z.array(sessionRowSchema), () => window.api.getSessionRows(scope))
+  return fetchPayload('session rows', effectSchemaDecoder(Schema.mutable(Schema.Array(sessionRowSchema))), () =>
+    window.api.getSessionRows(scope),
+  )
 }
 
 export function fetchPullRequests(scope: OverviewScope): Promise<ApiResult<PullRequestsPayload | null>> {
@@ -219,7 +232,9 @@ export function fetchSpend(scope: OverviewScope): Promise<ApiResult<SpendPayload
 }
 
 export function fetchModels(scope: OverviewScope): Promise<ApiResult<ModelsPayload | null>> {
-  return fetchZodPayload('models', modelsPayloadSchema.nullable(), () => window.api.getModels(scope))
+  return fetchPayload('models', effectSchemaDecoder(Schema.NullOr(modelsPayloadSchema)), () =>
+    window.api.getModels(scope),
+  )
 }
 
 export function fetchCompare(scope: OverviewScope, pair?: ComparePair): Promise<ApiResult<ComparePayload | null>> {
@@ -250,11 +265,15 @@ export function fetchSaveSkill(request: SkillsSaveRequest): Promise<ApiResult<Sk
 }
 
 export function fetchModelAliases(): Promise<ApiResult<ModelAlias[]>> {
-  return fetchZodPayload('model aliases', z.array(modelAliasSchema), () => window.api.getModelAliases())
+  return fetchPayload('model aliases', effectSchemaDecoder(Schema.mutable(Schema.Array(modelAliasSchema))), () =>
+    window.api.getModelAliases(),
+  )
 }
 
 export function fetchPriceOverrides(): Promise<ApiResult<PriceOverride[]>> {
-  return fetchZodPayload('price overrides', z.array(priceOverrideSchema), () => window.api.getPriceOverrides())
+  return fetchPayload('price overrides', effectSchemaDecoder(Schema.mutable(Schema.Array(priceOverrideSchema))), () =>
+    window.api.getPriceOverrides(),
+  )
 }
 
 export function fetchSettings(): Promise<ApiResult<SettingsInfo>> {
@@ -316,7 +335,9 @@ export function fetchAppVersion(): Promise<ApiResult<AppVersion>> {
 }
 
 export function fetchSearch(query: string): Promise<ApiResult<SearchHit[]>> {
-  return fetchZodPayload('search', z.array(searchHitSchema), () => window.api.search(query))
+  return fetchPayload('search', effectSchemaDecoder(Schema.mutable(Schema.Array(searchHitSchema))), () =>
+    window.api.search(query),
+  )
 }
 
 export function fetchExport(format: 'csv' | 'json', destination?: string): Promise<ApiResult<ExportResult>> {

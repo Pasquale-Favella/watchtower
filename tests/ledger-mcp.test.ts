@@ -1,20 +1,22 @@
-import { DatabaseSync } from 'node:sqlite'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { DatabaseSync } from 'node:sqlite'
+
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import * as Schema from 'effect/Schema'
+import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
 import { buildLedgerPrompts } from '../src/main/agents/ledger-mcp/prompts.js'
 import { buildLedgerResources } from '../src/main/agents/ledger-mcp/resources.js'
-import { buildLedgerTools } from '../src/main/agents/ledger-mcp/tools.js'
 import { createLedgerMcpServer } from '../src/main/agents/ledger-mcp/server.js'
+import { buildLedgerTools } from '../src/main/agents/ledger-mcp/tools.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
+import { modelsPayloadSchema } from '../src/shared/schemas/models.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { overviewPayloadSchema } from '../src/shared/schemas/overview.js'
-import { modelsPayloadSchema } from '../src/shared/schemas/models.js'
 import { skillsPayloadSchema } from '../src/shared/schemas/skills.js'
 import { sessionRowSchema } from '../src/shared/schemas/views.js'
 
@@ -170,8 +172,10 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
     const store = openStore()
     const tool = buildLedgerTools(store).find(t => t.name === 'ledger_sessions')!
     const out = await tool.run({ scope })
-    expect(sessionRowSchema.array().safeParse(out).success).toBe(true)
-    const rows = sessionRowSchema.array().parse(out)
+    const decoded = Schema.decodeUnknownResult(Schema.mutable(Schema.Array(sessionRowSchema)))(out)
+    expect(decoded._tag).toBe('Success')
+    if (decoded._tag === 'Failure') throw new Error('MCP session rows did not match the UI schema')
+    const rows = decoded.success
     expect(rows).toHaveLength(2)
     expect(rows[0]!.sessionId).toBe('sess-b') // newest first
   })
@@ -180,8 +184,10 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
     const store = openStore()
     const tool = buildLedgerTools(store).find(t => t.name === 'ledger_models')!
     const out = await tool.run({ scope })
-    expect(modelsPayloadSchema.safeParse(out).success).toBe(true)
-    const payload = modelsPayloadSchema.parse(out)
+    const decoded = Schema.decodeUnknownResult(modelsPayloadSchema)(out)
+    expect(decoded._tag).toBe('Success')
+    if (decoded._tag === 'Failure') throw new Error('MCP model payload did not match the UI schema')
+    const payload = decoded.success
     expect(payload.byModel.length).toBeGreaterThan(0)
   })
 

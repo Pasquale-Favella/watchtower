@@ -1,3 +1,5 @@
+import * as Schema from 'effect/Schema'
+
 import {
   type AuditRow,
   type ModelReportRow,
@@ -275,7 +277,7 @@ export function buildModelsViewFromLedger(
   now = new Date(),
 ): ModelsPayload {
   const snapshot = loadLedgerQuerySnapshot(store)
-  return modelsPayloadSchema.parse(
+  return Schema.decodeUnknownSync(modelsPayloadSchema)(
     buildModelsPayload(
       buildSessionSummariesFromSnapshot(snapshot, {
         range: overviewDateRange(scope, now),
