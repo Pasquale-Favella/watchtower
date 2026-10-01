@@ -1,6 +1,8 @@
+import * as Schema from 'effect/Schema'
 import { z } from 'zod'
-import { cachedFileSchema } from './session-cache.js'
+
 import { fileVerdictSchema } from './port.js'
+import { cachedFileSchema } from './session-cache.js'
 
 export const scanOptionsSchema = z.object({
   range: z.object({
@@ -54,16 +56,18 @@ export type ScanMetadata = z.infer<typeof scanMetadataSchema>
 /** The per-file reconcile verdict, mirrored from the store's `FileVerdict` so
  * the parse pipeline never imports the store (producer → consumer layering). */
 export const scanDeltaVerdictSchema = fileVerdictSchema
-export type ScanDeltaVerdict = z.infer<typeof scanDeltaVerdictSchema>
+export type ScanDeltaVerdict = Schema.Schema.Type<typeof scanDeltaVerdictSchema>
 
-export const scanDeltaSchema = z.object({
-  provider: z.string(),
-  envFingerprint: z.string(),
-  filePath: z.string(),
-  verdict: scanDeltaVerdictSchema,
-  cachedFile: cachedFileSchema,
-  durable: z.boolean().optional(),
-  project: z.string().optional(),
-  workingDirectory: z.string().optional(),
+const writable = Schema.mutableKey
+
+export const scanDeltaSchema = Schema.Struct({
+  provider: writable(Schema.String),
+  envFingerprint: writable(Schema.String),
+  filePath: writable(Schema.String),
+  verdict: writable(scanDeltaVerdictSchema),
+  cachedFile: writable(cachedFileSchema),
+  durable: writable(Schema.optional(Schema.Boolean)),
+  project: writable(Schema.optional(Schema.String)),
+  workingDirectory: writable(Schema.optional(Schema.String)),
 })
-export type ScanDelta = z.infer<typeof scanDeltaSchema>
+export type ScanDelta = Schema.Schema.Type<typeof scanDeltaSchema>

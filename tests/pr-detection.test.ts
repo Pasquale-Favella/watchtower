@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import * as Schema from 'effect/Schema'
+import { describe, expect, it } from 'vitest'
+
 import {
+  cachedTurnToClassified,
   collectPrUrlsFromEntry,
   collectSessionMeta,
   compactEntry,
@@ -10,17 +14,16 @@ import {
   extractPrUrlsFromProviderCall,
   extractPrUrlsFromText,
   groupIntoTurns,
-  cachedTurnToClassified,
 } from '../src/main/pipeline/parser.js'
+import { codex } from '../src/main/pipeline/providers/codex.js'
+import { buildAssistantCall } from '../src/main/pipeline/providers/session-message.js'
+import type { CachedFile } from '../src/main/pipeline/session-cache.js'
+import { sectionNeedsPrEvidenceReparse } from '../src/main/pipeline/session-cache.js'
 import { shortenPrUrl } from '../src/main/pipeline/sessions-report.js'
+import type { JournalEntry } from '../src/main/pipeline/types.js'
 import { buildPullRequestsViewFromLedger } from '../src/main/pull-requests-view.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
-import { sectionNeedsPrEvidenceReparse } from '../src/main/pipeline/session-cache.js'
 import { providerSectionSchema } from '../src/shared/schemas/session-cache.js'
-import { buildAssistantCall } from '../src/main/pipeline/providers/session-message.js'
-import { codex } from '../src/main/pipeline/providers/codex.js'
-import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import type { JournalEntry } from '../src/main/pipeline/types.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 const GH = 'https://github.com/acme/repo/pull/12'
@@ -323,8 +326,12 @@ describe('one-shot PR-evidence re-parse marker', () => {
   })
 
   it('the section schema accepts old sections and stamped ones', () => {
-    expect(providerSectionSchema.safeParse({ envFingerprint: 'x', files: {} }).success).toBe(true)
-    const stamped = providerSectionSchema.parse({ envFingerprint: 'x', files: {}, prEvidenceV1: true })
+    expect(Schema.decodeUnknownResult(providerSectionSchema)({ envFingerprint: 'x', files: {} })._tag).toBe('Success')
+    const stamped = Schema.decodeUnknownSync(providerSectionSchema)({
+      envFingerprint: 'x',
+      files: {},
+      prEvidenceV1: true,
+    })
     expect(stamped.prEvidenceV1).toBe(true)
   })
 })

@@ -1,25 +1,8 @@
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
 
-// ── Two shapes owned by sibling Wave A modules, restated here ────────────
-// `toolCallSchema` (./pipeline.js) and `fileVerdictSchema` (./port.js) are
-// still Zod: those two modules are separate Wave A slices with their own
-// consumers, and pulling them in would widen this diff past the slice. They are
-// restated here — the same "same semantics, restated locally" move
-// `store/read-projections.ts` already made for the JSON helpers — so this
-// module is single-library end to end. Nothing consumes these two by identity;
-// both are read only through the row schemas below.
-
-/** `pipeline.ts`'s `toolCallSchema`: one tool invocation inside a call's
- *  captured tool sequence, with the same two optional fields. */
-const toolCall = Schema.Struct({
-  tool: Schema.String,
-  file: Schema.optional(Schema.String),
-  command: Schema.optional(Schema.String),
-})
-
-/** `port.ts`'s `fileVerdictSchema`. */
-const fileVerdict = Schema.Literals(['new', 'appended', 'modified', 'unchanged'])
+import { toolCallSchema } from './pipeline.js'
+import { fileVerdictSchema } from './port.js'
 
 // ── Scalar helpers ──────────────────────────────────────────────────────
 
@@ -91,7 +74,9 @@ const nullTo = <S extends Schema.Constraint>(schema: S, fallback: S['Type']) =>
 
 const stringArrayJson = Schema.fromJsonString(Schema.mutable(Schema.Array(Schema.String)))
 const stringRecordJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String))
-const toolCallMatrixJson = Schema.fromJsonString(Schema.mutable(Schema.Array(Schema.mutable(Schema.Array(toolCall)))))
+const toolCallMatrixJson = Schema.fromJsonString(
+  Schema.mutable(Schema.Array(Schema.mutable(Schema.Array(toolCallSchema)))),
+)
 
 // ── Snake→camel storage shapes ──────────────────────────────────────────
 // Every row schema below maps its DB (snake_case) columns onto the camelCase
@@ -343,7 +328,7 @@ export type LedgerCallRow = Schema.Schema.Type<typeof ledgerCallRowSchema>
 // ── PortResult / config shapes ──────────────────────────────────────────
 
 export const portResultSchema = Schema.Struct({
-  verdict: fileVerdict,
+  verdict: fileVerdictSchema,
   sourceId: Schema.NullOr(finiteNumber),
   inserted: Schema.Struct({
     sessions: finiteNumber,

@@ -1,16 +1,16 @@
 import { createHash, randomBytes } from 'crypto'
+import * as Schema from 'effect/Schema'
+import * as SchemaGetter from 'effect/SchemaGetter'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises'
 import { join } from 'path'
 
-import type {
-  CachedCall,
-  CachedFile,
-  CachedTurn,
-  CachedUsage,
-  FileFingerprint,
-  ProviderSection,
-  SessionCache,
+import type { CachedCall, CachedFile, FileFingerprint } from '../../shared/schemas/session-cache.js'
+import {
+  cachedFileSchema,
+  providerSectionSchema,
+  sessionCacheSchema,
+  type SessionCache,
 } from '../../shared/schemas/session-cache.js'
 import { type AppPaths, resolveCacheDir, resolveSnapshotEnvVar, type SnapshotEnvVar } from '../env.js'
 
@@ -205,147 +205,49 @@ export function sectionNeedsPrEvidenceReparse(section: { prEvidenceV1?: boolean 
   return section.prEvidenceV1 !== true
 }
 
-function isNum(v: unknown): v is number {
-  return typeof v === 'number' && Number.isFinite(v)
-}
-
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every(e => typeof e === 'string')
-}
-
-function isOptionalString(v: unknown): boolean {
-  return v === undefined || typeof v === 'string'
-}
-
-function isOptionalNum(v: unknown): boolean {
-  return v === undefined || isNum(v)
-}
-
-function isOptionalBool(v: unknown): boolean {
-  return v === undefined || typeof v === 'boolean'
-}
-
-// A plain object whose every value is a string (or undefined). Used for the
-// sidechain `agentSpawnLinks` map (agentId -> spawn tool_use id).
-function isOptionalStringRecord(v: unknown): boolean {
-  if (v === undefined) return true
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
-  return Object.values(v as Record<string, unknown>).every(e => typeof e === 'string')
-}
-
-function isToolCall(v: unknown): boolean {
-  if (!v || typeof v !== 'object') return false
-  const o = v as Record<string, unknown>
-  return typeof o['tool'] === 'string' && isOptionalString(o['file']) && isOptionalString(o['command'])
-}
-
-function isToolCallArray(v: unknown): boolean {
-  return Array.isArray(v) && (v as unknown[]).every(isToolCall)
-}
-
-function validateFingerprint(fp: unknown): fp is FileFingerprint {
-  if (!fp || typeof fp !== 'object') return false
-  const f = fp as Record<string, unknown>
-  return isNum(f['dev']) && isNum(f['ino']) && isNum(f['mtimeMs']) && isNum(f['sizeBytes'])
-}
-
-function validateUsage(u: unknown): u is CachedUsage {
-  if (!u || typeof u !== 'object') return false
-  const o = u as Record<string, unknown>
-  return (
-    isNum(o['inputTokens']) &&
-    isNum(o['outputTokens']) &&
-    isNum(o['cacheCreationInputTokens']) &&
-    isNum(o['cacheReadInputTokens']) &&
-    isNum(o['cachedInputTokens']) &&
-    isNum(o['reasoningTokens']) &&
-    isNum(o['webSearchRequests']) &&
-    isNum(o['cacheCreationOneHourTokens'])
+/** On-disk cache versions historically passed these optional flags through
+ * unchecked. Normalize that envelope drift while keeping the shared in-memory
+ * contract strict. The inner field schema comes from the authoritative
+ * provider/session schemas, so requiredness and decoded flag types stay aligned. */
+function normalizeOptionalFlag<
+  S extends Schema.Constraint & { readonly Type: boolean | undefined; readonly Encoded: boolean | undefined },
+>(field: Schema.mutableKey<S>, normalize: (value: unknown) => boolean) {
+  return Schema.mutableKey(
+    Schema.optional(Schema.Unknown).pipe(
+      Schema.decodeTo(field.schema, {
+        decode: SchemaGetter.transform((value: unknown | undefined) =>
+          value === undefined ? undefined : normalize(value),
+        ),
+        encode: SchemaGetter.transform((value: boolean | undefined) => value),
+      }),
+    ),
   )
 }
 
-function validateCall(c: unknown): c is CachedCall {
-  if (!c || typeof c !== 'object') return false
-  const o = c as Record<string, unknown>
-  return (
-    typeof o['provider'] === 'string' &&
-    typeof o['model'] === 'string' &&
-    typeof o['deduplicationKey'] === 'string' &&
-    typeof o['timestamp'] === 'string' &&
-    (o['speed'] === 'standard' || o['speed'] === 'fast') &&
-    isOptionalNum(o['costUSD']) &&
-    isOptionalBool(o['isEstimated']) &&
-    isStringArray(o['tools']) &&
-    isStringArray(o['bashCommands']) &&
-    isStringArray(o['skills']) &&
-    (o['subagentTypes'] === undefined || isStringArray(o['subagentTypes'])) &&
-    isOptionalString(o['project']) &&
-    isOptionalString(o['projectPath']) &&
-    isOptionalString(o['workingDirectory']) &&
-    (o['toolSequence'] === undefined ||
-      (Array.isArray(o['toolSequence']) && (o['toolSequence'] as unknown[]).every(s => isToolCallArray(s)))) &&
-    isOptionalNum(o['locAdded']) &&
-    isOptionalNum(o['locRemoved']) &&
-    isOptionalBool(o['interrupted']) &&
-    isOptionalBool(o['userModified']) &&
-    isOptionalNum(o['toolErrors']) &&
-    isOptionalNum(o['editFailed']) &&
-    validateUsage(o['usage'])
-  )
+const providerSectionCacheSchema = providerSectionSchema.mapFields(fields => ({
+  ...fields,
+  durable: normalizeOptionalFlag(fields.durable, value => Boolean(value)),
+  prEvidenceV1: normalizeOptionalFlag(fields.prEvidenceV1, value => value === true),
+}))
+
+/** Legacy on-disk flag codec. Unknown keys still strip, while valid cached
+ * facts survive old malformed envelope flags until the next write normalizes
+ * those flags. Retire only with a cache version/support cutoff. */
+const sessionCacheFileSchema = sessionCacheSchema.mapFields(fields => ({
+  ...fields,
+  providers: Schema.mutableKey(Schema.Record(Schema.String, Schema.mutableKey(providerSectionCacheSchema))),
+  complete: normalizeOptionalFlag(fields.complete, value => value === true),
+}))
+
+function decodeCachedFile(value: unknown): CachedFile | null {
+  const decoded = Schema.decodeUnknownResult(cachedFileSchema)(value)
+  return decoded._tag === 'Success' ? decoded.success : null
 }
 
-function validateTurn(t: unknown): t is CachedTurn {
-  if (!t || typeof t !== 'object') return false
-  const o = t as Record<string, unknown>
-  return (
-    typeof o['timestamp'] === 'string' &&
-    typeof o['sessionId'] === 'string' &&
-    typeof o['userMessage'] === 'string' &&
-    isOptionalString(o['gitBranch']) &&
-    (o['prRefs'] === undefined || isStringArray(o['prRefs'])) &&
-    (o['spawnToolUseIds'] === undefined || isStringArray(o['spawnToolUseIds'])) &&
-    Array.isArray(o['calls']) &&
-    (o['calls'] as unknown[]).every(validateCall)
-  )
-}
-
-function validateCachedFile(f: unknown): f is CachedFile {
-  if (!f || typeof f !== 'object') return false
-  const o = f as Record<string, unknown>
-  return (
-    validateFingerprint(o['fingerprint']) &&
-    isOptionalNum(o['lastCompleteLineOffset']) &&
-    isOptionalString(o['canonicalCwd']) &&
-    isOptionalString(o['workingDirectory']) &&
-    isOptionalString(o['canonicalProjectName']) &&
-    isStringArray(o['mcpInventory']) &&
-    isOptionalString(o['title']) &&
-    (o['prLinks'] === undefined || isStringArray(o['prLinks'])) &&
-    isOptionalBool(o['isSidechain']) &&
-    isOptionalString(o['agentType']) &&
-    isOptionalBool(o['failed']) &&
-    isOptionalString(o['parentSessionId']) &&
-    isOptionalStringRecord(o['agentSpawnLinks']) &&
-    (o['ambiguousSpawnAgentIds'] === undefined || isStringArray(o['ambiguousSpawnAgentIds'])) &&
-    Array.isArray(o['turns']) &&
-    (o['turns'] as unknown[]).every(validateTurn)
-  )
-}
-
-function validateProviderSection(s: unknown): s is ProviderSection {
-  if (!s || typeof s !== 'object') return false
-  const o = s as Record<string, unknown>
-  if (typeof o['envFingerprint'] !== 'string') return false
-  if (!o['files'] || typeof o['files'] !== 'object' || Array.isArray(o['files'])) return false
-  return Object.values(o['files'] as Record<string, unknown>).every(validateCachedFile)
-}
-
-function validateCache(raw: unknown): raw is SessionCache {
-  if (!raw || typeof raw !== 'object') return false
-  const o = raw as Record<string, unknown>
-  if (o['version'] !== CACHE_VERSION) return false
-  if (!o['providers'] || typeof o['providers'] !== 'object' || Array.isArray(o['providers'])) return false
-  return Object.values(o['providers'] as Record<string, unknown>).every(validateProviderSection)
+function decodeCache(value: unknown): SessionCache | null {
+  const decoded = Schema.decodeUnknownResult(sessionCacheFileSchema)(value)
+  if (decoded._tag === 'Failure' || decoded.success.version !== CACHE_VERSION) return null
+  return decoded.success
 }
 
 // Every prior versioned cache file that can still exist on disk from a shipped or
@@ -396,8 +298,9 @@ async function adoptPriorCache(version: number): Promise<SessionCache | null> {
       const files: Record<string, CachedFile> = {}
       if (rawFiles && typeof rawFiles === 'object' && !Array.isArray(rawFiles)) {
         for (const [path, file] of Object.entries(rawFiles as Record<string, unknown>)) {
-          if (!validateCachedFile(file)) continue
-          if (!existsSync(path) && file.prLinks?.length) files[path] = file
+          const decodedFile = decodeCachedFile(file)
+          if (!decodedFile) continue
+          if (!existsSync(path) && decodedFile.prLinks?.length) files[path] = decodedFile
         }
       }
       migrated.providers[provider] = {
@@ -446,8 +349,9 @@ export async function loadCache(): Promise<SessionCache> {
   try {
     const raw = await readFile(getCachePath(), 'utf-8')
     const parsed = JSON.parse(raw)
-    if (!validateCache(parsed)) return afterMissingVersionedCache()
-    return parsed
+    const decoded = decodeCache(parsed)
+    if (!decoded) return afterMissingVersionedCache()
+    return decoded
   } catch {
     return afterMissingVersionedCache()
   }
@@ -470,9 +374,10 @@ async function adoptLegacyCache(): Promise<SessionCache> {
   try {
     const raw = await readFile(getLegacyCachePath(), 'utf-8')
     const parsed = JSON.parse(raw)
-    if (!validateCache(parsed)) return emptyCache()
-    await saveCache(parsed).catch(() => {})
-    return parsed
+    const decoded = decodeCache(parsed)
+    if (!decoded) return emptyCache()
+    await saveCache(decoded).catch(() => {})
+    return decoded
   } catch {
     return emptyCache()
   }

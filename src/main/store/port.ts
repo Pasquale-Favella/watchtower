@@ -1,18 +1,19 @@
 import { basename, dirname } from 'node:path'
-import { cachedTurnToClassified } from '../pipeline/parser.js'
-import type { CachedCall, CachedFile } from '../pipeline/session-cache.js'
-import type { ParsedApiCall } from '../pipeline/types.js'
+
+import * as Schema from 'effect/Schema'
+
 import {
-  mappedFileSchema,
-  type FileVerdict,
   type MappedCall,
   type MappedFile,
-  type MappedFingerprint,
+  mappedFileSchema,
   type MappedSession,
   type MappedSource,
   type MappedTurn,
   type PortInput,
 } from '../../shared/schemas/port.js'
+import { cachedTurnToClassified } from '../pipeline/parser.js'
+import type { CachedCall } from '../pipeline/session-cache.js'
+import type { ParsedApiCall } from '../pipeline/types.js'
 
 export type {
   FileVerdict,
@@ -138,7 +139,7 @@ export function mapFileToLedgerRows(input: PortInput): MappedFile {
 
   // Validate the assembled mapping at the seam before any ledger write: a bad
   // mapping fails loudly here, never as a silently corrupt ledger row.
-  return mappedFileSchema.parse({ source, session, turns, calls })
+  return Schema.decodeUnknownSync(mappedFileSchema)({ source, session, turns, calls })
 }
 
 function mapCallToLedgerRow(

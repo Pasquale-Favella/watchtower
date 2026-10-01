@@ -146,13 +146,13 @@ describe('store seam under Effect Schema (ADR 0003: read-back parsing)', () => {
   })
 })
 
-describe('port-in seam under zod (ADR 0002: mapping validation)', () => {
+describe('port-in seam under Effect Schema (ADR 0002: mapping validation)', () => {
   it('a valid mapping validates against mappedFileSchema', async () => {
     const store = makeStore()
     const input = { ...baseInput, verdict: 'new' as const, cachedFile: buildFixtureCachedFile() }
     const { mapFileToLedgerRows } = await import('../src/main/store/port.js')
     const mapped = mapFileToLedgerRows(input)
-    expect(mappedFileSchema.safeParse(mapped).success).toBe(true)
+    expect(Schema.decodeUnknownResult(mappedFileSchema)(mapped)._tag).toBe('Success')
     store.close()
   })
 

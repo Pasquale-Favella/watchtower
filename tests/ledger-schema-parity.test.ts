@@ -38,8 +38,6 @@ import {
   priceOverrideRowSchema,
   priceOverrideSchema,
 } from '../src/shared/schemas/ledger.js'
-import { toolCallSchema } from '../src/shared/schemas/pipeline.js'
-import { fileVerdictSchema } from '../src/shared/schemas/port.js'
 
 // ══════════════════════════════════════════════════════════════════════════
 // THE REFERENCE — pre-migration `src/shared/schemas/ledger.ts`, verbatim.
@@ -49,7 +47,15 @@ const zJsonParse = z.string().transform(s => JSON.parse(s) as unknown)
 
 const zStringArrayJson = zJsonParse.pipe(z.array(z.string()))
 const zStringRecordJson = zJsonParse.pipe(z.record(z.string(), z.string()))
-const zToolCallMatrixJson = zJsonParse.pipe(z.array(z.array(toolCallSchema)))
+// Frozen pre-migration reference definitions: these must stay self-contained
+// so the Effect contracts are compared with the old Zod behavior.
+const zToolCallSchema = z.object({
+  tool: z.string(),
+  file: z.string().optional(),
+  command: z.string().optional(),
+})
+const zFileVerdictSchema = z.enum(['new', 'appended', 'modified', 'unchanged'])
+const zToolCallMatrixJson = zJsonParse.pipe(z.array(z.array(zToolCallSchema)))
 
 const zNum = z.coerce.number()
 
@@ -234,7 +240,7 @@ const zLedgerCallRowSchema = z
   }))
 
 const zPortResultSchema = z.object({
-  verdict: fileVerdictSchema,
+  verdict: zFileVerdictSchema,
   sourceId: z.number().nullable(),
   inserted: z.object({
     sessions: z.number(),

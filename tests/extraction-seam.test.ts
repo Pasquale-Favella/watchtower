@@ -1,6 +1,8 @@
+import * as Schema from 'effect/Schema'
 import { describe, expect, it, vi } from 'vitest'
-import { parsedProviderCallSchema } from '../src/shared/schemas/providers.js'
+
 import { parseOrSkip } from '../src/shared/schemas/extract.js'
+import { parsedProviderCallSchema } from '../src/shared/schemas/providers.js'
 
 const validCall = {
   provider: 'demo',
@@ -22,9 +24,9 @@ const validCall = {
   sessionId: 'sess-0',
 }
 
-describe('extraction seam under zod (ADR 0003: loose + skip-and-report)', () => {
+describe('extraction seam under Effect Schema (ADR 0003: loose + skip-and-report)', () => {
   it('accepts a valid provider call; unknown extra keys are stripped, never fatal', () => {
-    const parsed = parsedProviderCallSchema.parse({
+    const parsed = Schema.decodeUnknownSync(parsedProviderCallSchema)({
       ...validCall,
       // A new provider version added columns this build does not know about:
       // loose schema must tolerate them and strip them from the result.
