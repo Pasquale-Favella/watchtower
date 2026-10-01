@@ -152,20 +152,22 @@ Evaluate the official SDK Server handler API with SDK-owned protocol schemas, ge
 
 ## Implementation census, 2026-10-01
 
-This source snapshot is `3ec87a5`. It follows the internal Schema group, request reuse, Coach cancellation, clock fixes, worker observation forwarding, renderer decoder and cadence conversion, scan callback drain and command startup correction. TypeScript AST import counting excludes type-only imports, declarations and test/spec files under `src`. Line coverage counts nonblank lines in importing files against nonblank area lines; it remains an upper bound on adoption, not a workflow completion percentage.
+This source snapshot is `0cd0ef7`. It adds currency, update and export contract conversion and explicit request pricing catalogue input to the preceding internal Schema, request reuse, cancellation, observation and renderer decoder work. TypeScript AST import counting excludes type-only imports, declarations and test/spec files under `src`. Line coverage counts nonblank lines in importing files against nonblank area lines; it remains an upper bound on adoption, not a workflow completion percentage.
 
 | Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
 | ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
 | DB worker                          |                     2 / 5 |         40.0% |                     1,187 / 1,369 |         86.7% |
-| Store                              |                     7 / 8 |         87.5% |                     1,678 / 2,237 |         75.0% |
+| Store                              |                     7 / 8 |         87.5% |                     1,687 / 2,245 |         75.1% |
 | Agents                             |                    8 / 44 |         18.2% |                     2,865 / 5,883 |         48.7% |
-| Pipeline                           |                    5 / 67 |          7.5% |                    3,066 / 27,567 |         11.1% |
-| View builders ending in `-view.ts` |                     0 / 8 |          0.0% |                         0 / 3,953 |          0.0% |
-| All main-process code              |                  28 / 143 |         19.6% |                   10,682 / 44,903 |         23.8% |
-| Shared schema modules              |                    8 / 24 |         33.3% |                       774 / 1,947 |         39.8% |
-| Renderer                           |                   1 / 123 |          0.8% |                       83 / 13,088 |          0.6% |
+| Pipeline                           |                    5 / 68 |          7.4% |                    2,806 / 27,606 |         10.2% |
+| View builders ending in `-view.ts` |                     0 / 8 |          0.0% |                         0 / 3,957 |          0.0% |
+| All main-process code              |                  28 / 144 |         19.4% |                   10,431 / 44,954 |         23.2% |
+| Shared schema modules              |                   11 / 24 |         45.8% |                       810 / 1,952 |         41.5% |
+| Renderer                           |                   1 / 123 |          0.8% |                       83 / 13,090 |          0.6% |
 | Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
 
-Six of 23 contract modules now use Effect Schema throughout: ledger, pipeline, providers, session-cache, port and cadence. That module measure is 26.1%, excluding the extraction helper. The broader 8/24 import count also includes the Effect extraction helper and partially migrated scan module; it must not be called eight completed contract modules. The renderer's importing module is a synchronous decoder with no application runtime. Both original stores still match `ce81593`, with no request identities, coalescing or added `let` variables. The worker forwarding module imports sink types only, so its addition changes that area's denominator without indicating a regression.
+Nine of 23 contract modules now use Effect Schema throughout: ledger, pipeline, providers, session-cache, port, cadence, fx, updates and export. That module measure is 39.1%, excluding the extraction helper. The broader 11/24 import count also includes the Effect extraction helper and partially migrated scan module; it must not be called eleven completed contract modules. The renderer's importing module is a synchronous decoder with no application runtime. Both original stores still match `ce81593`, with no request identities, coalescing or added `let` variables.
+
+The new pricing calculation module deliberately imports no runtime Effect value. Moving calculation out of the IO module reduces the pipeline's importing-line percentage; that is the intended dependency separation, rather than an orchestration regression. A request captures pricing once and shares it across aggregation and the Models lens. Provider adapters still capture from live state until scan-boundary inputs migrate. Query diagnostics remain in a temporary outer adapter to preserve verbose unpriced-alias warnings; direct-port loading and complete query/calculation separation remain open.
 
 The target architecture's execution record records passed integration gates for this increment. Full contract migration, runtime consolidation, facade retirement, scan lifetime, purpose-specific queries and comparable performance measurements remain open. No post-migration speedup is claimed.
