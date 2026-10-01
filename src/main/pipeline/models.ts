@@ -8,14 +8,32 @@ import snapshotData from './data/litellm-snapshot.json'
 import fallbackData from './data/pricing-fallback.json'
 import { DEFAULT_FETCH_TIMEOUT_MS, HttpFetch, retryTransientFetch } from './fetch-utils.js'
 import { queueLogRecord } from './file-errors.js'
+import {
+  calculateCostResult,
+  calculateRepricedCostResult,
+  capturePricingCatalogue,
+  type ConfigRatePair,
+  getModelCosts as getModelCostsPure,
+  getTieredModelCosts as getTieredModelCostsPure,
+  type ModelCosts,
+  type PricingCatalogue,
+  type PricingConfigLookup,
+  type RepricedCall,
+} from './pricing-calculation.js'
 
-export type ModelCosts = {
-  inputCostPerToken: number
-  outputCostPerToken: number
-  cacheWriteCostPerToken: number
-  cacheReadCostPerToken: number
-  webSearchCostPerRequest: number
-  fastMultiplier: number
+export type { ModelCosts } from './pricing-calculation.js'
+export type { ConfigRatePair, PricingConfigLookup } from './pricing-calculation.js'
+
+/** Temporary query adapter preserving pricing diagnostics. Retire when the
+ * application workflows handle the pure calculation result's unpriced status. */
+export function calculateRepricedCost(
+  catalogue: PricingCatalogue,
+  config: PricingConfigLookup,
+  call: RepricedCall,
+): number {
+  const result = calculateRepricedCostResult(catalogue, config, call)
+  if (!result.priced) warnAboutUnknownModel(call.effectiveModel)
+  return result.cost
 }
 
 type PriceOverrideRates = {
@@ -45,7 +63,6 @@ type SnapshotEntry = [number, number, number | null, number | null, (number | nu
 
 const LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
 const WEB_SEARCH_COST = 0.01
-const ONE_HOUR_CACHE_WRITE_MULTIPLIER_FROM_FIVE_MINUTE_RATE = 1.6
 
 // Named removal (Wave 4 TTL seam): `getPricingCacheTtlMs` deleted — its
 // single caller `parseCachedPricingPayload` now takes `ttlMs` via `Env`
@@ -220,49 +237,7 @@ const fallbackCosts: Map<string, ModelCosts> = (() => {
 })()
 
 let pricingCache: Map<string, ModelCosts> = applyBuiltinPriceOverrides(loadSnapshot())
-let sortedPricingKeys: string[] | null = null
-let lowercasePricingIndex: Map<string, ModelCosts> | null = null
-
-function getSortedPricingKeys(): string[] {
-  if (sortedPricingKeys === null) {
-    sortedPricingKeys = Array.from(pricingCache.keys()).sort((a, b) => b.length - a.length)
-  }
-  return sortedPricingKeys
-}
-
-// Case-insensitive index, built lazily. Lets a session model like `MiniMax-M3`
-// resolve to a gap-filled OpenRouter key like `minimax-m3` (lowercase slug).
-// First key wins on a lowercase collision so it stays deterministic.
-//
-// Zero-priced entries are excluded: LiteLLM ships `[0,0]` stubs (e.g.
-// `GigaChat-2-Max`) for models it lists but has no price for. Indexing those
-// would let a case-mismatched query (`gigachat-2-max`) resolve to a silent $0
-// instead of returning null, which suppresses the unknown-model warning and
-// hides real spend. A case-EXACT query still finds the stub via the normal
-// pipeline; only the fuzzy case-insensitive path skips them.
-//
-// "Zero-priced" is `hasBillableRate`, not "input and output are both zero": a
-// vendor can bill cache traffic alone, and such a row prices real money, so it
-// must stay in this index. The mirror of that rule on the other side of the
-// fence is `hasBillableRate`'s own definition — a model that is genuinely free
-// to cache keeps positive input/output rates, so it never reads as unpriced
-// just because its cache rates are now an honest `0`.
-function getLowercasePricingIndex(): Map<string, ModelCosts> {
-  if (lowercasePricingIndex === null) {
-    lowercasePricingIndex = new Map()
-    const priced = hasBillableRate
-    // The live pricing data wins on any lowercase collision; the gap-fill only
-    // fills names that resolve to nothing through the normal pipeline.
-    for (const [key, costs] of pricingCache) {
-      const lk = key.toLowerCase()
-      if (priced(costs) && !lowercasePricingIndex.has(lk)) lowercasePricingIndex.set(lk, costs)
-    }
-    for (const [lk, costs] of fallbackCosts) {
-      if (priced(costs) && !lowercasePricingIndex.has(lk)) lowercasePricingIndex.set(lk, costs)
-    }
-  }
-  return lowercasePricingIndex
-}
+let capturedPricingCatalogue: PricingCatalogue | null = null
 
 // The pricing cache directory is ALREADY the AppPaths cache-dir seam:
 // `resolveCacheDir()` resolves `AppPaths.cacheDir` (boot-initialized) →
@@ -435,13 +410,12 @@ const BUILTIN_ALIASES: Record<string, string> = {
 let userAliases: Record<string, string> = {}
 let userPriceOverrides: Map<string, ModelCosts> = new Map()
 let userPriceOverridesConfig: Record<string, PriceOverrideRates> = {}
-let sortedPriceOverrideKeys: string[] | null = null
-let lowercasePriceOverrideIndex: Map<string, ModelCosts> | null = null
 
 // Called once during CLI startup after config is loaded.
 // User aliases take precedence over built-ins.
 export function setModelAliases(aliases: Record<string, string>): void {
-  userAliases = aliases
+  userAliases = { ...aliases }
+  capturedPricingCatalogue = null
 }
 
 function priceOverrideRatePerToken(usdPerMillion: number | undefined): number | null {
@@ -476,48 +450,7 @@ export function setPriceOverrides(overrides: Record<string, PriceOverrideRates>)
   }
   userPriceOverrides = next
   userPriceOverridesConfig = nextConfig
-  sortedPriceOverrideKeys = null
-  lowercasePriceOverrideIndex = null
-}
-
-function getSortedPriceOverrideKeys(): string[] {
-  if (sortedPriceOverrideKeys === null) {
-    sortedPriceOverrideKeys = Array.from(userPriceOverrides.keys()).sort((a, b) => b.length - a.length)
-  }
-  return sortedPriceOverrideKeys
-}
-
-function getLowercasePriceOverrideIndex(): Map<string, ModelCosts> {
-  if (lowercasePriceOverrideIndex === null) {
-    lowercasePriceOverrideIndex = new Map()
-    for (const [key, costs] of userPriceOverrides) {
-      const lk = key.toLowerCase()
-      if (!lowercasePriceOverrideIndex.has(lk)) lowercasePriceOverrideIndex.set(lk, costs)
-    }
-  }
-  return lowercasePriceOverrideIndex
-}
-
-function getPriceOverrideExact(...keys: string[]): ModelCosts | null {
-  for (const key of keys) {
-    const costs = userPriceOverrides.get(key)
-    if (costs) return costs
-  }
-  return null
-}
-
-function getPriceOverridePrefix(canonical: string): ModelCosts | null {
-  for (const key of getSortedPriceOverrideKeys()) {
-    if (canonical.startsWith(key + '-') || canonical === key) {
-      return userPriceOverrides.get(key)!
-    }
-  }
-  return null
-}
-
-function getPriceOverrideCaseInsensitive(canonical: string, withPrefix: string): ModelCosts | null {
-  const lowerIndex = getLowercasePriceOverrideIndex()
-  return lowerIndex.get(canonical.toLowerCase()) ?? lowerIndex.get(withPrefix.toLowerCase()) ?? null
+  capturedPricingCatalogue = null
 }
 
 // Local-model savings config. Kept separate from userAliases: a `modelAliases`
@@ -648,26 +581,6 @@ export function getProxyPathsConfigHash(): string {
   return [...userProxyPaths].sort().join('')
 }
 
-/// The `@pin` / date-suffix noise every key derivation in this file strips
-/// before anything else, in ONE place so the two examples below are recorded
-/// once: `claude-sonnet-4-6@20250929` -> `claude-sonnet-4-6` (pin),
-/// `claude-sonnet-4-20250514` -> `claude-sonnet-4` (date).
-function stripPinAndDate(model: string): string {
-  return model.replace(/@.*$/, '').replace(/-\d{8}$/, '')
-}
-
-function resolveAlias(model: string): string {
-  if (Object.hasOwn(userAliases, model)) return userAliases[model]!
-  if (Object.hasOwn(BUILTIN_ALIASES, model)) return BUILTIN_ALIASES[model]!
-  const lowercase = model.toLowerCase()
-  if (lowercase !== model && Object.hasOwn(BUILTIN_ALIASES, lowercase)) return BUILTIN_ALIASES[lowercase]!
-  return model
-}
-function getCanonicalName(model: string): string {
-  // strip provider prefix: anthropic/foo -> foo
-  return stripPinAndDate(model).replace(/^[^/]+\//, '')
-}
-
 /// Canonical key for USER-config matching (alias sources, override names).
 /// Strips `@pin` / date suffixes, ALL provider prefixes and known pricing
 /// variant suffixes (`:thinking`, `:cloud`, `-TEE`), then case-folds — so a
@@ -683,20 +596,10 @@ export function normalizeModelKey(model: string): string {
     .toLowerCase()
 }
 
-export interface ConfigRatePair {
-  inputPricePerMillion: number
-  outputPricePerMillion: number
-}
-
 /// Shared user-config lookup (aliases + price overrides) with verbatim-first,
 /// normalized-fallback matching. The aggregation seam and the Models lens both
 /// build it, so every Section resolves identical identities and rates.
 /// Later entries win on any key collision.
-export interface PricingConfigLookup {
-  resolveAlias(model: string): string
-  findOverride(name: string): ConfigRatePair | undefined
-}
-
 export function createPricingConfigLookup(
   aliases: ReadonlyArray<{ model: string; aliasOf: string }>,
   overrides: ReadonlyArray<{ model: string; inputPricePerMillion: number; outputPricePerMillion: number }>,
@@ -727,258 +630,10 @@ export function createPricingConfigLookup(
   }
 }
 
-function stripKnownPricingVariantSuffix(model: string): string | null {
-  const withoutColonSuffix = model.replace(/:(thinking|cloud)$/i, '')
-  if (withoutColonSuffix !== model) return withoutColonSuffix
-
-  const withoutTeeSuffix = model.replace(/-TEE$/i, '')
-  if (withoutTeeSuffix !== model) return withoutTeeSuffix
-
-  return null
-}
-
-// Path segments a ROUTED model id carries that the bare model id never does.
-// `getCanonicalName` peels exactly ONE leading segment, which covers a single
-// hop (`bedrock/us.anthropic.claude-…`, `azure/gpt-5.4`) and nothing deeper.
-// A gateway keeps the upstream vendor's own name after its own, so a routed id
-// can stack two or three of these and each hop is a naming decision no
-// hand-maintained alias can enumerate: `openrouter/anthropic/claude-opus-4-6`
-// canonicalises to `anthropic/claude-opus-4-6` (not a key) and
-// `accounts/fireworks/models/glm-5p2` to `fireworks/models/glm-5p2` (also not
-// a key), so both missed the catalog entirely and priced at $0.
-//
-// The list is deliberately a SET OF KNOWN SEGMENTS rather than "peel any
-// slash": a slash is also how the catalog spells a real, separately-priced
-// model (`vertex_ai/xai/grok-4.6`, `perplexity/xai/grok-4.6` — a rehost whose
-// rate card differs from xAI's), and blindly peeling would reprice those. A
-// segment absent from this set is not peeled, so a vendor-prefixed key keeps
-// resolving to its own row. `getModelCosts` peels only AFTER the exact and
-// bare-canonical key lookups, so a real prefixed key is never displaced.
-const ROUTED_ID_SEGMENTS: ReadonlySet<string> = new Set([
-  // Gateways / routers that carry the upstream vendor's name after their own.
-  'openrouter',
-  'accounts',
-  'models',
-  'vercel_ai_gateway',
-  'vercel',
-  'lambda_ai',
-  'deepinfra',
-  'aihubmix',
-  'novita',
-  'together_ai',
-  'together',
-  'fireworks_ai',
-  'fireworks',
-  'perplexity',
-  'replicate',
-  'nscale',
-  'hyperbolic',
-  'llamagate',
-  'friendliai',
-  'baseten',
-  'nebius',
-  'ovhcloud',
-  'scaleway',
-  'anyscale',
-  'tensormesh',
-  'gradient_ai',
-  'inference-net',
-  'publicai',
-  'sambanova',
-  'watsonx',
-  'wandb',
-  'v0',
-  'cerebras',
-  'gigachat',
-  'oci',
-  'cognition',
-  'morph',
-  'poolside',
-  'snowflake',
-  'writer',
-  'sail',
-  'inclusionai',
-  'sdaia',
-  'upstage',
-  // Vendor namespaces: the same model named under the vendor behind the router.
-  'anthropic',
-  'openai',
-  'google',
-  'gemini',
-  'vertex_ai',
-  'xai',
-  'x-ai',
-  'meta-llama',
-  'meta',
-  'mistral',
-  'mistralai',
-  'deepseek',
-  'deepseek-ai',
-  'qwen',
-  'qwencloud',
-  'qwen_ai_platform',
-  'alibaba',
-  'bytedance',
-  'baidu',
-  'cohere',
-  'ibm',
-  'amazon',
-  'nvidia',
-  'zai',
-  'z-ai',
-  'zai-org',
-  'moonshot',
-  'moonshotai',
-  'minimax',
-  'xiaomi',
-  'kwaipilot',
-  'camel-ai',
-])
-
-/// The model ids a routed id could be naming, least-peeled first, after
-/// dropping the `@pin` / date-suffix noise `withPrefix` already handles.
-///
-/// Each step peels exactly one KNOWN router/vendor segment, so the order is the
-/// order of specificity: the shortest suffix (the bare model id) is tried last
-/// and the most specific routed spelling first. An id with no known segment
-/// yields no candidates, so nothing downstream behaves differently.
-function routingCandidates(id: string): string[] {
-  const out: string[] = []
-  let rest = id
-  for (;;) {
-    const slash = rest.indexOf('/')
-    if (slash < 0) return out
-    const segment = rest.slice(0, slash).toLowerCase()
-    if (!ROUTED_ID_SEGMENTS.has(segment)) return out
-    rest = rest.slice(slash + 1)
-    if (rest !== '') out.push(rest)
-  }
-}
-
-/// How a model resolved, and through which authority.
-///
-/// The flag exists for exactly one consumer — the context-window tier seam
-/// (ADR 0033: "a tier is only ever reached when no user override and no user
-/// alias resolved the model"). Deriving it here rather than re-asking the
-/// override tables at the tier is what makes that sentence true by
-/// construction: a stage that hands back a card marks it, so the prefix and
-/// case-insensitive override forms are covered the same way the exact form is,
-/// instead of the tier keeping its own shorter list of override spellings that
-/// drifts out of step with this chain.
-type ModelResolution = {
-  costs: ModelCosts
-  /** True when a user Price override produced this card, in ANY of the three
-   *  forms `getModelCosts` honours (exact, prefix, case-insensitive). */
-  fromUserOverride: boolean
-}
-
-function viaOverride(costs: ModelCosts): ModelResolution {
-  return { costs, fromUserOverride: true }
-}
-
-function viaCatalog(costs: ModelCosts): ModelResolution {
-  return { costs, fromUserOverride: false }
-}
-
-/// Resolve `model` to a rate card through the full precedence chain, reporting
-/// which authority answered. `getModelCosts` is this function's card-only face;
-/// the resolution object exists so the tier seam can tell a user price from a
-/// catalog price without repeating a single lookup.
-function resolveModelCosts(model: string): ModelResolution | null {
-  // Try with provider prefix preserved (azure/gpt-5.4, openrouter/anthropic/claude-opus-4.6)
-  const withPrefix = stripPinAndDate(model)
-  const canonicalName = getCanonicalName(model)
-  const canonical = resolveAlias(canonicalName)
-
-  const override = getPriceOverrideExact(model, withPrefix, canonicalName, canonical)
-  if (override) return viaOverride(override)
-
-  // An explicit alias for a bare (un-prefixed) model name is authoritative: it
-  // must win over a coincidental stripped reseller key of the same name. LiteLLM
-  // ships `snowflake/claude-4-opus` ($5), which the bundler strips to a bare
-  // `claude-4-opus` key; without this, that would shadow the curated alias
-  // `claude-4-opus -> claude-opus-4` ($15 official Anthropic price).
-  if (canonical !== canonicalName && withPrefix === canonicalName && pricingCache.has(canonical)) {
-    return viaCatalog(pricingCache.get(canonical)!)
-  }
-
-  if (pricingCache.has(withPrefix)) return viaCatalog(pricingCache.get(withPrefix)!)
-
-  if (pricingCache.has(canonical)) return viaCatalog(pricingCache.get(canonical)!)
-
-  const prefixOverride = getPriceOverridePrefix(canonical)
-  if (prefixOverride) return viaOverride(prefixOverride)
-
-  // Iterate keys longest-first so a model id like `gpt-5-mini` matches the
-  // `gpt-5-mini` entry rather than collapsing to the shorter `gpt-5` entry
-  // due to dictionary insertion order.
-  for (const key of getSortedPricingKeys()) {
-    if (canonical.startsWith(key + '-') || canonical === key) {
-      return viaCatalog(pricingCache.get(key)!)
-    }
-  }
-
-  const caseInsensitiveOverride = getPriceOverrideCaseInsensitive(canonical, withPrefix)
-  if (caseInsensitiveOverride) return viaOverride(caseInsensitiveOverride)
-
-  // Case-insensitive fallback: gap-filled keys from OpenRouter are lowercase
-  // slugs (e.g. `minimax-m3`), but sessions report `MiniMax-M3`. Only consulted
-  // after the exact/canonical/prefix attempts, so it never changes a match that
-  // already resolved above.
-  const lowerIndex = getLowercasePricingIndex()
-  const byCanonical = lowerIndex.get(canonical.toLowerCase())
-  if (byCanonical) return viaCatalog(byCanonical)
-  const byPrefix = lowerIndex.get(withPrefix.toLowerCase())
-  if (byPrefix) return viaCatalog(byPrefix)
-
-  const withPrefixVariant = stripKnownPricingVariantSuffix(withPrefix)
-  if (withPrefixVariant && withPrefixVariant !== withPrefix) {
-    const variant = resolveModelCosts(withPrefixVariant)
-    if (variant) return variant
-  }
-
-  const canonicalVariant = stripKnownPricingVariantSuffix(canonical)
-  if (canonicalVariant && canonicalVariant !== canonical && canonicalVariant !== withPrefixVariant) {
-    const variant = resolveModelCosts(canonicalVariant)
-    if (variant) return variant
-  }
-
-  // A ROUTED id, resolved as the sequence of names it could be naming: peel one
-  // KNOWN router/vendor segment at a time and try each remaining spelling, LEAST
-  // peeled first, in order. `getCanonicalName` peels exactly one segment, which
-  // covers a single hop and nothing deeper — `openrouter/anthropic/claude-opus-4-6`
-  // canonicalises to `anthropic/claude-opus-4-6` (not a key) and
-  // `accounts/fireworks/models/glm-5p2` to `fireworks/models/glm-5p2` (also not
-  // a key), so both missed the catalog entirely and priced at $0.
-  //
-  // Placement: LAST, after every existing stage. That is what makes the rule
-  // provable rather than merely intended. Each candidate is answered by the
-  // FULL chain, so a candidate can only ever answer an id that reached here
-  // UNRESOLVED — no id that resolves today changes what it resolves to, and
-  // every existing stage (the exact override, the bare-Alias-wins check, both
-  // exact-key lookups, the prefix and case-insensitive overrides, the prefix
-  // scan, the lowercase index, the variant-suffix recursions) keeps its exact
-  // current precedence. A candidate that could outrank any of them would let a
-  // peeled name beat a rehost's own row for the id as written
-  // (`accounts/fireworks/models/DeepSeek-R1` must stay on Fireworks' card, not
-  // jump to whatever bare `DeepSeek-R1` key another vendor claimed) — the same
-  // shadowing defect this workstream is about, one level up.
-  //
-  // Termination: `routingCandidates` yields only strictly shorter ids (one
-  // fewer path segment at each step), so the recursion is bounded by the
-  // segment count of the original id.
-  for (const candidate of routingCandidates(withPrefix)) {
-    const candidateResolution = resolveModelCosts(candidate)
-    if (candidateResolution) return candidateResolution
-  }
-
-  return null
-}
-
-/// The rate card for `model` alone — the card-only face of `resolveModelCosts`,
+/// The rate card for `model`, resolved through the captured pure catalogue.
 /// and what every other caller in the app wants.
 export function getModelCosts(model: string): ModelCosts | null {
-  return resolveModelCosts(model)?.costs ?? null
+  return getModelCostsPure(captureModelPricingCatalogue(), model)
 }
 
 // Warn at most once per unknown model name per process. Without this, a model
@@ -1108,6 +763,110 @@ export function findUnpricedModels(
 // `webSearchCostPerRequest` are deliberately not tiered: nothing published
 // splits them by context length, and `calculateCost` still applies the fast
 // multiplier on top of the resolved card.
+const ROUTED_ID_SEGMENTS: ReadonlySet<string> = new Set([
+  // Gateways / routers that carry the upstream vendor's name after their own.
+  'openrouter',
+  'accounts',
+  'models',
+  'vercel_ai_gateway',
+  'vercel',
+  'lambda_ai',
+  'deepinfra',
+  'aihubmix',
+  'novita',
+  'together_ai',
+  'together',
+  'fireworks_ai',
+  'fireworks',
+  'perplexity',
+  'replicate',
+  'nscale',
+  'hyperbolic',
+  'llamagate',
+  'friendliai',
+  'baseten',
+  'nebius',
+  'ovhcloud',
+  'scaleway',
+  'anyscale',
+  'tensormesh',
+  'gradient_ai',
+  'inference-net',
+  'publicai',
+  'sambanova',
+  'watsonx',
+  'wandb',
+  'v0',
+  'cerebras',
+  'gigachat',
+  'oci',
+  'cognition',
+  'morph',
+  'poolside',
+  'snowflake',
+  'writer',
+  'sail',
+  'inclusionai',
+  'sdaia',
+  'upstage',
+  // Vendor namespaces: the same model named under the vendor behind the router.
+  'anthropic',
+  'openai',
+  'google',
+  'gemini',
+  'vertex_ai',
+  'xai',
+  'x-ai',
+  'meta-llama',
+  'meta',
+  'mistral',
+  'mistralai',
+  'deepseek',
+  'deepseek-ai',
+  'qwen',
+  'qwencloud',
+  'qwen_ai_platform',
+  'alibaba',
+  'bytedance',
+  'baidu',
+  'cohere',
+  'ibm',
+  'amazon',
+  'nvidia',
+  'zai',
+  'z-ai',
+  'zai-org',
+  'moonshot',
+  'moonshotai',
+  'minimax',
+  'xiaomi',
+  'kwaipilot',
+  'camel-ai',
+])
+
+function stripPinAndDate(model: string): string {
+  return model.replace(/@.*$/, '').replace(/-\d{8}$/, '')
+}
+
+function getCanonicalName(model: string): string {
+  return stripPinAndDate(model).replace(/^[^/]+\//, '')
+}
+
+function resolveAlias(model: string): string {
+  if (Object.hasOwn(userAliases, model) && userAliases[model] !== undefined) return userAliases[model]
+  if (Object.hasOwn(BUILTIN_ALIASES, model) && BUILTIN_ALIASES[model] !== undefined) return BUILTIN_ALIASES[model]
+  const lowercase = model.toLowerCase()
+  const lowercaseAlias = BUILTIN_ALIASES[lowercase]
+  return lowercase !== model && lowercaseAlias !== undefined ? lowercaseAlias : model
+}
+
+function getPriceOverrideExact(...keys: string[]): ModelCosts | null {
+  for (const key of keys) {
+    const costs = userPriceOverrides.get(key)
+    if (costs) return costs
+  }
+  return null
+}
 type ContextWindowTier = {
   /** Inclusive lower bound in PROMPT tokens (input + cache-read + cache-write
    *  — the tokens occupying the context window for this request).
@@ -1244,29 +1003,6 @@ const TIERED_PRICING: readonly TierRule[] = [
 /// case-insensitive override on a model the catalog does not carry is the form
 /// that reaches the tier at all, and it now yields here exactly as the exact
 /// form always did.
-function applyContextWindowTier(
-  model: string,
-  promptTokens: number,
-  costs: ModelCosts,
-  fromUserOverride: boolean,
-): ModelCosts {
-  if (fromUserOverride) return costs
-  // The caller's OWN spelling, prefix intact. `resolveAlias` so an Alias onto a
-  // tiered model is respected; deliberately NOT `getCanonicalName`, which
-  // would peel the provider prefix and let this rule reach a re-hoster's row.
-  const spelled = resolveAlias(stripPinAndDate(model))
-  const rule = TIERED_PRICING.find(r => r.model === spelled)
-  if (!rule) return costs
-  // Tiers are ordered cheapest-first by construction, so the last one whose
-  // inclusive bound the prompt reaches is the card that applies.
-  let matched: ContextWindowTier | undefined
-  for (const tier of rule.tiers) {
-    if (promptTokens >= tier.promptTokensAtLeast) matched = tier
-  }
-  if (!matched) return costs
-  return { ...costs, ...matched.rates }
-}
-
 /// `getModelCosts` WITH the context-window tier applied, for a call whose prompt
 /// is `promptTokens` — the single resolver both `calculateCost` and the Models
 /// audit lens go through.
@@ -1281,9 +1017,24 @@ function applyContextWindowTier(
 /// Returns `null` for a model no source prices, so an unknown row still reports
 /// "no live pricing entry" rather than a $0 tier.
 export function getTieredModelCosts(model: string, promptTokens: number): ModelCosts | null {
-  const resolved = resolveModelCosts(model)
-  if (!resolved) return null
-  return applyContextWindowTier(model, promptTokens, resolved.costs, resolved.fromUserOverride)
+  return getTieredModelCostsPure(captureModelPricingCatalogue(), model, promptTokens)
+}
+
+/** Capture live pricing state once for a request. The returned maps and cards
+ * are copies, so a later refresh or config update cannot alter this request. */
+export function captureModelPricingCatalogue(): PricingCatalogue {
+  if (capturedPricingCatalogue === null) {
+    capturedPricingCatalogue = capturePricingCatalogue({
+      prices: pricingCache,
+      overrides: userPriceOverrides,
+      builtinAliases: BUILTIN_ALIASES,
+      userAliases,
+      tiers: TIERED_PRICING,
+      routedSegments: ROUTED_ID_SEGMENTS,
+      fallbackPrices: fallbackCosts,
+    })
+  }
+  return capturedPricingCatalogue
 }
 
 function shouldWarnAboutUnknownModel(name: string, paths?: AppPaths): boolean {
@@ -1305,6 +1056,17 @@ function shouldWarnAboutUnknownModel(name: string, paths?: AppPaths): boolean {
   return true
 }
 
+function warnAboutUnknownModel(name: string, paths?: AppPaths): void {
+  if (!shouldWarnAboutUnknownModel(name, paths)) return
+  warnedUnknownModels.add(name)
+  const safeName = name.replace(/[\x00-\x1F\x7F-\x9F]/g, '?').slice(0, 200)
+  queueLogRecord({
+    logEvent: 'pricing.unpriced',
+    level: 'warn',
+    fields: { op: 'pricing', model: safeName, code: 'unpriced' },
+  })
+}
+
 export function calculateCost(
   model: string,
   inputTokens: number,
@@ -1314,74 +1076,24 @@ export function calculateCost(
   webSearchRequests: number,
   speed: 'standard' | 'fast' = 'standard',
   oneHourCacheCreationTokens = 0,
-  // The AppPaths threading slot, threaded straight to the verbose gate below:
-  // pricing math itself is pure, so this is the ONE argument a caller may add
-  // and only to reach `WATCHTOWER_VERBOSE`. Existing callers pass ≤ 8 arguments
-  // and keep reading the ambient env.
   paths?: AppPaths,
 ): number {
-  const resolved = resolveModelCosts(model)
-  if (!resolved) {
-    if (shouldWarnAboutUnknownModel(model, paths)) {
-      warnedUnknownModels.add(model)
-      // Strip control characters and cap length: model names come from JSONL
-      // payloads written by external tools, so a hostile or corrupt file
-      // could embed terminal escape sequences here. Queued for the
-      // Operational log (model names are identifiers like providers — the
-      // Models alias workflow needs to know WHICH model is unpriced).
-      const safeName = model.replace(/[\x00-\x1F\x7F-\x9F]/g, '?').slice(0, 200)
-      queueLogRecord({
-        logEvent: 'pricing.unpriced',
-        level: 'warn',
-        fields: { op: 'pricing', model: safeName, code: 'unpriced' },
-      })
-    }
-    return 0
-  }
-
-  const { costs, fromUserOverride } = resolved
-  const multiplier = speed === 'fast' ? costs.fastMultiplier : 1
-
-  // Clamp negative inputs to 0. A corrupt JSONL that emits a negative token
-  // count would otherwise produce a negative cost that silently subtracts
-  // from real spend in aggregate totals. NaN is also handled here; the
-  // arithmetic below short-circuits to 0 when any operand is non-finite.
-  const safe = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0)
-  const safeOneHourCacheCreation = safe(oneHourCacheCreationTokens)
-  const safeCacheCreation = Math.max(safe(cacheCreationTokens), safeOneHourCacheCreation)
-  const safeFiveMinuteCacheCreation = Math.max(0, safeCacheCreation - safeOneHourCacheCreation)
-  const safeInput = safe(inputTokens)
-
-  // Clamped prompt tokens, computed once: the tier discriminator, and the
-  // `safe(inputTokens)` term below, must not disagree about what "input" is.
-  const tiered = applyContextWindowTier(
+  const catalogue = captureModelPricingCatalogue()
+  const result = calculateCostResult(
+    catalogue,
     model,
-    // Prompt tokens = everything occupying the context window for this request:
-    // fresh input, cached reads, AND cache writes. Cache-write tokens were
-    // excluded for a while and the tier was wrong because of it — 190k fresh
-    // input plus 20k cache-write is a 210k-token prompt and priced at the base
-    // rate. It is inert for the current row (xAI publishes no cache-write rate
-    // for grok-4.6, so `safeCacheCreation` contributes $0 to the bill) and
-    // latent for the next vendor, which is exactly why it is here: a token
-    // count that occupies the window is a token count that crosses the
-    // threshold. `safeFiveMinuteCacheCreation` is deliberately NOT added on
-    // top — those same tokens are already inside `safeCacheCreation`. Clamped
-    // identically to the bill, so a negative or NaN count can never reach a
-    // threshold comparison.
-    safeInput + safe(cacheReadTokens) + safeCacheCreation,
-    costs,
-    fromUserOverride,
+    inputTokens,
+    outputTokens,
+    cacheCreationTokens,
+    cacheReadTokens,
+    webSearchRequests,
+    speed,
+    oneHourCacheCreationTokens,
   )
-
-  return (
-    multiplier *
-    (safeInput * tiered.inputCostPerToken +
-      safe(outputTokens) * tiered.outputCostPerToken +
-      safeFiveMinuteCacheCreation * tiered.cacheWriteCostPerToken +
-      safeOneHourCacheCreation * tiered.cacheWriteCostPerToken * ONE_HOUR_CACHE_WRITE_MULTIPLIER_FROM_FIVE_MINUTE_RATE +
-      safe(cacheReadTokens) * tiered.cacheReadCostPerToken +
-      safe(webSearchRequests) * tiered.webSearchCostPerRequest)
-  )
+  if (!result.priced) {
+    warnAboutUnknownModel(model, paths)
+  }
+  return result.cost
 }
 
 const autoModelNames: Record<string, string> = {
@@ -1528,8 +1240,7 @@ export function getShortModelName(model: string): string {
 // `AppPaths.cacheDir` → the `WATCHTOWER_CACHE_DIR` override → the homedir
 // default), so the cache location needs no `paths` parameter here.
 // Pure pricing math stays plain TypeScript. Both effects write through to the
-// SAME module-level cache (`pricingCache`, `sortedPricingKeys`,
-// `lowercasePricingIndex`) so current callers keep working.
+// live cache; its captured catalogue is invalidated and rebuilt on next use.
 
 /** Typed failure for `refreshPricingNowEffect`: fetch, non-2xx, decode, or cache write. */
 export class PricingRefreshError extends Schema.TaggedError<PricingRefreshError>()('PricingRefreshError', {
@@ -1565,8 +1276,7 @@ function parseCachedPricingPayload(raw: string, ttlMs: number): Map<string, Mode
 
 function writeThroughPricingCache(pricing: Map<string, ModelCosts>): void {
   pricingCache = mergeSnapshotFallbacks(pricing)
-  sortedPricingKeys = null
-  lowercasePricingIndex = null
+  capturedPricingCatalogue = null
 }
 
 const loadCachedPricingEffect = Effect.fn('loadCachedPricingEffect')(function* (): Effect.fn.Return<

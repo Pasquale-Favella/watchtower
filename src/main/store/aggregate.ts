@@ -1,4 +1,4 @@
-import { calculateCost, getShortModelName, type PricingConfigLookup } from '../pipeline/models.js'
+import { calculateRepricedCost, getShortModelName } from '../pipeline/models.js'
 import {
   buildSpawnPrSets,
   deriveCanonicalProjectKey,
@@ -6,6 +6,7 @@ import {
   isAbsoluteProjectPath,
   projectNameFromPath,
 } from '../pipeline/parser.js'
+import type { PricingCatalogue, PricingConfigLookup } from '../pipeline/pricing-calculation.js'
 import { type SessionRow, sessionRowFromSummary } from '../pipeline/sessions-report.js'
 import type {
   ClassifiedTurn,
@@ -76,25 +77,19 @@ function resolveDisplayCost(
   call: LedgerCallFactsRow,
   resolvedModel: string,
   pricingConfig: PricingConfigLookup,
+  catalogue: PricingCatalogue,
 ): number {
-  const override = pricingConfig.findOverride(resolvedModel)
-  if (override) {
-    const input = call.inputTokens * (override.inputPricePerMillion / 1_000_000)
-    const output = call.outputTokens * (override.outputPricePerMillion / 1_000_000)
-    return Number.isFinite(input + output) ? input + output : call.baseCostUSD
-  }
-  if (resolvedModel !== call.model) {
-    return calculateCost(
-      resolvedModel,
-      call.inputTokens,
-      call.outputTokens,
-      call.cacheCreationInputTokens,
-      Math.max(call.cacheReadInputTokens, call.cachedInputTokens),
-      call.webSearchRequests,
-      call.speed,
-    )
-  }
-  return call.baseCostUSD
+  return calculateRepricedCost(catalogue, pricingConfig, {
+    model: call.model,
+    effectiveModel: resolvedModel,
+    inputTokens: call.inputTokens,
+    outputTokens: call.outputTokens,
+    cacheWriteTokens: call.cacheCreationInputTokens,
+    cacheReadTokens: Math.max(call.cacheReadInputTokens, call.cachedInputTokens),
+    webSearchRequests: call.webSearchRequests,
+    speed: call.speed,
+    recordedCost: call.baseCostUSD,
+  })
 }
 
 /** SQL read seam: flat rows for the scope, provider-filtered, priced/aliased on read.
@@ -127,7 +122,11 @@ export function queryScopeFromSnapshot(snapshot: LedgerQuerySnapshot, scope: Agg
   for (const call of snapshot.calls) {
     if (!keepSource(call.sourceId)) continue
     const resolvedModel = snapshot.pricing.resolveAlias(call.model)
-    calls.push({ ...call, resolvedModel, displayCostUSD: resolveDisplayCost(call, resolvedModel, snapshot.pricing) })
+    calls.push({
+      ...call,
+      resolvedModel,
+      displayCostUSD: resolveDisplayCost(call, resolvedModel, snapshot.pricing, snapshot.catalogue),
+    })
   }
 
   return { sessions, turns, calls }

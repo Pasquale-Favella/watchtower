@@ -1,6 +1,11 @@
 import * as Effect from 'effect/Effect'
 
-import { createPricingConfigLookup, type PricingConfigLookup } from '../pipeline/models.js'
+import {
+  captureModelPricingCatalogue,
+  createPricingConfigLookup,
+  type PricingConfigLookup,
+} from '../pipeline/models.js'
+import type { PricingCatalogue } from '../pipeline/pricing-calculation.js'
 import type {
   LedgerSessionRow,
   LedgerSourceRow,
@@ -18,6 +23,7 @@ export type LedgerQuerySnapshot = {
   turns: readonly LedgerTurnRow[]
   calls: readonly LedgerCallFactsRow[]
   pricing: PricingConfigLookup
+  catalogue: PricingCatalogue
 }
 
 export function makeLedgerQuerySnapshot(input: {
@@ -27,6 +33,7 @@ export function makeLedgerQuerySnapshot(input: {
   calls: readonly LedgerCallFactsRow[]
   aliases: readonly ModelAlias[]
   overrides: readonly PriceOverride[]
+  catalogue: PricingCatalogue
 }): LedgerQuerySnapshot {
   return {
     sources: input.sources,
@@ -34,6 +41,7 @@ export function makeLedgerQuerySnapshot(input: {
     turns: input.turns,
     calls: input.calls,
     pricing: createPricingConfigLookup(input.aliases, input.overrides),
+    catalogue: input.catalogue,
   }
 }
 
@@ -43,6 +51,7 @@ export function makeLedgerQuerySnapshot(input: {
  * own port. The calls remain synchronous on the owning thread.
  */
 export function loadLedgerQuerySnapshot(store: LedgerStore): LedgerQuerySnapshot {
+  const catalogue = captureModelPricingCatalogue()
   const rows = store.runQueriesSync(queries =>
     Effect.gen(function* () {
       const sources = yield* queries.getSources()
@@ -59,5 +68,5 @@ export function loadLedgerQuerySnapshot(store: LedgerStore): LedgerQuerySnapshot
       return { aliases, overrides }
     }),
   )
-  return makeLedgerQuerySnapshot({ ...rows, ...config })
+  return makeLedgerQuerySnapshot({ ...rows, ...config, catalogue })
 }

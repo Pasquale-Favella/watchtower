@@ -9,16 +9,16 @@ import {
 import { overviewDateRange, type OverviewScope } from './overview.js'
 import { billableOutputTokens } from './pipeline/billable-output.js'
 import {
-  calculateCost,
+  calculateRepricedCost,
   createPricingConfigLookup,
   getShortModelName,
-  getTieredModelCosts,
-  type ModelCosts,
   type PricingConfigLookup,
 } from './pipeline/models.js'
+import { getTieredModelCosts, type ModelCosts, type PricingCatalogue } from './pipeline/pricing-calculation.js'
 import type { SessionSummary, TaskCategory } from './pipeline/types.js'
-import { buildSessionSummaries } from './store/aggregate.js'
+import { buildSessionSummariesFromSnapshot } from './store/aggregate.js'
 import type { LedgerStore } from './store/ledger.js'
+import { loadLedgerQuerySnapshot } from './store/query-snapshot.js'
 
 export type { AuditRow, ModelReportRow, ModelsConfig, ModelsPayload, RowOverride } from '../shared/schemas/models.js'
 
@@ -176,26 +176,23 @@ function callCacheReadTokens(call: ParsedCall): number {
  * reported output alone, so pricing the same call here at output+reasoning made
  * an aliased or overridden row cost more than the identical call costs as
  * recorded by a scan — the lens disagreeing with the ledger it is explaining. */
-function resolveCallCost(call: ParsedCall, effectiveModel: string, pricingConfig: PricingConfigLookup): number {
-  const override = pricingConfig.findOverride(effectiveModel)
-  if (override) {
-    return (
-      (call.usage.inputTokens / 1_000_000) * override.inputPricePerMillion +
-      (displayOutputTokens(call) / 1_000_000) * override.outputPricePerMillion
-    )
-  }
-  if (effectiveModel !== call.model) {
-    return calculateCost(
-      effectiveModel,
-      call.usage.inputTokens,
-      displayOutputTokens(call),
-      call.usage.cacheCreationInputTokens,
-      callCacheReadTokens(call),
-      call.usage.webSearchRequests,
-      call.speed,
-    )
-  }
-  return call.costUSD
+function resolveCallCost(
+  call: ParsedCall,
+  effectiveModel: string,
+  pricingConfig: PricingConfigLookup,
+  catalogue: PricingCatalogue,
+): number {
+  return calculateRepricedCost(catalogue, pricingConfig, {
+    model: call.model,
+    effectiveModel,
+    inputTokens: call.usage.inputTokens,
+    outputTokens: displayOutputTokens(call),
+    cacheWriteTokens: call.usage.cacheCreationInputTokens,
+    cacheReadTokens: callCacheReadTokens(call),
+    webSearchRequests: call.usage.webSearchRequests,
+    speed: call.speed,
+    recordedCost: call.costUSD,
+  })
 }
 
 /** The rates the audit lens attributes to a raw model, resolved through the
@@ -226,6 +223,7 @@ function auditRatesFor(
   effectiveModel: string,
   promptTokens: number,
   pricingConfig: PricingConfigLookup,
+  catalogue: PricingCatalogue,
 ): ModelCosts | null {
   const override = pricingConfig.findOverride(effectiveModel)
   if (override) {
@@ -238,7 +236,7 @@ function auditRatesFor(
       fastMultiplier: 1,
     }
   }
-  return getTieredModelCosts(effectiveModel, promptTokens)
+  return getTieredModelCosts(catalogue, effectiveModel, promptTokens)
 }
 
 /** The Price override attached to a by-model/by-task row's effective model,
@@ -276,18 +274,24 @@ export function buildModelsViewFromLedger(
   config: ModelsConfig,
   now = new Date(),
 ): ModelsPayload {
+  const snapshot = loadLedgerQuerySnapshot(store)
   return modelsPayloadSchema.parse(
     buildModelsPayload(
-      buildSessionSummaries(store, {
+      buildSessionSummariesFromSnapshot(snapshot, {
         range: overviewDateRange(scope, now),
         provider: scope.provider,
       }),
       config,
+      snapshot.catalogue,
     ),
   )
 }
 
-function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): ModelsPayload {
+function buildModelsPayload(
+  sessions: SessionSummary[],
+  config: ModelsConfig,
+  catalogue: PricingCatalogue,
+): ModelsPayload {
   // One shared lookup with the aggregation seam: identical alias/override
   // resolution here and in every other Section.
   const pricingConfig = createPricingConfigLookup(config.aliases, config.overrides)
@@ -321,7 +325,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
         const output = displayOutputTokens(call)
         const cacheWrite = call.usage.cacheCreationInputTokens
         const cacheRead = callCacheReadTokens(call)
-        const cost = resolveCallCost(call, model, pricingConfig)
+        const cost = resolveCallCost(call, model, pricingConfig, catalogue)
         const savings = call.savingsUSD ?? 0
         const baseline = call.savingsBaselineModel ?? ''
 
@@ -437,7 +441,7 @@ function buildModelsPayload(sessions: SessionSummary[], config: ModelsConfig): M
     // `auditRatesFor` for what that does to a row whose calls straddle the
     // threshold.
     const promptTokens = displayed.inputTokens + displayed.cacheReadTokens + displayed.cacheWriteTokens
-    const rates = auditRatesFor(effectiveModel, promptTokens, pricingConfig)
+    const rates = auditRatesFor(effectiveModel, promptTokens, pricingConfig, catalogue)
     const cost = {
       input: rates ? displayed.inputTokens * rates.inputCostPerToken : 0,
       output: rates ? displayed.outputTokens * rates.outputCostPerToken : 0,
