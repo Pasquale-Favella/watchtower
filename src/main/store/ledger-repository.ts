@@ -46,6 +46,48 @@ type RunResult = { changes: number | bigint; lastInsertRowid: number | bigint }
 const decodeRows = <S extends Schema.Constraint>(schema: S) =>
   Schema.decodeUnknownEffect(Schema.mutable(Schema.Array(schema)))
 
+const SELECT_MODEL_ALIASES = 'SELECT model, alias_of FROM model_alias'
+const SELECT_PRICE_OVERRIDES = `
+  SELECT model, input_price_per_million, output_price_per_million FROM price_override
+`
+const SELECT_SOURCES = `
+  SELECT id, provider, env_fingerprint, file_path, repo_url, project,
+         CAST(fingerprint_dev AS TEXT) AS fingerprint_dev,
+         CAST(fingerprint_ino AS TEXT) AS fingerprint_ino,
+         fingerprint_mtime_ms, fingerprint_size_bytes, last_ported_at
+  FROM ledger_source ORDER BY id ASC
+`
+const SELECT_SESSIONS = `
+  SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
+         agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
+         mcp_inventory_json, ambiguous_spawn_agent_ids_json, ever_had_branch
+  FROM ledger_session ORDER BY session_id ASC
+`
+const SELECT_TURNS = `
+  SELECT source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
+         spawn_tool_use_ids_json, category, sub_category, retries, has_edits
+  FROM ledger_turn ORDER BY session_id ASC, turn_index ASC
+`
+const SELECT_CALLS = `
+  SELECT source_id, session_id, turn_index, call_index, call_key, dedup_key, provider, model, timestamp, speed,
+         project, project_path, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
+         input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
+         reasoning_tokens, web_search_requests, cache_creation_one_hour_tokens, agent_type,
+         tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
+         tool_sequence_json,
+         loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
+  FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
+`
+const SELECT_CALL_FACTS = `
+  SELECT source_id, session_id, turn_index, call_index, dedup_key, provider, model, timestamp, speed,
+         project, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
+         input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
+         reasoning_tokens, web_search_requests, cache_creation_one_hour_tokens,
+         tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
+         tool_sequence_json
+  FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
+`
+
 /**
  * The ledger's THREE PORTS, split by concern (ADR 0032 §A3, plan F12).
  *
@@ -73,17 +115,25 @@ export interface LedgerIngestPort {
   clear(): Effect.Effect<void, SqlError>
 }
 
-/** Read port (5 members): the four bulk reads the query-time aggregation seam
- *  consumes (ADR 0002/0008) plus `getCallFacts`, the same `ledger_call` rows
- *  shaped to what those consumers actually read. Every row is schema-validated
- *  at this boundary, and a row that fails to decode is a `SchemaError` in `E`
- *  rather than a defect (see `decodeRows`). */
+/** Read port for ledger facts plus one consistent snapshot for view requests.
+ * Every row is schema-validated at this boundary, and a row that fails to
+ * decode is a `SchemaError` in `E` rather than a defect (see `decodeRows`). */
+export type LedgerRequestSnapshotData = {
+  sources: LedgerSourceRow[]
+  sessions: LedgerSessionRow[]
+  turns: LedgerTurnRow[]
+  calls: LedgerCallFactsRow[]
+  aliases: ModelAlias[]
+  overrides: PriceOverride[]
+}
+
 export interface LedgerQueriesPort {
   getSources(): Effect.Effect<LedgerSourceRow[], SqlError | Schema.SchemaError>
   getSessions(): Effect.Effect<LedgerSessionRow[], SqlError | Schema.SchemaError>
   getTurns(): Effect.Effect<LedgerTurnRow[], SqlError | Schema.SchemaError>
   getCalls(): Effect.Effect<LedgerCallRow[], SqlError | Schema.SchemaError>
   getCallFacts(): Effect.Effect<LedgerCallFactsRow[], SqlError | Schema.SchemaError>
+  getRequestSnapshotData(): Effect.Effect<LedgerRequestSnapshotData, SqlError | Schema.SchemaError>
 }
 
 /** Config port (16 members): the user settings that are NOT scan data and must
@@ -114,7 +164,7 @@ export interface LedgerConfigPort {
   ): Effect.Effect<void, SqlError>
 }
 
-/** All 23 members, un-split: the shape the three ports project from. */
+/** Shared implementation of the three ledger ports. */
 export interface LedgerImplementationShape extends LedgerIngestPort, LedgerQueriesPort, LedgerConfigPort {}
 
 /**
@@ -146,7 +196,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
       })
 
       const getModelAliases = Effect.fn('LedgerConfig.getModelAliases')(function* () {
-        const rows = yield* sql.unsafe('SELECT model, alias_of FROM model_alias')
+        const rows = yield* sql.unsafe(SELECT_MODEL_ALIASES)
         return yield* decodeRows(modelAliasRowSchema)(rows)
       })
 
@@ -168,53 +218,27 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
       })
 
       const getPriceOverrides = Effect.fn('LedgerConfig.getPriceOverrides')(function* () {
-        const rows = yield* sql.unsafe(
-          'SELECT model, input_price_per_million, output_price_per_million FROM price_override',
-        )
+        const rows = yield* sql.unsafe(SELECT_PRICE_OVERRIDES)
         return yield* decodeRows(priceOverrideRowSchema)(rows)
       })
 
       const getSources = Effect.fn('LedgerQueries.getSources')(function* () {
-        const rows = yield* sql.unsafe(`
-          SELECT id, provider, env_fingerprint, file_path, repo_url, project,
-                 CAST(fingerprint_dev AS TEXT) AS fingerprint_dev,
-                 CAST(fingerprint_ino AS TEXT) AS fingerprint_ino,
-                 fingerprint_mtime_ms, fingerprint_size_bytes, last_ported_at
-          FROM ledger_source ORDER BY id ASC
-        `)
+        const rows = yield* sql.unsafe(SELECT_SOURCES)
         return yield* decodeRows(ledgerSourceRowSchema)(rows)
       })
 
       const getSessions = Effect.fn('LedgerQueries.getSessions')(function* () {
-        const rows = yield* sql.unsafe(`
-          SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
-                 agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
-                 mcp_inventory_json, ambiguous_spawn_agent_ids_json, ever_had_branch
-          FROM ledger_session ORDER BY session_id ASC
-        `)
+        const rows = yield* sql.unsafe(SELECT_SESSIONS)
         return yield* decodeRows(ledgerSessionRowSchema)(rows)
       })
 
       const getTurns = Effect.fn('LedgerQueries.getTurns')(function* () {
-        const rows = yield* sql.unsafe(`
-          SELECT source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
-                 spawn_tool_use_ids_json, category, sub_category, retries, has_edits
-          FROM ledger_turn ORDER BY session_id ASC, turn_index ASC
-        `)
+        const rows = yield* sql.unsafe(SELECT_TURNS)
         return yield* decodeRows(ledgerTurnRowSchema)(rows)
       })
 
       const getCalls = Effect.fn('LedgerQueries.getCalls')(function* () {
-        const rows = yield* sql.unsafe(`
-          SELECT source_id, session_id, turn_index, call_index, call_key, dedup_key, provider, model, timestamp, speed,
-                 project, project_path, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
-                 input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
-                 reasoning_tokens, web_search_requests, cache_creation_one_hour_tokens, agent_type,
-                 tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
-                 tool_sequence_json,
-                 loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
-          FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
-        `)
+        const rows = yield* sql.unsafe(SELECT_CALLS)
         return yield* decodeRows(ledgerCallRowSchema)(rows)
       })
 
@@ -233,16 +257,33 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
        *  which `call_key` alone is 34.1 B — a STORED generated column SQLite has
        *  to materialise for every row. */
       const getCallFacts = Effect.fn('LedgerQueries.getCallFacts')(function* () {
-        const rows = yield* sql.unsafe(`
-          SELECT source_id, session_id, turn_index, call_index, dedup_key, provider, model, timestamp, speed,
-                 project, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
-                 input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
-                 reasoning_tokens, web_search_requests, cache_creation_one_hour_tokens,
-                 tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
-                 tool_sequence_json
-          FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
-        `)
+        const rows = yield* sql.unsafe(SELECT_CALL_FACTS)
         return yield* decodeRows(ledgerCallFactsRowSchema)(rows)
+      })
+
+      /** One request-level read unit for view inputs. Materialize all selected
+       * rows inside the transaction, then decode after it commits so large
+       * schema passes never hold the SQLite transaction open. */
+      const getRequestSnapshotData = Effect.fn('LedgerQueries.getRequestSnapshotData')(function* () {
+        const rawRows = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const sources = yield* sql.unsafe(SELECT_SOURCES)
+            const sessions = yield* sql.unsafe(SELECT_SESSIONS)
+            const turns = yield* sql.unsafe(SELECT_TURNS)
+            const calls = yield* sql.unsafe(SELECT_CALL_FACTS)
+            const aliases = yield* sql.unsafe(SELECT_MODEL_ALIASES)
+            const overrides = yield* sql.unsafe(SELECT_PRICE_OVERRIDES)
+            return { sources, sessions, turns, calls, aliases, overrides }
+          }),
+        )
+
+        const sources = yield* decodeRows(ledgerSourceRowSchema)(rawRows.sources)
+        const sessions = yield* decodeRows(ledgerSessionRowSchema)(rawRows.sessions)
+        const turns = yield* decodeRows(ledgerTurnRowSchema)(rawRows.turns)
+        const calls = yield* decodeRows(ledgerCallFactsRowSchema)(rawRows.calls)
+        const aliases = yield* decodeRows(modelAliasRowSchema)(rawRows.aliases)
+        const overrides = yield* decodeRows(priceOverrideRowSchema)(rawRows.overrides)
+        return { sources, sessions, turns, calls, aliases, overrides }
       })
 
       const getCurrencyRate = Effect.fn('LedgerConfig.getCurrencyRate')(function* (code: string) {
@@ -606,6 +647,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
         getTurns,
         getCalls,
         getCallFacts,
+        getRequestSnapshotData,
         getCurrencyRate,
         getDisplayCurrency,
         getRefreshCadence,
@@ -639,7 +681,7 @@ export class LedgerIngest extends Context.Service<LedgerIngest, LedgerIngestPort
 }
 
 /**
- * `LedgerQueries` — the ledger's read port (5 members), the one the query-time
+ * `LedgerQueries` — the ledger's read port (6 members), the one the query-time
  * view builders will take through `R` so `LedgerStore` loses its last callers.
  */
 export class LedgerQueries extends Context.Service<LedgerQueries, LedgerQueriesPort>()(
@@ -654,6 +696,7 @@ export class LedgerQueries extends Context.Service<LedgerQueries, LedgerQueriesP
         getTurns: implementation.getTurns,
         getCalls: implementation.getCalls,
         getCallFacts: implementation.getCallFacts,
+        getRequestSnapshotData: implementation.getRequestSnapshotData,
       }),
     ),
   )

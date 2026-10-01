@@ -13,6 +13,7 @@ import {
   type SkillsThresholds,
   skillsThresholdsSchema,
 } from '../../shared/schemas/skills.js'
+import { queryAnalyticalViews, queryDashboardViews } from '../application/view-queries.js'
 import { resolveCadenceMs } from '../cadence.js'
 import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from '../compare-view.js'
 import type { Env } from '../env.js'
@@ -51,8 +52,6 @@ import { buildSpendViewFromLedger, type SpendPayload } from '../spend-view.js'
 import { LedgerStore } from '../store/ledger.js'
 import type { PortInput } from '../store/port.js'
 import {
-  buildAnalyticalViewsFromLedger,
-  buildDashboardViewsFromLedger,
   buildProjectRowsFromLedger,
   buildProjectsFromLedger,
   getSessionDetailFromLedger,
@@ -593,7 +592,7 @@ export class DbWorkerContext {
       }
 
       case 'store:views':
-        return buildDashboardViewsFromLedger(ledger)
+        return this.runtime.runPromise(queryDashboardViews())
 
       case 'store:projects':
         return buildProjectRowsFromLedger(ledger)
@@ -763,7 +762,7 @@ export class DbWorkerContext {
       }
 
       case 'store:analytics':
-        return buildAnalyticalViewsFromLedger(ledger)
+        return this.runtime.runPromise(queryAnalyticalViews())
 
       case 'overview:query': {
         const scope = args[0] as OverviewScope

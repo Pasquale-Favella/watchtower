@@ -355,6 +355,8 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
       getTurns: () => Effect.succeed([]),
       getCalls: () => Effect.succeed([]),
       getCallFacts: () => Effect.succeed([]),
+      getRequestSnapshotData: () =>
+        Effect.succeed({ sources: [], sessions: [], turns: [], calls: [], aliases: [], overrides: [] }),
     })
     const ctx = worker(() =>
       Layer.mergeAll(

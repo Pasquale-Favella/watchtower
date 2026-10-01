@@ -18,10 +18,10 @@
  *     through `LedgerIngest.portIn` is visible to `LedgerQueries.getCalls` and
  *     writable by `LedgerConfig` in the same program. Triplicated SQL would mean
  *     triplicated connections and this could not hold.
- *  3. **The rows are still Zod-validated.** Every read still goes through
- *     `z.array(rowSchema).parse` — the wire-boundary guarantee the split must not
- *     weaken — proven by asserting the Zod-parsed shape (numeric tokens, parsed
- *     JSON arrays) rather than raw driver rows.
+ *  3. **The rows are still schema-validated.** Every read still decodes with
+ *     Effect Schema — the repository-boundary guarantee the split must not
+ *     weaken — proven by asserting decoded values (numeric tokens, parsed JSON
+ *     arrays) rather than raw driver rows.
  *
  * No `process.env` is mutated anywhere in this file.
  */
@@ -90,7 +90,7 @@ function reachable<A, R, L>(program: Effect.Effect<A, unknown, R>, layer: Layer.
 // ── 1. Independence ────────────────────────────────────────────────────────
 
 describe('each port is providable in isolation, with the other two absent', () => {
-  it('a LedgerQueries fake answers all four reads, and ingest + config are unreachable from it', async () => {
+  it('a LedgerQueries fake answers its reads, and ingest + config are unreachable from it', async () => {
     const calls: string[] = []
     const fakeQueries = Layer.succeed(
       LedgerQueries,
@@ -100,6 +100,10 @@ describe('each port is providable in isolation, with the other two absent', () =
         getTurns: () => Effect.sync(() => (calls.push('getTurns'), [])),
         getCalls: () => Effect.sync(() => (calls.push('getCalls'), [])),
         getCallFacts: () => Effect.sync(() => (calls.push('getCallFacts'), [])),
+        getRequestSnapshotData: () =>
+          Effect.sync(() => calls.push('getRequestSnapshotData')).pipe(
+            Effect.as({ sources: [], sessions: [], turns: [], calls: [], aliases: [], overrides: [] }),
+          ),
       }),
     )
 
@@ -112,11 +116,26 @@ describe('each port is providable in isolation, with the other two absent', () =
             queries.getTurns(),
             queries.getCalls(),
             queries.getCallFacts(),
+            queries.getRequestSnapshotData(),
           ]),
         ).pipe(Effect.provide(fakeQueries)),
       ),
-    ).resolves.toEqual([[], [], [], [], []])
-    expect(calls).toEqual(['getSources', 'getSessions', 'getTurns', 'getCalls', 'getCallFacts'])
+    ).resolves.toEqual([
+      [],
+      [],
+      [],
+      [],
+      [],
+      { sources: [], sessions: [], turns: [], calls: [], aliases: [], overrides: [] },
+    ])
+    expect(calls).toEqual([
+      'getSources',
+      'getSessions',
+      'getTurns',
+      'getCalls',
+      'getCallFacts',
+      'getRequestSnapshotData',
+    ])
 
     // Absence is OBSERVED. Pre-split there was one tag, so "the other two are
     // missing" was not a state this could express at all.
@@ -223,7 +242,7 @@ describe('each port is providable in isolation, with the other two absent', () =
   })
 })
 
-// ── 2 & 3. One implementation, three tags, still Zod-validated ─────────────
+// ── 2 & 3. One implementation, three tags, still schema-validated ──────────
 
 describe('the three live ports share ONE implementation over the writer connection', () => {
   it('a row ported through LedgerIngest is readable through LedgerQueries and writable by LedgerConfig', async () => {
@@ -240,6 +259,7 @@ describe('the three live ports share ONE implementation over the writer connecti
         const sources = yield* queries.getSources()
         yield* config.setModelAlias('aliased-model', 'real-model')
         const aliases = yield* config.getModelAliases()
+        const requestData = yield* queries.getRequestSnapshotData()
 
         return {
           insertedCalls: ported.inserted.calls,
@@ -248,6 +268,7 @@ describe('the three live ports share ONE implementation over the writer connecti
           tools: calls[0]?.tools,
           sourceCount: sources.length,
           aliases,
+          requestDataAliases: requestData.aliases,
         }
       }).pipe(Effect.provide(store.portsLayer)),
     )
@@ -260,11 +281,12 @@ describe('the three live ports share ONE implementation over the writer connecti
     expect(result.callCount).toBeGreaterThan(0)
     expect(result.sourceCount).toBe(1)
 
-    // Zod at the row boundary is unchanged: tokens arrive as numbers (not driver
-    // text) and JSON columns as arrays (not raw JSON strings).
+    // Effect Schema at the row boundary is unchanged: tokens arrive as numbers
+    // (not driver text) and JSON columns as arrays (not raw JSON strings).
     expect(typeof result.inputTokens).toBe('number')
     expect(Array.isArray(result.tools)).toBe(true)
     expect(result.aliases).toEqual([{ model: 'aliased-model', aliasOf: 'real-model' }])
+    expect(result.requestDataAliases).toEqual(result.aliases)
 
     // And the facade sees the same rows: its delegators were RE-POINTED at the
     // ports, not reimplemented.
