@@ -154,7 +154,7 @@ describe('effect: Scope-based instance registry (pain 3 — manual cleanup() tod
 
 describe('effect: interrupt + drain barrier (pain 4 — iterator.return() juggling today)', () => {
   it('interrupting a run still flushes buffered events before settle', async () => {
-    // ONE program, ONE runtime: fork + sleep + interrupt + barrier all in the
+    // ONE program, ONE runtime: fork + events + interrupt + barrier all in the
     // same scope (cross-runPromise fork parenting proved unreliable under test).
     const result = await Effect.runPromise(
       Effect.scoped(
@@ -162,6 +162,7 @@ describe('effect: interrupt + drain barrier (pain 4 — iterator.return() juggli
           const drained: string[] = []
           const killCount = yield* Ref.make(0)
           const drain = yield* Deferred.make<undefined>()
+          const buffered = yield* Deferred.make<undefined>()
           const fiber = yield* Effect.forkChild(
             Stream.range(0, 10).pipe(
               Stream.mapEffect(i =>
@@ -170,7 +171,15 @@ describe('effect: interrupt + drain barrier (pain 4 — iterator.return() juggli
                   20,
                 ),
               ),
-              Stream.tap(event => Effect.sync(() => drained.push(event))),
+              Stream.tap(event =>
+                Effect.gen(function* () {
+                  drained.push(event)
+                  if (drained.length === 2) {
+                    yield* Deferred.succeed(buffered, undefined)
+                    yield* Effect.never
+                  }
+                }),
+              ),
               Stream.runDrain,
               Effect.ensuring(
                 // Drain barrier: buffered/derived events flush BEFORE the child dies.
@@ -178,15 +187,14 @@ describe('effect: interrupt + drain barrier (pain 4 — iterator.return() juggli
               ),
             ),
           )
-          yield* Effect.sleep(80) // let a couple of events through (timing-tolerant)
+          yield* Deferred.await(buffered)
           yield* Fiber.interrupt(fiber) // <- cancel
           yield* Deferred.await(drain) // <- barrier run() lacks today
           return { drained: [...drained], kills: yield* Ref.get(killCount) }
         }),
       ),
     )
-    expect(result.drained.length).toBeGreaterThanOrEqual(2)
-    expect(result.drained.length).toBeLessThan(11) // range(0,10) is inclusive
+    expect(result.drained).toEqual(['event-0', 'event-1'])
     expect(result.kills).toBe(1) // child always reaped
   }, 15000)
 })
