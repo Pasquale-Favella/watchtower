@@ -26,7 +26,7 @@
  *     exactly the nine dropped keys" instead, which is a stronger statement
  *     than a literal.
  *
- * `tests/` is in neither tsconfig, so the casts here are checked by hand. No
+ * The dedicated test TypeScript config checks the fixtures and casts. No
  * `process.env` is mutated anywhere in this file.
  */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -120,7 +120,9 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
  *  scanned rather than the handful this slice edited. */
 const CONSUMER_FILES = [
   'src/main/store/aggregate.ts',
+  'src/main/store/aggregate-calculation.ts',
   'src/main/views.ts',
+  'src/main/views-calculation.ts',
   'src/main/overview.ts',
   'src/main/models-view.ts',
   'src/main/spend-view.ts',
@@ -132,6 +134,8 @@ const CONSUMER_FILES = [
   'src/main/pull-requests-view.ts',
   'src/main/export.ts',
   'src/main/pipeline/sessions-report.ts',
+  'src/main/pipeline/session-row.ts',
+  'src/main/pipeline/parser-calculations.ts',
   'src/main/agents/ledger-mcp/tools.ts',
 ]
 
@@ -272,13 +276,14 @@ describe('no consumer of the seam reads a dropped column', () => {
         'src/main/optimize-view.ts:b',
         'src/main/optimize-view.ts:p',
         'src/main/optimize-view.ts:project',
-        'src/main/store/aggregate.ts:s',
-        'src/main/store/aggregate.ts:session',
-        'src/main/store/aggregate.ts:summary',
+        'src/main/store/aggregate-calculation.ts:s',
+        'src/main/store/aggregate-calculation.ts:session',
+        'src/main/store/aggregate-calculation.ts:summary',
+        'src/main/views-calculation.ts:session',
         'src/main/views.ts:s',
         'src/main/yield-view.ts:project',
       ],
-      agentType: ['src/main/store/aggregate.ts:session', 'src/main/store/aggregate.ts:summary'],
+      agentType: ['src/main/store/aggregate-calculation.ts:session', 'src/main/store/aggregate-calculation.ts:summary'],
       locAdded: [],
       locRemoved: [],
       interrupted: [],
