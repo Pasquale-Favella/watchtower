@@ -566,7 +566,7 @@ export function buildSessionSummariesFromSnapshotResult(
 /**
  * The Sessions-view payload: ledger-derived `SessionRow[]` for a scope,
  * byte-identical to the old `aggregateSessions` over the report. The scope's
- * range/provider filter already applied at the SQL read; each summary carries
+ * range/provider filter is applied while building summaries; each summary carries
  * its project label, so no ProjectSummary shell is reconstructed.
  */
 export function buildSessionRowsFromSnapshot(snapshot: LedgerQuerySnapshot, scope: AggregateScope): SessionRow[] {

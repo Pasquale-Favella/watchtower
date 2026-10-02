@@ -8,14 +8,22 @@ import * as SqlError from 'effect/unstable/sql/SqlError'
 import { describe, expect, it, vi } from 'vitest'
 
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
+import { buildCompareViewFromLedger } from '../src/main/compare-view.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { buildModelsViewFromLedger } from '../src/main/models-view.js'
 import { buildOverviewFromLedger } from '../src/main/overview.js'
+import { buildPullRequestsViewFromLedger } from '../src/main/pull-requests-view.js'
 import { buildSessionsViewFromLedger } from '../src/main/sessions-view.js'
+import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
 import { LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
 import { buildAnalyticalViewsFromLedger, buildDashboardViewsFromLedger } from '../src/main/views.js'
 import { openWorkerOwner } from '../src/main/worker-runtime.js'
-import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import {
+  buildFixtureCachedCall,
+  buildFixtureCachedFile,
+  buildFixtureCachedTurn,
+  FIXTURE_SOURCE_PATH,
+} from './fixtures/cached-file.js'
 
 async function withWorker(
   run: (context: DbWorkerContext, owner: ReturnType<typeof openWorkerOwner>) => Promise<void>,
@@ -36,7 +44,16 @@ async function withWorker(
   }
 }
 
-const operations = ['store:views', 'store:analytics', 'sessions:view', 'models:view', 'overview:query'] as const
+const operations = [
+  'store:views',
+  'store:analytics',
+  'sessions:view',
+  'models:view',
+  'overview:query',
+  'spend:view',
+  'compare:view',
+  'pullRequests:view',
+] as const
 type ViewOperation = (typeof operations)[number]
 const scope = { period: 'lifetime' } as const
 
@@ -55,20 +72,61 @@ function expectedPayload(operation: ViewOperation, owner: ReturnType<typeof open
       })
     case 'overview:query':
       return buildOverviewFromLedger(owner.ledger, scope)
+    case 'spend:view':
+      return buildSpendViewFromLedger(owner.ledger, scope)
+    case 'compare:view':
+      return buildCompareViewFromLedger(owner.ledger, scope)
+    case 'pullRequests:view':
+      return buildPullRequestsViewFromLedger(owner.ledger, scope)
   }
 }
 
 function seedLedger(owner: ReturnType<typeof openWorkerOwner>): void {
+  const cachedFile = buildFixtureCachedFile({
+    turns: [
+      buildFixtureCachedTurn(0, 'Refactor the auth module', {
+        prRefs: ['https://github.com/acme/demo-project/pull/7'],
+      }),
+    ],
+  })
   owner.ledger.portIn({
     provider: 'opencode',
     envFingerprint: 'worker-view-query',
     filePath: FIXTURE_SOURCE_PATH,
     verdict: 'new',
-    cachedFile: buildFixtureCachedFile(),
+    cachedFile,
   })
 }
 
 describe('worker view queries', () => {
+  it('passes the requested Compare pair through to the application query', async () => {
+    await withWorker(async (context, owner) => {
+      owner.ledger.portIn({
+        provider: 'opencode',
+        envFingerprint: 'worker-compare-pair',
+        filePath: FIXTURE_SOURCE_PATH,
+        verdict: 'new',
+        cachedFile: buildFixtureCachedFile({
+          turns: [
+            buildFixtureCachedTurn(0, 'First model'),
+            buildFixtureCachedTurn(1, 'Second model', {
+              calls: [{ ...buildFixtureCachedCall(1), model: 'second-model' }],
+            }),
+          ],
+        }),
+      })
+      const pair = { modelA: 'second-model', modelB: 'demo-model' }
+      const expected = buildCompareViewFromLedger(owner.ledger, scope, pair)
+      const queries = owner.runtime.runSync(LedgerQueries)
+      const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
+
+      await expect(context.dispatch('compare:view', [scope, pair])).resolves.toEqual(expected)
+      expect(expected.report?.modelA.model).toBe(pair.modelA)
+      expect(expected.report?.modelB.model).toBe(pair.modelB)
+      expect(snapshot).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it.each(operations)('reports unpriced models through the runtime port for %s', async operation => {
     await withWorker(async (context, owner) => {
       seedLedger(owner)

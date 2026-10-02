@@ -9,6 +9,10 @@ const roots = [
   'src/main/sessions-calculation.ts',
   'src/main/models-calculation.ts',
   'src/main/overview-calculation.ts',
+  'src/main/spend-calculation.ts',
+  'src/main/compare-calculation.ts',
+  'src/main/pull-requests-calculation.ts',
+  'src/main/pipeline/pr-attribution.ts',
   'src/main/overview-scope.ts',
   'src/main/store/aggregate-calculation.ts',
   'src/main/pipeline/parser-calculations.ts',
@@ -82,6 +86,9 @@ describe('pure view calculation boundary', () => {
         'src/main/application/sessions-query.ts',
         'src/main/application/models-query.ts',
         'src/main/application/overview-query.ts',
+        'src/main/application/spend-query.ts',
+        'src/main/application/compare-query.ts',
+        'src/main/application/pull-requests-query.ts',
       ]),
     ).toEqual([])
   })

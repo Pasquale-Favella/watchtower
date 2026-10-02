@@ -9,17 +9,20 @@ import type { SqlError } from 'effect/unstable/sql/SqlError'
 import { readdirSync, statSync } from 'fs'
 import { join } from 'path'
 
+import type { ComparePair } from '../../shared/schemas/compare.js'
 import {
   DEFAULT_SKILLS_THRESHOLDS,
   type SkillsThresholds,
   skillsThresholdsSchema,
 } from '../../shared/schemas/skills.js'
+import { queryCompareView } from '../application/compare-query.js'
 import { queryModelsView } from '../application/models-query.js'
 import { queryOverview } from '../application/overview-query.js'
+import { queryPullRequestsView } from '../application/pull-requests-query.js'
 import { querySessionsView } from '../application/sessions-query.js'
+import { querySpendView } from '../application/spend-query.js'
 import { queryAnalyticalViews, queryDashboardViews } from '../application/view-queries.js'
 import { resolveCadenceMs } from '../cadence.js'
-import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from '../compare-view.js'
 import type { Env } from '../env.js'
 import type { ExportResult } from '../export.js'
 import { exportCsv, exportJson } from '../export.js'
@@ -53,9 +56,7 @@ import {
   type ScanProgress,
 } from '../pipeline/scan.js'
 import type { DateRange } from '../pipeline/types.js'
-import { buildPullRequestsViewFromLedger, type PullRequestsPayload } from '../pull-requests-view.js'
 import { buildSkillsViewFromLedger, type SkillsPayload } from '../skills-view.js'
-import { buildSpendViewFromLedger, type SpendPayload } from '../spend-view.js'
 import { LedgerStore } from '../store/ledger.js'
 import type { PortInput } from '../store/port.js'
 import {
@@ -619,12 +620,16 @@ export class DbWorkerContext {
 
       case 'pullRequests:view': {
         const scope = args[0] as OverviewScope
-        return buildPullRequestsViewFromLedger(ledger, scope) satisfies PullRequestsPayload | null
+        return this.runtime.runPromise(
+          queryPullRequestsView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
+        )
       }
 
       case 'spend:view': {
         const scope = args[0] as OverviewScope
-        return buildSpendViewFromLedger(ledger, scope) satisfies SpendPayload | null
+        return this.runtime.runPromise(
+          querySpendView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
+        )
       }
 
       /** The Models section's scoped payload (ADR 0008): by-model / by-task /
@@ -644,7 +649,9 @@ export class DbWorkerContext {
       case 'compare:view': {
         const scope = args[0] as OverviewScope
         const pair = args[1] as ComparePair | undefined
-        return buildCompareViewFromLedger(ledger, scope, pair) satisfies ComparePayload | null
+        return this.runtime.runPromise(
+          queryCompareView({ scope, pair, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
+        )
       }
 
       /** The Optimize section's scoped payload (ADR 0008): a read-only setup-health
