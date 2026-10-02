@@ -2,6 +2,7 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/unstable/sql/SqlError'
 
+import type { OverviewScope } from '../../shared/schemas/overview.js'
 import {
   type AnalyticalViews,
   analyticalViewsSchema,
@@ -16,6 +17,7 @@ import { buildAnalyticalViewsFromSnapshotResult, buildDashboardViewsFromSnapshot
 import { PricingDiagnostics } from './pricing-diagnostics.js'
 
 export type ViewQueryInputs = { readonly catalogue: PricingCatalogue; readonly proxyPaths: ProxyPathConfig }
+export type ScopedViewQueryInputs = ViewQueryInputs & { readonly scope: OverviewScope }
 
 export const queryDashboardViews = Effect.fn('queryDashboardViews')(function* (
   input: ViewQueryInputs,
