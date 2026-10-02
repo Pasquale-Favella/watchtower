@@ -20,9 +20,23 @@ jobs:
     name: Typecheck + tests (tagged commit)
     uses: ./.github/workflows/test.yml
 
+  verify-version:
+    # The tag must agree with package.json before any OS runner is spent
+    # building. One cheap ubuntu job beats re-running the same comparison
+    # inside every leg of the matrix.
+    name: Verify release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: node scripts/check-release-version.cjs
+
   build:
     name: Package ${{ matrix.target }}
-    needs: test
+    needs: [test, verify-version]
     strategy:
       fail-fast: false
       matrix:
