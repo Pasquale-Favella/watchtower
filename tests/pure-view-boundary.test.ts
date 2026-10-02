@@ -6,10 +6,15 @@ import { describe, expect, it } from 'vitest'
 
 const roots = [
   'src/main/views-calculation.ts',
+  'src/main/sessions-calculation.ts',
+  'src/main/models-calculation.ts',
+  'src/main/overview-calculation.ts',
+  'src/main/overview-scope.ts',
   'src/main/store/aggregate-calculation.ts',
   'src/main/pipeline/parser-calculations.ts',
 ]
-const forbiddenModule = /(?:^|\/)(?:models|parser|sessions-report|query-snapshot|ledger|ledger-repository|port)\.ts$/
+const forbiddenModule =
+  /\/main\/(?:pipeline\/(?:models|parser|sessions-report)|store\/(?:query-snapshot|ledger|ledger-repository|port))\.ts$/
 const forbiddenPackage = /^(?:electron|node:|fs(?:\/|$)|path$)/
 
 function runtimeImports(filePath: string, source = readFileSync(filePath, 'utf8')): string[] {
@@ -71,7 +76,14 @@ describe('pure view calculation boundary', () => {
   })
 
   it('keeps the canonical application query graph on ports instead of repository implementations', () => {
-    expect(graphViolations(['src/main/application/view-queries.ts'])).toEqual([])
+    expect(
+      graphViolations([
+        'src/main/application/view-queries.ts',
+        'src/main/application/sessions-query.ts',
+        'src/main/application/models-query.ts',
+        'src/main/application/overview-query.ts',
+      ]),
+    ).toEqual([])
   })
 
   it('ignores type-only named imports and re-exports while retaining runtime dependencies', () => {

@@ -9,6 +9,9 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
+import { buildModelsViewFromLedger } from '../src/main/models-view.js'
+import { buildOverviewFromLedger } from '../src/main/overview.js'
+import { buildSessionsViewFromLedger } from '../src/main/sessions-view.js'
 import { LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
 import { buildAnalyticalViewsFromLedger, buildDashboardViewsFromLedger } from '../src/main/views.js'
 import { openWorkerOwner } from '../src/main/worker-runtime.js'
@@ -33,7 +36,27 @@ async function withWorker(
   }
 }
 
-const operations = ['store:views', 'store:analytics'] as const
+const operations = ['store:views', 'store:analytics', 'sessions:view', 'models:view', 'overview:query'] as const
+type ViewOperation = (typeof operations)[number]
+const scope = { period: 'lifetime' } as const
+
+function expectedPayload(operation: ViewOperation, owner: ReturnType<typeof openWorkerOwner>) {
+  switch (operation) {
+    case 'store:views':
+      return buildDashboardViewsFromLedger(owner.ledger)
+    case 'store:analytics':
+      return buildAnalyticalViewsFromLedger(owner.ledger)
+    case 'sessions:view':
+      return buildSessionsViewFromLedger(owner.ledger, scope)
+    case 'models:view':
+      return buildModelsViewFromLedger(owner.ledger, scope, {
+        aliases: owner.ledger.getModelAliases(),
+        overrides: owner.ledger.getPriceOverrides(),
+      })
+    case 'overview:query':
+      return buildOverviewFromLedger(owner.ledger, scope)
+  }
+}
 
 function seedLedger(owner: ReturnType<typeof openWorkerOwner>): void {
   owner.ledger.portIn({
@@ -53,7 +76,7 @@ describe('worker view queries', () => {
       const diagnostics = owner.runtime.runSync(PricingDiagnostics)
       const report = vi.spyOn(diagnostics, 'reportUnpricedModels').mockReturnValue(Effect.void)
 
-      await context.dispatch(operation, [])
+      await context.dispatch(operation, [scope])
 
       expect(report).toHaveBeenCalledTimes(1)
       const reported = report.mock.calls[0]?.[0] ?? []
@@ -64,19 +87,28 @@ describe('worker view queries', () => {
   it.each(operations)('loads one port snapshot for %s without running the synchronous facade', async operation => {
     await withWorker(async (context, owner) => {
       seedLedger(owner)
-      const expected =
-        operation === 'store:views'
-          ? buildDashboardViewsFromLedger(owner.ledger)
-          : buildAnalyticalViewsFromLedger(owner.ledger)
+      const expected = expectedPayload(operation, owner)
       const queries = owner.runtime.runSync(LedgerQueries)
       const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
       const facade = vi.spyOn(owner.ledger, 'runQueriesSync').mockImplementation(() => {
         throw new Error('legacy query facade must not run')
       })
+      const repository = vi.spyOn(owner.ledger, 'runRepositorySync').mockImplementation(() => {
+        throw new Error('legacy repository facade must not run')
+      })
+      const aliases = vi.spyOn(owner.ledger, 'getModelAliases').mockImplementation(() => {
+        throw new Error('separate alias read must not run')
+      })
+      const overrides = vi.spyOn(owner.ledger, 'getPriceOverrides').mockImplementation(() => {
+        throw new Error('separate override read must not run')
+      })
 
-      await expect(context.dispatch(operation, [])).resolves.toEqual(expected)
+      await expect(context.dispatch(operation, [scope])).resolves.toEqual(expected)
       expect(snapshot).toHaveBeenCalledTimes(1)
       expect(facade).not.toHaveBeenCalled()
+      expect(repository).not.toHaveBeenCalled()
+      expect(aliases).not.toHaveBeenCalled()
+      expect(overrides).not.toHaveBeenCalled()
     })
   })
 
@@ -85,16 +117,13 @@ describe('worker view queries', () => {
       seedLedger(owner)
       owner.ledger.setModelAlias('demo-model', 'first-effective-model')
       owner.ledger.setPriceOverride('first-effective-model', { inputPricePerMillion: 2, outputPricePerMillion: 4 })
-      const first = await context.dispatch(operation, [])
+      const first = await context.dispatch(operation, [scope])
 
       owner.ledger.setModelAlias('demo-model', 'second-effective-model')
       owner.ledger.setPriceOverride('second-effective-model', { inputPricePerMillion: 7, outputPricePerMillion: 14 })
-      const expected =
-        operation === 'store:views'
-          ? buildDashboardViewsFromLedger(owner.ledger)
-          : buildAnalyticalViewsFromLedger(owner.ledger)
+      const expected = expectedPayload(operation, owner)
 
-      const next = await context.dispatch(operation, [])
+      const next = await context.dispatch(operation, [scope])
       expect(next).toEqual(expected)
       expect(next).not.toEqual(first)
     })
@@ -108,7 +137,7 @@ describe('worker view queries', () => {
       })
       vi.spyOn(queries, 'getRequestSnapshotData').mockReturnValue(Effect.fail(failure))
 
-      await expect(context.dispatch(operation, [])).rejects.toMatchObject({ _tag: 'SqlError' })
+      await expect(context.dispatch(operation, [scope])).rejects.toMatchObject({ _tag: 'SqlError' })
     })
   })
 
@@ -127,7 +156,7 @@ describe('worker view queries', () => {
         Schema.decodeUnknownEffect(Schema.Number)('invalid').pipe(Effect.as(empty)),
       )
 
-      await expect(context.dispatch(operation, [])).rejects.toMatchObject({ _tag: 'SchemaError' })
+      await expect(context.dispatch(operation, [scope])).rejects.toMatchObject({ _tag: 'SchemaError' })
     })
   })
 })

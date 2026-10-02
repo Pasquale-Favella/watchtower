@@ -14,6 +14,9 @@ import {
   type SkillsThresholds,
   skillsThresholdsSchema,
 } from '../../shared/schemas/skills.js'
+import { queryModelsView } from '../application/models-query.js'
+import { queryOverview } from '../application/overview-query.js'
+import { querySessionsView } from '../application/sessions-query.js'
 import { queryAnalyticalViews, queryDashboardViews } from '../application/view-queries.js'
 import { resolveCadenceMs } from '../cadence.js'
 import { buildCompareViewFromLedger, type ComparePair, type ComparePayload } from '../compare-view.js'
@@ -29,14 +32,18 @@ import {
   listCurrencies,
   refreshFxRateWithRates,
 } from '../fx.js'
-import { buildModelsViewFromLedger, type ModelsPayload } from '../models-view.js'
 import type { OperationalLog } from '../operational-log.js'
 import { buildOptimizeViewFromLedger, type OptimizePayload } from '../optimize-view.js'
-import { buildOverviewFromLedger, type OverviewScope } from '../overview.js'
+import type { OverviewScope } from '../overview.js'
 import type { HttpFetch } from '../pipeline/fetch-utils.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
 import { getRepoUrl } from '../pipeline/git-remote.js'
-import { captureModelPricingCatalogue, captureProxyPaths, refreshPricingNowEffect } from '../pipeline/models.js'
+import {
+  captureLocalModelSavings,
+  captureModelPricingCatalogue,
+  captureProxyPaths,
+  refreshPricingNowEffect,
+} from '../pipeline/models.js'
 import { getClaudeConfigDirs } from '../pipeline/providers/claude.js'
 import {
   buildScanSummaryRecords,
@@ -47,7 +54,6 @@ import {
 } from '../pipeline/scan.js'
 import type { DateRange } from '../pipeline/types.js'
 import { buildPullRequestsViewFromLedger, type PullRequestsPayload } from '../pull-requests-view.js'
-import { buildSessionsViewFromLedger } from '../sessions-view.js'
 import { buildSkillsViewFromLedger, type SkillsPayload } from '../skills-view.js'
 import { buildSpendViewFromLedger, type SpendPayload } from '../spend-view.js'
 import { LedgerStore } from '../store/ledger.js'
@@ -58,7 +64,6 @@ import {
   getSessionDetailFromLedger,
   querySessionRowsFromLedger,
   searchSessionsFromLedger,
-  type SessionRow,
 } from '../views.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
 import { buildYieldViewFromLedger, type YieldPayload } from '../yield-view.js'
@@ -607,7 +612,9 @@ export class DbWorkerContext {
 
       case 'sessions:view': {
         const scope = args[0] as OverviewScope
-        return buildSessionsViewFromLedger(ledger, scope) satisfies SessionRow[]
+        return this.runtime.runPromise(
+          querySessionsView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
+        )
       }
 
       case 'pullRequests:view': {
@@ -626,10 +633,9 @@ export class DbWorkerContext {
        * affected rows on the next query without a rescan. */
       case 'models:view': {
         const scope = args[0] as OverviewScope
-        return buildModelsViewFromLedger(ledger, scope, {
-          aliases: ledger.getModelAliases(),
-          overrides: ledger.getPriceOverrides(),
-        }) satisfies ModelsPayload | null
+        return this.runtime.runPromise(
+          queryModelsView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
+        )
       }
 
       /** The Compare section's scoped payload (ADR 0008): a model-pair picker
@@ -771,7 +777,14 @@ export class DbWorkerContext {
 
       case 'overview:query': {
         const scope = args[0] as OverviewScope
-        return buildOverviewFromLedger(ledger, scope)
+        return this.runtime.runPromise(
+          queryOverview({
+            scope,
+            catalogue: captureModelPricingCatalogue(),
+            proxyPaths: captureProxyPaths(),
+            localSavings: captureLocalModelSavings(),
+          }),
+        )
       }
 
       case 'store:search': {
