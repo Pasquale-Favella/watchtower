@@ -229,3 +229,27 @@ Named application queries now cover 5/11 aggregate and dedicated section read pa
 Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema covers 22/23, 95.7%, with one UI-only plain TypeScript module. F29 remains partial because other application queries, compatibility callers and purpose-specific reads are still open. The three new queries capture request time once before awaiting a snapshot and use pure calculations over captured pricing inputs. Models removes two separate config reads by reusing the alias and override rows already in that snapshot. Six snapshot SELECTs remain unchanged; comparable speed, memory and IPC measurements remain outstanding.
 
 Other remaining work includes scan-boundary inputs, cooperative parser stop and callback draining, main/Coach ownership and mapping, full facade retirement, installer acceptance and macOS/Linux packaged execution. Both renderer stores still match `ce81593` exactly.
+
+## Current census after Spend, Compare and Pull Requests migration, 2026-10-02
+
+This snapshot covers production source `979b73e`. It uses the same TypeScript AST runtime-import and nonblank-line method as the previous census. Import coverage measures library use, not completion of the migration.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,518 / 1,628 |         93.2% |
+| Store                              |                   10 / 12 |         83.3% |                     1,803 / 2,417 |         74.6% |
+| Agents                             |                   12 / 44 |         27.3% |                     3,873 / 5,889 |         65.8% |
+| Pipeline                           |                    6 / 74 |          8.1% |                    2,554 / 27,637 |          9.2% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                     3,000 / 3,000 |        100.0% |
+| All main-process code              |                  57 / 171 |         33.3% |                   15,587 / 45,676 |         34.1% |
+| Shared schema modules              |                   23 / 24 |         95.8% |                     1,865 / 1,923 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+Named application queries cover 8/11 aggregate and dedicated section read paths, 72.7%: dashboard, analytics, Overview, Sessions, Models, Spend, Compare and Pull Requests. Scoped dedicated queries cover 6/9, 66.7%. Optimize, Yield and Skills remain outside that query boundary because their workflows also use filesystem or process IO.
+
+The new queries capture request time once before loading one canonical snapshot. Their calculations use the snapshot's captured pricing catalogue, with diagnostics reported once and output validation in the typed error channel. PR attribution is now a pure module; terminal/report compatibility exports remain available. Spend uses the catalogue already in the snapshot, with no duplicate catalogue parameter. Compare preserves raw model identity and requested pair behavior.
+
+Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module. Six snapshot SELECTs remain unchanged. Forty-one worker checks cover the eight read paths and explicit Compare pair forwarding. Pure import-graph and narrow-column audits cover all new calculation modules. No speedup or memory improvement is claimed.
+
+F29 remains partial. Remaining work includes the three IO-dependent section queries, other application queries and compatibility callers, facade retirement, purpose-specific reads, scan-boundary input capture, cooperative parser stop and callback drain, main/Coach ownership and error mapping, comparable 1k/50k/500k measurements, installer acceptance and macOS/Linux packaged execution. Both renderer stores remain byte-identical to `ce81593`, with no added `let` variables, request identities or applyChange coalescing.

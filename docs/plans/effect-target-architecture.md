@@ -336,3 +336,17 @@ All four Electron end-to-end checks passed against the rebuilt application on Wi
 Windows x64 directory packaging passed without publishing or installing. A temporary gate launched the actual packaged executable with an isolated profile, completed its real boot scan/onboarding and verified Sessions, Models and Overview navigation with zero renderer errors. The official SDK client exercised the packaged stdio MCP child: all six tools, advertised metadata, invalid/unknown tool errors, three resources, the prompt and shutdown. Client/child and app closed before profile removal. Installer acceptance and macOS/Linux packaged execution remain open.
 
 F29 remains partial. The next pure query slices are Spend, Compare and Pull Requests. Skills, Yield and Optimize also require explicit filesystem or process boundaries. Cooperative parser stop, scan-boundary input capture, remaining main/Coach ownership, facade retirement, purpose-specific reads and comparable performance measurements remain programme work. The current census records query ownership and import coverage separately.
+
+### Spend, Compare and Pull Requests queries, 2026-10-02
+
+Production and test source is `979b73e`, following `70f7a03`.
+
+- `d005254` extracts PR attribution into a pure `pipeline/pr-attribution.ts` module. `sessions-report.ts` retains the terminal/report compatibility exports.
+- `03ddb51`, `8333fb0` and `3226945` add named Spend, Compare and Pull Requests application Effects over LedgerQueries and PricingDiagnostics. Each captures the Clock once before loading one canonical snapshot. Pure calculation modules receive explicit time and the snapshot's captured pricing catalogue; Spend does not take a duplicate catalogue parameter. Unpriced-model diagnostics are reported once, and payload validation runs in the typed Schema error channel. Compare preserves raw model identity and the requested pair.
+- `979b73e` dispatches the three worker routes through the existing runtime. The former builders never returned `null`, so the wire result is unchanged. Forty-one worker checks now cover the eight migrated read paths, including explicit Compare pair forwarding. The pure import-graph and narrow-column audits cover the new calculation modules.
+
+Named application queries cover 8/11 aggregate and dedicated section read paths, 72.7%. Scoped dedicated queries cover 6/9, 66.7%. Six snapshot SELECTs remain unchanged; no speedup is claimed. Both renderer stores remain byte-identical to `ce81593`.
+
+Production Node/web and strict test typechecks, full formatting and build passed. Lint passed with zero errors and 1,171 advisory warnings. The full unit suite passed all 134 files, with 2,124 tests passed and two skipped, using one worker and unchanged timeouts/assertions, in 191.56 seconds. All four Electron end-to-end checks then passed against the rebuilt application on Windows in 3.9 minutes. Packaging, installer acceptance and macOS/Linux packaged execution were not rerun for this increment.
+
+F29 remains partial. Optimize, Yield and Skills are the remaining dedicated queries; each needs an explicit filesystem or process boundary before it can join the query boundary. Cooperative parser stop, scan-boundary input capture, main/Coach ownership, facade retirement, purpose-specific reads and comparable performance measurements remain programme work.
