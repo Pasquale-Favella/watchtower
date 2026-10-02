@@ -40,7 +40,7 @@ Import counts and Effect LOC share do not establish these properties.
 | F23 Windows runner                           | Recorded, intentionally unscheduled                                 | Owner decision in latest issue comment                                    |
 | F25 Coach retention; F26 virtual-time stalls | Open                                                                | Registry code and mitigation notes at `a917305`                           |
 
-[PR #147](https://github.com/Pasquale-Favella/watchtower/pull/147) still describes a narrow migration foundation and contains `Closes #148`. Its September 24 rollout comment also says work is complete. Both are stale relative to this programme. Tracker maintenance should refresh the scope and remove automatic closure while work remains.
+At the assessment baseline, [PR #147](https://github.com/Pasquale-Favella/watchtower/pull/147) described a narrow migration foundation and contained `Closes #148`. Its September 24 rollout comment also said work was complete. The current PR description and living assessment now track the expanded programme and leave #148 open.
 
 ## Architectural findings and corrections
 
@@ -142,7 +142,9 @@ ADR 0034 requires one authority per contract, explicit Type/Encoded representati
 
 ### F36. A same-scope old response can overwrite newer data
 
-`scopedDataSlice.load` in `src/renderer/src/app/stores/data-store.ts` checks only dataKey after awaiting fetch. Two loads for the same scope have the same key, so both may publish; the older request may resolve last. Scope guards correctly reject different-scope results but cannot distinguish refresh generations. This is a source-level limitation, not a reproduced failure under the actual IPC path. The owner rejected request identities and Promise ownership variables. Both production stores were restored to `ce81593` in `709207e`; preserve them and assess actual ordering before proposing further changes. The source-level limitation is not claimed fixed.
+`scopedDataSlice.load` in `src/renderer/src/app/stores/data-store.ts` checks only dataKey after awaiting fetch. Two loads for the same scope have the same key, so both may publish; the older request may resolve last. Scope guards correctly reject different-scope results but cannot distinguish refresh generations. The owner rejected request identities and Promise ownership variables. Both production stores were restored to `ce81593` in `709207e`; preserve them.
+
+`d68fda9` adds a controlled native ordering check using a real worker, SQLite root, worker context and dashboard application query. A test-only Deferred pauses delivery after the real snapshot transaction has completed. A price write then commits and emits `config:changed`. A subsequent identical client read joins the old Promise and sends no second request. The old response arrives after the event with its earlier cost; a later request obtains the new cost. This reproduces stale coalescing under that barrier. It does not establish ordinary synchronous-adapter overlap, full Electron relay ordering or an older view overwriting a newer completed view. F35/F36 remain open, with no production ordering change.
 
 ### F37. MCP high-level registration requires Zod shapes
 
@@ -152,21 +154,21 @@ Evaluate the official SDK Server handler API with SDK-owned protocol schemas, ge
 
 ## Implementation census, 2026-10-02
 
-This snapshot is `3215238`, with production changes through `472e993`. It adds scan/IPC/MCP-status contracts, pure dashboard/analytics calculations, focused application ports and host recovery for stuck scan aborts. TypeScript AST import counting excludes type-only imports, declarations and test/spec files under `src`. Line coverage counts nonblank lines in importing files against nonblank area lines; it remains an upper bound on adoption, not a workflow completion percentage.
+This snapshot is `d68fda9`, with production changes through `4896421`. It includes six further section contracts and the internal resume cursor conversion, in addition to the preceding pure queries and worker recovery increment. TypeScript AST import counting excludes type-only imports, declarations and test/spec files under `src`. Line coverage counts nonblank lines in importing files against nonblank area lines; it remains an upper bound on adoption, not a workflow completion percentage.
 
 | Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
 | ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
-| DB worker                          |                     3 / 5 |         60.0% |                     1,435 / 1,545 |         92.9% |
+| DB worker                          |                     3 / 5 |         60.0% |                     1,436 / 1,546 |         92.9% |
 | Store                              |                   10 / 12 |         83.3% |                     1,799 / 2,413 |         74.6% |
-| Agents                             |                    8 / 44 |         18.2% |                     2,865 / 5,883 |         48.7% |
+| Agents                             |                   10 / 44 |         22.7% |                     3,589 / 5,884 |         61.0% |
 | Pipeline                           |                    6 / 73 |          8.2% |                    2,636 / 27,610 |          9.5% |
-| View builders ending in `-view.ts` |                     2 / 8 |         25.0% |                       467 / 3,961 |         11.8% |
-| All main-process code              |                  39 / 156 |         25.0% |                   11,839 / 45,361 |         26.1% |
-| Shared schema modules              |                   15 / 24 |         62.5% |                     1,173 / 1,960 |         59.8% |
-| Renderer                           |                   2 / 123 |          1.6% |                      444 / 13,119 |          3.4% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                     3,967 / 3,967 |        100.0% |
+| All main-process code              |                  47 / 156 |         30.1% |                   16,064 / 45,369 |         35.4% |
+| Shared schema modules              |                   21 / 24 |         87.5% |                     1,571 / 1,998 |         78.6% |
+| Renderer                           |                   2 / 123 |          1.6% |                      454 / 13,129 |          3.5% |
 | Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
 
-Fourteen of 23 baseline contract modules now use Effect Schema throughout: ledger, pipeline, providers, session-cache, port, cadence, fx, updates, export, models, views, scan, ipc and ledger-mcp. That module measure is 60.9%, excluding the extraction helper. The renderer schema module additionally removes Zod in favor of plain TypeScript for UI-only types. Zod removal therefore covers 15/23 baseline modules, or 65.2%; this is a different measure from Effect Schema conversion. The broader 15/24 import count includes the extraction helper. Renderer decoding remains synchronous, without an application runtime. Both original stores still match `ce81593`, with no request identities, coalescing or added `let` variables. MCP tool registration still uses Watchtower-owned Zod shapes until the accepted SDK adapter is implemented.
+Twenty of 23 baseline contract modules now use Effect Schema throughout, 87.0%. The six additions are spend, compare, optimize, yield, skills and pull-requests. Overview and agents remain on Zod. The renderer schema module additionally removes Zod in favor of plain TypeScript for UI-only types, so Zod removal covers 21/23 baseline modules, 91.3%. The broader 21/24 import count includes the extraction helper. All eight view-builder modules now import Effect Schema for boundary validation; their 100% import coverage does not prove pure calculation separation, direct-port application loading or facade retirement. Renderer decoding remains synchronous, without an application runtime. Both original stores still match `ce81593`, with no request identities, coalescing or added `let` variables. MCP tool registration, temporary decoder adapters, frozen parity references and the direct dependency still need removal.
 
 The pricing calculation module deliberately imports no runtime Effect value. Moving calculation out of the IO module reduces the pipeline's importing-line percentage. A request captures pricing and proxy configuration once. Dashboard and analytics import pure calculations and focused ledger ports; their unpriced-model reporting uses a port supplied at the worker root. Import-graph tests forbid IO, repository implementations and Effect runtime imports in the pure calculation graph. Other query callers retain the temporary facade loader. Provider adapters still capture live pricing state until scan-boundary inputs migrate.
 
