@@ -250,9 +250,9 @@ export default tseslint.config(
     },
   },
   {
-    // Build scripts are CJS by design (`require` + `__dirname`) — the
+    // Build scripts and worker fixtures use CJS (`require` + `__dirname`) — the
     // `no-require-imports` rule from strict does not apply to them.
-    files: ['scripts/**/*'],
+    files: ['scripts/**/*', 'tests/fixtures/**/*.cjs'],
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
     },
@@ -260,7 +260,13 @@ export default tseslint.config(
 
   // ── Process-aware language options ──────────────────────────────────────
   {
-    files: ['src/main/**/*.{ts,mts,cts}', 'src/preload/**/*.ts', 'scripts/**/*.?(c|m)js', 'tests/**/*.ts'],
+    files: [
+      'src/main/**/*.{ts,mts,cts}',
+      'src/preload/**/*.ts',
+      'scripts/**/*.?(c|m)js',
+      'tests/**/*.ts',
+      'tests/fixtures/**/*.cjs',
+    ],
     languageOptions: { globals: { ...globals.node, ...globals.es2023 } },
   },
   {

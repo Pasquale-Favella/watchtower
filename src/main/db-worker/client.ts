@@ -1,7 +1,10 @@
 import { Worker } from 'node:worker_threads'
 
+import * as Cause from 'effect/Cause'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 
 import { logCodeFor } from '../operational-log.js'
@@ -40,6 +43,23 @@ export interface DbWorkerPort {
 }
 
 export type DbWorkerFactory = (scriptPath: string, workerData: DbWorkerData) => DbWorkerPort
+
+type ReadyHandshake = {
+  promise: Promise<void>
+  resolve: () => void
+  reject: (err: Error) => void
+}
+
+function createReadyHandshake(): ReadyHandshake {
+  let resolve!: () => void
+  let reject!: (err: Error) => void
+  const promise = new Promise<void>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  promise.catch(() => {})
+  return { promise, resolve, reject }
+}
 
 const defaultFactory: DbWorkerFactory = (scriptPath, workerData) =>
   new Worker(scriptPath, { workerData }) as unknown as DbWorkerPort
@@ -80,6 +100,11 @@ const awaitGracefulShutdown = Effect.fn('awaitGracefulShutdown')(function* (
 export const RESPAWN_BACKOFF_BASE_MS = 1_000
 export const RESPAWN_BACKOFF_CAP_MS = 30_000
 export const RESPAWN_BACKOFF_RESET_AFTER_MS = 60_000
+
+/** A scan abort normally waits for the worker's real parser/callback drain.
+ * If that never arrives, kill the owning thread under the same bound as
+ * graceful shutdown; only then may its replacement receive requests. */
+export const SCAN_ABORT_DRAIN_TIMEOUT_MS = 2_000
 
 /** Capped exponential respawn backoff with jitter: attempt N (1-based) waits
  * `min(base * 2^(N-1), cap)`, scaled by `jittered` (±20%, mean-preserving) so
@@ -123,6 +148,13 @@ export class DbWorkerClient {
   private inflightReads = new Map<string, Promise<unknown>>()
   private eventListeners = new Set<(event: DbWorkerEvent) => void>()
   private intentionalTeardown = false
+  /** Non-null while a stuck abort is terminating the old worker and booting
+   * its replacement. Requests queue behind this exact ownership transition. */
+  private recovery: Promise<void> | null = null
+  /** The incarnation being forcibly retired; its late events are ignored. */
+  private retiringWorker: DbWorkerPort | null = null
+  private termination: { worker: DbWorkerPort; promise: Promise<void> } | null = null
+  private currentReady: ReadyHandshake
   /** True once the CURRENT worker incarnation posted `ready`. Gates respawn:
    * only a worker that once lived is recreated. */
   private becameReady = false
@@ -133,8 +165,6 @@ export class DbWorkerClient {
    * Measurement only — every wait rides the Effect Clock, never this stamp. */
   private lastCrashAtMs: number | null = null
   private initError: string | null = null
-  private readyResolve!: () => void
-  private readyReject!: (err: Error) => void
   /** Resolves when the worker owns the ledger; rejects on boot failure. */
   readonly ready: Promise<void>
 
@@ -143,24 +173,23 @@ export class DbWorkerClient {
     private scriptPath: string,
     private spawnWorker: DbWorkerFactory = defaultFactory,
   ) {
-    this.ready = new Promise<void>((resolve, reject) => {
-      this.readyResolve = resolve
-      this.readyReject = reject
-    })
+    this.currentReady = createReadyHandshake()
+    this.ready = this.currentReady.promise
     // The constructor never awaits `ready` itself — mark it handled so a
     // boot failure the app surfaces elsewhere is not ALSO an unhandled
     // rejection. External `await client.ready` still observes the outcome.
-    this.ready.catch(() => {})
     this.spawn()
   }
 
   private spawn(): void {
     this.becameReady = false
     this.initError = null
+    const handshake = this.currentReady
     const worker = this.spawnWorker(this.scriptPath, this.init)
     this.worker = worker
-    worker.on('message', (raw: unknown) => this.onMessage(raw))
+    worker.on('message', (raw: unknown) => this.onMessage(raw, worker, handshake))
     worker.on('error', (raw: unknown) => {
+      if (this.worker !== worker || this.retiringWorker === worker) return
       const err = raw instanceof Error ? raw : new Error(String(raw))
       for (const { reject } of this.pending.values()) reject(err)
       this.pending.clear()
@@ -171,10 +200,11 @@ export class DbWorkerClient {
       // exit handler below still runs and stays a safe no-op for `ready`.
       if (!this.becameReady) {
         this.initError ??= err.message
-        this.readyReject(err)
+        handshake.reject(err)
       }
     })
     worker.on('exit', (raw: unknown) => {
+      if (this.worker !== worker || this.retiringWorker === worker) return
       const code = String(raw)
       const wasReady = this.becameReady
       this.becameReady = false
@@ -188,7 +218,7 @@ export class DbWorkerClient {
         for (const { reject } of this.pending.values()) reject(err)
         this.pending.clear()
         this.inflightReads.clear()
-        this.readyReject(err)
+        handshake.reject(err)
         return
       }
       const err = new Error(`data worker exited unexpectedly (code ${code})`)
@@ -202,6 +232,7 @@ export class DbWorkerClient {
       // already rejected above: no replay, exactly as before. Never-lived
       // workers return early above and never enter this path.
       const nowMs = Date.now()
+      this.currentReady = createReadyHandshake()
       const attempt = nextRespawnAttempt(this.consecutiveCrashes, nowMs, this.lastCrashAtMs)
       this.consecutiveCrashes = attempt
       this.lastCrashAtMs = nowMs
@@ -211,7 +242,8 @@ export class DbWorkerClient {
     })
   }
 
-  private onMessage(raw: unknown): void {
+  private onMessage(raw: unknown, worker: DbWorkerPort, handshake: ReadyHandshake): void {
+    if (this.worker !== worker || this.retiringWorker === worker) return
     if (isDbWorkerResponse(raw)) {
       const slot = this.pending.get(raw.id)
       if (!slot) return
@@ -224,12 +256,12 @@ export class DbWorkerClient {
       // Boot handshake — consumed here, never relayed to windows.
       if (raw.event === 'ready') {
         this.becameReady = true
-        this.readyResolve()
+        handshake.resolve()
         return
       }
       if (raw.event === 'init-error') {
         this.initError = raw.error
-        this.readyReject(new Error(raw.error))
+        handshake.reject(new Error(raw.error))
         return
       }
       for (const listener of this.eventListeners) listener(raw)
@@ -237,7 +269,12 @@ export class DbWorkerClient {
   }
 
   private send(op: string, args: unknown[] = []): Promise<unknown> {
-    const worker = this.worker
+    const recovery = this.recovery
+    if (recovery) return recovery.then(() => this.sendTo(this.worker, op, args))
+    return this.sendTo(this.worker, op, args)
+  }
+
+  private sendTo(worker: DbWorkerPort | null, op: string, args: unknown[] = []): Promise<unknown> {
     if (!worker) return Promise.reject(new Error('data worker unavailable'))
     const id = this.nextId++
     return new Promise<unknown>((resolve, reject) => {
@@ -250,6 +287,7 @@ export class DbWorkerClient {
    * single execution; everything else always runs. Fire-and-forget callers
    * pass no args and ignore the (null) resolution. */
   request(op: string, ...args: unknown[]): Promise<unknown> {
+    if (op === 'scan:abort') return this.abortScan(args)
     if (!DEDUPABLE_OPS.has(op)) return this.send(op, args)
     let key: string | null = null
     try {
@@ -266,6 +304,157 @@ export class DbWorkerClient {
     }
     flight.then(forget, forget)
     return flight
+  }
+
+  /** Await the worker's cooperative abort. A deadline never abandons a live
+   * Promise in place: expiry tears down that Promise's entire worker isolate,
+   * waits for actual termination, and only then admits the replacement. */
+  private abortScan(args: unknown[]): Promise<unknown> {
+    return Effect.runPromise(this.scanAbortEffect(args))
+  }
+
+  /** Effect form keeps the abort-drain deadline deterministic under TestClock.
+   * Production enters it only through `request('scan:abort')`. */
+  scanAbortEffect(
+    args: unknown[],
+    timeoutMs = SCAN_ABORT_DRAIN_TIMEOUT_MS,
+    replacementTimeoutMs = SCAN_ABORT_DRAIN_TIMEOUT_MS,
+  ): Effect.Effect<unknown, unknown> {
+    return Effect.suspend(() => {
+      const ongoingRecovery = this.recovery
+      if (ongoingRecovery)
+        return Effect.tryPromise({ try: () => ongoingRecovery, catch: cause => cause }).pipe(Effect.as(null))
+
+      const worker = this.worker
+      const sendAbort = (): Promise<unknown> => this.sendTo(worker, 'scan:abort', args)
+      const recover = (target: DbWorkerPort | null): Effect.Effect<void, unknown> =>
+        this.recoverStuckWorker(target, replacementTimeoutMs)
+      return Effect.gen(function* () {
+        const response = yield* Effect.tryPromise({
+          try: sendAbort,
+          catch: cause => cause,
+        }).pipe(Effect.timeoutOption(Duration.millis(timeoutMs)))
+        if (Option.isSome(response)) return response.value
+        yield* recover(worker)
+        return yield* Effect.fail(new Error('scan abort drain timed out; worker was restarted'))
+      })
+    })
+  }
+
+  private recoverStuckWorker(worker: DbWorkerPort | null, timeoutMs: number): Effect.Effect<void, unknown> {
+    return Effect.uninterruptible(
+      Effect.suspend(() => {
+        const ongoingRecovery = this.recovery
+        if (ongoingRecovery) {
+          return Effect.tryPromise({ try: () => ongoingRecovery, catch: cause => cause })
+        }
+        if (!worker || this.worker !== worker) {
+          return Effect.tryPromise({ try: () => this.currentReady.promise, catch: cause => cause })
+        }
+
+        const completion = createReadyHandshake()
+        const recovery = completion.promise
+        this.recovery = recovery
+        return Effect.onExit(this.terminateAndReplace(worker, timeoutMs), exit =>
+          Effect.sync(() => {
+            if (Exit.isSuccess(exit)) {
+              if (this.recovery === recovery) this.recovery = null
+              completion.resolve()
+            } else {
+              // Keep the failed recovery installed so requests fail closed. This
+              // also settles joiners on defects or interruption, not only typed
+              // failures from the worker promises.
+              const failure = Cause.squash(exit.cause)
+              completion.reject(failure instanceof Error ? failure : new Error(String(failure)))
+            }
+          }),
+        )
+      }),
+    )
+  }
+
+  private terminateAndReplace(worker: DbWorkerPort, replacementTimeoutMs: number): Effect.Effect<void, unknown> {
+    const terminatedError = new Error('data worker terminated after scan abort timed out')
+    const terminate = (target: DbWorkerPort): Effect.Effect<void, unknown> =>
+      Effect.tryPromise({ try: () => this.terminateWorker(target), catch: cause => cause }).pipe(Effect.asVoid)
+    const startReplacement = (): ReadyHandshake => {
+      const handshake = (this.currentReady = createReadyHandshake())
+      this.spawn()
+      return handshake
+    }
+    const bootReplacement = Effect.gen(function* () {
+      const handshake = yield* Effect.try({ try: startReplacement, catch: cause => cause })
+      const ready = yield* Effect.tryPromise({
+        try: () => handshake.promise,
+        catch: cause => cause,
+      }).pipe(Effect.timeoutOption(Duration.millis(replacementTimeoutMs)))
+      if (Option.isNone(ready)) return yield* Effect.fail(new Error('replacement worker did not become ready'))
+    })
+    const currentWorker = (): DbWorkerPort | null => this.worker
+    const releaseWorker = (target: DbWorkerPort): void => {
+      if (this.worker === target) this.worker = null
+      if (this.retiringWorker === target) this.retiringWorker = null
+    }
+    const isTeardown = (): boolean => this.intentionalTeardown
+    const rejectPending = (error: Error): void => this.rejectPending(error)
+    const emitBootFailure = (): void => {
+      this.emitEvent({
+        event: 'scan:error',
+        manual: true,
+        message: 'scan stopped after abort timeout; replacement worker failed to start',
+      })
+      this.emitEvent({ event: 'scan:idle' })
+    }
+    const emitRecovery = (): void => {
+      this.emitEvent({ event: 'scan:error', manual: true, message: 'scan abort timed out; worker restarted' })
+      this.emitEvent({ event: 'scan:idle' })
+    }
+    const recoverBootFailure = (cause: unknown): Effect.Effect<void, unknown> =>
+      Effect.gen(function* () {
+        const failedWorker = currentWorker()
+        if (failedWorker) {
+          yield* terminate(failedWorker)
+          releaseWorker(failedWorker)
+        }
+        if (!isTeardown()) emitBootFailure()
+        return yield* Effect.fail(cause instanceof Error ? cause : new Error(String(cause)))
+      })
+
+    return Effect.gen(function* () {
+      // Worker.terminate() resolves only after the isolate has exited, which
+      // is the hard no-more-writes boundary.
+      yield* terminate(worker).pipe(
+        Effect.tapError(cause =>
+          Effect.sync(() => rejectPending(cause instanceof Error ? cause : new Error(String(cause)))),
+        ),
+      )
+      releaseWorker(worker)
+      rejectPending(terminatedError)
+      if (isTeardown()) return
+
+      yield* bootReplacement.pipe(Effect.catch(recoverBootFailure))
+      emitRecovery()
+    })
+  }
+
+  private terminateWorker(worker: DbWorkerPort): Promise<void> {
+    if (this.termination?.worker === worker) return this.termination.promise
+    this.retiringWorker = worker
+    const promise = Promise.resolve()
+      .then(() => worker.terminate())
+      .then(() => undefined)
+    this.termination = { worker, promise }
+    return promise
+  }
+
+  private rejectPending(error: Error): void {
+    for (const { reject } of this.pending.values()) reject(error)
+    this.pending.clear()
+    this.inflightReads.clear()
+  }
+
+  private emitEvent(event: DbWorkerEvent): void {
+    for (const listener of this.eventListeners) listener(event)
   }
 
   onEvent(listener: (event: DbWorkerEvent) => void): () => void {
@@ -348,34 +537,30 @@ export class DbWorkerClient {
     })
   }
 
-  /** Termination finalizer for `shutdownEffect`: captures the live worker,
-   * rejects every in-flight call with the legacy 'data worker shut down'
-   * error, and terminates the thread. Never fails — teardown must not turn
-   * a completed shutdown into a rejection. */
+  /** Termination finalizer for `shutdownEffect`. The worker reference remains
+   * owned until the actual termination promise resolves; a rejection must not
+   * make this client spawn a second writer beside a possibly-live thread. */
   private terminateWorkerEffect(): Effect.Effect<void> {
-    const takeWorker = (): DbWorkerPort | null => this.takeWorkerForTeardown()
+    const currentWorker = (): DbWorkerPort | null => this.worker
+    const rejectCalls = (): void => this.rejectPending(new Error('data worker shut down'))
+    const releaseWorker = (worker: DbWorkerPort): void => {
+      if (this.worker === worker) this.worker = null
+      if (this.retiringWorker === worker) this.retiringWorker = null
+    }
+    const terminate = (worker: DbWorkerPort): Promise<void> => this.terminateWorker(worker)
     return Effect.gen(function* () {
-      const worker: DbWorkerPort | null = yield* Effect.sync(takeWorker)
+      const worker: DbWorkerPort | null = yield* Effect.sync(currentWorker)
       if (worker) {
+        yield* Effect.sync(rejectCalls)
         yield* Effect.tryPromise({
-          try: () => worker.terminate(),
+          try: () => terminate(worker),
           catch: cause => cause,
-        }).pipe(Effect.ignore)
+        }).pipe(
+          Effect.tap(() => Effect.sync(() => releaseWorker(worker))),
+          Effect.ignore,
+        )
       }
     })
-  }
-
-  /** Captures the live worker for teardown (the legacy `finally` semantics):
-   * the worker ref is cleared, every pending call is rejected, and read
-   * coalescing is dropped, so a late graceful ack finds no slot and is
-   * ignored. A second call captures null and is a safe no-op. */
-  private takeWorkerForTeardown(): DbWorkerPort | null {
-    const worker = this.worker
-    this.worker = null
-    for (const { reject } of this.pending.values()) reject(new Error('data worker shut down'))
-    this.pending.clear()
-    this.inflightReads.clear()
-    return worker
   }
 
   /**
