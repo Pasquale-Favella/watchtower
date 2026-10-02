@@ -91,10 +91,30 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
 describe('subscribeToIpc (ADR 0011)', () => {
+  it('decodes Coach events and forwards only valid, stripped envelopes', () => {
+    const listeners = captureApi()
+    const onEvent = vi.spyOn(useCoachSkillsStore.getState(), 'onEvent').mockImplementation(() => {})
+    const notifyNotice = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('api', { notifyNotice })
+    const teardown = subscribeToIpc()
+
+    listeners.onCoachEvent!({
+      runId: 'run-1',
+      event: { kind: 'text', delta: 'Hello', extra: 'discarded' },
+      extra: 'discarded',
+    })
+    expect(onEvent).toHaveBeenCalledExactlyOnceWith({ runId: 'run-1', event: { kind: 'text', delta: 'Hello' } })
+
+    listeners.onCoachEvent!({ runId: 'run-1', event: { kind: 'text', delta: 42 } })
+    expect(onEvent).toHaveBeenCalledTimes(1)
+    expect(notifyNotice).toHaveBeenCalledWith('coach event', 'event.delta')
+    teardown()
+  })
   it('feeds scan progress into the scan store, dropping malformed broadcasts', () => {
     const listeners = captureApi()
     const teardown = subscribeToIpc()

@@ -1,3 +1,5 @@
+import * as Schema from 'effect/Schema'
+
 import {
   type EfficiencyGrade,
   type OverviewActivityRow,
@@ -732,5 +734,7 @@ export function buildOverviewFromLedger(store: LedgerStore, scope: OverviewScope
     range: overviewDateRange(scope, now),
     provider: scope.provider,
   })
-  return overviewPayloadSchema.parse(buildOverviewPayload(scoped, scope, now, dataStartForSessions(allSessions)))
+  return Schema.decodeUnknownSync(overviewPayloadSchema)(
+    buildOverviewPayload(scoped, scope, now, dataStartForSessions(allSessions)),
+  )
 }

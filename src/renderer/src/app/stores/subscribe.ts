@@ -1,5 +1,4 @@
-import { onCoachHarnessesChanged, parseEvent, parseZodEvent } from '@/shared/lib/api'
-import { effectSchemaDecoder } from '@/shared/lib/schema-decoder'
+import { onCoachHarnessesChanged, parseEvent } from '@/shared/lib/api'
 
 import { coachEventEnvelopeSchema } from '../../../../shared/schemas/agents.js'
 import { activeCurrencySchema } from '../../../../shared/schemas/fx.js'
@@ -19,7 +18,7 @@ export function subscribeToIpc(): () => void {
   unsubs.push(
     window.api.onProgress(progress => {
       // Tripwire (ADR 0005): a malformed broadcast is dropped, never painted.
-      const parsed = parseEvent(effectSchemaDecoder(scanProgressMessageSchema), 'scan progress', progress)
+      const parsed = parseEvent(scanProgressMessageSchema, 'scan progress', progress)
       if (!parsed) return
       useScanStore
         .getState()
@@ -31,7 +30,7 @@ export function subscribeToIpc(): () => void {
 
   unsubs.push(
     window.api.onChanged(message => {
-      const parsed = parseEvent(effectSchemaDecoder(storeChangedMessageSchema), 'store changed', message)
+      const parsed = parseEvent(storeChangedMessageSchema, 'store changed', message)
       if (!parsed) return
       void useScanStore.getState().applyChange()
     }),
@@ -43,7 +42,7 @@ export function subscribeToIpc(): () => void {
   // values with it, replacing the fallback rate the selection returned.
   unsubs.push(
     window.api.onCurrencyChanged(next => {
-      const parsed = parseEvent(effectSchemaDecoder(activeCurrencySchema), 'currency changed', next)
+      const parsed = parseEvent(activeCurrencySchema, 'currency changed', next)
       if (!parsed) return
       useSettingsStore.getState().onCurrencyChanged(parsed)
     }),
@@ -61,7 +60,7 @@ export function subscribeToIpc(): () => void {
   // Coach & Skills store so the thread accumulates text/tools/session live.
   unsubs.push(
     window.api.onCoachEvent(message => {
-      const parsed = parseZodEvent(coachEventEnvelopeSchema, 'coach event', message)
+      const parsed = parseEvent(coachEventEnvelopeSchema, 'coach event', message)
       if (!parsed) return
       useCoachSkillsStore.getState().onEvent(parsed)
     }),

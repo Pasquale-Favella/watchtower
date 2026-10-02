@@ -1,18 +1,18 @@
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { effectSchemaDecoder } from '../src/renderer/src/shared/lib/schema-decoder.js'
+import { decodeSchema } from '../src/renderer/src/shared/lib/schema-decoder.js'
 import * as models from '../src/shared/schemas/models.js'
 import * as views from '../src/shared/schemas/views.js'
-import { preEffectModelsContracts, preEffectViewsContracts } from './fixtures/pre-effect-views-models-schemas.js'
 
-type LegacySchema = { safeParse: (input: unknown) => { success: boolean; data?: unknown } }
+function assertAccepted(current: Schema.ConstraintDecoder<unknown>, input: unknown, expected: unknown): void {
+  const result = decodeSchema(current, input)
+  expect(result.ok).toBe(true)
+  if (result.ok) expect(result.value).toStrictEqual(expected)
+}
 
-function assertParity(legacy: LegacySchema, current: Schema.ConstraintDecoder<unknown>, input: unknown): void {
-  const before = legacy.safeParse(input)
-  const after = effectSchemaDecoder(current)(input)
-  expect(after.ok).toBe(before.success)
-  if (before.success && after.ok) expect(after.value).toStrictEqual(before.data)
+function assertRejected(current: Schema.ConstraintDecoder<unknown>, input: unknown): void {
+  expect(decodeSchema(current, input).ok).toBe(false)
 }
 
 const costs = {
@@ -88,72 +88,27 @@ const detailTurn = {
 }
 
 const contracts = [
-  [
-    'models.modelCostsSchema',
-    preEffectModelsContracts.modelCostsSchema,
-    models.modelCostsSchema,
-    costs,
-    ['inputCostPerToken'],
-  ],
-  [
-    'models.modelAliasSchema',
-    preEffectModelsContracts.modelAliasSchema,
-    models.modelAliasSchema,
-    { model: 'a', aliasOf: 'b' },
-    [],
-  ],
-  [
-    'models.priceOverrideSchema',
-    preEffectModelsContracts.priceOverrideSchema,
-    models.priceOverrideSchema,
-    { model: 'a', ...override },
-    ['inputPricePerMillion'],
-  ],
+  ['models.modelCostsSchema', models.modelCostsSchema, costs, ['inputCostPerToken']],
+  ['models.modelAliasSchema', models.modelAliasSchema, { model: 'a', aliasOf: 'b' }, []],
+  ['models.priceOverrideSchema', models.priceOverrideSchema, { model: 'a', ...override }, ['inputPricePerMillion']],
   [
     'models.modelsConfigSchema',
-    preEffectModelsContracts.modelsConfigSchema,
     models.modelsConfigSchema,
     { aliases: [{ model: 'a', aliasOf: 'b' }], overrides: [{ model: 'a', ...override }] },
     ['overrides.0.inputPricePerMillion'],
   ],
-  [
-    'models.rowOverrideSchema',
-    preEffectModelsContracts.rowOverrideSchema,
-    models.rowOverrideSchema,
-    override,
-    ['inputPricePerMillion'],
-  ],
-  [
-    'models.modelReportRowSchema',
-    preEffectModelsContracts.modelReportRowSchema,
-    models.modelReportRowSchema,
-    modelRow,
-    ['costUSD'],
-  ],
-  [
-    'models.auditRowSchema',
-    preEffectModelsContracts.auditRowSchema,
-    models.auditRowSchema,
-    auditRow,
-    ['raw.inputTokens'],
-  ],
+  ['models.rowOverrideSchema', models.rowOverrideSchema, override, ['inputPricePerMillion']],
+  ['models.modelReportRowSchema', models.modelReportRowSchema, modelRow, ['costUSD']],
+  ['models.auditRowSchema', models.auditRowSchema, auditRow, ['raw.inputTokens']],
   [
     'models.modelsPayloadSchema',
-    preEffectModelsContracts.modelsPayloadSchema,
     models.modelsPayloadSchema,
     { byModel: [modelRow], byTask: [], audit: [auditRow] },
     ['byModel.0.costUSD'],
   ],
-  [
-    'views.providerRowSchema',
-    preEffectViewsContracts.providerRowSchema,
-    views.providerRowSchema,
-    providerRow,
-    ['cost'],
-  ],
+  ['views.providerRowSchema', views.providerRowSchema, providerRow, ['cost']],
   [
     'views.dashboardViewsSchema',
-    preEffectViewsContracts.dashboardViewsSchema,
     views.dashboardViewsSchema,
     {
       kpis: Object.fromEntries(
@@ -182,7 +137,6 @@ const contracts = [
   ],
   [
     'views.projectRowSchema',
-    preEffectViewsContracts.projectRowSchema,
     views.projectRowSchema,
     {
       project: 'p',
@@ -197,7 +151,6 @@ const contracts = [
   ],
   [
     'views.sessionRowSchema',
-    preEffectViewsContracts.sessionRowSchema,
     views.sessionRowSchema,
     {
       sessionId: 's',
@@ -216,23 +169,10 @@ const contracts = [
     },
     ['cost'],
   ],
-  [
-    'views.skillRowSchema',
-    preEffectViewsContracts.skillRowSchema,
-    views.skillRowSchema,
-    { name: 'n', turns: 1, cost: 2, savingsUSD: 3 },
-    ['cost'],
-  ],
-  [
-    'views.subagentRowSchema',
-    preEffectViewsContracts.subagentRowSchema,
-    views.subagentRowSchema,
-    { name: 'n', calls: 1, cost: 2, savingsUSD: 3 },
-    ['cost'],
-  ],
+  ['views.skillRowSchema', views.skillRowSchema, { name: 'n', turns: 1, cost: 2, savingsUSD: 3 }, ['cost']],
+  ['views.subagentRowSchema', views.subagentRowSchema, { name: 'n', calls: 1, cost: 2, savingsUSD: 3 }, ['cost']],
   [
     'views.analyticalViewsSchema',
-    preEffectViewsContracts.analyticalViewsSchema,
     views.analyticalViewsSchema,
     {
       providers: [providerRow],
@@ -245,7 +185,6 @@ const contracts = [
   ],
   [
     'views.searchHitSchema',
-    preEffectViewsContracts.searchHitSchema,
     views.searchHitSchema,
     {
       sessionId: 's',
@@ -257,23 +196,10 @@ const contracts = [
     },
     [],
   ],
-  [
-    'views.sessionDetailCallSchema',
-    preEffectViewsContracts.sessionDetailCallSchema,
-    views.sessionDetailCallSchema,
-    detailCall,
-    ['costUSD'],
-  ],
-  [
-    'views.sessionDetailTurnSchema',
-    preEffectViewsContracts.sessionDetailTurnSchema,
-    views.sessionDetailTurnSchema,
-    detailTurn,
-    ['retries'],
-  ],
+  ['views.sessionDetailCallSchema', views.sessionDetailCallSchema, detailCall, ['costUSD']],
+  ['views.sessionDetailTurnSchema', views.sessionDetailTurnSchema, detailTurn, ['retries']],
   [
     'views.sessionDetailSchema',
-    preEffectViewsContracts.sessionDetailSchema,
     views.sessionDetailSchema,
     {
       sessionId: 's',
@@ -307,23 +233,24 @@ function withUnknownExtension(value: unknown): unknown {
 function setPath(value: unknown, path: readonly string[], replacement: unknown): unknown {
   const copy = structuredClone(value) as Record<string, unknown>
   let cursor: Record<string, unknown> | unknown[] = copy
-  for (const part of path.slice(0, -1)) cursor = (cursor as Record<string, unknown>)[part] as Record<string, unknown>
-  const leaf = path.at(-1)
+  const parts = path.flatMap(part => part.split('.'))
+  for (const part of parts.slice(0, -1)) cursor = (cursor as Record<string, unknown>)[part] as Record<string, unknown>
+  const leaf = parts.at(-1)
   if (leaf !== undefined) (cursor as Record<string, unknown>)[leaf] = replacement
   return copy
 }
 
 describe('models and views Effect Schema parity', () => {
   it.each(contracts)(
-    '%s preserves old verdicts, decoded outputs, and unknown-key stripping',
-    (_name, oldSchema, newSchema, sample, numericPath) => {
+    '%s accepts the expected value, rejects invalid numbers, and strips unknown keys',
+    (_name, schema, sample, numericPath) => {
       const extended = withUnknownExtension(sample)
-      assertParity(oldSchema, newSchema, extended)
+      assertAccepted(schema, extended, sample)
       const invalid = numericPath.length ? setPath(sample, numericPath, Number.NaN) : { invalid: true }
-      assertParity(oldSchema, newSchema, invalid)
+      assertRejected(schema, invalid)
       if (numericPath.length) {
-        assertParity(oldSchema, newSchema, setPath(sample, numericPath, Number.POSITIVE_INFINITY))
-        assertParity(oldSchema, newSchema, setPath(sample, numericPath, Number.NEGATIVE_INFINITY))
+        assertRejected(schema, setPath(sample, numericPath, Number.POSITIVE_INFINITY))
+        assertRejected(schema, setPath(sample, numericPath, Number.NEGATIVE_INFINITY))
       }
     },
   )
@@ -341,15 +268,10 @@ describe('models and views Effect Schema parity', () => {
     }
     const report = { ...modelRow, sourceModels: undefined, override: undefined }
     const cases = [
-      [preEffectModelsContracts.modelReportRowSchema, models.modelReportRowSchema, report],
+      [models.modelReportRowSchema, report],
+      [models.auditRowSchema, { ...auditRow, aliasOf: undefined, override: undefined }],
+      [views.projectRowSchema, project],
       [
-        preEffectModelsContracts.auditRowSchema,
-        models.auditRowSchema,
-        { ...auditRow, aliasOf: undefined, override: undefined },
-      ],
-      [preEffectViewsContracts.projectRowSchema, views.projectRowSchema, project],
-      [
-        preEffectViewsContracts.sessionRowSchema,
         views.sessionRowSchema,
         {
           sessionId: 's',
@@ -369,7 +291,6 @@ describe('models and views Effect Schema parity', () => {
         },
       ],
       [
-        preEffectViewsContracts.sessionDetailCallSchema,
         views.sessionDetailCallSchema,
         {
           ...detailCall,
@@ -377,13 +298,8 @@ describe('models and views Effect Schema parity', () => {
           savingsUSD: undefined,
         },
       ],
+      [views.sessionDetailTurnSchema, { ...detailTurn, gitBranch: undefined }],
       [
-        preEffectViewsContracts.sessionDetailTurnSchema,
-        views.sessionDetailTurnSchema,
-        { ...detailTurn, gitBranch: undefined },
-      ],
-      [
-        preEffectViewsContracts.sessionDetailSchema,
         views.sessionDetailSchema,
         {
           sessionId: 's',
@@ -408,13 +324,10 @@ describe('models and views Effect Schema parity', () => {
         },
       ],
     ] as const
-    for (const [legacy, current, value] of cases) assertParity(legacy, current, value)
+    for (const [current, value] of cases) assertAccepted(current, value, value)
 
-    assertParity(preEffectViewsContracts.projectRowSchema, views.projectRowSchema, { ...project, repoUrl: null })
-    assertParity(preEffectModelsContracts.modelReportRowSchema, models.modelReportRowSchema, {
-      ...report,
-      sourceModels: null,
-    })
+    assertRejected(views.projectRowSchema, { ...project, repoUrl: null })
+    assertRejected(models.modelReportRowSchema, { ...report, sourceModels: null })
   })
 
   it('keeps validated collection outputs mutable for existing consumers', () => {

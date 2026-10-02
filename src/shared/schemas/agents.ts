@@ -1,237 +1,145 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
 import { overviewScopeSchema } from './overview.js'
 
-/**
- * The agent harness event stream — the wire contract between the main-process
- * HarnessRuntime seam and the renderer (ADR 0005). Stream parts from the AI SDK
- * + ACP provider (a local coding-agent harness: Claude Code, OpenCode, Codex,
- * …) are derived into this typed union before they cross the IPC boundary; the
- * renderer never sees the raw stream shape. The discriminated union matches the
- * shape settled in the pathfinder prototype (tickets 14/15) and the
- * architecture decision (ticket 18): text deltas, thinking/reasoning deltas,
- * tool-call notices with their lifecycle state and payload previews, session
- * ids (the ACP session resume handle), lifecycle status, and errors.
- *
- * Model/mode session-meta (map 47 ticket 50): the ACP handshake
- * (`initSession()`) can report the agent's selectable models and modes. Those
- * ride the `session` event as optional `models`/`modes` — the renderer shows a
- * picker ONLY when they are present (progressive: the agent itself declares
- * what is selectable).
- */
+const writable = Schema.mutableKey
+const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))
+const optionalText = Schema.optional(Schema.String)
+const nullableOptionalText = Schema.optional(Schema.NullOr(Schema.String))
 
-/** One selectable ACP model (ACP `ModelInfo` subset — description optional). */
-export const coachModelInfoSchema = z.object({
-  modelId: z.string(),
-  name: z.string(),
-  description: z.string().nullable().optional(),
+export const coachModelInfoSchema = Schema.Struct({
+  modelId: writable(Schema.String),
+  name: writable(Schema.String),
+  description: writable(nullableOptionalText),
 })
-export type CoachModelInfo = z.infer<typeof coachModelInfoSchema>
+export type CoachModelInfo = Schema.Schema.Type<typeof coachModelInfoSchema>
 
-/** One selectable ACP session mode (e.g. ask / plan / acceptEdits). */
-export const coachSessionModeSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  description: z.string().nullable().optional(),
+export const coachSessionModeSchema = Schema.Struct({
+  id: writable(Schema.String),
+  name: writable(Schema.String),
+  description: writable(nullableOptionalText),
 })
-export type CoachSessionMode = z.infer<typeof coachSessionModeSchema>
+export type CoachSessionMode = Schema.Schema.Type<typeof coachSessionModeSchema>
 
-/** The agent's selectable models + the one currently active. */
-export const coachSessionModelsSchema = z.object({
-  availableModels: z.array(coachModelInfoSchema),
-  currentModelId: z.string(),
+export const coachSessionModelsSchema = Schema.Struct({
+  availableModels: writable(mutableArray(coachModelInfoSchema)),
+  currentModelId: writable(Schema.String),
 })
-export type CoachSessionModels = z.infer<typeof coachSessionModelsSchema>
+export type CoachSessionModels = Schema.Schema.Type<typeof coachSessionModelsSchema>
 
-/** The agent's selectable modes + the one currently active. */
-export const coachSessionModesSchema = z.object({
-  availableModes: z.array(coachSessionModeSchema),
-  currentModeId: z.string(),
+export const coachSessionModesSchema = Schema.Struct({
+  availableModes: writable(mutableArray(coachSessionModeSchema)),
+  currentModeId: writable(Schema.String),
 })
-export type CoachSessionModes = z.infer<typeof coachSessionModesSchema>
+export type CoachSessionModes = Schema.Schema.Type<typeof coachSessionModesSchema>
 
-export const coachEventSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('status'),
-    state: z.enum(['starting', 'running', 'done']),
-  }),
-  z.object({
-    kind: z.literal('text'),
-    /** Assistant text delta — appended to the running message. */
-    delta: z.string(),
-  }),
-  z.object({
-    kind: z.literal('reasoning'),
-    /** Thinking/reasoning text delta — appended to the running thinking block. */
-    delta: z.string(),
-  }),
-  z.object({
-    kind: z.literal('tool'),
-    /** Tool-call notice: the tool name (e.g. Bash, Read, Edit). */
-    tool: z.string(),
-    /** Optional human-readable title the harness attached to the call. */
-    title: z.string().optional(),
-    /** The tool call id — pairs the started notice with its completion. */
-    id: z.string().optional(),
-    /** Lifecycle state: started while executing, completed/error once it ends. */
-    state: z.enum(['started', 'completed', 'error']).optional(),
-    /** Truncated JSON preview of the tool's input arguments. */
-    input: z.string().optional(),
-    /** Truncated JSON preview of the tool's result output. */
-    output: z.string().optional(),
-    /** Truncated error message when the call failed (`state: 'error'`). */
-    error: z.string().optional(),
-  }),
-  z.object({
-    kind: z.literal('session'),
-    /** Opaque, instance-bound resume handle for follow-up turns. */
-    resumeCursor: z.string(),
-    /** Progressive model/mode selection (map 47 ticket 50): present ONLY when
-     *  the agent's handshake reported selectable options. */
-    models: coachSessionModelsSchema.optional(),
-    modes: coachSessionModesSchema.optional(),
-  }),
-  z.object({
-    kind: z.literal('notice'),
-    message: z.string(),
-  }),
-  z.object({
-    kind: z.literal('error'),
-    message: z.string(),
+const statusEventSchema = Schema.Struct({
+  kind: writable(Schema.Literal('status')),
+  state: writable(Schema.Literals(['starting', 'running', 'done'])),
+})
+const textEventSchema = Schema.Struct({ kind: writable(Schema.Literal('text')), delta: writable(Schema.String) })
+const reasoningEventSchema = Schema.Struct({
+  kind: writable(Schema.Literal('reasoning')),
+  delta: writable(Schema.String),
+})
+const toolEventSchema = Schema.Struct({
+  kind: writable(Schema.Literal('tool')),
+  tool: writable(Schema.String),
+  title: writable(optionalText),
+  id: writable(optionalText),
+  state: writable(Schema.optional(Schema.Literals(['started', 'completed', 'error']))),
+  input: writable(optionalText),
+  output: writable(optionalText),
+  error: writable(optionalText),
+})
+const sessionEventSchema = Schema.Struct({
+  kind: writable(Schema.Literal('session')),
+  resumeCursor: writable(Schema.String),
+  models: writable(Schema.optional(coachSessionModelsSchema)),
+  modes: writable(Schema.optional(coachSessionModesSchema)),
+})
+const noticeEventSchema = Schema.Struct({ kind: writable(Schema.Literal('notice')), message: writable(Schema.String) })
+const errorEventSchema = Schema.Struct({ kind: writable(Schema.Literal('error')), message: writable(Schema.String) })
+
+export const coachEventSchema = Schema.Union([
+  statusEventSchema,
+  textEventSchema,
+  reasoningEventSchema,
+  toolEventSchema,
+  sessionEventSchema,
+  noticeEventSchema,
+  errorEventSchema,
+])
+export type CoachEvent = Schema.Schema.Type<typeof coachEventSchema>
+
+export const coachEventEnvelopeSchema = Schema.Struct({
+  runId: writable(Schema.String),
+  event: writable(coachEventSchema),
+})
+export type CoachEventEnvelope = Schema.Schema.Type<typeof coachEventEnvelopeSchema>
+
+export const coachRunRequestSchema = Schema.Struct({
+  harnessKind: writable(Schema.String),
+  modelId: writable(optionalText),
+  modeId: writable(optionalText),
+  scope: writable(Schema.optional(overviewScopeSchema)),
+  prompt: writable(optionalText),
+  resumeCursor: writable(optionalText),
+  allowApiKeyEnv: writable(Schema.optional(Schema.Boolean)),
+})
+export type CoachRunRequest = Schema.Schema.Type<typeof coachRunRequestSchema>
+
+export const coachRunResultSchema = Schema.Union([
+  Schema.Struct({ ok: writable(Schema.Literal(true)), runId: writable(Schema.String) }),
+  Schema.Struct({ ok: writable(Schema.Literal(false)), error: writable(Schema.String) }),
+])
+export type CoachRunResult = Schema.Schema.Type<typeof coachRunResultSchema>
+
+export const coachHarnessRowSchema = Schema.Struct({
+  instanceId: writable(Schema.String),
+  kind: writable(Schema.String),
+  displayName: writable(Schema.String),
+  status: writable(Schema.Literals(['pending', 'ready', 'warning', 'error', 'disabled'])),
+  auth: writable(
+    Schema.Struct({
+      status: writable(Schema.Literals(['configured', 'unauthenticated', 'unknown'])),
+      label: writable(optionalText),
+      loginCommand: writable(optionalText),
+    }),
+  ),
+  version: writable(optionalText),
+  binaryPath: writable(optionalText),
+  message: writable(optionalText),
+})
+export type CoachHarnessRow = Schema.Schema.Type<typeof coachHarnessRowSchema>
+
+export const coachHarnessesResultSchema = mutableArray(coachHarnessRowSchema)
+export type CoachHarnessesResult = Schema.Schema.Type<typeof coachHarnessesResultSchema>
+
+export const coachOpenLoginTerminalRequestSchema = Schema.String.pipe(Schema.check(Schema.isMinLength(1)))
+export type CoachOpenLoginTerminalRequest = Schema.Schema.Type<typeof coachOpenLoginTerminalRequestSchema>
+
+export const coachLoginTerminalResultSchema = Schema.Union([
+  Schema.Struct({ ok: writable(Schema.Literal(true)) }),
+  Schema.Struct({ ok: writable(Schema.Literal(false)), error: writable(Schema.String) }),
+])
+export type CoachLoginTerminalResult = Schema.Schema.Type<typeof coachLoginTerminalResultSchema>
+
+export const coachInspectRequestSchema = Schema.Union([
+  Schema.String.pipe(Schema.check(Schema.isMinLength(1))),
+  Schema.Struct({
+    kind: writable(Schema.String.pipe(Schema.check(Schema.isMinLength(1)))),
+    allowApiKeyEnv: writable(Schema.optional(Schema.Boolean)),
   }),
 ])
-export type CoachEvent = z.infer<typeof coachEventSchema>
+export type CoachInspectRequest = Schema.Schema.Type<typeof coachInspectRequestSchema>
 
-/** The `coach:event` push envelope — one CoachEvent tagged with the run it
- *  belongs to, so the renderer routes concurrent/sequential run streams
- *  without mixing deltas. */
-export const coachEventEnvelopeSchema = z.object({
-  runId: z.string(),
-  event: coachEventSchema,
-})
-export type CoachEventEnvelope = z.infer<typeof coachEventEnvelopeSchema>
-
-/** `coach:run` request — the renderer's ask to drive one harness run through
- *  the seam. There is NO workspace picker (map 53): the main process runs
- *  each conversation in a private temp directory it owns and cleans up;
- *  `resumeCursor` resumes a previous run's session (ACP `existingSessionId`, and
- *  with it the conversation's temp workspace).
- *
- * The harness reads the platform's own data through the in-app ledger MCP
- *  server, scoped to `scope` — the conversation's snapshot of the current UI
- *  scope (period/provider/range), baked at spawn.
- *
- * Model/mode selection is PROGRESSIVE (map 47 ticket 50): the renderer may
- *  only send `modelId`/`modeId` that the agent's own handshake reported via the
- *  `session` event's models/modes — there is no arbitrary model picker.
- *
- * There is ONE run mode — a free-form coach prompt. Skill crafting is a
- *  coaching question (the suggested-skill chips send a natural-language
- *  authoring prompt); the separate `build-skill` mode was deleted. */
-export const coachRunRequestSchema = z.object({
-  /** Instance id to drive; the wire field retains its legacy name. */
-  harnessKind: z.string(),
-  /** Agent-declared model id (from the session event's models), optional. */
-  modelId: z.string().optional(),
-  /** Agent-declared session mode id (from the session event's modes). */
-  modeId: z.string().optional(),
-  /** The conversation's UI-scope snapshot — since the in-app ledger MCP
-   *  server serves the FULL lifetime ledger (map 53), this rides the first-run
-   *  briefing as a SUGGESTED default window for the agent's queries, never a
-   *  boundary. Absent = lifetime (the tools' own no-arg default). */
-  scope: overviewScopeSchema.optional(),
-  /** The user's prompt — the whole run. The main process prepends the MCP
-   *  briefing on the conversation's first run. The runner enforces that a
-   *  prompt is present (the schema keeps it optional so the channel stays
-   *  uniform). */
-  prompt: z.string().optional(),
-  /** Opaque resume handle from a previous run's session event. */
-  resumeCursor: z.string().optional(),
-  /** Opt-in API-key passthrough: when true the main process does NOT scrub
-   *  the harness's API-key env vars (e.g. ANTHROPIC_API_KEY) before spawning
-   *  the agent, so a harness authenticates the same way the user's terminal
-   *  does. Default (absent/false) keeps the ADR 0012 stored-login behaviour.
-   *  The key itself is never sent over this wire — it stays in the app
-   *  process's own environment. */
-  allowApiKeyEnv: z.boolean().optional(),
-})
-export type CoachRunRequest = z.infer<typeof coachRunRequestSchema>
-
-/** `coach:run` response — an immediate ack with the run id; the events land
- *  on the `coach:event` push channel as they stream. */
-export const coachRunResultSchema = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), runId: z.string() }),
-  z.object({ ok: z.literal(false), error: z.string() }),
-])
-export type CoachRunResult = z.infer<typeof coachRunResultSchema>
-
-/** One detected harness, as the Coach harness picker sees it (ADR 0016,
- *  reshaped by map 47 ticket 49). A harness is ONE agent = ONE language model:
- *  no static model list rides the row — selectable models/modes arrive only
- *  via the live handshake (`session` event models/modes, ticket 50). */
-export const coachHarnessRowSchema = z.object({
-  /** Stable instance key. For the default registry this equals `kind`. */
-  instanceId: z.string(),
-  /** Canonical tool name — the registry key (claude, gemini, …). */
-  kind: z.string(),
-  /** Human-readable label shown in the picker. */
-  displayName: z.string(),
-  status: z.enum(['pending', 'ready', 'warning', 'error', 'disabled']),
-  auth: z.object({
-    status: z.enum(['configured', 'unauthenticated', 'unknown']),
-    label: z.string().optional(),
-    loginCommand: z.string().optional(),
+export const coachInspectResultSchema = Schema.Union([
+  Schema.Struct({
+    ok: writable(Schema.Literal(true)),
+    models: writable(Schema.optional(coachSessionModelsSchema)),
+    modes: writable(Schema.optional(coachSessionModesSchema)),
   }),
-  version: z.string().optional(),
-  binaryPath: z.string().optional(),
-  message: z.string().optional(),
-})
-export type CoachHarnessRow = z.infer<typeof coachHarnessRowSchema>
-
-/** `coach:harnesses` response — the detected harnesses for the picker. */
-export const coachHarnessesResultSchema = z.array(coachHarnessRowSchema)
-export type CoachHarnessesResult = z.infer<typeof coachHarnessesResultSchema>
-
-export const coachOpenLoginTerminalRequestSchema = z.string().min(1)
-export type CoachOpenLoginTerminalRequest = z.infer<typeof coachOpenLoginTerminalRequestSchema>
-
-export const coachLoginTerminalResultSchema = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true) }),
-  z.object({ ok: z.literal(false), error: z.string() }),
+  Schema.Struct({ ok: writable(Schema.Literal(false)), error: writable(Schema.String) }),
 ])
-export type CoachLoginTerminalResult = z.infer<typeof coachLoginTerminalResultSchema>
-
-/** `coach:inspect` request — a bare registry key (legacy) or the key plus the
- *  API-key passthrough opt-in. The probe spawns the agent exactly like a run
- *  would, so it must honour the same env flag — otherwise a probe-warmed
- *  session resumed by the first run would carry the wrong environment. */
-export const coachInspectRequestSchema = z.union([
-  z.string().min(1),
-  z.object({
-    kind: z.string().min(1),
-    allowApiKeyEnv: z.boolean().optional(),
-  }),
-])
-export type CoachInspectRequest = z.infer<typeof coachInspectRequestSchema>
-
-/** `coach:inspect` response — a pre-flight probe of a harness's handshake
- *  declared models/modes, WITHOUT running a prompt (map 47 ticket 50,
- *  progressive selection before the first message). The main process spawns
- *  the ACP provider, calls `initSession()`, reads the session response, and
- *  tears the provider down — the same handshake a run performs, just with no
- *  streaming. `models`/`modes` are present ONLY when the agent declared
- *  selectable options; a failed probe (unavailable agent, auth wall) is a
- *  `{ ok: false }` arm the renderer treats as "no pickers" — the run itself
- *  surfaces the real error when the user chats. */
-export const coachInspectResultSchema = z.discriminatedUnion('ok', [
-  z.object({
-    ok: z.literal(true),
-    models: coachSessionModelsSchema.optional(),
-    modes: coachSessionModesSchema.optional(),
-  }),
-  z.object({
-    ok: z.literal(false),
-    error: z.string(),
-  }),
-])
-export type CoachInspectResult = z.infer<typeof coachInspectResultSchema>
+export type CoachInspectResult = Schema.Schema.Type<typeof coachInspectResultSchema>

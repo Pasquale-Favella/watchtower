@@ -149,10 +149,10 @@ interface ProbeInput {
 /** Normalizes the `coach:inspect` wire payload (bare registry key or
  *  `{ kind, allowApiKeyEnv }`). Null when invalid. */
 function toProbeInput(request: unknown): ProbeInput | null {
-  const parsed = coachInspectRequestSchema.safeParse(request)
-  if (!parsed.success) return null
-  if (typeof parsed.data === 'string') return { kind: parsed.data, allowApiKeyEnv: false }
-  return { kind: parsed.data.kind, allowApiKeyEnv: parsed.data.allowApiKeyEnv ?? false }
+  const parsed = Schema.decodeUnknownResult(coachInspectRequestSchema)(request)
+  if (parsed._tag === 'Failure') return null
+  if (typeof parsed.success === 'string') return { kind: parsed.success, allowApiKeyEnv: false }
+  return { kind: parsed.success.kind, allowApiKeyEnv: parsed.success.allowApiKeyEnv ?? false }
 }
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
@@ -360,11 +360,11 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
 
     async start(request: unknown, emit): Promise<CoachRunResult> {
       const runGeneration = conversationGeneration
-      const parsed = coachRunRequestSchema.safeParse(request)
-      if (!parsed.success) {
+      const parsed = Schema.decodeUnknownResult(coachRunRequestSchema)(request)
+      if (parsed._tag === 'Failure') {
         return { ok: false, error: 'invalid coach run request' }
       }
-      const req: CoachRunRequest = parsed.data
+      const req: CoachRunRequest = parsed.success
       const runId = randomUUID()
 
       // The conversation's UI scope snapshot (map 53): no longer baked into
@@ -669,13 +669,13 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
   ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> => runner.harnesses())
   ipcMain.handle('coach:harnesses-refresh', async (): Promise<CoachHarnessRow[]> => runner.refreshHarnesses())
   ipcMain.handle('coach:open-login-terminal', async (_event, request: unknown): Promise<CoachLoginTerminalResult> => {
-    const parsed = coachOpenLoginTerminalRequestSchema.safeParse(request)
-    if (!parsed.success) return { ok: false, error: 'invalid harness instance id' }
-    const instance = await harnessStore.get(parsed.data)
+    const parsed = Schema.decodeUnknownResult(coachOpenLoginTerminalRequestSchema)(request)
+    if (parsed._tag === 'Failure') return { ok: false, error: 'invalid harness instance id' }
+    const instance = await harnessStore.get(parsed.success)
     const loginCommand = instance
       ? harnessSpecs.find(spec => spec.kind === instance.info.kind)?.auth?.loginCommand
       : undefined
-    return openLoginTerminal(parsed.data, instanceId => (instanceId === parsed.data ? loginCommand : undefined))
+    return openLoginTerminal(parsed.success, instanceId => (instanceId === parsed.success ? loginCommand : undefined))
   })
 
   /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared

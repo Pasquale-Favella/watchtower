@@ -1,34 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { z } from 'zod'
 
-import { effectSchemaDecoder } from '../src/renderer/src/shared/lib/schema-decoder.js'
+import { decodeSchema } from '../src/renderer/src/shared/lib/schema-decoder.js'
 import { exportResultSchema } from '../src/shared/schemas/export.js'
 import { activeCurrencySchema, currencyOptionSchema, currencyOptionsSchema } from '../src/shared/schemas/fx.js'
 import { appVersionSchema, updateStatusSchema } from '../src/shared/schemas/updates.js'
 
-// Frozen copies of the pre-migration contracts. Replace these definitions with
-// golden fixtures after the final Watchtower-owned Zod import and direct
-// dependency are removed.
-const priorContracts = {
-  activeCurrency: z.object({
-    code: z.string(),
-    symbol: z.string(),
-    rate: z.number(),
-    updatedAt: z.string().optional(),
-  }),
-  currencyOption: z.object({ code: z.string(), symbol: z.string() }),
-  updateStatus: z.object({
-    currentVersion: z.string(),
-    latestVersion: z.string().nullable(),
-    updateAvailable: z.boolean(),
-    tag: z.string().nullable(),
-  }),
-  appVersion: z.string(),
-  exportResult: z.object({
-    ok: z.boolean(),
-    path: z.string().optional(),
-    error: z.string().optional(),
-  }),
+type CurrentSchema = Parameters<typeof decodeSchema>[0]
+type ExpectedCase = { input: unknown; output: unknown } | { input: unknown; rejects: true }
+
+function expectCases(schema: CurrentSchema, cases: ReadonlyArray<ExpectedCase>): void {
+  for (const testCase of cases) {
+    const result = decodeSchema(schema, testCase.input)
+    if ('rejects' in testCase) {
+      expect(result.ok, `rejection for ${String(testCase.input)}`).toBe(false)
+    } else {
+      expect(result.ok, `acceptance for ${String(testCase.input)}`).toBe(true)
+      if (result.ok) expect(result.value).toStrictEqual(testCase.output)
+    }
+  }
 }
 
 const validCurrency = { code: 'EUR', symbol: '€', rate: 0.9 }
@@ -39,125 +28,128 @@ const validUpdateStatus = {
   tag: 'v1.2.4',
 }
 
-describe('leaf wire schemas retain the prior Zod contract', () => {
-  it('matches verdicts and decoded values across the active-currency contract', () => {
-    const corpus: unknown[] = [
-      validCurrency,
-      { ...validCurrency, updatedAt: '2026-10-01T00:00:00.000Z' },
-      { ...validCurrency, updatedAt: undefined },
-      { ...validCurrency, extra: true },
-      { code: 'EUR', symbol: '€', rate: -0 },
-      { code: 'EUR', symbol: '€', rate: Number.MAX_VALUE },
-      { code: 'EUR', symbol: '€', rate: Number.MIN_VALUE },
-      { ...validCurrency, code: undefined },
-      { ...validCurrency, code: null },
-      { ...validCurrency, symbol: 1 },
-      { ...validCurrency, rate: undefined },
-      { ...validCurrency, rate: null },
-      { ...validCurrency, rate: Number.NaN },
-      { ...validCurrency, rate: Number.POSITIVE_INFINITY },
-      { ...validCurrency, rate: Number.NEGATIVE_INFINITY },
-      { ...validCurrency, updatedAt: null },
-      null,
-      [],
-    ]
-
-    expectParity(priorContracts.activeCurrency, activeCurrencySchema, corpus)
+describe('leaf wire schemas retain the prior decoded contract', () => {
+  it('preserves active-currency verdicts and decoded values', () => {
+    expectCases(activeCurrencySchema, [
+      { input: validCurrency, output: validCurrency },
+      {
+        input: { ...validCurrency, updatedAt: '2026-10-01T00:00:00.000Z' },
+        output: { ...validCurrency, updatedAt: '2026-10-01T00:00:00.000Z' },
+      },
+      { input: { ...validCurrency, updatedAt: undefined }, output: { ...validCurrency, updatedAt: undefined } },
+      { input: { ...validCurrency, extra: true }, output: validCurrency },
+      { input: { code: 'EUR', symbol: '€', rate: -0 }, output: { code: 'EUR', symbol: '€', rate: -0 } },
+      {
+        input: { code: 'EUR', symbol: '€', rate: Number.MAX_VALUE },
+        output: { code: 'EUR', symbol: '€', rate: Number.MAX_VALUE },
+      },
+      {
+        input: { code: 'EUR', symbol: '€', rate: Number.MIN_VALUE },
+        output: { code: 'EUR', symbol: '€', rate: Number.MIN_VALUE },
+      },
+      { input: { ...validCurrency, code: undefined }, rejects: true },
+      { input: { ...validCurrency, code: null }, rejects: true },
+      { input: { ...validCurrency, symbol: 1 }, rejects: true },
+      { input: { ...validCurrency, rate: undefined }, rejects: true },
+      { input: { ...validCurrency, rate: null }, rejects: true },
+      { input: { ...validCurrency, rate: Number.NaN }, rejects: true },
+      { input: { ...validCurrency, rate: Number.POSITIVE_INFINITY }, rejects: true },
+      { input: { ...validCurrency, rate: Number.NEGATIVE_INFINITY }, rejects: true },
+      { input: { ...validCurrency, updatedAt: null }, rejects: true },
+      { input: null, rejects: true },
+      { input: [], rejects: true },
+    ])
   })
 
-  it('matches verdicts and decoded values across currency options and their mutable array', () => {
-    const optionCorpus: unknown[] = [
-      { code: 'USD', symbol: '$' },
-      { code: '', symbol: '' },
-      { code: 'USD', symbol: '$', extra: true },
-      {},
-      { code: undefined, symbol: '$' },
-      { code: 'USD' },
-      { code: 'USD', symbol: null },
-      { code: 1, symbol: '$' },
-      null,
-      [],
-    ]
-    expectParity(priorContracts.currencyOption, currencyOptionSchema, optionCorpus)
-
-    const arrayCorpus: unknown[] = [
-      [
-        { code: 'EUR', symbol: '€', extension: 1 },
-        { code: 'USD', symbol: '$' },
-      ],
-      [],
-      [{ code: 'EUR', symbol: '€', extra: true }],
-      [{ code: 'EUR' }],
-      [{ code: 'EUR', symbol: undefined }],
-      [null],
-      { code: 'EUR', symbol: '€' },
-      null,
-    ]
-    expectParity(z.array(priorContracts.currencyOption), currencyOptionsSchema, arrayCorpus)
+  it('preserves currency-option and mutable-array verdicts and decoded values', () => {
+    expectCases(currencyOptionSchema, [
+      { input: { code: 'USD', symbol: '$' }, output: { code: 'USD', symbol: '$' } },
+      { input: { code: '', symbol: '' }, output: { code: '', symbol: '' } },
+      { input: { code: 'USD', symbol: '$', extra: true }, output: { code: 'USD', symbol: '$' } },
+      { input: {}, rejects: true },
+      { input: { code: undefined, symbol: '$' }, rejects: true },
+      { input: { code: 'USD' }, rejects: true },
+      { input: { code: 'USD', symbol: null }, rejects: true },
+      { input: { code: 1, symbol: '$' }, rejects: true },
+      { input: null, rejects: true },
+      { input: [], rejects: true },
+    ])
+    expectCases(currencyOptionsSchema, [
+      {
+        input: [
+          { code: 'EUR', symbol: '€', extension: 1 },
+          { code: 'USD', symbol: '$' },
+        ],
+        output: [
+          { code: 'EUR', symbol: '€' },
+          { code: 'USD', symbol: '$' },
+        ],
+      },
+      { input: [], output: [] },
+      { input: [{ code: 'EUR', symbol: '€', extra: true }], output: [{ code: 'EUR', symbol: '€' }] },
+      { input: [{ code: 'EUR' }], rejects: true },
+      { input: [{ code: 'EUR', symbol: undefined }], rejects: true },
+      { input: [null], rejects: true },
+      { input: { code: 'EUR', symbol: '€' }, rejects: true },
+      { input: null, rejects: true },
+    ])
   })
 
-  it('matches verdicts and decoded values for update status required and nullable fields', () => {
-    const corpus: unknown[] = [
-      validUpdateStatus,
-      { ...validUpdateStatus, latestVersion: null, tag: null },
-      { ...validUpdateStatus, extra: true },
-      { ...validUpdateStatus, currentVersion: undefined },
-      { ...validUpdateStatus, currentVersion: null },
-      { ...validUpdateStatus, latestVersion: undefined },
-      { ...validUpdateStatus, latestVersion: 1 },
-      { ...validUpdateStatus, updateAvailable: undefined },
-      { ...validUpdateStatus, updateAvailable: null },
-      { ...validUpdateStatus, updateAvailable: 'true' },
-      { ...validUpdateStatus, tag: undefined },
-      { ...validUpdateStatus, tag: 1 },
-      { currentVersion: '1.2.3', updateAvailable: true, tag: null },
-      null,
-      [],
-    ]
-
-    expectParity(priorContracts.updateStatus, updateStatusSchema, corpus)
+  it('preserves update-status verdicts with required and nullable fields', () => {
+    expectCases(updateStatusSchema, [
+      { input: validUpdateStatus, output: validUpdateStatus },
+      {
+        input: { ...validUpdateStatus, latestVersion: null, tag: null },
+        output: { ...validUpdateStatus, latestVersion: null, tag: null },
+      },
+      { input: { ...validUpdateStatus, extra: true }, output: validUpdateStatus },
+      { input: { ...validUpdateStatus, currentVersion: undefined }, rejects: true },
+      { input: { ...validUpdateStatus, currentVersion: null }, rejects: true },
+      { input: { ...validUpdateStatus, latestVersion: undefined }, rejects: true },
+      { input: { ...validUpdateStatus, latestVersion: 1 }, rejects: true },
+      { input: { ...validUpdateStatus, updateAvailable: undefined }, rejects: true },
+      { input: { ...validUpdateStatus, updateAvailable: null }, rejects: true },
+      { input: { ...validUpdateStatus, updateAvailable: 'true' }, rejects: true },
+      { input: { ...validUpdateStatus, tag: undefined }, rejects: true },
+      { input: { ...validUpdateStatus, tag: 1 }, rejects: true },
+      { input: { currentVersion: '1.2.3', updateAvailable: true, tag: null }, rejects: true },
+      { input: null, rejects: true },
+      { input: [], rejects: true },
+    ])
   })
 
-  it('matches verdicts and decoded values for app-version strings', () => {
-    const corpus: unknown[] = ['desktop/1.2.3', '', 'arbitrary version value', undefined, null, 123, [], {}]
-
-    expectParity(priorContracts.appVersion, appVersionSchema, corpus)
+  it('preserves app-version string verdicts and values', () => {
+    expectCases(appVersionSchema, [
+      { input: 'desktop/1.2.3', output: 'desktop/1.2.3' },
+      { input: '', output: '' },
+      { input: 'arbitrary version value', output: 'arbitrary version value' },
+      { input: undefined, rejects: true },
+      { input: null, rejects: true },
+      { input: 123, rejects: true },
+      { input: [], rejects: true },
+      { input: {}, rejects: true },
+    ])
   })
 
-  it('matches verdicts and decoded values for optional export fields', () => {
-    const corpus: unknown[] = [
-      { ok: true },
-      { ok: true, path: '/tmp/export' },
-      { ok: false, error: 'denied' },
-      { ok: true, path: undefined },
-      { ok: false, error: undefined },
-      { ok: true, path: '/tmp/export', error: 'retained' },
-      { ok: false, error: 'denied', extra: true },
-      { ok: undefined },
-      { ok: null },
-      { ok: 'true' },
-      { ok: true, path: null },
-      { ok: true, error: 1 },
-      {},
-      null,
-    ]
-
-    expectParity(priorContracts.exportResult, exportResultSchema, corpus)
+  it('preserves optional export-field verdicts and decoded values', () => {
+    expectCases(exportResultSchema, [
+      { input: { ok: true }, output: { ok: true } },
+      { input: { ok: true, path: '/tmp/export' }, output: { ok: true, path: '/tmp/export' } },
+      { input: { ok: false, error: 'denied' }, output: { ok: false, error: 'denied' } },
+      { input: { ok: true, path: undefined }, output: { ok: true, path: undefined } },
+      { input: { ok: false, error: undefined }, output: { ok: false, error: undefined } },
+      {
+        input: { ok: true, path: '/tmp/export', error: 'retained' },
+        output: { ok: true, path: '/tmp/export', error: 'retained' },
+      },
+      { input: { ok: false, error: 'denied', extra: true }, output: { ok: false, error: 'denied' } },
+      { input: { ok: undefined }, rejects: true },
+      { input: { ok: null }, rejects: true },
+      { input: { ok: 'true' }, rejects: true },
+      { input: { ok: true, path: null }, rejects: true },
+      { input: { ok: true, error: 1 }, rejects: true },
+      { input: {}, rejects: true },
+      { input: null, rejects: true },
+    ])
   })
 })
-
-function expectParity(
-  priorSchema: z.ZodType,
-  currentSchema: Parameters<typeof effectSchemaDecoder>[0],
-  corpus: ReadonlyArray<unknown>,
-): void {
-  for (const input of corpus) {
-    const prior = priorSchema.safeParse(input)
-    const current = effectSchemaDecoder(currentSchema)(input)
-
-    expect(current.ok, `verdict for ${JSON.stringify(input)}`).toBe(prior.success)
-    if (prior.success && current.ok) {
-      expect(current.value, `decoded output for ${JSON.stringify(input)}`).toStrictEqual(prior.data)
-    }
-  }
-}

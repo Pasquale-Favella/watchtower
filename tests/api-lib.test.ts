@@ -1,11 +1,15 @@
+import * as Schema from 'effect/Schema'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { z } from 'zod'
 
 import {
+  fetchAddModelAlias,
   fetchAppVersion,
   fetchCadence,
   fetchCheckForUpdates,
   fetchClearData,
+  fetchCoachHarnesses,
+  fetchCoachInspect,
+  fetchCoachRun,
   fetchCompare,
   fetchCurrencies,
   fetchCurrency,
@@ -14,25 +18,31 @@ import {
   fetchLedgerMcpConnection,
   fetchLedgerMcpStatus,
   fetchOptimize,
+  fetchOverview,
   fetchPayload,
   fetchPullRequests,
   fetchRefreshPricing,
   fetchRegenerateLedgerMcpToken,
+  fetchRemoveModelAlias,
+  fetchRemovePriceOverride,
   fetchSaveSkill,
   fetchScan,
   fetchScanStatus,
   fetchSetCadence,
   fetchSetCurrency,
+  fetchSetModelPrice,
   fetchSettings,
   fetchSkills,
   fetchSpend,
   fetchViews,
   fetchYield,
+  onCoachHarnessesChanged,
+  openCoachLoginTerminal,
   parsePayload,
+  refreshCoachHarnesses,
 } from '../src/renderer/src/shared/lib/api.js'
-import { zodDecoder } from '../src/renderer/src/shared/lib/schema-decoder.js'
 
-const scanStatusSchema = z.object({ scanned: z.boolean() })
+const scanStatusSchema = Schema.Struct({ scanned: Schema.Boolean })
 
 /** Stub the preload surface for the fetch wrappers' IPC-call sites. The
  * renderer-lib modules themselves never touch `window` at load time — only
@@ -50,6 +60,7 @@ describe('renderer parse seam (ADR 0005)', () => {
   const pair = { modelA: 'a', modelB: 'b' }
   const thresholds = { frequency: 5, spread: 2 }
   const sectionFetches = [
+    { label: 'overview', method: 'getOverview', fetch: () => fetchOverview(scope), args: [scope] },
     { label: 'spend', method: 'getSpend', fetch: () => fetchSpend(scope), args: [scope] },
     { label: 'compare', method: 'getCompare', fetch: () => fetchCompare(scope, pair), args: [scope, pair] },
     { label: 'optimize', method: 'getOptimize', fetch: () => fetchOptimize(scope), args: [scope] },
@@ -62,6 +73,107 @@ describe('renderer parse seam (ADR 0005)', () => {
       args: [scope, thresholds],
     },
   ]
+
+  const coachRequest = { harnessKind: 'codex', scope, prompt: 'Review usage.' }
+  const commandFetches = [
+    {
+      label: 'model alias write',
+      method: 'addModelAlias',
+      fetch: () => fetchAddModelAlias('a', 'b'),
+      args: ['a', 'b'],
+      value: { ok: true },
+    },
+    {
+      label: 'model alias remove',
+      method: 'removeModelAlias',
+      fetch: () => fetchRemoveModelAlias('a'),
+      args: ['a'],
+      value: { ok: true },
+    },
+    {
+      label: 'price write',
+      method: 'setModelPrice',
+      fetch: () => fetchSetModelPrice('a', 1, 2),
+      args: ['a', 1, 2],
+      value: { ok: true },
+    },
+    {
+      label: 'price remove',
+      method: 'removePriceOverride',
+      fetch: () => fetchRemovePriceOverride('a'),
+      args: ['a'],
+      value: { ok: true },
+    },
+    { label: 'coach harnesses', method: 'getCoachHarnesses', fetch: () => fetchCoachHarnesses(), args: [], value: [] },
+    {
+      label: 'coach harnesses refresh',
+      method: 'refreshCoachHarnesses',
+      fetch: () => refreshCoachHarnesses(),
+      args: [],
+      value: [],
+    },
+    {
+      label: 'coach login terminal',
+      method: 'openCoachLoginTerminal',
+      fetch: () => openCoachLoginTerminal('codex'),
+      args: ['codex'],
+      value: { ok: true },
+    },
+    {
+      label: 'coach inspect',
+      method: 'inspectCoachHarness',
+      fetch: () => fetchCoachInspect('codex'),
+      args: ['codex'],
+      value: { ok: true },
+    },
+    {
+      label: 'coach run',
+      method: 'startCoachRun',
+      fetch: () => fetchCoachRun(coachRequest),
+      args: [coachRequest],
+      value: { ok: true, runId: 'run-1' },
+    },
+  ]
+
+  it.each(commandFetches)('decodes $label and preserves IPC arguments', async row => {
+    const invoke = vi.fn().mockResolvedValue(row.value)
+    mockWindow({ [row.method]: invoke })
+    expect(await row.fetch()).toStrictEqual({ ok: true, data: row.value })
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(...row.args)
+  })
+
+  it.each(commandFetches)('rejects malformed $label payloads', async row => {
+    mockWindow({ [row.method]: () => Promise.resolve(null) })
+    const result = await row.fetch()
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain(`Invalid ${row.label} payload`)
+  })
+
+  it('decodes harness broadcasts and retains subscription ownership', () => {
+    const callback = vi.fn()
+    const unsubscribe = vi.fn()
+    const listeners: Array<(payload: unknown) => void> = []
+    mockWindow({
+      onCoachHarnessesChanged: (listener: (payload: unknown) => void) => {
+        listeners.push(listener)
+        return unsubscribe
+      },
+    })
+    const teardown = onCoachHarnessesChanged(callback)
+    const harness = {
+      instanceId: 'codex',
+      kind: 'codex',
+      displayName: 'Codex',
+      status: 'ready',
+      auth: { status: 'configured' },
+    }
+    listeners[0]!([{ ...harness, extra: 'discarded', auth: { ...harness.auth, extra: 'discarded' } }])
+    expect(callback).toHaveBeenCalledExactlyOnceWith([harness])
+    listeners[0]!([{ ...harness, status: 'invalid' }])
+    expect(callback).toHaveBeenCalledTimes(1)
+    teardown()
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
 
   it.each(sectionFetches)('accepts a null $label payload and preserves IPC arguments', async row => {
     const invoke = vi.fn().mockResolvedValue(null)
@@ -100,12 +212,12 @@ describe('renderer parse seam (ADR 0005)', () => {
   })
 
   it('parsePayload passes a valid payload through untouched', () => {
-    const result = parsePayload(zodDecoder(scanStatusSchema), 'scan status', { scanned: true })
+    const result = parsePayload(scanStatusSchema, 'scan status', { scanned: true })
     expect(result).toEqual({ ok: true, data: { scanned: true } })
   })
 
   it('parsePayload names the channel and failing field on a bad payload', () => {
-    const result = parsePayload(zodDecoder(scanStatusSchema), 'scan status', { scanned: 'nope' })
+    const result = parsePayload(scanStatusSchema, 'scan status', { scanned: 'nope' })
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.error).toMatch(/Invalid scan status payload/)
@@ -114,9 +226,7 @@ describe('renderer parse seam (ADR 0005)', () => {
   })
 
   it('fetchPayload turns an IPC rejection into an error state, never a throw', async () => {
-    const result = await fetchPayload('scan status', zodDecoder(scanStatusSchema), () =>
-      Promise.reject(new Error('boom')),
-    )
+    const result = await fetchPayload('scan status', scanStatusSchema, () => Promise.reject(new Error('boom')))
     expect(result).toEqual({ ok: false, error: 'boom' })
   })
 

@@ -1,14 +1,28 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createServer, type Server as HttpServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { PassThrough } from 'node:stream'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import {
+  CallToolResultSchema,
+  ContentBlockSchema,
+  EmptyResultSchema,
+  type JSONRPCMessage,
+  JSONRPCMessageSchema,
+} from '@modelcontextprotocol/sdk/types.js'
 import * as Schema from 'effect/Schema'
-import { afterEach, describe, expect, it } from 'vitest'
-import { z } from 'zod'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { bearerHeaderValue } from '../src/main/agents/ledger-mcp/auth.js'
+import { createLedgerMcpHttpHandler } from '../src/main/agents/ledger-mcp/http-server.js'
 import { buildLedgerPrompts } from '../src/main/agents/ledger-mcp/prompts.js'
 import { buildLedgerResources } from '../src/main/agents/ledger-mcp/resources.js'
 import { createLedgerMcpServer } from '../src/main/agents/ledger-mcp/server.js'
@@ -91,6 +105,7 @@ function seedLedger(): { dbPath: string; cleanup: () => void } {
 }
 
 const cleanups: Array<() => void> = []
+const httpServers: HttpServer[] = []
 /** A windowed scope — passed to the tools as their optional `scope` argument.
  *  3 in-scope calls (0.5 + 0.3 + 0.7), 2 sessions. */
 const scope: OverviewScope = { period: '30days', range: { since: '2026-07-01', until: '2026-07-31' } }
@@ -105,9 +120,71 @@ function openStore(): LedgerStore {
   return store
 }
 
+function decode<S extends Schema.ConstraintDecoder<unknown>>(schema: S, input: unknown): S['Type'] {
+  const result = Schema.decodeUnknownResult(schema)(input)
+  if (result._tag === 'Failure') throw new Error('MCP payload did not match the shared Effect Schema')
+  return result.success
+}
+
+function textContent(content: unknown): string | undefined {
+  return ContentBlockSchema.array()
+    .parse(content)
+    .find(item => item.type === 'text')?.text
+}
+
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const cleanup of cleanups.splice(0)) cleanup()
 })
+
+afterEach(async () => {
+  for (const server of httpServers.splice(0)) {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
+/** A real SDK Client stream bridge for tests: the server uses the official
+ *  newline-delimited StdioServerTransport, with isolated in-memory streams. */
+class StdioClientBridge implements Transport {
+  onclose?: () => void
+  onerror?: (error: Error) => void
+  onmessage?: Transport['onmessage']
+  private buffered = ''
+
+  constructor(
+    private readonly stdin: PassThrough,
+    private readonly stdout: PassThrough,
+  ) {}
+
+  async start(): Promise<void> {
+    this.stdout.on('data', this.onData)
+  }
+
+  async send(message: JSONRPCMessage): Promise<void> {
+    this.stdin.write(`${JSON.stringify(message)}\n`)
+  }
+
+  async close(): Promise<void> {
+    this.stdout.off('data', this.onData)
+    this.stdin.end()
+    this.onclose?.()
+  }
+
+  private readonly onData = (chunk: Buffer): void => {
+    this.buffered += chunk.toString('utf8')
+    while (true) {
+      const newline = this.buffered.indexOf('\n')
+      if (newline < 0) return
+      const line = this.buffered.slice(0, newline)
+      this.buffered = this.buffered.slice(newline + 1)
+      try {
+        this.onmessage?.(JSONRPCMessageSchema.parse(JSON.parse(line)))
+      } catch (error) {
+        this.onerror?.(error instanceof Error ? error : new Error('Invalid SDK stdio message'))
+      }
+    }
+  }
+}
 
 describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam', () => {
   it('serves the FULL lifetime ledger by default — nothing is baked at spawn', () => {
@@ -136,14 +213,10 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
     expect(out.range.startMs).toBeGreaterThan(0)
   })
 
-  it('degrades a malformed scope argument to the lifetime window (never a crash)', () => {
+  it('rejects a malformed scope argument through the tool contract', () => {
     const store = openStore()
     const tool = buildLedgerTools(store).find(t => t.name === 'ledger_scope')!
-    // Belt-and-suspenders: the SDK rejects bad args over the wire, but a
-    // direct caller passing garbage still gets a sane lifetime answer.
-    const out = tool.run({ scope: { period: 'nope' } }) as { scope: OverviewScope; calls: number }
-    expect(out.scope).toEqual({ period: 'lifetime' })
-    expect(out.calls).toBe(4)
+    expect(() => tool.run({ scope: { period: 'nope' } })).toThrow('Invalid arguments for tool ledger_scope')
   })
 
   it('ledger_overview returns a payload that IS the UI OverviewPayload', async () => {
@@ -152,8 +225,7 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
     const out = await tool.run({ scope })
     // The renderer's own schema validates the MCP output byte-for-byte — the
     // agent sees exactly what the Overview view shows for that window.
-    expect(overviewPayloadSchema.safeParse(out).success).toBe(true)
-    const payload = overviewPayloadSchema.parse(out)
+    const payload = decode(overviewPayloadSchema, out)
     expect(payload.kpis.calls).toBe(3)
     expect(payload.kpis.cost).toBeCloseTo(1.5)
     expect(payload.models.map(m => m.name).sort()).toEqual(['claude-sonnet', 'opencode-default'])
@@ -162,7 +234,7 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
   it('ledger_overview with no scope argument spans the whole ledger', async () => {
     const store = openStore()
     const tool = buildLedgerTools(store).find(t => t.name === 'ledger_overview')!
-    const payload = overviewPayloadSchema.parse(await tool.run({}))
+    const payload = decode(overviewPayloadSchema, await tool.run({}))
     expect(payload.kpis.calls).toBe(4)
     expect(payload.kpis.sessions).toBe(3)
     expect(payload.kpis.cost).toBeCloseTo(10.5)
@@ -266,20 +338,21 @@ describe('Ledger MCP server (ADR 0020) — official SDK over an in-memory transp
       'ledger_calls',
     ])
 
-    const result = await client.callTool({ name: 'ledger_overview', arguments: {} })
-    const content = z.array(z.object({ type: z.string(), text: z.string().optional() })).parse(result.content)
-    const text = content.find(c => c.type === 'text')?.text ?? ''
+    const result = await client.callTool({ name: 'ledger_overview', arguments: {} }, CallToolResultSchema)
+    const text = textContent(result.content) ?? ''
     const payload = JSON.parse(text) as unknown
-    expect(overviewPayloadSchema.safeParse(payload).success).toBe(true)
+    expect(decode(overviewPayloadSchema, payload)).toBeDefined()
 
     // Scoped over the wire: the harness filters autonomously via `scope`.
-    const scopeResult = await client.callTool({ name: 'ledger_scope', arguments: { scope } })
-    const scopeContent = z.array(z.object({ type: z.string(), text: z.string().optional() })).parse(scopeResult.content)
-    const scopeText = scopeContent.find(c => c.type === 'text')?.text ?? ''
+    const scopeResult = await client.callTool({ name: 'ledger_scope', arguments: { scope } }, CallToolResultSchema)
+    const scopeText = textContent(scopeResult.content) ?? ''
     expect(JSON.parse(scopeText)).toMatchObject({ calls: 3, sessions: 2 })
 
     await client.close()
     await server.close()
+    // The MCP server borrows the process-owned read-only store. Closing the
+    // protocol connection must not close that store.
+    expect(store.getSources()).toHaveLength(2)
   })
 
   it('surfaces an unknown tool as a protocol error, not a crash', async () => {
@@ -297,13 +370,156 @@ describe('Ledger MCP server (ADR 0020) — official SDK over an in-memory transp
     await client.close()
     await server.close()
   })
+
+  it('advertises input metadata from the Effect tool contracts and preserves call error categories', async () => {
+    const store = openStore()
+    const server = createLedgerMcpServer(store)
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    const client = new Client({ name: 'ledger-mcp-test', version: '1.0.0' }, { capabilities: {} })
+    await server.connect(serverTransport)
+    await client.connect(clientTransport)
+
+    const { tools } = await client.listTools()
+    const calls = tools.find(tool => tool.name === 'ledger_calls')!
+    expect(calls.inputSchema).toMatchObject({
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', minimum: 1, maximum: 200 },
+        scope: {
+          type: 'object',
+          properties: {
+            period: { enum: ['today', 'week', '30days', 'month', 'all', 'lifetime'] },
+            provider: { type: 'string' },
+            range: { type: 'object' },
+          },
+        },
+        model: { type: 'string' },
+        project: { type: 'string' },
+        category: { type: 'string' },
+        tool: { type: 'string' },
+      },
+    })
+    expect(calls.inputSchema.required ?? []).not.toContain('scope')
+
+    for (const name of [
+      'ledger_scope',
+      'ledger_overview',
+      'ledger_sessions',
+      'ledger_models',
+      'ledger_skills',
+      'ledger_calls',
+    ]) {
+      const result = await client.callTool({ name, arguments: {} }, CallToolResultSchema)
+      expect(result.isError).not.toBe(true)
+      expect(JSON.parse(textContent(result.content) ?? 'null')).toBeDefined()
+    }
+
+    // SDK-level unknown-tool lookup and Effect argument failures are tool
+    // results. They do not become JSON-RPC protocol errors.
+    expect((await client.callTool({ name: 'ghost', arguments: {} })).isError).toBe(true)
+    expect((await client.callTool({ name: 'ledger_scope', arguments: { scope: { period: 'nope' } } })).isError).toBe(
+      true,
+    )
+    expect(
+      (await client.callTool({ name: 'ledger_scope', arguments: { scope: { period: 'lifetime', provider: null } } }))
+        .isError,
+    ).toBe(true)
+    expect((await client.callTool({ name: 'ledger_calls', arguments: { limit: 0 } })).isError).toBe(true)
+    expect((await client.callTool({ name: 'ledger_calls', arguments: { limit: 1.5 } })).isError).toBe(true)
+    expect((await client.callTool({ name: 'ledger_calls', arguments: { limit: '2' } })).isError).toBe(true)
+
+    vi.spyOn(store, 'getModelAliases').mockImplementation(() => {
+      throw new Error('configuration unavailable')
+    })
+    expect((await client.callTool({ name: 'ledger_models', arguments: {} })).isError).toBe(true)
+
+    // Resource and prompt lookup failures remain SDK InvalidParams errors.
+    await expect(client.readResource({ uri: 'ledger://missing' })).rejects.toMatchObject({ code: -32602 })
+    await expect(client.getPrompt({ name: 'missing', arguments: {} })).rejects.toMatchObject({ code: -32602 })
+    await expect(
+      client.request({ method: 'not/a-method', params: {} } as never, EmptyResultSchema),
+    ).rejects.toMatchObject({ code: -32601 })
+    await expect(
+      client.request(
+        { method: 'tools/call', params: { name: 'ledger_scope', arguments: [] } } as never,
+        EmptyResultSchema,
+      ),
+    ).rejects.toMatchObject({ code: expect.any(Number) })
+
+    await client.close()
+    await server.close()
+    expect(store.getSources()).toHaveLength(2)
+  })
+})
+
+describe('Ledger MCP server (ADR 0020) — official stdio transport', () => {
+  it('negotiates, answers a real client, and closes transport ownership without closing the store', async () => {
+    const store = openStore()
+    const server = createLedgerMcpServer(store)
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const serverTransport = new StdioServerTransport(stdin, stdout)
+    const client = new Client({ name: 'ledger-mcp-stdio-test', version: '1.0.0' }, { capabilities: {} })
+    await server.connect(serverTransport)
+    await client.connect(new StdioClientBridge(stdin, stdout))
+
+    expect((await client.listTools()).tools).toHaveLength(6)
+    const scopeResult = await client.callTool({ name: 'ledger_scope', arguments: {} }, CallToolResultSchema)
+    expect(JSON.parse(textContent(scopeResult.content) ?? 'null')).toMatchObject({ calls: 4 })
+
+    await client.close()
+    await server.close()
+    expect(stdin.listenerCount('data')).toBe(0)
+    expect(store.getSources()).toHaveLength(2)
+  })
+})
+
+describe('Ledger MCP server (ADR 0020) — stateless Streamable HTTP transport', () => {
+  it('serves tools, resources, and prompts over real HTTP requests and releases only per-request transports', async () => {
+    const store = openStore()
+    const closeTransport = vi.spyOn(StreamableHTTPServerTransport.prototype, 'close')
+    const token = 'ledger-mcp-http-test-token'
+    const handler = createLedgerMcpHttpHandler(store, token)
+    const httpServer = createServer((request, response) => {
+      void handler(request, response)
+    })
+    await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve))
+    const address = httpServer.address()
+    if (typeof address !== 'object' || !address) throw new Error('No HTTP listener address')
+    httpServers.push(httpServer)
+
+    const client = new Client({ name: 'ledger-mcp-http-test', version: '1.0.0' }, { capabilities: {} })
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`), {
+        requestInit: { headers: { authorization: bearerHeaderValue(token) } },
+      }),
+    )
+
+    expect((await client.listTools()).tools).toHaveLength(6)
+    expect((await client.listResources()).resources.map(resource => resource.uri)).toEqual([
+      'ledger://scope',
+      'ledger://overview',
+      'ledger://schema',
+    ])
+    expect((await client.listPrompts()).prompts.map(prompt => prompt.name)).toEqual(['coach-orient'])
+    const scopeResult = await client.callTool({ name: 'ledger_scope', arguments: {} }, CallToolResultSchema)
+    expect(JSON.parse(textContent(scopeResult.content) ?? 'null')).toMatchObject({ calls: 4 })
+    expect((await client.readResource({ uri: 'ledger://scope' })).contents).toHaveLength(1)
+    expect((await client.getPrompt({ name: 'coach-orient', arguments: {} })).messages).toHaveLength(1)
+
+    await client.close()
+    // initialize + initialized notification + six list/call/read/get requests
+    // each own one stateless transport, all closed after their response.
+    expect(closeTransport).toHaveBeenCalledTimes(8)
+    expect(store.getSources()).toHaveLength(2)
+  })
 })
 
 describe('Ledger MCP prompts (ADR 0020) — reusable preambles over the SDK', () => {
   it('coach-orient renders the lifetime MCP briefing plus a first-step nudge', () => {
     const store = openStore()
     const prompt = buildLedgerPrompts().find(p => p.name === 'coach-orient')!
-    const text = prompt.render({})
+    const text = prompt.render()
     expect(text).toContain('watchtower-ledger')
     expect(text).toContain('ledger_scope')
     expect(text).toContain('FULL usage history')
@@ -319,7 +535,7 @@ describe('Ledger MCP prompts (ADR 0020) — reusable preambles over the SDK', ()
   it('coach-orient carries the TWO-scope role — skill authoring needs no separate prompt (the build-skill mode is gone)', () => {
     const store = openStore()
     const prompt = buildLedgerPrompts().find(p => p.name === 'coach-orient')!
-    const text = prompt.render({})
+    const text = prompt.render()
     expect(text).toContain('TWO scopes')
     expect(text).toContain('Skill authoring')
     // Evidence-first authoring: the ledger tools ride the prompt, the shape
@@ -346,8 +562,7 @@ describe('Ledger MCP resources (ADR 0020) — read-only documents behind stable 
     const store = openStore()
     const resource = buildLedgerResources(store).find(r => r.uri === 'ledger://overview')!
     const payload = JSON.parse(resource.read()) as unknown
-    expect(overviewPayloadSchema.safeParse(payload).success).toBe(true)
-    expect(overviewPayloadSchema.parse(payload).kpis.calls).toBe(4)
+    expect(decode(overviewPayloadSchema, payload).kpis.calls).toBe(4)
   })
 
   it('ledger://schema documents the tables, tools, resources, and prompts', () => {
@@ -403,7 +618,7 @@ describe('Ledger MCP server (ADR 0020) — prompts + resources over the in-memor
     const overviewRead = await client.readResource({ uri: 'ledger://overview' })
     const overviewText =
       overviewRead.contents[0] && 'text' in overviewRead.contents[0] ? overviewRead.contents[0].text : ''
-    expect(overviewPayloadSchema.safeParse(JSON.parse(overviewText)).success).toBe(true)
+    expect(decode(overviewPayloadSchema, JSON.parse(overviewText))).toBeDefined()
 
     await client.close()
     await server.close()
