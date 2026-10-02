@@ -1,20 +1,22 @@
-import { getShortModelName } from './pipeline/models.js'
-import type { SessionSummary } from './pipeline/types.js'
-import { overviewDateRange, type OverviewScope } from './overview.js'
-import { buildSessionSummaries } from './store/aggregate.js'
-import type { LedgerStore } from './store/ledger.js'
+import * as Schema from 'effect/Schema'
+
 import {
-  comparePayloadSchema,
   type CategoryComparison,
   type CompareFormatFn,
   type CompareModelStat,
   type ComparePair,
   type ComparePayload,
+  comparePayloadSchema,
   type CompareReport,
   type CompareWinner,
   type ComparisonRow,
   type WorkingStyleRow,
 } from '../shared/schemas/compare.js'
+import { overviewDateRange, type OverviewScope } from './overview.js'
+import { getShortModelName } from './pipeline/models.js'
+import type { SessionSummary } from './pipeline/types.js'
+import { buildSessionSummaries } from './store/aggregate.js'
+import type { LedgerStore } from './store/ledger.js'
 
 export type {
   CategoryComparison,
@@ -333,7 +335,7 @@ export function buildCompareViewFromLedger(
   pair?: ComparePair,
   now = new Date(),
 ): ComparePayload {
-  return comparePayloadSchema.parse(
+  return Schema.decodeUnknownSync(comparePayloadSchema)(
     buildComparePayload(
       buildSessionSummaries(store, {
         range: overviewDateRange(scope, now),

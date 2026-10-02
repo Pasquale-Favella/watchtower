@@ -1,72 +1,76 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
-export const compareFormatFnSchema = z.enum(['cost', 'number', 'percent', 'decimal', 'compact'])
-export type CompareFormatFn = z.infer<typeof compareFormatFnSchema>
+const finiteNumber = Schema.Finite
+const writable = Schema.mutableKey
+const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))
 
-export const compareModelStatSchema = z.object({
-  model: z.string(),
-  displayName: z.string(),
-  calls: z.number(),
-  costUSD: z.number(),
-  outputTokens: z.number(),
-  inputTokens: z.number(),
-  cacheReadTokens: z.number(),
-  totalTurns: z.number(),
-  editTurns: z.number(),
-  oneShotTurns: z.number(),
-  retries: z.number(),
+export const compareFormatFnSchema = Schema.Literals(['cost', 'number', 'percent', 'decimal', 'compact'])
+export type CompareFormatFn = Schema.Schema.Type<typeof compareFormatFnSchema>
+
+export const compareModelStatSchema = Schema.Struct({
+  model: writable(Schema.String),
+  displayName: writable(Schema.String),
+  calls: writable(finiteNumber),
+  costUSD: writable(finiteNumber),
+  outputTokens: writable(finiteNumber),
+  inputTokens: writable(finiteNumber),
+  cacheReadTokens: writable(finiteNumber),
+  totalTurns: writable(finiteNumber),
+  editTurns: writable(finiteNumber),
+  oneShotTurns: writable(finiteNumber),
+  retries: writable(finiteNumber),
 })
-export type CompareModelStat = z.infer<typeof compareModelStatSchema>
+export type CompareModelStat = Schema.Schema.Type<typeof compareModelStatSchema>
 
-export const compareWinnerSchema = z.enum(['a', 'b', 'tie', 'none'])
-export type CompareWinner = z.infer<typeof compareWinnerSchema>
+export const compareWinnerSchema = Schema.Literals(['a', 'b', 'tie', 'none'])
+export type CompareWinner = Schema.Schema.Type<typeof compareWinnerSchema>
 
-export const comparisonRowSchema = z.object({
-  label: z.string(),
-  valueA: z.number().nullable(),
-  valueB: z.number().nullable(),
-  formatFn: compareFormatFnSchema,
-  winner: compareWinnerSchema,
+export const comparisonRowSchema = Schema.Struct({
+  label: writable(Schema.String),
+  valueA: writable(Schema.NullOr(finiteNumber)),
+  valueB: writable(Schema.NullOr(finiteNumber)),
+  formatFn: writable(compareFormatFnSchema),
+  winner: writable(compareWinnerSchema),
 })
-export type ComparisonRow = z.infer<typeof comparisonRowSchema>
+export type ComparisonRow = Schema.Schema.Type<typeof comparisonRowSchema>
 
-export const categoryComparisonSchema = z.object({
-  category: z.string(),
-  turnsA: z.number(),
-  editTurnsA: z.number(),
-  oneShotRateA: z.number().nullable(),
-  turnsB: z.number(),
-  editTurnsB: z.number(),
-  oneShotRateB: z.number().nullable(),
-  winner: compareWinnerSchema,
+export const categoryComparisonSchema = Schema.Struct({
+  category: writable(Schema.String),
+  turnsA: writable(finiteNumber),
+  editTurnsA: writable(finiteNumber),
+  oneShotRateA: writable(Schema.NullOr(finiteNumber)),
+  turnsB: writable(finiteNumber),
+  editTurnsB: writable(finiteNumber),
+  oneShotRateB: writable(Schema.NullOr(finiteNumber)),
+  winner: writable(compareWinnerSchema),
 })
-export type CategoryComparison = z.infer<typeof categoryComparisonSchema>
+export type CategoryComparison = Schema.Schema.Type<typeof categoryComparisonSchema>
 
-export const workingStyleRowSchema = z.object({
-  label: z.string(),
-  valueA: z.number().nullable(),
-  valueB: z.number().nullable(),
-  formatFn: compareFormatFnSchema,
+export const workingStyleRowSchema = Schema.Struct({
+  label: writable(Schema.String),
+  valueA: writable(Schema.NullOr(finiteNumber)),
+  valueB: writable(Schema.NullOr(finiteNumber)),
+  formatFn: writable(compareFormatFnSchema),
 })
-export type WorkingStyleRow = z.infer<typeof workingStyleRowSchema>
+export type WorkingStyleRow = Schema.Schema.Type<typeof workingStyleRowSchema>
 
-export const compareReportSchema = z.object({
-  modelA: compareModelStatSchema,
-  modelB: compareModelStatSchema,
-  metrics: z.array(comparisonRowSchema),
-  categories: z.array(categoryComparisonSchema),
-  workingStyle: z.array(workingStyleRowSchema),
+export const compareReportSchema = Schema.Struct({
+  modelA: writable(compareModelStatSchema),
+  modelB: writable(compareModelStatSchema),
+  metrics: writable(mutableArray(comparisonRowSchema)),
+  categories: writable(mutableArray(categoryComparisonSchema)),
+  workingStyle: writable(mutableArray(workingStyleRowSchema)),
 })
-export type CompareReport = z.infer<typeof compareReportSchema>
+export type CompareReport = Schema.Schema.Type<typeof compareReportSchema>
 
-export const comparePayloadSchema = z.object({
-  models: z.array(compareModelStatSchema),
-  report: compareReportSchema.nullable(),
+export const comparePayloadSchema = Schema.Struct({
+  models: writable(mutableArray(compareModelStatSchema)),
+  report: writable(Schema.NullOr(compareReportSchema)),
 })
-export type ComparePayload = z.infer<typeof comparePayloadSchema>
+export type ComparePayload = Schema.Schema.Type<typeof comparePayloadSchema>
 
-export const comparePairSchema = z.object({
-  modelA: z.string(),
-  modelB: z.string(),
+export const comparePairSchema = Schema.Struct({
+  modelA: writable(Schema.String),
+  modelB: writable(Schema.String),
 })
-export type ComparePair = z.infer<typeof comparePairSchema>
+export type ComparePair = Schema.Schema.Type<typeof comparePairSchema>

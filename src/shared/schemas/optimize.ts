@@ -1,39 +1,43 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
-export const impactSchema = z.enum(['high', 'medium', 'low'])
-export type Impact = z.infer<typeof impactSchema>
+const finiteNumber = Schema.Finite
+const writable = Schema.mutableKey
+const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))
 
-export const healthGradeSchema = z.enum(['A', 'B', 'C', 'D', 'F'])
-export type HealthGrade = z.infer<typeof healthGradeSchema>
+export const impactSchema = Schema.Literals(['high', 'medium', 'low'])
+export type Impact = Schema.Schema.Type<typeof impactSchema>
 
-export const trendSchema = z.enum(['active', 'improving'])
-export type Trend = z.infer<typeof trendSchema>
+export const healthGradeSchema = Schema.Literals(['A', 'B', 'C', 'D', 'F'])
+export type HealthGrade = Schema.Schema.Type<typeof healthGradeSchema>
 
-export const pasteDestinationSchema = z.enum(['claude-md', 'session-opener', 'prompt', 'shell-config'])
-export type PasteDestination = z.infer<typeof pasteDestinationSchema>
+export const trendSchema = Schema.Literals(['active', 'improving'])
+export type Trend = Schema.Schema.Type<typeof trendSchema>
 
-export const wasteActionSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('paste'),
-    label: z.string(),
-    text: z.string(),
-    destination: pasteDestinationSchema.optional(),
+export const pasteDestinationSchema = Schema.Literals(['claude-md', 'session-opener', 'prompt', 'shell-config'])
+export type PasteDestination = Schema.Schema.Type<typeof pasteDestinationSchema>
+
+export const wasteActionSchema = Schema.Union([
+  Schema.Struct({
+    type: writable(Schema.Literal('paste')),
+    label: writable(Schema.String),
+    text: writable(Schema.String),
+    destination: writable(Schema.optional(pasteDestinationSchema)),
   }),
-  z.object({
-    type: z.literal('command'),
-    label: z.string(),
-    text: z.string(),
+  Schema.Struct({
+    type: writable(Schema.Literal('command')),
+    label: writable(Schema.String),
+    text: writable(Schema.String),
   }),
-  z.object({
-    type: z.literal('file-content'),
-    label: z.string(),
-    path: z.string(),
-    content: z.string(),
+  Schema.Struct({
+    type: writable(Schema.Literal('file-content')),
+    label: writable(Schema.String),
+    path: writable(Schema.String),
+    content: writable(Schema.String),
   }),
 ])
-export type WasteAction = z.infer<typeof wasteActionSchema>
+export type WasteAction = Schema.Schema.Type<typeof wasteActionSchema>
 
-export const findingIdSchema = z.enum([
+export const findingIdSchema = Schema.Literals([
   'read-edit-ratio',
   'build-folder-reads',
   'redundant-rereads',
@@ -51,56 +55,60 @@ export const findingIdSchema = z.enum([
   'unused-skills',
   'unused-commands',
 ])
-export type FindingId = z.infer<typeof findingIdSchema>
+export type FindingId = Schema.Schema.Type<typeof findingIdSchema>
 
-export const optimizeFindingSchema = z.object({
-  id: findingIdSchema,
-  title: z.string(),
-  explanation: z.string(),
-  severity: impactSchema,
-  trend: trendSchema.nullable(),
-  tokensSaved: z.number(),
-  estimatedSavingsUSD: z.number(),
-  fix: wasteActionSchema,
+export const optimizeFindingSchema = Schema.Struct({
+  id: writable(findingIdSchema),
+  title: writable(Schema.String),
+  explanation: writable(Schema.String),
+  severity: writable(impactSchema),
+  trend: writable(Schema.NullOr(trendSchema)),
+  tokensSaved: writable(finiteNumber),
+  estimatedSavingsUSD: writable(finiteNumber),
+  fix: writable(wasteActionSchema),
 })
-export type OptimizeFinding = z.infer<typeof optimizeFindingSchema>
+export type OptimizeFinding = Schema.Schema.Type<typeof optimizeFindingSchema>
 
-export const optimizePayloadSchema = z.object({
-  period: z.object({ start: z.string().nullable(), end: z.string().nullable() }),
-  summary: z.object({
-    healthScore: z.number(),
-    healthGrade: healthGradeSchema,
-    findingCount: z.number(),
-    periodCostUSD: z.number(),
-    sessions: z.number(),
-    calls: z.number(),
-    potentialSavingsTokens: z.number(),
-    potentialSavingsCostUSD: z.number(),
-    potentialSavingsPercent: z.number().nullable(),
-    costRateUSD: z.number(),
-  }),
-  findings: z.array(optimizeFindingSchema),
+export const optimizePayloadSchema = Schema.Struct({
+  period: writable(
+    Schema.Struct({ start: writable(Schema.NullOr(Schema.String)), end: writable(Schema.NullOr(Schema.String)) }),
+  ),
+  summary: writable(
+    Schema.Struct({
+      healthScore: writable(finiteNumber),
+      healthGrade: writable(healthGradeSchema),
+      findingCount: writable(finiteNumber),
+      periodCostUSD: writable(finiteNumber),
+      sessions: writable(finiteNumber),
+      calls: writable(finiteNumber),
+      potentialSavingsTokens: writable(finiteNumber),
+      potentialSavingsCostUSD: writable(finiteNumber),
+      potentialSavingsPercent: writable(Schema.NullOr(finiteNumber)),
+      costRateUSD: writable(finiteNumber),
+    }),
+  ),
+  findings: writable(mutableArray(optimizeFindingSchema)),
 })
-export type OptimizePayload = z.infer<typeof optimizePayloadSchema>
+export type OptimizePayload = Schema.Schema.Type<typeof optimizePayloadSchema>
 
-export const lowWorthCandidateSchema = z.object({
-  project: z.string(),
-  sessionId: z.string(),
-  date: z.string(),
-  cost: z.number(),
-  tokens: z.number(),
-  reasons: z.array(z.string()),
+export const lowWorthCandidateSchema = Schema.Struct({
+  project: writable(Schema.String),
+  sessionId: writable(Schema.String),
+  date: writable(Schema.String),
+  cost: writable(finiteNumber),
+  tokens: writable(finiteNumber),
+  reasons: writable(mutableArray(Schema.String)),
 })
-export type LowWorthCandidate = z.infer<typeof lowWorthCandidateSchema>
+export type LowWorthCandidate = Schema.Schema.Type<typeof lowWorthCandidateSchema>
 
-export const contextBloatCandidateSchema = z.object({
-  project: z.string(),
-  sessionId: z.string(),
-  date: z.string(),
-  effectiveInputTokens: z.number(),
-  outputTokens: z.number(),
-  ratio: z.number(),
-  excessInputTokens: z.number(),
-  growthRatio: z.number().nullable(),
+export const contextBloatCandidateSchema = Schema.Struct({
+  project: writable(Schema.String),
+  sessionId: writable(Schema.String),
+  date: writable(Schema.String),
+  effectiveInputTokens: writable(finiteNumber),
+  outputTokens: writable(finiteNumber),
+  ratio: writable(finiteNumber),
+  excessInputTokens: writable(finiteNumber),
+  growthRatio: writable(Schema.NullOr(finiteNumber)),
 })
-export type ContextBloatCandidate = z.infer<typeof contextBloatCandidateSchema>
+export type ContextBloatCandidate = Schema.Schema.Type<typeof contextBloatCandidateSchema>

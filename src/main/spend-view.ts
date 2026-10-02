@@ -1,17 +1,19 @@
-import { getShortModelName } from './pipeline/models.js'
-import type { SessionSummary } from './pipeline/types.js'
-import { buildSessionSummaries, sessionProjectKey } from './store/aggregate.js'
-import { localDateKey, overviewDateRange, type OverviewScope } from './overview.js'
-import type { LedgerStore } from './store/ledger.js'
+import * as Schema from 'effect/Schema'
+
 import {
-  spendPayloadSchema,
   type SpendDayEntry,
   type SpendFlow,
   type SpendFlowLink,
   type SpendFlowNode,
   type SpendPayload,
+  spendPayloadSchema,
   type SpendSegment,
 } from '../shared/schemas/spend.js'
+import { localDateKey, overviewDateRange, type OverviewScope } from './overview.js'
+import { getShortModelName } from './pipeline/models.js'
+import type { SessionSummary } from './pipeline/types.js'
+import { buildSessionSummaries, sessionProjectKey } from './store/aggregate.js'
+import type { LedgerStore } from './store/ledger.js'
 
 export type {
   SpendDayEntry,
@@ -139,7 +141,7 @@ export function buildSpendViewFromLedger(store: LedgerStore, scope: OverviewScop
     // Key spend buckets on the canonical project key so same-leaf checkouts
     // (/a/src, /b/src) never collapse; the leaf rides along for display only.
     .map(summary => ({ projectKey: sessionProjectKey(summary), project: summary.project, session: summary }))
-  return spendPayloadSchema.parse(buildSpendPayload(scoped, scope, now))
+  return Schema.decodeUnknownSync(spendPayloadSchema)(buildSpendPayload(scoped, scope, now))
 }
 
 function buildSpendPayload(

@@ -1,20 +1,22 @@
 import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { promisify } from 'node:util'
 
-import type { ProjectSummary, SessionSummary } from './pipeline/types.js'
-import { scopeDateRange, groupSummariesIntoProjects } from './optimize-view.js'
-import { overviewDateRange, type OverviewScope } from './overview.js'
-import { buildSessionSummaries } from './store/aggregate.js'
-import type { LedgerStore } from './store/ledger.js'
+import * as Schema from 'effect/Schema'
+
 import {
-  yieldPayloadSchema,
   type YieldBucket,
   type YieldCategory,
   type YieldDetail,
   type YieldPayload,
+  yieldPayloadSchema,
 } from '../shared/schemas/yield.js'
+import { groupSummariesIntoProjects, scopeDateRange } from './optimize-view.js'
+import { overviewDateRange, type OverviewScope } from './overview.js'
+import type { ProjectSummary, SessionSummary } from './pipeline/types.js'
+import { buildSessionSummaries } from './store/aggregate.js'
+import type { LedgerStore } from './store/ledger.js'
 
 export type { YieldBucket, YieldCategory, YieldDetail, YieldPayload } from '../shared/schemas/yield.js'
 
@@ -383,5 +385,7 @@ export async function buildYieldViewFromLedger(
     range: overviewDateRange(scope, now),
     provider: scope.provider,
   })
-  return yieldPayloadSchema.parse(await buildYieldPayload(groupSummariesIntoProjects(summaries), scope, opts))
+  return Schema.decodeUnknownSync(yieldPayloadSchema)(
+    await buildYieldPayload(groupSummariesIntoProjects(summaries), scope, opts),
+  )
 }

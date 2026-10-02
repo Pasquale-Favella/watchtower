@@ -3,12 +3,9 @@ import { readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename as pathBasename, join } from 'node:path'
 
-import type { ProjectSummary, SessionSummary } from './pipeline/types.js'
-import { overviewDateRange, periodWindowStart, type OverviewScope } from './overview.js'
-import { buildSessionSummaries, groupSummariesIntoProjects } from './store/aggregate.js'
-import type { LedgerStore } from './store/ledger.js'
+import * as Schema from 'effect/Schema'
+
 import {
-  optimizePayloadSchema,
   type ContextBloatCandidate,
   type FindingId,
   type HealthGrade,
@@ -16,10 +13,15 @@ import {
   type LowWorthCandidate,
   type OptimizeFinding,
   type OptimizePayload,
+  optimizePayloadSchema,
   type PasteDestination,
   type Trend,
   type WasteAction,
 } from '../shared/schemas/optimize.js'
+import { overviewDateRange, type OverviewScope, periodWindowStart } from './overview.js'
+import type { ProjectSummary, SessionSummary } from './pipeline/types.js'
+import { buildSessionSummaries, groupSummariesIntoProjects } from './store/aggregate.js'
+import type { LedgerStore } from './store/ledger.js'
 
 export type {
   ContextBloatCandidate,
@@ -2392,7 +2394,9 @@ export async function buildOptimizeViewFromLedger(
     range: overviewDateRange(scope, now),
     provider: scope.provider,
   })
-  return optimizePayloadSchema.parse(await buildOptimizePayload(groupSummariesIntoProjects(summaries), scope, opts))
+  return Schema.decodeUnknownSync(optimizePayloadSchema)(
+    await buildOptimizePayload(groupSummariesIntoProjects(summaries), scope, opts),
+  )
 }
 
 // The grouping seam's home is the aggregation layer; re-exported here so the

@@ -228,7 +228,7 @@ export function fetchPullRequests(scope: OverviewScope): Promise<ApiResult<PullR
 }
 
 export function fetchSpend(scope: OverviewScope): Promise<ApiResult<SpendPayload | null>> {
-  return fetchZodPayload('spend', spendPayloadSchema.nullable(), () => window.api.getSpend(scope))
+  return fetchPayload('spend', effectSchemaDecoder(Schema.NullOr(spendPayloadSchema)), () => window.api.getSpend(scope))
 }
 
 export function fetchModels(scope: OverviewScope): Promise<ApiResult<ModelsPayload | null>> {
@@ -238,15 +238,19 @@ export function fetchModels(scope: OverviewScope): Promise<ApiResult<ModelsPaylo
 }
 
 export function fetchCompare(scope: OverviewScope, pair?: ComparePair): Promise<ApiResult<ComparePayload | null>> {
-  return fetchZodPayload('compare', comparePayloadSchema.nullable(), () => window.api.getCompare(scope, pair))
+  return fetchPayload('compare', effectSchemaDecoder(Schema.NullOr(comparePayloadSchema)), () =>
+    window.api.getCompare(scope, pair),
+  )
 }
 
 export function fetchOptimize(scope: OverviewScope): Promise<ApiResult<OptimizePayload | null>> {
-  return fetchZodPayload('optimize', optimizePayloadSchema.nullable(), () => window.api.getOptimize(scope))
+  return fetchPayload('optimize', effectSchemaDecoder(Schema.NullOr(optimizePayloadSchema)), () =>
+    window.api.getOptimize(scope),
+  )
 }
 
 export function fetchYield(scope: OverviewScope): Promise<ApiResult<YieldPayload | null>> {
-  return fetchZodPayload('yield', yieldPayloadSchema.nullable(), () => window.api.getYield(scope))
+  return fetchPayload('yield', effectSchemaDecoder(Schema.NullOr(yieldPayloadSchema)), () => window.api.getYield(scope))
 }
 
 export function fetchSkills(

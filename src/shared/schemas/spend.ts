@@ -1,41 +1,49 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
-export const spendSegmentSchema = z.object({
-  name: z.string(),
-  cost: z.number(),
-  sourceModels: z.array(z.string()).optional(),
+const finiteNumber = Schema.Finite
+const writable = Schema.mutableKey
+const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))
+
+export const spendSegmentSchema = Schema.Struct({
+  name: writable(Schema.String),
+  cost: writable(finiteNumber),
+  sourceModels: writable(Schema.optional(mutableArray(Schema.String))),
 })
-export type SpendSegment = z.infer<typeof spendSegmentSchema>
+export type SpendSegment = Schema.Schema.Type<typeof spendSegmentSchema>
 
-export const spendDayEntrySchema = z.object({
-  date: z.string(),
-  cost: z.number(),
-  segments: z.array(spendSegmentSchema),
+export const spendDayEntrySchema = Schema.Struct({
+  date: writable(Schema.String),
+  cost: writable(finiteNumber),
+  segments: writable(mutableArray(spendSegmentSchema)),
 })
-export type SpendDayEntry = z.infer<typeof spendDayEntrySchema>
+export type SpendDayEntry = Schema.Schema.Type<typeof spendDayEntrySchema>
 
-export const spendFlowNodeSchema = z.object({
-  id: z.string(),
-  label: z.string(),
-  cost: z.number(),
-  sourceModels: z.array(z.string()).optional(),
+export const spendFlowNodeSchema = Schema.Struct({
+  id: writable(Schema.String),
+  label: writable(Schema.String),
+  cost: writable(finiteNumber),
+  sourceModels: writable(Schema.optional(mutableArray(Schema.String))),
 })
-export type SpendFlowNode = z.infer<typeof spendFlowNodeSchema>
+export type SpendFlowNode = Schema.Schema.Type<typeof spendFlowNodeSchema>
 
-export const spendFlowLinkSchema = z.object({ model: z.string(), project: z.string(), cost: z.number() })
-export type SpendFlowLink = z.infer<typeof spendFlowLinkSchema>
-
-export const spendFlowSchema = z.object({
-  models: z.array(spendFlowNodeSchema),
-  projects: z.array(spendFlowNodeSchema),
-  links: z.array(spendFlowLinkSchema),
+export const spendFlowLinkSchema = Schema.Struct({
+  model: writable(Schema.String),
+  project: writable(Schema.String),
+  cost: writable(finiteNumber),
 })
-export type SpendFlow = z.infer<typeof spendFlowSchema>
+export type SpendFlowLink = Schema.Schema.Type<typeof spendFlowLinkSchema>
 
-export const spendPayloadSchema = z.object({
-  byModel: z.array(spendDayEntrySchema),
-  byProject: z.array(spendDayEntrySchema),
-  flow: spendFlowSchema,
-  dataStart: z.string().nullable(),
+export const spendFlowSchema = Schema.Struct({
+  models: writable(mutableArray(spendFlowNodeSchema)),
+  projects: writable(mutableArray(spendFlowNodeSchema)),
+  links: writable(mutableArray(spendFlowLinkSchema)),
 })
-export type SpendPayload = z.infer<typeof spendPayloadSchema>
+export type SpendFlow = Schema.Schema.Type<typeof spendFlowSchema>
+
+export const spendPayloadSchema = Schema.Struct({
+  byModel: writable(mutableArray(spendDayEntrySchema)),
+  byProject: writable(mutableArray(spendDayEntrySchema)),
+  flow: writable(spendFlowSchema),
+  dataStart: writable(Schema.NullOr(Schema.String)),
+})
+export type SpendPayload = Schema.Schema.Type<typeof spendPayloadSchema>
