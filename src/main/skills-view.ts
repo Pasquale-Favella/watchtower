@@ -3,20 +3,22 @@ import { readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import type { LedgerStore } from './store/ledger.js'
-import { buildSessionSummaries } from './store/aggregate.js'
-import { overviewDateRange, type OverviewScope } from './overview.js'
+import * as Schema from 'effect/Schema'
+
 import {
-  DEFAULT_SKILLS_THRESHOLDS,
-  skillsPayloadSchema,
   type CandidateSourceSession,
+  DEFAULT_SKILLS_THRESHOLDS,
   type GhostSkill,
   type SkillCandidate,
-  type SkillsPayload,
   type SkillsDismissal,
+  type SkillsPayload,
+  skillsPayloadSchema,
   type SkillsSource,
   type SkillsThresholds,
 } from '../shared/schemas/skills.js'
+import { overviewDateRange, type OverviewScope } from './overview.js'
+import { buildSessionSummaries } from './store/aggregate.js'
+import type { LedgerStore } from './store/ledger.js'
 
 export type { SkillsPayload } from '../shared/schemas/skills.js'
 
@@ -373,7 +375,7 @@ export async function buildSkillsViewFromLedger(
   const bashEvents = candidates.filter(c => c.source === 'bash').reduce((s, c) => s + c.frequency, 0)
   const toolEvents = candidates.filter(c => c.source === 'tool').reduce((s, c) => s + c.frequency, 0)
 
-  return skillsPayloadSchema.parse({
+  return Schema.decodeUnknownSync(skillsPayloadSchema)({
     period: { start: dateRange.start.toISOString(), end: dateRange.end.toISOString() },
 
     summary: {

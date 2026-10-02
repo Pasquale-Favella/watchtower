@@ -1,13 +1,11 @@
-import { buildPrAttribution } from './pipeline/sessions-report.js'
+import * as Schema from 'effect/Schema'
+
+import { type PullRequestsPayload, pullRequestsPayloadSchema } from '../shared/schemas/pull-requests.js'
 import { overviewDateRange, type OverviewScope } from './overview.js'
+import { buildPrAttribution } from './pipeline/sessions-report.js'
+import type { SessionSummary } from './pipeline/types.js'
 import { buildSessionSummaries } from './store/aggregate.js'
 import type { LedgerStore } from './store/ledger.js'
-import type { SessionSummary } from './pipeline/types.js'
-import {
-  pullRequestsPayloadSchema,
-  type PullRequestRow,
-  type PullRequestsPayload,
-} from '../shared/schemas/pull-requests.js'
 
 export type { PullRequestRow, PullRequestsPayload } from '../shared/schemas/pull-requests.js'
 
@@ -67,5 +65,5 @@ export function buildPullRequestsViewFromLedger(
     range: overviewDateRange(scope, now),
     provider: scope.provider,
   })
-  return pullRequestsPayloadSchema.parse(payloadFrom(sessions, []))
+  return Schema.decodeUnknownSync(pullRequestsPayloadSchema)(payloadFrom(sessions, []))
 }

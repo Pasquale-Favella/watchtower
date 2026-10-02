@@ -224,9 +224,9 @@ function registerIpc(db: DbWorkerClient): void {
    * is user-initiated — the OS save dialog IS the user's confirmation, and no
    * path is ever written without it. Defaults to `.agents/skills/` in home. */
   handleLogged('skills:save', async (_event, request: unknown): Promise<SkillsSaveResult> => {
-    const parsed = skillsSaveRequestSchema.safeParse(request)
-    if (!parsed.success) return { ok: false, error: 'invalid save request' }
-    const defaultPath = join(homedir(), '.agents', 'skills', slugifyCandidateName(parsed.data.name), 'SKILL.md')
+    const parsed = Schema.decodeUnknownResult(skillsSaveRequestSchema)(request)
+    if (parsed._tag === 'Failure') return { ok: false, error: 'invalid save request' }
+    const defaultPath = join(homedir(), '.agents', 'skills', slugifyCandidateName(parsed.success.name), 'SKILL.md')
     const picked = await dialog.showSaveDialog({
       title: 'Save skill',
       defaultPath,
@@ -237,7 +237,7 @@ function registerIpc(db: DbWorkerClient): void {
       // The dialog confirmed the target — create its parent dir so the write
       // succeeds even when the nested .agents/skills/<slug>/ is brand new.
       mkdirSync(dirname(picked.filePath), { recursive: true })
-      await writeFile(picked.filePath, parsed.data.content, 'utf8')
+      await writeFile(picked.filePath, parsed.success.content, 'utf8')
       return { ok: true, path: picked.filePath }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }

@@ -224,7 +224,9 @@ export function fetchSessionRows(scope: OverviewScope): Promise<ApiResult<Sessio
 }
 
 export function fetchPullRequests(scope: OverviewScope): Promise<ApiResult<PullRequestsPayload | null>> {
-  return fetchZodPayload('pull requests', pullRequestsPayloadSchema.nullable(), () => window.api.getPullRequests(scope))
+  return fetchPayload('pull requests', effectSchemaDecoder(Schema.NullOr(pullRequestsPayloadSchema)), () =>
+    window.api.getPullRequests(scope),
+  )
 }
 
 export function fetchSpend(scope: OverviewScope): Promise<ApiResult<SpendPayload | null>> {
@@ -257,15 +259,19 @@ export function fetchSkills(
   scope: OverviewScope,
   thresholds?: SkillsThresholds,
 ): Promise<ApiResult<SkillsPayload | null>> {
-  return fetchZodPayload('skills', skillsPayloadSchema.nullable(), () => window.api.getSkills(scope, thresholds))
+  return fetchPayload('skills', effectSchemaDecoder(Schema.NullOr(skillsPayloadSchema)), () =>
+    window.api.getSkills(scope, thresholds),
+  )
 }
 
 export function fetchDismissSkill(request: SkillsDismissalRequest): Promise<ApiResult<SkillsDismissalResult>> {
-  return fetchZodPayload('skills dismissal', skillsDismissalResultSchema, () => window.api.dismissSkill(request))
+  return fetchPayload('skills dismissal', effectSchemaDecoder(skillsDismissalResultSchema), () =>
+    window.api.dismissSkill(request),
+  )
 }
 
 export function fetchSaveSkill(request: SkillsSaveRequest): Promise<ApiResult<SkillsSaveResult>> {
-  return fetchZodPayload('skills save', skillsSaveResultSchema, () => window.api.saveSkill(request))
+  return fetchPayload('skills save', effectSchemaDecoder(skillsSaveResultSchema), () => window.api.saveSkill(request))
 }
 
 export function fetchModelAliases(): Promise<ApiResult<ModelAlias[]>> {

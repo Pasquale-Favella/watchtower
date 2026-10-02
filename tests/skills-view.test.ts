@@ -1,12 +1,12 @@
-import { describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import type { ClassifiedTurn, ParsedApiCall, SessionSummary } from '../src/main/pipeline/types.js'
+
+import * as Schema from 'effect/Schema'
+import { describe, expect, it } from 'vitest'
+
 import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
-import { buildFixtureReport } from './fixtures/report.js'
-import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
+import type { ClassifiedTurn, ParsedApiCall, SessionSummary } from '../src/main/pipeline/types.js'
 import {
   buildSkillsViewFromLedger,
   collectSkillCandidates,
@@ -14,7 +14,10 @@ import {
   normalizeBashCommand,
   partitionSkillCandidates,
 } from '../src/main/skills-view.js'
+import { LedgerStore } from '../src/main/store/ledger.js'
 import { DEFAULT_SKILLS_THRESHOLDS, skillsThresholdsSchema } from '../src/shared/schemas/skills.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { buildFixtureReport } from './fixtures/report.js'
 
 const BASE_SESSION = buildFixtureReport()[0]!.sessions[0]!
 const BASE_TURN = BASE_SESSION.turns[0]!
@@ -223,21 +226,24 @@ describe('partitionSkillCandidates (frequency × spread gate)', () => {
 
 describe('skillsThresholdsSchema (the handler tripwire)', () => {
   it('defaults missing fields to 5 × 2', () => {
-    expect(skillsThresholdsSchema.safeParse({}).data).toEqual(DEFAULT_SKILLS_THRESHOLDS)
-    expect(skillsThresholdsSchema.safeParse({ frequency: 3 }).data).toEqual({ frequency: 3, spread: 2 })
+    expect(Schema.decodeUnknownSync(skillsThresholdsSchema)({})).toEqual(DEFAULT_SKILLS_THRESHOLDS)
+    expect(Schema.decodeUnknownSync(skillsThresholdsSchema)({ frequency: 3 })).toEqual({ frequency: 3, spread: 2 })
   })
 
   it('fails on absent input so the handler falls back to defaults', () => {
-    expect(skillsThresholdsSchema.safeParse(undefined).success).toBe(false)
+    expect(Schema.decodeUnknownResult(skillsThresholdsSchema)(undefined)._tag).toBe('Failure')
   })
 
   it('rejects out-of-range values so the handler falls back to defaults', () => {
-    expect(skillsThresholdsSchema.safeParse({ frequency: -5, spread: 0 }).success).toBe(false)
-    expect(skillsThresholdsSchema.safeParse({ frequency: 1.5, spread: 2 }).success).toBe(false)
+    expect(Schema.decodeUnknownResult(skillsThresholdsSchema)({ frequency: -5, spread: 0 })._tag).toBe('Failure')
+    expect(Schema.decodeUnknownResult(skillsThresholdsSchema)({ frequency: 1.5, spread: 2 })._tag).toBe('Failure')
   })
 
   it('accepts a valid tuning pair', () => {
-    expect(skillsThresholdsSchema.safeParse({ frequency: 3, spread: 1 }).data).toEqual({ frequency: 3, spread: 1 })
+    expect(Schema.decodeUnknownSync(skillsThresholdsSchema)({ frequency: 3, spread: 1 })).toEqual({
+      frequency: 3,
+      spread: 1,
+    })
   })
 })
 

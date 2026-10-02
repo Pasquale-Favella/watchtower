@@ -195,7 +195,7 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
     const store = openStore()
     const tool = buildLedgerTools(store).find(t => t.name === 'ledger_skills')!
     const out = await tool.run({ scope })
-    expect(skillsPayloadSchema.safeParse(out).success).toBe(true)
+    expect(Schema.decodeUnknownResult(skillsPayloadSchema)(out)._tag).toBe('Success')
   })
 
   it('ledger_calls is the raw drill-down — filtered, newest first, display-priced', async () => {

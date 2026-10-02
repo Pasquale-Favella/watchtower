@@ -3,6 +3,7 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Schedule from 'effect/Schedule'
 import type { SchemaError } from 'effect/Schema'
+import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import type { SqlError } from 'effect/unstable/sql/SqlError'
 import { readdirSync, statSync } from 'fs'
@@ -655,17 +656,17 @@ export class DbWorkerContext {
       case 'skills:view': {
         const scope = args[0] as OverviewScope
         const thresholds = args[1] as SkillsThresholds | undefined
-        // Tripwire (ADR 0005): IPC args are `unknown` — safeParse applies the
+        // Tripwire (ADR 0005): IPC args are `unknown` — schema decoding applies the
         // schema's .int().min(1) guards and .default()s, falling back to the
         // defaults on garbage so a malformed renderer value can never flip every
         // pattern into a draft.
-        const parsed = skillsThresholdsSchema.safeParse(thresholds)
+        const parsed = Schema.decodeUnknownResult(skillsThresholdsSchema)(thresholds)
         // Dismissals ride every fetch (ticket 25): the not-a-skill store filters
         // rejected patterns out of drafts AND opportunities before the gate.
         return (await buildSkillsViewFromLedger(
           ledger,
           scope,
-          parsed.success ? parsed.data : DEFAULT_SKILLS_THRESHOLDS,
+          parsed._tag === 'Success' ? parsed.success : DEFAULT_SKILLS_THRESHOLDS,
           { dismissals: ledger.getSkillDismissals() },
         )) satisfies SkillsPayload | null
       }

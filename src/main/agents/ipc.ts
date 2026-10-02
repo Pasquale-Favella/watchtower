@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Schema from 'effect/Schema'
 import { BrowserWindow, ipcMain } from 'electron'
 
 import {
@@ -724,9 +725,9 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
   // coach:run's single coach mode (ADR 0017 reshaped), so no separate prose
   // channel exists here.
   ipcMain.handle('skills:dismiss', async (_event, request: unknown): Promise<SkillsDismissalResult> => {
-    const parsed = skillsDismissalRequestSchema.safeParse(request)
-    if (!parsed.success) return { ok: false, error: 'invalid dismissal request' }
-    await dismissals.dismiss(parsed.data.source, parsed.data.name, parsed.data.reason)
+    const parsed = Schema.decodeUnknownResult(skillsDismissalRequestSchema)(request)
+    if (parsed._tag === 'Failure') return { ok: false, error: 'invalid dismissal request' }
+    await dismissals.dismiss(parsed.success.source, parsed.success.name, parsed.success.reason)
     return { ok: true }
   })
 

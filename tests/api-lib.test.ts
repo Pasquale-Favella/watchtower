@@ -6,20 +6,28 @@ import {
   fetchCadence,
   fetchCheckForUpdates,
   fetchClearData,
+  fetchCompare,
   fetchCurrencies,
   fetchCurrency,
+  fetchDismissSkill,
   fetchExport,
   fetchLedgerMcpConnection,
   fetchLedgerMcpStatus,
+  fetchOptimize,
   fetchPayload,
+  fetchPullRequests,
   fetchRefreshPricing,
   fetchRegenerateLedgerMcpToken,
+  fetchSaveSkill,
   fetchScan,
   fetchScanStatus,
   fetchSetCadence,
   fetchSetCurrency,
   fetchSettings,
+  fetchSkills,
+  fetchSpend,
   fetchViews,
+  fetchYield,
   parsePayload,
 } from '../src/renderer/src/shared/lib/api.js'
 import { zodDecoder } from '../src/renderer/src/shared/lib/schema-decoder.js'
@@ -38,6 +46,59 @@ afterEach(() => {
 })
 
 describe('renderer parse seam (ADR 0005)', () => {
+  const scope = { period: 'today' } as const
+  const pair = { modelA: 'a', modelB: 'b' }
+  const thresholds = { frequency: 5, spread: 2 }
+  const sectionFetches = [
+    { label: 'spend', method: 'getSpend', fetch: () => fetchSpend(scope), args: [scope] },
+    { label: 'compare', method: 'getCompare', fetch: () => fetchCompare(scope, pair), args: [scope, pair] },
+    { label: 'optimize', method: 'getOptimize', fetch: () => fetchOptimize(scope), args: [scope] },
+    { label: 'yield', method: 'getYield', fetch: () => fetchYield(scope), args: [scope] },
+    { label: 'pull requests', method: 'getPullRequests', fetch: () => fetchPullRequests(scope), args: [scope] },
+    {
+      label: 'skills',
+      method: 'getSkills',
+      fetch: () => fetchSkills(scope, thresholds),
+      args: [scope, thresholds],
+    },
+  ]
+
+  it.each(sectionFetches)('accepts a null $label payload and preserves IPC arguments', async row => {
+    const invoke = vi.fn().mockResolvedValue(null)
+    mockWindow({ [row.method]: invoke })
+    expect(await row.fetch()).toStrictEqual({ ok: true, data: null })
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(...row.args)
+  })
+
+  it.each(sectionFetches)('rejects a malformed $label payload with its channel label', async row => {
+    mockWindow({ [row.method]: () => Promise.resolve(42) })
+    const result = await row.fetch()
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain(`Invalid ${row.label} payload`)
+  })
+
+  it('decodes Skills command results and preserves request arguments', async () => {
+    const dismissRequest = { source: 'skill', name: 'unused', reason: 'irrelevant' } as const
+    const saveRequest = { name: 'review', content: 'Review changes.' }
+    const dismissSkill = vi.fn().mockResolvedValue({ ok: true, extra: 'stripped' })
+    const saveSkill = vi.fn().mockResolvedValue({ ok: false, error: 'cancelled', extra: 'stripped' })
+    mockWindow({ dismissSkill, saveSkill })
+
+    expect(await fetchDismissSkill(dismissRequest)).toStrictEqual({ ok: true, data: { ok: true } })
+    expect(await fetchSaveSkill(saveRequest)).toStrictEqual({ ok: true, data: { ok: false, error: 'cancelled' } })
+    expect(dismissSkill).toHaveBeenCalledExactlyOnceWith(dismissRequest)
+    expect(saveSkill).toHaveBeenCalledExactlyOnceWith(saveRequest)
+  })
+
+  it('rejects malformed Skills command results', async () => {
+    mockWindow({
+      dismissSkill: () => Promise.resolve({ ok: 'true' }),
+      saveSkill: () => Promise.resolve({ ok: true, path: null }),
+    })
+    expect((await fetchDismissSkill({ source: 'tool', name: 'unused', reason: '' })).ok).toBe(false)
+    expect((await fetchSaveSkill({ name: 'review', content: '' })).ok).toBe(false)
+  })
+
   it('parsePayload passes a valid payload through untouched', () => {
     const result = parsePayload(zodDecoder(scanStatusSchema), 'scan status', { scanned: true })
     expect(result).toEqual({ ok: true, data: { scanned: true } })
