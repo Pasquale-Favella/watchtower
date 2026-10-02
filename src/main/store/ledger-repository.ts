@@ -309,8 +309,8 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
       const getLedgerMcpStartupMode = Effect.fn('LedgerConfig.getLedgerMcpStartupMode')(function* () {
         const rows = yield* sql.unsafe('SELECT startup_mode FROM ledger_mcp_config WHERE id = 1')
         const row = rows[0] as { startup_mode: unknown } | undefined
-        const parsed = ledgerMcpStartupModeSchema.safeParse(row?.startup_mode)
-        return parsed.success ? parsed.data : 'on-demand'
+        const parsed = Schema.decodeUnknownResult(ledgerMcpStartupModeSchema)(row?.startup_mode)
+        return parsed._tag === 'Success' ? parsed.success : 'on-demand'
       })
 
       const getSkillDismissals = Effect.fn('LedgerConfig.getSkillDismissals')(function* () {

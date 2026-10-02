@@ -3,7 +3,7 @@ import { dirname } from 'node:path'
 
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import type { SchemaError } from 'effect/Schema'
+import * as Schema from 'effect/Schema'
 import { SqlError } from 'effect/unstable/sql/SqlError'
 
 import {
@@ -208,8 +208,8 @@ export class LedgerStore {
   }
 
   setLedgerMcpStartupMode(value: unknown): LedgerMcpStartupMode {
-    const parsed = ledgerMcpStartupModeSchema.safeParse(value)
-    const startupMode = parsed.success ? parsed.data : 'on-demand'
+    const parsed = Schema.decodeUnknownResult(ledgerMcpStartupModeSchema)(value)
+    const startupMode = parsed._tag === 'Success' ? parsed.success : 'on-demand'
     this.runRepositorySync(config => config.setLedgerMcpStartupMode(startupMode))
     return startupMode
   }
@@ -269,7 +269,9 @@ export class LedgerStore {
    * Retain the historical name until those callers migrate, then delete this
    * runner with LedgerStore. Each runner executes on its owning thread.
    */
-  runRepositorySync<A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError | SchemaError>): A {
+  runRepositorySync<A>(
+    operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError | Schema.SchemaError>,
+  ): A {
     return this.db.runSync(
       Effect.gen(function* () {
         const config = yield* LedgerConfig
@@ -293,7 +295,9 @@ export class LedgerStore {
 
   /** `LedgerQueries` analogue of `runIngestSync` (the four bulk reads).
    *  Same removal condition as `runIngestSync`. */
-  runQueriesSync<A>(operation: (queries: LedgerQueries['Service']) => Effect.Effect<A, SqlError | SchemaError>): A {
+  runQueriesSync<A>(
+    operation: (queries: LedgerQueries['Service']) => Effect.Effect<A, SqlError | Schema.SchemaError>,
+  ): A {
     return this.db.runSync(
       Effect.gen(function* () {
         const queries = yield* LedgerQueries

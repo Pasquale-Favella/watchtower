@@ -176,7 +176,7 @@ const okEnvelopeSchema = z.object({ ok: z.literal(true) })
 export type OkEnvelope = z.infer<typeof okEnvelopeSchema>
 
 export function fetchScanStatus(): Promise<ApiResult<ScanStatus>> {
-  return fetchZodPayload('scan status', scanStatusSchema, () => window.api.getScanStatus())
+  return fetchPayload('scan status', effectSchemaDecoder(scanStatusSchema), () => window.api.getScanStatus())
 }
 
 export function fetchViews(): Promise<ApiResult<DashboardViews | null>> {
@@ -277,33 +277,41 @@ export function fetchPriceOverrides(): Promise<ApiResult<PriceOverride[]>> {
 }
 
 export function fetchSettings(): Promise<ApiResult<SettingsInfo>> {
-  return fetchZodPayload('settings', settingsInfoSchema, () => window.api.getSettings())
+  return fetchPayload('settings', effectSchemaDecoder(settingsInfoSchema), () => window.api.getSettings())
 }
 
 export function fetchClearData(): Promise<ApiResult<SettingsInfo>> {
-  return fetchZodPayload('cleared settings', settingsInfoSchema, () => window.api.clearData())
+  return fetchPayload('cleared settings', effectSchemaDecoder(settingsInfoSchema), () => window.api.clearData())
 }
 
 export function fetchLedgerMcpStatus(): Promise<ApiResult<LedgerMcpStatus>> {
-  return fetchZodPayload('ledger MCP status', ledgerMcpStatusSchema, () => window.api.getLedgerMcpStatus())
+  return fetchPayload('ledger MCP status', effectSchemaDecoder(ledgerMcpStatusSchema), () =>
+    window.api.getLedgerMcpStatus(),
+  )
 }
 
 export function fetchSetLedgerMcpStartupMode(mode: LedgerMcpStartupMode): Promise<ApiResult<LedgerMcpStatus>> {
-  return fetchZodPayload('ledger MCP startup mode', ledgerMcpStatusSchema, () =>
+  return fetchPayload('ledger MCP startup mode', effectSchemaDecoder(ledgerMcpStatusSchema), () =>
     window.api.setLedgerMcpStartupMode(mode),
   )
 }
 
 export function fetchLedgerMcpConnection(): Promise<ApiResult<LedgerMcpConnection>> {
-  return fetchZodPayload('ledger MCP connection', ledgerMcpConnectionSchema, () => window.api.getLedgerMcpConnection())
+  return fetchPayload('ledger MCP connection', effectSchemaDecoder(ledgerMcpConnectionSchema), () =>
+    window.api.getLedgerMcpConnection(),
+  )
 }
 
 export function fetchRegenerateLedgerMcpToken(): Promise<ApiResult<LedgerMcpStatus>> {
-  return fetchZodPayload('ledger MCP token', ledgerMcpStatusSchema, () => window.api.regenerateLedgerMcpToken())
+  return fetchPayload('ledger MCP token', effectSchemaDecoder(ledgerMcpStatusSchema), () =>
+    window.api.regenerateLedgerMcpToken(),
+  )
 }
 
 export function fetchRefreshPricing(): Promise<ApiResult<PricingRefreshResult>> {
-  return fetchZodPayload('pricing refresh', pricingRefreshResultSchema, () => window.api.refreshPricing())
+  return fetchPayload('pricing refresh', effectSchemaDecoder(pricingRefreshResultSchema), () =>
+    window.api.refreshPricing(),
+  )
 }
 
 export function fetchCheckForUpdates(): Promise<ApiResult<UpdateStatus>> {
@@ -347,7 +355,7 @@ export function fetchExport(format: 'csv' | 'json', destination?: string): Promi
 }
 
 export function fetchScan(options?: { provider?: string }): Promise<ApiResult<ScanResult>> {
-  return fetchZodPayload('scan', scanResultSchema, () => window.api.scan(options))
+  return fetchPayload('scan', effectSchemaDecoder(scanResultSchema), () => window.api.scan(options))
 }
 
 export function fetchAddModelAlias(model: string, aliasOf: string): Promise<ApiResult<OkEnvelope>> {

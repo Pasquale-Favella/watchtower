@@ -5,13 +5,20 @@ import {
   fetchAppVersion,
   fetchCadence,
   fetchCheckForUpdates,
+  fetchClearData,
   fetchCurrencies,
   fetchCurrency,
   fetchExport,
+  fetchLedgerMcpConnection,
+  fetchLedgerMcpStatus,
   fetchPayload,
+  fetchRefreshPricing,
+  fetchRegenerateLedgerMcpToken,
+  fetchScan,
   fetchScanStatus,
   fetchSetCadence,
   fetchSetCurrency,
+  fetchSettings,
   fetchViews,
   parsePayload,
 } from '../src/renderer/src/shared/lib/api.js'
@@ -65,6 +72,52 @@ describe('renderer parse seam (ADR 0005)', () => {
     mockWindow({ getScanStatus: () => Promise.resolve({ scanned: true }) })
     const result = await fetchScanStatus()
     expect(result).toEqual({ ok: true, data: { scanned: true } })
+  })
+
+  it('decodes scan, settings, pricing, and ledger MCP fetches through Effect schemas', async () => {
+    const scanOptions = { provider: 'claude' }
+    const calls: unknown[][] = []
+    const settings = { dataDir: '/data', dbSize: 1, dataDirSize: 2, cacheDir: '/cache', cacheSize: 3 }
+    const status = { startupMode: 'on-demand', running: false, url: null }
+    mockWindow({
+      scan: (options: unknown) => {
+        calls.push(['scan', options])
+        return Promise.resolve({ ok: true, alreadyRunning: false })
+      },
+      getSettings: () => Promise.resolve(settings),
+      clearData: () => Promise.resolve(settings),
+      refreshPricing: () => Promise.resolve({ ok: false, error: 'offline' }),
+      getLedgerMcpStatus: () => Promise.resolve(status),
+      getLedgerMcpConnection: () => Promise.resolve({ url: 'http://localhost:1234', config: '{}' }),
+      regenerateLedgerMcpToken: () => Promise.resolve(status),
+    })
+
+    expect(await fetchScan(scanOptions)).toEqual({ ok: true, data: { ok: true, alreadyRunning: false } })
+    expect(await fetchSettings()).toEqual({ ok: true, data: settings })
+    expect(await fetchClearData()).toEqual({ ok: true, data: settings })
+    expect(await fetchRefreshPricing()).toEqual({ ok: true, data: { ok: false, error: 'offline' } })
+    expect(await fetchLedgerMcpStatus()).toEqual({ ok: true, data: status })
+    expect(await fetchLedgerMcpConnection()).toEqual({
+      ok: true,
+      data: { url: 'http://localhost:1234', config: '{}' },
+    })
+    expect(await fetchRegenerateLedgerMcpToken()).toEqual({ ok: true, data: status })
+    expect(calls).toEqual([['scan', scanOptions]])
+  })
+
+  it('keeps labels for malformed migrated settings and ledger MCP payloads', async () => {
+    mockWindow({
+      getSettings: () => Promise.resolve({ dataDir: '/data', dbSize: '1' }),
+      getLedgerMcpStatus: () => Promise.resolve({ startupMode: 'sometimes', running: false, url: null }),
+    })
+    expect(await fetchSettings()).toEqual({
+      ok: false,
+      error: 'Invalid settings payload (dbSize: has an unexpected type)',
+    })
+    expect(await fetchLedgerMcpStatus()).toEqual({
+      ok: false,
+      error: 'Invalid ledger MCP status payload (startupMode: does not match the expected shape)',
+    })
   })
 
   it('fetchViews accepts a null payload (a valid nullable view)', async () => {

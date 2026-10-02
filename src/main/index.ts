@@ -1,13 +1,30 @@
-import { dirname, join } from 'path'
-import { mkdirSync, existsSync } from 'fs'
 import { writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { app, BrowserWindow, ipcMain, shell, dialog, type WebContents } from 'electron'
+
+import * as Schema from 'effect/Schema'
+import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron'
+import { existsSync, mkdirSync } from 'fs'
+import { dirname, join } from 'path'
+
 import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
+import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
+import {
+  type LedgerMcpConnection,
+  type LedgerMcpStartupMode,
+  ledgerMcpStartupModeSchema,
+  type LedgerMcpStatus,
+} from '../shared/schemas/ledger-mcp.js'
 import { skillsSaveRequestSchema, type SkillsSaveResult, type SkillsThresholds } from '../shared/schemas/skills.js'
+import type { AcpMcpServer } from './agents/harnesses/types.js'
+import { type LedgerMcpAttachment, registerAgentsIpc } from './agents/ipc.js'
+import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
+import { createSidecarPool } from './agents/ledger-mcp/pool.js'
+import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
+import type { ComparePair } from './compare-view.js'
+import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths } from './env.js'
+import type { ExportResult } from './export.js'
 import { mainRuntime } from './main-runtime.js'
-import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
 import {
   closeOperationalLog,
   initOperationalLog,
@@ -15,22 +32,8 @@ import {
   logIpcError,
   safeLogOperationalEvent,
 } from './operational-log.js'
-import type { ExportResult } from './export.js'
 import type { OverviewScope } from './overview.js'
-import type { ComparePair } from './compare-view.js'
-import { registerAgentsIpc, type LedgerMcpAttachment } from './agents/ipc.js'
-import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
-import { createSidecarPool } from './agents/ledger-mcp/pool.js'
-import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
-import type { AcpMcpServer } from './agents/harnesses/types.js'
-import { DbWorkerClient } from './db-worker/client.js'
-import {
-  ledgerMcpStartupModeSchema,
-  type LedgerMcpConnection,
-  type LedgerMcpStartupMode,
-  type LedgerMcpStatus,
-} from '../shared/schemas/ledger-mcp.js'
-import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
+import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
 
 /**
  * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the
@@ -148,15 +151,15 @@ function relayWorkerEvents(db: DbWorkerClient): void {
 
 function registerIpc(db: DbWorkerClient): void {
   /** Renderer tripwire forward (#130): a dropped subscription payload lands
-   * here with its label + location only — never contents. Zod-validated and
+   * here with its label + location only — never contents. Schema-validated and
    * length-capped at the schema; a malformed notice is itself an IPC error. */
   handleLogged('log:notice', (notice: unknown): { ok: true } => {
-    const parsed = rendererNoticeSchema.safeParse(notice)
-    if (!parsed.success) throw new Error('invalid renderer notice')
+    const parsed = Schema.decodeUnknownResult(rendererNoticeSchema)(notice)
+    if (parsed._tag === 'Failure') throw new Error('invalid renderer notice')
     safeLogOperationalEvent(
       'warn',
       'renderer.notice',
-      { label: parsed.data.label, location: parsed.data.location },
+      { label: parsed.success.label, location: parsed.success.location },
       'renderer',
     )
     return { ok: true }
@@ -301,9 +304,9 @@ function registerIpc(db: DbWorkerClient): void {
   handleLogged('ledger-mcp:status', () => ledgerMcpStatus(db))
 
   handleLogged('ledger-mcp:startup:set', async (_event, value: unknown): Promise<LedgerMcpStatus> => {
-    const parsed = ledgerMcpStartupModeSchema.safeParse(value)
-    if (!parsed.success) throw new Error('invalid ledger MCP startup mode')
-    const startupMode = (await db.request('ledger-mcp:startup:set', parsed.data)) as LedgerMcpStartupMode
+    const parsed = Schema.decodeUnknownResult(ledgerMcpStartupModeSchema)(value)
+    if (parsed._tag === 'Failure') throw new Error('invalid ledger MCP startup mode')
+    const startupMode = (await db.request('ledger-mcp:startup:set', parsed.success)) as LedgerMcpStartupMode
     if (startupMode === 'at-launch') {
       // Starting is best-effort: a broken bundle or unavailable DB leaves the
       // Coach able to run without grounding tools.

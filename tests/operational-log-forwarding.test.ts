@@ -1,9 +1,10 @@
+import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { buildScanSummaryRecords } from '../src/main/pipeline/scan.js'
-import { fileErrorCode, logFileName, queueLogRecord, takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
-import { logCodeFor } from '../src/main/operational-log.js'
 import { parseSidecarLogLine } from '../src/main/agents/ledger-mcp/sidecar.js'
+import { logCodeFor } from '../src/main/operational-log.js'
+import { fileErrorCode, logFileName, queueLogRecord, takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
+import { buildScanSummaryRecords } from '../src/main/pipeline/scan.js'
 import { rendererNoticeSchema } from '../src/shared/schemas/ipc.js'
 import type { ScanMetadata } from '../src/shared/schemas/scan.js'
 
@@ -149,14 +150,28 @@ describe('sidecar stderr protocol (#129)', () => {
 
 describe('renderer notice schema (#130)', () => {
   it('accepts a label + location notice', () => {
-    expect(rendererNoticeSchema.safeParse({ label: 'scan progress', location: 'sessions' }).success).toBe(true)
+    expect(
+      Schema.decodeUnknownResult(rendererNoticeSchema)({ label: 'scan progress', location: 'sessions' })._tag,
+    ).toBe('Success')
   })
 
   it('rejects empty, missing, and oversized notices', () => {
-    expect(rendererNoticeSchema.safeParse({ label: '', location: 'x' }).success).toBe(false)
-    expect(rendererNoticeSchema.safeParse({ label: 'x' }).success).toBe(false)
-    expect(rendererNoticeSchema.safeParse({ label: 'x'.repeat(81), location: 'y' }).success).toBe(false)
-    expect(rendererNoticeSchema.safeParse({ label: 'x', location: 'y'.repeat(121) }).success).toBe(false)
-    expect(rendererNoticeSchema.safeParse('nope').success).toBe(false)
+    expect(Schema.decodeUnknownResult(rendererNoticeSchema)({ label: '', location: 'x' })._tag).toBe('Failure')
+    expect(Schema.decodeUnknownResult(rendererNoticeSchema)({ label: 'x' })._tag).toBe('Failure')
+    expect(Schema.decodeUnknownResult(rendererNoticeSchema)({ label: 'x'.repeat(81), location: 'y' })._tag).toBe(
+      'Failure',
+    )
+    expect(Schema.decodeUnknownResult(rendererNoticeSchema)({ label: 'x', location: 'y'.repeat(121) })._tag).toBe(
+      'Failure',
+    )
+    expect(Schema.decodeUnknownResult(rendererNoticeSchema)('nope')._tag).toBe('Failure')
+  })
+
+  it('trims before validating lengths', () => {
+    const decoded = Schema.decodeUnknownSync(rendererNoticeSchema)({
+      label: '  scan progress  ',
+      location: ' sessions ',
+    })
+    expect(decoded).toEqual({ label: 'scan progress', location: 'sessions' })
   })
 })

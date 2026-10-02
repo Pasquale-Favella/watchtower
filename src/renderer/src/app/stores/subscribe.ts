@@ -19,7 +19,7 @@ export function subscribeToIpc(): () => void {
   unsubs.push(
     window.api.onProgress(progress => {
       // Tripwire (ADR 0005): a malformed broadcast is dropped, never painted.
-      const parsed = parseZodEvent(scanProgressMessageSchema, 'scan progress', progress)
+      const parsed = parseEvent(effectSchemaDecoder(scanProgressMessageSchema), 'scan progress', progress)
       if (!parsed) return
       useScanStore
         .getState()
@@ -31,7 +31,7 @@ export function subscribeToIpc(): () => void {
 
   unsubs.push(
     window.api.onChanged(message => {
-      const parsed = parseZodEvent(storeChangedMessageSchema, 'store changed', message)
+      const parsed = parseEvent(effectSchemaDecoder(storeChangedMessageSchema), 'store changed', message)
       if (!parsed) return
       void useScanStore.getState().applyChange()
     }),
