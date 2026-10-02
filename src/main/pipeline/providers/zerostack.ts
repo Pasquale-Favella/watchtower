@@ -51,7 +51,7 @@ function defaultSessionsDir(): string {
   const base =
     platform() === 'darwin'
       ? join(homedir(), 'Library', 'Application Support')
-      : process.env['XDG_DATA_HOME'] ?? join(homedir(), '.local', 'share')
+      : (process.env['XDG_DATA_HOME'] ?? join(homedir(), '.local', 'share'))
   return join(base, 'zerostack', 'sessions')
 }
 
@@ -59,7 +59,10 @@ function firstUserMessage(messages: ZerostackMessage[]): string {
   const msg = messages.find(m => m.role === 'user')
   if (!msg) return ''
   if (typeof msg.content === 'string') return msg.content
-  return (msg.content ?? []).map(c => c.text ?? '').filter(Boolean).join(' ')
+  return (msg.content ?? [])
+    .map(c => c.text ?? '')
+    .filter(Boolean)
+    .join(' ')
 }
 
 async function readSession(path: string): Promise<ZerostackSession | null> {

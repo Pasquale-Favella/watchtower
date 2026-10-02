@@ -123,14 +123,17 @@ function parseThreads(db: SqliteDatabase, seenKeys: Set<string>): ParsedProvider
       if (Number.isNaN(parsedAt.getTime())) continue
       const timestamp = parsedAt.toISOString()
 
-      const jsonText = row.data_type === 'zstd'
-        ? zstdDecompress!(Buffer.from(row.data)).toString('utf-8')
-        : Buffer.from(row.data).toString('utf-8')
+      const jsonText =
+        row.data_type === 'zstd'
+          ? zstdDecompress!(Buffer.from(row.data)).toString('utf-8')
+          : Buffer.from(row.data).toString('utf-8')
       const thread = JSON.parse(jsonText) as ThreadJson
       const model = thread.model?.model || 'unknown'
       const userMessage = row.summary ?? ''
 
-      const requests = Object.entries(thread.request_token_usage ?? {}).filter(([, usage]) => usage != null && !usageIsEmpty(usage))
+      const requests = Object.entries(thread.request_token_usage ?? {}).filter(
+        ([, usage]) => usage != null && !usageIsEmpty(usage),
+      )
       // The per-request map is keyed by user message and does not cover every
       // request (verified on a real thread: cumulative was ~3x the map sum),
       // so a remainder entry tops the thread up to the exact cumulative
@@ -138,7 +141,10 @@ function parseThreads(db: SqliteDatabase, seenKeys: Set<string>): ParsedProvider
       const entries: Array<[string, TokenUsage]> = [...requests]
       const cumulative = thread.cumulative_token_usage
       if (cumulative && !usageIsEmpty(cumulative)) {
-        let sumIn = 0, sumOut = 0, sumWrite = 0, sumRead = 0
+        let sumIn = 0,
+          sumOut = 0,
+          sumWrite = 0,
+          sumRead = 0
         for (const [, usage] of requests) {
           sumIn += num(usage.input_tokens)
           sumOut += num(usage.output_tokens)

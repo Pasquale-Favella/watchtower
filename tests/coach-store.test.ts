@@ -6,12 +6,20 @@ import { harnessBadge, statusLabel } from '../src/renderer/src/features/coach-sk
 function createMemoryStorage(): Storage {
   const store = new Map<string, string>()
   return {
-    get length() { return store.size },
-    clear: () => { store.clear() },
+    get length() {
+      return store.size
+    },
+    clear: () => {
+      store.clear()
+    },
     getItem: (key: string) => store.get(key) ?? null,
     key: (index: number) => Array.from(store.keys())[index] ?? null,
-    removeItem: (key: string) => { store.delete(key) },
-    setItem: (key: string, value: string) => { store.set(key, value) },
+    removeItem: (key: string) => {
+      store.delete(key)
+    },
+    setItem: (key: string, value: string) => {
+      store.set(key, value)
+    },
   }
 }
 
@@ -39,7 +47,10 @@ const harnesses = [
 
 const envelope = (event: CoachEventEnvelope['event']): CoachEventEnvelope => ({ runId: 'run-1', event })
 
-const models: CoachSessionModels = { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }], currentModelId: 'opus' }
+const models: CoachSessionModels = {
+  availableModels: [{ modelId: 'opus', name: 'Claude Opus' }],
+  currentModelId: 'opus',
+}
 const modes: CoachSessionModes = { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan' }
 
 beforeEach(() => {
@@ -48,7 +59,13 @@ beforeEach(() => {
 
 describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   it('derives honest harness status labels and setup badges without a DOM', () => {
-    const warning = { instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'warning' as const, auth: { status: 'unknown' as const } }
+    const warning = {
+      instanceId: 'codex',
+      kind: 'codex',
+      displayName: 'Codex',
+      status: 'warning' as const,
+      auth: { status: 'unknown' as const },
+    }
     const error = { ...warning, status: 'error' as const }
     const pending = { ...warning, status: 'pending' as const }
     expect(statusLabel(warning.status)).toBe('Needs attention')
@@ -88,8 +105,20 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   })
 
   it('selects ready before warning/pending and never selects an error row', async () => {
-    const errorRow = { instanceId: 'broken', kind: 'broken', displayName: 'Broken', status: 'error' as const, auth: { status: 'unknown' as const } }
-    const warningRow = { instanceId: 'needs-login', kind: 'needs-login', displayName: 'Needs login', status: 'warning' as const, auth: { status: 'unauthenticated' as const } }
+    const errorRow = {
+      instanceId: 'broken',
+      kind: 'broken',
+      displayName: 'Broken',
+      status: 'error' as const,
+      auth: { status: 'unknown' as const },
+    }
+    const warningRow = {
+      instanceId: 'needs-login',
+      kind: 'needs-login',
+      displayName: 'Needs login',
+      status: 'warning' as const,
+      auth: { status: 'unauthenticated' as const },
+    }
     mockWindow({ getCoachHarnesses: () => Promise.resolve([errorRow, warningRow]) })
     await useCoachSkillsStore.getState().loadHarnesses()
     expect(useCoachSkillsStore.getState().harnessKind).toBe('needs-login')
@@ -100,7 +129,13 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   })
 
   it('moves an auto-pick to a ready instance as probes land, but keeps a user pick', () => {
-    const pending = (id: string) => ({ instanceId: id, kind: id, displayName: id, status: 'pending' as const, auth: { status: 'unknown' as const } })
+    const pending = (id: string) => ({
+      instanceId: id,
+      kind: id,
+      displayName: id,
+      status: 'pending' as const,
+      auth: { status: 'unknown' as const },
+    })
     const store = useCoachSkillsStore.getState()
     store.replaceHarnesses([pending('claude'), pending('codex')])
     expect(useCoachSkillsStore.getState().harnessKind).toBe('claude')
@@ -120,13 +155,27 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   })
 
   it('applies a harnesses-changed snapshot before initial load', () => {
-    const changed = { instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'ready' as const, auth: { status: 'configured' as const } }
+    const changed = {
+      instanceId: 'codex',
+      kind: 'codex',
+      displayName: 'Codex',
+      status: 'ready' as const,
+      auth: { status: 'configured' as const },
+    }
     useCoachSkillsStore.getState().replaceHarnesses([changed])
     expect(useCoachSkillsStore.getState()).toMatchObject({ hydrated: true, harnessKind: 'codex', harnesses: [changed] })
   })
 
   it('refreshHarnesses applies the refreshed rows through replaceHarnesses', async () => {
-    const refreshed = [{ instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'ready' as const, auth: { status: 'configured' as const } }]
+    const refreshed = [
+      {
+        instanceId: 'codex',
+        kind: 'codex',
+        displayName: 'Codex',
+        status: 'ready' as const,
+        auth: { status: 'configured' as const },
+      },
+    ]
     const refreshCoachHarnesses = vi.fn(() => Promise.resolve(refreshed))
     mockWindow({ refreshCoachHarnesses })
 
@@ -166,20 +215,39 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     })
   })
 
-  it('onEvent stores the agent-declared models/modes and the user\'s pick is sent on the next run', async () => {
+  it("onEvent stores the agent-declared models/modes and the user's pick is sent on the next run", async () => {
     const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
     mockWindow({ startCoachRun })
     useCoachSkillsStore.setState({ harnessKind: 'claude' })
 
     // A prior run's handshake declared selectable models/modes.
-    useCoachSkillsStore.setState({ activeRunId: 'run-1', runMessageIds: { 'run-1': 'm1' }, messages: [{ id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true }] })
+    useCoachSkillsStore.setState({
+      activeRunId: 'run-1',
+      runMessageIds: { 'run-1': 'm1' },
+      messages: [
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+      ],
+    })
     useCoachSkillsStore.getState().onEvent({
       runId: 'run-1',
       event: {
         kind: 'session',
         resumeCursor: 'cursor_9',
-        models: { availableModels: [{ modelId: 'opus', name: 'Claude Opus' }, { modelId: 'sonnet', name: 'Claude Sonnet' }], currentModelId: 'opus' },
-        modes: { availableModes: [{ id: 'default', name: 'Default' }, { id: 'plan', name: 'Plan' }], currentModeId: 'default' },
+        models: {
+          availableModels: [
+            { modelId: 'opus', name: 'Claude Opus' },
+            { modelId: 'sonnet', name: 'Claude Sonnet' },
+          ],
+          currentModelId: 'opus',
+        },
+        modes: {
+          availableModes: [
+            { id: 'default', name: 'Default' },
+            { id: 'plan', name: 'Plan' },
+          ],
+          currentModeId: 'default',
+        },
       },
     })
     useCoachSkillsStore.getState().setModelId('sonnet')
@@ -200,7 +268,9 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
 
     await useCoachSkillsStore.getState().sendCoach('p')
 
-    expect(startCoachRun).toHaveBeenCalledWith(expect.not.objectContaining({ modelId: expect.anything(), modeId: expect.anything() }))
+    expect(startCoachRun).toHaveBeenCalledWith(
+      expect.not.objectContaining({ modelId: expect.anything(), modeId: expect.anything() }),
+    )
   })
 
   it('sendCoach forwards the API-key passthrough opt-in only when enabled in settings', async () => {
@@ -284,7 +354,7 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     expect(inspectCoachHarness).not.toHaveBeenCalled()
   })
 
-  it('setHarness remembers the outgoing harness\'s picks against its cached set', () => {
+  it("setHarness remembers the outgoing harness's picks against its cached set", () => {
     const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true }))
     mockWindow({ inspectCoachHarness })
     useCoachSkillsStore.setState({
@@ -331,12 +401,19 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     // The main acks, then pumps — a fast failure can emit BEFORE the ack's
     // round-trip reaches the store. Those pre-ack events must not be lost.
     let resolveAck!: (value: { ok: true; runId: string }) => void
-    mockWindow({ startCoachRun: () => new Promise(resolve => { resolveAck = resolve }) })
+    mockWindow({
+      startCoachRun: () =>
+        new Promise(resolve => {
+          resolveAck = resolve
+        }),
+    })
     useCoachSkillsStore.setState({ harnessKind: 'claude' })
 
     const pending = useCoachSkillsStore.getState().sendCoach('p')
     // The ack is still in flight — an error event arrives first.
-    useCoachSkillsStore.getState().onEvent({ runId: 'run-9', event: { kind: 'error', message: 'spawn opencode ENOENT' } })
+    useCoachSkillsStore
+      .getState()
+      .onEvent({ runId: 'run-9', event: { kind: 'error', message: 'spawn opencode ENOENT' } })
     expect(useCoachSkillsStore.getState().pendingEvents['run-9']).toHaveLength(1)
 
     resolveAck({ ok: true, runId: 'run-9' })
@@ -350,23 +427,28 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   })
 
   it('onEvent accumulates text deltas, thinking, and tool lifecycle into the streaming turn', () => {
-    useCoachSkillsStore.setState({ activeRunId: 'run-1', runMessageIds: { 'run-1': 'm1' }, running: true, messages: [
-      { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-      { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], streaming: true },
-    ] })
+    useCoachSkillsStore.setState({
+      activeRunId: 'run-1',
+      runMessageIds: { 'run-1': 'm1' },
+      running: true,
+      messages: [
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+      ],
+    })
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'reasoning', delta: 'Let me ' }))
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'text', delta: 'Hel' }))
     // A started tool call with an id, then its completed result.
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Bash', id: 'call-1', state: 'started' }))
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'reasoning', delta: 'think…' }))
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'text', delta: 'lo' }))
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Bash', id: 'call-1', state: 'completed', output: 'total 0' }))
+    useCoachSkillsStore
+      .getState()
+      .onEvent(envelope({ kind: 'tool', tool: 'Bash', id: 'call-1', state: 'completed', output: 'total 0' }))
     let assistant = useCoachSkillsStore.getState().messages[1]
     expect(assistant.content).toBe('Hello')
     expect(assistant.thinking).toBe('Let me think…')
-    expect(assistant.tools).toEqual([
-      { id: 'call-1', tool: 'Bash', state: 'completed', output: 'total 0' },
-    ])
+    expect(assistant.tools).toEqual([{ id: 'call-1', tool: 'Bash', state: 'completed', output: 'total 0' }])
 
     // A second tool call streams after the first finished.
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Edit', id: 'call-2', state: 'started' }))
@@ -376,14 +458,21 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   })
 
   it('onEvent merges a started tool re-announcement by id and keeps a bare notice as started', () => {
-    useCoachSkillsStore.setState({ activeRunId: 'run-1', runMessageIds: { 'run-1': 'm1' }, running: true, messages: [
-      { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-      { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], streaming: true },
-    ] })
+    useCoachSkillsStore.setState({
+      activeRunId: 'run-1',
+      runMessageIds: { 'run-1': 'm1' },
+      running: true,
+      messages: [
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+      ],
+    })
     // The ACP provider opens the call via tool-input-start, then re-announces
     // it via the dynamic tool-call WITH the args preview — same id, merged.
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Bash', id: 'call-1', state: 'started' }))
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Bash', id: 'call-1', state: 'started', input: '{"command":"ls"}' }))
+    useCoachSkillsStore
+      .getState()
+      .onEvent(envelope({ kind: 'tool', tool: 'Bash', id: 'call-1', state: 'started', input: '{"command":"ls"}' }))
     // A legacy bare notice (no state, older seam) still opens as started.
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Read' }))
     const assistant = useCoachSkillsStore.getState().messages[1]
@@ -394,14 +483,21 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   })
 
   it('onEvent appends an id-less tool completion because tool merging is strictly id-based', () => {
-    useCoachSkillsStore.setState({ activeRunId: 'run-1', runMessageIds: { 'run-1': 'm1' }, running: true, messages: [
-      { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-      { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], streaming: true },
-    ] })
+    useCoachSkillsStore.setState({
+      activeRunId: 'run-1',
+      runMessageIds: { 'run-1': 'm1' },
+      running: true,
+      messages: [
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+      ],
+    })
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'WebFetch', state: 'started' }))
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'WebFetch', state: 'started' }))
     // Without an id, the completion cannot be paired to either started call.
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'WebFetch', state: 'error', error: 'timeout' }))
+    useCoachSkillsStore
+      .getState()
+      .onEvent(envelope({ kind: 'tool', tool: 'WebFetch', state: 'error', error: 'timeout' }))
     const assistant = useCoachSkillsStore.getState().messages[1]
     expect(assistant.tools).toEqual([
       { tool: 'WebFetch', state: 'started' },
@@ -411,9 +507,12 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   })
 
   it('onEvent appends a notice to the run-owned assistant message', () => {
-    useCoachSkillsStore.setState({ activeRunId: 'run-1', runMessageIds: { 'run-1': 'm1' }, running: true, messages: [
-      { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-    ] })
+    useCoachSkillsStore.setState({
+      activeRunId: 'run-1',
+      runMessageIds: { 'run-1': 'm1' },
+      running: true,
+      messages: [{ id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true }],
+    })
 
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'notice', message: 'continuing in a fresh session' }))
 
@@ -421,10 +520,23 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   })
 
   it('onEvent done finalizes the streaming turn', () => {
-    useCoachSkillsStore.setState({ activeRunId: 'run-1', runMessageIds: { 'run-1': 'm1' }, running: true, messages: [
-      { id: 'm0', role: 'user', content: 'advice please', thinking: '', tools: [], streaming: false },
-      { id: 'm1', role: 'assistant', content: 'Here is some advice…', thinking: '', tools: [], streaming: true },
-    ] })
+    useCoachSkillsStore.setState({
+      activeRunId: 'run-1',
+      runMessageIds: { 'run-1': 'm1' },
+      running: true,
+      messages: [
+        { id: 'm0', role: 'user', content: 'advice please', thinking: '', tools: [], notices: [], streaming: false },
+        {
+          id: 'm1',
+          role: 'assistant',
+          content: 'Here is some advice…',
+          thinking: '',
+          tools: [],
+          notices: [],
+          streaming: true,
+        },
+      ],
+    })
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'status', state: 'done' }))
     const s = useCoachSkillsStore.getState()
     expect(s.running).toBe(false)
@@ -439,10 +551,15 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   })
 
   it('onEvent surfaces an error and stops running', () => {
-    useCoachSkillsStore.setState({ activeRunId: 'run-1', runMessageIds: { 'run-1': 'm1' }, running: true, messages: [
-      { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-      { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], streaming: true },
-    ] })
+    useCoachSkillsStore.setState({
+      activeRunId: 'run-1',
+      runMessageIds: { 'run-1': 'm1' },
+      running: true,
+      messages: [
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+      ],
+    })
     useCoachSkillsStore.getState().onEvent(envelope({ kind: 'error', message: 'CLI not logged in' }))
     const s = useCoachSkillsStore.getState()
     expect(s.running).toBe(false)
@@ -452,10 +569,15 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   it('cancel sends the active runId and immediately clears the run state', () => {
     const cancelCoachRun = vi.fn()
     mockWindow({ cancelCoachRun })
-    useCoachSkillsStore.setState({ activeRunId: 'run-1', runMessageIds: { 'run-1': 'm1' }, running: true, messages: [
-      { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-      { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], streaming: true },
-    ] })
+    useCoachSkillsStore.setState({
+      activeRunId: 'run-1',
+      runMessageIds: { 'run-1': 'm1' },
+      running: true,
+      messages: [
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+      ],
+    })
     useCoachSkillsStore.getState().cancel()
     // No done event follows a cancel — the store must recover on its own.
     expect(cancelCoachRun).toHaveBeenCalledWith('run-1')
@@ -470,10 +592,22 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   it('retryAssistant re-runs the last coach turn with the SAME prompt, replacing the old answer in place', async () => {
     const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
     mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: 'claude', resumeCursor: 'cursor_prev', messages: [
-      { id: 'm0', role: 'user', content: 'Summarise my spend', thinking: '', tools: [], streaming: false },
-      { id: 'm1', role: 'assistant', content: 'old answer', thinking: '', tools: [], streaming: false },
-    ] })
+    useCoachSkillsStore.setState({
+      harnessKind: 'claude',
+      resumeCursor: 'cursor_prev',
+      messages: [
+        {
+          id: 'm0',
+          role: 'user',
+          content: 'Summarise my spend',
+          thinking: '',
+          tools: [],
+          notices: [],
+          streaming: false,
+        },
+        { id: 'm1', role: 'assistant', content: 'old answer', thinking: '', tools: [], notices: [], streaming: false },
+      ],
+    })
 
     await useCoachSkillsStore.getState().retryAssistant('m1')
 
@@ -482,12 +616,14 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     expect(s.messages.map(m => m.role)).toEqual(['user', 'assistant'])
     expect(s.messages[1]).toMatchObject({ role: 'assistant', content: '', streaming: true })
     expect(s.messages[0].id).toBe('m0')
-    expect(startCoachRun).toHaveBeenCalledWith(expect.objectContaining({
-      harnessKind: 'claude',
-      prompt: 'Summarise my spend',
-      scope: expectedScope(),
-      resumeCursor: 'cursor_prev',
-    }))
+    expect(startCoachRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        harnessKind: 'claude',
+        prompt: 'Summarise my spend',
+        scope: expectedScope(),
+        resumeCursor: 'cursor_prev',
+      }),
+    )
     expect(s.running).toBe(true)
     expect(s.activeRunId).toBe('run-9')
   })
@@ -495,10 +631,13 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   it('retryAssistant refuses a still-streaming assistant turn', async () => {
     const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
     mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: 'claude', messages: [
-      { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-      { id: 'm1', role: 'assistant', content: 'half…', thinking: '', tools: [], streaming: true },
-    ] })
+    useCoachSkillsStore.setState({
+      harnessKind: 'claude',
+      messages: [
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: 'half…', thinking: '', tools: [], notices: [], streaming: true },
+      ],
+    })
 
     await useCoachSkillsStore.getState().retryAssistant('m1')
 
@@ -509,12 +648,15 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   it('retryAssistant refuses a NON-last assistant turn, a user turn, and while a run is in flight', async () => {
     const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
     mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: 'claude', messages: [
-      { id: 'm0', role: 'user', content: 'a', thinking: '', tools: [], streaming: false },
-      { id: 'm1', role: 'assistant', content: 'x', thinking: '', tools: [], streaming: false },
-      { id: 'm2', role: 'user', content: 'b', thinking: '', tools: [], streaming: false },
-      { id: 'm3', role: 'assistant', content: 'y', thinking: '', tools: [], streaming: false },
-    ] })
+    useCoachSkillsStore.setState({
+      harnessKind: 'claude',
+      messages: [
+        { id: 'm0', role: 'user', content: 'a', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm1', role: 'assistant', content: 'x', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm2', role: 'user', content: 'b', thinking: '', tools: [], notices: [], streaming: false },
+        { id: 'm3', role: 'assistant', content: 'y', thinking: '', tools: [], notices: [], streaming: false },
+      ],
+    })
 
     // m1 is not the LAST assistant turn — refused.
     await useCoachSkillsStore.getState().retryAssistant('m1')
@@ -531,10 +673,14 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
   })
 
   it('onEvent routes each event to its run-owned assistant message', () => {
-    useCoachSkillsStore.setState({ activeRunId: 'run-2', runMessageIds: { 'run-1': 'm1', 'run-2': 'm2' }, messages: [
-      { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-      { id: 'm2', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-    ] })
+    useCoachSkillsStore.setState({
+      activeRunId: 'run-2',
+      runMessageIds: { 'run-1': 'm1', 'run-2': 'm2' },
+      messages: [
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+        { id: 'm2', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+      ],
+    })
     useCoachSkillsStore.getState().onEvent({ runId: 'run-1', event: { kind: 'text', delta: 'stale' } })
     expect(useCoachSkillsStore.getState().messages[0].content).toBe('stale')
     useCoachSkillsStore.getState().onEvent({ runId: 'run-2', event: { kind: 'text', delta: 'fresh' } })
@@ -543,14 +689,21 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
 
   it('late text after cancel lands on the cancelled message and preserves its error', () => {
     mockWindow({ cancelCoachRun: vi.fn() })
-    useCoachSkillsStore.setState({ activeRunId: 'run-1', runMessageIds: { 'run-1': 'm1' }, running: true, messages: [
-      { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-    ] })
+    useCoachSkillsStore.setState({
+      activeRunId: 'run-1',
+      runMessageIds: { 'run-1': 'm1' },
+      running: true,
+      messages: [{ id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true }],
+    })
 
     useCoachSkillsStore.getState().cancel()
     useCoachSkillsStore.getState().onEvent({ runId: 'run-1', event: { kind: 'text', delta: 'late' } })
 
-    expect(useCoachSkillsStore.getState().messages[0]).toMatchObject({ content: 'late', streaming: false, error: 'cancelled' })
+    expect(useCoachSkillsStore.getState().messages[0]).toMatchObject({
+      content: 'late',
+      streaming: false,
+      error: 'cancelled',
+    })
   })
 
   it('resetSession clears the thread, resume handle, and error, restores the cached set, and resets the temp workspace', () => {
@@ -564,9 +717,6 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
       modelId: 'opus',
       modeId: 'plan',
       modelsByKind: { claude: { models, modes, modelId: 'opus', modeId: 'plan' } },
-      messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-      ],
       error: 'boom',
     })
     useCoachSkillsStore.getState().resetSession()
@@ -609,9 +759,7 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
         claude: { models, modes, modelId: 'opus', modeId: 'plan' },
         gemini: { models: null, modes: null, modelId: null, modeId: null },
       },
-      messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-      ],
+      messages: [{ id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false }],
     })
 
     // The composer's confirmHarnessSwitch sequence, exactly: switch + reset.
@@ -677,7 +825,10 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
       running: true,
       activeRunId: 'run-1',
       runMessageIds: { 'run-1': 'm1' },
-      messages: [{ id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true }],
+      messages: [
+        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
+        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
+      ],
       sessionModels: models,
       sessionModes: modes,
       modelId: 'opus',
@@ -686,9 +837,6 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
       modelsByKind: {
         claude: { models, modes, modelId: 'opus', modeId: 'plan' },
       },
-      messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-      ],
     })
 
     await useCoachSkillsStore.getState().loadHarnesses()
@@ -739,11 +887,15 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
   })
 
   it('a switch-back to a probed harness restores its set WITHOUT re-probing', async () => {
-    const inspectCoachHarness = vi.fn((request: { kind: string }) => Promise.resolve({
-      ok: true,
-      ...(request.kind === 'claude' ? { models } : {}),
-      ...(request.kind === 'gemini' ? { models: { availableModels: [{ modelId: 'gem-1', name: 'Gemini' }], currentModelId: 'gem-1' } } : {}),
-    }))
+    const inspectCoachHarness = vi.fn((request: { kind: string }) =>
+      Promise.resolve({
+        ok: true,
+        ...(request.kind === 'claude' ? { models } : {}),
+        ...(request.kind === 'gemini'
+          ? { models: { availableModels: [{ modelId: 'gem-1', name: 'Gemini' }], currentModelId: 'gem-1' } }
+          : {}),
+      }),
+    )
     mockWindow({ inspectCoachHarness })
     useCoachSkillsStore.setState({ harnessKind: 'claude' })
 
@@ -778,7 +930,7 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
     expect(s.modelsByKind['claude']?.models).toEqual(models)
   })
 
-  it('a run\'s session event refreshes the per-harness cache for the current harness', async () => {
+  it("a run's session event refreshes the per-harness cache for the current harness", async () => {
     mockWindow({ startCoachRun: () => Promise.resolve({ ok: true, runId: 'run-9' }) })
     useCoachSkillsStore.setState({
       harnessKind: 'claude',
@@ -822,11 +974,18 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
   it('a probe that answers after a harness switch caches for its kind but never clobbers the live set', async () => {
     let resolveClaude!: (value: { ok: true; models: typeof models }) => void
     const inspectCoachHarness = vi.fn()
-    inspectCoachHarness.mockImplementationOnce(() => new Promise(resolve => { resolveClaude = resolve }))
-    inspectCoachHarness.mockImplementation(() => Promise.resolve({
-      ok: true,
-      models: { availableModels: [{ modelId: 'codex-1', name: 'Codex' }], currentModelId: 'codex-1' },
-    }))
+    inspectCoachHarness.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveClaude = resolve
+        }),
+    )
+    inspectCoachHarness.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        models: { availableModels: [{ modelId: 'codex-1', name: 'Codex' }], currentModelId: 'codex-1' },
+      }),
+    )
     mockWindow({ inspectCoachHarness })
     useCoachSkillsStore.setState({ harnessKind: 'claude' })
 
@@ -838,8 +997,12 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
     // switch-back.
     resolveClaude({ ok: true, models })
 
-    await vi.waitFor(() => expect(useCoachSkillsStore.getState().sessionModels?.availableModels[0]?.modelId).toBe('codex-1'))
-    expect(useCoachSkillsStore.getState().sessionModels?.availableModels).toEqual([{ modelId: 'codex-1', name: 'Codex' }])
+    await vi.waitFor(() =>
+      expect(useCoachSkillsStore.getState().sessionModels?.availableModels[0]?.modelId).toBe('codex-1'),
+    )
+    expect(useCoachSkillsStore.getState().sessionModels?.availableModels).toEqual([
+      { modelId: 'codex-1', name: 'Codex' },
+    ])
     expect(useCoachSkillsStore.getState().modelsByKind['claude']?.models).toEqual(models)
 
     // Switching back to claude restores the cached set without a reload.
@@ -872,7 +1035,12 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
     useCoachSkillsStore.setState({ harnessKind: 'claude' })
 
     await useCoachSkillsStore.getState().inspectHarness('claude')
-    expect(useCoachSkillsStore.getState().modelsByKind['claude']).toEqual({ models: null, modes: null, modelId: null, modeId: null })
+    expect(useCoachSkillsStore.getState().modelsByKind['claude']).toEqual({
+      models: null,
+      modes: null,
+      modelId: null,
+      modeId: null,
+    })
     expect(useCoachSkillsStore.getState().sessionModels).toBeNull()
 
     await useCoachSkillsStore.getState().inspectHarness('claude')
@@ -896,7 +1064,7 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
     expect(inspectCoachHarness).not.toHaveBeenCalled()
   })
 
-  it('resetSession clears the thread and restores the current harness\'s cached set WITHOUT re-probing', async () => {
+  it("resetSession clears the thread and restores the current harness's cached set WITHOUT re-probing", async () => {
     const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models, modes }))
     mockWindow({ resetCoachWorkspace: vi.fn(), inspectCoachHarness })
     useCoachSkillsStore.setState({
@@ -909,9 +1077,7 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
         claude: { models, modes, modelId: 'opus', modeId: 'plan' },
         gemini: { models: null, modes: null, modelId: null, modeId: null },
       },
-      messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], streaming: false },
-      ],
+      messages: [{ id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false }],
     })
 
     useCoachSkillsStore.getState().resetSession()
@@ -929,7 +1095,12 @@ describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', (
 
   it('skips a redundant probe while one for the same harness is already in flight', async () => {
     let resolveProbe!: (value: { ok: true; models: typeof models }) => void
-    const inspectCoachHarness = vi.fn(() => new Promise(resolve => { resolveProbe = resolve }))
+    const inspectCoachHarness = vi.fn(
+      () =>
+        new Promise(resolve => {
+          resolveProbe = resolve
+        }),
+    )
     mockWindow({ inspectCoachHarness })
     useCoachSkillsStore.setState({ harnessKind: 'claude' })
 

@@ -54,10 +54,13 @@ type OpenClawEntry = {
   }
 }
 
-type SessionIndex = Record<string, {
-  sessionId: string
-  sessionFile?: string
-}>
+type SessionIndex = Record<
+  string,
+  {
+    sessionId: string
+    sessionFile?: string
+  }
+>
 
 function getOpenClawDirs(): string[] {
   const home = homedir()
@@ -69,7 +72,9 @@ function getOpenClawDirs(): string[] {
   ]
 }
 
-function extractTools(content: Array<{ type?: string; name?: string; arguments?: Record<string, unknown> }> | undefined): { tools: string[]; bashCommands: string[] } {
+function extractTools(
+  content: Array<{ type?: string; name?: string; arguments?: Record<string, unknown> }> | undefined,
+): { tools: string[]; bashCommands: string[] } {
   const tools: string[] = []
   const bashCommands: string[] = []
   if (!content) return { tools, bashCommands }
@@ -172,9 +177,10 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
 
         const u = call.usage
         const costFromProvider = u.cost?.total ?? 0
-        const costUSD = costFromProvider > 0
-          ? costFromProvider
-          : calculateCost(call.model, u.input, u.output, u.cacheWrite, u.cacheRead, 0)
+        const costUSD =
+          costFromProvider > 0
+            ? costFromProvider
+            : calculateCost(call.model, u.input, u.output, u.cacheWrite, u.cacheRead, 0)
 
         const ts = new Date(call.timestamp)
         if (isNaN(ts.getTime()) || ts.getTime() < 1_000_000_000_000) continue
@@ -221,7 +227,9 @@ async function discoverInDir(agentsDir: string): Promise<SessionSource[]> {
     try {
       const indexRaw = await readFile(join(sessionsDir, 'sessions.json'), 'utf-8')
       indexData = JSON.parse(indexRaw)
-    } catch { /* no index, fall back to directory scan */ }
+    } catch {
+      /* no index, fall back to directory scan */
+    }
 
     const seenFiles = new Set<string>()
 
@@ -244,7 +252,9 @@ async function discoverInDir(agentsDir: string): Promise<SessionSource[]> {
         if (seenFiles.has(filePath)) continue
         sources.push({ path: filePath, project: agent, provider: 'openclaw' })
       }
-    } catch { /* directory may not exist */ }
+    } catch {
+      /* directory may not exist */
+    }
   }
 
   return sources

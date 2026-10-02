@@ -14,7 +14,10 @@ export type SqliteDatabase = {
   close(): void
 }
 
-type DatabaseSyncCtor = new (path: string, options?: { readOnly?: boolean }) => {
+type DatabaseSyncCtor = new (
+  path: string,
+  options?: { readOnly?: boolean },
+) => {
   prepare(sql: string): { all(...params: unknown[]): Row[] }
   exec?(sql: string): void
   close(): void
@@ -102,10 +105,9 @@ export function isSqliteBusyError(err: unknown): boolean {
   const e = err as { code?: unknown; errcode?: unknown; errstr?: unknown; message?: unknown } | null
   const code = typeof e?.code === 'string' ? e.code : ''
   const errcode = typeof e?.errcode === 'number' ? e.errcode : null
-  const message = [
-    typeof e?.message === 'string' ? e.message : '',
-    typeof e?.errstr === 'string' ? e.errstr : '',
-  ].join(' ')
+  const message = [typeof e?.message === 'string' ? e.message : '', typeof e?.errstr === 'string' ? e.errstr : ''].join(
+    ' ',
+  )
 
   return (
     errcode === 5 ||

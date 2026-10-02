@@ -81,9 +81,7 @@ function port(store: LedgerStore, specs: Spec[]): void {
 describe('custom pricing applies query-time in every Section (issue 77)', () => {
   it('an Alias from a Models unpriced row reprices every Section with no rescan', () => {
     const store = makeStore()
-    port(store, [
-      { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' },
-    ])
+    port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
     store.setModelAlias('weird-model', 'claude-sonnet-4-6')
 
     const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
@@ -95,13 +93,22 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
     const sessions = buildSessionsViewFromLedger(store, { period: 'lifetime' }, NOW)
     expect(sessions[0]!.cost).toBeCloseTo(0.0105, 4)
 
-    const spend = buildSpendViewFromLedger(store, { period: 'lifetime', range: { since: '2026-07-10', until: '2026-07-10' } }, NOW)
+    const spend = buildSpendViewFromLedger(
+      store,
+      { period: 'lifetime', range: { since: '2026-07-10', until: '2026-07-10' } },
+      NOW,
+    )
     expect(spend.byModel[0]!.cost).toBeCloseTo(0.0105, 4)
 
-    const models = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
-      aliases: store.getModelAliases(),
-      overrides: store.getPriceOverrides(),
-    }, NOW)
+    const models = buildModelsViewFromLedger(
+      store,
+      { period: 'lifetime' },
+      {
+        aliases: store.getModelAliases(),
+        overrides: store.getPriceOverrides(),
+      },
+      NOW,
+    )
     expect(models.byModel[0]!.model).toBe('claude-sonnet-4-6')
     expect(models.byModel[0]!.costUSD).toBeCloseTo(0.0105, 4)
     // Audit keeps raw identity with token-source detail.
@@ -113,9 +120,7 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
 
   it('a Price override reprices everywhere and wins over the Alias on the effective model', () => {
     const store = makeStore()
-    port(store, [
-      { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' },
-    ])
+    port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
     store.setModelAlias('weird-model', 'claude-sonnet-4-6')
     store.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
 
@@ -127,10 +132,15 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
     const overview = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
     expect(overview.kpis.cost).toBeCloseTo(expected, 9)
 
-    const models = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
-      aliases: store.getModelAliases(),
-      overrides: store.getPriceOverrides(),
-    }, NOW)
+    const models = buildModelsViewFromLedger(
+      store,
+      { period: 'lifetime' },
+      {
+        aliases: store.getModelAliases(),
+        overrides: store.getPriceOverrides(),
+      },
+      NOW,
+    )
     expect(models.byModel[0]!.costUSD).toBeCloseTo(expected, 9)
 
     store.close()
@@ -164,9 +174,7 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
 
   it('changing the Alias target reprices every Section to the new target', () => {
     const store = makeStore()
-    port(store, [
-      { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' },
-    ])
+    port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
     store.setModelAlias('weird-model', 'claude-sonnet-4-6')
     const first = buildSessionSummaries(store, { range: FULL_RANGE })[0]!
     expect(first.turns[0]!.assistantCalls[0]!.model).toBe('claude-sonnet-4-6')
@@ -181,10 +189,15 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
     const overview = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
     expect(overview.kpis.cost).toBeCloseTo(summaries[0]!.totalCostUSD, 9)
 
-    const models = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
-      aliases: store.getModelAliases(),
-      overrides: store.getPriceOverrides(),
-    }, NOW)
+    const models = buildModelsViewFromLedger(
+      store,
+      { period: 'lifetime' },
+      {
+        aliases: store.getModelAliases(),
+        overrides: store.getPriceOverrides(),
+      },
+      NOW,
+    )
     expect(models.byModel[0]!.model).toBe('claude-opus-4')
     expect(models.byModel[0]!.sourceModels).toEqual(['weird-model'])
     expect(models.audit[0]!.model).toBe('weird-model')
@@ -237,9 +250,7 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
 
   it('exported data carries the same custom pricing the UI shows', () => {
     const store = makeStore()
-    port(store, [
-      { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' },
-    ])
+    port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
     store.setModelAlias('weird-model', 'claude-sonnet-4-6')
 
     const projects = buildProjectsFromLedger(store)
@@ -252,20 +263,25 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
 
   it('the Coach ledger MCP tools answer with the same pricing the UI shows', async () => {
     const store = makeStore()
-    port(store, [
-      { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' },
-    ])
+    port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
     store.setModelAlias('weird-model', 'claude-sonnet-4-6')
 
     const tools = buildLedgerTools(store)
     const ui = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
-    const mcpOverview = await (tools.find(t => t.name === 'ledger_overview')!.run({}) as Promise<{ kpis: { cost: number } }>)
+    const mcpOverview = await (tools.find(t => t.name === 'ledger_overview')!.run({}) as Promise<{
+      kpis: { cost: number }
+    }>)
     expect(mcpOverview.kpis.cost).toBeCloseTo(ui.kpis.cost, 9)
 
-    const mcpSessions = await (tools.find(t => t.name === 'ledger_sessions')!.run({}) as Promise<Array<{ cost: number }>>)
+    const mcpSessions = await (tools.find(t => t.name === 'ledger_sessions')!.run({}) as Promise<
+      Array<{ cost: number }>
+    >)
     expect(mcpSessions[0]!.cost).toBeCloseTo(ui.kpis.cost, 9)
 
-    const mcpCalls = tools.find(t => t.name === 'ledger_calls')!.run({}) as Array<{ model: string; display_cost_usd: number }>
+    const mcpCalls = tools.find(t => t.name === 'ledger_calls')!.run({}) as Array<{
+      model: string
+      display_cost_usd: number
+    }>
     expect(mcpCalls[0]!.model).toBe('claude-sonnet-4-6')
     expect(mcpCalls[0]!.display_cost_usd).toBeCloseTo(0.0105, 4)
 
@@ -275,7 +291,14 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
   it('Skills cost evidence reprices through the seam', async () => {
     const store = makeStore()
     port(store, [
-      { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10', skills: ['demo-skill'] },
+      {
+        sessionId: 'sess-a',
+        provider: 'claude',
+        model: 'weird-model',
+        cost: 0,
+        date: '2026-07-10',
+        skills: ['demo-skill'],
+      },
     ])
     store.setModelAlias('weird-model', 'claude-sonnet-4-6')
 
@@ -287,7 +310,12 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
     // call yields two skill events (turn + call) each at the display cost.
     expect(agg.costUSD).toBeCloseTo(0.021, 4)
 
-    const payload = await buildSkillsViewFromLedger(store, { period: 'lifetime' }, { frequency: 1, spread: 1 }, { now: NOW })
+    const payload = await buildSkillsViewFromLedger(
+      store,
+      { period: 'lifetime' },
+      { frequency: 1, spread: 1 },
+      { now: NOW },
+    )
     const draft = payload.drafts.find(d => d.name === 'demo-skill')
     expect(draft).toBeDefined()
     expect(draft!.costUSD).toBeCloseTo(0.02, 2)

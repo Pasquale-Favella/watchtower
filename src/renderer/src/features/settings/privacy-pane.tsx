@@ -31,7 +31,13 @@ export function PrivacyPane() {
   // A clear triggers a rescan, so re-read the on-disk sizes whenever a scan
   // (or config change) settles — otherwise the pane keeps showing the
   // post-clear payload while the store refills underneath it.
-  useEffect(() => subscribeToRefresh(() => { void load() }), [load])
+  useEffect(
+    () =>
+      subscribeToRefresh(() => {
+        void load()
+      }),
+    [load],
+  )
 
   const clear = async (): Promise<void> => {
     setClearError(null)
@@ -48,46 +54,48 @@ export function PrivacyPane() {
 
   return (
     <div className="flex max-w-md flex-col gap-3">
-      <PaneHeader
-        title="Privacy & data"
-        subtitle="What the app does, and does not do, with your data."
-      />
+      <PaneHeader title="Privacy & data" subtitle="What the app does, and does not do, with your data." />
       <Card className="flex flex-col gap-4 px-4 py-4">
         <div className="flex items-start gap-2.5">
-          <ShieldCheck className="mt-0.5 size-4 shrink-0 text-brand-text" />
+          <ShieldCheck className="text-brand-text mt-0.5 size-4 shrink-0" />
           <div>
-            <p className="text-[12.5px] font-medium text-foreground">Local-only</p>
-            <p className="text-[11px] text-muted-foreground">Everything runs on your machine. Data is read from local session files.</p>
+            <p className="text-foreground text-[12.5px] font-medium">Local-only</p>
+            <p className="text-muted-foreground text-[11px]">
+              Everything runs on your machine. Data is read from local session files.
+            </p>
           </div>
         </div>
         <div className="flex items-start gap-2.5">
-          <KeyRound className="mt-0.5 size-4 shrink-0 text-brand-text" />
+          <KeyRound className="text-brand-text mt-0.5 size-4 shrink-0" />
           <div>
-            <p className="text-[12.5px] font-medium text-foreground">No API keys</p>
-            <p className="text-[11px] text-muted-foreground">Usage is detected from local files; no provider API keys are required. Coach runs use each harness&apos;s own sign-in — an opt-in toggle in Coach can pass environment keys through instead.</p>
+            <p className="text-foreground text-[12.5px] font-medium">No API keys</p>
+            <p className="text-muted-foreground text-[11px]">
+              Usage is detected from local files; no provider API keys are required. Coach runs use each harness&apos;s
+              own sign-in — an opt-in toggle in Coach can pass environment keys through instead.
+            </p>
           </div>
         </div>
       </Card>
 
       <Card className="px-4 py-3">
-        <p className="flex items-center gap-2 text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">
+        <p className="text-muted-foreground flex items-center gap-2 text-[10.5px] font-semibold tracking-[0.05em] uppercase">
           <Database className="size-3.5" /> Store
         </p>
         <div className="mt-2 flex flex-col gap-1.5 text-[11.5px]">
           <div className="flex justify-between gap-4">
-            <span className="shrink-0 text-muted-foreground">Location</span>
-            <span className="break-all text-right text-foreground">{info?.dataDir ?? '…'}</span>
+            <span className="text-muted-foreground shrink-0">Location</span>
+            <span className="text-foreground text-right break-all">{info?.dataDir ?? '…'}</span>
           </div>
           <div className="flex justify-between gap-4">
-            <span className="shrink-0 text-muted-foreground">Database size</span>
+            <span className="text-muted-foreground shrink-0">Database size</span>
             <span className="text-foreground">{info ? formatBytes(info.dbSize) : '…'}</span>
           </div>
           <div className="flex justify-between gap-4">
-            <span className="shrink-0 text-muted-foreground">Total data size</span>
+            <span className="text-muted-foreground shrink-0">Total data size</span>
             <span className="text-foreground">{info ? formatBytes(info.dataDirSize) : '…'}</span>
           </div>
           <div className="flex justify-between gap-4">
-            <span className="shrink-0 text-muted-foreground">Pricing cache</span>
+            <span className="text-muted-foreground shrink-0">Pricing cache</span>
             <span className="text-foreground">{info ? formatBytes(info.cacheSize) : '…'}</span>
           </div>
         </div>
@@ -98,8 +106,8 @@ export function PrivacyPane() {
             prompt="This removes all scanned reports. Config (aliases, overrides, currency, cadence) is kept."
             onConfirm={() => void clear()}
           />
-          {clearing && <span className="text-[11px] text-muted-foreground">Clearing…</span>}
-          {clearError && <span className="text-[11px] text-destructive">{clearError}</span>}
+          {clearing && <span className="text-muted-foreground text-[11px]">Clearing…</span>}
+          {clearError && <span className="text-destructive text-[11px]">{clearError}</span>}
         </div>
       </Card>
     </div>

@@ -1,18 +1,18 @@
-import { readFile, stat, open, rename, unlink, readdir, mkdir } from 'fs/promises'
-import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { createHash, randomBytes } from 'crypto'
+import * as Schema from 'effect/Schema'
+import * as SchemaGetter from 'effect/SchemaGetter'
+import { existsSync, readFileSync, unlinkSync } from 'fs'
+import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises'
 import { join } from 'path'
-import { homedir } from 'os'
 
-import type {
-  CachedCall,
-  CachedFile,
-  CachedTurn,
-  CachedUsage,
-  FileFingerprint,
-  ProviderSection,
-  SessionCache,
+import type { CachedCall, CachedFile, FileFingerprint } from '../../shared/schemas/session-cache.js'
+import {
+  cachedFileSchema,
+  providerSectionSchema,
+  sessionCacheSchema,
+  type SessionCache,
 } from '../../shared/schemas/session-cache.js'
+import { type AppPaths, resolveCacheDir, resolveSnapshotEnvVar, type SnapshotEnvVar } from '../env.js'
 
 export type {
   CachedCall,
@@ -101,7 +101,17 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
   codex: 'mcp-attribution-v2-est-cost-rich-capture-v1-cross-provider-pr-v1',
   cursor: 'composer-anchored-crediting-v1-est-cost',
   'cursor-agent': 'workspaceless-transcript-v1',
-  copilot: 'cli-shutdown-cost-v1-skills',
+  // cli-shutdown-cost-v1: the `session.shutdown` rollup became the only source
+  // of input/cache tokens for a Copilot CLI session.
+  // skills: per-call skill attribution.
+  // session-store-v1: the CLI's own `~/.copilot/session-store.db` is now a
+  // telemetry source, and its per-request rows take precedence over the
+  // shutdown rollup for any (session, model) they cover. That precedence is
+  // decided INSIDE the parser, by a provider-lifetime set the store parser
+  // populates — so a turn served straight from this cache keeps its rollup and
+  // the skip never runs, double-counting the CLI's input and cache tokens.
+  // The bump forces the one-time re-parse that makes the skip take effect.
+  copilot: 'cli-shutdown-cost-v1-skills-session-store-v1',
   grok: 'estimated-cost-v1',
   hermes: 'reasoning-output-accounting-v1-est-cost',
   'lingtai-tui': 'token-ledger-registry-activity-v3',
@@ -118,7 +128,7 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
 // ── Cache Dir ──────────────────────────────────────────────────────────
 
 function getCacheDir(): string {
-  return process.env['WATCHTOWER_CACHE_DIR'] ?? join(homedir(), '.cache', 'watchtower')
+  return resolveCacheDir()
 }
 
 function getCachePath(): string {
@@ -136,9 +146,35 @@ export function sessionCachePath(): string {
 
 // ── Env Fingerprint ────────────────────────────────────────────────────
 
-export function computeEnvFingerprint(provider: string): string {
+/**
+ * The per-provider env fingerprint: which vars a provider's cached parse depends
+ * on, so a config change invalidates its cache entries.
+ *
+ * Each var now resolves through `env.ts:ENV_VAR_SOURCES` — the one inventory of
+ * which snapshot source answers a given name — instead of reading `process.env`
+ * directly, so a threaded `AppPaths` record moves the hash with the seam it
+ * fingerprints. That was the hard precondition for threading records into the
+ * provider seams: while this function read the ambient env, a snapshot-driven
+ * config change would change what the provider parses without invalidating its
+ * cached rows.
+ *
+ * `PROVIDER_ENV_VARS` stays as the per-provider LIST (which vars this provider
+ * depends on) and is now covered by the snapshot's var union, pinned by
+ * `tests/session-cache-env-fingerprint.test.ts`; the untyped `v as SnapshotEnvVar`
+ * is safe only because that test fails if a name is not in the inventory.
+ *
+ * ONE deliberate divergence from the pre-snapshot hash: the two FIELD-shaped vars
+ * — `WATCHTOWER_CACHE_DIR` (antigravity) and `CODEX_HOME` (codex) — resolve to
+ * the snapshot's RESOLVED field, so they hash the effective value rather than
+ * `''` when the env var is unset. That costs those two providers exactly one
+ * re-parse on upgrade, and it is the point: keeping `''` would let a threaded
+ * `cacheDir` / `codexHome` change what the seam reads while the fingerprint stood
+ * still. Every other var is override- or platform-shaped, so it still hashes `''`
+ * when unset and no other cached row moves.
+ */
+export function computeEnvFingerprint(provider: string, paths?: AppPaths): string {
   const vars = PROVIDER_ENV_VARS[provider] ?? []
-  const parts = vars.map(v => `${v}=${process.env[v] ?? ''}`)
+  const parts = vars.map(v => `${v}=${resolveSnapshotEnvVar(v as SnapshotEnvVar, paths) ?? ''}`)
   const parseVersion = PROVIDER_PARSE_VERSIONS[provider]
   if (parseVersion) parts.push(`parser=${parseVersion}`)
   return createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 16)
@@ -169,136 +205,49 @@ export function sectionNeedsPrEvidenceReparse(section: { prEvidenceV1?: boolean 
   return section.prEvidenceV1 !== true
 }
 
-function isNum(v: unknown): v is number {
-  return typeof v === 'number' && Number.isFinite(v)
+/** On-disk cache versions historically passed these optional flags through
+ * unchecked. Normalize that envelope drift while keeping the shared in-memory
+ * contract strict. The inner field schema comes from the authoritative
+ * provider/session schemas, so requiredness and decoded flag types stay aligned. */
+function normalizeOptionalFlag<
+  S extends Schema.Constraint & { readonly Type: boolean | undefined; readonly Encoded: boolean | undefined },
+>(field: Schema.mutableKey<S>, normalize: (value: unknown) => boolean) {
+  return Schema.mutableKey(
+    Schema.optional(Schema.Unknown).pipe(
+      Schema.decodeTo(field.schema, {
+        decode: SchemaGetter.transform((value: unknown | undefined) =>
+          value === undefined ? undefined : normalize(value),
+        ),
+        encode: SchemaGetter.transform((value: boolean | undefined) => value),
+      }),
+    ),
+  )
 }
 
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every(e => typeof e === 'string')
+const providerSectionCacheSchema = providerSectionSchema.mapFields(fields => ({
+  ...fields,
+  durable: normalizeOptionalFlag(fields.durable, value => Boolean(value)),
+  prEvidenceV1: normalizeOptionalFlag(fields.prEvidenceV1, value => value === true),
+}))
+
+/** Legacy on-disk flag codec. Unknown keys still strip, while valid cached
+ * facts survive old malformed envelope flags until the next write normalizes
+ * those flags. Retire only with a cache version/support cutoff. */
+const sessionCacheFileSchema = sessionCacheSchema.mapFields(fields => ({
+  ...fields,
+  providers: Schema.mutableKey(Schema.Record(Schema.String, Schema.mutableKey(providerSectionCacheSchema))),
+  complete: normalizeOptionalFlag(fields.complete, value => value === true),
+}))
+
+function decodeCachedFile(value: unknown): CachedFile | null {
+  const decoded = Schema.decodeUnknownResult(cachedFileSchema)(value)
+  return decoded._tag === 'Success' ? decoded.success : null
 }
 
-function isOptionalString(v: unknown): boolean {
-  return v === undefined || typeof v === 'string'
-}
-
-function isOptionalNum(v: unknown): boolean {
-  return v === undefined || isNum(v)
-}
-
-function isOptionalBool(v: unknown): boolean {
-  return v === undefined || typeof v === 'boolean'
-}
-
-// A plain object whose every value is a string (or undefined). Used for the
-// sidechain `agentSpawnLinks` map (agentId -> spawn tool_use id).
-function isOptionalStringRecord(v: unknown): boolean {
-  if (v === undefined) return true
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
-  return Object.values(v as Record<string, unknown>).every(e => typeof e === 'string')
-}
-
-function isToolCall(v: unknown): boolean {
-  if (!v || typeof v !== 'object') return false
-  const o = v as Record<string, unknown>
-  return typeof o['tool'] === 'string'
-    && isOptionalString(o['file'])
-    && isOptionalString(o['command'])
-}
-
-function isToolCallArray(v: unknown): boolean {
-  return Array.isArray(v) && (v as unknown[]).every(isToolCall)
-}
-
-function validateFingerprint(fp: unknown): fp is FileFingerprint {
-  if (!fp || typeof fp !== 'object') return false
-  const f = fp as Record<string, unknown>
-  return isNum(f['dev']) && isNum(f['ino']) && isNum(f['mtimeMs']) && isNum(f['sizeBytes'])
-}
-
-function validateUsage(u: unknown): u is CachedUsage {
-  if (!u || typeof u !== 'object') return false
-  const o = u as Record<string, unknown>
-  return isNum(o['inputTokens']) && isNum(o['outputTokens'])
-    && isNum(o['cacheCreationInputTokens']) && isNum(o['cacheReadInputTokens'])
-    && isNum(o['cachedInputTokens']) && isNum(o['reasoningTokens'])
-    && isNum(o['webSearchRequests']) && isNum(o['cacheCreationOneHourTokens'])
-}
-
-function validateCall(c: unknown): c is CachedCall {
-  if (!c || typeof c !== 'object') return false
-  const o = c as Record<string, unknown>
-  return typeof o['provider'] === 'string'
-    && typeof o['model'] === 'string'
-    && typeof o['deduplicationKey'] === 'string'
-    && typeof o['timestamp'] === 'string'
-    && (o['speed'] === 'standard' || o['speed'] === 'fast')
-    && isOptionalNum(o['costUSD'])
-    && isOptionalBool(o['isEstimated'])
-    && isStringArray(o['tools'])
-    && isStringArray(o['bashCommands'])
-    && isStringArray(o['skills'])
-    && (o['subagentTypes'] === undefined || isStringArray(o['subagentTypes']))
-    && isOptionalString(o['project'])
-    && isOptionalString(o['projectPath'])
-    && isOptionalString(o['workingDirectory'])
-    && (o['toolSequence'] === undefined || (Array.isArray(o['toolSequence']) && (o['toolSequence'] as unknown[]).every(s => isToolCallArray(s))))
-    && isOptionalNum(o['locAdded'])
-    && isOptionalNum(o['locRemoved'])
-    && isOptionalBool(o['interrupted'])
-    && isOptionalBool(o['userModified'])
-    && isOptionalNum(o['toolErrors'])
-    && isOptionalNum(o['editFailed'])
-    && validateUsage(o['usage'])
-}
-
-function validateTurn(t: unknown): t is CachedTurn {
-  if (!t || typeof t !== 'object') return false
-  const o = t as Record<string, unknown>
-  return typeof o['timestamp'] === 'string'
-    && typeof o['sessionId'] === 'string'
-    && typeof o['userMessage'] === 'string'
-    && isOptionalString(o['gitBranch'])
-    && (o['prRefs'] === undefined || isStringArray(o['prRefs']))
-    && (o['spawnToolUseIds'] === undefined || isStringArray(o['spawnToolUseIds']))
-    && Array.isArray(o['calls'])
-    && (o['calls'] as unknown[]).every(validateCall)
-}
-
-function validateCachedFile(f: unknown): f is CachedFile {
-  if (!f || typeof f !== 'object') return false
-  const o = f as Record<string, unknown>
-  return validateFingerprint(o['fingerprint'])
-    && isOptionalNum(o['lastCompleteLineOffset'])
-    && isOptionalString(o['canonicalCwd'])
-    && isOptionalString(o['workingDirectory'])
-    && isOptionalString(o['canonicalProjectName'])
-    && isStringArray(o['mcpInventory'])
-    && isOptionalString(o['title'])
-    && (o['prLinks'] === undefined || isStringArray(o['prLinks']))
-    && isOptionalBool(o['isSidechain'])
-    && isOptionalString(o['agentType'])
-    && isOptionalBool(o['failed'])
-    && isOptionalString(o['parentSessionId'])
-    && isOptionalStringRecord(o['agentSpawnLinks'])
-    && (o['ambiguousSpawnAgentIds'] === undefined || isStringArray(o['ambiguousSpawnAgentIds']))
-    && Array.isArray(o['turns'])
-    && (o['turns'] as unknown[]).every(validateTurn)
-}
-
-function validateProviderSection(s: unknown): s is ProviderSection {
-  if (!s || typeof s !== 'object') return false
-  const o = s as Record<string, unknown>
-  if (typeof o['envFingerprint'] !== 'string') return false
-  if (!o['files'] || typeof o['files'] !== 'object' || Array.isArray(o['files'])) return false
-  return Object.values(o['files'] as Record<string, unknown>).every(validateCachedFile)
-}
-
-function validateCache(raw: unknown): raw is SessionCache {
-  if (!raw || typeof raw !== 'object') return false
-  const o = raw as Record<string, unknown>
-  if (o['version'] !== CACHE_VERSION) return false
-  if (!o['providers'] || typeof o['providers'] !== 'object' || Array.isArray(o['providers'])) return false
-  return Object.values(o['providers'] as Record<string, unknown>).every(validateProviderSection)
+function decodeCache(value: unknown): SessionCache | null {
+  const decoded = Schema.decodeUnknownResult(sessionCacheFileSchema)(value)
+  if (decoded._tag === 'Failure' || decoded.success.version !== CACHE_VERSION) return null
+  return decoded.success
 }
 
 // Every prior versioned cache file that can still exist on disk from a shipped or
@@ -318,11 +267,15 @@ function priorCacheFile(version: number): string {
 // Lightweight top-level check: a specific prior-version cache envelope with a
 // providers object. Files are validated per-entry in adoptPriorCache so one
 // corrupt entry cannot drop every valid expired-transcript PR session.
-function isCacheEnvelope(raw: unknown, version: number): raw is { version: number; providers: Record<string, unknown> } {
+function isCacheEnvelope(
+  raw: unknown,
+  version: number,
+): raw is { version: number; providers: Record<string, unknown> } {
   if (!raw || typeof raw !== 'object') return false
   const o = raw as Record<string, unknown>
-  return o['version'] === version
-    && !!o['providers'] && typeof o['providers'] === 'object' && !Array.isArray(o['providers'])
+  return (
+    o['version'] === version && !!o['providers'] && typeof o['providers'] === 'object' && !Array.isArray(o['providers'])
+  )
 }
 
 // One-time migration on a version bump: carry forward exactly the prior-version
@@ -345,8 +298,9 @@ async function adoptPriorCache(version: number): Promise<SessionCache | null> {
       const files: Record<string, CachedFile> = {}
       if (rawFiles && typeof rawFiles === 'object' && !Array.isArray(rawFiles)) {
         for (const [path, file] of Object.entries(rawFiles as Record<string, unknown>)) {
-          if (!validateCachedFile(file)) continue
-          if (!existsSync(path) && file.prLinks?.length) files[path] = file
+          const decodedFile = decodeCachedFile(file)
+          if (!decodedFile) continue
+          if (!existsSync(path) && decodedFile.prLinks?.length) files[path] = decodedFile
         }
       }
       migrated.providers[provider] = {
@@ -373,10 +327,16 @@ async function adoptNewestPriorCache(): Promise<SessionCache | null> {
   for (const version of oldestFirst) {
     const adopted = await adoptPriorCache(version)
     if (!adopted) continue
-    if (!merged) { merged = adopted; continue }
+    if (!merged) {
+      merged = adopted
+      continue
+    }
     for (const [provider, section] of Object.entries(adopted.providers)) {
       const existing = merged.providers[provider]
-      if (!existing) { merged.providers[provider] = section; continue }
+      if (!existing) {
+        merged.providers[provider] = section
+        continue
+      }
       // Newer version's entries overwrite older ones for the same source path.
       Object.assign(existing.files, section.files)
       if (section.durable) existing.durable = true
@@ -389,8 +349,9 @@ export async function loadCache(): Promise<SessionCache> {
   try {
     const raw = await readFile(getCachePath(), 'utf-8')
     const parsed = JSON.parse(raw)
-    if (!validateCache(parsed)) return afterMissingVersionedCache()
-    return parsed
+    const decoded = decodeCache(parsed)
+    if (!decoded) return afterMissingVersionedCache()
+    return decoded
   } catch {
     return afterMissingVersionedCache()
   }
@@ -413,9 +374,10 @@ async function adoptLegacyCache(): Promise<SessionCache> {
   try {
     const raw = await readFile(getLegacyCachePath(), 'utf-8')
     const parsed = JSON.parse(raw)
-    if (!validateCache(parsed)) return emptyCache()
-    await saveCache(parsed).catch(() => {})
-    return parsed
+    const decoded = decodeCache(parsed)
+    if (!decoded) return emptyCache()
+    await saveCache(decoded).catch(() => {})
+    return decoded
   } catch {
     return emptyCache()
   }
@@ -442,7 +404,7 @@ export async function saveCache(cache: SessionCache, verifyStillOwner?: () => Pr
     // The warm refresh transaction passes an ownership fence. It must be the
     // final operation before publication so a displaced writer cannot replace
     // the canonical cache with its stale snapshot.
-    if (verifyStillOwner && !await verifyStillOwner()) {
+    if (verifyStillOwner && !(await verifyStillOwner())) {
       await retryCacheFileMutation(() => unlink(tempPath))
       return false
     }
@@ -455,7 +417,9 @@ export async function saveCache(cache: SessionCache, verifyStillOwner?: () => Pr
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code
         if ((code !== 'EPERM' && code !== 'EBUSY') || attempt === 2) throw err
-        await new Promise(resolve => { setTimeout(resolve, 10 * (attempt + 1)) })
+        await new Promise(resolve => {
+          setTimeout(resolve, 10 * (attempt + 1))
+        })
       }
     }
     if (!renamed) throw new Error('session cache rename failed')
@@ -475,7 +439,9 @@ async function retryCacheFileMutation(operation: () => Promise<void>): Promise<b
       const code = (err as NodeJS.ErrnoException).code
       if (code === 'ENOENT') return true
       if ((code !== 'EPERM' && code !== 'EBUSY') || attempt === 2) return false
-      await new Promise(resolve => { setTimeout(resolve, 10 * (attempt + 1)) })
+      await new Promise(resolve => {
+        setTimeout(resolve, 10 * (attempt + 1))
+      })
     }
   }
   return false
@@ -528,15 +494,9 @@ export async function fingerprintFile(filePath: string): Promise<FileFingerprint
 // ── Reconciliation ─────────────────────────────────────────────────────
 
 export type ReconcileAction =
-  | { action: 'unchanged' }
-  | { action: 'appended'; readFromOffset: number }
-  | { action: 'modified' }
-  | { action: 'new' }
+  { action: 'unchanged' } | { action: 'appended'; readFromOffset: number } | { action: 'modified' } | { action: 'new' }
 
-export function reconcileFile(
-  current: FileFingerprint,
-  cached: CachedFile | undefined,
-): ReconcileAction {
+export function reconcileFile(current: FileFingerprint, cached: CachedFile | undefined): ReconcileAction {
   if (!cached) return { action: 'new' }
 
   const fp = cached.fingerprint
@@ -571,15 +531,10 @@ export function reconcileFile(
 // the same dedup key with updated usage. Merge by key: keep the earliest
 // timestamp, take incoming usage/tools/bashCommands/skills (latest wins).
 
-export function mergeCallByDedupKey(
-  existing: CachedCall,
-  incoming: CachedCall,
-): CachedCall {
+export function mergeCallByDedupKey(existing: CachedCall, incoming: CachedCall): CachedCall {
   return {
     ...incoming,
-    timestamp: existing.timestamp < incoming.timestamp
-      ? existing.timestamp
-      : incoming.timestamp,
+    timestamp: existing.timestamp < incoming.timestamp ? existing.timestamp : incoming.timestamp,
   }
 }
 
@@ -639,8 +594,12 @@ function lockPath(): string {
 // belongs to another user — still alive.
 function pidLooksAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false
-  try { process.kill(pid, 0); return true }
-  catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM' }
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
 }
 
 async function readLockRecord(): Promise<LockRecord | null> {
@@ -648,7 +607,9 @@ async function readLockRecord(): Promise<LockRecord | null> {
     const parsed = JSON.parse(await readFile(lockPath(), 'utf-8')) as Partial<LockRecord>
     if (typeof parsed?.pid === 'number' && typeof parsed?.at === 'number') return { pid: parsed.pid, at: parsed.at }
     return null
-  } catch { return null }
+  } catch {
+    return null
+  }
 }
 
 async function writeOurLock(): Promise<boolean> {
@@ -656,17 +617,24 @@ async function writeOurLock(): Promise<boolean> {
     const dir = getCacheDir()
     if (!existsSync(dir)) await mkdir(dir, { recursive: true })
     const handle = await open(lockPath(), 'wx', 0o600)
-    try { await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }), { encoding: 'utf-8' }) }
-    finally { await handle.close() }
+    try {
+      await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }), { encoding: 'utf-8' })
+    } finally {
+      await handle.close()
+    }
     return true
-  } catch { return false }
+  } catch {
+    return false
+  }
 }
 
 async function removeOurLock(): Promise<void> {
   try {
     const cur = await readLockRecord()
     if (cur && cur.pid === process.pid) await unlink(lockPath())
-  } catch { /* best-effort; a leaked lock is reclaimed as stale next cold start */ }
+  } catch {
+    /* best-effort; a leaked lock is reclaimed as stale next cold start */
+  }
 }
 
 // Synchronous variant for the signal path: a handler can't await, so read + unlink
@@ -675,7 +643,9 @@ function removeOurLockSync(): void {
   try {
     const parsed = JSON.parse(readFileSync(lockPath(), 'utf-8')) as Partial<LockRecord>
     if (parsed?.pid === process.pid) unlinkSync(lockPath())
-  } catch { /* best-effort; nothing to clean or already gone */ }
+  } catch {
+    /* best-effort; nothing to clean or already gone */
+  }
 }
 
 // Arm once, only while we hold the lock: on a catchable termination (Ctrl-C, or a
@@ -697,7 +667,9 @@ function armSignalCleanup(): void {
 const releaseHandle: HydrationHandle = { waited: false, release: removeOurLock }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => { setTimeout(resolve, ms) })
+  return new Promise(resolve => {
+    setTimeout(resolve, ms)
+  })
 }
 
 /**
@@ -715,7 +687,10 @@ function sleep(ms: number): Promise<void> {
 export async function beginColdHydration(isCold: boolean): Promise<HydrationHandle> {
   if (!isCold) return NOOP_HANDLE
   try {
-    if (await writeOurLock()) { armSignalCleanup(); return releaseHandle }
+    if (await writeOurLock()) {
+      armSignalCleanup()
+      return releaseHandle
+    }
     const existing = await readLockRecord()
     const fresh = existing !== null && Date.now() - existing.at < LOCK_FRESH_MS
     if (existing && fresh && pidLooksAlive(existing.pid)) {
@@ -731,17 +706,34 @@ export async function beginColdHydration(isCold: boolean): Promise<HydrationHand
         await sleep(LOCK_POLL_MS)
         const cur = await readLockRecord()
         if (!cur) break
-        if (Date.now() - cur.at >= LOCK_FRESH_MS) { takeover = true; break }
-        if (!pidLooksAlive(cur.pid)) { takeover = true; break }
+        if (Date.now() - cur.at >= LOCK_FRESH_MS) {
+          takeover = true
+          break
+        }
+        if (!pidLooksAlive(cur.pid)) {
+          takeover = true
+          break
+        }
       }
       if (takeover) {
-        try { await unlink(lockPath()) } catch { /* another process may have; fine */ }
-        if (await writeOurLock()) { armSignalCleanup(); return releaseHandle }
+        try {
+          await unlink(lockPath())
+        } catch {
+          /* another process may have; fine */
+        }
+        if (await writeOurLock()) {
+          armSignalCleanup()
+          return releaseHandle
+        }
       }
       return { waited: true, release: async () => {} }
     }
     // Stale, dead-pid, or unreadable lock: replace it and take over.
-    try { await unlink(lockPath()) } catch { /* another process may have; fine */ }
+    try {
+      await unlink(lockPath())
+    } catch {
+      /* another process may have; fine */
+    }
     if (await writeOurLock()) return releaseHandle
     return NOOP_HANDLE
   } catch {

@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { basename, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLines } from '../fs-utils.js'
 import { calculateCost, getShortModelName } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
@@ -217,10 +218,14 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             return typeof script === 'string' ? extractBashCommands(script) : []
           })
 
+        // `outputTokens` was made reasoning-exclusive above, so re-adding
+        // `reasoning` restores the provider's own inclusive output figure.
+        // mux is not in the output-inclusive set because it already decomposed
+        // the field itself; the helper makes that decision explicit.
         const costUSD = calculateCost(
           model,
           inputTokens,
-          outputTokens + reasoning,
+          billableOutputTokens('mux', outputTokens, reasoning),
           cacheCreate,
           cacheRead,
           0,

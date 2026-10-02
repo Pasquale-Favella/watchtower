@@ -18,10 +18,12 @@ function normalizeOverrideDirs(overrideDirs?: string | string[]): string[] | und
 }
 
 async function dedupeTaskSources(sources: SessionSource[]): Promise<SessionSource[]> {
-  const candidates = await Promise.all(sources.map(async source => ({
-    source,
-    mtimeMs: (await stat(join(source.path, 'ui_messages.json')).catch(() => null))?.mtimeMs ?? 0,
-  })))
+  const candidates = await Promise.all(
+    sources.map(async source => ({
+      source,
+      mtimeMs: (await stat(join(source.path, 'ui_messages.json')).catch(() => null))?.mtimeMs ?? 0,
+    })),
+  )
 
   const seenTaskIds = new Set<string>()
   const deduped: SessionSource[] = []
@@ -52,14 +54,9 @@ export function createClineProvider(overrideDirs?: string | string[]): Provider 
     },
 
     async discoverSessions(): Promise<SessionSource[]> {
-      const baseDirs = configuredDirs ?? [
-        getVSCodeGlobalStoragePath(EXTENSION_ID),
-        getClineDataPath(),
-      ]
+      const baseDirs = configuredDirs ?? [getVSCodeGlobalStoragePath(EXTENSION_ID), getClineDataPath()]
 
-      const sources = await Promise.all(
-        baseDirs.map(dir => discoverClineTasks(EXTENSION_ID, 'cline', 'Cline', dir)),
-      )
+      const sources = await Promise.all(baseDirs.map(dir => discoverClineTasks(EXTENSION_ID, 'cline', 'Cline', dir)))
 
       return dedupeTaskSources(sources.flat())
     },

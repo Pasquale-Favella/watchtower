@@ -2,11 +2,17 @@ import { readdir, stat } from 'fs/promises'
 import { createReadStream } from 'fs'
 import { createInterface } from 'readline'
 import { basename, join } from 'path'
-import { homedir } from 'os'
 
+import { appPaths, resolveCodexHome, type AppPaths } from '../../env.js'
 import { readSessionLines } from '../fs-utils.js'
+import { billableOutputTokens } from '../billable-output.js'
 import { calculateCost } from '../models.js'
-import { readCachedCodexResults, writeCachedCodexResults, getCachedCodexProject, fingerprintFile } from '../codex-cache.js'
+import {
+  readCachedCodexResults,
+  writeCachedCodexResults,
+  getCachedCodexProject,
+  fingerprintFile,
+} from '../codex-cache.js'
 import { normalizeContentBlocks } from '../content-utils.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 import type { ToolCall } from '../types.js'
@@ -64,9 +70,12 @@ const toolNameMap: Record<string, string> = {
 // class don't overlap, so there is no catastrophic backtracking.
 const MCP_CLI_CALL = /(?<![\w.-])mcp-cli(?:\s+(?!call\b)[^\s;|&]+)*\s+call\s+(\S+)\s+(\S+)/
 function mcpToolFromShellCommand(command: unknown): string | null {
-  const text = typeof command === 'string'
-    ? command
-    : Array.isArray(command) ? command.filter(x => typeof x === 'string').join(' ') : ''
+  const text =
+    typeof command === 'string'
+      ? command
+      : Array.isArray(command)
+        ? command.filter(x => typeof x === 'string').join(' ')
+        : ''
   if (!text) return null
   const m = MCP_CLI_CALL.exec(text)
   if (!m) return null
@@ -125,10 +134,6 @@ type CodexTokenUsage = {
 const RAW_HEAD_BYTES = 64 * 1024
 const LARGE_TEXT_CAP = 2000
 
-function getCodexDir(override?: string): string {
-  return override ?? process.env['CODEX_HOME'] ?? join(homedir(), '.codex')
-}
-
 function sanitizeProject(cwd: string): string {
   return cwd.replace(/^[/\\]+/, '').replace(/[/\\]/g, '-')
 }
@@ -179,7 +184,8 @@ async function readFirstLine(filePath: string): Promise<CodexEntry | null> {
 async function isValidCodexSession(filePath: string): Promise<{ valid: boolean; meta?: CodexEntry }> {
   const entry = await readFirstLine(filePath)
   if (!entry) return { valid: false }
-  const valid = entry.type === 'session_meta' &&
+  const valid =
+    entry.type === 'session_meta' &&
     typeof entry.payload?.originator === 'string' &&
     entry.payload.originator.toLowerCase().startsWith('codex')
   return { valid, meta: valid ? entry : undefined }
@@ -290,7 +296,9 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
   if (type === 'response_item' && payloadType === 'message' && role === 'user') {
     entry.payload!.content = [{ type: 'input_text', text: extractFirstJsonText(line) }]
   } else if (type === 'response_item' && payloadType === 'message' && role === 'assistant') {
-    entry.payload!.content = [{ type: 'output_text', text: 'x'.repeat(Math.min(countFirstJsonText(line), LARGE_TEXT_CAP)) }]
+    entry.payload!.content = [
+      { type: 'output_text', text: 'x'.repeat(Math.min(countFirstJsonText(line), LARGE_TEXT_CAP)) },
+    ]
   }
 
   return entry
@@ -367,11 +375,7 @@ async function discoverSessionsInDir(codexDir: string): Promise<SessionSource[]>
 }
 
 function resolveModel(info: CodexEntry['payload'], sessionModel?: string): string {
-  return info?.model
-    ?? info?.info?.model
-    ?? info?.info?.model_name
-    ?? sessionModel
-    ?? 'gpt-5'
+  return info?.model ?? info?.info?.model ?? info?.info?.model_name ?? sessionModel ?? 'gpt-5'
 }
 
 function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
@@ -456,9 +460,18 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           pendingTools.push(mapped)
           const call: ToolCall = { tool: mapped }
           const rawArgs = (entry.payload as Record<string, unknown>)['arguments']
-          const args = typeof rawArgs === 'string'
-            ? (() => { try { return JSON.parse(rawArgs) as Record<string, unknown> } catch { return null } })()
-            : typeof rawArgs === 'object' && rawArgs ? rawArgs as Record<string, unknown> : null
+          const args =
+            typeof rawArgs === 'string'
+              ? (() => {
+                  try {
+                    return JSON.parse(rawArgs) as Record<string, unknown>
+                  } catch {
+                    return null
+                  }
+                })()
+              : typeof rawArgs === 'object' && rawArgs
+                ? (rawArgs as Record<string, unknown>)
+                : null
           if (args) {
             const fp = args['file_path'] ?? args['path']
             if (typeof fp === 'string') call.file = fp
@@ -480,7 +493,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           pendingTools.push('Edit')
           const p = entry.payload as Record<string, unknown>
           const changes = p['changes']
-          const changesObj = typeof changes === 'object' && changes ? changes as Record<string, unknown> : {}
+          const changesObj = typeof changes === 'object' && changes ? (changes as Record<string, unknown>) : {}
           const filePaths = Object.keys(changesObj)
           if (filePaths.length > 0) {
             for (const fp of filePaths) {
@@ -504,8 +517,8 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         // classifier recognizes.
         if (entry.type === 'event_msg' && entry.payload?.type === 'mcp_tool_call_end') {
           const inv = (entry.payload as Record<string, unknown>)['invocation'] as Record<string, unknown> | undefined
-          const server = typeof inv?.['server'] === 'string' ? inv['server'] as string : ''
-          const tool = typeof inv?.['tool'] === 'string' ? inv['tool'] as string : ''
+          const server = typeof inv?.['server'] === 'string' ? (inv['server'] as string) : ''
+          const tool = typeof inv?.['tool'] === 'string' ? (inv['tool'] as string) : ''
           if (server && tool) {
             const name = `mcp__${server}__${tool}`
             pendingTools.push(name)
@@ -526,7 +539,11 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           continue
         }
 
-        if (entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload?.role === 'assistant') {
+        if (
+          entry.type === 'response_item' &&
+          entry.payload?.type === 'message' &&
+          entry.payload?.role === 'assistant'
+        ) {
           const texts = normalizeContentBlocks(entry.payload.content)
             .filter(c => c.type === 'output_text' || c.type === 'text')
             .map(c => c.text ?? '')
@@ -553,7 +570,17 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             const timestamp = entry.timestamp ?? ''
             const dedupKey = `codex:${sessionId}:${timestamp}:est${estCounter++}`
 
-            if (seenKeys.has(dedupKey)) { pendingTools = []; pendingToolSequence = []; pendingUserMessage = ''; pendingAssistantText = ''; pendingOutputChars = 0; pendingLocAdded = 0; pendingLocRemoved = 0; pendingEditFailed = 0; continue }
+            if (seenKeys.has(dedupKey)) {
+              pendingTools = []
+              pendingToolSequence = []
+              pendingUserMessage = ''
+              pendingAssistantText = ''
+              pendingOutputChars = 0
+              pendingLocAdded = 0
+              pendingLocRemoved = 0
+              pendingEditFailed = 0
+              continue
+            }
             seenKeys.add(dedupKey)
 
             const costUSD = calculateCost(model, estInput, estOutput, 0, 0, 0)
@@ -672,7 +699,10 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           const costUSD = calculateCost(
             model,
             uncachedInputTokens,
-            outputTokens + reasoningTokens,
+            // OpenAI's `reasoning_output_tokens` is a breakdown of
+            // `output_tokens`, not a sibling of it — the helper keeps the fold
+            // from billing the same tokens twice.
+            billableOutputTokens('codex', outputTokens, reasoningTokens),
             0,
             cachedInputTokens,
             0,
@@ -730,8 +760,19 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
   }
 }
 
-export function createCodexProvider(codexDir?: string): Provider {
-  const dir = getCodexDir(codexDir)
+export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provider {
+  // One trailing snapshot param, never a second "override" slot: the explicit
+  // `codexDir` wins, then `AppPaths.codexHome` — the `CODEX_HOME` value the
+  // startup snapshot reports, or the homedir default when the var is unset.
+  // The seam keeps its own `??` chain, so an uninitialized snapshot resolves
+  // exactly the `process.env['CODEX_HOME']` the pre-snapshot read saw.
+  //
+  // A FUNCTION, not a value: the dir is resolved per call so this factory is
+  // safe to run at module-evaluation time (the registry imports the singleton
+  // below, and module bodies evaluate before any importer's body, so a value
+  // captured here would freeze the pre-`initAppPaths` snapshot). Every other
+  // seam already resolves `appPaths()` inside its call; this one now does too.
+  const dir = (): string => resolveCodexHome((paths ?? appPaths()).codexHome, codexDir)
 
   return {
     name: 'codex',
@@ -748,17 +789,19 @@ export function createCodexProvider(codexDir?: string): Provider {
       return toolNameMap[rawTool] ?? rawTool
     },
 
-    // Same `dir` discoverSessionsInDir walks: <codexDir>/sessions (dated
-    // rollout files) and <codexDir>/archived_sessions. Honors CODEX_HOME.
+    // `<home>/sessions` (dated rollout files) and `<home>/archived_sessions`
+    // are the two roots `discoverSessionsInDir` walks, where `home` is `dir()`
+    // resolved at this call. Honors CODEX_HOME.
     async probeRoots(): Promise<ProbeRoot[]> {
+      const home = dir()
       return [
-        { path: join(dir, 'sessions'), label: 'sessions' },
-        { path: join(dir, 'archived_sessions'), label: 'archived' },
+        { path: join(home, 'sessions'), label: 'sessions' },
+        { path: join(home, 'archived_sessions'), label: 'archived' },
       ]
     },
 
     async discoverSessions(): Promise<SessionSource[]> {
-      return discoverSessionsInDir(dir)
+      return discoverSessionsInDir(dir())
     },
 
     createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
@@ -767,4 +810,18 @@ export function createCodexProvider(codexDir?: string): Provider {
   }
 }
 
+// The registry (`providers/index.ts`) imports this singleton, and it is built
+// with NO threaded record for the same reason `export const opencode =
+// createOpenCodeProvider()` is: the seam falls back to `appPaths()` at CALL
+// time, so the record the importer's `initAppPaths` installs is honoured.
+//
+// LAZY, deliberately — and the ordering constraint that used to force the
+// opposite is gone. Module bodies evaluate BEFORE any importer's body, so the
+// previous `createCodexProvider(undefined, appPaths())` captured the snapshot
+// from BEFORE `initAppPaths` runs in either isolate: a boot-time
+// `initAppPaths({ codexHome })` would have been ignored by `codex` while every
+// other provider honoured it. That was invisible only because an uninitialized
+// `codexHome` falls back to the same `process.env['CODEX_HOME']` the seam
+// always read. Per-call resolution is what makes `codex` report the pin the
+// moment boot makes it, with no import-order contract to maintain.
 export const codex = createCodexProvider()

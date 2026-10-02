@@ -1,9 +1,4 @@
-import type {
-  ProjectSummary,
-  SessionSummary,
-  TaskCategory,
-  TokenUsage
-} from '../../src/main/pipeline/types.js'
+import type { ProjectSummary, SessionSummary, TaskCategory, TokenUsage } from '../../src/main/pipeline/types.js'
 
 const usage: TokenUsage = {
   inputTokens: 100,
@@ -12,7 +7,7 @@ const usage: TokenUsage = {
   cacheReadInputTokens: 20,
   cachedInputTokens: 0,
   reasoningTokens: 5,
-  webSearchRequests: 0
+  webSearchRequests: 0,
 }
 
 const CATEGORIES: TaskCategory[] = [
@@ -28,12 +23,12 @@ const CATEGORIES: TaskCategory[] = [
   'build/deploy',
   'conversation',
   'brainstorming',
-  'general'
+  'general',
 ]
 
 function zeroedCategoryBreakdown(): SessionSummary['categoryBreakdown'] {
   const empty = { turns: 0, costUSD: 0, savingsUSD: 0, retries: 0, editTurns: 0, oneShotTurns: 0 }
-  return Object.fromEntries(CATEGORIES.map((category) => [category, { ...empty }])) as SessionSummary['categoryBreakdown']
+  return Object.fromEntries(CATEGORIES.map(category => [category, { ...empty }])) as SessionSummary['categoryBreakdown']
 }
 
 function buildSession(index: number): SessionSummary {
@@ -50,6 +45,7 @@ function buildSession(index: number): SessionSummary {
     totalReasoningTokens: 5,
     totalCacheReadTokens: 20,
     totalCacheWriteTokens: 0,
+    subagentBreakdown: {},
     apiCalls: 1,
     turns: [
       {
@@ -69,27 +65,27 @@ function buildSession(index: number): SessionSummary {
             speed: 'standard',
             timestamp: '2026-07-01T10:00:00.000Z',
             bashCommands: ['ls'],
-            deduplicationKey: `dedup-${index}`
-          }
+            deduplicationKey: `dedup-${index}`,
+          },
         ],
         timestamp: '2026-07-01T10:00:00.000Z',
         sessionId: `sess-${index}`,
         category: 'coding',
         retries: 0,
-        hasEdits: true
-      }
+        hasEdits: true,
+      },
     ],
     modelBreakdown: {
-      'demo-model': { calls: 1, costUSD: 0.42, tokens: usage, savingsUSD: 0 }
+      'demo-model': { calls: 1, costUSD: 0.42, tokens: usage, savingsUSD: 0 },
     },
     toolBreakdown: { bash: { calls: 1 } },
     mcpBreakdown: {},
     bashBreakdown: { ls: { calls: 1 } },
     categoryBreakdown: {
       ...zeroedCategoryBreakdown(),
-      coding: { turns: 1, costUSD: 0.42, savingsUSD: 0, retries: 0, editTurns: 1, oneShotTurns: 0 }
+      coding: { turns: 1, costUSD: 0.42, savingsUSD: 0, retries: 0, editTurns: 1, oneShotTurns: 0 },
     },
-    skillBreakdown: {}
+    skillBreakdown: {},
   }
 }
 
@@ -104,7 +100,7 @@ export function buildFixtureReport(): ProjectSummary[] {
       totalSavingsUSD: 0,
       totalEstimatedCostUSD: 0,
       totalApiCalls: 1,
-      totalProxiedCostUSD: 0
-    }
+      totalProxiedCostUSD: 0,
+    },
   ]
 }

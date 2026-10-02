@@ -53,9 +53,9 @@ forward, so the seam probes the CLI directly instead.
 ## Consequences
 
 - The picker tooltip and default-harness preference are honest for Claude
-   before any spawn; auth walls fail with a remedy instead of a protocol
-   error code.
+  before any spawn; auth walls fail with a remedy instead of a protocol
+  error code.
 - Key-based terminal users can make Coach work by enabling passthrough
-   (the key must be in the APP process's own environment — e.g. launch the
-   app from that terminal or set it at user level).
+  (the key must be in the APP process's own environment — e.g. launch the
+  app from that terminal or set it at user level).
 - `coach:inspect` accepts the bare key (legacy) or `{ kind, allowApiKeyEnv }`.

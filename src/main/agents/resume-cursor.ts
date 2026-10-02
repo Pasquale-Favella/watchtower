@@ -1,12 +1,12 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
-const resumeCursorSchema = z.object({
-  v: z.literal(1),
-  instanceId: z.string().min(1),
-  sessionId: z.string().min(1),
+const resumeCursorSchema = Schema.Struct({
+  v: Schema.Literal(1),
+  instanceId: Schema.NonEmptyString,
+  sessionId: Schema.NonEmptyString,
 })
 
-type ResumeCursor = z.infer<typeof resumeCursorSchema>
+type ResumeCursor = Schema.Schema.Type<typeof resumeCursorSchema>
 
 export function encodeResumeCursor(input: { instanceId: string; sessionId: string }): string {
   const cursor: ResumeCursor = { v: 1, instanceId: input.instanceId, sessionId: input.sessionId }
@@ -17,9 +17,9 @@ export function decodeResumeCursor(raw: unknown, instanceId: string): string | u
   if (typeof raw !== 'string' || !/^[A-Za-z0-9_-]+$/.test(raw)) return undefined
   try {
     const decoded = Buffer.from(raw, 'base64url').toString('utf8')
-    const parsed = resumeCursorSchema.safeParse(JSON.parse(decoded))
-    if (!parsed.success || parsed.data.instanceId !== instanceId) return undefined
-    return parsed.data.sessionId
+    const parsed = Schema.decodeUnknownResult(Schema.fromJsonString(resumeCursorSchema))(decoded)
+    if (parsed._tag === 'Failure' || parsed.success.instanceId !== instanceId) return undefined
+    return parsed.success.sessionId
   } catch {
     return undefined
   }

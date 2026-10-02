@@ -176,8 +176,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       if (input === 0 && output === 0) return
 
       const signals = await readJson<GrokSignals>(join(dir, 'signals.json'))
-      const model =
-        summary.current_model_id ?? signals?.primaryModelId ?? signals?.modelsUsed?.[0] ?? 'grok-build'
+      const model = summary.current_model_id ?? signals?.primaryModelId ?? signals?.modelsUsed?.[0] ?? 'grok-build'
       const timestamp = summary.updated_at ?? summary.last_active_at ?? summary.created_at ?? ''
       const sessionId = summary.info?.id ?? basename(dir)
 

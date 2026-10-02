@@ -177,11 +177,7 @@ function extractCwd(meta: CodebuffMetadata | undefined): string | null {
   const rs = meta?.runState
   if (!rs) return null
   return (
-    rs.sessionState?.projectContext?.cwd ??
-    rs.sessionState?.fileContext?.cwd ??
-    rs.sessionState?.cwd ??
-    rs.cwd ??
-    null
+    rs.sessionState?.projectContext?.cwd ?? rs.sessionState?.fileContext?.cwd ?? rs.sessionState?.cwd ?? rs.cwd ?? null
   )
 }
 
@@ -281,9 +277,7 @@ async function discoverChannel(root: string): Promise<SessionSource[]> {
       // Resolve the real cwd from run-state.json so sessions group by the
       // originating project directory instead of the sanitized chat folder
       // name (which is often the same for many users).
-      const runState = await readJson<CodebuffMetadata['runState']>(
-        join(chatDir, 'run-state.json'),
-      )
+      const runState = await readJson<CodebuffMetadata['runState']>(join(chatDir, 'run-state.json'))
       const cwd = extractCwd({ runState: runState ?? undefined })
       const project = cwd ? basename(cwd) : projectName
 
@@ -302,7 +296,7 @@ async function discoverSessionsInBase(baseDir: string): Promise<SessionSource[]>
   if (process.env['CODEBUFF_DATA_DIR'] || baseDir !== join(homedir(), '.config', 'manicode')) {
     const rootStat = await stat(baseDir).catch(() => null)
     if (!rootStat?.isDirectory()) return results
-    results.push(...await discoverChannel(baseDir))
+    results.push(...(await discoverChannel(baseDir)))
     return results
   }
 
@@ -311,7 +305,7 @@ async function discoverSessionsInBase(baseDir: string): Promise<SessionSource[]>
     const root = join(configDir, channel)
     const rootStat = await stat(root).catch(() => null)
     if (!rootStat?.isDirectory()) continue
-    results.push(...await discoverChannel(root))
+    results.push(...(await discoverChannel(root)))
   }
   return results
 }
@@ -349,9 +343,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       const sessionId = channel ? `${channel}/${chatId}` : chatId
       const fallbackTs = parseChatIdToIso(chatId)
 
-      const messages = await readJson<CodebuffChatMessage[]>(
-        join(chatDir, 'chat-messages.json'),
-      )
+      const messages = await readJson<CodebuffChatMessage[]>(join(chatDir, 'chat-messages.json'))
       if (!Array.isArray(messages)) return
 
       let pendingUserMessage = ''
@@ -374,16 +366,19 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         const stashedUsage = usageFromHistory(msg.metadata)
 
         const hasDirect =
-          directUsage.input > 0 ||
-          directUsage.output > 0 ||
-          directUsage.cacheRead > 0 ||
-          directUsage.cacheWrite > 0
+          directUsage.input > 0 || directUsage.output > 0 || directUsage.cacheRead > 0 || directUsage.cacheWrite > 0
         const usage = hasDirect ? directUsage : stashedUsage
         const stashedModel = stashedUsage.model
 
         // Skip messages with neither credits nor tokens -- they're typically
         // in-progress mode dividers or empty framing blocks.
-        if (credits === 0 && usage.input === 0 && usage.output === 0 && usage.cacheRead === 0 && usage.cacheWrite === 0) {
+        if (
+          credits === 0 &&
+          usage.input === 0 &&
+          usage.output === 0 &&
+          usage.cacheRead === 0 &&
+          usage.cacheWrite === 0
+        ) {
           continue
         }
 

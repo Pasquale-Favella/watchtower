@@ -47,4 +47,6 @@ export const useCompareStore = create<CompareState>()((set, get) => ({
   clear: () => set({ data: null, error: null, status: 'idle', scope: EMPTY_SCOPE, pair: undefined, dataKey: '' }),
 }))
 
-subscribeToRefresh(() => { void useCompareStore.getState().reload() })
+subscribeToRefresh(() => {
+  void useCompareStore.getState().reload()
+})

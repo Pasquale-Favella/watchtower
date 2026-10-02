@@ -3,7 +3,14 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LedgerStore } from '../src/main/store/ledger.js'
-import type { ClassifiedTurn, ParsedApiCall, ProjectSummary, SessionSummary, TokenUsage, ToolCall } from '../src/main/pipeline/types.js'
+import type {
+  ClassifiedTurn,
+  ParsedApiCall,
+  ProjectSummary,
+  SessionSummary,
+  TokenUsage,
+  ToolCall,
+} from '../src/main/pipeline/types.js'
 import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
 import { buildFixtureReport } from './fixtures/report.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
@@ -198,7 +205,6 @@ function readSteps(projects: ProjectSummary[]) {
   return steps
 }
 
-
 // ── Ledger-backed Optimize view (map 06) ───────────────────────────────────
 
 function optMakeLedger(): LedgerStore {
@@ -206,12 +212,15 @@ function optMakeLedger(): LedgerStore {
   return new LedgerStore(join(dir, 'data.db'))
 }
 
-function optCachedFile(index: number, opts: {
-  sessionId: string
-  date?: string
-  cost?: number
-  toolSequence?: ToolCall[][]
-}): CachedFile {
+function optCachedFile(
+  index: number,
+  opts: {
+    sessionId: string
+    date?: string
+    cost?: number
+    toolSequence?: ToolCall[][]
+  },
+): CachedFile {
   const iso = new Date(`${opts.date ?? '2026-07-13'}T12:00:00`).toISOString()
   const call: CachedCall = {
     ...buildFixtureCachedCall(index),
@@ -244,7 +253,13 @@ describe('buildOptimizeViewFromLedger (aggregation seam scope)', () => {
     const store = optMakeLedger()
     const payload = await buildOptimizeViewFromLedger(store, { period: 'lifetime' }, { now: NOW, homeDir: tempHome() })
     expect(payload.findings).toEqual([])
-    expect(payload.summary).toMatchObject({ healthScore: 100, healthGrade: 'A', findingCount: 0, sessions: 0, calls: 0 })
+    expect(payload.summary).toMatchObject({
+      healthScore: 100,
+      healthGrade: 'A',
+      findingCount: 0,
+      sessions: 0,
+      calls: 0,
+    })
     expect(payload.period.start).not.toBeNull()
     store.close()
   })
@@ -287,7 +302,6 @@ describe('buildOptimizeViewFromLedger (aggregation seam scope)', () => {
     expect(payload.summary.calls).toBe(1)
     store.close()
   })
-
 })
 
 describe('formatTokens', () => {
@@ -326,12 +340,44 @@ describe('computeHealth', () => {
 
 describe('computeTrend', () => {
   it('classifies active vs improving vs resolved', () => {
-    expect(computeTrend({ recentCount: 0, recentWindowMs: 1000, baselineCount: 0, baselineWindowMs: 1000, hasRecentActivity: true })).toBe('active')
-    expect(computeTrend({ recentCount: 0, recentWindowMs: 1000, baselineCount: 5, baselineWindowMs: 1000, hasRecentActivity: true })).toBe('resolved')
+    expect(
+      computeTrend({
+        recentCount: 0,
+        recentWindowMs: 1000,
+        baselineCount: 0,
+        baselineWindowMs: 1000,
+        hasRecentActivity: true,
+      }),
+    ).toBe('active')
+    expect(
+      computeTrend({
+        recentCount: 0,
+        recentWindowMs: 1000,
+        baselineCount: 5,
+        baselineWindowMs: 1000,
+        hasRecentActivity: true,
+      }),
+    ).toBe('resolved')
     // No recent activity keeps the finding active (no signal to downgrade).
-    expect(computeTrend({ recentCount: 0, recentWindowMs: 1000, baselineCount: 5, baselineWindowMs: 1000, hasRecentActivity: false })).toBe('active')
+    expect(
+      computeTrend({
+        recentCount: 0,
+        recentWindowMs: 1000,
+        baselineCount: 5,
+        baselineWindowMs: 1000,
+        hasRecentActivity: false,
+      }),
+    ).toBe('active')
     // Recent rate well below half the baseline rate reads as improving.
-    expect(computeTrend({ recentCount: 1, recentWindowMs: 10_000, baselineCount: 100, baselineWindowMs: 1_000, hasRecentActivity: true })).toBe('improving')
+    expect(
+      computeTrend({
+        recentCount: 1,
+        recentWindowMs: 10_000,
+        baselineCount: 100,
+        baselineWindowMs: 1_000,
+        hasRecentActivity: true,
+      }),
+    ).toBe('improving')
   })
 })
 
@@ -421,8 +467,10 @@ describe('detectDuplicateReads', () => {
 describe('detectLowReadEditRatio', () => {
   it('flags edit-heavy sessions with a low read:edit ratio', () => {
     const steps: Array<{ name: string; filePath?: string; sessionId: string; project: string; recent: boolean }> = []
-    for (let i = 0; i < 10; i++) steps.push({ name: 'Edit', filePath: '/tmp/demo/src/a.ts', sessionId: 's', project: 'p', recent: false })
-    for (let i = 0; i < 10; i++) steps.push({ name: 'Read', filePath: '/tmp/demo/src/b.ts', sessionId: 's', project: 'p', recent: false })
+    for (let i = 0; i < 10; i++)
+      steps.push({ name: 'Edit', filePath: '/tmp/demo/src/a.ts', sessionId: 's', project: 'p', recent: false })
+    for (let i = 0; i < 10; i++)
+      steps.push({ name: 'Read', filePath: '/tmp/demo/src/b.ts', sessionId: 's', project: 'p', recent: false })
     const finding = detectLowReadEditRatio(steps)
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('read-edit-ratio')
@@ -432,7 +480,8 @@ describe('detectLowReadEditRatio', () => {
 
   it('stays quiet with too few edits to judge', () => {
     const steps: Array<{ name: string; filePath?: string; sessionId: string; project: string; recent: boolean }> = []
-    for (let i = 0; i < 3; i++) steps.push({ name: 'Edit', filePath: '/tmp/demo/src/a.ts', sessionId: 's', project: 'p', recent: false })
+    for (let i = 0; i < 3; i++)
+      steps.push({ name: 'Edit', filePath: '/tmp/demo/src/a.ts', sessionId: 's', project: 'p', recent: false })
     expect(detectLowReadEditRatio(steps)).toBeNull()
   })
 })
@@ -441,7 +490,10 @@ describe('detectCacheBloat', () => {
   it('flags sessions whose warmup is far above the baseline', () => {
     const apiCalls = Array.from({ length: 10 }, () => ({ cacheCreationTokens: 100_000, version: '', recent: false }))
     const projects = groupByProject([
-      makeSession(0, { turns: [makeTurn(0, { calls: [makeCall(0, { cacheCreation: 100_000 })] })], cacheWrite: 100_000 }),
+      makeSession(0, {
+        turns: [makeTurn(0, { calls: [makeCall(0, { cacheCreation: 100_000 })] })],
+        cacheWrite: 100_000,
+      }),
     ])
     const finding = detectCacheBloat(apiCalls, projects, undefined, NOW)
     expect(finding).not.toBeNull()
@@ -574,16 +626,18 @@ describe('detectMcpProfileAdvisor', () => {
 
 describe('detectCapabilityReliability', () => {
   it('flags capabilities whose edit turns are retry-heavy', () => {
-    const retryTurn = (i: number) => makeTurn(i, {
-      calls: [makeCall(i, { skills: ['data-fetch'], input: 1000, output: 500, cost: 1 })],
-      hasEdits: true,
-      retries: 1,
-    })
-    const cleanTurn = (i: number) => makeTurn(i, {
-      calls: [makeCall(i, { skills: ['data-fetch'], input: 1000, output: 500, cost: 1 })],
-      hasEdits: true,
-      retries: 0,
-    })
+    const retryTurn = (i: number) =>
+      makeTurn(i, {
+        calls: [makeCall(i, { skills: ['data-fetch'], input: 1000, output: 500, cost: 1 })],
+        hasEdits: true,
+        retries: 1,
+      })
+    const cleanTurn = (i: number) =>
+      makeTurn(i, {
+        calls: [makeCall(i, { skills: ['data-fetch'], input: 1000, output: 500, cost: 1 })],
+        hasEdits: true,
+        retries: 0,
+      })
     // 6 edit turns, 4 retried → retry rate 0.67.
     const session = makeSession(0, {
       turns: [retryTurn(0), retryTurn(1), retryTurn(2), retryTurn(3), cleanTurn(4), cleanTurn(5)],

@@ -1,4 +1,4 @@
-import type { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
 /** Mutable per-provider unparsed tally shared across a scan run. */
 export type UnparsedTally = { count: number }
@@ -10,14 +10,14 @@ export type UnparsedTally = { count: number }
  * `null` so the caller can skip just that unit and keep going — a provider
  * version bump degrades that provider's extraction, never bricks the scan.
  */
-export function parseOrSkip<T>(
-  schema: z.ZodType<T>,
+export function parseOrSkip<S extends Schema.ConstraintDecoder<unknown>>(
+  schema: S,
   value: unknown,
   tally: UnparsedTally,
   context: string,
-): T | null {
-  const result = schema.safeParse(value)
-  if (result.success) return result.data
+): S['Type'] | null {
+  const result = Schema.decodeUnknownResult(schema)(value)
+  if (result._tag === 'Success') return result.success
   tally.count++
   // No console output: the tally aggregates into the scan's per-provider
   // unparsed counts, which the Operational log files as `scan.provider`

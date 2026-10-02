@@ -27,13 +27,25 @@ const dashboardRoute = createRoute({ getParentRoute: () => rootRoute, id: 'dashb
 
 const overviewRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/', component: OverviewView })
 const sessionsRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/sessions', component: SessionsView })
-const sessionDetailRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/sessions/$sessionId', component: SessionView })
-const pullRequestsRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/pull-requests', component: PullRequestsView })
+const sessionDetailRoute = createRoute({
+  getParentRoute: () => dashboardRoute,
+  path: '/sessions/$sessionId',
+  component: SessionView,
+})
+const pullRequestsRoute = createRoute({
+  getParentRoute: () => dashboardRoute,
+  path: '/pull-requests',
+  component: PullRequestsView,
+})
 const spendRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/spend', component: SpendView })
 const optimizeRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/optimize', component: OptimizeView })
 const modelsRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/models', component: ModelsView })
 const compareRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/compare', component: CompareView })
-const coachSkillsRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/coach-skills', component: CoachSkillsView })
+const coachSkillsRoute = createRoute({
+  getParentRoute: () => dashboardRoute,
+  path: '/coach-skills',
+  component: CoachSkillsView,
+})
 
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsView })
 
@@ -59,7 +71,9 @@ export const router = createRouter({
 
 // Navigation goes through app/navigation.ts (module-level, works during the
 // splash) instead of importing the router there — keeps it headless-testable.
-setRouter(to => { void router.navigate({ to }) })
+setRouter(to => {
+  void router.navigate({ to })
+})
 
 declare module '@tanstack/react-router' {
   interface Register {

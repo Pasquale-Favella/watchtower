@@ -48,10 +48,7 @@ async function readParts(dataDir: string, messageId: string): Promise<PartData[]
   return parts
 }
 
-export async function discoverOpenCodeFileSessions(
-  dataDir: string,
-  providerName: string,
-): Promise<SessionSource[]> {
+export async function discoverOpenCodeFileSessions(dataDir: string, providerName: string): Promise<SessionSource[]> {
   const sessionRoot = join(dataDir, 'storage', 'session')
   let projectDirs: string[]
   try {
@@ -122,8 +119,8 @@ export function createOpenCodeFileSessionParser(
         if (data.role === 'user') {
           const parts = await readParts(dataDir, id)
           const text = parts
-            .filter((p) => p.type === 'text')
-            .map((p) => p.text ?? '')
+            .filter(p => p.type === 'text')
+            .map(p => p.text ?? '')
             .filter(Boolean)
             .join(' ')
           if (text) currentUserMessage = text

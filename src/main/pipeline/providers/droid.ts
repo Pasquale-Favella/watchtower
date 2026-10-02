@@ -2,16 +2,12 @@ import { readdir, stat, readFile } from 'fs/promises'
 import { join } from 'path'
 import { homedir } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { readSessionFile, readSessionLines } from '../fs-utils.js'
 import { calculateCost, getShortModelName } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { normalizeContentBlocks } from '../content-utils.js'
-import type {
-  Provider,
-  SessionSource,
-  SessionParser,
-  ParsedProviderCall,
-} from './types.js'
+import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 
 const toolNameMap: Record<string, string> = {
   Read: 'Read',
@@ -68,7 +64,6 @@ function getFactoryDir(): string {
   return process.env['FACTORY_DIR'] ?? join(homedir(), '.factory')
 }
 
-
 // Strip Droid-specific wrapper to get the model's display name.
 // e.g. "custom:GLM-5.1-[Proxy]-0" -> "GLM-5.1"
 // Cost lookup is handled by the pipeline's existing calculateCost/getCanonicalName
@@ -109,10 +104,7 @@ function extractDroidBashCommands(command: string): string[] {
   return extractBashCommands(firstLine)
 }
 
-function createParser(
-  source: SessionSource,
-  seenKeys: Set<string>,
-): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const content = await readSessionFile(source.path)
@@ -235,21 +227,13 @@ function createParser(
 
         // Assign remainder to the last call
         const isLast = i === assistantCalls.length - 1
-        const inputTokens = isLast
-          ? totalInput - inputPerCall * (numCalls - 1)
-          : inputPerCall
-        const outputTokens = isLast
-          ? totalOutput - outputPerCall * (numCalls - 1)
-          : outputPerCall
+        const inputTokens = isLast ? totalInput - inputPerCall * (numCalls - 1) : inputPerCall
+        const outputTokens = isLast ? totalOutput - outputPerCall * (numCalls - 1) : outputPerCall
         const cacheCreationTokens = isLast
           ? totalCacheCreation - cacheCreationPerCall * (numCalls - 1)
           : cacheCreationPerCall
-        const cacheReadTokens = isLast
-          ? totalCacheRead - cacheReadPerCall * (numCalls - 1)
-          : cacheReadPerCall
-        const thinkingTokens = isLast
-          ? totalThinking - thinkingPerCall * (numCalls - 1)
-          : thinkingPerCall
+        const cacheReadTokens = isLast ? totalCacheRead - cacheReadPerCall * (numCalls - 1) : cacheReadPerCall
+        const thinkingTokens = isLast ? totalThinking - thinkingPerCall * (numCalls - 1) : thinkingPerCall
 
         const dedupKey = `droid:${sessionId}:${call.id}`
         if (seenKeys.has(dedupKey)) continue
@@ -258,7 +242,7 @@ function createParser(
         const costUSD = calculateCost(
           sessionModelDisplay.toLowerCase(),
           inputTokens,
-          outputTokens + thinkingTokens,
+          billableOutputTokens('droid', outputTokens, thinkingTokens),
           cacheCreationTokens,
           cacheReadTokens,
           0,
@@ -326,10 +310,7 @@ async function readFirstJsonlLine(filePath: string): Promise<string | null> {
   return null
 }
 
-async function discoverSessionsInDir(
-  sessionsDir: string,
-  factoryDir: string,
-): Promise<SessionSource[]> {
+async function discoverSessionsInDir(sessionsDir: string, factoryDir: string): Promise<SessionSource[]> {
   const sources: SessionSource[] = []
 
   let entries: string[]
@@ -395,10 +376,7 @@ export function createDroidProvider(factoryDir?: string): Provider {
       return discoverSessionsInDir(sessionsDir, base)
     },
 
-    createSessionParser(
-      source: SessionSource,
-      seenKeys: Set<string>,
-    ): SessionParser {
+    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
       return createParser(source, seenKeys)
     },
   }

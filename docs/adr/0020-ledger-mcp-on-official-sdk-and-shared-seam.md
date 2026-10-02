@@ -46,14 +46,14 @@ schema (e.g. `ledger_calls`'s `limit`/`model`/`project`/`category`/`tool`).
 renderer's payload types — validated by the same zod schemas the renderer
 parses over IPC:
 
-| Tool | Payload |
-|---|---|
-| `ledger_scope` | the window of a query (`OverviewScope`, from the optional `scope` arg) + epoch range + in-window counts |
-| `ledger_overview` | `OverviewPayload` (`buildOverviewFromLedger`) |
-| `ledger_sessions` | `SessionRow[]` (`buildSessionsViewFromLedger`) |
-| `ledger_models` | `ModelsPayload` (`buildModelsViewFromLedger` + live alias/override config) |
-| `ledger_skills` | `SkillsPayload` (`buildSkillsViewFromLedger` — the suggested-skill pool the chat's craft chips surface) |
-| `ledger_calls` | raw drill-down (the one custom shape the views don't offer), fed by the same `queryScope` seam with the UI's query-time display pricing |
+| Tool              | Payload                                                                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `ledger_scope`    | the window of a query (`OverviewScope`, from the optional `scope` arg) + epoch range + in-window counts                                 |
+| `ledger_overview` | `OverviewPayload` (`buildOverviewFromLedger`)                                                                                           |
+| `ledger_sessions` | `SessionRow[]` (`buildSessionsViewFromLedger`)                                                                                          |
+| `ledger_models`   | `ModelsPayload` (`buildModelsViewFromLedger` + live alias/override config)                                                              |
+| `ledger_skills`   | `SkillsPayload` (`buildSkillsViewFromLedger` — the suggested-skill pool the chat's craft chips surface)                                 |
+| `ledger_calls`    | raw drill-down (the one custom shape the views don't offer), fed by the same `queryScope` seam with the UI's query-time display pricing |
 
 ### Lifetime-serving: the harness filters autonomously (2026-08-12)
 
@@ -66,7 +66,7 @@ defaults to `{ period: 'lifetime' }`. The harness therefore consumes the data
 and filters autonomously — one server instance answers any window the agent
 asks about, instead of one server per conversation baked to the UI's current
 scope. The UI's current window is not lost: it rides the first-run briefing
-as a *suggested default* ("the user is currently viewing …"), phrased
+as a _suggested default_ ("the user is currently viewing …"), phrased
 explicitly as a hint the agent is free to ignore.
 
 `LedgerStore` gains a `readOnly` constructor option: the MCP process opens a
@@ -104,8 +104,8 @@ grounding source, never a license to fabricate.
 - Protocol robustness (version negotiation, error codes, framing) is now the
   SDK's, maintained upstream; the entry is ~60 lines.
 - The MCP contract cannot drift from the UI: a payload the renderer accepts is
-  exactly what the agent receives, and the renderer's zod schemas are the
-  MCP tool's argument + output contract. Cost semantics are the UI's
+  exactly what the agent receives, and shared Effect schemas are the
+  MCP tool's argument + output contract under ADR 0034. Cost semantics are the UI's
   query-time display pricing everywhere (superseding ADR 0019's base-cost note).
 - The ledger-querying code lives in exactly one place (the seam + view
   builders); `tools.ts` is now pure composition.
@@ -125,3 +125,17 @@ grounding source, never a license to fabricate.
   reuse the same seam and the same main-side prompt builders, so no MCP surface
   can drift from the UI or from a `coach:run`. Resources and prompts ride the
   SDK natively — no hand-rolled protocol extension.
+
+## Effect argument adapter, 2026-10-02
+
+The evaluated official SDK `Server` owns protocol negotiation, envelope validation,
+framing and transports. Watchtower registers six request handlers for tools,
+resources and prompts. Its tool argument validation uses Effect Schema, and
+advertised JSON Schema derives from those same inputs. The SDK's own Zod protocol
+schemas remain inside the dependency. This updates the original high-level
+registration choice without changing SDK ownership of the protocol.
+
+Each stateless HTTP request closes its server and transport. The process retains
+ownership of the borrowed read-only ledger. Application tool errors remain error
+tool results; resource/prompt lookup and malformed protocol failures use SDK error
+categories. Scoped tool inputs retain the lifetime default when omitted.

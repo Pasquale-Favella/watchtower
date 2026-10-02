@@ -12,11 +12,7 @@ export const TH = 'text-[10.5px] uppercase tracking-wide text-muted-foreground'
 
 export function AddAliasButton({ onClick }: { onClick: () => void }) {
   return (
-    <button
-      type="button"
-      className="font-medium text-primary hover:underline"
-      onClick={onClick}
-    >
+    <button type="button" className="text-primary font-medium hover:underline" onClick={onClick}>
       add alias ›
     </button>
   )
@@ -31,7 +27,7 @@ export function RemoveButton({ label, onRemove }: { label: string; onRemove: () 
     return (
       <button
         type="button"
-        className="font-medium text-muted-foreground hover:text-destructive hover:underline"
+        className="text-muted-foreground hover:text-destructive font-medium hover:underline"
         onClick={() => setArmed(true)}
       >
         {label}
@@ -41,21 +37,22 @@ export function RemoveButton({ label, onRemove }: { label: string; onRemove: () 
   return (
     <span
       className="inline-flex items-center gap-1"
-      onKeyDown={event => { if (event.key === 'Escape') setArmed(false) }}
+      onKeyDown={event => {
+        if (event.key === 'Escape') setArmed(false)
+      }}
     >
       <button
         type="button"
         autoFocus
-        className="font-medium text-destructive hover:underline"
-        onClick={() => { setArmed(false); onRemove() }}
+        className="text-destructive font-medium hover:underline"
+        onClick={() => {
+          setArmed(false)
+          onRemove()
+        }}
       >
         confirm
       </button>
-      <button
-        type="button"
-        className="text-muted-foreground hover:underline"
-        onClick={() => setArmed(false)}
-      >
+      <button type="button" className="text-muted-foreground hover:underline" onClick={() => setArmed(false)}>
         cancel
       </button>
     </span>
@@ -64,7 +61,12 @@ export function RemoveButton({ label, onRemove }: { label: string; onRemove: () 
 
 /** One "original → target" line per raw model folded into a merged row, each
  * with retarget/remove so an alias is managed where it is seen. */
-export function AliasLines({ target, sources, onEdit, onRemove }: {
+export function AliasLines({
+  target,
+  sources,
+  onEdit,
+  onRemove,
+}: {
   target: string
   sources: string[]
   onEdit: (source: string) => void
@@ -73,11 +75,15 @@ export function AliasLines({ target, sources, onEdit, onRemove }: {
   return (
     <>
       {sources.map(source => (
-        <span key={source} className="flex items-center gap-1 truncate text-[9.5px] font-normal text-muted-foreground">
+        <span key={source} className="text-muted-foreground flex items-center gap-1 truncate text-[9.5px] font-normal">
           <span className="truncate" title={`${source} → ${target}`}>
             alias · <span className="font-mono">{source}</span> → <span className="font-mono">{target}</span>
           </span>
-          <button type="button" className="shrink-0 font-medium text-primary hover:underline" onClick={() => onEdit(source)}>
+          <button
+            type="button"
+            className="text-primary shrink-0 font-medium hover:underline"
+            onClick={() => onEdit(source)}
+          >
             edit
           </button>
           <RemoveButton label="remove" onRemove={() => onRemove(source)} />
@@ -89,18 +95,23 @@ export function AliasLines({ target, sources, onEdit, onRemove }: {
 
 /** "Repriced" line for a row priced by a Price override, with edit/remove so
  * override rates are managed where they apply. */
-export function OverrideLine({ inputPricePerMillion, outputPricePerMillion, onEdit, onRemove }: {
+export function OverrideLine({
+  inputPricePerMillion,
+  outputPricePerMillion,
+  onEdit,
+  onRemove,
+}: {
   inputPricePerMillion: number
   outputPricePerMillion: number
   onEdit: () => void
   onRemove: () => void
 }) {
   return (
-    <span className="flex items-center gap-1 truncate text-[9.5px] font-normal text-muted-foreground">
+    <span className="text-muted-foreground flex items-center gap-1 truncate text-[9.5px] font-normal">
       <span className="truncate" title={`in ${inputPricePerMillion} · out ${outputPricePerMillion} USD per 1M tokens`}>
         repriced · in {inputPricePerMillion} · out {outputPricePerMillion} /1M
       </span>
-      <button type="button" className="shrink-0 font-medium text-primary hover:underline" onClick={onEdit}>
+      <button type="button" className="text-primary shrink-0 font-medium hover:underline" onClick={onEdit}>
         edit
       </button>
       <RemoveButton label="remove" onRemove={onRemove} />
@@ -158,12 +169,30 @@ export function MetricCells({ row }: { row: ModelReportRow }) {
   const dim = isUnpriced(row)
   return (
     <>
-      <TableCell className={cn(MUT_CELL, 'text-[11px]', dim && 'opacity-50')}>{row.calls.toLocaleString('en-US')}</TableCell>
-      <TableCell className={cn(MUT_CELL, 'text-[11px]', dim && 'opacity-50')}>{tokenValue(row, row.inputTokens)}</TableCell>
-      <TableCell className={cn(MUT_CELL, 'text-[11px]', dim && 'opacity-50')}>{tokenValue(row, row.outputTokens)}</TableCell>
-      <TableCell className={cn(MUT_CELL, 'text-[11px]', dim && 'opacity-50')}>{tokenValue(row, row.cacheReadTokens)}</TableCell>
-      <TableCell className={cn(NUM_CELL, 'text-[11.5px]', dim ? 'opacity-50 text-muted-foreground' : 'text-foreground')}>{dim ? '—' : formatUsd(row.costUSD)}</TableCell>
-      <TableCell className={cn('text-right font-mono text-[11.5px] tabular-nums', row.savingsUSD > 0 ? 'text-success' : 'text-muted-foreground', dim && 'opacity-50')}>
+      <TableCell className={cn(MUT_CELL, 'text-[11px]', dim && 'opacity-50')}>
+        {row.calls.toLocaleString('en-US')}
+      </TableCell>
+      <TableCell className={cn(MUT_CELL, 'text-[11px]', dim && 'opacity-50')}>
+        {tokenValue(row, row.inputTokens)}
+      </TableCell>
+      <TableCell className={cn(MUT_CELL, 'text-[11px]', dim && 'opacity-50')}>
+        {tokenValue(row, row.outputTokens)}
+      </TableCell>
+      <TableCell className={cn(MUT_CELL, 'text-[11px]', dim && 'opacity-50')}>
+        {tokenValue(row, row.cacheReadTokens)}
+      </TableCell>
+      <TableCell
+        className={cn(NUM_CELL, 'text-[11.5px]', dim ? 'text-muted-foreground opacity-50' : 'text-foreground')}
+      >
+        {dim ? '—' : formatUsd(row.costUSD)}
+      </TableCell>
+      <TableCell
+        className={cn(
+          'text-right font-mono text-[11.5px] tabular-nums',
+          row.savingsUSD > 0 ? 'text-success' : 'text-muted-foreground',
+          dim && 'opacity-50',
+        )}
+      >
         {savedCell(row)}
       </TableCell>
     </>

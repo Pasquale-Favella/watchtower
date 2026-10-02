@@ -36,12 +36,14 @@ Layout routes are **pathless** — created with an `id` (`createRoute({ id: 'she
 ## Files
 
 ### Add
+
 - `src/renderer/src/app/navigation.ts` — `ROUTES` path constants (incl. `sessionDetail(id)`), `SECTIONS` (canonical order, moved from shell-store), `navigateToSection(action: Section)` → `router.navigate({ to: routeFor(action) })`. Pure TS.
 - `src/renderer/src/app/router.tsx` — all route definitions, the assembled `routeTree`, `createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ['/'] }) })`, and `declare module '@tanstack/react-router' { interface Register { router: typeof router } }`. Export `router` for `navigation.ts`.
 - `src/renderer/src/app/components/dashboard-layout.tsx` — `<TopBar/><Outlet/><StatusBar/>`.
 - `tests/navigation.test.ts` — `navigateToSection` mapping (action → route path) and `SECTIONS` ordering. Headless.
 
 ### Change
+
 - `package.json` — add dependency `@tanstack/react-router` (^1.170).
 - `src/renderer/src/main.tsx` — render `<RouterProvider router={router} />` inside `HotkeysProvider`/`StrictMode`.
 - `src/renderer/src/app/AppShell.tsx` — stays the root route component: keeps `useAppBootstrap`/`useThemeEffect`/`useAppHotkeys`; renders `<Splash/>` while `!hydrated`, else `<Outlet/>` (+ onboarding). No longer imports `ShellLayout`.
@@ -57,6 +59,7 @@ Layout routes are **pathless** — created with an `id` (`createRoute({ id: 'she
 - `tests/shell-store.test.ts` → `tests/scope-store.test.ts` — drop the navigation assertions (`navigate sets the section…`, `navigateString…`, `openSessionById/closeSession round-trip`); keep period-seeding + `selectScope` suites; update imports.
 
 ### Unchanged
+
 - `electron.vite.config.ts` (no plugin), `tsconfig.web.json`, `vitest.config.ts`.
 - `app/shortcuts.ts` + `tests/shortcuts.test.ts` (registry, ADR 0001).
 - `shared/lib/shell.ts` + `tests/shell-logic.test.ts` (provider options / scope caption / theme).
@@ -81,6 +84,7 @@ npm run typecheck && npm test
 ```
 
 Then `npm run dev` smoke:
+
 - Sidebar navigates all eight sections; active highlight follows the route.
 - Shortcuts `Mod+1..7`, `Mod+,`, `Mod+R`, `Mod+B` work; ⌘R works during the splash.
 - Sessions list → drilldown (param route) → Back returns to the list; an id that resolves to a load error shows the ErrorPanel.

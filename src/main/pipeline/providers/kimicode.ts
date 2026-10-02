@@ -44,9 +44,7 @@ const toolNameMap: Record<string, string> = {
 }
 
 function asObject(value: unknown): JsonObject | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as JsonObject
-    : null
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : null
 }
 
 function stringValue(value: unknown): string {
@@ -54,9 +52,7 @@ function stringValue(value: unknown): string {
 }
 
 function nonNegativeNumber(value: unknown): number {
-  const number = typeof value === 'number'
-    ? value
-    : typeof value === 'string' && value.trim() ? Number(value) : NaN
+  const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN
   return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : 0
 }
 
@@ -80,7 +76,17 @@ function kimicodeHomes(override?: string): string[] {
   const home = homedir()
   const homes = [
     join(home, '.kimi-code'),
-    join(home, 'Library', 'Application Support', 'kimi-desktop', 'daimon-share', 'daimon', 'runtime', 'kimi-code', 'home'),
+    join(
+      home,
+      'Library',
+      'Application Support',
+      'kimi-desktop',
+      'daimon-share',
+      'daimon',
+      'runtime',
+      'kimi-code',
+      'home',
+    ),
   ]
   return [...new Set(homes.map(h => resolve(h)))]
 }
@@ -141,7 +147,7 @@ async function discoverSources(root: string): Promise<SessionSource[]> {
       for (const agentEntry of await directoryEntries(join(sessionDir, 'agents'))) {
         if (!agentEntry.isDirectory()) continue
         const wirePath = join(sessionDir, 'agents', agentEntry.name, 'wire.jsonl')
-        if (!await isFile(wirePath)) continue
+        if (!(await isFile(wirePath))) continue
         sources.push({
           path: wirePath,
           project,
@@ -363,7 +369,7 @@ export function createKimicodeProvider(homeOverride?: string): Provider {
     async discoverSessions(): Promise<SessionSource[]> {
       const all: SessionSource[] = []
       for (const home of kimicodeHomes(homeOverride)) {
-        all.push(...await discoverSources(home))
+        all.push(...(await discoverSources(home)))
       }
       return all.sort((a, b) => a.path.localeCompare(b.path))
     },

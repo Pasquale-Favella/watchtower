@@ -5,8 +5,10 @@
 // - devin.acuUsdRate (i provider Devin restano ma niente config)
 // - currency (solo USD)
 //
-// Rimane in questa forma solo per compatibilità API con i moduli portati
-// (models.ts non lo importa, ma alcuni provider potrebbero).
+// Rimane in questa forma solo per compatibilità API con i moduli portati:
+// `readConfig` è importato da providers/claude.ts e providers/devin.ts.
+// La risoluzione delle directory Claude NON sta qui: l'unico resolver è
+// `getClaudeConfigDirs` in providers/claude.ts.
 
 import { readFile } from 'fs/promises'
 import { join } from 'path'
@@ -37,25 +39,6 @@ export async function readConfig(): Promise<WatchtowerConfig> {
   } catch {
     return {}
   }
-}
-
-/**
- * Restituisce l'elenco di directory Claude Code da aggregare.
- * Rispetta le stesse env var di Claude Code + un fallback su `~/.claude`.
- */
-export async function getClaudeConfigDirs(): Promise<string[]> {
-  const envDirs = process.env['CLAUDE_CONFIG_DIRS']
-  if (envDirs) {
-    return envDirs.split(/[,;]/).map(s => s.trim()).filter(Boolean)
-  }
-  const envDir = process.env['CLAUDE_CONFIG_DIR']
-  if (envDir) return [envDir]
-
-  const config = await readConfig()
-  if (config.claudeConfigDirs && config.claudeConfigDirs.length > 0) {
-    return config.claudeConfigDirs
-  }
-  return [join(homedir(), '.claude')]
 }
 
 /**

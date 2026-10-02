@@ -18,7 +18,11 @@ export function EfficiencyGauge({ value }: { value: number | null }) {
   const ny = cy - needleLen * Math.sin(angleRad)
 
   return (
-    <div className="w-[160px] shrink-0" role="img" aria-label={pct === null ? 'One-shot rate unavailable' : `One-shot rate ${Math.round(pct * 100)} percent`}>
+    <div
+      className="w-[160px] shrink-0"
+      role="img"
+      aria-label={pct === null ? 'One-shot rate unavailable' : `One-shot rate ${Math.round(pct * 100)} percent`}
+    >
       <svg viewBox="0 0 160 100" className="h-auto w-full" aria-hidden="true">
         <title>{pct === null ? 'One-shot rate unavailable' : `One-shot success rate: ${Math.round(pct * 100)}%`}</title>
         {/* Track */}

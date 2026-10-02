@@ -10,8 +10,7 @@ export function filterSessions(rows: SessionRow[], query: string): SessionRow[] 
   const q = query.trim().toLowerCase()
   if (!q) return rows
   return rows.filter(row =>
-    [row.title, row.project, row.sessionId, row.models.join(' ')]
-      .some(value => value.toLowerCase().includes(q))
+    [row.title, row.project, row.sessionId, row.models.join(' ')].some(value => value.toLowerCase().includes(q)),
   )
 }
 

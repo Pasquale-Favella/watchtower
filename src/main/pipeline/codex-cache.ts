@@ -2,8 +2,8 @@ import { readFile, mkdir, stat, open, rename, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import { randomBytes } from 'crypto'
 import { join } from 'path'
-import { homedir } from 'os'
 
+import { resolveCacheDir } from '../env.js'
 import type { ParsedProviderCall } from './providers/types.js'
 
 // v4: attribute MCP calls emitted as event_msg/mcp_tool_call_end (issue #478).
@@ -34,7 +34,7 @@ type ResultCache = {
 }
 
 function getCacheDir(): string {
-  return process.env['WATCHTOWER_CACHE_DIR'] ?? join(homedir(), '.cache', 'watchtower')
+  return resolveCacheDir()
 }
 
 function getCachePath(): string {
@@ -66,9 +66,7 @@ function getEntry(cache: ResultCache, filePath: string, fp: FileFingerprint): Fi
   return null
 }
 
-export async function readCachedCodexResults(
-  filePath: string,
-): Promise<ParsedProviderCall[] | null> {
+export async function readCachedCodexResults(filePath: string): Promise<ParsedProviderCall[] | null> {
   try {
     const s = await stat(filePath)
     const cache = await loadCache()
@@ -78,9 +76,7 @@ export async function readCachedCodexResults(
   return null
 }
 
-export async function getCachedCodexProject(
-  filePath: string,
-): Promise<string | null> {
+export async function getCachedCodexProject(filePath: string): Promise<string | null> {
   try {
     const s = await stat(filePath)
     const cache = await loadCache()
@@ -90,9 +86,7 @@ export async function getCachedCodexProject(
   return null
 }
 
-export async function fingerprintFile(
-  filePath: string,
-): Promise<FileFingerprint | null> {
+export async function fingerprintFile(filePath: string): Promise<FileFingerprint | null> {
   try {
     const s = await stat(filePath)
     return { mtimeMs: s.mtimeMs, sizeBytes: s.size }
@@ -146,7 +140,9 @@ export async function flushCodexCache(): Promise<void> {
     try {
       await rename(tempPath, finalPath)
     } catch (err) {
-      try { await unlink(tempPath) } catch {}
+      try {
+        await unlink(tempPath)
+      } catch {}
       throw err
     }
   } catch {}

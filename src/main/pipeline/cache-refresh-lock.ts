@@ -1,8 +1,9 @@
 import { randomBytes } from 'crypto'
 import { existsSync } from 'fs'
 import { mkdir, open, readFile, stat, unlink, utimes, writeFile } from 'fs/promises'
-import { homedir } from 'os'
 import { join } from 'path'
+
+import { resolveCacheDir } from '../env.js'
 
 const LOCK_FILE = 'session-refresh.lock'
 const TAKEOVER_FILE = `${LOCK_FILE}.takeover`
@@ -46,12 +47,10 @@ const defaultClock: RefreshLockClock = {
   wallNow: () => Date.now(),
 }
 
-function defaultCacheDir(): string {
-  return process.env['WATCHTOWER_CACHE_DIR'] ?? join(homedir(), '.cache', 'watchtower')
-}
-
 function delay(ms: number): Promise<void> {
-  return new Promise(resolve => { setTimeout(resolve, ms) })
+  return new Promise(resolve => {
+    setTimeout(resolve, ms)
+  })
 }
 
 function isBusyError(err: unknown): boolean {
@@ -67,7 +66,10 @@ function isMissingError(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT'
 }
 
-async function retryWindowsMutation(operation: () => Promise<void>, sleep: (ms: number) => Promise<void>): Promise<boolean> {
+async function retryWindowsMutation(
+  operation: () => Promise<void>,
+  sleep: (ms: number) => Promise<void>,
+): Promise<boolean> {
   for (let attempt = 0; attempt < WINDOWS_RETRIES; attempt++) {
     try {
       await operation()
@@ -84,8 +86,11 @@ async function retryWindowsMutation(operation: () => Promise<void>, sleep: (ms: 
 async function createExclusive(path: string, body: string): Promise<'created' | 'exists' | 'unavailable'> {
   try {
     const handle = await open(path, 'wx', 0o600)
-    try { await handle.writeFile(body, { encoding: 'utf-8' }) }
-    finally { await handle.close() }
+    try {
+      await handle.writeFile(body, { encoding: 'utf-8' })
+    } finally {
+      await handle.close()
+    }
     return 'created'
   } catch (err) {
     return isExistsError(err) ? 'exists' : 'unavailable'
@@ -133,7 +138,9 @@ let singleFlightTail: Promise<void> = Promise.resolve()
 async function enterSingleFlight(): Promise<() => void> {
   const previous = singleFlightTail
   let leave!: () => void
-  singleFlightTail = new Promise<void>(resolve => { leave = resolve })
+  singleFlightTail = new Promise<void>(resolve => {
+    leave = resolve
+  })
   await previous
   return leave
 }
@@ -151,7 +158,7 @@ export async function acquireCacheRefreshLock(options: RefreshLockOptions = {}):
     leaveSingleFlight()
   }
 
-  const cacheDir = options.cacheDir ?? defaultCacheDir()
+  const cacheDir = options.cacheDir ?? resolveCacheDir()
   const clock = options.clock ?? defaultClock
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
   const staleMs = options.staleMs ?? DEFAULT_STALE_MS
@@ -189,7 +196,7 @@ export async function acquireCacheRefreshLock(options: RefreshLockOptions = {}):
     if (reverified === 'changing') return 'exists'
     if (reverified === 'unavailable') return 'unavailable'
     if (!sameObservation(staleGuard, reverified)) return 'exists'
-    if (!await retryWindowsMutation(() => unlink(takeoverPath), sleep)) return 'unavailable'
+    if (!(await retryWindowsMutation(() => unlink(takeoverPath), sleep))) return 'unavailable'
     return createExclusive(takeoverPath, body())
   }
 
@@ -216,16 +223,19 @@ export async function acquireCacheRefreshLock(options: RefreshLockOptions = {}):
     }
   }
 
-  const verifyStillOwner = (): Promise<boolean> => serializeOwnerOp(async () => {
-    const guard = await acquireTakeoverGuard()
-    if (guard !== 'created') return false
-    try {
-      const current = await observe(lockPath)
-      return current !== 'missing' && current !== 'changing' && current !== 'unavailable' && current.record.token === token
-    } finally {
-      await retryWindowsMutation(() => unlink(takeoverPath), sleep)
-    }
-  })
+  const verifyStillOwner = (): Promise<boolean> =>
+    serializeOwnerOp(async () => {
+      const guard = await acquireTakeoverGuard()
+      if (guard !== 'created') return false
+      try {
+        const current = await observe(lockPath)
+        return (
+          current !== 'missing' && current !== 'changing' && current !== 'unavailable' && current.record.token === token
+        )
+      } finally {
+        await retryWindowsMutation(() => unlink(takeoverPath), sleep)
+      }
+    })
 
   const makeHandle = (): RefreshLockHandle => {
     let released = false
@@ -235,15 +245,25 @@ export async function acquireCacheRefreshLock(options: RefreshLockOptions = {}):
         if (released || heartbeatRunning) return
         heartbeatRunning = true
         const guard = await acquireTakeoverGuard()
-        if (guard !== 'created') { heartbeatRunning = false; return }
+        if (guard !== 'created') {
+          heartbeatRunning = false
+          return
+        }
         try {
           const current = await observe(lockPath)
-          if (current === 'missing' || current === 'changing' || current === 'unavailable' || current.record.token !== token) return
+          if (
+            current === 'missing' ||
+            current === 'changing' ||
+            current === 'unavailable' ||
+            current.record.token !== token
+          )
+            return
           await writeFile(lockPath, body(), { encoding: 'utf-8' })
           const now = new Date(clock.wallNow())
           await utimes(lockPath, now, now)
-        } catch { /* verify/release will turn displacement or I/O failure into a closed gate */ }
-        finally {
+        } catch {
+          /* verify/release will turn displacement or I/O failure into a closed gate */
+        } finally {
           await retryWindowsMutation(() => unlink(takeoverPath), sleep)
           heartbeatRunning = false
         }
@@ -282,7 +302,7 @@ export async function acquireCacheRefreshLock(options: RefreshLockOptions = {}):
       if (current === 'changing') return null
       if (current === 'missing' || !sameObservation(stale, current)) return null
       if (Math.max(0, clock.wallNow() - current.mtimeMs) <= staleMs) return null
-      if (!await retryWindowsMutation(() => unlink(lockPath), sleep)) return { outcome: 'unavailable' }
+      if (!(await retryWindowsMutation(() => unlink(lockPath), sleep))) return { outcome: 'unavailable' }
       // Publish the successor while the takeover guard is still canonical.
       // Otherwise a waiter can observe neither file and misclassify the narrow
       // unlink/create gap as a clean completion by the stale owner.
@@ -311,16 +331,31 @@ export async function acquireCacheRefreshLock(options: RefreshLockOptions = {}):
     const deadline = clock.monotonicNow() + waitMs
     while (clock.monotonicNow() < deadline) {
       const observation = await observe(lockPath)
-      if (observation === 'unavailable') { leave(); return { outcome: 'unavailable' } }
-      if (observation === 'changing') { await sleep(pollMs); continue }
+      if (observation === 'unavailable') {
+        leave()
+        return { outcome: 'unavailable' }
+      }
+      if (observation === 'changing') {
+        await sleep(pollMs)
+        continue
+      }
       if (observation === 'missing') {
         // A stale taker removes the primary while holding the guard, then
         // exclusively creates its successor. Do not misreport that narrow gap
         // as a clean completion by the previous owner.
         const guard = await observe(takeoverPath)
-        if (guard === 'unavailable') { leave(); return { outcome: 'unavailable' } }
-        if (guard === 'changing') { await sleep(pollMs); continue }
-        if (guard === 'missing') { leave(); return { outcome: 'completed-by-other' } }
+        if (guard === 'unavailable') {
+          leave()
+          return { outcome: 'unavailable' }
+        }
+        if (guard === 'changing') {
+          await sleep(pollMs)
+          continue
+        }
+        if (guard === 'missing') {
+          leave()
+          return { outcome: 'completed-by-other' }
+        }
         await sleep(pollMs)
         continue
       }

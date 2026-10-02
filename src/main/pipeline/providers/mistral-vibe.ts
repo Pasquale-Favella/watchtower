@@ -118,7 +118,7 @@ async function readJsonFile<T>(path: string): Promise<T | null> {
   if (raw === null) return null
   try {
     const parsed = JSON.parse(raw) as unknown
-    return typeof parsed === 'object' && parsed !== null ? parsed as T : null
+    return typeof parsed === 'object' && parsed !== null ? (parsed as T) : null
   } catch {
     return null
   }
@@ -136,14 +136,14 @@ async function discoverSessionDirs(root: string): Promise<string[]> {
 
   for (const entry of entries) {
     const dir = join(root, entry)
-    if (!await isDirectory(dir)) continue
+    if (!(await isDirectory(dir))) continue
 
     if (await hasSessionFiles(dir)) {
       sessionDirs.push(dir)
     }
 
     const agentsDir = join(dir, 'agents')
-    if (!await isDirectory(agentsDir)) continue
+    if (!(await isDirectory(agentsDir))) continue
 
     let agentEntries: string[]
     try {
@@ -154,7 +154,7 @@ async function discoverSessionDirs(root: string): Promise<string[]> {
 
     for (const agentEntry of agentEntries) {
       const agentDir = join(agentsDir, agentEntry)
-      if (await isDirectory(agentDir) && await hasSessionFiles(agentDir)) {
+      if ((await isDirectory(agentDir)) && (await hasSessionFiles(agentDir))) {
         sessionDirs.push(agentDir)
       }
     }
@@ -177,7 +177,12 @@ function resolveModel(metadata: VibeMetadata): string {
   return configured?.alias ?? configured?.name ?? DEFAULT_MODEL
 }
 
-function calculateSessionCost(metadata: VibeMetadata, model: string, inputTokens: number, outputTokens: number): number {
+function calculateSessionCost(
+  metadata: VibeMetadata,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+): number {
   const stats = metadata.stats ?? {}
   const sessionCost = safeNumber(stats.session_cost)
   if (sessionCost > 0) return sessionCost
@@ -213,7 +218,7 @@ function parseToolArguments(raw: string | Record<string, unknown> | null | undef
   if (typeof raw === 'object') return raw
   try {
     const parsed = JSON.parse(raw) as unknown
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {}
   } catch {
     return {}
   }

@@ -1,9 +1,14 @@
+import { type ChildProcess, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
 
-import type { AcpMcpServer } from '../harnesses/types.js'
+import * as Duration from 'effect/Duration'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import * as Schedule from 'effect/Schedule'
+
 import { logCodeFor, safeLogOperationalEvent } from '../../operational-log.js'
+import type { AcpMcpServer } from '../harnesses/types.js'
 import { bearerHeaderValue } from './auth.js'
 import type { LedgerMcpSpawnContext } from './config.js'
 
@@ -34,6 +39,14 @@ export interface StartedLedgerMcpHttp {
 const READY_TIMEOUT_MS = 10_000
 const READY_POLL_MS = 100
 const READY_PREFIX = 'READY '
+const READY_TIMEOUT_MESSAGE = 'ledger MCP HTTP server did not become ready'
+
+function earlyExitError(code: number | null): Error {
+  return new Error(`ledger MCP HTTP server exited early (code ${code})`)
+}
+/** Single health-probe ceiling (was `AbortSignal.timeout(2000)` — now the
+ *  Effect Clock governs it, so `TestClock` controls prod timeouts). */
+const PROBE_TIMEOUT_MS = 2000
 /** Preamble cap: the announcement is one short line — megabytes of stdout
  *  before it means the child is chatty-broken, not booting. */
 const MAX_READY_BYTES = 64 * 1024
@@ -50,22 +63,17 @@ export function parseReadyPort(line: string): number {
   return parsed.port as number
 }
 
-/** The bound port the sidecar reports itself — it binds port 0, so the
- *  parent never picks ports and there is no probe/bind race. Preamble lines
- *  (Node warnings, SDK banners) are skipped — only a `READY ...` line is
- *  parsed, strictly, so a corrupt announcement fails fast instead of burning
- *  the timeout. Rejects when the child exits first (its stderr stays piped,
- *  so the cause is visible in the main-process console) or when the line
- *  never arrives in time. Exported for unit tests (see ledger-mcp-pool). */
-export function readReadyPort(child: ChildProcess, stdout: NodeJS.ReadableStream): Promise<number> {
-  return new Promise((resolve, reject) => {
+/** READY wait as a Clock-governed Effect (exported for `TestClock` tests):
+ *  `Effect.callback` owns the stdout/exit/error listeners with a finalizer,
+ *  so a timeout interruption removes them — no leaked listeners. The
+ *  deadline rides `Effect.timeoutOption` (Clock, not `setTimeout`), mapping
+ *  to the exact legacy timeout error.
+ *  Removal: raw `setTimeout(READY_TIMEOUT_MS)` READY timer removed when the
+ *  wait rides this Effect + Clock. */
+export const readReadyPortEffect = Effect.fnUntraced(function* (child: ChildProcess, stdout: NodeJS.ReadableStream) {
+  const waitForLine = Effect.callback<number, Error>(resume => {
     let buffer = ''
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error('ledger MCP HTTP server did not become ready'))
-    }, READY_TIMEOUT_MS)
     const cleanup = (): void => {
-      clearTimeout(timer)
       stdout.off('data', onData)
       child.off('exit', onExit)
       child.off('error', onError)
@@ -74,7 +82,7 @@ export function readReadyPort(child: ChildProcess, stdout: NodeJS.ReadableStream
       buffer += chunk.toString()
       if (buffer.length > MAX_READY_BYTES) {
         cleanup()
-        reject(new Error('ledger MCP HTTP server announced too much before becoming ready'))
+        resume(Effect.fail(new Error('ledger MCP HTTP server announced too much before becoming ready')))
         return
       }
       let newline = buffer.indexOf('\n')
@@ -84,9 +92,9 @@ export function readReadyPort(child: ChildProcess, stdout: NodeJS.ReadableStream
         if (line.startsWith(READY_PREFIX)) {
           cleanup()
           try {
-            resolve(parseReadyPort(line))
+            resume(Effect.succeed(parseReadyPort(line)))
           } catch (err) {
-            reject(err)
+            resume(Effect.fail(err as Error))
           }
           return
         }
@@ -95,16 +103,35 @@ export function readReadyPort(child: ChildProcess, stdout: NodeJS.ReadableStream
     }
     const onExit = (code: number | null): void => {
       cleanup()
-      reject(new Error(`ledger MCP HTTP server exited early (code ${code})`))
+      resume(Effect.fail(earlyExitError(code)))
     }
     const onError = (err: Error): void => {
       cleanup()
-      reject(err)
+      resume(Effect.fail(err))
     }
     stdout.on('data', onData)
     child.once('exit', onExit)
     child.once('error', onError)
+    return Effect.sync(() => cleanup())
   })
+
+  const outcome = yield* waitForLine.pipe(Effect.timeoutOption(Duration.millis(READY_TIMEOUT_MS)))
+  if (Option.isNone(outcome)) {
+    return yield* Effect.fail(new Error(READY_TIMEOUT_MESSAGE))
+  }
+  return outcome.value
+})
+
+/** The bound port the sidecar reports itself — it binds port 0, so the
+ *  parent never picks ports and there is no probe/bind race. Preamble lines
+ *  (Node warnings, SDK banners) are skipped — only a `READY ...` line is
+ *  parsed, strictly, so a corrupt announcement fails fast instead of burning
+ *  the timeout. Rejects when the child exits first (its stderr stays piped,
+ *  so the cause is visible in the main-process console) or when the line
+ *  never arrives in time. Exported for unit tests (see ledger-mcp-pool).
+ *  Promise seam kept — `run*` stays at this spawn-function boundary. */
+export function readReadyPort(child: ChildProcess, stdout: NodeJS.ReadableStream): Promise<number> {
+  return Effect.runPromise(readReadyPortEffect(child, stdout) as Effect.Effect<number, Error>)
 }
 
 /** One sidecar stderr record as parsed off the line protocol: method + route +
@@ -148,37 +175,108 @@ export function parseSidecarLogLine(line: string): SidecarRequestRecord | null {
   return record
 }
 
-/** Files one parsed stderr line via the shared seam (never throws). */
+/**
+ * Files one parsed stderr line via the shared seam (never throws).
+ *
+ * A deliberate non-Effect boundary, and one of only two left in `src/main`
+ * besides the Promise-shaped edges in `index.ts` / `agents/ipc.ts`: this runs
+ * as a `readline` `line` listener on a child process's stderr, which is not an
+ * Effect fiber and has no runtime anywhere near it. The stream outlives every
+ * Effect that could own it (the sidecar is app-scoped, ADR 0027), so putting
+ * these records behind a fiber would mean giving a diagnostic stream its own
+ * long-lived runtime to keep two never-throwing lines in the log. Reaching the
+ * logger through `Effect.runSync` here instead is exactly the composition-root
+ * violation the Effect-is-the-logging-API programme exists to remove, so the
+ * direct call to the sink module's never-throwing helper is the honest answer.
+ */
 function recordSidecarLine(line: string): void {
   const parsed = parseSidecarLogLine(line)
   if (!parsed) return
   if (parsed.kind === 'boot') {
-    safeLogOperationalEvent('error', 'sidecar.error', { op: parsed.op ?? 'ledger-mcp-boot', code: parsed.code }, 'sidecar')
+    safeLogOperationalEvent(
+      'error',
+      'sidecar.error',
+      { op: parsed.op ?? 'ledger-mcp-boot', code: parsed.code },
+      'sidecar',
+    )
     return
   }
-  safeLogOperationalEvent('error', 'sidecar.request', { method: parsed.method, route: parsed.route, code: parsed.code }, 'sidecar')
+  safeLogOperationalEvent(
+    'error',
+    'sidecar.request',
+    { method: parsed.method, route: parsed.route, code: parsed.code },
+    'sidecar',
+  )
 }
+
+/** Single health probe as a never-fails Effect (the `HttpFetch` timeout
+ *  shape): fiber interruption aborts the underlying fetch via the
+ *  `tryPromise` signal, and the ceiling rides `Effect.timeoutOption` (Clock)
+ *  — no manual `AbortSignal` plumbing at call sites. `fetch` stays as-is
+ *  (no `@effect/platform` — not installed); only the timeout moved to Clock.
+ *  Removal: `AbortSignal.timeout(2000)` removed when the probe rides this
+ *  Effect + Clock. */
+const probeOnceEffect = Effect.fnUntraced(function* (port: number, token: string) {
+  return yield* Effect.tryPromise({
+    try: (signal: AbortSignal) =>
+      fetch(`http://127.0.0.1:${port}/health`, {
+        headers: { authorization: bearerHeaderValue(token) },
+        signal,
+      }).then(
+        res => res.ok,
+        () => false,
+      ),
+    catch: () => false,
+  }).pipe(
+    Effect.timeoutOption(Duration.millis(PROBE_TIMEOUT_MS)),
+    Effect.map(outcome => Option.getOrElse(outcome, () => false)),
+  )
+})
 
 async function probeOnce(port: number, token: string): Promise<boolean> {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/health`, {
-      headers: { authorization: bearerHeaderValue(token) },
-      signal: AbortSignal.timeout(2000),
-    })
-    return res.ok
+    return await Effect.runPromise(probeOnceEffect(port, token))
   } catch {
     return false
   }
 }
 
-async function waitForHealth(port: number, token: string): Promise<void> {
-  const deadline = Date.now() + READY_TIMEOUT_MS
-  for (;;) {
-    if (await probeOnce(port, token)) return
-    if (Date.now() >= deadline) throw new Error('ledger MCP HTTP server did not become ready')
-    await new Promise(resolve => setTimeout(resolve, READY_POLL_MS))
+/** Confirming health poll as a Clock-governed Effect (exported for tests):
+ *  `Schedule.spaced` paces retries, `timeoutOption` bounds the whole poll —
+ *  same `READY_TIMEOUT_MS` deadline and exact legacy timeout error as before.
+ *  Removal: `Date.now()` deadline + `setTimeout(READY_POLL_MS)` poll loop
+ *  removed when the poll rides this Schedule + Clock. */
+export const waitForHealthEffect = Effect.fnUntraced(function* (port: number, token: string) {
+  const healthyOrFail = Effect.filterOrFail(
+    probeOnceEffect(port, token),
+    (healthy): healthy is true => healthy,
+    () => new Error(READY_TIMEOUT_MESSAGE),
+  )
+  const outcome = yield* healthyOrFail.pipe(
+    Effect.retry(Schedule.spaced(Duration.millis(READY_POLL_MS))),
+    Effect.timeoutOption(Duration.millis(READY_TIMEOUT_MS)),
+  )
+  if (Option.isNone(outcome)) {
+    return yield* Effect.fail(new Error(READY_TIMEOUT_MESSAGE))
   }
-}
+})
+
+/** Early-exit as an Effect for the boot race: fails when the child exits
+ *  before health confirms (same exact error as the legacy `earlyExit`
+ *  Promise — exit code only, no stderr detail). Listeners are
+ *  finalizer-owned, so the losing side of the race is cleaned up. */
+const earlyExitEffect = (child: ChildProcess): Effect.Effect<never, Error> =>
+  Effect.callback<never, Error>(resume => {
+    const cleanup = (): void => {
+      child.off('exit', onExit)
+    }
+    const onExit = (code: number | null): void => {
+      cleanup()
+      resume(Effect.fail(earlyExitError(code)))
+    }
+    child.once('exit', onExit)
+    return Effect.sync(() => cleanup())
+  })
 
 /** Minimal env for the sidecar: it serves telemetry over HTTP, so it never
  *  inherits the app's secrets — only what plain node needs plus its own
@@ -212,23 +310,46 @@ export async function startLedgerMcpHttp(ctx: LedgerMcpSpawnContext): Promise<St
     throw new Error('ledger MCP HTTP server has no stdout for its ready announcement')
   }
   const stdout = child.stdout
-  const earlyExit = new Promise<never>((_resolve, reject) => {
-    child.once('exit', code => reject(new Error(`ledger MCP HTTP server exited early (code ${code})`)))
-  })
-  let port: number
-  try {
+  // The boot rides ONE Effect so the spawn-failure record can be `yield*`ed in
+  // Effect context instead of being emitted from a `catch` block (a `catch` has
+  // no Effect to yield into, and reaching for the logger with `Effect.runSync`
+  // there would manufacture the composition root this slice removes). `tapError`
+  // runs the kill and the record, in that order, exactly as the old `catch` did.
+  const bootPort = Effect.gen(function* () {
     // The child binds its own ephemeral port and announces it — no
     // parent-side probe, no bind race. The listen callback precedes the
     // announcement, so the confirming health check below passes first try on
     // a healthy boot; it only polls when something is genuinely wedged.
-    port = await readReadyPort(child, stdout)
-    stdout.resume()
-    await Promise.race([waitForHealth(port, token), earlyExit])
-  } catch (err) {
-    child.kill()
-    safeLogOperationalEvent('error', 'sidecar.error', { op: 'ledger-mcp-spawn', code: logCodeFor(err) }, 'sidecar')
-    throw err
-  }
+    // Boot race rides `Effect.raceFirst` (the `Promise.race` semantics:
+    // first settle — success OR failure — wins, so an early exit fails fast
+    // instead of burning the health timeout; `Effect.race` would ignore the
+    // fast failure and hang). Removal: `Promise.race([waitForHealth,
+    // earlyExit])` removed when boot rides this Effect race + Clock.
+    const port = yield* readReadyPortEffect(child, stdout) as Effect.Effect<number, Error>
+    yield* Effect.sync(() => stdout.resume())
+    yield* Effect.raceFirst(waitForHealthEffect(port, token), earlyExitEffect(child))
+    return port
+  }).pipe(
+    Effect.tapError(err =>
+      Effect.gen(function* () {
+        yield* Effect.sync(() => child.kill())
+        // `code` stays an explicit `logCodeFor(err)`: this is an observation of
+        // a failed boot, not a typed failure being reported through a channel,
+        // so there is no `Cause` for a `Logger` to squash. `event` / `context`
+        // ride the annotation bag because they are not Effect concepts — the
+        // `Logger` pulls both out before the allowlist runs.
+        yield* Effect.logError('sidecar.error').pipe(
+          Effect.annotateLogs({
+            event: 'sidecar.error',
+            context: 'sidecar',
+            op: 'ledger-mcp-spawn',
+            code: logCodeFor(err),
+          }),
+        )
+      }),
+    ),
+  )
+  const port = await Effect.runPromise(bootPort)
   return {
     server: {
       type: 'http',

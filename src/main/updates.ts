@@ -13,10 +13,16 @@
 // Privacy: a plain, unauthenticated GitHub read that carries no identifiers.
 // We deliberately send no app-identifying headers and no auth token — only the
 // runtime's default User-Agent (Node/Electron's "node") goes out. GitHub only
-// requires *some* User-Agent, which the default satisfies. See fetchReleases.
+// requires *some* User-Agent, which the default satisfies.
+
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Ref from 'effect/Ref'
+import * as Schema from 'effect/Schema'
 
 import type { UpdateStatus } from '../shared/schemas/updates.js'
-import { safeLogOperationalEvent } from './operational-log.js'
+import { HttpFetch, retryTransientFetch } from './pipeline/fetch-utils.js'
 
 export type { UpdateStatus } from '../shared/schemas/updates.js'
 
@@ -60,65 +66,185 @@ export function pickLatestDesktopVersion(releases: GitHubRelease[]): { version: 
   return best
 }
 
-/** Fetch + parse the releases feed. No auth, no app-identifying headers (see
- * the file header). Aborts after 15s. Throws on a non-2xx response (a private
- * or unknown repo 404s, which the caller turns into "unable to check"). */
-export async function fetchReleases(signal: AbortSignal, fetchImpl: typeof fetch = globalThis.fetch): Promise<GitHubRelease[]> {
-  const response = await fetchImpl(RELEASES_URL, { signal })
-  if (!response.ok) throw new Error(`GitHub HTTP ${response.status}`)
-  const data = await response.json()
-  return Array.isArray(data) ? (data as GitHubRelease[]) : []
+// --- Effect-native updates boundary (ADR 0032). The Promise adapters
+// (`fetchReleases`/`createUpdateChecker`) were removed once the main-process
+// update IPC consumed these effects through the main runtime; pure helpers
+// (`compareSemver`, `pickLatestDesktopVersion`) stay plain functions. ---
+
+/** Typed fetch failure for the Effect boundary: non-2xx (`http` with status),
+ * network/abort (`network`), or Clock timeout (`timeout`). */
+export class UpdateFetchError extends Schema.TaggedError<UpdateFetchError>()('UpdateFetchError', {
+  reason: Schema.Literals(['http', 'network', 'timeout']),
+  message: Schema.String,
+  status: Schema.optional(Schema.Number),
+}) {}
+
+function toUpdateFetchReason(reason: string): 'timeout' | 'network' {
+  if (reason === 'timeout') {
+    return 'timeout'
+  }
+  return 'network'
 }
 
-export type UpdateChecker = {
-  /** Force a fresh check now. Every button click calls this; there is no
-   * background schedule, so this is the only entry point. */
-  check(): Promise<UpdateStatus>
+function describeUpdateErrorCause(cause: unknown): string {
+  if (cause instanceof Error) {
+    return cause.message
+  }
+  return String(cause)
 }
 
-export function createUpdateChecker(opts: {
+function buildFreshStatus(currentVersion: string, latest: { version: string; tag: string } | null): UpdateStatus {
+  if (latest === null) {
+    return baselineStatus(currentVersion)
+  }
+  if (compareSemver(latest.version, currentVersion) > 0) {
+    return { currentVersion, latestVersion: latest.version, updateAvailable: true, tag: latest.tag }
+  }
+  return { currentVersion, latestVersion: latest.version, updateAvailable: false, tag: null }
+}
+
+interface UpdateCheckerState {
+  cached: UpdateStatus
+  flight: Deferred.Deferred<UpdateStatus> | null
+}
+
+interface UpdateCheckDecision {
+  isLeader: boolean
+  deferred: Deferred.Deferred<UpdateStatus>
+  prevCached: UpdateStatus
+}
+
+/** Effect-native releases read: the public GitHub releases feed over the
+ * `HttpFetch` service — timeout via the Effect Clock (`FETCH_TIMEOUT_MS`,
+ * TestClock controllable) and fiber interruption aborts the underlying
+ * fetch, replacing manual `AbortController`+`setTimeout` plumbing. No auth,
+ * no app-identifying headers (see the file header). Non-array JSON still
+ * yields `[]`.
+ *
+ * Bounded transient retry (F15/A1) on the fetch only: the manual check used
+ * to report "unable to check" off a single two-second blip. It stays
+ * manual-only, still sends nothing, and still never blocks — the
+ * `update.offline` degrade in `createUpdateCheckerEffect` is unchanged, it
+ * just runs after the retries are spent. A 404 (private/unpublished repo) is
+ * a real answer, not a transient failure, so the non-2xx arm below stays
+ * outside the retry. */
+export const fetchReleasesEffect = Effect.fn('fetchReleasesEffect')(function* (): Effect.fn.Return<
+  GitHubRelease[],
+  UpdateFetchError,
+  HttpFetch
+> {
+  const http = yield* HttpFetch
+  const response = yield* http.fetch(RELEASES_URL, {}, FETCH_TIMEOUT_MS).pipe(
+    retryTransientFetch,
+    Effect.mapError(
+      cause =>
+        new UpdateFetchError({
+          reason: toUpdateFetchReason(cause.reason),
+          message: cause.message,
+        }),
+    ),
+  )
+  if (!response.ok) {
+    return yield* new UpdateFetchError({
+      reason: 'http',
+      message: `GitHub HTTP ${response.status}`,
+      status: response.status,
+    })
+  }
+  const data = yield* Effect.tryPromise({
+    try: () => response.json(),
+    catch: cause =>
+      new UpdateFetchError({
+        reason: 'network',
+        message: describeUpdateErrorCause(cause),
+      }),
+  })
+  if (Array.isArray(data)) {
+    return data as GitHubRelease[]
+  }
+  return []
+})
+
+export interface UpdateCheckerEffect {
+  /** Effect-based check (`checkUpdatesEffect` equivalent): every button click
+   * runs this; there is no background schedule. Concurrent checks share one
+   * flight, last-known status is cached, offline/error degrades to cached
+   * status with the `update.offline` informational note — never fails
+   * (interruption still propagates). */
+  readonly check: () => Effect.Effect<UpdateStatus, never, HttpFetch>
+}
+
+/** Effect-native update checker factory. Observable contract: concurrent
+ * `check()` calls share one flight via a shared `Deferred`, the last-known
+ * status is cached in a `Ref`, and any fetch failure degrades to the cached
+ * status with the `update.offline` informational operational-log note (via
+ * `Effect.logInfo` + `annotateLogs`, the one Effect logging path). Pure helpers
+ * (`compareSemver`, `pickLatestDesktopVersion`) stay plain functions. */
+export const createUpdateCheckerEffect = Effect.fn('createUpdateCheckerEffect')(function* (opts: {
   currentVersion: string
-  /** Injected in tests; defaults to the real GitHub read. */
-  fetchReleasesImpl?: (signal: AbortSignal) => Promise<GitHubRelease[]>
-}): UpdateChecker {
-  const fetchReleasesImpl = opts.fetchReleasesImpl ?? ((signal: AbortSignal) => fetchReleases(signal))
+}): Effect.fn.Return<UpdateCheckerEffect> {
+  const stateRef = yield* Ref.make<UpdateCheckerState>({
+    cached: baselineStatus(opts.currentVersion),
+    flight: null,
+  })
+  const currentVersion = opts.currentVersion
 
-  let cached = baselineStatus(opts.currentVersion)
-  let inflight: Promise<UpdateStatus> | null = null
-
-  const check = (): Promise<UpdateStatus> => {
-    if (inflight) return inflight
-    inflight = (async () => {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-      try {
-        const releases = await fetchReleasesImpl(controller.signal)
-        const latest = pickLatestDesktopVersion(releases)
-        if (!latest) {
-          cached = baselineStatus(opts.currentVersion)
-        } else {
-          const updateAvailable = compareSemver(latest.version, opts.currentVersion) > 0
-          cached = {
-            currentVersion: opts.currentVersion,
-            latestVersion: latest.version,
-            updateAvailable,
-            tag: updateAvailable ? latest.tag : null,
-          }
+  function check(): Effect.Effect<UpdateStatus, never, HttpFetch> {
+    return Effect.gen(function* () {
+      const myDeferred = yield* Deferred.make<UpdateStatus>()
+      const decision = yield* Ref.modify(stateRef, function claimFlight(state: UpdateCheckerState): readonly [
+        UpdateCheckDecision,
+        UpdateCheckerState,
+      ] {
+        if (state.flight === null) {
+          return [
+            { isLeader: true, deferred: myDeferred, prevCached: state.cached },
+            { cached: state.cached, flight: myDeferred },
+          ]
         }
-      } catch {
-        // Offline / GitHub error / private repo / timeout: silent no-op. Keep
-        // the last known status so the next click retries cleanly. Recorded as
-        // an informational note, never an error — being offline is not
-        // breakage (#130).
-        safeLogOperationalEvent('info', 'update.offline', { op: 'updates:check', code: 'unavailable' })
-      } finally {
-        clearTimeout(timer)
-        inflight = null
+        return [{ isLeader: false, deferred: state.flight, prevCached: state.cached }, state]
+      })
+      if (!decision.isLeader) {
+        return yield* Deferred.await(decision.deferred)
       }
-      return cached
-    })()
-    return inflight
+      const prevCached = decision.prevCached
+      const leaderDeferred = decision.deferred
+
+      const computeFresh: Effect.Effect<UpdateStatus, never, HttpFetch> = Effect.gen(function* () {
+        const releases = yield* fetchReleasesEffect()
+        return buildFreshStatus(currentVersion, pickLatestDesktopVersion(releases))
+      }).pipe(
+        Effect.catch(() =>
+          Effect.gen(function* () {
+            yield* Effect.logInfo('update.offline').pipe(
+              Effect.annotateLogs({
+                event: 'update.offline',
+                context: 'main',
+                op: 'updates:check',
+                code: 'unavailable',
+              }),
+            )
+            return prevCached
+          }),
+        ),
+      )
+
+      return yield* computeFresh.pipe(
+        Effect.onExit(function (exit) {
+          if (Exit.isSuccess(exit)) {
+            return Effect.gen(function* () {
+              yield* Ref.update(stateRef, () => ({ cached: exit.value, flight: null }))
+              yield* Deferred.succeed(leaderDeferred, exit.value)
+            })
+          }
+          return Effect.gen(function* () {
+            yield* Ref.update(stateRef, s => ({ cached: s.cached, flight: null }))
+            yield* Deferred.done(leaderDeferred, exit)
+          })
+        }),
+      )
+    })
   }
 
   return { check }
-}
+})

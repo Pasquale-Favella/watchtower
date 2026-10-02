@@ -2,13 +2,7 @@ import { useEffect, useState } from 'react'
 import { ExternalLink, ShieldAlert, X } from 'lucide-react'
 
 import { Button } from '@/shared/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/shared/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { AboutSection } from '@/features/settings/AboutSection'
 import { CADENCE_UI_OPTIONS, type Theme } from '@/shared/lib/shell'
@@ -46,7 +40,9 @@ export function GeneralPane() {
       if (cancelled) return
       setClaudeConfigDirs(result.ok ? result.data.claudeConfigDirs : undefined)
     })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const choosePeriod = (value: string): void => {
@@ -65,19 +61,18 @@ export function GeneralPane() {
        * silently hides provider data. Dismissal is pane-local: leaving and
        * returning to Settings (or the next zero-source scan) shows it again. */}
       {fdaNeeded && !fdaDismissed && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/5 px-3 py-2.5">
-          <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warning" />
+        <div className="border-warning/40 bg-warning/5 flex items-start gap-2.5 rounded-lg border px-3 py-2.5">
+          <ShieldAlert className="text-warning mt-0.5 size-4 shrink-0" />
           <div className="min-w-0 flex-1">
-            <p className="text-[12px] font-medium text-foreground">No coding-tool data found</p>
-            <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
-              On macOS, Watchtower needs{' '}
-              <span className="font-medium text-foreground">Full Disk Access</span> to read Claude,
-              Cursor, and other tool data. Grant it in System Settings, then refresh with{' '}
-              <span className="font-medium text-foreground">⌘R</span>.
+            <p className="text-foreground text-[12px] font-medium">No coding-tool data found</p>
+            <p className="text-muted-foreground mt-0.5 text-[11px] leading-snug">
+              On macOS, Watchtower needs <span className="text-foreground font-medium">Full Disk Access</span> to read
+              Claude, Cursor, and other tool data. Grant it in System Settings, then refresh with{' '}
+              <span className="text-foreground font-medium">⌘R</span>.
             </p>
             <button
               type="button"
-              className="mt-1.5 inline-flex cursor-pointer items-center gap-1 text-[11px] font-medium text-brand-text"
+              className="text-brand-text mt-1.5 inline-flex cursor-pointer items-center gap-1 text-[11px] font-medium"
               onClick={() => void window.api.openSystemSettings()}
             >
               Open System Settings <ExternalLink className="size-3" />
@@ -86,7 +81,7 @@ export function GeneralPane() {
           <button
             type="button"
             aria-label="Dismiss"
-            className="cursor-pointer rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+            className="text-muted-foreground hover:text-foreground cursor-pointer rounded p-0.5 transition-colors"
             onClick={() => setFdaDismissed(true)}
           >
             <X className="size-3.5" />
@@ -94,30 +89,39 @@ export function GeneralPane() {
         </div>
       )}
       <div className="flex flex-col gap-2">
-        <p className="text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">Appearance</p>
+        <p className="text-muted-foreground text-[10.5px] font-semibold tracking-[0.05em] uppercase">Appearance</p>
         <div className="flex items-center justify-between gap-3">
-          <span className="text-[12.5px] text-foreground">Theme</span>
+          <span className="text-foreground text-[12.5px]">Theme</span>
           <SegTabs options={THEME_OPTIONS} value={theme} onChange={value => setTheme(value as Theme)} />
         </div>
-        <p className="text-[11px] text-muted-foreground">Match your system or force a mode; your choice persists.</p>
+        <p className="text-muted-foreground text-[11px]">Match your system or force a mode; your choice persists.</p>
       </div>
 
       <div className="flex flex-col gap-2">
-        <p className="text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">Display</p>
+        <p className="text-muted-foreground text-[10.5px] font-semibold tracking-[0.05em] uppercase">Display</p>
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="settings-currency" className="text-[12.5px] font-medium text-foreground">Currency</label>
-          <p className="text-[11px] text-muted-foreground">Display currency for every cost in the app and in CSV/JSON exports. Rates come from the Frankfurter API (ECB data) and are cached 24h.</p>
+          <label htmlFor="settings-currency" className="text-foreground text-[12.5px] font-medium">
+            Currency
+          </label>
+          <p className="text-muted-foreground text-[11px]">
+            Display currency for every cost in the app and in CSV/JSON exports. Rates come from the Frankfurter API (ECB
+            data) and are cached 24h.
+          </p>
           <div className="flex items-center gap-2">
             <Select
               value={currency.code}
-              onValueChange={value => { if (value) void setCurrency(value) }}
+              onValueChange={value => {
+                if (value) void setCurrency(value)
+              }}
             >
               <SelectTrigger id="settings-currency" size="sm" className="mt-1 w-full text-[12.5px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 {currencyOptions.map(option => (
-                  <SelectItem key={option.code} value={option.code}>{option.code} · {option.symbol}</SelectItem>
+                  <SelectItem key={option.code} value={option.code}>
+                    {option.code} · {option.symbol}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -133,38 +137,63 @@ export function GeneralPane() {
             </Button>
           </div>
           {currency.code !== 'USD' && currency.updatedAt && (
-            <p className="text-[10.5px] text-muted-foreground">Rate fetched {new Date(currency.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.</p>
+            <p className="text-muted-foreground text-[10.5px]">
+              Rate fetched{' '}
+              {new Date(currency.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.
+            </p>
           )}
           {currency.code !== 'USD' && !currency.updatedAt && (
-            <p className="text-[10.5px] text-muted-foreground">No rate cached yet — showing USD-equivalent values until a fetch succeeds.</p>
+            <p className="text-muted-foreground text-[10.5px]">
+              No rate cached yet — showing USD-equivalent values until a fetch succeeds.
+            </p>
           )}
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="settings-period" className="text-[12.5px] font-medium text-foreground">Default period</label>
-          <p className="text-[11px] text-muted-foreground">Applied on next launch.</p>
-          <Select value={defaultPeriod} onValueChange={value => { if (value) choosePeriod(value) }}>
+          <label htmlFor="settings-period" className="text-foreground text-[12.5px] font-medium">
+            Default period
+          </label>
+          <p className="text-muted-foreground text-[11px]">Applied on next launch.</p>
+          <Select
+            value={defaultPeriod}
+            onValueChange={value => {
+              if (value) choosePeriod(value)
+            }}
+          >
             <SelectTrigger id="settings-period" size="sm" className="mt-1 w-full text-[12.5px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {DEFAULT_PERIOD_OPTIONS.map(option => (
-                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="settings-cadence" className="text-[12.5px] font-medium text-foreground">Refresh every</label>
-          <p className="text-[11px] text-muted-foreground">How often the app scans your machine's sources in the background. Manual only refreshes on ⌘R.</p>
-          <Select value={cadence} onValueChange={value => { if (value) void setCadence(value) }}>
+          <label htmlFor="settings-cadence" className="text-foreground text-[12.5px] font-medium">
+            Refresh every
+          </label>
+          <p className="text-muted-foreground text-[11px]">
+            How often the app scans your machine's sources in the background. Manual only refreshes on ⌘R.
+          </p>
+          <Select
+            value={cadence}
+            onValueChange={value => {
+              if (value) void setCadence(value)
+            }}
+          >
             <SelectTrigger id="settings-cadence" size="sm" className="mt-1 w-full text-[12.5px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {CADENCE_UI_OPTIONS.map(option => (
-                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -173,12 +202,16 @@ export function GeneralPane() {
 
       {showClaudeConfigRow && (
         <div className="flex flex-col gap-2">
-          <p className="text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">Claude config</p>
+          <p className="text-muted-foreground text-[10.5px] font-semibold tracking-[0.05em] uppercase">Claude config</p>
           <div className="flex items-center justify-between gap-3">
-            <span className="text-[12.5px] text-foreground">Active config</span>
-            <span className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground">All Claude configs</span>
+            <span className="text-foreground text-[12.5px]">Active config</span>
+            <span className="border-border text-muted-foreground rounded-md border px-2 py-1 text-[11px]">
+              All Claude configs
+            </span>
           </div>
-          <p className="text-[11px] text-muted-foreground">Applies to the overview data. Manage config folders with CLAUDE_CONFIG_DIRS or the watchtower config.</p>
+          <p className="text-muted-foreground text-[11px]">
+            Applies to the overview data. Manage config folders with CLAUDE_CONFIG_DIRS or the watchtower config.
+          </p>
         </div>
       )}
 

@@ -1,27 +1,36 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
-export const pullRequestRowSchema = z.object({
-  url: z.string(),
-  label: z.string(),
-  cost: z.number(),
-  sessions: z.number(),
-  calls: z.number(),
-  firstStarted: z.string(),
-  lastEnded: z.string(),
-  models: z.array(z.string()),
+const finiteNumber = Schema.Finite
+const writable = Schema.mutableKey
+const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))
+
+export const pullRequestCategorySchema = Schema.Struct({
+  name: writable(Schema.String),
+  cost: writable(finiteNumber),
+})
+
+export const pullRequestRowSchema = Schema.Struct({
+  url: writable(Schema.String),
+  label: writable(Schema.String),
+  cost: writable(finiteNumber),
+  sessions: writable(finiteNumber),
+  calls: writable(finiteNumber),
+  firstStarted: writable(Schema.String),
+  lastEnded: writable(Schema.String),
+  models: writable(mutableArray(Schema.String)),
   /** Per-model raw feeders for Alias-merged models (`models` holds the merged
    * identity). Present only when a merge happened. */
-  modelProvenance: z.record(z.string(), z.array(z.string())).optional(),
-  categories: z.array(z.object({ name: z.string(), cost: z.number() })).optional(),
+  modelProvenance: writable(Schema.optional(Schema.Record(Schema.String, mutableArray(Schema.String)))),
+  categories: writable(Schema.optional(mutableArray(pullRequestCategorySchema))),
 })
-export type PullRequestRow = z.infer<typeof pullRequestRowSchema>
+export type PullRequestRow = Schema.Schema.Type<typeof pullRequestRowSchema>
 
-export const pullRequestsPayloadSchema = z.object({
-  rows: z.array(pullRequestRowSchema),
-  distinctCost: z.number(),
-  distinctSessions: z.number(),
-  subagentSessions: z.number(),
-  attributedCost: z.number(),
-  unattributedCost: z.number(),
+export const pullRequestsPayloadSchema = Schema.Struct({
+  rows: writable(mutableArray(pullRequestRowSchema)),
+  distinctCost: writable(finiteNumber),
+  distinctSessions: writable(finiteNumber),
+  subagentSessions: writable(finiteNumber),
+  attributedCost: writable(finiteNumber),
+  unattributedCost: writable(finiteNumber),
 })
-export type PullRequestsPayload = z.infer<typeof pullRequestsPayloadSchema>
+export type PullRequestsPayload = Schema.Schema.Type<typeof pullRequestsPayloadSchema>

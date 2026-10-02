@@ -41,22 +41,45 @@ export function HarnessSetup({ row, compact = false }: { row: CoachHarnessRow; c
   }
 
   return (
-    <div className={cn('flex flex-col gap-2 text-[11px]', compact ? 'py-1' : 'rounded-md border border-border/70 bg-card p-3')}>
+    <div
+      className={cn(
+        'flex flex-col gap-2 text-[11px]',
+        compact ? 'py-1' : 'border-border/70 bg-card rounded-md border p-3',
+      )}
+    >
       {!compact && (
-        <div className="flex items-center gap-1.5 font-medium text-foreground">
+        <div className="text-foreground flex items-center gap-1.5 font-medium">
           <HarnessStatusDot status={row.status} />
           {statusLabel(row.status)}
         </div>
       )}
-      <p className="text-muted-foreground">{row.status === 'pending' ? 'Checking…' : row.message ?? 'Setup required before this harness can run.'}</p>
+      <p className="text-muted-foreground">
+        {row.status === 'pending' ? 'Checking…' : (row.message ?? 'Setup required before this harness can run.')}
+      </p>
       {row.auth.loginCommand ? (
         <div className="flex flex-wrap items-center gap-1.5">
-          <code className="min-w-0 max-w-full truncate rounded bg-muted px-1.5 py-1 font-mono text-[10px] text-foreground">{row.auth.loginCommand}</code>
-          <Button type="button" variant="ghost" size="sm" onClick={() => void copy()} className="h-6 gap-1 px-1.5 text-[10px]" title="Copy login command">
+          <code className="bg-muted text-foreground max-w-full min-w-0 truncate rounded px-1.5 py-1 font-mono text-[10px]">
+            {row.auth.loginCommand}
+          </code>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void copy()}
+            className="h-6 gap-1 px-1.5 text-[10px]"
+            title="Copy login command"
+          >
             {copied ? <Check className="size-3" /> : <Clipboard className="size-3" />}
             {copied ? 'Copied' : 'Copy'}
           </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => void openTerminal()} disabled={busy || row.status === 'pending'} className="h-6 gap-1 px-1.5 text-[10px]">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void openTerminal()}
+            disabled={busy || row.status === 'pending'}
+            className="h-6 gap-1 px-1.5 text-[10px]"
+          >
             <ExternalLink className="size-3" />
             Open terminal
           </Button>
@@ -65,11 +88,18 @@ export function HarnessSetup({ row, compact = false }: { row: CoachHarnessRow; c
         <p className="text-muted-foreground">Sign in with {row.displayName}'s own CLI, then re-check.</p>
       ) : null}
       <div className="flex items-center gap-2">
-        <Button type="button" variant="ghost" size="sm" onClick={() => void recheck()} disabled={busy} className="h-6 gap-1 px-1.5 text-[10px]">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => void recheck()}
+          disabled={busy}
+          className="h-6 gap-1 px-1.5 text-[10px]"
+        >
           <RefreshCw className={cn('size-3', busy && 'animate-spin')} />
           Re-check
         </Button>
-        {error && <span className="text-[10px] text-destructive">{error}</span>}
+        {error && <span className="text-destructive text-[10px]">{error}</span>}
       </div>
     </div>
   )

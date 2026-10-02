@@ -10,8 +10,6 @@ import { compareValue } from '../src/renderer/src/features/compare/lib.js'
 
 const NOW = new Date(2026, 6, 15)
 
-
-
 // ── Ledger-backed Compare view (map 05) ────────────────────────────────────
 
 type CompareSessionSpec = {
@@ -72,17 +70,17 @@ function comparePort(store: LedgerStore, specs: CompareSessionSpec[]): void {
 
 const COMPARE_SPECS: CompareSessionSpec[] = [
   {
-    sessionId: 'sess-c0', date: '2026-07-10',
+    sessionId: 'sess-c0',
+    date: '2026-07-10',
     turns: [
       { model: 'claude-opus-4', cost: 1 },
       { model: 'claude-opus-4', cost: 2 },
     ],
   },
   {
-    sessionId: 'sess-c1', date: '2026-07-10',
-    turns: [
-      { model: 'claude-sonnet-4', cost: 0.5, hasAgentSpawn: true, speed: 'fast' },
-    ],
+    sessionId: 'sess-c1',
+    date: '2026-07-10',
+    turns: [{ model: 'claude-sonnet-4', cost: 0.5, hasAgentSpawn: true, speed: 'fast' }],
   },
 ]
 
@@ -110,7 +108,12 @@ describe('buildCompareViewFromLedger (aggregation seam scope)', () => {
     expect(defaulted.report!.modelA.model).toBe('claude-opus-4')
     expect(defaulted.report!.modelB.model).toBe('claude-sonnet-4')
 
-    const swapped = buildCompareViewFromLedger(store, { period: 'lifetime' }, { modelA: 'claude-sonnet-4', modelB: 'claude-opus-4' }, NOW)
+    const swapped = buildCompareViewFromLedger(
+      store,
+      { period: 'lifetime' },
+      { modelA: 'claude-sonnet-4', modelB: 'claude-opus-4' },
+      NOW,
+    )
     expect(swapped.report!.modelA.model).toBe('claude-sonnet-4')
     expect(swapped.report!.modelB.model).toBe('claude-opus-4')
     store.close()
@@ -129,21 +132,30 @@ describe('buildCompareViewFromLedger (aggregation seam scope)', () => {
   it('recomputes against the selected custom date range', () => {
     const store = compareMakeLedger()
     comparePort(store, COMPARE_SPECS)
-    const out = buildCompareViewFromLedger(store, {
-      period: 'lifetime',
-      range: { since: '2026-07-12', until: '2026-07-13' },
-    }, undefined, NOW)
+    const out = buildCompareViewFromLedger(
+      store,
+      {
+        period: 'lifetime',
+        range: { since: '2026-07-12', until: '2026-07-13' },
+      },
+      undefined,
+      NOW,
+    )
     expect(out.models).toHaveLength(0)
     expect(out.report).toBeNull()
 
-    const inWindow = buildCompareViewFromLedger(store, {
-      period: 'lifetime',
-      range: { since: '2026-07-10', until: '2026-07-10' },
-    }, undefined, NOW)
+    const inWindow = buildCompareViewFromLedger(
+      store,
+      {
+        period: 'lifetime',
+        range: { since: '2026-07-10', until: '2026-07-10' },
+      },
+      undefined,
+      NOW,
+    )
     expect(inWindow.models.map(model => model.model)).toEqual(['claude-opus-4', 'claude-sonnet-4'])
     store.close()
   })
-
 
   it('returns an empty payload for an empty ledger', () => {
     const store = compareMakeLedger()

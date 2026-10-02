@@ -1,32 +1,39 @@
-import { dirname, join } from 'path'
-import { mkdirSync, existsSync } from 'fs'
 import { writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { app, BrowserWindow, ipcMain, shell, dialog, type WebContents } from 'electron'
+
+import * as Schema from 'effect/Schema'
+import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron'
+import { existsSync, mkdirSync } from 'fs'
+import { dirname, join } from 'path'
+
 import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
+import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
 import {
-  skillsSaveRequestSchema,
-  type SkillsSaveResult,
-  type SkillsThresholds,
-} from '../shared/schemas/skills.js'
-import { createUpdateChecker, type UpdateChecker, type UpdateStatus } from './updates.js'
-import { closeOperationalLog, initOperationalLog, logCodeFor, logIpcError, safeLogOperationalEvent } from './operational-log.js'
-import type { ExportResult } from './export.js'
-import type { OverviewScope } from './overview.js'
-import type { ComparePair } from './compare-view.js'
-import { registerAgentsIpc, type LedgerMcpAttachment } from './agents/ipc.js'
+  type LedgerMcpConnection,
+  type LedgerMcpStartupMode,
+  ledgerMcpStartupModeSchema,
+  type LedgerMcpStatus,
+} from '../shared/schemas/ledger-mcp.js'
+import { skillsSaveRequestSchema, type SkillsSaveResult, type SkillsThresholds } from '../shared/schemas/skills.js'
+import type { AcpMcpServer } from './agents/harnesses/types.js'
+import { type LedgerMcpAttachment, registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { createSidecarPool } from './agents/ledger-mcp/pool.js'
 import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
-import type { AcpMcpServer } from './agents/harnesses/types.js'
+import type { ComparePair } from './compare-view.js'
 import { DbWorkerClient } from './db-worker/client.js'
+import { initAppPaths } from './env.js'
+import type { ExportResult } from './export.js'
+import { mainRuntime } from './main-runtime.js'
 import {
-  ledgerMcpStartupModeSchema,
-  type LedgerMcpConnection,
-  type LedgerMcpStartupMode,
-  type LedgerMcpStatus,
-} from '../shared/schemas/ledger-mcp.js'
-import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
+  closeOperationalLog,
+  initOperationalLog,
+  logCodeFor,
+  logIpcError,
+  safeLogOperationalEvent,
+} from './operational-log.js'
+import type { OverviewScope } from './overview.js'
+import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
 
 /**
  * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the
@@ -37,7 +44,7 @@ import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
  * unchanged: same channels, same payloads.
  */
 
-let updateChecker: UpdateChecker | null = null
+let updateChecker: UpdateCheckerEffect | null = null
 /** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
 let agentsCleanup: { reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
@@ -57,7 +64,10 @@ function broadcast(channel: string, data?: unknown): void {
 }
 
 /** Single IPC failure seam: operation name + short code only, never args. */
-function handleLogged<T extends unknown[]>(channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown): void {
+function handleLogged<T extends unknown[]>(
+  channel: string,
+  listener: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown,
+): void {
   ipcMain.handle(channel, async (event, ...args) => {
     try {
       return await listener(event, ...(args as T))
@@ -81,16 +91,20 @@ function ledgerMcpConnection(server: AcpMcpServer): LedgerMcpConnection {
   const headers = Object.fromEntries(server.headers.map(header => [header.name, header.value]))
   return {
     url: server.url,
-    config: JSON.stringify({
-      mcpServers: {
-        [server.name]: { type: 'http', url: server.url, headers },
+    config: JSON.stringify(
+      {
+        mcpServers: {
+          [server.name]: { type: 'http', url: server.url, headers },
+        },
       },
-    }, null, 2),
+      null,
+      2,
+    ),
   }
 }
 
 async function ledgerMcpStatus(db: DbWorkerClient): Promise<LedgerMcpStatus> {
-  const startupMode = await db.request('ledger-mcp:startup:get') as LedgerMcpStartupMode
+  const startupMode = (await db.request('ledger-mcp:startup:get')) as LedgerMcpStartupMode
   const server = await sidecarPool.status()
   return { startupMode, running: server !== null, url: server && 'url' in server ? server.url : null }
 }
@@ -137,12 +151,17 @@ function relayWorkerEvents(db: DbWorkerClient): void {
 
 function registerIpc(db: DbWorkerClient): void {
   /** Renderer tripwire forward (#130): a dropped subscription payload lands
-   * here with its label + location only — never contents. Zod-validated and
+   * here with its label + location only — never contents. Schema-validated and
    * length-capped at the schema; a malformed notice is itself an IPC error. */
   handleLogged('log:notice', (notice: unknown): { ok: true } => {
-    const parsed = rendererNoticeSchema.safeParse(notice)
-    if (!parsed.success) throw new Error('invalid renderer notice')
-    safeLogOperationalEvent('warn', 'renderer.notice', { label: parsed.data.label, location: parsed.data.location }, 'renderer')
+    const parsed = Schema.decodeUnknownResult(rendererNoticeSchema)(notice)
+    if (parsed._tag === 'Failure') throw new Error('invalid renderer notice')
+    safeLogOperationalEvent(
+      'warn',
+      'renderer.notice',
+      { label: parsed.success.label, location: parsed.success.location },
+      'renderer',
+    )
     return { ok: true }
   })
 
@@ -176,7 +195,8 @@ function registerIpc(db: DbWorkerClient): void {
   handleLogged('store:projects', () => db.request('store:projects'))
 
   handleLogged('store:sessions', (_event, filter?: { project?: string; since?: string; until?: string }) =>
-    db.request('store:sessions', filter))
+    db.request('store:sessions', filter),
+  )
 
   handleLogged('sessions:view', (_event, scope: OverviewScope) => db.request('sessions:view', scope))
 
@@ -187,7 +207,8 @@ function registerIpc(db: DbWorkerClient): void {
   handleLogged('models:view', (_event, scope: OverviewScope) => db.request('models:view', scope))
 
   handleLogged('compare:view', (_event, scope: OverviewScope, pair?: ComparePair) =>
-    db.request('compare:view', scope, pair))
+    db.request('compare:view', scope, pair),
+  )
 
   handleLogged('optimize:view', (_event, scope: OverviewScope) => db.request('optimize:view', scope))
 
@@ -196,15 +217,16 @@ function registerIpc(db: DbWorkerClient): void {
    * network. Thresholds (frequency × spread) are renderer settings passed
    * per request; defaults (5 × 2) apply when absent. */
   handleLogged('skills:view', (_event, scope: OverviewScope, thresholds?: SkillsThresholds) =>
-    db.request('skills:view', scope, thresholds))
+    db.request('skills:view', scope, thresholds),
+  )
 
   /** Skills › Save (ticket 25): the ONLY write the draft board can do, and it
    * is user-initiated — the OS save dialog IS the user's confirmation, and no
    * path is ever written without it. Defaults to `.agents/skills/` in home. */
   handleLogged('skills:save', async (_event, request: unknown): Promise<SkillsSaveResult> => {
-    const parsed = skillsSaveRequestSchema.safeParse(request)
-    if (!parsed.success) return { ok: false, error: 'invalid save request' }
-    const defaultPath = join(homedir(), '.agents', 'skills', slugifyCandidateName(parsed.data.name), 'SKILL.md')
+    const parsed = Schema.decodeUnknownResult(skillsSaveRequestSchema)(request)
+    if (parsed._tag === 'Failure') return { ok: false, error: 'invalid save request' }
+    const defaultPath = join(homedir(), '.agents', 'skills', slugifyCandidateName(parsed.success.name), 'SKILL.md')
     const picked = await dialog.showSaveDialog({
       title: 'Save skill',
       defaultPath,
@@ -215,7 +237,7 @@ function registerIpc(db: DbWorkerClient): void {
       // The dialog confirmed the target — create its parent dir so the write
       // succeeds even when the nested .agents/skills/<slug>/ is brand new.
       mkdirSync(dirname(picked.filePath), { recursive: true })
-      await writeFile(picked.filePath, parsed.data.content, 'utf8')
+      await writeFile(picked.filePath, parsed.success.content, 'utf8')
       return { ok: true, path: picked.filePath }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -225,7 +247,8 @@ function registerIpc(db: DbWorkerClient): void {
   handleLogged('optimize:yield', (_event, scope: OverviewScope) => db.request('optimize:yield', scope))
 
   handleLogged('models:addAlias', (_event, model: string, aliasOf: string) =>
-    db.request('models:addAlias', model, aliasOf))
+    db.request('models:addAlias', model, aliasOf),
+  )
 
   handleLogged('models:getAliases', () => db.request('models:getAliases'))
 
@@ -233,11 +256,13 @@ function registerIpc(db: DbWorkerClient): void {
 
   handleLogged('models:getPriceOverrides', () => db.request('models:getPriceOverrides'))
 
-  handleLogged('models:removePriceOverride', (_event, model: string) =>
-    db.request('models:removePriceOverride', model))
+  handleLogged('models:removePriceOverride', (_event, model: string) => db.request('models:removePriceOverride', model))
 
-  handleLogged('models:setPrice', (_event, model: string, inputPricePerMillion: number, outputPricePerMillion: number) =>
-    db.request('models:setPrice', model, inputPricePerMillion, outputPricePerMillion))
+  handleLogged(
+    'models:setPrice',
+    (_event, model: string, inputPricePerMillion: number, outputPricePerMillion: number) =>
+      db.request('models:setPrice', model, inputPricePerMillion, outputPricePerMillion),
+  )
 
   /** Open a PR in the default browser. Only http(s) URLs are allowed — a
    * malformed or non-web URL is refused so a crafted label can never drive the
@@ -246,7 +271,9 @@ function registerIpc(db: DbWorkerClient): void {
     try {
       const { protocol } = new URL(url)
       if (protocol === 'https:' || protocol === 'http:') return shell.openExternal(url)
-    } catch { /* malformed URL — refuse to open */ }
+    } catch {
+      /* malformed URL — refuse to open */
+    }
     return undefined
   })
 
@@ -277,9 +304,9 @@ function registerIpc(db: DbWorkerClient): void {
   handleLogged('ledger-mcp:status', () => ledgerMcpStatus(db))
 
   handleLogged('ledger-mcp:startup:set', async (_event, value: unknown): Promise<LedgerMcpStatus> => {
-    const parsed = ledgerMcpStartupModeSchema.safeParse(value)
-    if (!parsed.success) throw new Error('invalid ledger MCP startup mode')
-    const startupMode = await db.request('ledger-mcp:startup:set', parsed.data) as LedgerMcpStartupMode
+    const parsed = Schema.decodeUnknownResult(ledgerMcpStartupModeSchema)(value)
+    if (parsed._tag === 'Failure') throw new Error('invalid ledger MCP startup mode')
+    const startupMode = (await db.request('ledger-mcp:startup:set', parsed.success)) as LedgerMcpStartupMode
     if (startupMode === 'at-launch') {
       // Starting is best-effort: a broken bundle or unavailable DB leaves the
       // Coach able to run without grounding tools.
@@ -315,7 +342,7 @@ function registerIpc(db: DbWorkerClient): void {
    * check" status rather than an error. */
   handleLogged('updates:check', async (): Promise<UpdateStatus> => {
     if (!updateChecker) throw new Error('update checker not initialised')
-    return updateChecker.check()
+    return mainRuntime.runPromise(updateChecker.check())
   })
 
   handleLogged('currency:get', () => db.request('currency:get'))
@@ -335,7 +362,7 @@ function registerIpc(db: DbWorkerClient): void {
         const picked = await dialog.showOpenDialog({
           title: 'Choose an export folder',
           properties: ['openDirectory', 'createDirectory'],
-          buttonLabel: 'Export'
+          buttonLabel: 'Export',
         })
         if (picked.canceled || picked.filePaths.length === 0) return { ok: false, error: 'cancelled' }
         target = picked.filePaths[0]
@@ -343,7 +370,7 @@ function registerIpc(db: DbWorkerClient): void {
         const picked = await dialog.showSaveDialog({
           title: 'Export JSON',
           defaultPath: 'watchtower-export.json',
-          filters: [{ name: 'JSON', extensions: ['json'] }]
+          filters: [{ name: 'JSON', extensions: ['json'] }],
         })
         if (picked.canceled || !picked.filePath) return { ok: false, error: 'cancelled' }
         target = picked.filePath
@@ -418,8 +445,8 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
-    }
+      sandbox: true,
+    },
   })
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
@@ -435,16 +462,28 @@ app.whenReady().then(async () => {
   const dataDir = app.getPath('userData')
   try {
     await initOperationalLog({ logDir: join(dataDir, 'logs'), isPackaged: app.isPackaged })
-  } catch { /* logging must never break boot */ }
+  } catch {
+    /* logging must never break boot */
+  }
   // The data plane boots first: the worker owns the ledger from here on —
   // requests simply queue on its port until its synchronous init finishes.
+  const cacheDir = join(dataDir, 'cache')
+  // This isolate's own copy of the `AppPaths` startup snapshot, from the same
+  // value the worker gets below — so a sync discovery path reached from main
+  // resolves the same cache dir as the one reached from the worker. The env
+  // override still wins, exactly as it did before the snapshot existed: the
+  // snapshot is initialized with the value the reader would have resolved
+  // anyway, never with a value that shadows the documented override.
+  initAppPaths({ cacheDir: process.env['WATCHTOWER_CACHE_DIR'] ?? cacheDir })
   const db = new DbWorkerClient(
-    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir: join(dataDir, 'cache') },
+    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir },
     join(__dirname, 'db-worker.js'),
   )
   relayWorkerEvents(db)
   dbClient = db
-  updateChecker = createUpdateChecker({ currentVersion: app.getVersion() })
+  // Built through the main runtime (ADR 0032): the checker's HttpFetch
+  // dependency is provided there, so the IPC handler just runs check().
+  updateChecker = await mainRuntime.runPromise(createUpdateCheckerEffect({ currentVersion: app.getVersion() }))
   registerIpc(db)
   createWindow()
 
@@ -452,18 +491,20 @@ app.whenReady().then(async () => {
   // data worker owns the DB, so the sidecar can safely open its read-only
   // connection. A failed prewarm is non-fatal; the next Coach run or an
   // explicit copy-config action can retry on demand.
-  void db.ready.then(async () => {
-    safeLogOperationalEvent('info', 'boot.ready', {})
-    safeLogOperationalEvent('info', 'worker.ready', {}, 'worker')
-    const startupMode = await db.request('ledger-mcp:startup:get') as LedgerMcpStartupMode
-    if (startupMode === 'at-launch') {
-      await sidecarPool.connection(ledgerMcpContext())
-    }
-  }).catch(err => {
-    safeLogOperationalEvent('error', 'boot.error', {
-      code: logCodeFor(err, 'prewarm-failed'),
+  void db.ready
+    .then(async () => {
+      safeLogOperationalEvent('info', 'boot.ready', {})
+      safeLogOperationalEvent('info', 'worker.ready', {}, 'worker')
+      const startupMode = (await db.request('ledger-mcp:startup:get')) as LedgerMcpStartupMode
+      if (startupMode === 'at-launch') {
+        await sidecarPool.connection(ledgerMcpContext())
+      }
     })
-  })
+    .catch(err => {
+      safeLogOperationalEvent('error', 'boot.error', {
+        code: logCodeFor(err, 'prewarm-failed'),
+      })
+    })
 
   // The worker queues requests until its synchronous init finishes, so the
   // window can paint immediately. A boot failure (unopenable ledger) cannot
@@ -501,5 +542,12 @@ app.on('before-quit', () => {
   sidecarPool.releaseAll()
   void agentsCleanup?.dispose()
   void dbClient?.shutdown().catch(() => {})
-  try { closeOperationalLog() } catch { /* best effort */ }
+  // Release main-runtime layers (resourceless today; harness capabilities
+  // join MainLive later) — best-effort like the shutdowns above.
+  void mainRuntime.dispose()
+  try {
+    closeOperationalLog()
+  } catch {
+    /* best effort */
+  }
 })

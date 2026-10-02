@@ -10,12 +10,20 @@ function mockWindow(api: unknown): void {
 function createMemoryStorage(): Storage {
   const store = new Map<string, string>()
   return {
-    get length() { return store.size },
-    clear: () => { store.clear() },
+    get length() {
+      return store.size
+    },
+    clear: () => {
+      store.clear()
+    },
     getItem: (key: string) => store.get(key) ?? null,
     key: (index: number) => Array.from(store.keys())[index] ?? null,
-    removeItem: (key: string) => { store.delete(key) },
-    setItem: (key: string, value: string) => { store.set(key, value) },
+    removeItem: (key: string) => {
+      store.delete(key)
+    },
+    setItem: (key: string, value: string) => {
+      store.set(key, value)
+    },
   }
 }
 
@@ -42,8 +50,14 @@ const candidate: SkillCandidate = {
 const payload = {
   period: { start: '2026-07-01', end: '2026-07-31' },
   summary: {
-    sessions: 4, calls: 40, skillEvents: 8, bashEvents: 10, toolEvents: 3,
-    drafts: 1, opportunities: 1, ghosts: 0,
+    sessions: 4,
+    calls: 40,
+    skillEvents: 8,
+    bashEvents: 10,
+    toolEvents: 3,
+    drafts: 1,
+    opportunities: 1,
+    ghosts: 0,
   },
   drafts: [candidate],
   opportunities: [],
@@ -121,7 +135,11 @@ describe('the suggested-skill chip chat-starter', () => {
   it('craftSkillPrompt keeps a messy raw sample to a single clean line', () => {
     // A bash sample with command substitution + a trailing line must not
     // break the markdown bullet — backticks stripped, newline dropped.
-    const messy = { ...candidate, source: 'bash' as const, sample: 'git log --format="%h `git branch --show-current`"\nmore' }
+    const messy = {
+      ...candidate,
+      source: 'bash' as const,
+      sample: 'git log --format="%h `git branch --show-current`"\nmore',
+    }
     const prompt = craftSkillPrompt(messy)
     const lines = prompt.split('\n').filter(l => l.startsWith('- Sample:'))
     // Exactly ONE Sample line, wrapped in a single pair of code backticks with

@@ -1,11 +1,14 @@
-import type { DateRange } from '../types.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
-import { fetchWithTimeout } from '../fetch-utils.js'
+import * as Effect from 'effect/Effect'
+
+import { Env } from '../../env.js'
+import { HttpFetch, HttpFetchError, retryTransientFetch } from '../fetch-utils.js'
 import { fileErrorCode, queueLogRecord } from '../file-errors.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
 
 const REPORT_URL = 'https://ai-gateway.vercel.sh/v1/report'
 
-type ReportRow = {
+export type ReportRow = {
   day?: string
   model?: string
   total_cost?: number
@@ -17,10 +20,10 @@ type ReportRow = {
   request_count?: number
 }
 
-export function getVercelGatewayApiKey(): string | null {
-  const key = process.env['AI_GATEWAY_API_KEY'] ?? process.env['VERCEL_OIDC_TOKEN']
-  return key?.trim() ? key.trim() : null
-}
+// Wave-3 named condition #2 done this slice: `getVercelGatewayApiKey` deleted.
+// Discovery runs through the env layer (`Env.layer` provided at this
+// composition root, mirroring the parser seam below); `resolveGatewayKey`
+// stays in `Env` (read-only here).
 
 function formatUtcDate(d: Date): string {
   const y = d.getUTCFullYear()
@@ -29,10 +32,31 @@ function formatUtcDate(d: Date): string {
   return `${y}-${m}-${day}`
 }
 
-export async function fetchVercelGatewayReport(
+/** Legacy failure code for the gateway warn log. The old `fetchWithTimeout`
+ * path logged the raw error's name slug (`abort`, `timeout`, else the
+ * `unreachable` fallback); `HttpFetchError` carries a `reason` instead, so map
+ * it back to preserve the exact codes. */
+function gatewayFailureCode(err: unknown): string {
+  if (err instanceof HttpFetchError) {
+    if (err.reason === 'timeout') return 'timeout'
+    if (err.reason === 'abort') return 'abort'
+    return 'unreachable'
+  }
+  return fileErrorCode(err, 'unreachable')
+}
+
+function queueGatewayWarn(code: string): void {
+  queueLogRecord({
+    logEvent: 'scan.file-error',
+    level: 'warn',
+    fields: { op: 'scan', provider: 'vercel-gateway', code },
+  })
+}
+
+export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
   dateRange: DateRange,
-): Promise<ReportRow[]> {
-  const key = getVercelGatewayApiKey()
+): Effect.fn.Return<ReportRow[], never, HttpFetch | Env> {
+  const { vercelGatewayApiKey: key } = yield* Env
   if (!key) return []
 
   const params = new URLSearchParams({
@@ -42,47 +66,55 @@ export async function fetchVercelGatewayReport(
     group_by: 'model',
   })
 
-  try {
-    const res = await fetchWithTimeout(`${REPORT_URL}?${params}`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        Accept: 'application/json',
-      },
-    })
+  const http = yield* HttpFetch
+  return yield* Effect.gen(function* () {
+    // Bounded transient retry (F15/A1) on the fetch only: discovery used to
+    // answer "no sessions" (plus one `unreachable` warn) off a single blip,
+    // which silently zeroes a whole provider's cost for the scan. The
+    // non-2xx arm below stays OUTSIDE the retry — a 401/500 is a real answer,
+    // and the warn code it logs is byte-identical to today's.
+    const res = yield* http
+      .fetch(`${REPORT_URL}?${params}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          Accept: 'application/json',
+        },
+      })
+      .pipe(retryTransientFetch)
 
     if (!res.ok) {
       // The gateway error body can carry request echoes — status only.
-      queueLogRecord({
-        logEvent: 'scan.file-error',
-        level: 'warn',
-        fields: { op: 'scan', provider: 'vercel-gateway', code: `http-${res.status}` },
-      })
+      yield* Effect.sync(() => queueGatewayWarn(`http-${res.status}`))
       return []
     }
 
-    const body = (await res.json()) as { results?: ReportRow[] }
-    return body.results ?? []
-  } catch (err) {
-    queueLogRecord({
-      logEvent: 'scan.file-error',
-      level: 'warn',
-      fields: { op: 'scan', provider: 'vercel-gateway', code: fileErrorCode(err, 'unreachable') },
+    const body = yield* Effect.tryPromise({
+      try: () => res.json() as Promise<{ results?: ReportRow[] }>,
+      catch: cause => cause,
     })
-    return []
-  }
-}
+    return body.results ?? []
+  }).pipe(
+    Effect.catch(err =>
+      Effect.sync(() => {
+        queueGatewayWarn(gatewayFailureCode(err))
+        return []
+      }),
+    ),
+  )
+})
 
-function createParser(
-  source: SessionSource,
-  seenKeys: Set<string>,
-  dateRange?: DateRange,
-): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!dateRange) return
 
-      const rows = await fetchVercelGatewayReport(dateRange)
+      const rows = await Effect.runPromise(
+        fetchVercelGatewayReportEffect(dateRange).pipe(
+          Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
+          Effect.provide(Env.layer),
+        ),
+      )
       for (const row of rows) {
         const day = row.day ?? ''
         const model = row.model ?? 'unknown'
@@ -120,6 +152,22 @@ function createParser(
   }
 }
 
+export const discoverVercelGatewaySessionsEffect = Effect.fnUntraced(function* (): Effect.fn.Return<
+  SessionSource[],
+  never,
+  Env
+> {
+  const { vercelGatewayApiKey: key } = yield* Env
+  if (!key) return []
+  return [
+    {
+      path: 'vercel-ai-gateway:report',
+      project: 'Vercel AI Gateway',
+      provider: 'vercel-gateway',
+    },
+  ]
+})
+
 export const vercelGateway: Provider = {
   name: 'vercel-gateway',
   displayName: 'Vercel AI Gateway',
@@ -135,20 +183,10 @@ export const vercelGateway: Provider = {
   },
 
   async discoverSessions(): Promise<SessionSource[]> {
-    if (!getVercelGatewayApiKey()) return []
-
-    return [{
-      path: 'vercel-ai-gateway:report',
-      project: 'Vercel AI Gateway',
-      provider: 'vercel-gateway',
-    }]
+    return Effect.runPromise(discoverVercelGatewaySessionsEffect().pipe(Effect.provide(Env.layer)))
   },
 
-  createSessionParser(
-    source: SessionSource,
-    seenKeys: Set<string>,
-    dateRange?: DateRange,
-  ): SessionParser {
+  createSessionParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
     return createParser(source, seenKeys, dateRange)
   },
 }

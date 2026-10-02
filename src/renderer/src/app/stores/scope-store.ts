@@ -28,11 +28,11 @@ export const selectScope = (s: ScopeState): OverviewScope => ({
 // synchronously at module load, so this read is correct before any render.
 const initialPeriod = useSettingsStore.getState().defaultPeriod as OverviewPeriod
 
-export const useScopeStore = create<ScopeState>()((set) => ({
+export const useScopeStore = create<ScopeState>()(set => ({
   period: initialPeriod,
   customRange: null,
   provider: 'all',
-  setPeriod: (period) => set({ period, customRange: null }),
-  setCustomRange: (customRange) => set({ customRange }),
-  setProvider: (provider) => set({ provider }),
+  setPeriod: period => set({ period, customRange: null }),
+  setCustomRange: customRange => set({ customRange }),
+  setProvider: provider => set({ provider }),
 }))

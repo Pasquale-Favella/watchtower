@@ -3,6 +3,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 
 import { readSessionFile } from '../fs-utils.js'
+import { billableOutputTokens } from '../billable-output.js'
 import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
@@ -75,7 +76,10 @@ function parseSession(data: GeminiSession, seenKeys: Set<string>): ParsedProvide
   for (const msg of data.messages) {
     if (msg.type === 'user') {
       if (Array.isArray(msg.content)) {
-        lastUserMessage = msg.content.map(c => c.text).join(' ').slice(0, 500)
+        lastUserMessage = msg.content
+          .map(c => c.text)
+          .join(' ')
+          .slice(0, 500)
       } else if (typeof msg.content === 'string') {
         lastUserMessage = msg.content.slice(0, 500)
       }
@@ -122,7 +126,14 @@ function parseSession(data: GeminiSession, seenKeys: Set<string>): ParsedProvide
     // Gemini bills thoughts at the output token rate; calculateCost does not
     // accept a reasoning parameter, so fold thoughts into the output count for
     // pricing while keeping outputTokens / reasoningTokens reported separately.
-    const costUSD = calculateCost(msg.model, freshInput, totalOutput + totalThoughts, 0, totalCached, 0)
+    const costUSD = calculateCost(
+      msg.model,
+      freshInput,
+      billableOutputTokens('gemini', totalOutput, totalThoughts),
+      0,
+      totalCached,
+      0,
+    )
 
     results.push({
       provider: 'gemini',
@@ -197,7 +208,9 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         if (parsed.messages && parsed.sessionId) {
           data = parsed
         }
-      } catch { /* not single JSON */ }
+      } catch {
+        /* not single JSON */
+      }
 
       if (!data) {
         data = parseJsonl(raw)

@@ -129,4 +129,4 @@ export function pickPreferredHarness(harnesses: HarnessInfo[]): HarnessInfo | un
   return sorted[0]
 }
 
-export { harnessSpecs } from './harnesses/index.js'
+export { harnessSpecs } from './harnesses/index.js'

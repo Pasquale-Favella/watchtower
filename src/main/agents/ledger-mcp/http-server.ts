@@ -79,13 +79,19 @@ export function createLedgerMcpHttpHandler(
       sendJson(res, 400, { error: err instanceof Error ? err.message : 'bad request' })
       return
     }
+    const mcpServer = createLedgerMcpServer(store)
     try {
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
-      await createLedgerMcpServer(store).connect(transport)
+      await mcpServer.connect(transport)
       await transport.handleRequest(req, res, body)
     } catch (error) {
       reportSidecarRequestFailure(req.method, pathname, error)
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' })
+    } finally {
+      // This is a stateless, per-request SDK server. Its transport and protocol
+      // handlers end with the HTTP response; the LedgerStore belongs to the
+      // process and remains open for the next request.
+      await mcpServer.close()
     }
   }
 }

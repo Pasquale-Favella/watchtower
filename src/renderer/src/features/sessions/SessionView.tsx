@@ -30,8 +30,8 @@ function openPr(event: MouseEvent<HTMLAnchorElement>, url: string): void {
 
 function Stat({ label, value }: { label: string; value: string }): React.JSX.Element {
   return (
-    <div className="rounded-lg border bg-card p-3">
-      <div className="text-xs text-muted-foreground">{label}</div>
+    <div className="bg-card rounded-lg border p-3">
+      <div className="text-muted-foreground text-xs">{label}</div>
       <div className="mt-0.5 font-medium">{value}</div>
     </div>
   )
@@ -40,13 +40,21 @@ function Stat({ label, value }: { label: string; value: string }): React.JSX.Ele
 function CallCard({ call }: { call: SessionDetail['turns'][number]['assistantCalls'][number] }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   return (
-    <div className="rounded-md border bg-muted/30">
+    <div className="bg-muted/30 rounded-md border">
       <button className="flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => setOpen(!open)}>
-        <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground transition-transform', open && 'rotate-180')} />
+        <ChevronDown className={cn('text-muted-foreground h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
         <span className="font-mono text-xs">{call.model}</span>
-        <span className="text-xs text-muted-foreground">{call.provider}</span>
-        {call.isEstimated && <Badge variant="secondary" className="text-[10px]">estimated</Badge>}
-        {call.savingsUSD != null && <Badge variant="secondary" className="text-[10px]">saved {formatUsd(call.savingsUSD)}</Badge>}
+        <span className="text-muted-foreground text-xs">{call.provider}</span>
+        {call.isEstimated && (
+          <Badge variant="secondary" className="text-[10px]">
+            estimated
+          </Badge>
+        )}
+        {call.savingsUSD != null && (
+          <Badge variant="secondary" className="text-[10px]">
+            saved {formatUsd(call.savingsUSD)}
+          </Badge>
+        )}
         <span className="ml-auto text-xs font-medium">{formatUsd(call.costUSD)}</span>
       </button>
       {open && (
@@ -55,10 +63,18 @@ function CallCard({ call }: { call: SessionDetail['turns'][number]['assistantCal
             <span>in {call.usage.inputTokens.toLocaleString()}</span>
             <span>out {call.usage.outputTokens.toLocaleString()}</span>
             {call.usage.reasoningTokens > 0 && <span>reasoning {call.usage.reasoningTokens.toLocaleString()}</span>}
-            {call.usage.cacheReadInputTokens > 0 && <span>cache-read {call.usage.cacheReadInputTokens.toLocaleString()}</span>}
-            {call.usage.cacheCreationInputTokens > 0 && <span>cache-write {call.usage.cacheCreationInputTokens.toLocaleString()}</span>}
+            {call.usage.cacheReadInputTokens > 0 && (
+              <span>cache-read {call.usage.cacheReadInputTokens.toLocaleString()}</span>
+            )}
+            {call.usage.cacheCreationInputTokens > 0 && (
+              <span>cache-write {call.usage.cacheCreationInputTokens.toLocaleString()}</span>
+            )}
           </div>
-          {call.speed !== 'standard' && <div>speed: <Badge variant="outline">{call.speed}</Badge></div>}
+          {call.speed !== 'standard' && (
+            <div>
+              speed: <Badge variant="outline">{call.speed}</Badge>
+            </div>
+          )}
           {call.hasPlanMode && <div>plan mode</div>}
           {call.tools.length > 0 && <div>tools: {call.tools.join(', ')}</div>}
           {call.mcpTools.length > 0 && <div>mcp: {call.mcpTools.join(', ')}</div>}
@@ -73,35 +89,61 @@ function CallCard({ call }: { call: SessionDetail['turns'][number]['assistantCal
 function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   return (
-    <div className="rounded-md border bg-card">
+    <div className="bg-card rounded-md border">
       <button className="flex w-full items-start gap-3 px-3 py-2.5 text-left" onClick={() => setOpen(!open)}>
-        <ChevronDown className={cn('mt-0.5 h-3.5 w-3.5 text-muted-foreground transition-transform', open && 'rotate-180')} />
+        <ChevronDown
+          className={cn('text-muted-foreground mt-0.5 h-3.5 w-3.5 transition-transform', open && 'rotate-180')}
+        />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">{formatDate(turn.timestamp)}</span>
-            <Badge variant="outline" className="text-[10px]">{turn.category}</Badge>
+            <span className="text-muted-foreground text-xs">{formatDate(turn.timestamp)}</span>
+            <Badge variant="outline" className="text-[10px]">
+              {turn.category}
+            </Badge>
             {turn.gitBranch && (
-              <Badge variant="outline" className="text-[10px]"><GitBranch className="mr-0.5 h-3 w-3" />{turn.gitBranch}</Badge>
+              <Badge variant="outline" className="text-[10px]">
+                <GitBranch className="mr-0.5 h-3 w-3" />
+                {turn.gitBranch}
+              </Badge>
             )}
-            {turn.hasEdits && <Badge variant="outline" className="text-[10px]">edited</Badge>}
-            {turn.retries > 0 && <Badge variant="destructive" className="text-[10px]">{turn.retries} retries</Badge>}
+            {turn.hasEdits && (
+              <Badge variant="outline" className="text-[10px]">
+                edited
+              </Badge>
+            )}
+            {turn.retries > 0 && (
+              <Badge variant="destructive" className="text-[10px]">
+                {turn.retries} retries
+              </Badge>
+            )}
           </div>
           <p className="mt-1 line-clamp-2 text-sm">{turn.userMessage || '(no prompt)'}</p>
           {turn.prRefs.length > 0 && (
             <div className="mt-1 flex flex-wrap gap-1">
-              {turn.prRefs.map((pr) => (
-                <a key={pr} href={pr} title={pr} onClick={event => openPr(event, pr)} className="inline-flex items-center gap-0.5 text-xs text-brand-text hover:underline">
-                  <Link2 className="h-3 w-3" />PR
+              {turn.prRefs.map(pr => (
+                <a
+                  key={pr}
+                  href={pr}
+                  title={pr}
+                  onClick={event => openPr(event, pr)}
+                  className="text-brand-text inline-flex items-center gap-0.5 text-xs hover:underline"
+                >
+                  <Link2 className="h-3 w-3" />
+                  PR
                 </a>
               ))}
             </div>
           )}
         </div>
-        <span className="shrink-0 text-xs text-muted-foreground">{turn.assistantCalls.length} call{turn.assistantCalls.length === 1 ? '' : 's'}</span>
+        <span className="text-muted-foreground shrink-0 text-xs">
+          {turn.assistantCalls.length} call{turn.assistantCalls.length === 1 ? '' : 's'}
+        </span>
       </button>
       {open && (
         <div className="space-y-2 border-t px-3 py-2">
-          {turn.assistantCalls.map((call, i) => <CallCard key={i} call={call} />)}
+          {turn.assistantCalls.map((call, i) => (
+            <CallCard key={i} call={call} />
+          ))}
         </div>
       )}
     </div>
@@ -136,7 +178,7 @@ export function SessionView(): React.JSX.Element {
           </div>
           <div className="grid grid-cols-4 gap-3">
             {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="rounded-lg border bg-card p-3">
+              <div key={i} className="bg-card rounded-lg border p-3">
                 <Skeleton className="h-3 w-14" />
                 <Skeleton className="mt-1.5 h-4 w-20" />
               </div>
@@ -154,7 +196,7 @@ export function SessionView(): React.JSX.Element {
             </Button>
             <div>
               <h2 className="text-lg font-semibold">{session.title || session.sessionId}</h2>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 {session.project} · {session.provider} · {formatDate(session.firstTimestamp)}
               </p>
             </div>
@@ -162,9 +204,16 @@ export function SessionView(): React.JSX.Element {
 
           {session.prLinks.length > 0 && (
             <div className="flex flex-wrap gap-2">
-              {session.prLinks.map((pr) => (
-                <a key={pr} href={pr} title={pr} onClick={event => openPr(event, pr)} className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-brand-text hover:bg-muted">
-                  <Link2 className="h-3 w-3" />{pr.split('/').slice(-2).join('/')}
+              {session.prLinks.map(pr => (
+                <a
+                  key={pr}
+                  href={pr}
+                  title={pr}
+                  onClick={event => openPr(event, pr)}
+                  className="text-brand-text hover:bg-muted inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs"
+                >
+                  <Link2 className="h-3 w-3" />
+                  {pr.split('/').slice(-2).join('/')}
                 </a>
               ))}
             </div>
@@ -183,7 +232,12 @@ export function SessionView(): React.JSX.Element {
 
           {session.workingDirectory && (
             <Card>
-              <CardHeader><CardTitle className="text-base"><Tag className="mr-1 inline h-4 w-4" />Working directory</CardTitle></CardHeader>
+              <CardHeader>
+                <CardTitle className="text-base">
+                  <Tag className="mr-1 inline h-4 w-4" />
+                  Working directory
+                </CardTitle>
+              </CardHeader>
               <CardContent className="font-mono text-xs">{session.workingDirectory}</CardContent>
             </Card>
           )}
@@ -194,7 +248,9 @@ export function SessionView(): React.JSX.Element {
               <CardDescription>Tap a turn to expand its assistant calls</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
-              {session.turns.map((turn, i) => <Turn key={i} turn={turn} />)}
+              {session.turns.map((turn, i) => (
+                <Turn key={i} turn={turn} />
+              ))}
             </CardContent>
           </Card>
         </>

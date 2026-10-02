@@ -1,8 +1,15 @@
 import { join } from 'path'
 import { homedir } from 'os'
 
+import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { getShortModelName } from '../models.js'
-import { discoverSqliteSessions, createSqliteSessionParser, type SqliteProviderConfig } from './sqlite-session-parser.js'
+import {
+  discoverSqliteSessions,
+  createSqliteSessionParser,
+  OPENCODE_FAMILY_1X,
+  OPENCODE_FAMILY_2X,
+  type SqliteProviderConfig,
+} from './opencode-family-sqlite.js'
 import { discoverOpenCodeFileSessions, createOpenCodeFileSessionParser } from './opencode-file-parser.js'
 import type { Provider, ProbeRoot, SessionSource, SessionParser } from './types.js'
 
@@ -21,7 +28,7 @@ const toolNameMap: Record<string, string> = {
   patch: 'Patch',
 }
 
-function getDataDir(dataDir?: string): string {
+function getDataDir(dataDir?: string, paths?: AppPaths): string {
   // Test seam: createOpenCodeProvider(tmpDir) points at a base dir that still
   // gets the 'opencode' subdirectory appended, preserving existing fixtures
   // (tmpDir/opencode/opencode*.db and tmpDir/opencode/storage/...).
@@ -31,19 +38,26 @@ function getDataDir(dataDir?: string): string {
   // ~/.local/share/mimocode). This is the EXACT data directory — no 'opencode'
   // suffix — so a fork writing <dir>/<prefix>*.db or <dir>/storage/... is found
   // instead of silently yielding zero sessions. (issue #617)
-  const override = process.env['OPENCODE_DATA_DIR']
+  // Snapshot lookup (`overrideFor`), seam's own truthy check kept: a defined
+  // empty override falls through to the XDG default exactly as `''` did.
+  const override = overrideFor(paths, 'OPENCODE_DATA_DIR')
   if (override) return override
 
   // Default: $XDG_DATA_HOME/opencode or ~/.local/share/opencode.
-  const base = process.env['XDG_DATA_HOME'] ?? join(homedir(), '.local', 'share')
+  // `??` parity: the snapshot reports `null` for unset (never `''`), and an
+  // empty `XDG_DATA_HOME` still joins as the relative 'opencode'.
+  const base = platformFor(paths).xdgDataHome ?? join(homedir(), '.local', 'share')
   return join(base, 'opencode')
 }
 
-function getSqliteConfig(dataDir?: string): SqliteProviderConfig {
+/// Exported as OpenCode's own declaration of which schema generations it may be
+/// read as — the seam ADR 0006 wants checkable, so a test can assert the list
+/// without reading this file as text.
+export function getSqliteConfig(dataDir?: string, paths?: AppPaths): SqliteProviderConfig {
   return {
     providerName: 'opencode',
     displayName: 'OpenCode',
-    dbDir: getDataDir(dataDir),
+    dbDir: getDataDir(dataDir, paths),
     // Truthy check (not `??`): an empty-string `OPENCODE_DB_PREFIX` must fall
     // back to 'opencode'. With `??`, '' survives as the prefix and
     // `discoverSqliteSessions` matches every '*.db' file (filename.startsWith('')
@@ -51,13 +65,20 @@ function getSqliteConfig(dataDir?: string): SqliteProviderConfig {
     // `OPENCODE_DATA_DIR`'s truthy handling above, and makes behavior identical
     // for unset vs empty — which matches the env fingerprint, since
     // `computeEnvFingerprint` collapses both to 'OPENCODE_DB_PREFIX='. (issue #617)
-    dbFilePrefix: process.env['OPENCODE_DB_PREFIX'] || 'opencode',
+    // `||` against the snapshot keeps that: `''` is a DEFINED value there too
+    // (the resolver records raw strings), and it must reach the same default.
+    dbFilePrefix: overrideFor(paths, 'OPENCODE_DB_PREFIX') || 'opencode',
+    // OpenCode's own migration policy, declared here rather than inside the
+    // shared reader: 2.x is preferred, and the 1.x tables stay declared because
+    // 2.x FREEZES them at the upgrade, so a DB carries both and a session that
+    // never migrated is still read where its rows live. Most-preferred first.
+    generations: [OPENCODE_FAMILY_2X, OPENCODE_FAMILY_1X],
   }
 }
 
-export function createOpenCodeProvider(dataDir?: string): Provider {
-  const sqliteConfig = getSqliteConfig(dataDir)
-  const resolvedDataDir = getDataDir(dataDir)
+export function createOpenCodeProvider(dataDir?: string, paths?: AppPaths): Provider {
+  const sqliteConfig = getSqliteConfig(dataDir, paths)
+  const resolvedDataDir = getDataDir(dataDir, paths)
 
   return {
     name: 'opencode',
@@ -95,7 +116,11 @@ export function createOpenCodeProvider(dataDir?: string): Provider {
       if (source.path.endsWith('.json')) {
         return createOpenCodeFileSessionParser(source, seenKeys, resolvedDataDir, 'opencode')
       }
-      return createSqliteSessionParser(source, seenKeys, sqliteConfig)
+      // `paths` threads straight through to the shared reader's verbose gate:
+      // one trailing seam slot, no second override argument. A caller that
+      // omitted it (`kilo-code.ts`) resolves `appPaths()` there instead — the
+      // same lookup, at the reader rather than at the root.
+      return createSqliteSessionParser(source, seenKeys, sqliteConfig, paths)
     },
   }
 }

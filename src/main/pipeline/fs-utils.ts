@@ -1,6 +1,7 @@
 import { readFile, stat } from 'fs/promises'
 import { readFileSync, statSync, createReadStream } from 'fs'
 import { basename } from 'node:path'
+import { type AppPaths, overrideFor } from '../env.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
 
 // Hard cap well below V8's 512 MB string limit. Callers that need line-by-line
@@ -17,8 +18,15 @@ export const LARGE_STREAM_LINE_BYTES = 32 * 1024
 // not verbose-gated) so a dropped session never silently understates usage.
 export const MAX_STREAM_SESSION_FILE_BYTES = 4 * 1024 * 1024 * 1024
 
-function verbose(): boolean {
-  return process.env.WATCHTOWER_VERBOSE === '1'
+/**
+ * The one verbose-gate read in this module, through the `AppPaths` seam
+ * (`overrideFor`, so an unthreaded caller reads the same `process.env` value it
+ * always did). The `=== '1'` comparison is deliberately strict equality:
+ * 'true' or 'yes' never enabled it, and that has not changed. Callers inside
+ * this module call it with no argument, so they compile and behave as before.
+ */
+function verbose(paths?: AppPaths): boolean {
+  return overrideFor(paths, 'WATCHTOWER_VERBOSE') === '1'
 }
 
 function warn(msg: string): void {
@@ -43,10 +51,7 @@ function notice(filePath: string, code: string): void {
   })
 }
 
-export async function readSessionFile(
-  filePath: string,
-  encoding: BufferEncoding = 'utf-8'
-): Promise<string | null> {
+export async function readSessionFile(filePath: string, encoding: BufferEncoding = 'utf-8'): Promise<string | null> {
   let size: number
   try {
     size = (await stat(filePath)).size
@@ -100,10 +105,7 @@ type ReadSessionLinesOptions = {
   maxBytes?: number
 }
 
-export function readSessionLines(
-  filePath: string,
-  shouldSkipHead?: (head: string) => boolean,
-): AsyncGenerator<string>
+export function readSessionLines(filePath: string, shouldSkipHead?: (head: string) => boolean): AsyncGenerator<string>
 export function readSessionLines(
   filePath: string,
   shouldSkipHead?: (head: string) => boolean,
@@ -185,9 +187,7 @@ export async function* readSessionLines(
           headChecked = false
 
           if (shouldSkipHead) {
-            const head = lineLen > SKIP_HEAD
-              ? buf.subarray(0, SKIP_HEAD).toString('utf-8')
-              : buf.toString('utf-8')
+            const head = lineLen > SKIP_HEAD ? buf.subarray(0, SKIP_HEAD).toString('utf-8') : buf.toString('utf-8')
             if (shouldSkipHead(head)) continue
             yield formatLine(buf, lineLen, head)
           } else {
@@ -203,9 +203,8 @@ export async function* readSessionLines(
           // enter scanning mode — just look for \n without accumulating.
           if (shouldSkipHead && !headChecked && len >= SKIP_HEAD) {
             headChecked = true
-            const headBuf = parts.length === 1
-              ? parts[0]!.subarray(0, SKIP_HEAD)
-              : Buffer.concat(parts, len).subarray(0, SKIP_HEAD)
+            const headBuf =
+              parts.length === 1 ? parts[0]!.subarray(0, SKIP_HEAD) : Buffer.concat(parts, len).subarray(0, SKIP_HEAD)
             if (shouldSkipHead(headBuf.toString('utf-8'))) {
               skipping = true
               parts = []
@@ -221,9 +220,7 @@ export async function* readSessionLines(
       const buf = parts.length === 1 ? parts[0]! : Buffer.concat(parts, len)
       const lineLen = len
       if (shouldSkipHead) {
-        const head = lineLen > SKIP_HEAD
-          ? buf.subarray(0, SKIP_HEAD).toString('utf-8')
-          : buf.toString('utf-8')
+        const head = lineLen > SKIP_HEAD ? buf.subarray(0, SKIP_HEAD).toString('utf-8') : buf.toString('utf-8')
         if (!shouldSkipHead(head)) {
           yield formatLine(buf, lineLen, head)
         }

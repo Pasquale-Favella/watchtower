@@ -10,9 +10,9 @@ agent hangs the picker forever), a sequential probe loop (`detectHarnesses()`
 awaits each auth probe inline), manual child teardown (`cleanup()` in finally
 blocks scattered across `runtime.ts`/`ipc.ts`), and single-iterator cancel
 juggling (`iterator.return()` with no drain barrier, so late events can be
-lost). t3code solves the same problems with Effect-TS (`effect-acp` client,
-scoped instances, fiber interrupt + drain barriers). Issue #144 asked whether
-Effect earns its place here — with the UI staying as-is and no rewrite.
+lost). Effect provides scoped resources, fiber interruption, and drain barriers
+that address these gaps. Issue #144 asked whether Effect earns its place here —
+with the UI staying as-is and no rewrite.
 
 The F8 spike (pinned as `tests/agents-effect-primitives.test.ts`, 8 tests
 green in ~600ms against fakes mirroring the current seam shapes) answered:
@@ -45,10 +45,14 @@ transitives). `typecheck:node` passes unchanged (tests are vitest-only).
 ## Decision
 
 **Targeted adoption: Effect is allowed — and expected — inside
-`src/main/agents/` only**, behind the existing seams (`HarnessRuntime`,
-`detectHarnesses`, the `coach:*` IPC contract). Everything else stays:
+`src/main/agents/`**, behind the existing seams (`HarnessRuntime`,
+`detectHarnesses`, the `coach:*` IPC contract). The local ledger SQL boundary
+is the separately authorized exception in ADR 0031. The app pins Effect
+`4.0.0-rc.115` so both integrations use the same API generation. Elsewhere:
 
-- No Effect in the renderer, the stores, the pipeline, or the db-worker.
+- No Effect in the renderer or provider pipeline. The db-worker uses Effect only
+  through the ledger SQL client; worker orchestration and other stores stay
+  unchanged.
 - No Effect Schema: `zod` remains the single wire/extraction truth
   (ADRs 0003/0005). Effect types internal control flow, never wire shapes.
 - Granular subpath imports (`effect/Effect`, `effect/Scope`, …) in
@@ -65,11 +69,11 @@ transitives). `typecheck:node` passes unchanged (tests are vitest-only).
 - F0–F4 get timeouts, retries, scoped teardown, and honest cancel almost for
   free, plus deterministic time tests — the exact gaps behind the "picker
   pieno ma run KO" and orphan-child failure modes.
-- The harness layer gains a second paradigm: contributors touch Effect only
-  in `src/main/agents/`; the spike tests double as executable documentation
-  of the four allowed patterns.
+- The harness layer gains a second paradigm, with the ledger SQL client as a
+  separate, narrow boundary. The spike tests double as executable documentation
+  of the harness patterns; ADR 0031 documents the database integration.
 - ~26MB added to packaged `node_modules` (asar-internal, pure JS). Revisit
   if installer size becomes a constraint — the mitigations are narrower
   imports and dropping the spike-only transitives, not removal.
-- If a future phase needs Effect elsewhere (db-worker, pipeline), it gets
-  its own ADR — this decision does not pre-authorize sprawl.
+- Any future Effect adoption outside agents or the ledger SQL client needs its
+  own ADR — these decisions do not pre-authorize broader adoption.

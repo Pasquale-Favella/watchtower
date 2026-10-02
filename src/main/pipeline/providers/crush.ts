@@ -2,6 +2,7 @@ import { readFile } from 'fs/promises'
 import { join, resolve } from 'path'
 import { homedir, platform } from 'os'
 
+import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { calculateCost } from '../models.js'
 import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
@@ -29,16 +30,25 @@ type SessionRow = {
   message_count: number | null
 }
 
-function getRegistryPath(): string {
-  const explicit = process.env['CRUSH_GLOBAL_DATA']
+/// Registry seam, exported for the AppPaths thread (the other providers expose
+/// their path resolvers the same way — `getClineDataPath`,
+/// `getIBMBobGlobalStorageDirs`): `discoverSessions` has no way to surface the
+/// resolved path, and an untestable seam is one that drifts. Every branch keeps
+/// its own normalization on top of the snapshot: `overrideFor` reports the raw
+/// string (a defined `''` is falsy here, as it was), and `platformFor` reports
+/// `null` for unset, which `??` skips exactly like an `undefined` env var did.
+export function getRegistryPath(paths?: AppPaths): string {
+  const explicit = overrideFor(paths, 'CRUSH_GLOBAL_DATA')
   if (explicit) return join(explicit, 'projects.json')
 
+  // `platform` below is the OS module's, NOT the snapshot's: the snapshot
+  // carries platform ROOTS (`AppPaths.platform`), never an OS name.
   if (platform() === 'win32') {
-    const localAppData = process.env['LOCALAPPDATA'] ?? join(homedir(), 'AppData', 'Local')
+    const localAppData = platformFor(paths).localAppData ?? join(homedir(), 'AppData', 'Local')
     return join(localAppData, 'crush', 'projects.json')
   }
 
-  const xdg = process.env['XDG_DATA_HOME'] ?? join(homedir(), '.local', 'share')
+  const xdg = platformFor(paths).xdgDataHome ?? join(homedir(), '.local', 'share')
   return join(xdg, 'crush', 'projects.json')
 }
 
@@ -165,9 +175,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         const model = dominantModel(db, sessionId)
         // Crush already records cost in dollars; trust it. Fall back to
         // pricing-table calculation only when the row is missing a cost.
-        const costUSD = cost > 0
-          ? cost
-          : calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
+        const costUSD = cost > 0 ? cost : calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
 
         yield {
           provider: 'crush',
@@ -222,7 +230,7 @@ async function discoverFromDb(dbPath: string, project: string): Promise<SessionS
   }
 }
 
-export function createCrushProvider(): Provider {
+export function createCrushProvider(paths?: AppPaths): Provider {
   return {
     name: 'crush',
     displayName: 'Crush',
@@ -237,7 +245,7 @@ export function createCrushProvider(): Provider {
 
     async discoverSessions(): Promise<SessionSource[]> {
       if (!isSqliteAvailable()) return []
-      const registry = await loadRegistry(getRegistryPath())
+      const registry = await loadRegistry(getRegistryPath(paths))
       const sources: SessionSource[] = []
       for (const entry of registry) {
         const dbPath = resolveDbPath(entry)

@@ -24,9 +24,13 @@ function seedLedger(): { dbPath: string; cleanup: () => void } {
 
   const db = new DatabaseSync(dbPath)
   db.exec('BEGIN')
-  const sourceId = Number(db.prepare(
-    "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('claude', 'fp1', 'C:\\work\\.claude\\sessions.json')",
-  ).run().lastInsertRowid)
+  const sourceId = Number(
+    db
+      .prepare(
+        "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('claude', 'fp1', 'C:\\work\\.claude\\sessions.json')",
+      )
+      .run().lastInsertRowid,
+  )
   db.prepare(
     "INSERT INTO ledger_session (source_id, session_id, project, working_directory, agent_type, title) VALUES (?, 'sess-a', 'watchtower', 'C:\\work', 'claude', 'Fix bug')",
   ).run(sourceId)

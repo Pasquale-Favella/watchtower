@@ -103,7 +103,19 @@ describe('buildYieldPayload (ADR 0008)', () => {
       commitAt(repoDir, 'file.txt', 'hello\n', 'feat: shipped', '2026-01-01T10:30:00Z')
 
       const session = makeSession({ sessionId: 'sess-prod', project: 'app', ...tightWindow, totalCostUSD: 5 })
-      const payload = await buildYieldPayload([{ project: 'app', projectPath: repoDir, sessions: [session], totalCostUSD: 5, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 1, totalProxiedCostUSD: 0 }],
+      const payload = await buildYieldPayload(
+        [
+          {
+            project: 'app',
+            projectPath: repoDir,
+            sessions: [session],
+            totalCostUSD: 5,
+            totalSavingsUSD: 0,
+            totalEstimatedCostUSD: 0,
+            totalApiCalls: 1,
+            totalProxiedCostUSD: 0,
+          },
+        ],
         { period: 'lifetime', range: RANGE },
       )
 
@@ -124,7 +136,19 @@ describe('buildYieldPayload (ADR 0008)', () => {
       revertAt(repoDir, 'file.txt', 'original\n', featureSha, '2026-01-01T11:00:00Z')
 
       const session = makeSession({ sessionId: 'sess-rev', project: 'app', ...tightWindow, totalCostUSD: 8 })
-      const payload = await buildYieldPayload([{ project: 'app', projectPath: repoDir, sessions: [session], totalCostUSD: 8, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 1, totalProxiedCostUSD: 0 }],
+      const payload = await buildYieldPayload(
+        [
+          {
+            project: 'app',
+            projectPath: repoDir,
+            sessions: [session],
+            totalCostUSD: 8,
+            totalSavingsUSD: 0,
+            totalEstimatedCostUSD: 0,
+            totalApiCalls: 1,
+            totalProxiedCostUSD: 0,
+          },
+        ],
         { period: 'lifetime', range: RANGE },
       )
 
@@ -144,7 +168,19 @@ describe('buildYieldPayload (ADR 0008)', () => {
       revertAt(repoDir, 'file.txt', 'original\n', shortSha, '2026-01-01T11:00:00Z')
 
       const session = makeSession({ sessionId: 'sess-rev-short', project: 'app', ...tightWindow, totalCostUSD: 3 })
-      const payload = await buildYieldPayload([{ project: 'app', projectPath: repoDir, sessions: [session], totalCostUSD: 3, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 1, totalProxiedCostUSD: 0 }],
+      const payload = await buildYieldPayload(
+        [
+          {
+            project: 'app',
+            projectPath: repoDir,
+            sessions: [session],
+            totalCostUSD: 3,
+            totalSavingsUSD: 0,
+            totalEstimatedCostUSD: 0,
+            totalApiCalls: 1,
+            totalProxiedCostUSD: 0,
+          },
+        ],
         { period: 'lifetime', range: RANGE },
       )
 
@@ -161,7 +197,19 @@ describe('buildYieldPayload (ADR 0008)', () => {
       commitAt(repoDir, 'file.txt', 'hello\n', 'feat: unrelated', '2026-01-01T16:00:00Z')
 
       const session = makeSession({ sessionId: 'sess-aban', project: 'app', ...tightWindow, totalCostUSD: 12 })
-      const payload = await buildYieldPayload([{ project: 'app', projectPath: repoDir, sessions: [session], totalCostUSD: 12, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 1, totalProxiedCostUSD: 0 }],
+      const payload = await buildYieldPayload(
+        [
+          {
+            project: 'app',
+            projectPath: repoDir,
+            sessions: [session],
+            totalCostUSD: 12,
+            totalSavingsUSD: 0,
+            totalEstimatedCostUSD: 0,
+            totalApiCalls: 1,
+            totalProxiedCostUSD: 0,
+          },
+        ],
         { period: 'lifetime', range: RANGE },
       )
 
@@ -180,12 +228,30 @@ describe('buildYieldPayload (ADR 0008)', () => {
 
       const winner = makeSession({ sessionId: 'sess-tight', project: 'app', ...tightWindow, totalCostUSD: 5 })
       const loser = makeSession({ sessionId: 'sess-broad', project: 'app', ...broadWindow, totalCostUSD: 3 })
-      const payload = await buildYieldPayload([{ project: 'app', projectPath: repoDir, sessions: [loser, winner], totalCostUSD: 8, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 2, totalProxiedCostUSD: 0 }],
+      const payload = await buildYieldPayload(
+        [
+          {
+            project: 'app',
+            projectPath: repoDir,
+            sessions: [loser, winner],
+            totalCostUSD: 8,
+            totalSavingsUSD: 0,
+            totalEstimatedCostUSD: 0,
+            totalApiCalls: 2,
+            totalProxiedCostUSD: 0,
+          },
+        ],
         { period: 'lifetime', range: RANGE },
       )
 
-      expect(payload.details.find(d => d.sessionId === 'sess-tight')).toMatchObject({ category: 'productive', commitCount: 1 })
-      expect(payload.details.find(d => d.sessionId === 'sess-broad')).toMatchObject({ category: 'ambiguous', commitCount: 0 })
+      expect(payload.details.find(d => d.sessionId === 'sess-tight')).toMatchObject({
+        category: 'productive',
+        commitCount: 1,
+      })
+      expect(payload.details.find(d => d.sessionId === 'sess-broad')).toMatchObject({
+        category: 'ambiguous',
+        commitCount: 0,
+      })
       expect(payload.summary.productive.sessions).toBe(1)
       expect(payload.summary.ambiguous).toMatchObject({ costUSD: 3, sessions: 1 })
     } finally {
@@ -197,15 +263,37 @@ describe('buildYieldPayload (ADR 0008)', () => {
     const repo1 = await mkdtemp(join(tmpdir(), 'yield-sep1-'))
     const repo2 = await mkdtemp(join(tmpdir(), 'yield-sep2-'))
     try {
-      for (const [dir, name] of [[repo1, 'one'], [repo2, 'two']] as const) {
+      for (const [dir, name] of [
+        [repo1, 'one'],
+        [repo2, 'two'],
+      ] as const) {
         initRepo(dir)
         commitAt(dir, 'file.txt', `${name}\n`, `feat: ${name}`, '2026-01-01T10:30:00Z')
       }
       const session1 = makeSession({ sessionId: 'r1', project: 'r1', ...broadWindow, totalCostUSD: 4 })
       const session2 = makeSession({ sessionId: 'r2', project: 'r2', ...broadWindow, totalCostUSD: 4 })
-      const payload = await buildYieldPayload([
-          { project: 'r1', projectPath: repo1, sessions: [session1], totalCostUSD: 4, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 1, totalProxiedCostUSD: 0 },
-          { project: 'r2', projectPath: repo2, sessions: [session2], totalCostUSD: 4, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 1, totalProxiedCostUSD: 0 },
+      const payload = await buildYieldPayload(
+        [
+          {
+            project: 'r1',
+            projectPath: repo1,
+            sessions: [session1],
+            totalCostUSD: 4,
+            totalSavingsUSD: 0,
+            totalEstimatedCostUSD: 0,
+            totalApiCalls: 1,
+            totalProxiedCostUSD: 0,
+          },
+          {
+            project: 'r2',
+            projectPath: repo2,
+            sessions: [session2],
+            totalCostUSD: 4,
+            totalSavingsUSD: 0,
+            totalEstimatedCostUSD: 0,
+            totalApiCalls: 1,
+            totalProxiedCostUSD: 0,
+          },
         ],
         { period: 'lifetime', range: RANGE },
       )
@@ -231,9 +319,28 @@ describe('buildYieldPayload (ADR 0008)', () => {
 
       const sessionA = makeSession({ sessionId: 'sub-a', project: 'pkg-a', ...tightWindow, totalCostUSD: 5 })
       const sessionB = makeSession({ sessionId: 'sub-b', project: 'pkg-b', ...broadWindow, totalCostUSD: 3 })
-      const payload = await buildYieldPayload([
-          { project: 'pkg-a', projectPath: subA, sessions: [sessionA], totalCostUSD: 5, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 1, totalProxiedCostUSD: 0 },
-          { project: 'pkg-b', projectPath: subB, sessions: [sessionB], totalCostUSD: 3, totalSavingsUSD: 0, totalEstimatedCostUSD: 0, totalApiCalls: 1, totalProxiedCostUSD: 0 },
+      const payload = await buildYieldPayload(
+        [
+          {
+            project: 'pkg-a',
+            projectPath: subA,
+            sessions: [sessionA],
+            totalCostUSD: 5,
+            totalSavingsUSD: 0,
+            totalEstimatedCostUSD: 0,
+            totalApiCalls: 1,
+            totalProxiedCostUSD: 0,
+          },
+          {
+            project: 'pkg-b',
+            projectPath: subB,
+            sessions: [sessionB],
+            totalCostUSD: 3,
+            totalSavingsUSD: 0,
+            totalEstimatedCostUSD: 0,
+            totalApiCalls: 1,
+            totalProxiedCostUSD: 0,
+          },
         ],
         { period: 'lifetime', range: RANGE },
       )
@@ -256,13 +363,16 @@ function yieldMakeLedger(): LedgerStore {
   return new LedgerStore(join(mkdtempSync(join(tmpdir(), 'tr-yld-')), 'data.db'))
 }
 
-function yieldCachedFile(index: number, opts: {
-  sessionId: string
-  project?: string
-  workingDirectory?: string
-  iso: string
-  cost?: number
-}): CachedFile {
+function yieldCachedFile(
+  index: number,
+  opts: {
+    sessionId: string
+    project?: string
+    workingDirectory?: string
+    iso: string
+    cost?: number
+  },
+): CachedFile {
   const call: CachedCall = {
     ...buildFixtureCachedCall(index),
     costUSD: opts.cost ?? 1,
@@ -340,14 +450,20 @@ describe('buildYieldViewFromLedger (aggregation seam scope)', () => {
       commitAt(repoDir, 'file.txt', 'in\n', 'feat: in range', '2026-01-01T10:30:00Z')
       const store = yieldMakeLedger()
       yieldPort(store, [
-        yieldCachedFile(0, { sessionId: 'sess-in', workingDirectory: repoDir, iso: '2026-01-01T10:15:00.000Z', cost: 5 }),
-        yieldCachedFile(1, { sessionId: 'sess-out', workingDirectory: repoDir, iso: '2026-02-01T10:15:00.000Z', cost: 7 }),
+        yieldCachedFile(0, {
+          sessionId: 'sess-in',
+          workingDirectory: repoDir,
+          iso: '2026-01-01T10:15:00.000Z',
+          cost: 5,
+        }),
+        yieldCachedFile(1, {
+          sessionId: 'sess-out',
+          workingDirectory: repoDir,
+          iso: '2026-02-01T10:15:00.000Z',
+          cost: 7,
+        }),
       ])
-      const payload = await buildYieldViewFromLedger(
-        store,
-        { period: 'lifetime', range: RANGE },
-        { now: LEDGER_NOW },
-      )
+      const payload = await buildYieldViewFromLedger(store, { period: 'lifetime', range: RANGE }, { now: LEDGER_NOW })
 
       expect(payload.details).toHaveLength(1)
       expect(payload.details[0]!.sessionId).toBe('sess-in')

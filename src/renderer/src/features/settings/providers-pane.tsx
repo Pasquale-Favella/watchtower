@@ -21,7 +21,9 @@ export function ProvidersPane() {
       if (cancelled) return
       setProviders(result.ok && result.data ? result.data.providers : [])
     })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   return (
@@ -48,7 +50,7 @@ export function ProvidersPane() {
           ))}
         </LoadingRegion>
       ) : providers.length === 0 ? (
-        <p className="text-[11.5px] text-muted-foreground">No providers detected yet — run a scan first.</p>
+        <p className="text-muted-foreground text-[11.5px]">No providers detected yet — run a scan first.</p>
       ) : (
         providers.map(provider => (
           <Card key={provider.name} className="px-4 py-3">
@@ -58,13 +60,13 @@ export function ProvidersPane() {
                 className="inline-block size-[9px] shrink-0 rounded-full"
                 style={{ background: seriesColorForModel(provider.name) }}
               />
-              <span className="text-[12.5px] font-medium text-foreground">{providerTitle(provider.name)}</span>
-              <span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <span className="inline-block size-[6px] rounded-full bg-success" />
+              <span className="text-foreground text-[12.5px] font-medium">{providerTitle(provider.name)}</span>
+              <span className="text-muted-foreground ml-auto flex items-center gap-1.5 text-[11px]">
+                <span className="bg-success inline-block size-[6px] rounded-full" />
                 Detected
               </span>
             </div>
-            <div className="mt-2 flex gap-4 text-[11px] text-muted-foreground">
+            <div className="text-muted-foreground mt-2 flex gap-4 text-[11px]">
               <span>{formatUsd(provider.cost)}</span>
               <span>{provider.calls.toLocaleString('en-US')} calls</span>
               <span>{provider.sessions.toLocaleString('en-US')} sessions</span>

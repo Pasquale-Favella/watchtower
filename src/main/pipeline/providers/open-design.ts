@@ -2,6 +2,7 @@ import { readdir, stat } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import { homedir, platform } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLines } from '../fs-utils.js'
 import { calculateCost } from '../models.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
@@ -129,7 +130,7 @@ async function discoverNamespacesDir(namespacesDir: string): Promise<SessionSour
 
   for (const ns of namespaces) {
     const runsDir = join(namespacesDir, ns, 'data', 'runs')
-    sources.push(...await discoverRunsDir(runsDir, ns))
+    sources.push(...(await discoverRunsDir(runsDir, ns)))
   }
 
   return sources
@@ -156,9 +157,9 @@ async function discoverOpenDesignSessions(baseDir: string): Promise<SessionSourc
   }
 
   const sources: SessionSource[] = []
-  sources.push(...await discoverRunsDir(join(baseDir, 'data', 'runs'), basename(baseDir) || PROVIDER_NAME))
-  sources.push(...await discoverRunsDir(join(baseDir, 'runs'), basename(baseDir) || PROVIDER_NAME))
-  sources.push(...await discoverNamespacesDir(baseName === 'namespaces' ? baseDir : join(baseDir, 'namespaces')))
+  sources.push(...(await discoverRunsDir(join(baseDir, 'data', 'runs'), basename(baseDir) || PROVIDER_NAME)))
+  sources.push(...(await discoverRunsDir(join(baseDir, 'runs'), basename(baseDir) || PROVIDER_NAME)))
+  sources.push(...(await discoverNamespacesDir(baseName === 'namespaces' ? baseDir : join(baseDir, 'namespaces'))))
   return dedupeSources(sources)
 }
 
@@ -202,7 +203,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         const costUSD = calculateCost(
           currentModel,
           uncachedInputTokens,
-          usage.outputTokens + usage.reasoningTokens,
+          billableOutputTokens(PROVIDER_NAME, usage.outputTokens, usage.reasoningTokens),
           0,
           usage.cacheReadTokens,
           0,

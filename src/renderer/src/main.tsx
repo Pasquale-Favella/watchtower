@@ -10,5 +10,5 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     <HotkeysProvider>
       <RouterProvider router={router} />
     </HotkeysProvider>
-  </React.StrictMode>
+  </React.StrictMode>,
 )

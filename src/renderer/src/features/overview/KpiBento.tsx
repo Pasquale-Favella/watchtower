@@ -29,15 +29,14 @@ function formatCount(unit: string): (v: number) => string {
   return (v: number) => `${Math.round(v).toLocaleString('en-US')} ${unit}`
 }
 
-function HeroShell({
-  className,
-  children,
-}: {
-  className?: string
-  children: React.ReactNode
-}) {
+function HeroShell({ className, children }: { className?: string; children: React.ReactNode }) {
   return (
-    <Card className={cn('gap-0 rounded-xl border border-border bg-card p-4 shadow-[var(--card-shadow)] ring-0 [--card-spacing:0px] sm:p-5', className)}>
+    <Card
+      className={cn(
+        'border-border bg-card gap-0 rounded-xl border p-4 shadow-[var(--card-shadow)] ring-0 [--card-spacing:0px] sm:p-5',
+        className,
+      )}
+    >
       {children}
     </Card>
   )
@@ -53,17 +52,21 @@ function SpendHero({ payload }: { payload: OverviewPayload }) {
   const total = payload.kpis.cost
 
   return (
-    <HeroShell
-      className="lg:col-span-3"
-    >
-      <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Total spend</p>
+    <HeroShell className="lg:col-span-3">
+      <p className="text-muted-foreground text-[11px] font-medium tracking-wider uppercase">Total spend</p>
       <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="font-mono text-[34px] font-bold leading-none tracking-tight tabular-nums text-primary">
+        <span className="text-primary font-mono text-[34px] leading-none font-bold tracking-tight tabular-nums">
           {formatUsd(total)}
         </span>
         {trend !== null && (
-          <span className={cn('text-[12px] font-medium tabular-nums', trend >= 0 ? 'text-muted-foreground' : 'text-primary')}>
-            {trend >= 0 ? '+' : ''}{Math.round(trend * 100)}% this week
+          <span
+            className={cn(
+              'text-[12px] font-medium tabular-nums',
+              trend >= 0 ? 'text-muted-foreground' : 'text-primary',
+            )}
+          >
+            {trend >= 0 ? '+' : ''}
+            {Math.round(trend * 100)}% this week
           </span>
         )}
       </div>
@@ -74,24 +77,25 @@ function SpendHero({ payload }: { payload: OverviewPayload }) {
           height={52}
           formatValue={(v: number) => `${formatUsd(v)} spend`}
         />
-        <p className="mt-1 text-[10.5px] text-muted-foreground">Daily spend · last {payload.daily.length} days</p>
+        <p className="text-muted-foreground mt-1 text-[10.5px]">Daily spend · last {payload.daily.length} days</p>
       </div>
 
       <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <div>
-            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              Portion priced from estimates
-            </p>
-            <p className="mt-0.5 font-mono text-[16px] font-semibold tabular-nums text-foreground">
-              {formatUsd(estimated)} <span className="font-sans text-[11px] font-normal text-muted-foreground">Estimates</span>
-            </p>
-          </div>
-          <div>
-            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Via local models</p>
-            <p className="mt-0.5 font-mono text-[16px] font-semibold tabular-nums text-foreground">
-              {formatUsd(saved)} <span className="font-sans text-[11px] font-normal text-muted-foreground">Local</span>
-            </p>
-          </div>
+        <div>
+          <p className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">
+            Portion priced from estimates
+          </p>
+          <p className="text-foreground mt-0.5 font-mono text-[16px] font-semibold tabular-nums">
+            {formatUsd(estimated)}{' '}
+            <span className="text-muted-foreground font-sans text-[11px] font-normal">Estimates</span>
+          </p>
+        </div>
+        <div>
+          <p className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">Via local models</p>
+          <p className="text-foreground mt-0.5 font-mono text-[16px] font-semibold tabular-nums">
+            {formatUsd(saved)} <span className="text-muted-foreground font-sans text-[11px] font-normal">Local</span>
+          </p>
+        </div>
       </div>
     </HeroShell>
   )
@@ -103,13 +107,11 @@ function SpendHero({ payload }: { payload: OverviewPayload }) {
 function EfficiencyHero({ payload }: { payload: OverviewPayload }) {
   const rate = payload.kpis.oneShotRate
   return (
-    <HeroShell
-      className="lg:col-span-2"
-    >
+    <HeroShell className="lg:col-span-2">
       <div className="grid grid-cols-2 gap-3">
         <button type="button" onClick={() => navigateToSection('sessions')} className="group min-w-0 text-left">
-          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Sessions</p>
-          <p className="mt-0.5 truncate font-mono text-[24px] font-bold leading-none tabular-nums text-foreground group-hover:text-primary">
+          <p className="text-muted-foreground text-[11px] font-medium tracking-wider uppercase">Sessions</p>
+          <p className="text-foreground group-hover:text-primary mt-0.5 truncate font-mono text-[24px] leading-none font-bold tabular-nums">
             {payload.kpis.sessions.toLocaleString('en-US')}
           </p>
           <Sparkline
@@ -120,8 +122,8 @@ function EfficiencyHero({ payload }: { payload: OverviewPayload }) {
           />
         </button>
         <button type="button" onClick={() => navigateToSection('sessions')} className="group min-w-0 text-left">
-          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Calls</p>
-          <p className="mt-0.5 truncate font-mono text-[24px] font-bold leading-none tabular-nums text-foreground group-hover:text-primary">
+          <p className="text-muted-foreground text-[11px] font-medium tracking-wider uppercase">Calls</p>
+          <p className="text-foreground group-hover:text-primary mt-0.5 truncate font-mono text-[24px] leading-none font-bold tabular-nums">
             {payload.kpis.calls.toLocaleString('en-US')}
           </p>
           <Sparkline
@@ -135,11 +137,13 @@ function EfficiencyHero({ payload }: { payload: OverviewPayload }) {
 
       <div className="mt-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">One-shot success rate</p>
-          <p className="mt-1 font-mono text-[30px] font-bold leading-none tabular-nums text-foreground">
+          <p className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">One-shot success rate</p>
+          <p className="text-foreground mt-1 font-mono text-[30px] leading-none font-bold tabular-nums">
             {rate === null ? '—' : `${Math.round(rate * 100)}%`}
           </p>
-          <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Edits landed on first try</p>
+          <p className="text-muted-foreground mt-1.5 text-[10px] font-medium tracking-wide uppercase">
+            Edits landed on first try
+          </p>
         </div>
         <EfficiencyGauge value={rate} />
       </div>
@@ -166,7 +170,7 @@ export function KpiBento({ payload }: { payload: OverviewPayload }) {
 export function KpiBentoSkeleton() {
   return (
     <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
-      <div className="rounded-xl border border-border bg-card p-4 sm:p-5 lg:col-span-3">
+      <div className="border-border bg-card rounded-xl border p-4 sm:p-5 lg:col-span-3">
         <Skeleton className="h-3 w-24" />
         <Skeleton className="mt-1.5 h-9 w-44" />
         <SkeletonBars className="mt-3 h-[52px]" />
@@ -182,7 +186,7 @@ export function KpiBentoSkeleton() {
           </div>
         </div>
       </div>
-      <div className="rounded-xl border border-border bg-card p-4 sm:p-5 lg:col-span-2">
+      <div className="border-border bg-card rounded-xl border p-4 sm:p-5 lg:col-span-2">
         <div className="grid grid-cols-2 gap-3">
           <div>
             <Skeleton className="h-3 w-16" />
@@ -195,7 +199,7 @@ export function KpiBentoSkeleton() {
             <SkeletonBars className="mt-1.5 h-[34px]" />
           </div>
         </div>
-      <div className="mt-3 flex items-center justify-between gap-3">
+        <div className="mt-3 flex items-center justify-between gap-3">
           <div>
             <Skeleton className="h-3 w-28" />
             <Skeleton className="mt-2 h-8 w-24" />

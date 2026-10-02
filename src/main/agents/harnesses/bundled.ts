@@ -28,11 +28,12 @@ export function resolveBundledEntry(spec: HarnessSpec, appRoot: string): string 
     return null
   }
 
-  const binPath = typeof bin === 'string'
-    ? bin
-    : bin !== null && typeof bin === 'object'
-      ? (bin as Record<string, string>)[bundled.bin]
-      : undefined
+  const binPath =
+    typeof bin === 'string'
+      ? bin
+      : bin !== null && typeof bin === 'object'
+        ? (bin as Record<string, string>)[bundled.bin]
+        : undefined
   if (typeof binPath !== 'string' || !binPath) return null
 
   const entry = join(pkgDir, binPath)

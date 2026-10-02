@@ -1,7 +1,11 @@
 import { mkdtempSync, readFileSync, readdirSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
+
+import { FxRates } from '../src/main/fx.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import { buildProjectsFromLedger } from '../src/main/views.js'
 import { buildFixtureReport } from './fixtures/report.js'
@@ -17,10 +21,21 @@ function tempPath(): string {
   return join(mkdtempSync(join(tmpdir(), 'tr-export-out-')), 'out')
 }
 
+/** Display-currency pin through the `FxRates` port (ADR 0032, Wave-6 pin):
+ * same persisted value as the old direct store write — the repository-direct
+ * layer sanitizes the code in `fx.ts`, so the stored result is unchanged. */
+function pinDisplayCurrency(store: LedgerStore, code: string): void {
+  Effect.runSync(
+    Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(
+      Effect.provide(FxRates.layerWithRepository(store)),
+    ),
+  )
+}
+
 describe('exportJson (ADR 0009: carries the selected display currency at export time)', () => {
   it('converts every cost column and records the active currency in the payload', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: new Date().toISOString() })
 
     const target = await exportJson(buildFixtureReport(), tempPath(), store)
@@ -55,7 +70,7 @@ describe('exportJson (ADR 0009: carries the selected display currency at export 
 
   it('rounds to zero fraction digits for JPY (¥412 not ¥412.37)', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('JPY')
+    pinDisplayCurrency(store, 'JPY')
     store.setCurrencyRate({ code: 'JPY', symbol: '¥', rate: 150, updatedAt: new Date().toISOString() })
 
     const target = await exportJson(buildFixtureReport(), tempPath(), store)
@@ -68,7 +83,7 @@ describe('exportJson (ADR 0009: carries the selected display currency at export 
 describe('exportCsv (ADR 0009: folder of CSVs in the selected display currency)', () => {
   it('writes one-table-per-file with currency-labeled headers and converted values', async () => {
     const store = makeStore()
-    store.setDisplayCurrency('EUR')
+    pinDisplayCurrency(store, 'EUR')
     store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: new Date().toISOString() })
 
     const folder = await exportCsv(buildFixtureReport(), tempPath(), store)
@@ -104,8 +119,9 @@ describe('exportCsv (ADR 0009: folder of CSVs in the selected display currency)'
     const store = makeStore()
     const dir = mkdtempSync(join(tmpdir(), 'tr-export-guard-'))
     mkdirSync(join(dir, 'occupied'), { recursive: true })
-    await expect(exportCsv(buildFixtureReport(), join(dir, 'occupied'), store))
-      .rejects.toThrow('no .watchtower-export marker')
+    await expect(exportCsv(buildFixtureReport(), join(dir, 'occupied'), store)).rejects.toThrow(
+      'no .watchtower-export marker',
+    )
     store.close()
   })
 })
@@ -145,9 +161,10 @@ describe('export git info (repoUrl in projects/sessions/records)', () => {
     expect('repoUrl' in data.records[0]!).toBe(false)
 
     const folder = await exportCsv(buildFixtureReport(), tempPath(), store)
-    const header = readFileSync(join(folder, 'projects.csv'), 'utf-8').split('\n')[0]!
+    const projectsCsv = readFileSync(join(folder, 'projects.csv'), 'utf-8')
+    const header = projectsCsv.split('\n')[0]!
     expect(header).toContain('repoUrl')
-    expect(readFileSync(join(folder, 'projects.csv'), 'utf-8')).not.toContain('github.com')
+    expect(projectsCsv).not.toContain('github.com')
     store.close()
   })
 

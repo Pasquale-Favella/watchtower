@@ -2,6 +2,7 @@ import { readdir, stat } from 'fs/promises'
 import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { calculateCost, getShortModelName } from '../models.js'
 import { isSqliteAvailable, openDatabase, isSqliteBusyError, type SqliteDatabase } from '../sqlite.js'
 import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
@@ -167,9 +168,7 @@ function usageExpression(columns: Set<string>): string {
     'cache_write_tokens',
     'reasoning_tokens',
   ]
-  const parts = usageColumns
-    .filter(name => columns.has(name))
-    .map(name => `coalesce(${name}, 0)`)
+  const parts = usageColumns.filter(name => columns.has(name)).map(name => `coalesce(${name}, 0)`)
   return parts.length > 0 ? parts.join(' + ') : '0'
 }
 
@@ -181,7 +180,9 @@ function parseTimestamp(raw: number | null): string {
 
 function firstUserMessage(messages: HermesMessageRow[]): string {
   const msg = messages.find(m => m.role === 'user' && typeof m.content === 'string' && m.content.trim().length > 0)
-  return Array.from(msg?.content ?? '').slice(0, 500).join('')
+  return Array.from(msg?.content ?? '')
+    .slice(0, 500)
+    .join('')
 }
 
 function mapToolName(raw: string): string {
@@ -197,13 +198,17 @@ function parseToolCalls(raw: string | null): HermesToolCall[] {
   if (!raw) return []
   try {
     const parsed = JSON.parse(raw) as unknown
-    return Array.isArray(parsed) ? parsed as HermesToolCall[] : []
+    return Array.isArray(parsed) ? (parsed as HermesToolCall[]) : []
   } catch {
     return []
   }
 }
 
-function collectTools(messages: HermesMessageRow[]): { tools: string[]; toolSequence: ToolCall[][]; bashCommands: string[] } {
+function collectTools(messages: HermesMessageRow[]): {
+  tools: string[]
+  toolSequence: ToolCall[][]
+  bashCommands: string[]
+} {
   const tools: string[] = []
   const toolSequence: ToolCall[][] = []
   const bashCommands: string[] = []
@@ -396,15 +401,17 @@ function createParser(source: SessionSource, seenKeys: Set<string>, hermesHome: 
         const calculatedCost = calculateCost(
           model,
           inputTokens,
-          outputTokens + reasoningTokens,
+          billableOutputTokens('hermes', outputTokens, reasoningTokens),
           cacheWriteTokens,
           cacheReadTokens,
           0,
         )
         const recordedCost =
-          (row.actual_cost_usd ?? 0) > 0 ? row.actual_cost_usd!
-          : (row.estimated_cost_usd ?? 0) > 0 ? row.estimated_cost_usd!
-          : null
+          (row.actual_cost_usd ?? 0) > 0
+            ? row.actual_cost_usd!
+            : (row.estimated_cost_usd ?? 0) > 0
+              ? row.estimated_cost_usd!
+              : null
         // When Hermes stored no cost (e.g. subscription-billed sessions), the
         // figure is our LiteLLM-priced estimate from the session token totals.
         const costUSD = recordedCost ?? calculatedCost
@@ -468,7 +475,7 @@ export function createHermesProvider(hermesHomeOverride?: string): Provider {
       const dbs = await findStateDbs(hermesHome)
       const sessions: SessionSource[] = []
       for (const { dbPath, profile } of dbs) {
-        sessions.push(...await discoverFromDb(dbPath, profile))
+        sessions.push(...(await discoverFromDb(dbPath, profile)))
       }
       return sessions
     },

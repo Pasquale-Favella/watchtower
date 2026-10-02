@@ -2,6 +2,7 @@ import { readdir, stat } from 'fs/promises'
 import { basename, join } from 'path'
 import { homedir } from 'os'
 
+import { billableOutputTokens } from '../billable-output.js'
 import { readSessionFile } from '../fs-utils.js'
 import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
@@ -93,9 +94,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         }
 
         if (entry.type === 'user' && entry.message) {
-          const texts = (entry.message.parts ?? [])
-            .filter(p => p.text && !p.thought)
-            .map(p => p.text!)
+          const texts = (entry.message.parts ?? []).filter(p => p.text && !p.thought).map(p => p.text!)
           if (texts.length > 0) {
             pendingUserMessage = texts.join(' ').slice(0, 500)
           }
@@ -119,7 +118,17 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         const reasoningTokens = usage.thoughtsTokenCount ?? 0
         const cachedTokens = usage.cachedContentTokenCount ?? 0
 
-        const costUSD = calculateCost(model, inputTokens, outputTokens + reasoningTokens, 0, cachedTokens, 0)
+        // Gemini-shaped usage: `thoughtsTokenCount` sits beside
+        // `candidatesTokenCount`, it is not a breakdown of it, so the
+        // reasoning fold still applies here.
+        const costUSD = calculateCost(
+          model,
+          inputTokens,
+          billableOutputTokens('qwen', outputTokens, reasoningTokens),
+          0,
+          cachedTokens,
+          0,
+        )
 
         yield {
           provider: 'qwen',

@@ -60,7 +60,16 @@ function buildDailyRows(projects: ProjectSummary[], store: LedgerStore): Row[] {
         if (!turn.timestamp) continue
         const day = turn.timestamp.slice(0, 10)
         if (!daily[day]) {
-          daily[day] = { cost: 0, savings: 0, calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, sessions: new Set() }
+          daily[day] = {
+            cost: 0,
+            savings: 0,
+            calls: 0,
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            sessions: new Set(),
+          }
         }
         daily[day]!.sessions.add(session.sessionId)
         for (const call of turn.assistantCalls) {
@@ -77,17 +86,19 @@ function buildDailyRows(projects: ProjectSummary[], store: LedgerStore): Row[] {
   }
   const currency = getActiveCurrency(store)
   const { code } = currency
-  return Object.entries(daily).sort().map(([date, d]) => ({
-    Date: date,
-    [`Cost (${code})`]: roundForActiveCurrency(convertCost(d.cost, currency), currency),
-    [`Saved (${code})`]: roundForActiveCurrency(convertCost(d.savings, currency), currency),
-    'API Calls': d.calls,
-    Sessions: d.sessions.size,
-    'Input Tokens': d.input,
-    'Output Tokens': d.output,
-    'Cache Read Tokens': d.cacheRead,
-    'Cache Write Tokens': d.cacheWrite,
-  }))
+  return Object.entries(daily)
+    .sort()
+    .map(([date, d]) => ({
+      Date: date,
+      [`Cost (${code})`]: roundForActiveCurrency(convertCost(d.cost, currency), currency),
+      [`Saved (${code})`]: roundForActiveCurrency(convertCost(d.savings, currency), currency),
+      'API Calls': d.calls,
+      Sessions: d.sessions.size,
+      'Input Tokens': d.input,
+      'Output Tokens': d.output,
+      'Cache Read Tokens': d.cacheRead,
+      'Cache Write Tokens': d.cacheWrite,
+    }))
 }
 
 function buildRecordRows(projects: ProjectSummary[], store: LedgerStore): Row[] {
@@ -146,11 +157,30 @@ function buildActivityRows(projects: ProjectSummary[], store: LedgerStore): Row[
 }
 
 function buildModelRows(projects: ProjectSummary[], store: LedgerStore): Row[] {
-  const modelTotals: Record<string, { calls: number; cost: number; savings: number; input: number; output: number; cacheRead: number; cacheWrite: number }> = {}
+  const modelTotals: Record<
+    string,
+    {
+      calls: number
+      cost: number
+      savings: number
+      input: number
+      output: number
+      cacheRead: number
+      cacheWrite: number
+    }
+  > = {}
   for (const project of projects) {
     for (const session of project.sessions) {
       for (const [model, d] of Object.entries(session.modelBreakdown)) {
-        const bucket = modelTotals[model] ?? { calls: 0, cost: 0, savings: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        const bucket = modelTotals[model] ?? {
+          calls: 0,
+          cost: 0,
+          savings: 0,
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+        }
         bucket.calls += d.calls
         bucket.cost += d.costUSD
         bucket.savings += d.savingsUSD
@@ -167,7 +197,7 @@ function buildModelRows(projects: ProjectSummary[], store: LedgerStore): Row[] {
   const { code } = currency
   return Object.entries(modelTotals)
     .filter(([name]) => name !== '<synthetic>')
-    .sort(([, a], [, b]) => (b.cost + b.savings) - (a.cost + a.savings))
+    .sort(([, a], [, b]) => b.cost + b.savings - (a.cost + a.savings))
     .map(([model, d]) => ({
       Model: model,
       [`Cost (${code})`]: roundForActiveCurrency(convertCost(d.cost, currency), currency),
@@ -232,13 +262,16 @@ function buildProjectRows(projects: ProjectSummary[], store: LedgerStore): Row[]
   const total = projects.reduce((s, p) => s + p.totalCostUSD, 0)
   return projects
     .slice()
-    .sort((a, b) => (b.totalCostUSD + b.totalSavingsUSD) - (a.totalCostUSD + a.totalSavingsUSD))
+    .sort((a, b) => b.totalCostUSD + b.totalSavingsUSD - (a.totalCostUSD + a.totalSavingsUSD))
     .map(p => ({
       Project: p.projectPath,
       repoUrl: p.repoUrl ?? undefined,
       [`Cost (${code})`]: roundForActiveCurrency(convertCost(p.totalCostUSD, currency), currency),
       [`Saved (${code})`]: roundForActiveCurrency(convertCost(p.totalSavingsUSD, currency), currency),
-      [`Avg/Session (${code})`]: p.sessions.length > 0 ? roundForActiveCurrency(convertCost(p.totalCostUSD / p.sessions.length, currency), currency) : '',
+      [`Avg/Session (${code})`]:
+        p.sessions.length > 0
+          ? roundForActiveCurrency(convertCost(p.totalCostUSD / p.sessions.length, currency), currency)
+          : '',
       'Share (%)': pct(p.totalCostUSD, total),
       'API Calls': p.totalApiCalls,
       Sessions: p.sessions.length,
@@ -251,9 +284,7 @@ function buildSessionRows(projects: ProjectSummary[], store: LedgerStore): Row[]
   const rows: Row[] = []
   for (const p of projects) {
     for (const s of p.sessions) {
-      const models = new Set(
-        s.turns.flatMap(turn => turn.assistantCalls.map(call => call.model).filter(Boolean)),
-      )
+      const models = new Set(s.turns.flatMap(turn => turn.assistantCalls.map(call => call.model).filter(Boolean)))
       rows.push({
         Project: p.projectPath,
         repoUrl: s.repoUrl ?? p.repoUrl ?? undefined,
@@ -267,7 +298,12 @@ function buildSessionRows(projects: ProjectSummary[], store: LedgerStore): Row[]
       })
     }
   }
-  return rows.sort((a, b) => ((b[`Cost (${code})`] as number) + (b[`Saved (${code})`] as number)) - ((a[`Cost (${code})`] as number) + (a[`Saved (${code})`] as number)))
+  return rows.sort(
+    (a, b) =>
+      (b[`Cost (${code})`] as number) +
+      (b[`Saved (${code})`] as number) -
+      ((a[`Cost (${code})`] as number) + (a[`Saved (${code})`] as number)),
+  )
 }
 
 function buildReadme(store: LedgerStore): string {
@@ -337,7 +373,7 @@ export async function exportCsv(projects: ProjectSummary[], outputPath: string, 
     if (!(await isExportFolder(folder))) {
       throw new Error(
         `Refusing to reuse non-empty directory ${folder}: no ${EXPORT_MARKER_FILE} marker. ` +
-        `Delete it manually or pick a different destination.`
+          `Delete it manually or pick a different destination.`,
       )
     }
     await clearExportFolder(folder)
@@ -391,7 +427,7 @@ export async function exportJson(projects: ProjectSummary[], outputPath: string,
       if (!head.includes('"schema": "watchtower.export.v')) {
         throw new Error(
           `Refusing to overwrite ${target}: file does not look like a watchtower export. ` +
-          `Delete it manually or pick a different destination.`
+            `Delete it manually or pick a different destination.`,
         )
       }
     } finally {

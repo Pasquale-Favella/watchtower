@@ -35,7 +35,9 @@ export function CoachSkillsView(): React.JSX.Element {
   }, [loadHarnesses])
 
   return (
-    <div className={cn('flex min-h-0 w-full max-w-[1180px] flex-1 flex-col', motionClass('flex flex-col', 'section-fade'))}>
+    <div
+      className={cn('flex min-h-0 w-full max-w-[1180px] flex-1 flex-col', motionClass('flex flex-col', 'section-fade'))}
+    >
       <ConversationView />
 
       {detection.error && <ErrorPanel message={detection.error} />}
