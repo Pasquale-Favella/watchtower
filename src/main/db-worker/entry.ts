@@ -7,6 +7,7 @@ import { openWorkerOwner } from '../worker-runtime.js'
 import { DbWorkerContext } from './context.js'
 import { makeWorkerOperationalLogSink } from './operational-log-sink.js'
 import type { DbWorkerData, DbWorkerRequest, DbWorkerResponse } from './protocol.js'
+import { workerProtocolError } from './protocol-errors.js'
 
 /**
  * The db-worker thread entry (ADR 0023) — emitted as `out/main/db-worker.js`
@@ -65,13 +66,13 @@ try {
         port.postMessage({
           id: req.id,
           ok: false,
-          error: err instanceof Error ? err.message : String(err),
+          error: workerProtocolError(err),
         } satisfies DbWorkerResponse),
     )
   })
 
   port.postMessage({ event: 'ready' })
 } catch (err) {
-  port.postMessage({ event: 'init-error', error: err instanceof Error ? err.message : String(err) })
+  port.postMessage({ event: 'init-error', error: workerProtocolError(err) })
   process.exitCode = 1
 }

@@ -24,7 +24,7 @@ vi.mock('../src/main/db-worker/context.js', () => ({
   },
 }))
 
-it('closes the real driver and reports the original error if worker context construction fails', async () => {
+it('closes the real driver and reports a safe error if worker context construction fails', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-boot-'))
   boot.init.dbPath = join(directory, 'ledger.db')
   boot.init.dataDir = directory
@@ -37,7 +37,7 @@ it('closes the real driver and reports the original error if worker context cons
     expect(close).toHaveBeenCalledTimes(1)
     expect(boot.postMessage).toHaveBeenCalledWith({
       event: 'init-error',
-      error: 'controlled context-construction failure',
+      error: 'The database operation failed.',
     })
     expect(boot.postMessage).not.toHaveBeenCalledWith({ event: 'ready' })
     expect(boot.on).not.toHaveBeenCalled()
