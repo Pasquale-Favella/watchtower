@@ -12,15 +12,19 @@ import {
   calculateCostResult,
   calculateRepricedCostResult,
   capturePricingCatalogue,
+  findUnpricedModels as findUnpricedModelsPure,
+  getLocalSavingsBaseline as getLocalSavingsBaselinePure,
   getModelCosts as getModelCostsPure,
   getTieredModelCosts as getTieredModelCostsPure,
+  isExpectedFreeModel as isExpectedFreeModelPure,
+  type LocalModelSavings,
   type ModelCosts,
   type PricingCatalogue,
   type PricingConfigLookup,
   type RepricedCall,
-  stripPinAndDate,
+  type UnpricedModelUsage,
 } from './pricing-calculation.js'
-import { looksLikeLocalModel, warnAboutUnknownModel } from './pricing-diagnostics.js'
+import { warnAboutUnknownModel } from './pricing-diagnostics.js'
 import {
   isProxiedPath as isProxiedPathPure,
   normalizeProxyPath as normalizeProxyPathPure,
@@ -29,6 +33,7 @@ import {
 
 export type { ModelCosts } from './pricing-calculation.js'
 export type { ConfigRatePair, PricingConfigLookup } from './pricing-calculation.js'
+export type { UnpricedModelUsage } from './pricing-calculation.js'
 /** Compatibility re-exports. Remove after consumers import the pure pricing module. */
 export { createPricingConfigLookup, normalizeModelKey } from './pricing-calculation.js'
 
@@ -472,13 +477,12 @@ export function setLocalModelSavings(mappings: Record<string, string>): void {
 }
 
 export function getLocalSavingsBaseline(rawModel: string): string | undefined {
-  if (!rawModel || typeof rawModel !== 'string') return undefined
-  // Defensive: bracket-accessing user-controlled keys on a plain object
-  // exposes the prototype chain (`__proto__` would resolve to Object.prototype).
-  // Use Object.hasOwn so a hostile JSONL model name cannot piggyback into
-  // Object.prototype either through the alias map or here.
-  if (!Object.hasOwn(userLocalModelSavings, rawModel)) return undefined
-  return userLocalModelSavings[rawModel]
+  return getLocalSavingsBaselinePure(userLocalModelSavings, rawModel)
+}
+
+/** Snapshot the local savings mapping for one application query. */
+export function captureLocalModelSavings(): LocalModelSavings {
+  return Object.freeze({ ...userLocalModelSavings })
 }
 
 /// Compute the hypothetical baseline cost for a local call. The baseline
@@ -605,95 +609,18 @@ export function getModelCosts(model: string): ModelCosts | null {
   return getModelCostsPure(captureModelPricingCatalogue(), model)
 }
 
-// Warn at most once per unknown model name per process. Without this, a model
-// missing from the pricing snapshot would silently price at $0 for every
-// session that used it, hiding real spend until the user noticed.
-export interface UnpricedModelUsage {
-  model: string
-  calls: number
-  tokens: number
-}
-
-/// Does this rate card charge anything at all? The unpriced signal's only
-/// question. It counts all four per-token rates, so a row that bills cache
-/// traffic alone still reads as priced, and — the other half of the same rule —
-/// a model that is genuinely free to cache is still recognised by its positive
-/// input/output rates rather than reading as a LiteLLM `[0,0]` stub. A `$0`
-/// cache rate is now a normal, honest rate (`vendorCosts`), not a signal.
-function hasBillableRate(costs: ModelCosts): boolean {
-  return (
-    costs.inputCostPerToken > 0 ||
-    costs.outputCostPerToken > 0 ||
-    costs.cacheWriteCostPerToken > 0 ||
-    costs.cacheReadCostPerToken > 0
-  )
-}
-
-// Exact-override lookup with the same key derivation getModelCosts uses. Lets
-// the unpriced detector distinguish "explicitly declared free by the user" (a
-// zero-rate override) from a zero-rate LiteLLM stub, which means "listed but
-// unknown price" and must still be flagged. Only the EXACT override form is
-// consulted: getModelCosts checks it before any table hit, so when one exists
-// it is provably what priced the model. Prefix and case-insensitive overrides
-// resolve AFTER table hits and so cannot prove the $0 was intentional; a
-// zero-rate stub shadowed by one still gets flagged (the honest direction).
-function exactPriceOverrideFor(model: string): ModelCosts | null {
-  const withPrefix = stripPinAndDate(model)
-  const canonicalName = getCanonicalName(model)
-  const canonical = resolveAlias(canonicalName)
-  return getPriceOverrideExact(model, withPrefix, canonicalName, canonical)
-}
-
-// Render-time unpriced detection (#638): flag aggregated model rows that carry
-// usage but $0 cost AND whose pricing lookup yields no billable rate right
-// now. Cost is computed at parse time and cached, so a parse-time registry
-// would miss cached sessions; a render-time check covers both and heals the
-// moment pricing data, an alias, or a price override arrives.
-//
-// Rows with cost > 0 are never flagged: aggregation keys rows by DISPLAY name
-// (parser.ts keys modelBreakdown via getShortModelName), which the pricing
-// lookup misses, so a priced model like "Opus 4.8" would otherwise false-flag.
-// $0 display-name rows ARE flagged even when the raw id would price today:
-// those tokens really did enter the report at $0 (a provider priced a
-// transformed name, or the session was cached before its model's pricing
-// landed). Conservative by design: a display key merging priced and unpriced
-// raw ids carries cost > 0 and is not flagged. Local-looking models and
-// models with a local-savings mapping are excluded because $0 is their
-// correct cost, as are zero-rate USER overrides (explicitly declared free).
-/// Models whose $0 cost is CORRECT rather than a pricing gap, mirroring the
-/// exclusions findUnpricedModels applies: local-looking models, models mapped
-/// to a local-savings baseline, and models an exact zero-rate user override
-/// declares free. Used to keep their calls out of the pricing-coverage
-/// denominator — otherwise a 95%-ollama user reads high coverage while every
-/// genuinely cost-bearing call is unpriced.
 export function isExpectedFreeModel(model: string): boolean {
-  if (looksLikeLocalModel(model)) return true
-  if (getLocalSavingsBaseline(model)) return true
-  const costs = getModelCosts(model)
-  if (costs && !hasBillableRate(costs) && exactPriceOverrideFor(model)) return true
-  return false
+  const catalogue = captureModelPricingCatalogue()
+  const localSavings = captureLocalModelSavings()
+  return isExpectedFreeModelPure(catalogue, localSavings, model)
 }
 
 export function findUnpricedModels(
   rows: Iterable<{ model: string; calls: number; cost: number; tokens?: number }>,
 ): UnpricedModelUsage[] {
-  const out: UnpricedModelUsage[] = []
-  for (const row of rows) {
-    const { model } = row
-    const tokens = row.tokens ?? 0
-    if (!model || model === '<synthetic>') continue
-    if (row.calls <= 0 && tokens <= 0) continue
-    if (row.cost > 0) continue
-    if (looksLikeLocalModel(model)) continue
-    if (getLocalSavingsBaseline(model)) continue
-    const costs = getModelCosts(model)
-    if (costs && hasBillableRate(costs)) continue
-    if (costs && exactPriceOverrideFor(model)) continue
-    out.push({ model, calls: row.calls, tokens })
-  }
-  return out.sort(
-    (a, b) => b.tokens - a.tokens || b.calls - a.calls || (a.model < b.model ? -1 : a.model > b.model ? 1 : 0),
-  )
+  const catalogue = captureModelPricingCatalogue()
+  const localSavings = captureLocalModelSavings()
+  return findUnpricedModelsPure(catalogue, localSavings, rows)
 }
 
 // ── Context-window tiered pricing ─────────────────────────────────────────
@@ -797,10 +724,6 @@ const ROUTED_ID_SEGMENTS: ReadonlySet<string> = new Set([
   'camel-ai',
 ])
 
-function getCanonicalName(model: string): string {
-  return stripPinAndDate(model).replace(/^[^/]+\//, '')
-}
-
 function resolveAlias(model: string): string {
   if (Object.hasOwn(userAliases, model) && userAliases[model] !== undefined) return userAliases[model]
   if (Object.hasOwn(BUILTIN_ALIASES, model) && BUILTIN_ALIASES[model] !== undefined) return BUILTIN_ALIASES[model]
@@ -809,13 +732,6 @@ function resolveAlias(model: string): string {
   return lowercase !== model && lowercaseAlias !== undefined ? lowercaseAlias : model
 }
 
-function getPriceOverrideExact(...keys: string[]): ModelCosts | null {
-  for (const key of keys) {
-    const costs = userPriceOverrides.get(key)
-    if (costs) return costs
-  }
-  return null
-}
 type ContextWindowTier = {
   /** Inclusive lower bound in PROMPT tokens (input + cache-read + cache-write
    *  — the tokens occupying the context window for this request).

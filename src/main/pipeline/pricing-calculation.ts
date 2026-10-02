@@ -145,6 +145,12 @@ function hasBillableRate(costs: ModelCosts): boolean {
   )
 }
 
+/** Names that conventionally identify a model served by a local runtime. */
+export function looksLikeLocalModel(name: string): boolean {
+  if (name.includes(':') && !name.startsWith('http')) return true
+  return /[-_](q[2-8](_[a-z0-9]+)?|bf16|fp16|gguf|f16|f32)$/i.test(name)
+}
+
 function canonicalName(model: string): string {
   return stripPinAndDate(model).replace(/^[^/]+\//, '')
 }
@@ -191,6 +197,16 @@ function exactOverride(catalogue: PricingCatalogue, ...keys: string[]): ModelCos
     if (value) return value
   }
   return undefined
+}
+
+/** The exact user override that can authoritatively explain a free rate card.
+ * Prefix and case-insensitive lookups intentionally do not count: normal price
+ * resolution reaches catalogue cards before those fallback forms. */
+function exactPriceOverrideFor(catalogue: PricingCatalogue, model: string): ModelCosts | undefined {
+  const withPrefix = stripPinAndDate(model)
+  const name = canonicalName(model)
+  const canonical = alias(catalogue, name)
+  return exactOverride(catalogue, model, withPrefix, name, canonical)
 }
 
 function resolve(catalogue: PricingCatalogue, model: string): Resolution | null {
@@ -272,6 +288,70 @@ function tiered(catalogue: PricingCatalogue, model: string, promptTokens: number
 
 export function getModelCosts(catalogue: PricingCatalogue, model: string): ModelCosts | null {
   return resolve(catalogue, model)?.costs ?? null
+}
+
+export type LocalModelSavings = Readonly<Record<string, string>>
+
+export interface UnpricedModelUsage {
+  model: string
+  calls: number
+  tokens: number
+}
+
+/** Resolve only an explicitly captured raw model key, preserving the live
+ * adapter's existing exact-key mapping semantics. */
+export function getLocalSavingsBaseline(localSavings: LocalModelSavings, rawModel: string): string | undefined {
+  if (typeof rawModel !== 'string' || !rawModel || !Object.hasOwn(localSavings, rawModel)) return undefined
+  return localSavings[rawModel]
+}
+
+function hasLocalSavingsMapping(localSavings: LocalModelSavings, model: string): boolean {
+  return Boolean(getLocalSavingsBaseline(localSavings, model))
+}
+
+/** Models whose $0 cost is correct rather than a pricing gap: local-looking
+ * models, models mapped to a local-savings baseline, and models an exact zero-
+ * rate user override declares free. */
+export function isExpectedFreeModel(
+  catalogue: PricingCatalogue,
+  localSavings: LocalModelSavings,
+  model: string,
+): boolean {
+  if (looksLikeLocalModel(model)) return true
+  if (hasLocalSavingsMapping(localSavings, model)) return true
+  const costs = getModelCosts(catalogue, model)
+  return Boolean(costs && !hasBillableRate(costs) && exactPriceOverrideFor(catalogue, model))
+}
+
+/** Render-time coverage check for aggregated model rows. A render-time check
+ * covers cached sessions too and updates when pricing, aliases, or overrides
+ * change. Positive-cost rows are not flagged because their model key can be a
+ * display name the price catalogue cannot resolve. Zero-cost display-name rows
+ * are flagged even if the corresponding raw id prices now: those tokens were
+ * recorded at zero. Local-looking models and rows with a savings mapping are
+ * excluded because zero is their expected cost. */
+export function findUnpricedModels(
+  catalogue: PricingCatalogue,
+  localSavings: LocalModelSavings,
+  rows: Iterable<{ model: string; calls: number; cost: number; tokens?: number }>,
+): UnpricedModelUsage[] {
+  const out: UnpricedModelUsage[] = []
+  for (const row of rows) {
+    const { model } = row
+    const tokens = row.tokens ?? 0
+    if (!model || model === '<synthetic>') continue
+    if (row.calls <= 0 && tokens <= 0) continue
+    if (row.cost > 0) continue
+    if (looksLikeLocalModel(model)) continue
+    if (hasLocalSavingsMapping(localSavings, model)) continue
+    const costs = getModelCosts(catalogue, model)
+    if (costs && hasBillableRate(costs)) continue
+    if (costs && exactPriceOverrideFor(catalogue, model)) continue
+    out.push({ model, calls: row.calls, tokens })
+  }
+  return out.sort(
+    (a, b) => b.tokens - a.tokens || b.calls - a.calls || (a.model < b.model ? -1 : a.model > b.model ? 1 : 0),
+  )
 }
 
 export function getTieredModelCosts(

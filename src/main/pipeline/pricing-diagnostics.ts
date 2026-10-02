@@ -4,13 +4,12 @@ import * as Layer from 'effect/Layer'
 import { PricingDiagnostics } from '../application/pricing-diagnostics.js'
 import { type AppPaths, overrideFor } from '../env.js'
 import { queueLogRecord } from './file-errors.js'
+import { looksLikeLocalModel } from './pricing-calculation.js'
+
+/** Compatibility re-export; the model-name predicate is pure pricing logic. */
+export { looksLikeLocalModel }
 
 const warnedUnknownModels = new Set<string>()
-
-export function looksLikeLocalModel(name: string): boolean {
-  if (name.includes(':') && !name.startsWith('http')) return true
-  return /[-_](q[2-8](_[a-z0-9]+)?|bf16|fp16|gguf|f16|f32)$/i.test(name)
-}
 
 function shouldWarnAboutUnknownModel(name: string, paths?: AppPaths): boolean {
   if (!name || name === '<synthetic>' || warnedUnknownModels.has(name)) return false
