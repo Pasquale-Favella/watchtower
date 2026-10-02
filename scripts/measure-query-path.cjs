@@ -4,9 +4,8 @@
 // Zod-validated in full") stops being an argument and becomes a number.
 //
 // What is REAL here (not a reproduction):
-//   - the schema: the actual migrations run. `new LedgerStore(path)` executes
-//     migration 1 `initial_ledger_schema` (src/main/store/ledger.ts:66-212)
-//     through `Migrator.fromRecord` (src/main/store/sqlite-migrations.ts:24).
+//   - the schema: `new LedgerStore(path)` runs the shared initializer in
+//     src/main/store/ledger-initialization.ts through the actual Migrator.
 //     No DDL is transcribed into this file. A drift guard compares the live
 //     `PRAGMA table_info` against the column names named in EXPECTED_COLUMNS
 //     (transcribed from that DDL, with the line ranges) and aborts on drift.
@@ -14,12 +13,11 @@
 //     (src/main/store/ledger.ts:227) from synthetic session-cache files, so
 //     every column, every `*_json` blob and `base_cost_usd` is whatever the
 //     pipeline's own mapper emits. Only the *content* is synthetic.
-//   - the read path: `LedgerStore.getCalls()` etc. run the real repository
-//     (`ledger-repository.ts:111-153`), the real `SqlClient` over `node:sqlite`,
-//     and the real `z.array(<rowSchema>).parse(rows)`.
-//   - the aggregation path: the real `buildSessionSummaries`
-//     (store/aggregate.ts:493) and the real `store:views` / `store:analytics` /
-//     `overview:query` / export-read builders from views.ts and overview.ts.
+//   - the read path: `LedgerStore.getCalls()` etc. run ledger-repository.ts,
+//     SqlClient over node:sqlite, and the authoritative Effect row codecs.
+//   - the aggregation path: the real compatibility builders in aggregate.ts,
+//     views.ts and overview.ts. This harness does not yet measure the direct
+//     Effect application queries, detail/search, or a complete refresh cycle.
 //
 // The real TypeScript is loaded by installing a CommonJS transpile hook
 // (typescript.transpileModule, with a `.js` -> `.ts` resolver). This repo has
@@ -33,8 +31,8 @@
 //     useDefineForClassFields at its ES2022 default).
 //
 // Deterministic: fixed PRNG seed, fixed timestamp base, fixed shapes. The only
-// non-determinism is wall-clock, which is why every number is a median of >= 5
-// runs. Every file lives in a mkdtemp directory that is removed on exit; the
+// non-determinism is wall-clock. The defaults use five measured runs per size.
+// Ledger files live in a mkdtemp directory that is removed on exit; the
 // script never opens a path outside that directory (asserted in openLedger).
 //
 // Usage: node scripts/measure-query-path.cjs --help
@@ -42,11 +40,12 @@
 'use strict'
 
 const { execFileSync, spawn } = require('node:child_process')
-const { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } = require('node:fs')
+const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const v8 = require('node:v8')
 const { performance } = require('node:perf_hooks')
+const { extractReadSql: extractReadSqlFromSource } = require('./query-sql-source.cjs')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
 const SCRIPT_PATH = __filename
@@ -493,22 +492,13 @@ function loadRealModules() {
  * "no WHERE / no LIMIT / N columns" facts are measured from the tree rather
  * than transcribed, and the SQL-only attribution runs use the real text.
  *
- * The anchor is the method's `Effect.fn` span name, matched by PATTERN rather
- * than by the full `LedgerRepository.<name>` string this used to hard-code: the
- * repository was split into `LedgerIngest`/`LedgerQueries`/`LedgerConfig` and
- * every span renamed with it, which would have broken a literal anchor.
- * Tolerating the port prefix keeps this working across further splits, and if a
- * read disappears entirely the `throw` below fails loudly rather than letting
- * the harness quietly measure something else — which is what it did. */
+ * The syntax tree locates the method's Effect.fn body, then resolves its SQL
+ * argument. It accepts the historical inline template and shared constants.
+ * Missing, dynamic or ambiguous reads stop measurement, rather than choosing
+ * a template from a later method. The ledger port prefix may change. */
 function extractReadSql(name) {
   const source = readFileSync(REPOSITORY_SOURCE, 'utf8')
-  const marker = new RegExp(`Effect\\.fn\\('Ledger\\w+\\.${name}'\\)`)
-  const match = marker.exec(source)
-  if (match === null) throw new Error(`could not find the ${name} read in ${REPOSITORY_SOURCE}`)
-  const open = source.indexOf('`', match.index)
-  const close = source.indexOf('`', open + 1)
-  if (open === -1 || close === -1) throw new Error(`could not find the SQL literal of ${name}`)
-  return source.slice(open + 1, close)
+  return extractReadSqlFromSource(source, name)
 }
 
 function countSelectedColumns(sql) {
@@ -1233,8 +1223,9 @@ async function runAsParent(options, log) {
   const facts = readBulkReadFacts()
   const machine = machineInfo()
   const git = readGitState()
-  const parent = path.join(options.tmp || os.tmpdir(), `wt-query-path-${process.pid}`)
-  if (!existsSync(parent)) mkdirSync(parent, { recursive: true })
+  const tempRoot = path.resolve(options.tmp || os.tmpdir())
+  mkdirSync(tempRoot, { recursive: true })
+  const parent = mkdtempSync(path.join(tempRoot, 'wt-query-path-'))
   const result = {
     generatedAt: new Date().toISOString(),
     machine,
@@ -1278,7 +1269,11 @@ async function runAsParent(options, log) {
       log(`  keeping ${parent}`)
     } else {
       try {
-        rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 })
+        if (path.dirname(path.resolve(parent)) !== tempRoot) {
+          log('  measurement cleanup escaped its temp root; directory retained')
+        } else {
+          rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 })
+        }
       } catch (error) {
         log(`  could not remove ${parent}: ${error.message}`)
       }
@@ -1291,14 +1286,31 @@ async function runAsParent(options, log) {
 // because this tree is edited concurrently: a hash mismatch means the next run
 // measures something else and the previous table is stale.
 const MEASURED_SOURCES = [
+  'scripts/measure-query-path.cjs',
+  'scripts/query-sql-source.cjs',
   'src/main/store/ledger.ts',
+  'src/main/store/ledger-initialization.ts',
+  'src/main/store/ledger-ports.ts',
   'src/main/store/ledger-repository.ts',
   'src/main/store/aggregate.ts',
+  'src/main/store/aggregate-calculation.ts',
+  'src/main/store/query-snapshot.ts',
+  'src/main/store/ledger-query-snapshot.ts',
   'src/main/store/port.ts',
   'src/main/store/node-sqlite-client.ts',
   'src/main/views.ts',
+  'src/main/views-calculation.ts',
+  'src/main/application/view-queries.ts',
+  'src/main/application/pricing-diagnostics.ts',
   'src/main/overview.ts',
   'src/main/db-worker/context.ts',
+  'src/main/pipeline/models.ts',
+  'src/main/pipeline/pricing-calculation.ts',
+  'src/main/pipeline/pricing-diagnostics.ts',
+  'src/main/pipeline/model-names.ts',
+  'src/main/pipeline/proxy-paths.ts',
+  'src/main/pipeline/parser-calculations.ts',
+  'src/main/pipeline/session-row.ts',
   'src/main/pipeline/parser.ts',
   'src/shared/schemas/ledger.ts',
 ]
@@ -1313,7 +1325,10 @@ function readGitState() {
   }
   try {
     const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim()
-    const status = execFileSync('git', ['status', '--porcelain', '--', 'src'], { cwd: REPO_ROOT, encoding: 'utf8' })
+    const status = execFileSync('git', ['status', '--porcelain', '--', 'src', 'scripts'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    })
     return {
       commit,
       dirty: status.trim().length > 0,
