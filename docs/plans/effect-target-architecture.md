@@ -313,3 +313,26 @@ Native Effect Schema conversion covers 22/23 baseline contract modules, 95.7%. I
 All four jobs at `ae83bce` failed during `npm ci`, before lint, typechecks, unit tests or Electron could run. The missing entries were dependencies of the optional Tailwind WASI bundle. CI uses Node 22.23.3 and npm 10.9.9; local synchronization used Node 24.13.0 and npm 11.6.2.
 
 Regenerating with CI's npm 10.9.9 adds the bundled `@emnapi/core` and `@emnapi/runtime` entries and normalizes peer metadata. No existing package versions or other existing package fields change. An isolated directory with only the manifest and repaired lockfile passes npm 10.9.9's clean-install dry run. This validates the dependency graph without replacing the workspace's installed packages; the next exact-head CI run must establish actual clean installation and the platform checks. The production/test source remains `43d5b90`, and both protected stores remain unchanged.
+
+The subsequent GitHub CI run at `4451334` passed actual clean installation and all four jobs: [Linux typechecks and full unit tests](https://github.com/Pasquale-Favella/watchtower/actions/runs/37010950386/job/110850263343), [lint and formatting](https://github.com/Pasquale-Favella/watchtower/actions/runs/37010950386/job/110850263547), [Electron on Linux](https://github.com/Pasquale-Favella/watchtower/actions/runs/37010950377/job/110850264116) and [Electron on Windows](https://github.com/Pasquale-Favella/watchtower/actions/runs/37010950377/job/110850263369). Both workflow conclusions and all four individual jobs report success for that exact head.
+
+### Scoped query ownership, 2026-10-02
+
+Production and test source is `0f823d3`, following baseline `4451334`.
+
+- `5316ec8` retains raw alias and override rows already read by the canonical snapshot transaction. Models uses these rows without separate config reads. The six snapshot SELECTs remain unchanged.
+- `c5b8a01` moves free-model coverage and unpriced-row calculation into pure pricing helpers receiving an explicit catalogue and local savings map. Overview captures the local map once per request. The synchronous parser lookup uses the existing map directly, preserving exact raw-key and non-string rejection behavior without a per-call copy.
+- `bc69a52` extracts local calendar scope helpers. `863892f`, `d097ba3` and `9f5d6ed` add named Sessions, Models and Overview application Effects over LedgerQueries and PricingDiagnostics. Each captures the Clock once before loading one snapshot. Pure calculations receive explicit time and pricing inputs. Compatibility builders retain their signatures for current MCP and test callers.
+- `0f823d3` dispatches those three worker routes through the existing runtime. Twenty-five worker checks cover the five migrated routes, requiring one snapshot, forbidding synchronous facade and separate config reads, checking live edits without a scan and preserving SQL/Schema failures. The pure import-graph and dropped-column audits cover the extracted modules.
+
+Overview keeps lifetime dataStart separate from scoped summaries and reports the union of lifetime/scoped aggregation diagnostics once. Its pure payload builder returns the payload directly. The snapshot calculation owns diagnostics; no diagnostic-only fields remain in payload inputs. Models retains raw audit identity, aliases, overrides, tier/reasoning treatment, sorting and wire shapes.
+
+Standards and Spec reviews found zero findings, including a second review after simplification. The initial integrated focused group passed 175 tests across 16 files; the final simplification regressions passed 64 tests across three files. Production Node/web and strict test typechecks, full formatting and build passed. Lint passed with zero errors and 1,177 advisory warnings. The full unit suite passed all 130 files, with 2,093 tests passed and two skipped, using one worker and unchanged timeouts/assertions, in 180.60 seconds.
+
+Both renderer stores remain byte-identical to `ce81593`. No request identities, coalescing or added mutable coordination enter those stores.
+
+All four Electron end-to-end checks passed against the rebuilt application on Windows in 4.9 minutes. The unit suite and Electron checks ran sequentially.
+
+Windows x64 directory packaging passed without publishing or installing. A temporary gate launched the actual packaged executable with an isolated profile, completed its real boot scan/onboarding and verified Sessions, Models and Overview navigation with zero renderer errors. The official SDK client exercised the packaged stdio MCP child: all six tools, advertised metadata, invalid/unknown tool errors, three resources, the prompt and shutdown. Client/child and app closed before profile removal. Installer acceptance and macOS/Linux packaged execution remain open.
+
+F29 remains partial. The next pure query slices are Spend, Compare and Pull Requests. Skills, Yield and Optimize also require explicit filesystem or process boundaries. Cooperative parser stop, scan-boundary input capture, remaining main/Coach ownership, facade retirement, purpose-specific reads and comparable performance measurements remain programme work. The current census records query ownership and import coverage separately.

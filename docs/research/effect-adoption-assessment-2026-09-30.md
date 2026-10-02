@@ -207,3 +207,25 @@ Native Effect Schema now covers 22/23 baseline contract modules, 95.7%. Includin
 F32 now has bounded worker request/init failure mapping for typed SQL, Schema and unsupported-version failures. Real runner and native worker checks cover those paths. Main/Coach failure mapping and remaining synchronous facade boundaries still prevent calling F32 complete. F37's owned argument-schema adapter is implemented and covered with real SDK clients over isolated stdio streams and loopback HTTP. Windows directory packaging and a real packaged stdio child also pass: six tools, metadata, invalid/unknown tool errors, three resources, the prompt and SDK shutdown. This does not establish macOS/Linux packaged execution or installer acceptance.
 
 Both renderer stores remain byte-identical to `ce81593`. The owner rejected request identities, coalescing and added mutable coordination in those files. F35/F36 retain their earlier controlled native ordering evidence and limitations. The remaining application queries, facade retirement, captured time/scan inputs, cooperative parser stop, purpose-specific reads, main/Coach ownership, complete packaging acceptance and comparable performance measurements remain open. No performance claim is made.
+
+## Current census after scoped query migration, 2026-10-02
+
+This snapshot covers production source `0f823d3`. The same TypeScript AST runtime-import and nonblank-line method measures import coverage. Moving pure calculations out of Effect-importing files lowers line coverage while application ownership advances.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,511 / 1,621 |         93.2% |
+| Store                              |                   10 / 12 |         83.3% |                     1,803 / 2,417 |         74.6% |
+| Agents                             |                   12 / 44 |         27.3% |                     3,873 / 5,889 |         65.8% |
+| Pipeline                           |                    6 / 73 |          8.2% |                    2,554 / 27,600 |          9.3% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                     3,549 / 3,549 |        100.0% |
+| All main-process code              |                  54 / 164 |         32.9% |                   16,056 / 45,566 |         35.2% |
+| Shared schema modules              |                   23 / 24 |         95.8% |                     1,865 / 1,923 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+Named application queries now cover 5/11 aggregate and dedicated section read paths, 45.5%: dashboard, analytics, Sessions, Models and Overview. Scoped dedicated queries cover 3/9, 33.3%. The denominator includes Overview, Sessions, Pull Requests, Spend, Models, Compare, Optimize, Yield and Skills, plus dashboard and analytics. These counts measure this particular query boundary, not the whole migration.
+
+Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema covers 22/23, 95.7%, with one UI-only plain TypeScript module. F29 remains partial because other application queries, compatibility callers and purpose-specific reads are still open. The three new queries capture request time once before awaiting a snapshot and use pure calculations over captured pricing inputs. Models removes two separate config reads by reusing the alias and override rows already in that snapshot. Six snapshot SELECTs remain unchanged; comparable speed, memory and IPC measurements remain outstanding.
+
+Other remaining work includes scan-boundary inputs, cooperative parser stop and callback draining, main/Coach ownership and mapping, full facade retirement, installer acceptance and macOS/Linux packaged execution. Both renderer stores still match `ce81593` exactly.
