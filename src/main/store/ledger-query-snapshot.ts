@@ -16,6 +16,8 @@ export type LedgerQuerySnapshot = {
   sessions: readonly LedgerSessionRow[]
   turns: readonly LedgerTurnRow[]
   calls: readonly LedgerCallFactsRow[]
+  aliases: readonly LedgerRequestSnapshotData['aliases'][number][]
+  overrides: readonly LedgerRequestSnapshotData['overrides'][number][]
   pricing: PricingConfigLookup
   catalogue: PricingCatalogue
   proxyPaths: ProxyPathConfig
@@ -32,6 +34,8 @@ export function makeLedgerQuerySnapshot(input: LedgerQuerySnapshotInputs): Ledge
     sessions: input.sessions,
     turns: input.turns,
     calls: input.calls,
+    aliases: input.aliases,
+    overrides: input.overrides,
     pricing: createPricingConfigLookup(input.aliases, input.overrides),
     catalogue: input.catalogue,
     proxyPaths: Object.freeze({

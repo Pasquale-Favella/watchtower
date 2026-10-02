@@ -83,6 +83,14 @@ describe('Effect query snapshot loader', () => {
       expect(first.sessions).toHaveLength(1)
       expect(first.turns).toHaveLength(1)
       expect(first.calls.length).toBeGreaterThan(0)
+      expect(first.aliases).toEqual([{ model: 'demo-model', aliasOf: 'first-effective-model' }])
+      expect(first.overrides).toEqual([
+        {
+          model: 'first-effective-model',
+          inputPricePerMillion: 3,
+          outputPricePerMillion: 12,
+        },
+      ])
       expect(first.catalogue).toBe(catalogue)
       expect(first.proxyPaths).toEqual({ paths: ['/captured/path'], caseSensitive: false })
       expect(Object.isFrozen(first.proxyPaths)).toBe(true)
@@ -97,6 +105,8 @@ describe('Effect query snapshot loader', () => {
       const second = await Effect.runPromise(load())
       expect(second.proxyPaths).toEqual({ paths: ['/next/request'], caseSensitive: true })
       expect(first.proxyPaths).toEqual({ paths: ['/captured/path'], caseSensitive: false })
+      expect(second.aliases).toEqual(first.aliases)
+      expect(second.overrides).toEqual(first.overrides)
 
       store.setModelAlias('demo-model', 'second-effective-model')
       store.setPriceOverride('second-effective-model', {
@@ -111,6 +121,27 @@ describe('Effect query snapshot loader', () => {
         inputPricePerMillion: 7,
         outputPricePerMillion: 21,
       })
+      expect(third.aliases).toEqual([{ model: 'demo-model', aliasOf: 'second-effective-model' }])
+      expect(third.overrides).toEqual([
+        {
+          model: 'first-effective-model',
+          inputPricePerMillion: 3,
+          outputPricePerMillion: 12,
+        },
+        {
+          model: 'second-effective-model',
+          inputPricePerMillion: 7,
+          outputPricePerMillion: 21,
+        },
+      ])
+      expect(first.aliases).toEqual([{ model: 'demo-model', aliasOf: 'first-effective-model' }])
+      expect(first.overrides).toEqual([
+        {
+          model: 'first-effective-model',
+          inputPricePerMillion: 3,
+          outputPricePerMillion: 12,
+        },
+      ])
       expect(first.pricing.resolveAlias('demo-model')).toBe('first-effective-model')
       expect(first.pricing.findOverride('first-effective-model')).toEqual({
         inputPricePerMillion: 3,
