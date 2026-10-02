@@ -185,3 +185,25 @@ The pricing calculation module deliberately imports no runtime Effect value. Mov
 `8b1859f` bounds the host's cooperative scan-abort wait to two seconds. On expiry it waits for actual thread termination before booting a replacement, gates requests on replacement readiness and rejects failed recovery. Tests cover interruption, defects, boot failure, shutdown races and a real worker whose delayed callback must neither write nor emit progress. Forced thread termination does not prove cooperative parser cleanup or execution of Effect finalizers. Those remain acceptance work.
 
 The target architecture's execution record records integration evidence. Full contract migration, remaining application queries and protocol failure mapping, facade retirement, cooperative parser stop, purpose-specific queries, packaging and comparable performance measurements remain open. Pure dashboard/analytics separation is implemented; the remaining product paths still require migration.
+
+## Current census after owned schema removal, 2026-10-02
+
+This snapshot is `5b4233b`, with production and test changes through `43d5b90`. It uses the same TypeScript AST runtime-import and nonblank-line method as the preceding census. Import coverage remains an upper bound on adoption, not workflow completion.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,498 / 1,608 |         93.2% |
+| Store                              |                   10 / 12 |         83.3% |                     1,799 / 2,413 |         74.6% |
+| Agents                             |                   12 / 44 |         27.3% |                     3,873 / 5,889 |         65.8% |
+| Pipeline                           |                    6 / 73 |          8.2% |                    2,636 / 27,610 |          9.5% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                     3,967 / 3,967 |        100.0% |
+| All main-process code              |                  51 / 157 |         32.5% |                   17,095 / 45,439 |         37.6% |
+| Shared schema modules              |                   23 / 24 |         95.8% |                     1,865 / 1,923 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+Native Effect Schema now covers 22/23 baseline contract modules, 95.7%. Including the UI-only plain TypeScript module, owned Zod removal covers 23/23, 100%. The broader 23/24 import count includes the extraction helper. All owned contracts and their consumers have left Zod; the renderer helpers now accept native Schema directly. Recorded literal parity expectations replace the frozen Zod fixtures, and an AST/dependency guard enforces the removal. The official MCP adapter decodes Effect inputs and generates their advertised metadata, retaining SDK-owned protocol schemas and transport behavior. Transitive SDK Zod is not an owned contract.
+
+F32 now has bounded worker request/init failure mapping for typed SQL, Schema and unsupported-version failures. Real runner and native worker checks cover those paths. Main/Coach failure mapping and remaining synchronous facade boundaries still prevent calling F32 complete. F37's owned argument-schema adapter is implemented and covered with real SDK clients over isolated stdio streams and loopback HTTP. Windows directory packaging and a real packaged stdio child also pass: six tools, metadata, invalid/unknown tool errors, three resources, the prompt and SDK shutdown. This does not establish macOS/Linux packaged execution or installer acceptance.
+
+Both renderer stores remain byte-identical to `ce81593`. The owner rejected request identities, coalescing and added mutable coordination in those files. F35/F36 retain their earlier controlled native ordering evidence and limitations. The remaining application queries, facade retirement, captured time/scan inputs, cooperative parser stop, purpose-specific reads, main/Coach ownership, complete packaging acceptance and comparable performance measurements remain open. No performance claim is made.
