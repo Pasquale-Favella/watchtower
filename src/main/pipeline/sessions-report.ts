@@ -1,83 +1,15 @@
 import { type AppPaths, overrideFor } from '../env.js'
 import { getShortModelName } from './models.js'
-import { CATEGORY_LABELS } from './types.js'
+import { aggregateSessionRows, inferProvider, type SessionRow, sessionRowFromSummary } from './session-row.js'
 import type { ProjectSummary, SessionSummary, TaskCategory } from './types.js'
+import { CATEGORY_LABELS } from './types.js'
 
-export type SessionRow = {
-  sessionId: string
-  /// Captured human title, empty when the transcript never produced one.
-  title: string
-  project: string
-  provider: string
-  models: string[]
-  /// Per-model raw feeders for Alias-merged rows. Present only on merge.
-  modelProvenance?: Record<string, string[]>
-  cost: number
-  savingsUSD: number
-  calls: number
-  turns: number
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  cacheWriteTokens: number
-  startedAt: string
-  endedAt: string
-  durationMs: number
-}
-
-function inferProvider(session: SessionSummary): string {
-  for (const turn of session.turns) {
-    const provider = turn.assistantCalls[0]?.provider
-    if (provider) return provider
-  }
-
-  const models = Object.keys(session.modelBreakdown)
-  const model = models[0]?.toLowerCase() ?? ''
-  if (model.startsWith('claude')) return 'claude'
-  if (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4'))
-    return 'codex'
-  if (model.startsWith('gemini')) return 'gemini'
-  if (model.includes('/')) return model.split('/', 1)[0] || 'unknown'
-  return 'unknown'
-}
-
-function durationMs(startedAt: string, endedAt: string): number {
-  const duration = new Date(endedAt).getTime() - new Date(startedAt).getTime()
-  return Number.isFinite(duration) ? duration : 0
-}
-
-/** One session's row, shaped from its summary. `project` is the fallback
- * project label when the summary carries none. Shared by the report-based
- * `aggregateSessions` and the ledger aggregation seam (map 03) so both emit
- * byte-identical rows. */
-export function sessionRowFromSummary(session: SessionSummary, project: string): SessionRow {
-  const provenance: Record<string, string[]> = {}
-  for (const [model, breakdown] of Object.entries(session.modelBreakdown)) {
-    if (breakdown.sourceModels?.length) provenance[model] = [...breakdown.sourceModels].sort()
-  }
-  return {
-    sessionId: session.sessionId,
-    title: session.title ?? '',
-    project: session.project || project,
-    provider: inferProvider(session),
-    models: Object.keys(session.modelBreakdown),
-    ...(Object.keys(provenance).length > 0 ? { modelProvenance: provenance } : {}),
-    cost: session.totalCostUSD,
-    savingsUSD: session.totalSavingsUSD,
-    calls: session.apiCalls,
-    turns: session.turns.length,
-    inputTokens: session.totalInputTokens,
-    outputTokens: session.totalOutputTokens,
-    cacheReadTokens: session.totalCacheReadTokens,
-    cacheWriteTokens: session.totalCacheWriteTokens,
-    startedAt: session.firstTimestamp,
-    endedAt: session.lastTimestamp,
-    durationMs: durationMs(session.firstTimestamp, session.lastTimestamp),
-  }
-}
+/** Compatibility re-exports. Remove after report consumers import the pure row module. */
+export { inferProvider, sessionRowFromSummary }
+export type { SessionRow }
 
 export function aggregateSessions(projects: ProjectSummary[]): SessionRow[] {
-  return projects.flatMap(project => project.sessions.map(session => sessionRowFromSummary(session, project.project)))
+  return aggregateSessionRows(projects)
 }
 
 export function renderJson(rows: SessionRow[]): string {

@@ -13,8 +13,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
-import { LedgerQueries } from '../src/main/store/ledger-repository.js'
-import { loadLedgerQuerySnapshotEffect } from '../src/main/store/query-snapshot.js'
+import { LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
 const tempDirs: string[] = []
@@ -59,6 +59,7 @@ describe('Effect query snapshot loader', () => {
 
       let snapshotReads = 0
       const catalogue = testCatalogue()
+      let proxyPaths = { paths: ['/captured/path'], caseSensitive: false }
       const load = () =>
         Effect.gen(function* () {
           const actual = yield* LedgerQueries
@@ -71,7 +72,9 @@ describe('Effect query snapshot loader', () => {
             getRequestSnapshotData: () =>
               Effect.sync(() => snapshotReads++).pipe(Effect.flatMap(() => actual.getRequestSnapshotData())),
           })
-          return yield* loadLedgerQuerySnapshotEffect(catalogue).pipe(Effect.provideService(LedgerQueries, queries))
+          return yield* loadLedgerQuerySnapshotEffect({ catalogue, proxyPaths }).pipe(
+            Effect.provideService(LedgerQueries, queries),
+          )
         }).pipe(Effect.provide(store.portsLayer))
 
       const first = await Effect.runPromise(load())
@@ -81,11 +84,19 @@ describe('Effect query snapshot loader', () => {
       expect(first.turns).toHaveLength(1)
       expect(first.calls.length).toBeGreaterThan(0)
       expect(first.catalogue).toBe(catalogue)
+      expect(first.proxyPaths).toEqual({ paths: ['/captured/path'], caseSensitive: false })
+      expect(Object.isFrozen(first.proxyPaths)).toBe(true)
+      expect(Object.isFrozen(first.proxyPaths.paths)).toBe(true)
       expect(first.pricing.resolveAlias('demo-model')).toBe('first-effective-model')
       expect(first.pricing.findOverride('first-effective-model')).toEqual({
         inputPricePerMillion: 3,
         outputPricePerMillion: 12,
       })
+
+      proxyPaths = { paths: ['/next/request'], caseSensitive: true }
+      const second = await Effect.runPromise(load())
+      expect(second.proxyPaths).toEqual({ paths: ['/next/request'], caseSensitive: true })
+      expect(first.proxyPaths).toEqual({ paths: ['/captured/path'], caseSensitive: false })
 
       store.setModelAlias('demo-model', 'second-effective-model')
       store.setPriceOverride('second-effective-model', {
@@ -93,10 +104,10 @@ describe('Effect query snapshot loader', () => {
         outputPricePerMillion: 21,
       })
 
-      const second = await Effect.runPromise(load())
-      expect(snapshotReads).toBe(2)
-      expect(second.pricing.resolveAlias('demo-model')).toBe('second-effective-model')
-      expect(second.pricing.findOverride('second-effective-model')).toEqual({
+      const third = await Effect.runPromise(load())
+      expect(snapshotReads).toBe(3)
+      expect(third.pricing.resolveAlias('demo-model')).toBe('second-effective-model')
+      expect(third.pricing.findOverride('second-effective-model')).toEqual({
         inputPricePerMillion: 7,
         outputPricePerMillion: 21,
       })

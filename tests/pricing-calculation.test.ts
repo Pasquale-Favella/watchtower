@@ -4,11 +4,12 @@ import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
 import {
   calculateRepricedCost,
   captureModelPricingCatalogue,
+  captureProxyPaths,
   createPricingConfigLookup,
   setModelAliases,
   setPriceOverrides,
+  setProxyPaths,
 } from '../src/main/pipeline/models.js'
-
 import {
   calculateCost,
   calculateRepricedCostResult,
@@ -21,6 +22,7 @@ import {
 afterEach(() => {
   takeQueuedLogRecords()
   vi.unstubAllEnvs()
+  setProxyPaths([])
 })
 
 const costs = (input: number, output = 0, cacheRead = 0): ModelCosts => ({
@@ -87,6 +89,19 @@ describe('explicit pricing catalogue calculation', () => {
       setModelAliases({})
       setPriceOverrides({})
     }
+  })
+
+  it('keeps captured proxy paths stable and captures current paths for the next request', () => {
+    setProxyPaths(['/first/project'])
+    const before = captureProxyPaths()
+
+    setProxyPaths(['/second/project'])
+    const after = captureProxyPaths()
+
+    expect(before.paths).toEqual(['first/project'])
+    expect(after.paths).toEqual(['second/project'])
+    expect(before.paths).not.toBe(after.paths)
+    expect(Object.isFrozen(before.paths)).toBe(true)
   })
 
   it('keeps alias, routed-id and inclusive tier behavior in the pure resolver', () => {

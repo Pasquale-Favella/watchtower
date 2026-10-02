@@ -10,15 +10,19 @@ import {
 } from '../shared/schemas/models.js'
 import { overviewDateRange, type OverviewScope } from './overview.js'
 import { billableOutputTokens } from './pipeline/billable-output.js'
+import { getShortModelName } from './pipeline/model-names.js'
 import {
-  calculateRepricedCost,
+  calculateRepricedCostResult,
   createPricingConfigLookup,
-  getShortModelName,
+  getTieredModelCosts,
+  type ModelCosts,
+  type PricingCatalogue,
   type PricingConfigLookup,
-} from './pipeline/models.js'
-import { getTieredModelCosts, type ModelCosts, type PricingCatalogue } from './pipeline/pricing-calculation.js'
+  resolveModelNameAlias,
+} from './pipeline/pricing-calculation.js'
+import { reportUnpricedModels } from './pipeline/pricing-diagnostics.js'
 import type { SessionSummary, TaskCategory } from './pipeline/types.js'
-import { buildSessionSummariesFromSnapshot } from './store/aggregate.js'
+import { buildSessionSummariesFromSnapshotResult } from './store/aggregate-calculation.js'
 import type { LedgerStore } from './store/ledger.js'
 import { loadLedgerQuerySnapshot } from './store/query-snapshot.js'
 
@@ -184,7 +188,7 @@ function resolveCallCost(
   pricingConfig: PricingConfigLookup,
   catalogue: PricingCatalogue,
 ): number {
-  return calculateRepricedCost(catalogue, pricingConfig, {
+  return calculateRepricedCostResult(catalogue, pricingConfig, {
     model: call.model,
     effectiveModel,
     inputTokens: call.usage.inputTokens,
@@ -194,7 +198,7 @@ function resolveCallCost(
     webSearchRequests: call.usage.webSearchRequests,
     speed: call.speed,
     recordedCost: call.costUSD,
-  })
+  }).cost
 }
 
 /** The rates the audit lens attributes to a raw model, resolved through the
@@ -277,15 +281,13 @@ export function buildModelsViewFromLedger(
   now = new Date(),
 ): ModelsPayload {
   const snapshot = loadLedgerQuerySnapshot(store)
+  const calculation = buildSessionSummariesFromSnapshotResult(snapshot, {
+    range: overviewDateRange(scope, now),
+    provider: scope.provider,
+  })
+  reportUnpricedModels(calculation.unpricedModels)
   return Schema.decodeUnknownSync(modelsPayloadSchema)(
-    buildModelsPayload(
-      buildSessionSummariesFromSnapshot(snapshot, {
-        range: overviewDateRange(scope, now),
-        provider: scope.provider,
-      }),
-      config,
-      snapshot.catalogue,
-    ),
+    buildModelsPayload(calculation.summaries, config, snapshot.catalogue),
   )
 }
 
@@ -384,7 +386,7 @@ function buildModelsPayload(
   const rowFrom = (b: ModelBucket): ModelReportRow => ({
     provider: b.provider,
     model: b.model,
-    modelDisplayName: getShortModelName(b.model),
+    modelDisplayName: getShortModelName(b.model, name => resolveModelNameAlias(catalogue, name)),
     category: b.category,
     inputTokens: b.inputTokens,
     outputTokens: b.outputTokens,
@@ -456,7 +458,7 @@ function buildModelsPayload(
     audit.push({
       provider: bucket.provider,
       model: bucket.model,
-      modelDisplayName: getShortModelName(bucket.model),
+      modelDisplayName: getShortModelName(bucket.model, name => resolveModelNameAlias(catalogue, name)),
       calls: bucket.calls,
       raw: { ...bucket.raw },
       displayed,

@@ -3,26 +3,34 @@ import * as Schema from 'effect/Schema'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 
-import { type AppPaths, Env, overrideFor, resolveCacheDir } from '../env.js'
+import { type AppPaths, Env, resolveCacheDir } from '../env.js'
 import snapshotData from './data/litellm-snapshot.json'
 import fallbackData from './data/pricing-fallback.json'
 import { DEFAULT_FETCH_TIMEOUT_MS, HttpFetch, retryTransientFetch } from './fetch-utils.js'
-import { queueLogRecord } from './file-errors.js'
+import { getShortModelName as getShortModelNamePure } from './model-names.js'
 import {
   calculateCostResult,
   calculateRepricedCostResult,
   capturePricingCatalogue,
-  type ConfigRatePair,
   getModelCosts as getModelCostsPure,
   getTieredModelCosts as getTieredModelCostsPure,
   type ModelCosts,
   type PricingCatalogue,
   type PricingConfigLookup,
   type RepricedCall,
+  stripPinAndDate,
 } from './pricing-calculation.js'
+import { looksLikeLocalModel, warnAboutUnknownModel } from './pricing-diagnostics.js'
+import {
+  isProxiedPath as isProxiedPathPure,
+  normalizeProxyPath as normalizeProxyPathPure,
+  type ProxyPathConfig,
+} from './proxy-paths.js'
 
 export type { ModelCosts } from './pricing-calculation.js'
 export type { ConfigRatePair, PricingConfigLookup } from './pricing-calculation.js'
+/** Compatibility re-exports. Remove after consumers import the pure pricing module. */
+export { createPricingConfigLookup, normalizeModelKey } from './pricing-calculation.js'
 
 /** Temporary query adapter preserving pricing diagnostics. Retire when the
  * application workflows handle the pure calculation result's unpriced status. */
@@ -549,8 +557,7 @@ let userProxyPaths: string[] = []
 /// is dropped by callers so it can never match everything. Exported so the CLI
 /// dedupes with the same rule.
 export function normalizeProxyPath(p: string): string {
-  const s = p.trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
-  return process.platform === 'darwin' || process.platform === 'win32' ? s.toLowerCase() : s
+  return normalizeProxyPathPure(p, process.platform !== 'darwin' && process.platform !== 'win32')
 }
 
 export function setProxyPaths(paths: string[]): void {
@@ -565,11 +572,14 @@ export function setProxyPaths(paths: string[]): void {
 /// "/a/proj/sub" but NOT "/a/project-x". Empty/undefined cwd or empty config
 /// never matches (so a misconfig can't silently zero unrelated spend).
 export function isProxiedPath(cwd: string | undefined | null): boolean {
-  if (!cwd || typeof cwd !== 'string') return false
-  if (userProxyPaths.length === 0) return false
-  const c = normalizeProxyPath(cwd)
-  if (c === '') return false
-  return userProxyPaths.some(p => c === p || c.startsWith(p + '/'))
+  return isProxiedPathPure(cwd, captureProxyPaths())
+}
+
+export function captureProxyPaths(): ProxyPathConfig {
+  return {
+    paths: Object.freeze([...userProxyPaths]),
+    caseSensitive: process.platform !== 'darwin' && process.platform !== 'win32',
+  }
 }
 
 /// Stable hash of the active proxy-path config. Project-level proxy attribution
@@ -589,47 +599,6 @@ export function getProxyPathsConfigHash(): string {
 /// text always wins; this is only the fallback when nothing matches verbatim.
 /// Deliberately NOT the full pricing fallback: a bare alias must never swallow
 /// a longer distinct model (e.g. `gpt-5` must not match `gpt-5-mini`).
-export function normalizeModelKey(model: string): string {
-  const variantStripped = model.replace(/:(thinking|cloud)$/i, '').replace(/-TEE$/i, '')
-  return stripPinAndDate(variantStripped)
-    .replace(/^([^/]+\/)+/, '') // strip provider prefixes: a/b/foo -> foo
-    .toLowerCase()
-}
-
-/// Shared user-config lookup (aliases + price overrides) with verbatim-first,
-/// normalized-fallback matching. The aggregation seam and the Models lens both
-/// build it, so every Section resolves identical identities and rates.
-/// Later entries win on any key collision.
-export function createPricingConfigLookup(
-  aliases: ReadonlyArray<{ model: string; aliasOf: string }>,
-  overrides: ReadonlyArray<{ model: string; inputPricePerMillion: number; outputPricePerMillion: number }>,
-): PricingConfigLookup {
-  const aliasExact = new Map<string, string>()
-  const aliasNorm = new Map<string, string>()
-  for (const alias of aliases) {
-    aliasExact.set(alias.model, alias.aliasOf)
-    aliasNorm.set(normalizeModelKey(alias.model), alias.aliasOf)
-  }
-  const overrideExact = new Map<string, ConfigRatePair>()
-  const overrideNorm = new Map<string, ConfigRatePair>()
-  for (const override of overrides) {
-    const rates = {
-      inputPricePerMillion: override.inputPricePerMillion,
-      outputPricePerMillion: override.outputPricePerMillion,
-    }
-    overrideExact.set(override.model, rates)
-    overrideNorm.set(normalizeModelKey(override.model), rates)
-  }
-  return {
-    resolveAlias(model: string): string {
-      return aliasExact.get(model) ?? aliasNorm.get(normalizeModelKey(model)) ?? model
-    },
-    findOverride(name: string): ConfigRatePair | undefined {
-      return overrideExact.get(name) ?? overrideNorm.get(normalizeModelKey(name))
-    },
-  }
-}
-
 /// The rate card for `model`, resolved through the captured pure catalogue.
 /// and what every other caller in the app wants.
 export function getModelCosts(model: string): ModelCosts | null {
@@ -639,22 +608,6 @@ export function getModelCosts(model: string): ModelCosts | null {
 // Warn at most once per unknown model name per process. Without this, a model
 // missing from the pricing snapshot would silently price at $0 for every
 // session that used it, hiding real spend until the user noticed.
-const warnedUnknownModels = new Set<string>()
-
-/// Heuristic for "this looks like a local model that will never be in LiteLLM's
-/// pricing JSON". We suppress the unknown-model warning for these because the
-/// "update the CLI" advice can't help — local Ollama models, llama.cpp tags,
-/// LM Studio loads, etc. are billed locally and don't have public pricing.
-/// Users still get $0 in cost reports for them (correct — local inference is
-/// effectively free); the warning was just noise.
-function looksLikeLocalModel(name: string): boolean {
-  // Ollama and LM Studio tags include `:tag` (e.g. qwen3.6:35b-a3b-bf16).
-  if (name.includes(':') && !name.startsWith('http')) return true
-  // GGUF / quantized fingerprints commonly seen in local inference.
-  if (/[-_](q[2-8](_[a-z0-9]+)?|bf16|fp16|gguf|f16|f32)$/i.test(name)) return true
-  return false
-}
-
 export interface UnpricedModelUsage {
   model: string
   calls: number
@@ -843,10 +796,6 @@ const ROUTED_ID_SEGMENTS: ReadonlySet<string> = new Set([
   'kwaipilot',
   'camel-ai',
 ])
-
-function stripPinAndDate(model: string): string {
-  return model.replace(/@.*$/, '').replace(/-\d{8}$/, '')
-}
 
 function getCanonicalName(model: string): string {
   return stripPinAndDate(model).replace(/^[^/]+\//, '')
@@ -1037,36 +986,6 @@ export function captureModelPricingCatalogue(): PricingCatalogue {
   return capturedPricingCatalogue
 }
 
-function shouldWarnAboutUnknownModel(name: string, paths?: AppPaths): boolean {
-  if (!name || name === '<synthetic>') return false
-  if (warnedUnknownModels.has(name)) return false
-  // Suppress for local/quantized models — the "update the CLI" hint is
-  // actively misleading there. Users who need cost visibility for local
-  // inference can still set an alias via `token-reader model-alias`.
-  if (looksLikeLocalModel(name)) return false
-  // The warning fired on every CLI invocation (including the default
-  // dashboard) which made first launches look broken — three "no pricing
-  // data" lines greet a user before the dashboard even draws. Now opt-in
-  // via --verbose. The unknown model still costs $0 in reports; users who
-  // suspect missing models run `token-reader --verbose` to see the list.
-  // The module's only `WATCHTOWER_VERBOSE` read, through the `AppPaths` seam
-  // (`overrideFor`, so an unthreaded caller reads the same `process.env` value
-  // it always did). The `=== '1'` comparison is unchanged.
-  if (overrideFor(paths, 'WATCHTOWER_VERBOSE') !== '1') return false
-  return true
-}
-
-function warnAboutUnknownModel(name: string, paths?: AppPaths): void {
-  if (!shouldWarnAboutUnknownModel(name, paths)) return
-  warnedUnknownModels.add(name)
-  const safeName = name.replace(/[\x00-\x1F\x7F-\x9F]/g, '?').slice(0, 200)
-  queueLogRecord({
-    logEvent: 'pricing.unpriced',
-    level: 'warn',
-    fields: { op: 'pricing', model: safeName, code: 'unpriced' },
-  })
-}
-
 export function calculateCost(
   model: string,
   inputTokens: number,
@@ -1096,139 +1015,8 @@ export function calculateCost(
   return result.cost
 }
 
-const autoModelNames: Record<string, string> = {
-  'cursor-auto': 'Cursor (auto)',
-  'cursor-agent-auto': 'Cursor (auto)',
-  'copilot-auto': 'Copilot (auto)',
-  'copilot-openai-auto': 'Copilot (OpenAI)',
-  'copilot-anthropic-auto': 'Copilot (Anthropic)',
-  'ibm-bob-auto': 'IBM Bob (auto)',
-  'kiro-auto': 'Kiro (auto)',
-  'quickdesk-auto': 'Quick Desktop (auto)',
-  'cline-auto': 'Cline (auto)',
-  'openclaw-auto': 'OpenClaw (auto)',
-  'qwen-auto': 'Qwen (auto)',
-  'kimi-auto': 'Kimi (auto)',
-}
-
-const SHORT_NAMES: Record<string, string> = {
-  // claude-fable-5 and claude-mythos-5 are outside the opus/sonnet/haiku families deriveClaudeShortName covers.
-  'claude-fable-5': 'Fable 5',
-  'claude-mythos-5': 'Mythos 5',
-  // Modern claude-<family>-<major>-<minor> ids are derived in deriveClaudeShortName.
-  // Only the legacy 3.x ids (family-last) need explicit mapping.
-  'claude-3-7-sonnet': 'Sonnet 3.7',
-  'claude-3-5-sonnet': 'Sonnet 3.5',
-  'claude-3-5-haiku': 'Haiku 3.5',
-  'gpt-4o-mini': 'GPT-4o Mini',
-  'gpt-4o': 'GPT-4o',
-  'gpt-4.1-nano': 'GPT-4.1 Nano',
-  'gpt-4.1-mini': 'GPT-4.1 Mini',
-  'gpt-4.1': 'GPT-4.1',
-  'codex-auto-review': 'Codex Auto Review',
-  'gpt-5.5-pro': 'GPT-5.5 Pro',
-  'gpt-5.5': 'GPT-5.5',
-  'gpt-5.4-pro': 'GPT-5.4 Pro',
-  'gpt-5.4-nano': 'GPT-5.4 Nano',
-  'gpt-5.4-mini': 'GPT-5.4 Mini',
-  'gpt-5.4': 'GPT-5.4',
-  'gpt-5.3-codex-spark': 'GPT-5.3 Codex Spark',
-  'gpt-5.3-codex': 'GPT-5.3 Codex',
-  'gpt-5.3': 'GPT-5.3',
-  'gpt-5.2-pro': 'GPT-5.2 Pro',
-  'gpt-5.2-low': 'GPT-5.2 Low',
-  'gpt-5.2': 'GPT-5.2',
-  'gpt-5.1-codex-mini': 'GPT-5.1 Codex Mini',
-  'gpt-5.1-codex': 'GPT-5.1 Codex',
-  'gpt-5.1': 'GPT-5.1',
-  'gpt-5-pro': 'GPT-5 Pro',
-  'gpt-5-nano': 'GPT-5 Nano',
-  'gpt-5-mini': 'GPT-5 Mini',
-  'gpt-5': 'GPT-5',
-  'gemini-3.5-flash': 'Gemini 3.5 Flash',
-  'gemini-3.1-pro-preview': 'Gemini 3.1 Pro',
-  'gemini-3-flash-preview': 'Gemini 3 Flash',
-  'gemini-2.5-pro': 'Gemini 2.5 Pro',
-  'gemini-2.5-flash': 'Gemini 2.5 Flash',
-  'kimi-k2-thinking-turbo': 'Kimi K2 Thinking Turbo',
-  'kimi-k2-thinking': 'Kimi K2 Thinking',
-  'kimi-k3': 'Kimi K3',
-  'kimi-k2p6': 'Kimi K2.6',
-  'kimi-thinking-preview': 'Kimi Thinking',
-  'kimi-k2.6': 'Kimi K2.6',
-  'kimi-k2.5': 'Kimi K2.5',
-  'kimi-k2p5': 'Kimi K2.5',
-  'kimi-k2-instruct': 'Kimi K2 Instruct',
-  'kimi-k2-0905': 'Kimi K2',
-  'kimi-k2': 'Kimi K2',
-  'kimi-latest': 'Kimi Latest',
-  'moonshot-v1': 'Moonshot v1',
-  'deepseek-v4-pro': 'DeepSeek v4 Pro',
-  'deepseek-v4-flash': 'DeepSeek v4 Flash',
-  'deepseek-coder-max': 'DeepSeek Coder Max',
-  'deepseek-coder': 'DeepSeek Coder',
-  'deepseek-r1': 'DeepSeek R1',
-  'o4-mini': 'o4-mini',
-  o3: 'o3',
-  'MiniMax-M2.7-highspeed': 'MiniMax M2.7 Highspeed',
-  'MiniMax-M2.7': 'MiniMax M2.7',
-  // Grok (xAI) and GLM ids that otherwise surface raw or as a pricing key in
-  // reports. grok-build and GLM-5.2 price via sibling aliases, so
-  // getShortModelName resolves to the pricing key before this lookup; map each
-  // back to the real model name. grok-composer has no alias, it just lacked an
-  // entry.
-  'glm-5p1': 'GLM-5.2', // ZCode/Hermes run GLM-5.2 (priced as the GLM-5.1 sibling)
-  'grok-build-0.1': 'Grok Build', // Grok Build prices through the 0.1 sibling
-  'grok-composer-2.5-fast': 'Grok Composer 2.5 Fast',
-  // Fireworks-hosted fleet models arrive as `accounts/fireworks/models/<slug>`;
-  // getShortModelName's path fallback strips to the bare slug and re-resolves it
-  // through this table. Display-only — getModelCosts prices off the full path,
-  // so these entries do not move any dollar amounts. (deepseek-v4-pro/-flash
-  // already have entries above and resolve the same way.)
-  'glm-5p2': 'GLM-5.2',
-  'qwen3p7-plus': 'Qwen 3.7 Plus',
-  'kimi-k2p7-code': 'Kimi K2.7 Code',
-}
-
-// Sorted longest-first so more-specific prefixes match before shorter ones.
-// Without this, `gpt-5-mini` could resolve to "GPT-5" (the entry for `gpt-5`)
-// if it happened to be iterated before `gpt-5-mini`, hiding a distinct model
-// behind the wrong display name and pricing tier.
-const SORTED_SHORT_NAMES: [string, string][] = Object.entries(SHORT_NAMES).sort((a, b) => b[0].length - a[0].length)
-
-// Anthropic's id scheme is `claude-<family>-<major>[-<minor>]`, so every new
-// version is derivable — no hand-maintained entry per release. (Legacy 3.x ids
-// put the family last, e.g. `claude-3-5-sonnet`, and stay in SHORT_NAMES.)
-const CLAUDE_FAMILY: Record<string, string> = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' }
-function deriveClaudeShortName(canonical: string): string | undefined {
-  const m = canonical.match(/^claude-(opus|sonnet|haiku)-(\d+)(?:-(\d+))?/)
-  if (!m) return undefined
-  const [, family, major, minor] = m
-  return `${CLAUDE_FAMILY[family]} ${major}${minor ? `.${minor}` : ''}`
-}
-
 export function getShortModelName(model: string): string {
-  if (autoModelNames[model]) return autoModelNames[model]
-  const canonical = resolveAlias(getCanonicalName(model))
-  const claude = deriveClaudeShortName(canonical)
-  if (claude) return claude
-  for (const [key, name] of SORTED_SHORT_NAMES) {
-    // Match on a version boundary, not a bare prefix: an unlisted future minor
-    // (e.g. gpt-5.6) must NOT collapse into the base "gpt-5" entry — it should
-    // fall through to its raw id rather than show a wrong name/tier.
-    if (canonical === key || canonical.startsWith(key + '-')) return name
-  }
-  // getCanonicalName only strips the leading provider prefix, so a raw
-  // path-style id (e.g. accounts/fireworks/models/glm-5p2) still has slashes
-  // here. Take the last path segment and re-resolve it: the segment may itself
-  // be a known model slug (Fireworks fleet ids), earning a friendly name; a
-  // genuinely unmapped slug resolves to itself, preserving the raw-segment
-  // fallback for everything else.
-  if (canonical.includes('/')) {
-    const segment = canonical.slice(canonical.lastIndexOf('/') + 1)
-    return segment ? getShortModelName(segment) : canonical
-  }
-  return canonical
+  return getShortModelNamePure(model, resolveAlias)
 }
 
 // --- Effect-native pricing boundary (ADR 0032 slice) ---

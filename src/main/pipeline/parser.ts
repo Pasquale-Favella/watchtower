@@ -1,49 +1,70 @@
 import { existsSync } from 'fs'
-import { lstat, readFile, readdir, stat } from 'fs/promises'
+import { lstat, readdir, readFile, stat } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
+
 import { type AppPaths, overrideFor } from '../env.js'
 import { billableOutputTokens } from './billable-output.js'
-import { readSessionLines } from './fs-utils.js'
+import {
+  buildSpawnPrSets,
+  extractPrUrlsFromProviderCall,
+  extractPrUrlsFromText,
+  isAbsoluteProjectPath,
+  normalizeProjectPathKey,
+  projectNameFromPath,
+} from './parser-calculations.js'
+/** Compatibility re-exports. Remove after parser helper consumers import the pure module. */
+export {
+  buildSpawnPrSets,
+  deriveCanonicalProjectKey,
+  extractPrUrlsFromProviderCall,
+  extractPrUrlsFromText,
+  isAbsoluteProjectPath,
+  normalizeProjectPathKey,
+  projectNameFromPath,
+} from './parser-calculations.js'
+import { parseOrSkip, type UnparsedTally } from '../../shared/schemas/extract.js'
+import { parsedProviderCallSchema } from '../../shared/schemas/providers.js'
+import { extractBashCommands } from './bash-utils.js'
+import { acquireCacheRefreshLock, type RefreshLockHandle } from './cache-refresh-lock.js'
+import { BASH_TOOLS, classifyTurn, EDIT_TOOLS } from './classifier.js'
+import { flushCodexCache } from './codex-cache.js'
+import { normalizeContentBlocks } from './content-utils.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
+import { readSessionLines } from './fs-utils.js'
 import {
   calculateCost,
   calculateLocalModelSavings,
+  getProxyPathsConfigHash,
   getShortModelName,
   isProxiedPath,
-  getProxyPathsConfigHash,
 } from './models.js'
-import { resolveSubagentAttribution, sessionIdentity } from './sessions-report.js'
-import { normalizeContentBlocks } from './content-utils.js'
-import { discoverAllSessions, getProvider } from './providers/index.js'
-import { flushCodexCache } from './codex-cache.js'
 import {
   antigravityCascadeIdFromPath,
   flushAntigravityCache,
   shouldReparseAntigravitySource,
 } from './providers/antigravity.js'
 import { getDesktopSessionsDirs } from './providers/claude.js'
-import { isSqliteBusyError } from './sqlite.js'
+import { discoverAllSessions, getProvider } from './providers/index.js'
+import type { ParsedProviderCall, SessionSource } from './providers/types.js'
 import {
+  beginColdHydration,
   type CachedCall,
   type CachedFile,
   type CachedTurn,
-  type ProviderSection,
-  type SessionCache,
-  beginColdHydration,
   cleanupOrphanedTempFiles,
   computeEnvFingerprint,
   DURABLE_PROVIDER_NAMES,
   fingerprintFile,
   isCacheComplete,
   loadCache,
+  type ProviderSection,
   reconcileFile,
   saveCache,
   sectionNeedsPrEvidenceReparse,
+  type SessionCache,
 } from './session-cache.js'
-import { acquireCacheRefreshLock, type RefreshLockHandle } from './cache-refresh-lock.js'
-import type { ParsedProviderCall, SessionSource } from './providers/types.js'
-import { parsedProviderCallSchema } from '../../shared/schemas/providers.js'
-import { parseOrSkip, type UnparsedTally } from '../../shared/schemas/extract.js'
+import { resolveSubagentAttribution, sessionIdentity } from './sessions-report.js'
+import { isSqliteBusyError } from './sqlite.js'
 import type {
   ApiUsageIteration,
   AssistantMessageContent,
@@ -54,14 +75,12 @@ import type {
   ParsedApiCall,
   ParsedTurn,
   ProjectSummary,
-  SessionSummary,
   SessionSourceMetadata,
+  SessionSummary,
   TokenUsage,
   ToolCall,
   ToolUseBlock,
 } from './types.js'
-import { classifyTurn, BASH_TOOLS, EDIT_TOOLS } from './classifier.js'
-import { extractBashCommands } from './bash-utils.js'
 
 // ── Delta seam (map T3): per-file port-in events ─────────────────────────
 
@@ -109,37 +128,11 @@ function warnProviderPortFailure(providerName: string, sourcePath: string): void
 // Whether a path is absolute is always judged on the CURRENT platform: a
 // foreign-format path (a Windows checkout recorded on a machine that now runs
 // macOS, or vice versa) can never be walked here and passes through untouched.
-export function isAbsoluteProjectPath(projectPath: string): boolean {
-  const trimmed = projectPath.trim()
-  return process.platform === 'win32' ? /^[a-zA-Z]:[/\\]/.test(trimmed) : trimmed.startsWith('/')
-}
 export function claudeSlugFallbackPath(dirName: string): string {
   // Claude project directory names are lossy: a dash may be either a path
   // separator from the original cwd or a literal dash in the leaf name.
   // Without cwd metadata, keep the slug intact instead of inventing segments.
   return dirName
-}
-
-export function normalizeProjectPathKey(projectPath: string): string {
-  const trimmed = projectPath.trim()
-  // Foreign-format guard (mirrors resolveCanonicalProjectPath): a path that
-  // is not absolute on the current platform passes through untouched — the
-  // key derivation must never reinterpret another platform's spelling.
-  if (!isAbsoluteProjectPath(trimmed)) return trimmed
-  const normalized = trimmed.replace(/\\/g, '/')
-  const stripped = normalized.replace(/\/+$/, '')
-  // A stripped remainder of '' means the input was all slashes (a root):
-  // keep the root instead of collapsing to the empty string. A bare drive
-  // letter means a Windows drive root (e.g. `C:\` → `C:` after trimming):
-  // preserve the root slash instead of degrading to a drive-relative key.
-  if (!stripped) return normalized.startsWith('/') ? '/' : normalized
-  if (/^[a-zA-Z]:$/.test(stripped)) return `${stripped.toLowerCase()}/`
-  return stripped.toLowerCase()
-}
-
-export function projectNameFromPath(projectPath: string, fallback: string): string {
-  const normalized = projectPath.trim().replace(/\\/g, '/').replace(/\/+$/, '')
-  return normalized.split('/').filter(Boolean).pop() ?? fallback
 }
 
 /** Derive the grouping key for one session. Precedence: the worktree-folded
@@ -150,17 +143,6 @@ export function projectNameFromPath(projectPath: string, fallback: string): stri
  * never a cross-provider 'unknown'. The display label is derived separately
  * via projectNameFromPath so the key stays lowercase while display keeps its
  * original case. */
-export function deriveCanonicalProjectKey(
-  projectPath: string | null | undefined,
-  workingDirectory: string | null | undefined,
-  provider: string,
-  canonicalCwd?: string | null,
-): string {
-  const canonical = (canonicalCwd ?? projectPath ?? workingDirectory ?? '').trim()
-  if (!canonical) return `orphan:${provider}`
-  return normalizeProjectPathKey(canonical)
-}
-
 // Returns true for sessions whose canonical project key must NOT be derived
 // from the cwd. Cowork sessions come in two flavours:
 //   1. Local-mode: cwd is an ephemeral per-session outputs/ dir inside the
@@ -1891,19 +1873,6 @@ export function groupIntoTurns(
 // spawns within it; otherwise the carried set does. First occurrence of a spawn id
 // wins deterministically (tool_use ids are unique in practice; this only guards a
 // pathological restatement). Drives cross-range subagent PR attribution.
-export function buildSpawnPrSets(
-  turns: Array<{ prRefs?: string[]; spawnToolUseIds?: string[] }>,
-): Record<string, string[]> {
-  const out: Record<string, string[]> = {}
-  let cur: string[] = []
-  for (const turn of turns) {
-    const active = turn.prRefs?.length ? turn.prRefs : cur
-    for (const id of turn.spawnToolUseIds ?? []) if (!(id in out)) out[id] = active
-    if (turn.prRefs?.length) cur = turn.prRefs
-  }
-  return out
-}
-
 /**
  * Extract MCP tool inventory observed across a session's JSONL entries.
  *
@@ -2766,27 +2735,6 @@ function summarizeProject(
 // - Bitbucket Cloud: https?://<host>/<owner>/<repo>/pull-requests/<n>
 // Trailing prose punctuation (")].,;:...") is stripped so a URL at the end of
 // a sentence still matches.
-const PR_URL_RES = [
-  /https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g,
-  /https?:\/\/[^/\s]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/\d+/g,
-  /https?:\/\/[^/\s]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g,
-  /https?:\/\/[^/\s]+\/\S+?\/-\/merge_requests\/\d+/g,
-  /https?:\/\/[^/\s]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:merge_requests|merge-requests|pull-requests)\/\d+/g,
-]
-const PR_URL_TRAILING_PUNCT_RE = /[.,;:!?)\]}'"]+$/
-export function extractPrUrlsFromText(text: string): string[] {
-  const out = new Set<string>()
-  if (!text) return []
-  for (const re of PR_URL_RES) {
-    re.lastIndex = 0
-    for (const m of text.matchAll(re)) {
-      const cleaned = m[0].replace(PR_URL_TRAILING_PUNCT_RE, '')
-      if (cleaned) out.add(cleaned)
-    }
-  }
-  return [...out].sort()
-}
-
 // Union of PR URLs across every text surface a generic provider call carries:
 // the saved user message, the assistant/tool-output text when the provider
 // persists it (`assistantText`), plus the executed bash/tool commands (a `gh
@@ -2794,23 +2742,6 @@ export function extractPrUrlsFromText(text: string): string[] {
 // ever pasting a link). Providers that persist richer surfaces (Claude
 // assistant / tool-result text) add those before compaction; see
 // collectPrUrlsFromEntry.
-export function extractPrUrlsFromProviderCall(call: {
-  userMessage: string
-  assistantText?: string
-  bashCommands?: readonly string[]
-  toolSequence?: ReadonlyArray<ReadonlyArray<{ command?: string }>>
-}): string[] {
-  const parts: string[] = [call.userMessage]
-  if (call.assistantText) parts.push(call.assistantText)
-  for (const cmd of call.bashCommands ?? []) parts.push(cmd)
-  for (const group of call.toolSequence ?? []) {
-    for (const tool of group) {
-      if (tool.command) parts.push(tool.command)
-    }
-  }
-  return extractPrUrlsFromText(parts.join('\n'))
-}
-
 function providerCallToTurn(call: ParsedProviderCall): ParsedTurn {
   const tools = call.tools
   const usage: TokenUsage = {

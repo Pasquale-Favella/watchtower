@@ -16,7 +16,6 @@ import {
   ledgerSourceRowSchema,
   type LedgerTurnRow,
   ledgerTurnRowSchema,
-  type ModelAlias,
   modelAliasRowSchema,
   type PortResult,
   type PriceOverride,
@@ -25,8 +24,27 @@ import {
 import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../shared/schemas/ledger-mcp.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { DEFAULT_CADENCE } from '../cadence.js'
+import {
+  LedgerConfig,
+  type LedgerConfigPort,
+  LedgerIngest,
+  type LedgerIngestPort,
+  LedgerQueries,
+  type LedgerQueriesPort,
+  type LedgerRequestSnapshotData,
+} from './ledger-ports.js'
 import { mapFileToLedgerRows, type PortInput } from './port.js'
 import { type LedgerCallFactsRow, ledgerCallFactsRowSchema } from './read-projections.js'
+
+export {
+  LedgerConfig,
+  type LedgerConfigPort,
+  LedgerIngest,
+  type LedgerIngestPort,
+  LedgerQueries,
+  type LedgerQueriesPort,
+  type LedgerRequestSnapshotData,
+} from './ledger-ports.js'
 
 type SourceInput = ReturnType<typeof mapFileToLedgerRows>['source']
 type RunResult = { changes: number | bigint; lastInsertRowid: number | bigint }
@@ -87,82 +105,6 @@ const SELECT_CALL_FACTS = `
          tool_sequence_json
   FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
 `
-
-/**
- * The ledger's THREE PORTS, split by concern (ADR 0032 §A3, plan F12).
- *
- * The interface used to be one 23-member `LedgerRepository` spanning ingest,
- * source lifecycle, model aliases, price overrides, currency, cadence, MCP
- * startup, skill dismissals and four bulk reads — SRP and ISP violated, and
- * unreachable except through `LedgerStore`'s per-method sync adapters. The SQL
- * did not change: ONE implementation (`LedgerImplementation` below) is still
- * built over ONE `SqlClient`, and the three tags project their members out of
- * it. This is a signature change, not a rewrite.
- *
- * `LedgerStore` and the double `runSync` round-trip are deliberately still here
- * — both die in the facade-retirement slice, which needs the view builders to
- * take `LedgerQueries` through `R` first. The ports exist now so that retirement
- * is mechanical.
- */
-
-/** Ingest port (3 members): the scan-derived fact write path and the two
- *  deletions that belong to the same transactional unit. `portIn` is the
- *  ledger's centre of gravity — one file's whole port-in in one transaction
- *  (ADR 0002, ADR 0032). */
-export interface LedgerIngestPort {
-  portIn(input: PortInput): Effect.Effect<PortResult, SqlError>
-  deleteSource(provider: string, envFingerprint: string, filePath: string): Effect.Effect<void, SqlError>
-  clear(): Effect.Effect<void, SqlError>
-}
-
-/** Read port for ledger facts plus one consistent snapshot for view requests.
- * Every row is schema-validated at this boundary, and a row that fails to
- * decode is a `SchemaError` in `E` rather than a defect (see `decodeRows`). */
-export type LedgerRequestSnapshotData = {
-  sources: LedgerSourceRow[]
-  sessions: LedgerSessionRow[]
-  turns: LedgerTurnRow[]
-  calls: LedgerCallFactsRow[]
-  aliases: ModelAlias[]
-  overrides: PriceOverride[]
-}
-
-export interface LedgerQueriesPort {
-  getSources(): Effect.Effect<LedgerSourceRow[], SqlError | Schema.SchemaError>
-  getSessions(): Effect.Effect<LedgerSessionRow[], SqlError | Schema.SchemaError>
-  getTurns(): Effect.Effect<LedgerTurnRow[], SqlError | Schema.SchemaError>
-  getCalls(): Effect.Effect<LedgerCallRow[], SqlError | Schema.SchemaError>
-  getCallFacts(): Effect.Effect<LedgerCallFactsRow[], SqlError | Schema.SchemaError>
-  getRequestSnapshotData(): Effect.Effect<LedgerRequestSnapshotData, SqlError | Schema.SchemaError>
-}
-
-/** Config port (16 members): the user settings that are NOT scan data and must
- *  survive `clear()` (ADR 0002) — model aliases, price overrides, currency
- *  rates, display currency, refresh cadence, local MCP startup mode, and
- *  not-a-skill dismissals. */
-export interface LedgerConfigPort {
-  getModelAliases(): Effect.Effect<ModelAlias[], SqlError | Schema.SchemaError>
-  setModelAlias(model: string, aliasOf: string): Effect.Effect<void, SqlError>
-  removeModelAlias(model: string): Effect.Effect<void, SqlError>
-  getPriceOverrides(): Effect.Effect<PriceOverride[], SqlError | Schema.SchemaError>
-  setPriceOverride(model: string, override: Omit<PriceOverride, 'model'>): Effect.Effect<void, SqlError>
-  removePriceOverride(model: string): Effect.Effect<void, SqlError>
-  getCurrencyRate(code: string): Effect.Effect<CurrencyRate | null, SqlError | Schema.SchemaError>
-  setCurrencyRate(rate: CurrencyRate): Effect.Effect<void, SqlError>
-  getDisplayCurrency(): Effect.Effect<string, SqlError>
-  setDisplayCurrency(code: string): Effect.Effect<void, SqlError>
-  getRefreshCadence(): Effect.Effect<string, SqlError>
-  setRefreshCadence(value: string): Effect.Effect<void, SqlError>
-  getLedgerMcpStartupMode(): Effect.Effect<LedgerMcpStartupMode, SqlError>
-  setLedgerMcpStartupMode(mode: LedgerMcpStartupMode): Effect.Effect<void, SqlError>
-  getSkillDismissals(): Effect.Effect<SkillsDismissal[], SqlError>
-  dismissSkill(
-    source: SkillsDismissal['source'],
-    name: string,
-    reason: string,
-    created: string,
-  ): Effect.Effect<void, SqlError>
-}
 
 /** Shared implementation of the three ledger ports. */
 export interface LedgerImplementationShape extends LedgerIngestPort, LedgerQueriesPort, LedgerConfigPort {}
@@ -663,74 +605,54 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
   )
 }
 
-/**
- * `LedgerIngest` — the ledger's write port (3 members). Independently providable
- * and independently fakeable; the implementation is shared, not copied.
- */
-export class LedgerIngest extends Context.Service<LedgerIngest, LedgerIngestPort>()('watchtower/store/LedgerIngest') {
-  static readonly layer = Layer.effect(
-    LedgerIngest,
-    Effect.map(LedgerImplementation, implementation =>
-      LedgerIngest.of({
-        portIn: implementation.portIn,
-        deleteSource: implementation.deleteSource,
-        clear: implementation.clear,
-      }),
-    ),
-  )
-}
+const ledgerIngestLayer = Layer.effect(
+  LedgerIngest,
+  Effect.map(LedgerImplementation, implementation =>
+    LedgerIngest.of({
+      portIn: implementation.portIn,
+      deleteSource: implementation.deleteSource,
+      clear: implementation.clear,
+    }),
+  ),
+)
 
-/**
- * `LedgerQueries` — the ledger's read port (6 members), the one the query-time
- * view builders will take through `R` so `LedgerStore` loses its last callers.
- */
-export class LedgerQueries extends Context.Service<LedgerQueries, LedgerQueriesPort>()(
-  'watchtower/store/LedgerQueries',
-) {
-  static readonly layer = Layer.effect(
-    LedgerQueries,
-    Effect.map(LedgerImplementation, implementation =>
-      LedgerQueries.of({
-        getSources: implementation.getSources,
-        getSessions: implementation.getSessions,
-        getTurns: implementation.getTurns,
-        getCalls: implementation.getCalls,
-        getCallFacts: implementation.getCallFacts,
-        getRequestSnapshotData: implementation.getRequestSnapshotData,
-      }),
-    ),
-  )
-}
+const ledgerQueriesLayer = Layer.effect(
+  LedgerQueries,
+  Effect.map(LedgerImplementation, implementation =>
+    LedgerQueries.of({
+      getSources: implementation.getSources,
+      getSessions: implementation.getSessions,
+      getTurns: implementation.getTurns,
+      getCalls: implementation.getCalls,
+      getCallFacts: implementation.getCallFacts,
+      getRequestSnapshotData: implementation.getRequestSnapshotData,
+    }),
+  ),
+)
 
-/**
- * `LedgerConfig` — the ledger's settings port (16 members), the tables that
- * survive `clear()` (ADR 0002) and repaint every view with no rescan.
- */
-export class LedgerConfig extends Context.Service<LedgerConfig, LedgerConfigPort>()('watchtower/store/LedgerConfig') {
-  static readonly layer = Layer.effect(
-    LedgerConfig,
-    Effect.map(LedgerImplementation, implementation =>
-      LedgerConfig.of({
-        getModelAliases: implementation.getModelAliases,
-        setModelAlias: implementation.setModelAlias,
-        removeModelAlias: implementation.removeModelAlias,
-        getPriceOverrides: implementation.getPriceOverrides,
-        setPriceOverride: implementation.setPriceOverride,
-        removePriceOverride: implementation.removePriceOverride,
-        getCurrencyRate: implementation.getCurrencyRate,
-        setCurrencyRate: implementation.setCurrencyRate,
-        getDisplayCurrency: implementation.getDisplayCurrency,
-        setDisplayCurrency: implementation.setDisplayCurrency,
-        getRefreshCadence: implementation.getRefreshCadence,
-        setRefreshCadence: implementation.setRefreshCadence,
-        getLedgerMcpStartupMode: implementation.getLedgerMcpStartupMode,
-        setLedgerMcpStartupMode: implementation.setLedgerMcpStartupMode,
-        getSkillDismissals: implementation.getSkillDismissals,
-        dismissSkill: implementation.dismissSkill,
-      }),
-    ),
-  )
-}
+const ledgerConfigLayer = Layer.effect(
+  LedgerConfig,
+  Effect.map(LedgerImplementation, implementation =>
+    LedgerConfig.of({
+      getModelAliases: implementation.getModelAliases,
+      setModelAlias: implementation.setModelAlias,
+      removeModelAlias: implementation.removeModelAlias,
+      getPriceOverrides: implementation.getPriceOverrides,
+      setPriceOverride: implementation.setPriceOverride,
+      removePriceOverride: implementation.removePriceOverride,
+      getCurrencyRate: implementation.getCurrencyRate,
+      setCurrencyRate: implementation.setCurrencyRate,
+      getDisplayCurrency: implementation.getDisplayCurrency,
+      setDisplayCurrency: implementation.setDisplayCurrency,
+      getRefreshCadence: implementation.getRefreshCadence,
+      setRefreshCadence: implementation.setRefreshCadence,
+      getLedgerMcpStartupMode: implementation.getLedgerMcpStartupMode,
+      setLedgerMcpStartupMode: implementation.setLedgerMcpStartupMode,
+      getSkillDismissals: implementation.getSkillDismissals,
+      dismissSkill: implementation.dismissSkill,
+    }),
+  ),
+)
 
 /**
  * All three ports from ONE `LedgerImplementation`, with the implementation kept
@@ -742,6 +664,6 @@ export class LedgerConfig extends Context.Service<LedgerConfig, LedgerConfigPort
  * connection.
  */
 export const LedgerPortsLayer: Layer.Layer<LedgerIngest | LedgerQueries | LedgerConfig, never, SqlClient.SqlClient> =
-  Layer.mergeAll(LedgerIngest.layer, LedgerQueries.layer, LedgerConfig.layer).pipe(
+  Layer.mergeAll(ledgerIngestLayer, ledgerQueriesLayer, ledgerConfigLayer).pipe(
     Layer.provide(LedgerImplementation.layer),
   )

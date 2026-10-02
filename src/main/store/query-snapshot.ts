@@ -1,77 +1,27 @@
 import * as Effect from 'effect/Effect'
 
+import { captureModelPricingCatalogue, captureProxyPaths } from '../pipeline/models.js'
+import type { LedgerStore } from './ledger.js'
 import {
-  captureModelPricingCatalogue,
-  createPricingConfigLookup,
-  type PricingConfigLookup,
-} from '../pipeline/models.js'
-import type { PricingCatalogue } from '../pipeline/pricing-calculation.js'
-import type {
-  LedgerSessionRow,
-  LedgerSourceRow,
-  LedgerStore,
-  LedgerTurnRow,
-  ModelAlias,
-  PriceOverride,
-} from './ledger.js'
-import { LedgerQueries, type LedgerRequestSnapshotData } from './ledger-repository.js'
-import type { LedgerCallFactsRow } from './read-projections.js'
+  type LedgerQuerySnapshot,
+  type LedgerQuerySnapshotInputs,
+  makeLedgerQuerySnapshot,
+} from './ledger-query-snapshot.js'
 
-/** All ledger and pricing inputs captured once for one view request. */
-export type LedgerQuerySnapshot = {
-  sources: readonly LedgerSourceRow[]
-  sessions: readonly LedgerSessionRow[]
-  turns: readonly LedgerTurnRow[]
-  calls: readonly LedgerCallFactsRow[]
-  pricing: PricingConfigLookup
-  catalogue: PricingCatalogue
-}
-
-export function makeLedgerQuerySnapshot(input: {
-  sources: readonly LedgerSourceRow[]
-  sessions: readonly LedgerSessionRow[]
-  turns: readonly LedgerTurnRow[]
-  calls: readonly LedgerCallFactsRow[]
-  aliases: readonly ModelAlias[]
-  overrides: readonly PriceOverride[]
-  catalogue: PricingCatalogue
-}): LedgerQuerySnapshot {
-  return {
-    sources: input.sources,
-    sessions: input.sessions,
-    turns: input.turns,
-    calls: input.calls,
-    pricing: createPricingConfigLookup(input.aliases, input.overrides),
-    catalogue: input.catalogue,
-  }
-}
+export { makeLedgerQuerySnapshot }
+export type { LedgerQuerySnapshot, LedgerQuerySnapshotInputs }
 
 /**
- * Canonical Effect loader for one consistent query request. The catalogue is
- * captured once when the Effect runs; callers may supply an already captured
- * catalogue at this boundary for deterministic tests or a wider application
- * operation. Repository failures stay typed for the worker protocol boundary.
- */
-export const loadLedgerQuerySnapshotEffect = Effect.fn('LedgerQuerySnapshot.load')(function* (
-  catalogue?: PricingCatalogue,
-) {
-  const capturedCatalogue = catalogue ?? captureModelPricingCatalogue()
-  const queries = yield* LedgerQueries
-  const data: LedgerRequestSnapshotData = yield* queries.getRequestSnapshotData()
-  return makeLedgerQuerySnapshot({ ...data, catalogue: capturedCatalogue })
-})
-
-/**
- * The temporary LedgerStore adapter for request-level queries. Bulk ledger
- * reads share one LedgerQueries transition; config is loaded once through its
- * own port. The calls remain synchronous on the owning thread.
- *
- * Removal condition: delete this adapter when all query callers use
- * `loadLedgerQuerySnapshotEffect` through their application runtime.
+ * Temporary LedgerStore compatibility adapter for legacy view callers.
+ * Removal condition: delete after every caller loads through the application
+ * Effect runtime with request-captured catalogue and proxy paths.
  */
 export function loadLedgerQuerySnapshot(store: LedgerStore): LedgerQuerySnapshot {
-  const catalogue = captureModelPricingCatalogue()
-  const rows = store.runQueriesSync(queries =>
+  const inputs = {
+    catalogue: captureModelPricingCatalogue(),
+    proxyPaths: captureProxyPaths(),
+  }
+  const data = store.runQueriesSync(queries =>
     Effect.gen(function* () {
       const sources = yield* queries.getSources()
       const sessions = yield* queries.getSessions()
@@ -87,5 +37,5 @@ export function loadLedgerQuerySnapshot(store: LedgerStore): LedgerQuerySnapshot
       return { aliases, overrides }
     }),
   )
-  return makeLedgerQuerySnapshot({ ...rows, ...config, catalogue })
+  return makeLedgerQuerySnapshot({ ...data, ...config, ...inputs })
 }

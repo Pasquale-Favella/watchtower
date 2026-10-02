@@ -12,6 +12,51 @@ export type PricingConfigLookup = {
   findOverride(name: string): ConfigRatePair | undefined
 }
 
+export function stripPinAndDate(model: string): string {
+  return model.replace(/@.*$/, '').replace(/-\d{8}$/, '')
+}
+
+/** Normalize an explicit alias/override name without reading live config. */
+export function normalizeModelKey(model: string): string {
+  const variantStripped = model.replace(/:(thinking|cloud)$/i, '').replace(/-TEE$/i, '')
+  return stripPinAndDate(variantStripped)
+    .replace(/^([^/]+\/)+/, '')
+    .toLowerCase()
+}
+
+/** Build the request's immutable alias and override lookup from captured rows. */
+export function createPricingConfigLookup(
+  aliases: ReadonlyArray<{ model: string; aliasOf: string }>,
+  overrides: ReadonlyArray<{ model: string; inputPricePerMillion: number; outputPricePerMillion: number }>,
+): PricingConfigLookup {
+  const aliasExact = new Map<string, string>()
+  const aliasNormalized = new Map<string, string>()
+  for (const alias of aliases) {
+    aliasExact.set(alias.model, alias.aliasOf)
+    aliasNormalized.set(normalizeModelKey(alias.model), alias.aliasOf)
+  }
+
+  const overrideExact = new Map<string, ConfigRatePair>()
+  const overrideNormalized = new Map<string, ConfigRatePair>()
+  for (const override of overrides) {
+    const rates = {
+      inputPricePerMillion: override.inputPricePerMillion,
+      outputPricePerMillion: override.outputPricePerMillion,
+    }
+    overrideExact.set(override.model, rates)
+    overrideNormalized.set(normalizeModelKey(override.model), rates)
+  }
+
+  return {
+    resolveAlias(model: string): string {
+      return aliasExact.get(model) ?? aliasNormalized.get(normalizeModelKey(model)) ?? model
+    },
+    findOverride(model: string): ConfigRatePair | undefined {
+      return overrideExact.get(model) ?? overrideNormalized.get(normalizeModelKey(model))
+    },
+  }
+}
+
 export type PricingTier = {
   model: string
   tiers: readonly {
@@ -100,10 +145,6 @@ function hasBillableRate(costs: ModelCosts): boolean {
   )
 }
 
-function stripPinAndDate(model: string): string {
-  return model.replace(/@.*$/, '').replace(/-\d{8}$/, '')
-}
-
 function canonicalName(model: string): string {
   return stripPinAndDate(model).replace(/^[^/]+\//, '')
 }
@@ -125,6 +166,11 @@ function alias(catalogue: PricingCatalogue, model: string): string {
     return lowercaseAlias
   }
   return model
+}
+
+/** Resolve the captured user or built-in alias used for display naming. */
+export function resolveModelNameAlias(catalogue: PricingCatalogue, model: string): string {
+  return alias(catalogue, model)
 }
 
 function routedCandidates(id: string, segments: ReadonlySet<string>): string[] {

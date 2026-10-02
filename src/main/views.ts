@@ -13,12 +13,10 @@ import {
   sessionDetailSchema,
   type SessionRow,
   sessionRowSchema,
-  type SkillRow,
-  type SubagentRow,
 } from '../shared/schemas/views.js'
-import { isProxiedPath } from './pipeline/models.js'
-import { type SessionRow as ReportSessionRow, sessionRowFromSummary } from './pipeline/sessions-report.js'
-import type { ProjectSummary, SessionSummary, TaskCategory } from './pipeline/types.js'
+import { reportUnpricedModels } from './pipeline/pricing-diagnostics.js'
+import { sessionRowFromSummary } from './pipeline/sessions-report.js'
+import type { ProjectSummary, SessionSummary } from './pipeline/types.js'
 import { CATEGORY_LABELS } from './pipeline/types.js'
 import {
   buildSessionRows,
@@ -29,6 +27,10 @@ import {
 } from './store/aggregate.js'
 import type { LedgerStore } from './store/ledger.js'
 import { type LedgerQuerySnapshot, loadLedgerQuerySnapshot } from './store/query-snapshot.js'
+import {
+  buildAnalyticalViewsFromSnapshotResult as calculateAnalyticalViewsFromSnapshot,
+  buildDashboardViewsFromSnapshotResult as calculateDashboardViewsFromSnapshot,
+} from './views-calculation.js'
 
 export type {
   AnalyticalViews,
@@ -44,47 +46,6 @@ export type {
 /** All-time window: the ledger equivalent of reading a full report (no scope). */
 const ALL_TIME_RANGE = { start: new Date(-8640000000000000), end: new Date(8640000000000000) } as const
 
-/**
- * The four analytical screens from ledger rows. Only providers/models that
- * actually appear in the data are listed — detected-only rendering, so absent
- * providers never render a placeholder.
- */
-function analyticalFrom(dashboard: DashboardViews, sessions: SessionSummary[]): AnalyticalViews {
-  const skillSum = new Map<string, { turns: number; cost: number; savingsUSD: number }>()
-  const subagentSum = new Map<string, { calls: number; cost: number; savingsUSD: number }>()
-  for (const session of sessions) {
-    for (const [name, v] of Object.entries(session.skillBreakdown)) {
-      const sum = skillSum.get(name) ?? { turns: 0, cost: 0, savingsUSD: 0 }
-      sum.turns += v.turns
-      sum.cost += v.costUSD
-      sum.savingsUSD += v.savingsUSD
-      skillSum.set(name, sum)
-    }
-    for (const [name, v] of Object.entries(session.subagentBreakdown)) {
-      const sum = subagentSum.get(name) ?? { calls: 0, cost: 0, savingsUSD: 0 }
-      sum.calls += v.calls
-      sum.cost += v.costUSD
-      sum.savingsUSD += v.savingsUSD
-      subagentSum.set(name, sum)
-    }
-  }
-
-  const byCost = (a: { cost: number }, b: { cost: number }): number => b.cost - a.cost
-  return {
-    providers: dashboard.byProvider,
-    models: dashboard.byModel,
-    categories: dashboard.byCategory,
-    skills: Array.from(skillSum.entries())
-      .filter(([, s]) => s.cost !== 0 || s.turns !== 0)
-      .map(([name, s]) => ({ name, turns: s.turns, cost: s.cost, savingsUSD: s.savingsUSD }))
-      .sort(byCost),
-    subagents: Array.from(subagentSum.entries())
-      .filter(([, s]) => s.cost !== 0 || s.calls !== 0)
-      .map(([name, s]) => ({ name, calls: s.calls, cost: s.cost, savingsUSD: s.savingsUSD }))
-      .sort(byCost),
-  }
-}
-
 export function buildAnalyticalViewsFromLedger(store: LedgerStore): AnalyticalViews {
   return Schema.decodeUnknownSync(analyticalViewsSchema)(
     buildAnalyticalViewsFromSnapshot(loadLedgerQuerySnapshot(store)),
@@ -92,9 +53,9 @@ export function buildAnalyticalViewsFromLedger(store: LedgerStore): AnalyticalVi
 }
 
 export function buildAnalyticalViewsFromSnapshot(snapshot: LedgerQuerySnapshot): AnalyticalViews {
-  const summaries = buildSessionSummariesFromSnapshot(snapshot, { range: ALL_TIME_RANGE })
-  const dashboard = buildDashboardCoreFromSummaries(summaries, snapshot.sessions)
-  return analyticalFrom(dashboard, summaries)
+  const result = calculateAnalyticalViewsFromSnapshot(snapshot)
+  reportUnpricedModels(result.unpricedModels)
+  return result.value
 }
 
 /**
@@ -282,97 +243,6 @@ export function buildProjectsFromLedger(store: LedgerStore): ProjectSummary[] {
   return groupSummariesIntoProjects(buildSessionSummaries(store, { range: ALL_TIME_RANGE }))
 }
 
-type Sum = { cost: number; calls: number; sessions: number; turns: number }
-
-function emptySum(): Sum {
-  return { cost: 0, calls: 0, sessions: 0, turns: 0 }
-}
-
-function addSum(target: Sum, cost: number, calls: number, turns: number): void {
-  target.cost += cost
-  target.calls += calls
-  target.turns += turns
-  target.sessions += 1
-}
-
-/**
- * Dashboard payload core: `rows` and `sessions` must be the same sessions (rows
- * are shaped from the summaries) so the derived buckets are consistent.
- */
-function buildDashboardCore(
-  rows: ReportSessionRow[],
-  sessions: SessionSummary[],
-  kpis: DashboardViews['kpis'],
-): DashboardViews {
-  const costByDay = new Map<string, number>()
-  const providerSum = new Map<string, Sum>()
-  const modelSum = new Map<string, Sum>()
-  const projectSum = new Map<string, Sum>()
-  const categorySum = new Map<TaskCategory, Sum>()
-  // Same-leaf checkouts share a display leaf but never a canonical key: group
-  // the project bucket by key and keep the leaf only for display.
-  const projectKeyBySession = new Map(sessions.map(s => [s.sessionId, sessionProjectKey(s)]))
-  const projectDisplayByKey = new Map<string, string>()
-
-  for (const row of rows) {
-    const day = row.startedAt.slice(0, 10)
-    costByDay.set(day, (costByDay.get(day) ?? 0) + row.cost)
-
-    const provider = providerSum.get(row.provider) ?? emptySum()
-    addSum(provider, row.cost, row.calls, row.turns)
-    providerSum.set(row.provider, provider)
-
-    for (const model of row.models) {
-      const modelEntry = modelSum.get(model) ?? emptySum()
-      addSum(modelEntry, row.cost, row.calls, row.turns)
-      modelSum.set(model, modelEntry)
-    }
-
-    const projectKey = projectKeyBySession.get(row.sessionId) ?? row.project
-    if (!projectDisplayByKey.has(projectKey)) projectDisplayByKey.set(projectKey, row.project)
-    const project = projectSum.get(projectKey) ?? emptySum()
-    addSum(project, row.cost, row.calls, row.turns)
-    projectSum.set(projectKey, project)
-  }
-
-  for (const session of sessions) {
-    for (const [category, value] of Object.entries(session.categoryBreakdown) as Array<
-      [TaskCategory, { turns: number; costUSD: number }]
-    >) {
-      const sum = categorySum.get(category) ?? emptySum()
-      sum.cost += value.costUSD
-      sum.turns += value.turns
-      categorySum.set(category, sum)
-    }
-  }
-
-  const sortByCost = (a: { cost: number }, b: { cost: number }): number => b.cost - a.cost
-  const toEntry = <T>(map: Map<string, Sum>): T[] =>
-    Array.from(map.entries())
-      .map(([name, s]) => ({ name, cost: s.cost, calls: s.calls }))
-      .sort(sortByCost) as unknown as T[]
-
-  return {
-    kpis,
-    costOverTime: Array.from(costByDay.entries())
-      .map(([date, cost]) => ({ date, cost }))
-      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
-    byProvider: toEntry<DashboardViews['byProvider'][number]>(providerSum).map(e => ({
-      ...e,
-      sessions: providerSum.get(e.name)!.sessions,
-    })),
-    byModel: toEntry<DashboardViews['byModel'][number]>(modelSum),
-    byProject: toEntry<DashboardViews['byProject'][number]>(projectSum).map(e => ({
-      ...e,
-      name: projectDisplayByKey.get(e.name) ?? e.name,
-    })),
-    byCategory: Array.from(categorySum.entries())
-      .filter(([, s]) => s.cost !== 0 || s.turns !== 0)
-      .map(([category, s]) => ({ name: CATEGORY_LABELS[category] ?? category, cost: s.cost, turns: s.turns }))
-      .sort(sortByCost),
-  }
-}
-
 /**
  * Computes the Dashboard's view payload from the ledger (all-time scope). Kept
  * in the main process so the sandboxed renderer only receives serializable,
@@ -383,46 +253,7 @@ export function buildDashboardViewsFromLedger(store: LedgerStore): DashboardView
 }
 
 export function buildDashboardViewsFromSnapshot(snapshot: LedgerQuerySnapshot): DashboardViews {
-  const summaries = buildSessionSummariesFromSnapshot(snapshot, { range: ALL_TIME_RANGE })
-  return buildDashboardCoreFromSummaries(summaries, snapshot.sessions)
-}
-
-function buildDashboardCoreFromSummaries(
-  summaries: SessionSummary[],
-  ledgerSessions: ReturnType<typeof loadLedgerQuerySnapshot>['sessions'],
-): DashboardViews {
-  const projectPathBySession = new Map<string, string>()
-  for (const s of ledgerSessions) {
-    if (!projectPathBySession.has(s.sessionId)) projectPathBySession.set(s.sessionId, s.projectPath ?? '')
-  }
-
-  const kpis: DashboardViews['kpis'] = {
-    totalCost: 0,
-    totalEstimatedCost: 0,
-    totalSavings: 0,
-    totalProxiedCost: 0,
-    totalCalls: 0,
-    totalSessions: summaries.length,
-    totalProjects: new Set(summaries.map(s => sessionProjectKey(s))).size,
-    totalInputTokens: 0,
-    totalOutputTokens: 0,
-    totalCacheReadTokens: 0,
-    totalCacheWriteTokens: 0,
-    totalReasoningTokens: 0,
-  }
-  for (const s of summaries) {
-    kpis.totalCost += s.totalCostUSD
-    kpis.totalEstimatedCost += s.totalEstimatedCostUSD ?? 0
-    kpis.totalSavings += s.totalSavingsUSD
-    if (isProxiedPath(projectPathBySession.get(s.sessionId))) kpis.totalProxiedCost += s.totalCostUSD
-    kpis.totalCalls += s.apiCalls
-    kpis.totalInputTokens += s.totalInputTokens
-    kpis.totalOutputTokens += s.totalOutputTokens
-    kpis.totalCacheReadTokens += s.totalCacheReadTokens
-    kpis.totalCacheWriteTokens += s.totalCacheWriteTokens
-    kpis.totalReasoningTokens += s.totalReasoningTokens
-  }
-
-  const rows = summaries.map(s => sessionRowFromSummary(s, s.project))
-  return buildDashboardCore(rows, summaries, kpis)
+  const result = calculateDashboardViewsFromSnapshot(snapshot)
+  reportUnpricedModels(result.unpricedModels)
+  return result.value
 }

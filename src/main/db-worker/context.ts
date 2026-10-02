@@ -35,7 +35,7 @@ import { buildOverviewFromLedger, type OverviewScope } from '../overview.js'
 import type { HttpFetch } from '../pipeline/fetch-utils.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
 import { getRepoUrl } from '../pipeline/git-remote.js'
-import { refreshPricingNowEffect } from '../pipeline/models.js'
+import { captureModelPricingCatalogue, captureProxyPaths, refreshPricingNowEffect } from '../pipeline/models.js'
 import { getClaudeConfigDirs } from '../pipeline/providers/claude.js'
 import {
   buildScanSummaryRecords,
@@ -592,7 +592,9 @@ export class DbWorkerContext {
       }
 
       case 'store:views':
-        return this.runtime.runPromise(queryDashboardViews())
+        return this.runtime.runPromise(
+          queryDashboardViews({ catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
+        )
 
       case 'store:projects':
         return buildProjectRowsFromLedger(ledger)
@@ -762,7 +764,9 @@ export class DbWorkerContext {
       }
 
       case 'store:analytics':
-        return this.runtime.runPromise(queryAnalyticalViews())
+        return this.runtime.runPromise(
+          queryAnalyticalViews({ catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
+        )
 
       case 'overview:query': {
         const scope = args[0] as OverviewScope

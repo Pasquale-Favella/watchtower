@@ -7,8 +7,9 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/unstable/sql/SqlError'
 import { describe, expect, it, vi } from 'vitest'
 
+import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import { LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-repository.js'
+import { LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
 import { buildAnalyticalViewsFromLedger, buildDashboardViewsFromLedger } from '../src/main/views.js'
 import { openWorkerOwner } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
@@ -45,6 +46,21 @@ function seedLedger(owner: ReturnType<typeof openWorkerOwner>): void {
 }
 
 describe('worker view queries', () => {
+  it.each(operations)('reports unpriced models through the runtime port for %s', async operation => {
+    await withWorker(async (context, owner) => {
+      seedLedger(owner)
+      owner.ledger.setModelAlias('demo-model', 'test-unpriced-target-model')
+      const diagnostics = owner.runtime.runSync(PricingDiagnostics)
+      const report = vi.spyOn(diagnostics, 'reportUnpricedModels').mockReturnValue(Effect.void)
+
+      await context.dispatch(operation, [])
+
+      expect(report).toHaveBeenCalledTimes(1)
+      const reported = report.mock.calls[0]?.[0] ?? []
+      expect([...reported]).toEqual(['test-unpriced-target-model'])
+    })
+  })
+
   it.each(operations)('loads one port snapshot for %s without running the synchronous facade', async operation => {
     await withWorker(async (context, owner) => {
       seedLedger(owner)

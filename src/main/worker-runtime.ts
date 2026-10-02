@@ -7,6 +7,7 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
+import { PricingDiagnostics } from './application/pricing-diagnostics.js'
 import { Env } from './env.js'
 import { FxRates } from './fx.js'
 import {
@@ -17,11 +18,13 @@ import {
   OperationalLogTracerLayer,
 } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
+import { PricingDiagnosticsLive } from './pipeline/pricing-diagnostics.js'
 import { LedgerStore } from './store/ledger.js'
 import { initializeLedger } from './store/ledger-initialization.js'
 import { LedgerConfig, LedgerIngest, LedgerPortsLayer, LedgerQueries } from './store/ledger-repository.js'
 
 export type WorkerServices =
+  | PricingDiagnostics
   | OperationalLog
   | Env
   | HttpFetch
@@ -31,7 +34,8 @@ export type WorkerServices =
   | LedgerConfig
   | Sqlite.SqliteClient.SqliteClient
   | SqlClient.SqlClient
-export type WorkerOverrides = OperationalLog | Env | HttpFetch | FxRates | LedgerIngest | LedgerQueries | LedgerConfig
+export type WorkerOverrides =
+  OperationalLog | Env | HttpFetch | FxRates | LedgerIngest | LedgerQueries | LedgerConfig | PricingDiagnostics
 export type WorkerSqlLayer = Layer.Layer<Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient>
 export type WorkerRuntime = ManagedRuntime.ManagedRuntime<WorkerServices, never>
 
@@ -53,6 +57,7 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
     Env.layer,
     sink ? OperationalLog.layerWithSink(sink, 'worker') : OperationalLog.layer,
     liveFetch,
+    PricingDiagnosticsLive,
     fxRates,
     dependencies,
   )
