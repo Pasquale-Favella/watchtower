@@ -22,6 +22,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "icons": "node scripts/generate-icons.cjs",
+    "release:check-version": "node scripts/check-release-version.cjs",
     "package": "electron-vite build && electron-builder --publish never",
     "package:win": "electron-vite build && electron-builder --win --publish never",
     "package:mac": "electron-vite build && electron-builder --mac --publish never",
