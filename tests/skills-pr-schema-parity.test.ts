@@ -3,15 +3,15 @@ import { describe, expect, it } from 'vitest'
 
 import * as pullRequests from '../src/shared/schemas/pull-requests.js'
 import * as skills from '../src/shared/schemas/skills.js'
-import { preEffectPullRequestContracts, preEffectSkillsContracts } from './fixtures/pre-effect-skills-pr-schemas.js'
 
-type LegacySchema = { safeParse: (input: unknown) => { success: boolean; data?: unknown } }
+function assertAccepted(current: Schema.ConstraintDecoder<unknown>, input: unknown, expected: unknown): void {
+  const result = Schema.decodeUnknownResult(current)(input)
+  expect(result._tag).toBe('Success')
+  if (result._tag === 'Success') expect(result.success).toStrictEqual(expected)
+}
 
-function assertParity(legacy: LegacySchema, current: Schema.ConstraintDecoder<unknown>, input: unknown): void {
-  const before = legacy.safeParse(input)
-  const after = Schema.decodeUnknownResult(current)(input)
-  expect(after._tag === 'Success').toBe(before.success)
-  if (before.success && after._tag === 'Success') expect(after.success).toStrictEqual(before.data)
+function assertRejected(current: Schema.ConstraintDecoder<unknown>, input: unknown): void {
+  expect(Schema.decodeUnknownResult(current)(input)._tag).toBe('Failure')
 }
 
 const sourceSession = { sessionId: 's', project: 'p', date: '2026-01-01', turns: 2, costUSD: 3 }
@@ -40,61 +40,31 @@ const pullRequestRow = {
 }
 
 const contracts = [
-  ['skills source', preEffectSkillsContracts.skillsSourceSchema, skills.skillsSourceSchema, 'skill'],
-  ['skills thresholds', preEffectSkillsContracts.skillsThresholdsSchema, skills.skillsThresholdsSchema, {}],
-  [
-    'candidate source session',
-    preEffectSkillsContracts.candidateSourceSessionSchema,
-    skills.candidateSourceSessionSchema,
-    sourceSession,
-  ],
-  ['skill candidate', preEffectSkillsContracts.skillCandidateSchema, skills.skillCandidateSchema, candidate],
-  ['ghost skill', preEffectSkillsContracts.ghostSkillSchema, skills.ghostSkillSchema, ghost],
+  ['skills source', skills.skillsSourceSchema, 'skill'],
+  ['candidate source session', skills.candidateSourceSessionSchema, sourceSession],
+  ['skill candidate', skills.skillCandidateSchema, candidate],
+  ['ghost skill', skills.ghostSkillSchema, ghost],
   [
     'skills dismissal',
-    preEffectSkillsContracts.skillsDismissalSchema,
     skills.skillsDismissalSchema,
     { source: 'bash', name: 'git status', reason: 'not a skill', created: '2026-01-01' },
   ],
   [
     'skills dismissal request',
-    preEffectSkillsContracts.skillsDismissalRequestSchema,
     skills.skillsDismissalRequestSchema,
     { source: 'tool', name: 'Read', reason: 'not a skill' },
   ],
-  [
-    'skills dismissal success result',
-    preEffectSkillsContracts.skillsDismissalResultSchema,
-    skills.skillsDismissalResultSchema,
-    { ok: true },
-  ],
-  [
-    'skills dismissal failure result',
-    preEffectSkillsContracts.skillsDismissalResultSchema,
-    skills.skillsDismissalResultSchema,
-    { ok: false, error: 'offline' },
-  ],
+  ['skills dismissal success result', skills.skillsDismissalResultSchema, { ok: true }],
+  ['skills dismissal failure result', skills.skillsDismissalResultSchema, { ok: false, error: 'offline' }],
   [
     'skills save request',
-    preEffectSkillsContracts.skillsSaveRequestSchema,
     skills.skillsSaveRequestSchema,
     { name: 'data-fetch', content: '---\nname: data-fetch\n---' },
   ],
-  [
-    'skills save success result',
-    preEffectSkillsContracts.skillsSaveResultSchema,
-    skills.skillsSaveResultSchema,
-    { ok: true, path: '/skills/data-fetch/SKILL.md' },
-  ],
-  [
-    'skills save failure result',
-    preEffectSkillsContracts.skillsSaveResultSchema,
-    skills.skillsSaveResultSchema,
-    { ok: false, error: 'cancelled' },
-  ],
+  ['skills save success result', skills.skillsSaveResultSchema, { ok: true, path: '/skills/data-fetch/SKILL.md' }],
+  ['skills save failure result', skills.skillsSaveResultSchema, { ok: false, error: 'cancelled' }],
   [
     'skills payload',
-    preEffectSkillsContracts.skillsPayloadSchema,
     skills.skillsPayloadSchema,
     {
       period: { start: null, end: null },
@@ -113,21 +83,10 @@ const contracts = [
       ghosts: [ghost],
     },
   ],
-  [
-    'pull request category',
-    preEffectPullRequestContracts.pullRequestCategorySchema,
-    pullRequests.pullRequestCategorySchema,
-    { name: 'coding', cost: 1 },
-  ],
-  [
-    'pull request row',
-    preEffectPullRequestContracts.pullRequestRowSchema,
-    pullRequests.pullRequestRowSchema,
-    pullRequestRow,
-  ],
+  ['pull request category', pullRequests.pullRequestCategorySchema, { name: 'coding', cost: 1 }],
+  ['pull request row', pullRequests.pullRequestRowSchema, pullRequestRow],
   [
     'pull requests payload',
-    preEffectPullRequestContracts.pullRequestsPayloadSchema,
     pullRequests.pullRequestsPayloadSchema,
     {
       rows: [pullRequestRow],
@@ -142,22 +101,22 @@ const contracts = [
 
 describe('skills and pull requests Effect Schema parity', () => {
   it.each(contracts)(
-    '%s preserves decoded values, verdicts, and unknown-key stripping',
-    (_name, before, after, sample) => {
-      assertParity(before, after, sample)
+    '%s decodes the expected value, rejects invalid values, and strips unknown keys',
+    (_name, schema, sample) => {
+      assertAccepted(schema, sample, sample)
       if (typeof sample === 'object' && sample !== null && !Array.isArray(sample)) {
-        assertParity(before, after, { ...sample, unknownExtension: true })
+        assertAccepted(schema, { ...sample, unknownExtension: true }, sample)
       }
-      assertParity(before, after, { invalid: true })
+      assertRejected(schema, { invalid: true })
     },
   )
 
   it('keeps skill threshold safe-integer, lower-bound, default, and null behavior', () => {
-    const before = preEffectSkillsContracts.skillsThresholdsSchema
-    const after = skills.skillsThresholdsSchema
-    for (const input of [undefined, {}, { frequency: undefined }, { frequency: 3 }, { frequency: 3, spread: 1 }]) {
-      assertParity(before, after, input)
-    }
+    assertRejected(skills.skillsThresholdsSchema, undefined)
+    assertAccepted(skills.skillsThresholdsSchema, {}, { frequency: 5, spread: 2 })
+    assertAccepted(skills.skillsThresholdsSchema, { frequency: undefined }, { frequency: 5, spread: 2 })
+    assertAccepted(skills.skillsThresholdsSchema, { frequency: 3 }, { frequency: 3, spread: 2 })
+    assertAccepted(skills.skillsThresholdsSchema, { frequency: 3, spread: 1 }, { frequency: 3, spread: 1 })
     for (const value of [
       null,
       -0,
@@ -169,9 +128,13 @@ describe('skills and pull requests Effect Schema parity', () => {
       Number.NEGATIVE_INFINITY,
       2 ** 53,
     ]) {
-      assertParity(before, after, { frequency: value })
+      assertRejected(skills.skillsThresholdsSchema, { frequency: value })
     }
-    assertParity(before, after, { frequency: Number.MAX_SAFE_INTEGER, spread: 1 })
+    assertAccepted(
+      skills.skillsThresholdsSchema,
+      { frequency: Number.MAX_SAFE_INTEGER, spread: 1 },
+      { frequency: Number.MAX_SAFE_INTEGER, spread: 1 },
+    )
   })
 
   it('keeps decoded threshold fields mutable', () => {
@@ -182,12 +145,14 @@ describe('skills and pull requests Effect Schema parity', () => {
   })
 
   it('preserves optional PR fields for omitted, undefined, and null inputs', () => {
-    const before = preEffectPullRequestContracts.pullRequestRowSchema
-    const after = pullRequests.pullRequestRowSchema
-    assertParity(before, after, pullRequestRow)
-    assertParity(before, after, { ...pullRequestRow, categories: undefined, modelProvenance: undefined })
-    assertParity(before, after, { ...pullRequestRow, categories: null })
-    assertParity(before, after, { ...pullRequestRow, modelProvenance: null })
+    assertAccepted(pullRequests.pullRequestRowSchema, pullRequestRow, pullRequestRow)
+    assertAccepted(
+      pullRequests.pullRequestRowSchema,
+      { ...pullRequestRow, categories: undefined, modelProvenance: undefined },
+      { ...pullRequestRow, categories: undefined, modelProvenance: undefined },
+    )
+    assertRejected(pullRequests.pullRequestRowSchema, { ...pullRequestRow, categories: null })
+    assertRejected(pullRequests.pullRequestRowSchema, { ...pullRequestRow, modelProvenance: null })
   })
 
   it('preserves nested unknown-key stripping and rejects invalid enums, branches, and null fields', () => {
@@ -207,24 +172,50 @@ describe('skills and pull requests Effect Schema parity', () => {
       opportunities: [],
       ghosts: [],
     }
-    assertParity(preEffectSkillsContracts.skillsPayloadSchema, skills.skillsPayloadSchema, skillsPayload)
-    assertParity(preEffectPullRequestContracts.pullRequestRowSchema, pullRequests.pullRequestRowSchema, {
-      ...pullRequestRow,
-      categories: [{ name: 'coding', cost: 1, extension: true }],
+    assertAccepted(skills.skillsPayloadSchema, skillsPayload, {
+      period: { start: null, end: null },
+      summary: {
+        sessions: 0,
+        calls: 0,
+        skillEvents: 0,
+        bashEvents: 0,
+        toolEvents: 0,
+        drafts: 1,
+        opportunities: 0,
+        ghosts: 0,
+      },
+      drafts: [candidate],
+      opportunities: [],
+      ghosts: [],
     })
-    assertParity(preEffectSkillsContracts.skillCandidateSchema, skills.skillCandidateSchema, {
+    assertAccepted(
+      pullRequests.pullRequestRowSchema,
+      {
+        ...pullRequestRow,
+        categories: [{ name: 'coding', cost: 1, extension: true }],
+      },
+      {
+        ...pullRequestRow,
+        categories: [{ name: 'coding', cost: 1 }],
+      },
+    )
+    assertRejected(skills.skillCandidateSchema, {
       ...candidate,
       source: 'invalid',
     })
-    assertParity(preEffectSkillsContracts.skillsDismissalResultSchema, skills.skillsDismissalResultSchema, {
-      ok: true,
-      error: 'wrong branch',
-    })
-    assertParity(preEffectSkillsContracts.skillCandidateSchema, skills.skillCandidateSchema, {
+    assertAccepted(
+      skills.skillsDismissalResultSchema,
+      {
+        ok: true,
+        error: 'wrong branch',
+      },
+      { ok: true },
+    )
+    assertRejected(skills.skillCandidateSchema, {
       ...candidate,
       name: null,
     })
-    assertParity(preEffectPullRequestContracts.pullRequestRowSchema, pullRequests.pullRequestRowSchema, {
+    assertRejected(pullRequests.pullRequestRowSchema, {
       ...pullRequestRow,
       models: null,
     })
@@ -232,11 +223,11 @@ describe('skills and pull requests Effect Schema parity', () => {
 
   it('rejects non-finite numeric contract values', () => {
     for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-      assertParity(preEffectSkillsContracts.candidateSourceSessionSchema, skills.candidateSourceSessionSchema, {
+      assertRejected(skills.candidateSourceSessionSchema, {
         ...sourceSession,
         costUSD: value,
       })
-      assertParity(preEffectPullRequestContracts.pullRequestRowSchema, pullRequests.pullRequestRowSchema, {
+      assertRejected(pullRequests.pullRequestRowSchema, {
         ...pullRequestRow,
         cost: value,
       })

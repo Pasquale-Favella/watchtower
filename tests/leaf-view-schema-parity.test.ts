@@ -5,15 +5,15 @@ import * as compare from '../src/shared/schemas/compare.js'
 import * as optimize from '../src/shared/schemas/optimize.js'
 import * as spend from '../src/shared/schemas/spend.js'
 import * as yieldView from '../src/shared/schemas/yield.js'
-import { preEffectLeafViewContracts } from './fixtures/pre-effect-leaf-view-schemas.js'
 
-type LegacySchema = { safeParse: (input: unknown) => { success: boolean; data?: unknown } }
+function expectDecoded(schema: Schema.ConstraintDecoder<unknown>, input: unknown, expected: unknown): void {
+  const result = Schema.decodeUnknownResult(schema)(input)
+  expect(result._tag).toBe('Success')
+  if (result._tag === 'Success') expect(result.success).toStrictEqual(expected)
+}
 
-function assertParity(legacy: LegacySchema, current: Schema.ConstraintDecoder<unknown>, input: unknown): void {
-  const before = legacy.safeParse(input)
-  const after = Schema.decodeUnknownResult(current)(input)
-  expect(after._tag === 'Success').toBe(before.success)
-  if (before.success && after._tag === 'Success') expect(after.success).toStrictEqual(before.data)
+function expectRejected(schema: Schema.ConstraintDecoder<unknown>, input: unknown): void {
+  expect(Schema.decodeUnknownResult(schema)(input)._tag).toBe('Failure')
 }
 
 const modelStat = {
@@ -102,117 +102,115 @@ const comparePayload = {
   },
 }
 
-const cases = [
-  ['spend', preEffectLeafViewContracts.spendPayloadSchema, spend.spendPayloadSchema, spendPayload],
-  ['compare', preEffectLeafViewContracts.comparePayloadSchema, compare.comparePayloadSchema, comparePayload],
-  ['optimize', preEffectLeafViewContracts.optimizePayloadSchema, optimize.optimizePayloadSchema, optimizePayload],
-  ['yield', preEffectLeafViewContracts.yieldPayloadSchema, yieldView.yieldPayloadSchema, yieldPayload],
-] as const
-
-describe('leaf view Effect Schema parity', () => {
-  it.each(cases)('%s preserves old decoded values and unknown-key stripping', (_name, legacy, current, sample) => {
-    const extended = structuredClone(sample) as Record<string, unknown>
-    extended.extension = { retained: true }
-    assertParity(legacy, current, extended)
-    assertParity(legacy, current, sample)
+describe('leaf view Effect Schema contracts', () => {
+  it('strips unknown keys at the root and nested object levels', () => {
+    expectDecoded(spend.spendPayloadSchema, spendPayload, spendPayload)
+    expectDecoded(spend.spendPayloadSchema, { ...spendPayload, extension: { retained: true } }, spendPayload)
+    expectDecoded(compare.comparePayloadSchema, comparePayload, comparePayload)
+    expectDecoded(compare.comparePayloadSchema, { ...comparePayload, extension: { retained: true } }, comparePayload)
+    expectDecoded(optimize.optimizePayloadSchema, optimizePayload, optimizePayload)
+    expectDecoded(
+      optimize.optimizePayloadSchema,
+      { ...optimizePayload, extension: { retained: true } },
+      optimizePayload,
+    )
+    expectDecoded(yieldView.yieldPayloadSchema, yieldPayload, yieldPayload)
+    expectDecoded(yieldView.yieldPayloadSchema, { ...yieldPayload, extension: { retained: true } }, yieldPayload)
+    expectDecoded(
+      spend.spendPayloadSchema,
+      { ...spendPayload, byModel: [{ ...spendPayload.byModel[0], extension: true }] },
+      spendPayload,
+    )
+    expectDecoded(
+      compare.comparePayloadSchema,
+      { ...comparePayload, models: [{ ...modelStat, extension: true }] },
+      comparePayload,
+    )
+    expectDecoded(
+      optimize.optimizePayloadSchema,
+      { ...optimizePayload, findings: [{ ...optimizePayload.findings[0], extension: true }] },
+      optimizePayload,
+    )
+    expectDecoded(
+      yieldView.yieldPayloadSchema,
+      { ...yieldPayload, summary: { ...yieldPayload.summary, productive: { ...bucket, extension: true } } },
+      yieldPayload,
+    )
   })
 
-  it('preserves nested unknown-key stripping, enum rejection, and required fields', () => {
-    assertParity(preEffectLeafViewContracts.spendPayloadSchema, spend.spendPayloadSchema, {
-      ...spendPayload,
-      byModel: [{ ...spendPayload.byModel[0], extension: true }],
-    })
-    assertParity(preEffectLeafViewContracts.comparePayloadSchema, compare.comparePayloadSchema, {
-      ...comparePayload,
-      models: [{ ...modelStat, extension: true }],
-    })
-    assertParity(preEffectLeafViewContracts.optimizePayloadSchema, optimize.optimizePayloadSchema, {
-      ...optimizePayload,
-      findings: [{ ...optimizePayload.findings[0], extension: true }],
-    })
-    assertParity(preEffectLeafViewContracts.yieldPayloadSchema, yieldView.yieldPayloadSchema, {
-      ...yieldPayload,
-      summary: { ...yieldPayload.summary, productive: { ...bucket, extension: true } },
-    })
-
-    assertParity(preEffectLeafViewContracts.comparePayloadSchema, compare.comparePayloadSchema, {
+  it('rejects invalid enum members and invalid collection values', () => {
+    expectRejected(compare.comparePayloadSchema, {
       ...comparePayload,
       report: { ...comparePayload.report, metrics: [{ ...comparePayload.report.metrics[0], formatFn: 'invalid' }] },
     })
-    assertParity(preEffectLeafViewContracts.optimizePayloadSchema, optimize.optimizePayloadSchema, {
+    expectRejected(optimize.optimizePayloadSchema, {
       ...optimizePayload,
       findings: [{ ...optimizePayload.findings[0], fix: { ...optimizePayload.findings[0].fix, type: 'invalid' } }],
     })
-    assertParity(preEffectLeafViewContracts.yieldPayloadSchema, yieldView.yieldPayloadSchema, {
+    expectRejected(yieldView.yieldPayloadSchema, {
       ...yieldPayload,
       details: [{ ...yieldPayload.details[0], category: 'invalid' }],
     })
-    assertParity(preEffectLeafViewContracts.spendPayloadSchema, spend.spendPayloadSchema, {
-      ...spendPayload,
-      byModel: null,
-    })
+    expectRejected(spend.spendPayloadSchema, { ...spendPayload, byModel: null })
   })
 
   it('preserves nullable, optional, and undefined distinctions', () => {
-    assertParity(preEffectLeafViewContracts.spendSegmentSchema, spend.spendSegmentSchema, {
-      name: 'm',
-      cost: 1,
-      sourceModels: undefined,
-    })
-    assertParity(preEffectLeafViewContracts.spendSegmentSchema, spend.spendSegmentSchema, { name: 'm', cost: 1 })
-    assertParity(preEffectLeafViewContracts.spendSegmentSchema, spend.spendSegmentSchema, {
-      name: 'm',
-      cost: 1,
-      sourceModels: null,
-    })
-    assertParity(preEffectLeafViewContracts.spendPayloadSchema, spend.spendPayloadSchema, {
-      ...spendPayload,
-      dataStart: null,
-    })
-    assertParity(preEffectLeafViewContracts.spendPayloadSchema, spend.spendPayloadSchema, {
-      ...spendPayload,
-      dataStart: undefined,
-    })
-    assertParity(preEffectLeafViewContracts.comparePairSchema, compare.comparePairSchema, { modelA: 'a', modelB: 'b' })
-    assertParity(preEffectLeafViewContracts.lowWorthCandidateSchema, optimize.lowWorthCandidateSchema, {
-      project: 'p',
-      sessionId: 's',
-      date: '2026-01-01',
-      cost: 1,
-      tokens: 2,
-      reasons: ['short'],
-    })
-    assertParity(preEffectLeafViewContracts.contextBloatCandidateSchema, optimize.contextBloatCandidateSchema, {
-      project: 'p',
-      sessionId: 's',
-      date: '2026-01-01',
-      effectiveInputTokens: 3,
-      outputTokens: 2,
-      ratio: 1.5,
-      excessInputTokens: 1,
-      growthRatio: null,
-    })
-    assertParity(preEffectLeafViewContracts.wasteActionSchema, optimize.wasteActionSchema, {
-      type: 'command',
-      label: 'Run',
-      text: 'command',
-    })
-    assertParity(preEffectLeafViewContracts.wasteActionSchema, optimize.wasteActionSchema, {
-      type: 'file-content',
-      label: 'Edit',
-      path: 'file',
-      content: 'text',
-    })
+    expectDecoded(
+      spend.spendSegmentSchema,
+      { name: 'm', cost: 1, sourceModels: undefined },
+      { name: 'm', cost: 1, sourceModels: undefined },
+    )
+    expectDecoded(spend.spendSegmentSchema, { name: 'm', cost: 1 }, { name: 'm', cost: 1 })
+    expectRejected(spend.spendSegmentSchema, { name: 'm', cost: 1, sourceModels: null })
+    expectDecoded(spend.spendPayloadSchema, { ...spendPayload, dataStart: null }, spendPayload)
+    expectRejected(spend.spendPayloadSchema, { ...spendPayload, dataStart: undefined })
+    expectDecoded(compare.comparePairSchema, { modelA: 'a', modelB: 'b' }, { modelA: 'a', modelB: 'b' })
+    expectDecoded(
+      optimize.lowWorthCandidateSchema,
+      { project: 'p', sessionId: 's', date: '2026-01-01', cost: 1, tokens: 2, reasons: ['short'] },
+      { project: 'p', sessionId: 's', date: '2026-01-01', cost: 1, tokens: 2, reasons: ['short'] },
+    )
+    expectDecoded(
+      optimize.contextBloatCandidateSchema,
+      {
+        project: 'p',
+        sessionId: 's',
+        date: '2026-01-01',
+        effectiveInputTokens: 3,
+        outputTokens: 2,
+        ratio: 1.5,
+        excessInputTokens: 1,
+        growthRatio: null,
+      },
+      {
+        project: 'p',
+        sessionId: 's',
+        date: '2026-01-01',
+        effectiveInputTokens: 3,
+        outputTokens: 2,
+        ratio: 1.5,
+        excessInputTokens: 1,
+        growthRatio: null,
+      },
+    )
+    expectDecoded(
+      optimize.wasteActionSchema,
+      { type: 'command', label: 'Run', text: 'command' },
+      { type: 'command', label: 'Run', text: 'command' },
+    )
+    expectDecoded(
+      optimize.wasteActionSchema,
+      { type: 'file-content', label: 'Edit', path: 'file', content: 'text' },
+      { type: 'file-content', label: 'Edit', path: 'file', content: 'text' },
+    )
   })
 
-  it('rejects non-finite numeric values and keeps decoded arrays mutable', () => {
+  it('rejects non-finite numbers and keeps decoded arrays and rows mutable', () => {
     for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-      expect(() =>
-        Schema.decodeUnknownSync(spend.spendPayloadSchema)({
-          ...spendPayload,
-          byModel: [{ date: '2026-01-01', cost: value, segments: [] }],
-        }),
-      ).toThrow()
+      expectRejected(spend.spendPayloadSchema, {
+        ...spendPayload,
+        byModel: [{ date: '2026-01-01', cost: value, segments: [] }],
+      })
     }
 
     const decoded = Schema.decodeUnknownSync(spend.spendPayloadSchema)(spendPayload)

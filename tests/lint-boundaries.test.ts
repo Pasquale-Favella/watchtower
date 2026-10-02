@@ -73,7 +73,10 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
   })
 
   it('allows shared imports from the renderer', async () => {
-    const rules = await errorRules(`import { z } from 'zod'\nexport const probe = z.string()\n`, rendererProbe)
+    const rules = await errorRules(
+      `import * as Schema from 'effect/Schema'\nexport const probe = Schema.String\n`,
+      rendererProbe,
+    )
     expect(rules).not.toContain('no-restricted-imports')
   })
 })

@@ -4,19 +4,15 @@ import { describe, expect, it } from 'vitest'
 import * as ipc from '../src/shared/schemas/ipc.js'
 import * as ledgerMcp from '../src/shared/schemas/ledger-mcp.js'
 import * as scan from '../src/shared/schemas/scan.js'
-import {
-  preEffectIpcContracts,
-  preEffectLedgerMcpContracts,
-  preEffectScanContracts,
-} from './fixtures/pre-effect-scan-ipc-ledger-mcp-schemas.js'
 
-type LegacySchema = { safeParse: (input: unknown) => { success: boolean; data?: unknown } }
+function assertAccepted(current: Schema.ConstraintDecoder<unknown>, input: unknown, expected: unknown): void {
+  const result = Schema.decodeUnknownResult(current)(input)
+  expect(result._tag).toBe('Success')
+  if (result._tag === 'Success') expect(result.success).toStrictEqual(expected)
+}
 
-function assertParity(legacy: LegacySchema, current: Schema.ConstraintDecoder<unknown>, input: unknown): void {
-  const before = legacy.safeParse(input)
-  const after = Schema.decodeUnknownResult(current)(input)
-  expect(after._tag === 'Success').toBe(before.success)
-  if (before.success && after._tag === 'Success') expect(after.success).toStrictEqual(before.data)
+function assertRejected(current: Schema.ConstraintDecoder<unknown>, input: unknown): void {
+  expect(Schema.decodeUnknownResult(current)(input)._tag).toBe('Failure')
 }
 
 const dateStart = new Date('2026-01-01T00:00:00.000Z')
@@ -36,108 +32,94 @@ const metadata = {
 }
 
 const contracts = [
-  ['scan options', preEffectScanContracts.scanOptionsSchema, scan.scanOptionsSchema, scanOptions, null],
-  ['scan stage', preEffectScanContracts.scanStageSchema, scan.scanStageSchema, 'port-in', null],
-  ['scan progress', preEffectScanContracts.scanProgressSchema, scan.scanProgressSchema, progress, ['processed']],
-  ['provider port', preEffectScanContracts.perProviderPortSchema, scan.perProviderPortSchema, providerPort, ['failed']],
-  ['scan metadata', preEffectScanContracts.scanMetadataSchema, scan.scanMetadataSchema, metadata, ['portedFiles']],
-  ['scan result', preEffectIpcContracts.scanResultSchema, ipc.scanResultSchema, { ok: true, aborted: false }, null],
-  ['scan status', preEffectIpcContracts.scanStatusSchema, ipc.scanStatusSchema, { scanned: true, metadata }, null],
+  ['scan options', scan.scanOptionsSchema, scanOptions, null],
+  ['scan stage', scan.scanStageSchema, 'port-in', null],
+  ['scan progress', scan.scanProgressSchema, progress, ['processed']],
+  ['provider port', scan.perProviderPortSchema, providerPort, ['failed']],
+  ['scan metadata', scan.scanMetadataSchema, metadata, ['portedFiles']],
+  ['scan result', ipc.scanResultSchema, { ok: true, aborted: false }, null],
+  ['scan status', ipc.scanStatusSchema, { scanned: true, metadata }, null],
   [
     'settings info',
-    preEffectIpcContracts.settingsInfoSchema,
     ipc.settingsInfoSchema,
     { dataDir: '/data', dbSize: 1, dataDirSize: 2, cacheDir: '/cache', cacheSize: 3, claudeConfigDirs: ['/claude'] },
     ['dbSize'],
   ],
-  [
-    'pricing refresh result',
-    preEffectIpcContracts.pricingRefreshResultSchema,
-    ipc.pricingRefreshResultSchema,
-    { ok: false, error: 'offline' },
-    null,
-  ],
-  [
-    'store changed',
-    preEffectIpcContracts.storeChangedMessageSchema,
-    ipc.storeChangedMessageSchema,
-    metadata,
-    ['failedFiles'],
-  ],
-  [
-    'renderer notice',
-    preEffectIpcContracts.rendererNoticeSchema,
-    ipc.rendererNoticeSchema,
-    { label: 'scan progress', location: 'sessions' },
-    null,
-  ],
-  [
-    'ledger MCP startup mode',
-    preEffectLedgerMcpContracts.ledgerMcpStartupModeSchema,
-    ledgerMcp.ledgerMcpStartupModeSchema,
-    'at-launch',
-    null,
-  ],
-  [
-    'ledger MCP status',
-    preEffectLedgerMcpContracts.ledgerMcpStatusSchema,
-    ledgerMcp.ledgerMcpStatusSchema,
-    { startupMode: 'on-demand', running: true, url: null },
-    null,
-  ],
-  [
-    'ledger MCP connection',
-    preEffectLedgerMcpContracts.ledgerMcpConnectionSchema,
-    ledgerMcp.ledgerMcpConnectionSchema,
-    { url: 'http://localhost:1', config: '{}' },
-    null,
-  ],
+  ['pricing refresh result', ipc.pricingRefreshResultSchema, { ok: false, error: 'offline' }, null],
+  ['store changed', ipc.storeChangedMessageSchema, metadata, ['failedFiles']],
+  ['renderer notice', ipc.rendererNoticeSchema, { label: 'scan progress', location: 'sessions' }, null],
+  ['ledger MCP startup mode', ledgerMcp.ledgerMcpStartupModeSchema, 'at-launch', null],
+  ['ledger MCP status', ledgerMcp.ledgerMcpStatusSchema, { startupMode: 'on-demand', running: true, url: null }, null],
+  ['ledger MCP connection', ledgerMcp.ledgerMcpConnectionSchema, { url: 'http://localhost:1', config: '{}' }, null],
 ] as const
 
 describe('scan, IPC, and ledger MCP Effect Schema parity', () => {
   it.each(contracts)(
-    '%s preserves decoded output, verdicts, and unknown-key stripping',
-    (_name, before, after, sample, numberPath) => {
-      assertParity(before, after, sample)
+    '%s decodes the expected value, rejects invalid values, and strips unknown keys',
+    (_name, schema, sample, numberPath) => {
+      assertAccepted(schema, sample, sample)
       if (typeof sample === 'object' && sample !== null && !Array.isArray(sample)) {
-        assertParity(before, after, { ...sample, unknownExtension: true })
+        assertAccepted(schema, { ...sample, unknownExtension: true }, sample)
       }
-      assertParity(before, after, { invalid: true })
+      assertRejected(schema, { invalid: true })
 
       if (numberPath) {
         const key = numberPath[0]
         if (key === undefined) return
         for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
           const invalid = { ...(sample as Record<string, unknown>), [key]: value }
-          assertParity(before, after, invalid)
+          assertRejected(schema, invalid)
         }
       }
     },
   )
 
   it('preserves optional missing, undefined, and null behavior', () => {
-    assertParity(preEffectScanContracts.scanOptionsSchema, scan.scanOptionsSchema, scanOptions)
-    assertParity(preEffectScanContracts.scanOptionsSchema, scan.scanOptionsSchema, {
-      ...scanOptions,
-      provider: undefined,
-    })
-    assertParity(preEffectScanContracts.scanOptionsSchema, scan.scanOptionsSchema, { ...scanOptions, provider: null })
-    assertParity(preEffectScanContracts.scanProgressSchema, scan.scanProgressSchema, {
-      stage: 'parse',
-      total: undefined,
-    })
-    assertParity(preEffectIpcContracts.scanResultSchema, ipc.scanResultSchema, { ok: true, error: undefined })
-    assertParity(preEffectIpcContracts.scanStatusSchema, ipc.scanStatusSchema, { scanned: false, metadata: undefined })
-    assertParity(preEffectIpcContracts.scanStatusSchema, ipc.scanStatusSchema, { scanned: false, metadata: null })
-    assertParity(preEffectIpcContracts.settingsInfoSchema, ipc.settingsInfoSchema, {
-      dataDir: '/data',
-      dbSize: 1,
-      dataDirSize: 2,
-      cacheDir: '/cache',
-      cacheSize: 3,
-      claudeConfigDirs: undefined,
-    })
-    assertParity(preEffectIpcContracts.settingsInfoSchema, ipc.settingsInfoSchema, {
+    assertAccepted(scan.scanOptionsSchema, scanOptions, scanOptions)
+    assertAccepted(
+      scan.scanOptionsSchema,
+      {
+        ...scanOptions,
+        provider: undefined,
+      },
+      { ...scanOptions, provider: undefined },
+    )
+    assertRejected(scan.scanOptionsSchema, { ...scanOptions, provider: null })
+    assertAccepted(
+      scan.scanProgressSchema,
+      {
+        stage: 'parse',
+        total: undefined,
+      },
+      { stage: 'parse', total: undefined },
+    )
+    assertAccepted(ipc.scanResultSchema, { ok: true, error: undefined }, { ok: true, error: undefined })
+    assertAccepted(
+      ipc.scanStatusSchema,
+      { scanned: false, metadata: undefined },
+      { scanned: false, metadata: undefined },
+    )
+    assertRejected(ipc.scanStatusSchema, { scanned: false, metadata: null })
+    assertAccepted(
+      ipc.settingsInfoSchema,
+      {
+        dataDir: '/data',
+        dbSize: 1,
+        dataDirSize: 2,
+        cacheDir: '/cache',
+        cacheSize: 3,
+        claudeConfigDirs: undefined,
+      },
+      {
+        dataDir: '/data',
+        dbSize: 1,
+        dataDirSize: 2,
+        cacheDir: '/cache',
+        cacheSize: 3,
+        claudeConfigDirs: undefined,
+      },
+    )
+    assertRejected(ipc.settingsInfoSchema, {
       dataDir: '/data',
       dbSize: 1,
       dataDirSize: 2,
@@ -145,17 +127,21 @@ describe('scan, IPC, and ledger MCP Effect Schema parity', () => {
       cacheSize: 3,
       claudeConfigDirs: null,
     })
-    assertParity(preEffectIpcContracts.pricingRefreshResultSchema, ipc.pricingRefreshResultSchema, {
-      ok: true,
-      error: undefined,
-    })
+    assertAccepted(
+      ipc.pricingRefreshResultSchema,
+      {
+        ok: true,
+        error: undefined,
+      },
+      { ok: true, error: undefined },
+    )
   })
 
   it('rejects invalid scan and ledger MCP enum values', () => {
-    assertParity(preEffectScanContracts.scanStageSchema, scan.scanStageSchema, 'unknown')
-    assertParity(preEffectScanContracts.scanProgressSchema, scan.scanProgressSchema, { ...progress, stage: 'unknown' })
-    assertParity(preEffectLedgerMcpContracts.ledgerMcpStartupModeSchema, ledgerMcp.ledgerMcpStartupModeSchema, 'never')
-    assertParity(preEffectLedgerMcpContracts.ledgerMcpStatusSchema, ledgerMcp.ledgerMcpStatusSchema, {
+    assertRejected(scan.scanStageSchema, 'unknown')
+    assertRejected(scan.scanProgressSchema, { ...progress, stage: 'unknown' })
+    assertRejected(ledgerMcp.ledgerMcpStartupModeSchema, 'never')
+    assertRejected(ledgerMcp.ledgerMcpStatusSchema, {
       startupMode: 'never',
       running: false,
       url: null,
@@ -163,11 +149,11 @@ describe('scan, IPC, and ledger MCP Effect Schema parity', () => {
   })
 
   it('preserves real Date acceptance and invalid Date rejection', () => {
-    assertParity(preEffectScanContracts.scanOptionsSchema, scan.scanOptionsSchema, scanOptions)
-    assertParity(preEffectScanContracts.scanOptionsSchema, scan.scanOptionsSchema, {
+    assertAccepted(scan.scanOptionsSchema, scanOptions, scanOptions)
+    assertRejected(scan.scanOptionsSchema, {
       range: { start: new Date(Number.NaN), end: dateEnd },
     })
-    assertParity(preEffectScanContracts.scanOptionsSchema, scan.scanOptionsSchema, {
+    assertRejected(scan.scanOptionsSchema, {
       range: { start: dateStart.toISOString(), end: dateEnd },
     })
   })

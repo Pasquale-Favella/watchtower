@@ -1,28 +1,7 @@
-/**
- * Differential parity harness for the Wave A Zod → Effect Schema migration of
- * `src/shared/schemas/ledger.ts` and `src/main/store/read-projections.ts`.
- *
- * WHAT THIS IS. The pre-migration Zod definitions are restated verbatim below
- * as the REFERENCE implementation, and every migrated schema is asked the same
- * question with the same input. A verdict is `accept`, `reject` or — the case
- * this whole slice exists for — `threw`: the old
- * `z.string().transform(JSON.parse).pipe(...)` threw straight out of
- * `safeParse`, so a malformed `*_json` cell had no verdict at all and killed
- * the read as a defect in `Cause`.
- *
- * The test asserts the verdict is IDENTICAL for every probe except the ones
- * listed in `INTENTIONALLY_DIFFERENT`, and that on a shared `accept` the two
- * decoded values are deep-equal (so a mapping cannot silently change shape).
- *
- * The Zod reference is a frozen copy on purpose: it is the "before" half of a
- * before/after comparison, not a second source of truth. When every row of the
- * matrix below says `identical`, this file's Zod block can be deleted.
- */
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as SchemaAST from 'effect/SchemaAST'
 import { describe, expect, it } from 'vitest'
-import { z } from 'zod'
 
 import { ledgerCallFactsRowSchema } from '../src/main/store/read-projections.js'
 import {
@@ -38,331 +17,6 @@ import {
   priceOverrideRowSchema,
   priceOverrideSchema,
 } from '../src/shared/schemas/ledger.js'
-
-// ══════════════════════════════════════════════════════════════════════════
-// THE REFERENCE — pre-migration `src/shared/schemas/ledger.ts`, verbatim.
-// ══════════════════════════════════════════════════════════════════════════
-
-const zJsonParse = z.string().transform(s => JSON.parse(s) as unknown)
-
-const zStringArrayJson = zJsonParse.pipe(z.array(z.string()))
-const zStringRecordJson = zJsonParse.pipe(z.record(z.string(), z.string()))
-// Frozen pre-migration reference definitions: these must stay self-contained
-// so the Effect contracts are compared with the old Zod behavior.
-const zToolCallSchema = z.object({
-  tool: z.string(),
-  file: z.string().optional(),
-  command: z.string().optional(),
-})
-const zFileVerdictSchema = z.enum(['new', 'appended', 'modified', 'unchanged'])
-const zToolCallMatrixJson = zJsonParse.pipe(z.array(z.array(zToolCallSchema)))
-
-const zNum = z.coerce.number()
-
-const zLedgerSourceRowSchema = z
-  .object({
-    id: zNum,
-    provider: z.string(),
-    env_fingerprint: z.string(),
-    file_path: z.string(),
-    repo_url: z.string().nullable().optional(),
-    project: z.string().nullable().optional(),
-    fingerprint_dev: z.string().nullable().optional(),
-    fingerprint_ino: z.string().nullable().optional(),
-    fingerprint_mtime_ms: z.number().nullable().optional(),
-    fingerprint_size_bytes: z.number().nullable().optional(),
-    last_ported_at: z.string().nullable().optional(),
-  })
-  .transform(r => ({
-    id: r.id,
-    provider: r.provider,
-    envFingerprint: r.env_fingerprint,
-    filePath: r.file_path,
-    repoUrl: r.repo_url ?? undefined,
-    project: r.project ?? undefined,
-    fingerprint: {
-      dev: r.fingerprint_dev ?? undefined,
-      ino: r.fingerprint_ino ?? undefined,
-      mtimeMs: r.fingerprint_mtime_ms ?? undefined,
-      sizeBytes: r.fingerprint_size_bytes ?? undefined,
-    },
-    lastPortedAt: r.last_ported_at ?? undefined,
-  }))
-
-const zLedgerSessionRowSchema = z
-  .object({
-    source_id: zNum,
-    session_id: z.string(),
-    project: z.string().nullable(),
-    project_path: z.string().nullable(),
-    working_directory: z.string().nullable(),
-    canonical_project: z.string().nullable(),
-    canonical_cwd: z.string().nullable(),
-    agent_type: z.string().nullable(),
-    title: z.string().nullable(),
-    pr_links_json: zStringArrayJson,
-    is_sidechain: zNum,
-    parent_session_id: z.string().nullable(),
-    agent_spawn_links_json: zStringRecordJson,
-    mcp_inventory_json: zStringArrayJson,
-    ambiguous_spawn_agent_ids_json: zStringArrayJson,
-    ever_had_branch: zNum,
-  })
-  .transform(r => ({
-    sourceId: r.source_id,
-    sessionId: r.session_id,
-    project: r.project,
-    projectPath: r.project_path,
-    workingDirectory: r.working_directory,
-    canonicalProject: r.canonical_project,
-    canonicalCwd: r.canonical_cwd,
-    agentType: r.agent_type,
-    title: r.title,
-    prLinks: r.pr_links_json,
-    isSidechain: r.is_sidechain,
-    parentSessionId: r.parent_session_id,
-    agentSpawnLinks: r.agent_spawn_links_json,
-    mcpInventory: r.mcp_inventory_json,
-    ambiguousSpawnAgentIds: r.ambiguous_spawn_agent_ids_json,
-    everHadBranch: r.ever_had_branch,
-  }))
-
-const zLedgerTurnRowSchema = z
-  .object({
-    source_id: zNum,
-    session_id: z.string(),
-    turn_index: zNum,
-    timestamp: z.string(),
-    user_message: z.string().nullable(),
-    git_branch: z.string().nullable(),
-    pr_refs_json: zStringArrayJson,
-    spawn_tool_use_ids_json: zStringArrayJson,
-    category: z.string(),
-    sub_category: z.string().nullable(),
-    retries: zNum,
-    has_edits: zNum,
-  })
-  .transform(r => ({
-    sourceId: r.source_id,
-    sessionId: r.session_id,
-    turnIndex: r.turn_index,
-    timestamp: r.timestamp,
-    userMessage: r.user_message ?? '',
-    gitBranch: r.git_branch,
-    prRefs: r.pr_refs_json,
-    spawnToolUseIds: r.spawn_tool_use_ids_json,
-    category: r.category,
-    subCategory: r.sub_category,
-    retries: r.retries,
-    hasEdits: r.has_edits,
-  }))
-
-const zLedgerCallRowSchema = z
-  .object({
-    source_id: zNum,
-    session_id: z.string(),
-    turn_index: zNum,
-    call_index: zNum,
-    call_key: z.string(),
-    dedup_key: z.string().nullable(),
-    provider: z.string(),
-    model: z.string(),
-    timestamp: z.string(),
-    speed: z.enum(['standard', 'fast']),
-    project: z.string().nullable(),
-    project_path: z.string().nullable(),
-    working_directory: z.string().nullable(),
-    base_cost_usd: zNum,
-    is_estimated: zNum,
-    savings_usd: zNum,
-    savings_baseline_model: z.string().nullable(),
-    input_tokens: zNum,
-    output_tokens: zNum,
-    cache_creation_input_tokens: zNum,
-    cache_read_input_tokens: zNum,
-    cached_input_tokens: zNum,
-    reasoning_tokens: zNum,
-    web_search_requests: zNum,
-    cache_creation_one_hour_tokens: zNum,
-    agent_type: z.string().nullable(),
-    tools_json: zStringArrayJson,
-    mcp_tools_json: zStringArrayJson,
-    skills_json: zStringArrayJson,
-    subagent_types_json: zStringArrayJson,
-    bash_commands_json: zStringArrayJson,
-    tool_sequence_json: zToolCallMatrixJson,
-    loc_added: z.number().nullable(),
-    loc_removed: z.number().nullable(),
-    interrupted: zNum,
-    user_modified: zNum,
-    tool_errors: z.number().nullable(),
-    edit_failed: z.number().nullable(),
-  })
-  .transform(r => ({
-    sourceId: r.source_id,
-    sessionId: r.session_id,
-    turnIndex: r.turn_index,
-    callIndex: r.call_index,
-    callKey: r.call_key,
-    dedupKey: r.dedup_key,
-    provider: r.provider,
-    model: r.model,
-    timestamp: r.timestamp,
-    speed: r.speed,
-    project: r.project,
-    projectPath: r.project_path,
-    workingDirectory: r.working_directory,
-    baseCostUSD: r.base_cost_usd,
-    isEstimated: r.is_estimated,
-    savingsUSD: r.savings_usd,
-    savingsBaselineModel: r.savings_baseline_model,
-    inputTokens: r.input_tokens,
-    outputTokens: r.output_tokens,
-    cacheCreationInputTokens: r.cache_creation_input_tokens,
-    cacheReadInputTokens: r.cache_read_input_tokens,
-    cachedInputTokens: r.cached_input_tokens,
-    reasoningTokens: r.reasoning_tokens,
-    webSearchRequests: r.web_search_requests,
-    cacheCreationOneHourTokens: r.cache_creation_one_hour_tokens,
-    agentType: r.agent_type,
-    tools: r.tools_json,
-    mcpTools: r.mcp_tools_json,
-    skills: r.skills_json,
-    subagentTypes: r.subagent_types_json,
-    bashCommands: r.bash_commands_json,
-    toolSequence: r.tool_sequence_json,
-    locAdded: r.loc_added,
-    locRemoved: r.loc_removed,
-    interrupted: r.interrupted,
-    userModified: r.user_modified,
-    toolErrors: r.tool_errors,
-    editFailed: r.edit_failed,
-  }))
-
-const zPortResultSchema = z.object({
-  verdict: zFileVerdictSchema,
-  sourceId: z.number().nullable(),
-  inserted: z.object({
-    sessions: z.number(),
-    turns: z.number(),
-    calls: z.number(),
-  }),
-})
-
-const zModelAliasSchema = z.object({
-  model: z.string(),
-  aliasOf: z.string(),
-})
-
-const zPriceOverrideSchema = z.object({
-  model: z.string(),
-  inputPricePerMillion: z.number(),
-  outputPricePerMillion: z.number(),
-})
-
-const zCurrencyRateSchema = z.object({
-  code: z.string(),
-  symbol: z.string(),
-  rate: z.number(),
-  updatedAt: z.string(),
-})
-
-const zModelAliasRowSchema = z
-  .object({
-    model: z.string(),
-    alias_of: z.string(),
-  })
-  .transform(r => ({ model: r.model, aliasOf: r.alias_of }))
-
-const zPriceOverrideRowSchema = z
-  .object({
-    model: z.string(),
-    input_price_per_million: z.number(),
-    output_price_per_million: z.number(),
-  })
-  .transform(r => ({
-    model: r.model,
-    inputPricePerMillion: r.input_price_per_million,
-    outputPricePerMillion: r.output_price_per_million,
-  }))
-
-const zCurrencyRateRowSchema = z
-  .object({
-    code: z.string(),
-    symbol: z.string(),
-    rate: z.number(),
-    updated_at: z.string(),
-  })
-  .transform(r => ({ code: r.code, symbol: r.symbol, rate: r.rate, updatedAt: r.updated_at }))
-
-// `read-projections.ts`'s pre-migration Zod schema, verbatim.
-const zLedgerCallFactsRowSchema = z
-  .object({
-    source_id: zNum,
-    session_id: z.string(),
-    turn_index: zNum,
-    call_index: zNum,
-    dedup_key: z.string().nullable(),
-    provider: z.string(),
-    model: z.string(),
-    timestamp: z.string(),
-    speed: z.enum(['standard', 'fast']),
-    project: z.string().nullable(),
-    working_directory: z.string().nullable(),
-    base_cost_usd: zNum,
-    is_estimated: zNum,
-    savings_usd: zNum,
-    savings_baseline_model: z.string().nullable(),
-    input_tokens: zNum,
-    output_tokens: zNum,
-    cache_creation_input_tokens: zNum,
-    cache_read_input_tokens: zNum,
-    cached_input_tokens: zNum,
-    reasoning_tokens: zNum,
-    web_search_requests: zNum,
-    cache_creation_one_hour_tokens: zNum,
-    tools_json: zStringArrayJson,
-    mcp_tools_json: zStringArrayJson,
-    skills_json: zStringArrayJson,
-    subagent_types_json: zStringArrayJson,
-    bash_commands_json: zStringArrayJson,
-    tool_sequence_json: zToolCallMatrixJson,
-  })
-  .transform(r => ({
-    sourceId: r.source_id,
-    sessionId: r.session_id,
-    turnIndex: r.turn_index,
-    callIndex: r.call_index,
-    dedupKey: r.dedup_key,
-    provider: r.provider,
-    model: r.model,
-    timestamp: r.timestamp,
-    speed: r.speed,
-    project: r.project,
-    workingDirectory: r.working_directory,
-    baseCostUSD: r.base_cost_usd,
-    isEstimated: r.is_estimated,
-    savingsUSD: r.savings_usd,
-    savingsBaselineModel: r.savings_baseline_model,
-    inputTokens: r.input_tokens,
-    outputTokens: r.output_tokens,
-    cacheCreationInputTokens: r.cache_creation_input_tokens,
-    cacheReadInputTokens: r.cache_read_input_tokens,
-    cachedInputTokens: r.cached_input_tokens,
-    reasoningTokens: r.reasoning_tokens,
-    webSearchRequests: r.web_search_requests,
-    cacheCreationOneHourTokens: r.cache_creation_one_hour_tokens,
-    tools: r.tools_json,
-    mcpTools: r.mcp_tools_json,
-    skills: r.skills_json,
-    subagentTypes: r.subagent_types_json,
-    bashCommands: r.bash_commands_json,
-    toolSequence: r.tool_sequence_json,
-  }))
-
-// ══════════════════════════════════════════════════════════════════════════
-// The probe matrix
-// ══════════════════════════════════════════════════════════════════════════
 
 /** One row's worth of storage-side (snake_case) columns, per schema. */
 const validSourceRow = {
@@ -488,6 +142,181 @@ const validFactsRow = {
   tool_sequence_json: '[[{"tool":"Edit","file":"a.ts"}]]',
 }
 
+// Static decoded fixtures recorded before retiring the frozen validator.
+const expectedSource = {
+  id: 7,
+  provider: 'opencode',
+  envFingerprint: 'env-demo',
+  filePath: '/w/demo.jsonl',
+  repoUrl: 'https://github.com/acme/demo',
+  project: 'demo',
+  fingerprint: {
+    dev: '42',
+    ino: '4242',
+    mtimeMs: 1751300000000,
+    sizeBytes: 4096,
+  },
+  lastPortedAt: '2026-07-01T09:00:00.000Z',
+}
+const expectedSession = {
+  sourceId: 1,
+  sessionId: 'sess-0',
+  project: 'demo',
+  projectPath: '/w/demo',
+  workingDirectory: '/w',
+  canonicalProject: 'demo',
+  canonicalCwd: '/w',
+  agentType: 'build',
+  title: 'a title',
+  prLinks: ['acme/demo#1'],
+  isSidechain: 0,
+  parentSessionId: null,
+  agentSpawnLinks: {
+    'agent-1': 'sess-0',
+  },
+  mcpInventory: ['fs', 'git'],
+  ambiguousSpawnAgentIds: ['agent-2'],
+  everHadBranch: 1,
+}
+const expectedTurn = {
+  sourceId: 1,
+  sessionId: 'sess-0',
+  turnIndex: 0,
+  timestamp: '2026-07-01T09:00:00.000Z',
+  userMessage: 'hello',
+  gitBranch: 'main',
+  prRefs: ['acme/demo#1'],
+  spawnToolUseIds: ['tool-1'],
+  category: 'build',
+  subCategory: null,
+  retries: 0,
+  hasEdits: 1,
+}
+const expectedCall = {
+  sourceId: 1,
+  sessionId: 'sess-0',
+  turnIndex: 0,
+  callIndex: 0,
+  callKey: 'call-1',
+  dedupKey: null,
+  provider: 'opencode',
+  model: 'demo-model',
+  timestamp: '2026-07-01T09:00:00.000Z',
+  speed: 'standard',
+  project: null,
+  projectPath: null,
+  workingDirectory: null,
+  baseCostUSD: 0.42,
+  isEstimated: 0,
+  savingsUSD: 0,
+  savingsBaselineModel: null,
+  inputTokens: 100,
+  outputTokens: 50,
+  cacheCreationInputTokens: 0,
+  cacheReadInputTokens: 20,
+  cachedInputTokens: 0,
+  reasoningTokens: 5,
+  webSearchRequests: 0,
+  cacheCreationOneHourTokens: 0,
+  agentType: null,
+  tools: ['Edit'],
+  mcpTools: [],
+  skills: [],
+  subagentTypes: [],
+  bashCommands: ['ls'],
+  toolSequence: [
+    [
+      {
+        tool: 'Edit',
+        file: 'a.ts',
+      },
+    ],
+  ],
+  locAdded: null,
+  locRemoved: null,
+  interrupted: 0,
+  userModified: 0,
+  toolErrors: 0,
+  editFailed: 0,
+}
+const expectedFacts = {
+  sourceId: 1,
+  sessionId: 'sess-0',
+  turnIndex: 0,
+  callIndex: 0,
+  dedupKey: null,
+  provider: 'opencode',
+  model: 'demo-model',
+  timestamp: '2026-07-01T09:00:00.000Z',
+  speed: 'standard',
+  project: null,
+  workingDirectory: null,
+  baseCostUSD: 0.42,
+  isEstimated: 0,
+  savingsUSD: 0,
+  savingsBaselineModel: null,
+  inputTokens: 100,
+  outputTokens: 50,
+  cacheCreationInputTokens: 0,
+  cacheReadInputTokens: 20,
+  cachedInputTokens: 0,
+  reasoningTokens: 5,
+  webSearchRequests: 0,
+  cacheCreationOneHourTokens: 0,
+  tools: ['Edit'],
+  mcpTools: [],
+  skills: [],
+  subagentTypes: [],
+  bashCommands: ['ls'],
+  toolSequence: [
+    [
+      {
+        tool: 'Edit',
+        file: 'a.ts',
+      },
+    ],
+  ],
+}
+const expectedModelAliasRow = {
+  model: 'demo',
+  aliasOf: 'other',
+}
+const expectedPriceOverrideRow = {
+  model: 'demo',
+  inputPricePerMillion: 1.5,
+  outputPricePerMillion: 7.5,
+}
+const expectedCurrencyRateRow = {
+  code: 'EUR',
+  symbol: '€',
+  rate: 0.92,
+  updatedAt: '2026-07-01T09:00:00.000Z',
+}
+const expectedPortResult = {
+  verdict: 'modified',
+  sourceId: 7,
+  inserted: {
+    sessions: 1,
+    turns: 2,
+    calls: 3,
+  },
+}
+const expectedModelAlias = {
+  model: 'demo',
+  aliasOf: 'other',
+}
+const expectedPriceOverride = {
+  model: 'demo',
+  inputPricePerMillion: 1.5,
+  outputPricePerMillion: 7.5,
+}
+const expectedCurrencyRate = {
+  code: 'EUR',
+  symbol: '€',
+  rate: 0.92,
+  updatedAt: '2026-07-01T09:00:00.000Z',
+}
+
 /** The nine columns `getCallFacts` drops — see the consumption map on
  *  `ledgerCallFactsRowSchema` in `src/main/store/read-projections.ts`. */
 const DROPPED_FACTS_COLUMNS = [
@@ -502,35 +331,11 @@ const DROPPED_FACTS_COLUMNS = [
   'edit_failed',
 ] as const
 
-type Verdict = 'accept' | 'reject' | 'threw'
-
-interface ZodVerdict {
-  verdict: Verdict
-  value?: unknown
-}
-
-function zodVerdict(schema: z.ZodType, input: unknown): ZodVerdict {
-  try {
-    const parsed = schema.safeParse(input)
-    return parsed.success ? { verdict: 'accept', value: parsed.data } : { verdict: 'reject' }
-  } catch (error) {
-    // The Zod JSON pipe threw straight out of `safeParse`. Recorded, not hidden.
-    return { verdict: 'threw', value: `${(error as Error).constructor.name}: ${(error as Error).message}` }
-  }
-}
-
-function effectVerdict(schema: Schema.ConstraintDecoder<unknown, never>, input: unknown): ZodVerdict {
-  try {
-    return { verdict: 'accept', value: Schema.decodeUnknownSync(schema)(input) }
-  } catch {
-    return { verdict: 'reject' }
-  }
-}
-
-/** Probes that MUST agree. Anything else belongs in `INTENTIONALLY_DIFFERENT`. */
 interface Probe {
   label: string
   input: unknown
+  /** Absence means rejection; accepted rows carry the complete decoded value. */
+  expected?: unknown
 }
 
 const NON_FINITE_NUMBERS: ReadonlyArray<readonly [string, number]> = [
@@ -539,28 +344,36 @@ const NON_FINITE_NUMBERS: ReadonlyArray<readonly [string, number]> = [
   ['-Infinity', Number.NEGATIVE_INFINITY],
 ]
 
-/** The R3 corpus: everything `z.coerce.number()` had an opinion about. */
-const COERCION_PROBES: ReadonlyArray<readonly [string, unknown]> = [
-  ['null', null],
-  ['empty string', ''],
-  ['true', true],
-  ['false', false],
-  ['numeric string', '5'],
-  ['non-numeric string', 'abc'],
-  ['empty array', []],
-  ['single-element array', [5]],
-  ['empty object', {}],
-  ['explicit undefined', undefined],
-  ['bigint', 1n],
-  // Zod rejects a Symbol cleanly; a bare `Number(sym)` would be a defect, so
-  // `num` guards it. This probe is what keeps that guard honest.
-  ['symbol', Symbol('probe')],
+/** Recorded values for the former number coercion contract. */
+const COERCION_PROBES: ReadonlyArray<readonly [string, unknown, number | undefined]> = [
+  ['null', null, 0],
+  ['empty string', '', 0],
+  ['true', true, 1],
+  ['false', false, 0],
+  ['numeric string', '5', 5],
+  ['non-numeric string', 'abc', undefined],
+  ['empty array', [], 0],
+  ['single-element array', [5], 5],
+  ['empty object', {}, undefined],
+  ['explicit undefined', undefined, undefined],
+  ['bigint', 1n, 1],
+  ['symbol', Symbol('probe'), undefined],
 ]
 
-/** The R8 triple, applied to one JSON column. Where this slice's point lives. */
-function jsonProbes(column: string, row: Record<string, unknown>, wellFormed: string): Probe[] {
+function jsonProbes(
+  column: string,
+  row: Record<string, unknown>,
+  wellFormed: string,
+  decoded: Record<string, unknown>,
+  field: string,
+  expectedValue: unknown,
+): Probe[] {
   return [
-    { label: `json well-formed (${column})`, input: { ...row, [column]: wellFormed } },
+    {
+      label: `json well-formed (${column})`,
+      input: { ...row, [column]: wellFormed },
+      expected: { ...decoded, [field]: expectedValue },
+    },
     { label: `json malformed (${column})`, input: { ...row, [column]: '{not-json' } },
     { label: `json null (${column})`, input: { ...row, [column]: null } },
     { label: `json missing (${column})`, input: omit(row, column) },
@@ -574,13 +387,18 @@ function omit(row: Record<string, unknown>, key: string): Record<string, unknown
 
 interface ParityCase {
   schema: string
-  zod: z.ZodType
+  decoded: Record<string, unknown>
+  numericField: string
+  coercesNumbers?: boolean
+  nullableNumber?: boolean
   effect: Schema.ConstraintDecoder<unknown, never>
   row: Record<string, unknown>
   /** A coerced-number column, for the NaN/±Infinity and coercion probes. */
   numericColumn: string
   /** Columns whose stored value is JSON text, for the R8 triple. */
-  jsonColumns: ReadonlyArray<readonly [column: string, wellFormed: string]>
+  jsonColumns: ReadonlyArray<
+    readonly [column: string, wellFormed: string, decodedField: string, expectedValue: unknown]
+  >
   /** Probes only this schema can answer (a bad enum member, for instance). */
   extraProbes?: ReadonlyArray<Probe>
 }
@@ -588,75 +406,99 @@ interface ParityCase {
 const PARITY_CASES: ReadonlyArray<ParityCase> = [
   {
     schema: 'ledgerSourceRowSchema',
-    zod: zLedgerSourceRowSchema,
+    decoded: expectedSource,
+    numericField: 'id',
+    coercesNumbers: true,
     effect: ledgerSourceRowSchema,
     row: validSourceRow,
     numericColumn: 'id',
     jsonColumns: [],
     extraProbes: [
-      { label: 'missing nullable column', input: omit(validSourceRow, 'repo_url') },
-      { label: 'null nullable column', input: { ...validSourceRow, repo_url: null } },
+      {
+        label: 'missing nullable column',
+        input: omit(validSourceRow, 'repo_url'),
+        expected: { ...expectedSource, repoUrl: undefined },
+      },
+      {
+        label: 'null nullable column',
+        input: { ...validSourceRow, repo_url: null },
+        expected: { ...expectedSource, repoUrl: undefined },
+      },
       { label: 'text numeric column', input: { ...validSourceRow, fingerprint_mtime_ms: '1751300000000' } },
       { label: 'string where a number is declared', input: { ...validSourceRow, fingerprint_mtime_ms: 'nope' } },
     ],
   },
   {
     schema: 'ledgerSessionRowSchema',
-    zod: zLedgerSessionRowSchema,
+    decoded: expectedSession,
+    numericField: 'sourceId',
+    coercesNumbers: true,
     effect: ledgerSessionRowSchema,
     row: validSessionRow,
     numericColumn: 'source_id',
     jsonColumns: [
-      ['pr_links_json', '["acme/demo#1"]'],
-      ['agent_spawn_links_json', '{"a":"b"}'],
-      ['mcp_inventory_json', '["fs"]'],
-      ['ambiguous_spawn_agent_ids_json', '[]'],
+      ['pr_links_json', '["acme/demo#1"]', 'prLinks', ['acme/demo#1']],
+      ['agent_spawn_links_json', '{"a":"b"}', 'agentSpawnLinks', { a: 'b' }],
+      ['mcp_inventory_json', '["fs"]', 'mcpInventory', ['fs']],
+      ['ambiguous_spawn_agent_ids_json', '[]', 'ambiguousSpawnAgentIds', []],
     ],
     extraProbes: [
       { label: 'record column with array payload', input: { ...validSessionRow, agent_spawn_links_json: '[1,2]' } },
       { label: 'record column with null payload', input: { ...validSessionRow, agent_spawn_links_json: 'null' } },
-      { label: 'nullable text column is null', input: { ...validSessionRow, project: null } },
+      {
+        label: 'nullable text column is null',
+        input: { ...validSessionRow, project: null },
+        expected: { ...expectedSession, project: null },
+      },
       { label: 'nullable text column is missing', input: omit(validSessionRow, 'project') },
     ],
   },
   {
     schema: 'ledgerTurnRowSchema',
-    zod: zLedgerTurnRowSchema,
+    decoded: expectedTurn,
+    numericField: 'turnIndex',
+    coercesNumbers: true,
     effect: ledgerTurnRowSchema,
     row: validTurnRow,
     numericColumn: 'turn_index',
     jsonColumns: [
-      ['pr_refs_json', '["acme/demo#1"]'],
-      ['spawn_tool_use_ids_json', '["tool-1"]'],
+      ['pr_refs_json', '["acme/demo#1"]', 'prRefs', ['acme/demo#1']],
+      ['spawn_tool_use_ids_json', '["tool-1"]', 'spawnToolUseIds', ['tool-1']],
     ],
     extraProbes: [
-      // The old transform's `r.user_message ?? ''`: the row shape differs on the
-      // decoded side (null becomes ''), so only the verdict is compared.
-      { label: 'null user_message (decoded to "")', input: { ...validTurnRow, user_message: null } },
+      // A null stored message retains the recorded empty-string fallback.
+      {
+        label: 'null user_message (decoded to "")',
+        input: { ...validTurnRow, user_message: null },
+        expected: { ...expectedTurn, userMessage: '' },
+      },
     ],
   },
   {
     schema: 'ledgerCallRowSchema',
-    zod: zLedgerCallRowSchema,
+    decoded: expectedCall,
+    numericField: 'baseCostUSD',
+    coercesNumbers: true,
     effect: ledgerCallRowSchema,
     row: validCallRow,
     numericColumn: 'base_cost_usd',
     jsonColumns: [
-      ['tools_json', '["Edit"]'],
-      ['mcp_tools_json', '[]'],
-      ['skills_json', '[]'],
-      ['subagent_types_json', '[]'],
-      ['bash_commands_json', '["ls"]'],
-      ['tool_sequence_json', '[[{"tool":"Edit"}]]'],
+      ['tools_json', '["Edit"]', 'tools', ['Edit']],
+      ['mcp_tools_json', '[]', 'mcpTools', []],
+      ['skills_json', '[]', 'skills', []],
+      ['subagent_types_json', '[]', 'subagentTypes', []],
+      ['bash_commands_json', '["ls"]', 'bashCommands', ['ls']],
+      ['tool_sequence_json', '[[{"tool":"Edit"}]]', 'toolSequence', [[{ tool: 'Edit' }]]],
     ],
     extraProbes: [
       { label: 'bad speed enum member', input: { ...validCallRow, speed: 'turbo' } },
       { label: 'empty speed', input: { ...validCallRow, speed: '' } },
-      { label: 'nullable number column is null', input: { ...validCallRow, loc_added: null } },
+      { label: 'nullable number column is null', input: { ...validCallRow, loc_added: null }, expected: expectedCall },
       { label: 'nullable number column is NaN', input: { ...validCallRow, tool_errors: Number.NaN } },
       {
         label: 'tool_sequence payload with an unknown tool key',
         input: { ...validCallRow, tool_sequence_json: '[[{"tool":"Edit","nope":1}]]' },
+        expected: { ...expectedCall, toolSequence: [[{ tool: 'Edit' }]] },
       },
       {
         label: 'tool_sequence payload missing `tool`',
@@ -666,27 +508,30 @@ const PARITY_CASES: ReadonlyArray<ParityCase> = [
   },
   {
     schema: 'ledgerCallFactsRowSchema',
-    zod: zLedgerCallFactsRowSchema,
+    decoded: expectedFacts,
+    numericField: 'baseCostUSD',
+    coercesNumbers: true,
     effect: ledgerCallFactsRowSchema,
     row: validFactsRow,
     numericColumn: 'base_cost_usd',
     jsonColumns: [
-      ['tools_json', '["Edit"]'],
-      ['mcp_tools_json', '[]'],
-      ['skills_json', '[]'],
-      ['subagent_types_json', '[]'],
-      ['bash_commands_json', '["ls"]'],
-      ['tool_sequence_json', '[[{"tool":"Edit"}]]'],
+      ['tools_json', '["Edit"]', 'tools', ['Edit']],
+      ['mcp_tools_json', '[]', 'mcpTools', []],
+      ['skills_json', '[]', 'skills', []],
+      ['subagent_types_json', '[]', 'subagentTypes', []],
+      ['bash_commands_json', '["ls"]', 'bashCommands', ['ls']],
+      ['tool_sequence_json', '[[{"tool":"Edit"}]]', 'toolSequence', [[{ tool: 'Edit' }]]],
     ],
     extraProbes: [
       { label: 'bad speed enum member', input: { ...validFactsRow, speed: 'turbo' } },
       // The nine dropped columns must still be stripped, not rejected (R9).
-      { label: 'a dropped column reappears', input: { ...validFactsRow, call_key: 'call-1' } },
+      { label: 'a dropped column reappears', input: { ...validFactsRow, call_key: 'call-1' }, expected: expectedFacts },
     ],
   },
   {
     schema: 'modelAliasRowSchema',
-    zod: zModelAliasRowSchema,
+    decoded: expectedModelAliasRow,
+    numericField: '__none__',
     effect: modelAliasRowSchema,
     row: { model: 'demo', alias_of: 'other' },
     numericColumn: '__none__',
@@ -694,7 +539,8 @@ const PARITY_CASES: ReadonlyArray<ParityCase> = [
   },
   {
     schema: 'priceOverrideRowSchema',
-    zod: zPriceOverrideRowSchema,
+    decoded: expectedPriceOverrideRow,
+    numericField: 'inputPricePerMillion',
     effect: priceOverrideRowSchema,
     row: { model: 'demo', input_price_per_million: 1.5, output_price_per_million: 7.5 },
     numericColumn: 'input_price_per_million',
@@ -708,7 +554,8 @@ const PARITY_CASES: ReadonlyArray<ParityCase> = [
   },
   {
     schema: 'currencyRateRowSchema',
-    zod: zCurrencyRateRowSchema,
+    decoded: expectedCurrencyRateRow,
+    numericField: 'rate',
     effect: currencyRateRowSchema,
     row: { code: 'EUR', symbol: '€', rate: 0.92, updated_at: '2026-07-01T09:00:00.000Z' },
     numericColumn: 'rate',
@@ -716,7 +563,9 @@ const PARITY_CASES: ReadonlyArray<ParityCase> = [
   },
   {
     schema: 'portResultSchema',
-    zod: zPortResultSchema,
+    decoded: expectedPortResult,
+    numericField: 'sourceId',
+    nullableNumber: true,
     effect: portResultSchema,
     row: { verdict: 'modified', sourceId: 7, inserted: { sessions: 1, turns: 2, calls: 3 } },
     numericColumn: 'sourceId',
@@ -734,7 +583,8 @@ const PARITY_CASES: ReadonlyArray<ParityCase> = [
   },
   {
     schema: 'modelAliasSchema',
-    zod: zModelAliasSchema,
+    decoded: expectedModelAlias,
+    numericField: '__none__',
     effect: modelAliasSchema,
     row: { model: 'demo', aliasOf: 'other' },
     numericColumn: '__none__',
@@ -742,7 +592,8 @@ const PARITY_CASES: ReadonlyArray<ParityCase> = [
   },
   {
     schema: 'priceOverrideSchema',
-    zod: zPriceOverrideSchema,
+    decoded: expectedPriceOverride,
+    numericField: 'inputPricePerMillion',
     effect: priceOverrideSchema,
     row: { model: 'demo', inputPricePerMillion: 1.5, outputPricePerMillion: 7.5 },
     numericColumn: 'inputPricePerMillion',
@@ -750,7 +601,8 @@ const PARITY_CASES: ReadonlyArray<ParityCase> = [
   },
   {
     schema: 'currencyRateSchema',
-    zod: zCurrencyRateSchema,
+    decoded: expectedCurrencyRate,
+    numericField: 'rate',
     effect: currencyRateSchema,
     row: { code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T09:00:00.000Z' },
     numericColumn: 'rate',
@@ -758,67 +610,50 @@ const PARITY_CASES: ReadonlyArray<ParityCase> = [
   },
 ]
 
-/** Verdict pairs the migration is allowed to change, with the reason.
- *  Derived from the matrix so the count cannot drift: every `*_json` column in
- *  the slice is one of these, and nothing else is. */
-const R8_REASON = 'R8 — the Zod reference THREW a SyntaxError out of safeParse; Effect rejects cleanly'
-const INTENTIONALLY_DIFFERENT: Readonly<Record<string, string>> = Object.fromEntries(
-  PARITY_CASES.flatMap(c => c.jsonColumns.map(([column]) => [`${c.schema} json malformed (${column})`, R8_REASON])),
-)
-
-/** Probes where the decoded VALUES legitimately differ while the verdict matches. */
-const VALUE_SHAPING_DIFFERENCES: ReadonlySet<string> = new Set([
-  // `null → undefined` used to leave the key present-with-undefined under Zod
-  // (`{ repoUrl: undefined }`); Effect omits the key. `toEqual` treats the two
-  // identically, and the key is not on any wire payload.
-  'ledgerSourceRowSchema null nullable column',
-  'ledgerSourceRowSchema missing nullable column',
-  // `r.user_message ?? ''` — same decoded value, but the schemas' own types
-  // differ on the encoded side (`string | null` vs `string`), so only the
-  // verdict is comparable.
-  'ledgerTurnRowSchema null user_message (decoded to "")',
-])
-
-// ══════════════════════════════════════════════════════════════════════════
-// The comparison
-// ══════════════════════════════════════════════════════════════════════════
-
-describe('Zod → Effect Schema parity: verdict-for-verdict', () => {
+describe('recorded ledger contract verdicts and decoded values', () => {
   for (const parityCase of PARITY_CASES) {
     const probes: Probe[] = [
-      { label: 'valid row', input: parityCase.row },
-      { label: 'unknown extra column', input: { ...parityCase.row, a_column_that_does_not_exist: 'stripped' } },
+      { label: 'valid row', input: parityCase.row, expected: parityCase.decoded },
+      {
+        label: 'unknown extra column',
+        input: { ...parityCase.row, a_column_that_does_not_exist: 'stripped' },
+        expected: parityCase.decoded,
+      },
       ...NON_FINITE_NUMBERS.map(([label, value]): Probe => ({
         label: `${label} in ${parityCase.numericColumn}`,
         input: { ...parityCase.row, [parityCase.numericColumn]: value },
+        expected: parityCase.numericColumn === '__none__' ? parityCase.decoded : undefined,
       })),
-      ...COERCION_PROBES.map(([label, value]): Probe => ({
-        label: `coercion: ${label} in ${parityCase.numericColumn}`,
-        input: { ...parityCase.row, [parityCase.numericColumn]: value },
-      })),
-      ...parityCase.jsonColumns.flatMap(([column, wellFormed]) => jsonProbes(column, parityCase.row, wellFormed)),
+      ...COERCION_PROBES.map(([label, value, expectedNumber]): Probe => {
+        const labelText = `coercion: ${label} in ${parityCase.numericColumn}`
+        const input = { ...parityCase.row, [parityCase.numericColumn]: value }
+        if (parityCase.numericColumn === '__none__') return { label: labelText, input, expected: parityCase.decoded }
+        if (parityCase.nullableNumber && value === null)
+          return { label: labelText, input, expected: { ...parityCase.decoded, [parityCase.numericField]: null } }
+        return {
+          label: labelText,
+          input,
+          expected:
+            parityCase.coercesNumbers && expectedNumber !== undefined
+              ? { ...parityCase.decoded, [parityCase.numericField]: expectedNumber }
+              : undefined,
+        }
+      }),
+      ...parityCase.jsonColumns.flatMap(([column, text, field, value]) =>
+        jsonProbes(column, parityCase.row, text, parityCase.decoded, field, value),
+      ),
       ...(parityCase.extraProbes ?? []),
     ]
-
     describe(parityCase.schema, () => {
       for (const probe of probes) {
-        const key = `${parityCase.schema} ${probe.label}`
         it(probe.label, () => {
-          const zod = zodVerdict(parityCase.zod, probe.input)
-          const effect = effectVerdict(parityCase.effect, probe.input)
-          const allowed = INTENTIONALLY_DIFFERENT[key]
-
-          if (allowed !== undefined) {
-            // The one approved change: Zod had no verdict at all, Effect has one.
-            expect(zod.verdict, `${key}: the Zod reference must still throw here`).toBe('threw')
-            expect(effect.verdict, `${key}: ${allowed}`).toBe('reject')
-            return
-          }
-
-          expect(effect.verdict, `${key}: zod=${zod.verdict} effect=${effect.verdict}`).toBe(zod.verdict)
-
-          if (zod.verdict === 'accept' && effect.verdict === 'accept' && !VALUE_SHAPING_DIFFERENCES.has(key)) {
-            expect(effect.value, `${key}: decoded value drift`).toEqual(zod.value)
+          const result = Schema.decodeUnknownResult(parityCase.effect)(probe.input)
+          if (probe.expected === undefined) {
+            expect(result._tag).toBe('Failure')
+            if (result._tag === 'Failure') expect(Schema.isSchemaError(result.failure)).toBe(true)
+          } else {
+            expect(result._tag).toBe('Success')
+            if (result._tag === 'Success') expect(result.success).toStrictEqual(probe.expected)
           }
         })
       }
@@ -826,11 +661,10 @@ describe('Zod → Effect Schema parity: verdict-for-verdict', () => {
   }
 })
 
-describe('Zod → Effect Schema parity: the approved changes, counted', () => {
+describe('ledger contract approved behavior changes', () => {
   it('the ONLY verdict differences are the 18 R8 JSON cells, one per *_json column', () => {
     const jsonColumns = PARITY_CASES.flatMap(c => c.jsonColumns.map(([column]) => [c.schema, column] as const))
     expect(jsonColumns).toHaveLength(18)
-    expect(Object.keys(INTENTIONALLY_DIFFERENT)).toHaveLength(18)
   })
 
   it('a malformed JSON cell is a typed SchemaError on the error channel, not a defect', () => {
