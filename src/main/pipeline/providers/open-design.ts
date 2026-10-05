@@ -1,11 +1,13 @@
 import { readdir, stat } from 'fs/promises'
-import { basename, dirname, join } from 'path'
 import { homedir, platform } from 'os'
+import { basename, dirname, join } from 'path'
 
 import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLines } from '../fs-utils.js'
-import { calculateCost } from '../models.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const PROVIDER_NAME = 'open-design'
 const ENV_DIR = 'WATCHTOWER_OPEN_DESIGN_DIR'
@@ -163,7 +165,7 @@ async function discoverOpenDesignSessions(baseDir: string): Promise<SessionSourc
   return dedupeSources(sources)
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, pricing: ScanPricing): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const sessionId = basename(dirname(source.path))
@@ -200,7 +202,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         seenKeys.add(dedupKey)
 
         const uncachedInputTokens = Math.max(0, usage.inputTokens - usage.cacheReadTokens)
-        const costUSD = calculateCost(
+        const costUSD = pricing.calculateCost(
           currentModel,
           uncachedInputTokens,
           billableOutputTokens(PROVIDER_NAME, usage.outputTokens, usage.reasoningTokens),
@@ -251,8 +253,14 @@ export function createOpenDesignProvider(overrideDir?: string): Provider {
       return discoverOpenDesignSessions(overrideDir ?? getOpenDesignDir())
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createParser(source, seenKeys, pricing)
     },
   }
 }

@@ -1,13 +1,15 @@
 import { readdir, readFile, stat } from 'fs/promises'
-import { basename, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
+import { basename, dirname, join, resolve } from 'path'
 
+import { extractBashCommands } from '../bash-utils.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLines } from '../fs-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
-import { extractBashCommands } from '../bash-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
 import { safeNumber } from '../parser.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const toolNameMap: Record<string, string> = {
   bash: 'Bash',
@@ -148,7 +150,7 @@ async function discoverSessions(root: string): Promise<SessionSource[]> {
   return sources
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, pricing: ScanPricing): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const workspaceId = basename(dirname(source.path))
@@ -222,7 +224,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         // `reasoning` restores the provider's own inclusive output figure.
         // mux is not in the output-inclusive set because it already decomposed
         // the field itself; the helper makes that decision explicit.
-        const costUSD = calculateCost(
+        const costUSD = pricing.calculateCost(
           model,
           inputTokens,
           billableOutputTokens('mux', outputTokens, reasoning),
@@ -278,8 +280,14 @@ export function createMuxProvider(muxRoot?: string): Provider {
       return discoverSessions(root)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createParser(source, seenKeys, pricing)
     },
   }
 }

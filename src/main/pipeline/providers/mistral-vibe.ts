@@ -1,12 +1,14 @@
 import { readdir, stat } from 'fs/promises'
-import { basename, join } from 'path'
 import { homedir } from 'os'
+import { basename, join } from 'path'
 
-import { readSessionFile, readSessionLines } from '../fs-utils.js'
-import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { readSessionFile, readSessionLines } from '../fs-utils.js'
+import { captureScanPricing } from '../models.js'
 import { safeNumber } from '../parser.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const METADATA_FILENAME = 'meta.json'
 const MESSAGES_FILENAME = 'messages.jsonl'
@@ -182,6 +184,7 @@ function calculateSessionCost(
   model: string,
   inputTokens: number,
   outputTokens: number,
+  pricing: ScanPricing,
 ): number {
   const stats = metadata.stats ?? {}
   const sessionCost = safeNumber(stats.session_cost)
@@ -195,7 +198,7 @@ function calculateSessionCost(
     return (inputTokens / 1_000_000) * inputPrice + (outputTokens / 1_000_000) * outputPrice
   }
 
-  return calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
+  return pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
 }
 
 function normalizeContent(content: unknown): string {
@@ -301,7 +304,7 @@ function allocateCost(total: number, count: number): number {
   return count <= 1 ? total : total / count
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, pricing: ScanPricing): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const metadataPath = join(source.path, METADATA_FILENAME)
@@ -317,7 +320,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       const sessionId = metadata.session_id || basename(source.path)
       const messages = await readMessages(messagesPath)
       const model = resolveModel(metadata)
-      const costUSD = calculateSessionCost(metadata, model, inputTokens, outputTokens)
+      const costUSD = calculateSessionCost(metadata, model, inputTokens, outputTokens, pricing)
       const assistantMessages = messages.filter(m => m.role === 'assistant')
       const fallbackTimestamp = metadata.end_time ?? metadata.start_time ?? ''
 
@@ -432,8 +435,14 @@ export function createMistralVibeProvider(sessionsDir?: string): Provider {
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createParser(source, seenKeys, pricing)
     },
   }
 }

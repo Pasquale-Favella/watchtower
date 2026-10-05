@@ -1,11 +1,13 @@
 import { readdir, readFile, stat } from 'fs/promises'
-import { basename, delimiter, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
+import { basename, delimiter, dirname, join, resolve } from 'path'
 
 import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLines } from '../fs-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type JsonObject = Record<string, unknown>
 
@@ -303,7 +305,7 @@ async function discoverLedgers(homes: LingTaiHome[]): Promise<SessionSource[]> {
   return sources
 }
 
-function createParser(source: SessionSource): SessionParser {
+function createParser(source: SessionSource, pricing: ScanPricing): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const agentDir = agentDirFromLedgerPath(source.path)
@@ -356,7 +358,7 @@ function createParser(source: SessionSource): SessionParser {
           cachedInputTokens,
         ].join(':')
 
-        const costUSD = calculateCost(
+        const costUSD = pricing.calculateCost(
           model,
           inputTokens,
           billableOutputTokens('lingtai-tui', outputTokens, reasoningTokens),
@@ -412,8 +414,14 @@ export function createLingTaiTuiProvider(options?: string | LingTaiProviderOptio
       return discoverLedgers(await getLingTaiHomes(providerOptions))
     },
 
-    createSessionParser(source: SessionSource): SessionParser {
-      return createParser(source)
+    createSessionParser(
+      source: SessionSource,
+      _seenKeys?: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createParser(source, pricing)
     },
   }
 }
