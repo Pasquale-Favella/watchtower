@@ -1,12 +1,14 @@
 import { existsSync } from 'fs'
-import { join } from 'path'
 import { homedir } from 'os'
+import { join } from 'path'
 import zlib from 'zlib'
 
-import { calculateCost } from '../models.js'
-import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../file-errors.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // Zed's built-in agent stores one row per thread in a single SQLite database;
 // the `data` blob is zstd-compressed JSON carrying `request_token_usage`
@@ -74,6 +76,7 @@ function buildCall(opts: {
   model: string
   timestamp: string
   userMessage: string
+  pricing: ScanPricing
 }): ParsedProviderCall {
   const input = num(opts.usage.input_tokens)
   const output = num(opts.usage.output_tokens)
@@ -89,7 +92,7 @@ function buildCall(opts: {
     cachedInputTokens: cacheRead,
     reasoningTokens: 0,
     webSearchRequests: 0,
-    costUSD: calculateCost(opts.model, input, output, cacheWrite, cacheRead, 0),
+    costUSD: opts.pricing.calculateCost(opts.model, input, output, cacheWrite, cacheRead, 0),
     tools: [],
     bashCommands: [],
     timestamp: opts.timestamp,
@@ -100,7 +103,7 @@ function buildCall(opts: {
   }
 }
 
-function parseThreads(db: SqliteDatabase, seenKeys: Set<string>): ParsedProviderCall[] {
+function parseThreads(db: SqliteDatabase, seenKeys: Set<string>, pricing: ScanPricing): ParsedProviderCall[] {
   const calls: ParsedProviderCall[] = []
   let skipped = 0
 
@@ -161,7 +164,7 @@ function parseThreads(db: SqliteDatabase, seenKeys: Set<string>): ParsedProvider
       }
 
       for (const [requestKey, usage] of entries) {
-        const call = buildCall({ threadId: row.id, requestKey, usage, model, timestamp, userMessage })
+        const call = buildCall({ threadId: row.id, requestKey, usage, model, timestamp, userMessage, pricing })
         if (seenKeys.has(call.deduplicationKey)) continue
         seenKeys.add(call.deduplicationKey)
         calls.push(call)
@@ -181,7 +184,7 @@ function parseThreads(db: SqliteDatabase, seenKeys: Set<string>): ParsedProvider
   return calls
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, pricing: ScanPricing): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
@@ -201,7 +204,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         return
       }
       try {
-        for (const call of parseThreads(db, seenKeys)) {
+        for (const call of parseThreads(db, seenKeys, pricing)) {
           yield call
         }
       } finally {
@@ -231,8 +234,14 @@ export function createZedProvider(dbPathOverride?: string): Provider {
       return [{ path: dbPath, project: 'zed', provider: 'zed' }]
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createParser(source, seenKeys, pricing)
     },
   }
 }

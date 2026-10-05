@@ -1,15 +1,17 @@
 import type { Dirent } from 'fs'
 import { existsSync } from 'fs'
 import { readdir, readFile, stat } from 'fs/promises'
-import { basename, dirname, extname, join } from 'path'
 import { homedir } from 'os'
+import { basename, dirname, extname, join } from 'path'
 
 import { billableOutputTokens } from '../billable-output.js'
 import { readSessionFile } from '../fs-utils.js'
-import { calculateCost } from '../models.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
+import type { DateRange } from '../types.js'
 import type { ToolCall } from '../types.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // Kiro bills in credits: individual plans are $20/mo for 1,000 credits and
 // overage is billed at $0.04 per additional credit. We price credits at the
@@ -205,6 +207,7 @@ function parseChatFile(
   sessionId: string,
   project: string,
   seenKeys: Set<string>,
+  pricing: ScanPricing,
 ): ParsedProviderCall[] {
   const results: ParsedProviderCall[] = []
   const { chat, metadata } = data
@@ -237,7 +240,7 @@ function parseChatFile(
 
   const outputTokens = estimateTokensFromChars(totalOutputChars)
   const inputTokens = estimateTokensFromChars(pendingUserMessage.length)
-  const costUSD = calculateCost(modelId, inputTokens, outputTokens, 0, 0, 0)
+  const costUSD = pricing.calculateCost(modelId, inputTokens, outputTokens, 0, 0, 0)
   const tsDate = parseKiroTimestamp(metadata.startTime)
   if (!tsDate) return results
   const timestamp = tsDate.toISOString()
@@ -272,6 +275,7 @@ function parseModernExecution(
   data: KiroModernExecution,
   sourcePath: string,
   seenKeys: Set<string>,
+  pricing: ScanPricing,
 ): ParsedProviderCall[] {
   const results: ParsedProviderCall[] = []
   if (Array.isArray(data['executions'])) return results
@@ -396,7 +400,7 @@ function parseModernExecution(
   const costUSD =
     executionCredits > 0
       ? executionCredits * USD_PER_KIRO_CREDIT
-      : calculateCost(modelId, inputTokens, outputTokens, 0, 0, 0)
+      : pricing.calculateCost(modelId, inputTokens, outputTokens, 0, 0, 0)
   seenKeys.add(dedupKey)
 
   results.push({
@@ -454,6 +458,7 @@ function parseCliSession(
   meta: KiroCliSessionMeta,
   entries: KiroCliEntry[],
   seenKeys: Set<string>,
+  pricing: ScanPricing,
 ): ParsedProviderCall[] {
   const results: ParsedProviderCall[] = []
   const sessionId = meta.session_id
@@ -499,7 +504,9 @@ function parseCliSession(
     // parsers.
     const turnCredits = turnMeta?.metering_usage ? turnMeta.metering_usage.reduce((sum, m) => sum + m.value, 0) : 0
     const costUSD =
-      turnCredits > 0 ? turnCredits * USD_PER_KIRO_CREDIT : calculateCost(modelId, inputTokens, outputTokens, 0, 0, 0)
+      turnCredits > 0
+        ? turnCredits * USD_PER_KIRO_CREDIT
+        : pricing.calculateCost(modelId, inputTokens, outputTokens, 0, 0, 0)
     seenKeys.add(dedupKey)
 
     results.push({
@@ -594,6 +601,7 @@ async function parseWorkspaceSession(
   record: Record<string, unknown>,
   source: SessionSource,
   seenKeys: Set<string>,
+  pricing: ScanPricing,
 ): Promise<ParsedProviderCall[]> {
   const results: ParsedProviderCall[] = []
   const historyArr = record['history']
@@ -661,7 +669,7 @@ async function parseWorkspaceSession(
 
   const inputTokens = estimateTokensFromChars(inputChars)
   const outputTokens = estimateTokensFromChars(outputChars)
-  const costUSD = calculateCost(modelId, inputTokens, outputTokens, 0, 0, 0)
+  const costUSD = pricing.calculateCost(modelId, inputTokens, outputTokens, 0, 0, 0)
 
   results.push({
     provider: 'kiro',
@@ -703,7 +711,11 @@ type KiroV2SessionMeta = {
   lastModifiedAt?: string
 }
 
-async function parseV2Session(source: SessionSource, seenKeys: Set<string>): Promise<ParsedProviderCall[]> {
+async function parseV2Session(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  pricing: ScanPricing,
+): Promise<ParsedProviderCall[]> {
   const results: ParsedProviderCall[] = []
 
   const content = await readSessionFile(source.path)
@@ -785,7 +797,14 @@ async function parseV2Session(source: SessionSource, seenKeys: Set<string>): Pro
         const costUSD =
           turnCredits > 0
             ? turnCredits * USD_PER_KIRO_CREDIT
-            : calculateCost(modelId, inputTokens, billableOutputTokens('kiro', outputTokens, reasoningTokens), 0, 0, 0)
+            : pricing.calculateCost(
+                modelId,
+                inputTokens,
+                billableOutputTokens('kiro', outputTokens, reasoningTokens),
+                0,
+                0,
+                0,
+              )
         results.push({
           provider: 'kiro',
           model: modelId,
@@ -881,14 +900,14 @@ async function parseV2Session(source: SessionSource, seenKeys: Set<string>): Pro
   return results
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, pricing: ScanPricing): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       // v2 IDE store: ~/.kiro/sessions/<hash>/sess_<id>/messages.jsonl — a
       // self-contained event log. Must be checked BEFORE the generic .jsonl
       // (CLI) branch, since it also ends in .jsonl but has a different schema.
       if (/[/\\]sess_[^/\\]+[/\\]messages\.jsonl$/.test(source.path)) {
-        for (const call of await parseV2Session(source, seenKeys)) yield call
+        for (const call of await parseV2Session(source, seenKeys, pricing)) yield call
         return
       }
 
@@ -919,7 +938,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           meta = { session_id: basename(source.path, '.jsonl'), cwd: '', created_at: '', updated_at: '' }
         }
 
-        for (const call of parseCliSession(meta, entries, seenKeys)) {
+        for (const call of parseCliSession(meta, entries, seenKeys, pricing)) {
           yield call
         }
         return
@@ -942,7 +961,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       // Workspace-session files (newer Kiro builds): have history[] with message.role/content
       // and a top-level sessionId/selectedModel/workspaceDirectory.
       if (Array.isArray(record['history']) && typeof record['sessionId'] === 'string') {
-        for (const call of await parseWorkspaceSession(record, source, seenKeys)) yield call
+        for (const call of await parseWorkspaceSession(record, source, seenKeys, pricing)) yield call
         return
       }
 
@@ -954,8 +973,9 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
               stringField(metadata, ['workflowId']) || basename(source.path, '.chat'),
               source.project,
               seenKeys,
+              pricing,
             )
-          : parseModernExecution(record, source.path, seenKeys)
+          : parseModernExecution(record, source.path, seenKeys, pricing)
       for (const call of calls) {
         yield call
       }
@@ -1228,8 +1248,14 @@ export function createKiroProvider(
       })
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createParser(source, seenKeys, pricing)
     },
   }
 }

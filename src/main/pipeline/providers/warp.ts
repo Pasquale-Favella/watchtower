@@ -1,13 +1,15 @@
-import { join } from 'path'
 import { homedir } from 'os'
+import { join } from 'path'
 
 import { extractBashCommands } from '../bash-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
+import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import { safeNumber } from '../parser.js'
+import type { ScanPricing } from '../scan-pricing.js'
 import { blobToText, isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
-import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
-import { safeNumber } from '../parser.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const WARP_GROUP_CONTAINER = '2BBY89MBSN.dev.warp'
 const WARP_STABLE_BUNDLE_ID = 'dev.warp.Warp-Stable'
@@ -313,7 +315,7 @@ function validateSchema(db: SqliteDatabase): boolean {
   }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, pricing: ScanPricing): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
@@ -403,7 +405,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             cachedInputTokens: 0,
             reasoningTokens: 0,
             webSearchRequests: 0,
-            costUSD: calculateCost(model, inputTokens, 0, 0, 0, 0),
+            costUSD: pricing.calculateCost(model, inputTokens, 0, 0, 0, 0),
             costIsEstimated: true,
             tools: exchangeTools.tools,
             bashCommands: exchangeTools.bashCommands,
@@ -491,8 +493,14 @@ export function createWarpProvider(dbPathOverride?: string): Provider {
       return sessions
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createParser(source, seenKeys, pricing)
     },
   }
 }
