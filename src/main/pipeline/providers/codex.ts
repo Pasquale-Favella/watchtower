@@ -13,7 +13,7 @@ import {
 } from '../codex-cache.js'
 import { normalizeContentBlocks } from '../content-utils.js'
 import { readSessionLines } from '../fs-utils.js'
-import { calculateCost } from '../models.js'
+import { captureScanPricing } from '../models.js'
 import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 import type { DateRange, ToolCall } from '../types.js'
@@ -430,6 +430,7 @@ function resolveModel(info: CodexEntry['payload'], sessionModel?: string): strin
 }
 
 function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const { signal } = context ?? {}
@@ -643,7 +644,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
             }
             seenKeys.add(dedupKey)
 
-            const costUSD = calculateCost(model, estInput, estOutput, 0, 0, 0)
+            const costUSD = pricing.calculateCost(model, estInput, estOutput, 0, 0, 0)
 
             results.push({
               provider: 'codex',
@@ -756,7 +757,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
           if (seenKeys.has(dedupKey)) continue
           seenKeys.add(dedupKey)
 
-          const costUSD = calculateCost(
+          const costUSD = pricing.calculateCost(
             model,
             uncachedInputTokens,
             // OpenAI's `reasoning_output_tokens` is a breakdown of

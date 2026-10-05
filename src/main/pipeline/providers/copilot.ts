@@ -86,13 +86,16 @@ import { extractBashCommands } from '../bash-utils.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import { readSessionFile } from '../fs-utils.js'
-import { calculateCost } from '../models.js'
+import { captureScanPricing } from '../models.js'
 import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
+import type { ScanPricing } from '../scan-pricing.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+
+type CopilotParserContext = ProviderScanContext & { readonly pricing: ScanPricing }
 
 const estimateTokens = (text: string) => estimateTokensFromChars(text.length)
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // ---------------------------------------------------------------------------
 // Model display names (unchanged from original)
@@ -880,7 +883,7 @@ function createJsonlParser(
   source: SessionSource,
   seenKeys: Set<string>,
   coveredStoreKeys: Set<string>,
-  context?: ProviderScanContext,
+  context: CopilotParserContext,
 ): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
@@ -1097,7 +1100,7 @@ function createJsonlParser(
           // Copilot JSONL only logs outputTokens; inputTokens are NOT available.
           // Cost will be lower than actual API cost. This is the original
           // behaviour — OTel data (below) replaces it when available.
-          const costUSD = calculateCost(currentModel, 0, outputTokens, 0, 0, 0)
+          const costUSD = context.pricing.calculateCost(currentModel, 0, outputTokens, 0, 0, 0)
 
           yield {
             provider: 'copilot',
@@ -1138,7 +1141,14 @@ function createJsonlParser(
 
         // Tokens are real counts written by the CLI, so this cost is measured,
         // not char-estimated.
-        const costUSD = calculateCost(model, rollup.inputTokens, 0, rollup.cacheWriteTokens, rollup.cacheReadTokens, 0)
+        const costUSD = context.pricing.calculateCost(
+          model,
+          rollup.inputTokens,
+          0,
+          rollup.cacheWriteTokens,
+          rollup.cacheReadTokens,
+          0,
+        )
 
         yield {
           provider: 'copilot',
@@ -1171,7 +1181,7 @@ function createJsonlParser(
 function createChatSessionParser(
   source: SessionSource,
   seenKeys: Set<string>,
-  context?: ProviderScanContext,
+  context: CopilotParserContext,
 ): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
@@ -1209,7 +1219,7 @@ function createChatSessionParser(
         seenKeys.add(dedupKey)
 
         const model = modelFromChatSessionRequest(rawReq, metadata)
-        const costUSD = calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
+        const costUSD = context.pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
         const timestamp = timestampToISO(rawReq['timestamp']) || sessionCreatedAt
 
         yield {
@@ -1361,7 +1371,7 @@ function createSessionStoreParser(
   source: SessionStoreSource,
   seenKeys: Set<string>,
   coveredStoreKeys: Set<string>,
-  context?: ProviderScanContext,
+  context: CopilotParserContext,
 ): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
@@ -1467,7 +1477,7 @@ function createSessionStoreParser(
           // reasoning is already inside the store's `output_tokens` and must
           // NOT be added again. billableOutputTokens is the single place that
           // answers that question; the arithmetic is never reimplemented here.
-          const costUSD = calculateCost(
+          const costUSD = context.pricing.calculateCost(
             model,
             inputTokens,
             billableOutputTokens('copilot', outputTokens, reasoningTokens),
@@ -2063,7 +2073,7 @@ function extractJetBrainsDbTurns(raw: string): JBDbTurn[] {
 function createJetBrainsParser(
   source: JetBrainsSessionSource,
   seenKeys: Set<string>,
-  context?: ProviderScanContext,
+  context: CopilotParserContext,
 ): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
@@ -2111,7 +2121,7 @@ function createJetBrainsParser(
             const model = turn.model || storeModel || 'copilot-anthropic-auto'
             // Errored turns (failed generation) contribute no billable output.
             const outputTokens = turn.errored ? 0 : estimateTokens(turn.replyText)
-            const costUSD = outputTokens > 0 ? calculateCost(model, 0, outputTokens, 0, 0, 0) : 0
+            const costUSD = outputTokens > 0 ? context.pricing.calculateCost(model, 0, outputTokens, 0, 0, 0) : 0
             // Project resolution precedence:
             //   1. projectName — the plugin's own recorded label (1.12+),
             //      joined across kind dirs by store id. Authoritative.
@@ -2156,7 +2166,7 @@ function createJetBrainsParser(
 // OTel SQLite parser — reads agent-traces.db for FULL token data
 // ---------------------------------------------------------------------------
 
-function createOtelParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+function createOtelParser(source: SessionSource, seenKeys: Set<string>, context: CopilotParserContext): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       throwIfScanAborted(context?.signal)
@@ -2359,7 +2369,7 @@ function createOtelParser(source: SessionSource, seenKeys: Set<string>, context?
             const timestamp = epochToISO(spanMetadata.start_time_ms)
 
             // calculateCost with FULL token data — this is the key improvement.
-            const costUSD = calculateCost(
+            const costUSD = context.pricing.calculateCost(
               model,
               inputTokens,
               outputTokens,
@@ -3218,23 +3228,27 @@ export function createCopilotProvider(
       context?: ProviderScanContext,
     ): SessionParser {
       throwIfScanAborted(context?.signal)
+      const parserContext: CopilotParserContext = {
+        ...context,
+        pricing: context?.pricing ?? captureScanPricing(),
+      }
       // Route to the correct parser based on source type.
       // The dedup key set (seenKeys) is shared across both parsers,
       // so if OTel already yielded a span, the JSONL parser will skip
       // the matching assistant.message (and vice versa).
       if (isSessionStoreSource(source)) {
-        return createSessionStoreParser(source, seenKeys, coveredStoreKeys, context)
+        return createSessionStoreParser(source, seenKeys, coveredStoreKeys, parserContext)
       }
       if (isOtelSource(source)) {
-        return createOtelParser(source, seenKeys, context)
+        return createOtelParser(source, seenKeys, parserContext)
       }
       if (isChatSessionSource(source)) {
-        return createChatSessionParser(source, seenKeys, context)
+        return createChatSessionParser(source, seenKeys, parserContext)
       }
       if (isJetBrainsSource(source)) {
-        return createJetBrainsParser(source, seenKeys, context)
+        return createJetBrainsParser(source, seenKeys, parserContext)
       }
-      return createJsonlParser(source, seenKeys, coveredStoreKeys, context)
+      return createJsonlParser(source, seenKeys, coveredStoreKeys, parserContext)
     },
   }
 }
