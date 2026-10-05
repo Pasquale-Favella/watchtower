@@ -12,7 +12,8 @@ The renderer is built from three cooperating layers, all store-driven:
 
 **Why:** eight sections all read period/provider-scoped data and all must refresh on the same scan event. Centralizing the refresh trigger, the IPC wiring, and the scope model makes a section a one-liner (`createScopedDataStore(fetchX)`) and keeps every component a pure reader of its store — which is what makes the renderer testable without jsdom and keeps `window` confined to two modules.
 
-**Amendment (background orb, several windows):** the IPC wiring is now one layer of *wiring modules*, one per window, composed from a shared one, instead of a single module.
+**Amendment (background orb, several windows):** the IPC wiring is now one layer of _wiring modules_, one per window, composed from a shared one, instead of a single module.
+
 - `app/stores/shared-wiring.ts` holds what every window needs:
   - the scan lifecycle
   - the data plane: `store:changed` / `config:changed` driving the shared refresh tick, plus FX updates

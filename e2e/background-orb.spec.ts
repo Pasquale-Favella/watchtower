@@ -25,13 +25,10 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
 
     // Window-level state: a hidden window's DOM still reads as CSS-visible.
     const surface = (which: Surface) =>
-      app.evaluate(
-        ({ BrowserWindow }, page) => {
-          const win = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith(page))
-          return win ? { visible: win.isVisible(), bounds: win.getBounds() } : null
-        },
-        PAGE[which],
-      )
+      app.evaluate(({ BrowserWindow }, page) => {
+        const win = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith(page))
+        return win ? { visible: win.isVisible(), bounds: win.getBounds() } : null
+      }, PAGE[which])
     const visible = async (which: Surface): Promise<boolean> => (await surface(which))?.visible ?? false
     const opened = (which: Surface): Promise<Page> =>
       app.waitForEvent('window', { predicate: page => page.url().endsWith(PAGE[which]) })
@@ -119,7 +116,10 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     expect(summon).toBeDefined()
     if (summon) {
       const accelerator = acceleratorFor(summon.hotkey)
-      const registered = await app.evaluate(({ globalShortcut }, combo) => globalShortcut.isRegistered(combo), accelerator)
+      const registered = await app.evaluate(
+        ({ globalShortcut }, combo) => globalShortcut.isRegistered(combo),
+        accelerator,
+      )
       if (!registered) {
         const logDir = join(await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData')), 'logs')
         const refusals = readdirSync(logDir)
