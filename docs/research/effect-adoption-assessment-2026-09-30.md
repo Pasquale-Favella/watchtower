@@ -279,3 +279,29 @@ Each new query captures the Clock once before loading one canonical ledger snaps
 Owned Zod removal remains **23/23 baseline modules, 100%**; native Effect Schema remains **22/23, 95.7%**, with one UI-only plain TypeScript module. Fifty-eight worker checks cover all eleven reads, including current Skills dismissals, invalid threshold fallback, live configuration edits, one snapshot and typed SQL/Schema failures. Six snapshot SELECTs remain unchanged. No SQL reduction, speedup or memory improvement is claimed.
 
 F29 remains partial. Remaining work includes other application queries, facade and compatibility adapter retirement, purpose-specific reads, scan-boundary input capture, cooperative parser stop and callback drain, main/Coach ownership and failure mapping, comparable 1k/50k/500k measurements including refresh/detail/search, installer acceptance and macOS/Linux packaged execution. Both renderer stores remain byte-identical to `ce81593`, with no added `let` variables, request identities or applyChange coalescing.
+
+## Current census after export and lifetime ownership migration, 2026-10-05
+
+This snapshot covers production and test source `88ca75b`, following `e553601`. The TypeScript AST runtime-import and nonblank-line method is unchanged. These are library import percentages, not architectural completion percentages.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,506 / 1,616 |         93.2% |
+| Store                              |                   10 / 12 |         83.3% |                     1,803 / 2,417 |         74.6% |
+| Agents                             |                   12 / 44 |         27.3% |                     3,802 / 5,818 |         65.3% |
+| Pipeline                           |                    7 / 75 |          9.3% |                    2,587 / 27,818 |          9.3% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                         380 / 380 |        100.0% |
+| All main-process code              |                  68 / 188 |         36.2% |                   13,675 / 46,344 |         29.5% |
+| Shared schema modules              |                   23 / 24 |         95.8% |                     1,868 / 1,926 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+The established section-query denominator remains 11/11, 100%, with scoped dedicated queries 9/9, 100%. Export now separately covers both CSV and JSON routes, 2/2, through one named application query in the existing worker runtime. Each export reads one full-history snapshot and captures currency once after the no-data guard, before file IO. Pure builders receive currency and generation time explicitly. The next request sees configuration edits. File failures map to bounded guidance; SQL and Schema failures remain typed. Compatibility export wrappers remain for test callers with an explicit removal condition.
+
+Main now composes the actual app-version-aware probe and scoped snapshot in its one runtime. IPC enters that runtime, and root disposal owns pending detection and probe fibers. Quit awaits Coach cleanup, main-runtime disposal and worker shutdown before closing the operational log and permitting Electron to exit. These changes complete that ownership slice; main/Coach failure mapping and other service adoption remain open.
+
+F31 remains partial. Each scan owns an AbortSignal before parser work begins; interruption signals stop before awaiting the actual parser/callback drain. Parser checkpoints preserve cancellation through file-isolation catches and prevent new callbacks or cache publication after stop. Claude line streams accept the signal and close in their finalizer. Provider factories still do not accept a signal, so a generator blocked in `next()` or a noncooperative producer can hold draining indefinitely. The existing two-second host recovery remains necessary. Vercel Gateway network work and Codex/Copilot file readers are concrete follow-up producers.
+
+Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module. The six canonical snapshot SELECTs are unchanged. No speedup, SQL reduction or memory improvement is claimed. Other application queries, purpose-specific detail/search reads, persistent MCP read-only root adoption, compatibility facade retirement, one pricing catalogue per scan, main/Coach failure mapping, comparable 1k/50k/500k measurements and installer/macOS/Linux packaged acceptance remain open.
+
+Both renderer stores remain byte-identical to `ce81593`. Their original scope key and direct applyChange flow are preserved, without added `let` variables, request IDs or coalescing.
