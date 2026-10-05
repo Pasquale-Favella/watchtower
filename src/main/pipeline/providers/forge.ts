@@ -3,10 +3,11 @@ import { homedir } from 'os'
 import { join } from 'path'
 
 import { extractBashCommands } from '../bash-utils.js'
-import { calculateCost } from '../models.js'
-import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { reportProviderIssue } from '../file-errors.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
+import { captureScanPricing } from '../models.js'
+import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type ConversationRow = {
   conversation_id: string
@@ -144,7 +145,8 @@ function splitSourcePath(path: string): { dbPath: string; conversationId: string
   return { dbPath: path.slice(0, idx), conversationId: path.slice(idx + 1) }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
@@ -218,7 +220,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             cachedInputTokens,
             reasoningTokens: 0,
             webSearchRequests: 0,
-            costUSD: calculateCost(model, inputTokens, outputTokens, 0, cachedInputTokens, 0),
+            costUSD: pricing.calculateCost(model, inputTokens, outputTokens, 0, cachedInputTokens, 0),
             tools,
             bashCommands,
             timestamp: sqliteTimestampToIso(row.updated_at ?? row.created_at),
@@ -282,8 +284,13 @@ export function createForgeProvider(dbPath = DEFAULT_DB_PATH): Provider {
       return discoverFromDb(dbPath)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

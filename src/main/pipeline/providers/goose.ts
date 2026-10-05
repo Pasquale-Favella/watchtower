@@ -1,12 +1,13 @@
-import { join } from 'path'
 import { homedir, platform } from 'os'
+import { join } from 'path'
 
-import { calculateCost, getShortModelName } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
-import { isSqliteAvailable, openDatabase, blobToText, type SqliteDatabase } from '../sqlite.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import { blobToText, isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import type { ToolCall } from '../types.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type SessionRow = {
   id: string
@@ -156,7 +157,8 @@ function getFirstUserMessage(db: SqliteDatabase, sessionId: string): string {
   }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
@@ -196,7 +198,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
 
         const config = parseModelConfig(blobToText(session.model_config_json))
         const model = config.model_name ?? 'unknown'
-        const costUSD = calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
+        const costUSD = pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
 
         const { tools, bashCommands, toolSequence } = extractToolsFromMessages(db, sessionId)
         const userMessage = getFirstUserMessage(db, sessionId)
@@ -287,8 +289,13 @@ export function createGooseProvider(): Provider {
       return discoverFromDb(dbPath)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

@@ -3,8 +3,16 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 
 import { extractBashCommands } from '../bash-utils.js'
-import { calculateCost } from '../models.js'
-import type { ParsedProviderCall, ProbeRoot, Provider, SessionParser, SessionSource } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
+import type {
+  ParsedProviderCall,
+  ProbeRoot,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from './types.js'
 
 type JsonObject = Record<string, unknown>
 
@@ -215,7 +223,8 @@ function toolDetails(value: unknown): { name: string; bashCommands: string[] } |
   }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       let contents: string
@@ -321,7 +330,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           cachedInputTokens: cacheReadInputTokens,
           reasoningTokens: 0,
           webSearchRequests: 0,
-          costUSD: calculateCost(
+          costUSD: pricing.calculateCost(
             realModel,
             inputTokens,
             outputTokens,
@@ -374,8 +383,13 @@ export function createKimicodeProvider(homeOverride?: string): Provider {
       return all.sort((a, b) => a.path.localeCompare(b.path))
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

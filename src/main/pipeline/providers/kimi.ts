@@ -1,12 +1,13 @@
 import { createHash } from 'crypto'
 import { readdir, readFile, stat } from 'fs/promises'
-import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
+import { basename, dirname, join } from 'path'
 
 import { extractBashCommands } from '../bash-utils.js'
 import { readSessionLines } from '../fs-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type JsonObject = Record<string, unknown>
 
@@ -241,7 +242,13 @@ function extractTool(payload: JsonObject): { tool: string; bashCommands: string[
   return { tool, bashCommands }
 }
 
-function createParser(source: SessionSource, shareDir: string, seenKeys: Set<string>): SessionParser {
+function createParser(
+  source: SessionSource,
+  shareDir: string,
+  seenKeys: Set<string>,
+  context?: ProviderScanContext,
+): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const configuredModel = await getConfiguredModel(shareDir)
@@ -298,7 +305,7 @@ function createParser(source: SessionSource, shareDir: string, seenKeys: Set<str
 
         const model =
           stringField(envelope.payload, 'model') ?? stringField(envelope.payload, 'model_name') ?? configuredModel
-        const costUSD = calculateCost(
+        const costUSD = pricing.calculateCost(
           model,
           usage.inputTokens,
           usage.outputTokens,
@@ -386,8 +393,13 @@ export function createKimiProvider(overrideDir?: string): Provider {
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, shareDir, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, shareDir, seenKeys, context)
     },
   }
 }

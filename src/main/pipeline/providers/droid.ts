@@ -1,13 +1,14 @@
-import { readdir, stat, readFile } from 'fs/promises'
-import { join } from 'path'
+import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
+import { join } from 'path'
 
-import { billableOutputTokens } from '../billable-output.js'
-import { readSessionFile, readSessionLines } from '../fs-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
+import { billableOutputTokens } from '../billable-output.js'
 import { normalizeContentBlocks } from '../content-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { readSessionFile, readSessionLines } from '../fs-utils.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const toolNameMap: Record<string, string> = {
   Read: 'Read',
@@ -104,7 +105,8 @@ function extractDroidBashCommands(command: string): string[] {
   return extractBashCommands(firstLine)
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const content = await readSessionFile(source.path)
@@ -239,7 +241,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         if (seenKeys.has(dedupKey)) continue
         seenKeys.add(dedupKey)
 
-        const costUSD = calculateCost(
+        const costUSD = pricing.calculateCost(
           sessionModelDisplay.toLowerCase(),
           inputTokens,
           billableOutputTokens('droid', outputTokens, thinkingTokens),
@@ -376,8 +378,13 @@ export function createDroidProvider(factoryDir?: string): Provider {
       return discoverSessionsInDir(sessionsDir, base)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

@@ -1,12 +1,14 @@
 import { readdir, stat } from 'fs/promises'
-import { join } from 'path'
 import { homedir } from 'os'
+import { join } from 'path'
 
-import { readSessionFile } from '../fs-utils.js'
-import { billableOutputTokens } from '../billable-output.js'
-import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { billableOutputTokens } from '../billable-output.js'
+import { readSessionFile } from '../fs-utils.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const toolNameMap: Record<string, string> = {
   read_file: 'Read',
@@ -65,7 +67,7 @@ type GeminiSession = {
   kind?: string
 }
 
-function parseSession(data: GeminiSession, seenKeys: Set<string>): ParsedProviderCall[] {
+function parseSession(data: GeminiSession, seenKeys: Set<string>, pricing: ScanPricing): ParsedProviderCall[] {
   const results: ParsedProviderCall[] = []
 
   let lastUserMessage = ''
@@ -126,7 +128,7 @@ function parseSession(data: GeminiSession, seenKeys: Set<string>): ParsedProvide
     // Gemini bills thoughts at the output token rate; calculateCost does not
     // accept a reasoning parameter, so fold thoughts into the output count for
     // pricing while keeping outputTokens / reasoningTokens reported separately.
-    const costUSD = calculateCost(
+    const costUSD = pricing.calculateCost(
       msg.model,
       freshInput,
       billableOutputTokens('gemini', totalOutput, totalThoughts),
@@ -194,7 +196,8 @@ function parseJsonl(raw: string): GeminiSession | null {
   return { sessionId, projectHash, startTime, lastUpdated, kind, messages }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const raw = await readSessionFile(source.path)
@@ -218,7 +221,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
 
       if (!data?.messages || !data.sessionId) return
 
-      const calls = parseSession(data, seenKeys)
+      const calls = parseSession(data, seenKeys, pricing)
       for (const call of calls) {
         yield call
       }
@@ -289,8 +292,13 @@ export function createGeminiProvider(): Provider {
       return discoverSessions()
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

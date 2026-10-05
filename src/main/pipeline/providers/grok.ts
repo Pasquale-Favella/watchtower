@@ -1,11 +1,12 @@
 import { readdir, stat } from 'fs/promises'
-import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
+import { basename, dirname, join } from 'path'
 
-import { readSessionFile } from '../fs-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { readSessionFile } from '../fs-utils.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // Grok Build (xAI's coding CLI) stores one session per directory at
 // <grok-home>/sessions/<url-encoded-cwd>/<uuid>/, where grok-home is $GROK_HOME
@@ -164,7 +165,8 @@ function parseUpdates(updates: string): {
   return { input: inputFresh, cacheRead, output, tools, bashCommands, subagentTypes }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const dir = dirname(source.path)
@@ -194,7 +196,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         cachedInputTokens: cacheRead,
         reasoningTokens: 0,
         webSearchRequests: 0,
-        costUSD: calculateCost(model, input, output, 0, cacheRead, 0),
+        costUSD: pricing.calculateCost(model, input, output, 0, cacheRead, 0),
         costIsEstimated: true,
         tools,
         bashCommands,
@@ -269,8 +271,13 @@ export function createGrokProvider(sessionsDir?: string): Provider {
       return discoverSessions(dir)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }
