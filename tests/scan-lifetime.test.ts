@@ -11,7 +11,8 @@ const hooks = vi.hoisted(() => ({
   repoUrl: vi.fn(),
 }))
 
-vi.mock('../src/main/pipeline/parser.js', () => ({
+vi.mock('../src/main/pipeline/parser.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../src/main/pipeline/parser.js')>()),
   parseAllSessions: (...args: unknown[]) => hooks.parse(...args),
 }))
 
@@ -21,11 +22,19 @@ vi.mock('../src/main/pipeline/git-remote.js', () => ({
 
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
+import {
+  captureScanPricing,
+  setLocalModelSavings,
+  setModelAliases,
+  setPriceOverrides,
+} from '../src/main/pipeline/models.js'
+import type { DeltaHandler } from '../src/main/pipeline/parser.js'
+import type { ProviderScanServices } from '../src/main/pipeline/providers/types.js'
 import { runOwnedScanPromise } from '../src/main/pipeline/scan.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import { openWorkerOwner } from '../src/main/worker-runtime.js'
 import type { ScanDelta } from '../src/shared/schemas/scan.js'
-import { buildFixtureCachedFile } from './fixtures/cached-file.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 function deferred<A>(): { promise: Promise<A>; resolve(value: A): void } {
   let resolve!: (value: A) => void
@@ -66,11 +75,106 @@ describe('scan lifetime ownership', () => {
   afterEach(async () => {
     hooks.parse.mockReset()
     hooks.repoUrl.mockReset()
+    setPriceOverrides({})
+    setModelAliases({})
+    setLocalModelSavings({})
     await context?.close()
     context = null
     events.length = 0
     if (dir) rmSync(dir, { recursive: true, force: true })
     dir = ''
+  })
+
+  it('persists scan-owned costs and savings after pricing changes during repository lookup', async () => {
+    const c = open()
+    const ledger = (c as unknown as { ledger: LedgerStore }).ledger
+    const portIn = vi.spyOn(ledger, 'portIn')
+    const repoEntered = deferred<undefined>()
+    const releaseRepo = deferred<string | undefined>()
+    const model = 'scan-owned-model'
+    const baseline = 'scan-owned-baseline'
+    setPriceOverrides({ [baseline]: { input: 1, output: 2, cacheRead: 3 } })
+    setModelAliases({ [model]: baseline })
+    setLocalModelSavings({ 'local-scan-model': baseline })
+    const original = captureScanPricing()
+    const firstExpected = original.calculateCost(model, 100, 50, 0, 20, 0)
+    const cachedCall = { ...buildFixtureCachedCall(0), provider: 'claude', model, costUSD: undefined }
+    const firstDelta: ScanDelta = {
+      ...delta(),
+      cachedFile: buildFixtureCachedFile({
+        turns: [
+          buildFixtureCachedTurn(0, 'Captured prices', {
+            calls: [cachedCall, { ...cachedCall, model: 'local-scan-model', deduplicationKey: 'local-scan-call' }],
+          }),
+        ],
+      }),
+    }
+    hooks.repoUrl
+      .mockImplementationOnce(() => {
+        repoEntered.resolve(undefined)
+        return releaseRepo.promise
+      })
+      .mockResolvedValue('https://example.test/project')
+    hooks.parse.mockImplementation(
+      async (
+        _range: unknown,
+        _provider: unknown,
+        onDelta: DeltaHandler,
+        _onUnparsed: unknown,
+        _signal: unknown,
+        services: ProviderScanServices,
+      ) => {
+        expect(services.pricing).toBeDefined()
+        await onDelta(firstDelta)
+      },
+    )
+
+    const firstScan = c.dispatch('scan:start', [])
+    try {
+      await repoEntered.promise
+      setPriceOverrides({ [baseline]: { input: 100, output: 200, cacheRead: 300 } })
+      setModelAliases({ [model]: 'unpriced-after-scan-start' })
+      setLocalModelSavings({})
+    } finally {
+      releaseRepo.resolve('https://example.test/project')
+    }
+    await expect(firstScan).resolves.toEqual({ ok: true })
+    const firstPricing = hooks.parse.mock.calls[0][5].pricing
+    expect(portIn.mock.calls[0][1]).toBe(firstPricing)
+    expect(ledger.getCalls()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model, baseCostUSD: firstExpected, savingsUSD: 0 }),
+        expect.objectContaining({
+          model: 'local-scan-model',
+          baseCostUSD: 0,
+          savingsUSD: firstExpected,
+          savingsBaselineModel: baseline,
+        }),
+      ]),
+    )
+
+    setModelAliases({ [model]: baseline })
+    hooks.parse.mockImplementation(async (_range: unknown, _provider: unknown, onDelta: DeltaHandler) => {
+      await onDelta({ ...firstDelta, filePath: 'next-session.jsonl' })
+    })
+    await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: true })
+    const nextPricing = hooks.parse.mock.calls[1][5].pricing
+    expect(nextPricing).not.toBe(firstPricing)
+    expect(portIn.mock.calls[1][1]).toBe(nextPricing)
+    expect(
+      ledger
+        .getCalls()
+        .filter(call => call.model === model)
+        .map(call => call.baseCostUSD)
+        .sort((a, b) => a - b),
+    ).toEqual([firstExpected, firstExpected * 100])
+    expect(
+      ledger
+        .getCalls()
+        .filter(call => call.model === 'local-scan-model')
+        .map(call => call.savingsUSD)
+        .sort((a, b) => a - b),
+    ).toEqual([0, firstExpected])
   })
 
   it('does not complete interruption until the real parser Promise and callback drain', async () => {

@@ -7,7 +7,7 @@ import type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress } from '.
 import type { Env } from '../env.js'
 import { OperationalLog, SCAN_DURATION_COUNTER } from '../operational-log.js'
 import { HttpFetch } from './fetch-utils.js'
-import { loadPricingEffect } from './models.js'
+import { captureScanPricing, loadPricingEffect } from './models.js'
 import type { DeltaHandler } from './parser.js'
 import { parseAllSessions } from './parser.js'
 import type { ProviderScanServices } from './providers/types.js'
@@ -134,6 +134,7 @@ export const runScan = Effect.fnUntraced(function* (
 
     onProgress?.({ stage: 'pricing' })
     yield* loadPricingEffect()
+    const pricing = providerServices.pricing ?? captureScanPricing()
 
     onProgress?.({ stage: 'parse' })
     if (onDelta) onProgress?.({ stage: 'port-in' })
@@ -169,7 +170,7 @@ export const runScan = Effect.fnUntraced(function* (
           }
           if (delta.verdict === 'unchanged') row.unchanged++
           else row.ported++
-          await onDelta(delta)
+          await onDelta(delta, pricing)
         }
       : undefined
 
@@ -183,7 +184,10 @@ export const runScan = Effect.fnUntraced(function* (
     // Parser work observes this per-run signal, but the Promise remains owned
     // until every parser and callback has actually settled after interruption.
     yield* runOwnedScanPromise(signal =>
-      parseAllSessions(options.range, options.provider, countingDelta, onUnparsed, signal, providerServices),
+      parseAllSessions(options.range, options.provider, countingDelta, onUnparsed, signal, {
+        ...providerServices,
+        pricing,
+      }),
     )
 
     if (onDelta && abort?.isAborted()) {

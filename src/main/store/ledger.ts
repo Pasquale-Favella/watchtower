@@ -19,6 +19,7 @@ import {
 import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../shared/schemas/ledger-mcp.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { DEFAULT_CADENCE, isValidCadence } from '../cadence.js'
+import type { ScanPricing } from '../pipeline/scan-pricing.js'
 import { initializeLedger } from './ledger-initialization.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from './ledger-repository.js'
 import { type LedgerRuntime, NodeSqliteDatabase } from './node-sqlite-client.js'
@@ -97,8 +98,8 @@ export class LedgerStore {
    * own resume marker: `ledger_source` presence decides, so a first-time
    * `unchanged` file falls through to the full port below and the `call_key`
    * constraint keeps any partial re-port idempotent. */
-  portIn(input: PortInput): PortResult {
-    return this.runIngestSync(ingest => ingest.portIn(input))
+  portIn(input: PortInput, pricing?: ScanPricing): PortResult {
+    return this.runIngestSync(ingest => ingest.portIn(input, pricing))
   }
 
   /** Removes a source and all of its ledger rows (per-file provenance is the

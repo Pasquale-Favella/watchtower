@@ -30,6 +30,7 @@ import {
   normalizeProxyPath as normalizeProxyPathPure,
   type ProxyPathConfig,
 } from './proxy-paths.js'
+import { createScanPricing, type ScanPricing } from './scan-pricing.js'
 
 export type { ModelCosts } from './pricing-calculation.js'
 export type { ConfigRatePair, PricingConfigLookup } from './pricing-calculation.js'
@@ -900,6 +901,15 @@ export function captureModelPricingCatalogue(): PricingCatalogue {
     })
   }
   return capturedPricingCatalogue
+}
+
+/** Capture both pricing and local-savings mappings before parser IO begins.
+ * Production scans call this once after loading pricing. Remove standalone
+ * parser and ingest defaults when their direct callers supply that capture. */
+export function captureScanPricing(paths?: AppPaths): ScanPricing {
+  return createScanPricing(captureModelPricingCatalogue(), captureLocalModelSavings(), model =>
+    warnAboutUnknownModel(model, paths),
+  )
 }
 
 export function calculateCost(

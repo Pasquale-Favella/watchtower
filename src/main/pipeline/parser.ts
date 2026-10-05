@@ -31,13 +31,7 @@ import { flushCodexCache } from './codex-cache.js'
 import { normalizeContentBlocks } from './content-utils.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
 import { readSessionLines } from './fs-utils.js'
-import {
-  calculateCost,
-  calculateLocalModelSavings,
-  getProxyPathsConfigHash,
-  getShortModelName,
-  isProxiedPath,
-} from './models.js'
+import { captureScanPricing, getProxyPathsConfigHash, getShortModelName, isProxiedPath } from './models.js'
 import {
   antigravityCascadeIdFromPath,
   flushAntigravityCache,
@@ -47,6 +41,7 @@ import { getDesktopSessionsDirs } from './providers/claude.js'
 import { discoverAllSessions, getProvider } from './providers/index.js'
 import type { ParsedProviderCall, ProviderScanContext, ProviderScanServices, SessionSource } from './providers/types.js'
 import { isScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
+import type { ScanPricing } from './scan-pricing.js'
 import {
   beginColdHydration,
   type CachedCall,
@@ -88,7 +83,7 @@ import type {
 export type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 import type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 
-export type DeltaHandler = (delta: ScanDelta) => void | Promise<void>
+export type DeltaHandler = (delta: ScanDelta, pricing?: ScanPricing) => void | Promise<void>
 
 /** A single file's port-in must never abort the whole scan: a throw from the
  * delta consumer (e.g. a ledger write failing on one file) is warned and
@@ -1412,9 +1407,9 @@ function extractClaudeCacheCreation(usage: {
 /// to $0 and the hypothetical baseline cost is recorded as `savingsUSD`.
 /// Returns the input unchanged when no mapping is configured for the
 /// model — keeps the hot path branch-free for the common paid-only case.
-function applyLocalModelSavings(call: ParsedApiCall): ParsedApiCall {
+function applyLocalModelSavings(call: ParsedApiCall, pricing: ScanPricing): ParsedApiCall {
   const u = call.usage
-  const savings = calculateLocalModelSavings(
+  const savings = pricing.calculateLocalModelSavings(
     call.model,
     u.inputTokens,
     u.outputTokens,
@@ -1588,7 +1583,11 @@ export function collectSessionMeta(entry: JournalEntry, meta: SessionMeta): void
   }
 }
 
-export function parseApiCall(entry: JournalEntry, toolResultMeta?: Map<string, ToolResultMeta>): ParsedApiCall | null {
+export function parseApiCall(
+  entry: JournalEntry,
+  toolResultMeta?: Map<string, ToolResultMeta>,
+  pricing: ScanPricing = captureScanPricing(),
+): ParsedApiCall | null {
   if (entry.type !== 'assistant') return null
   const msg = entry.message as AssistantMessageContent | undefined
   if (!msg?.usage || !msg?.model) return null
@@ -1612,7 +1611,7 @@ export function parseApiCall(entry: JournalEntry, toolResultMeta?: Map<string, T
   const tools = extractToolNames(contentBlocks)
   const skills = extractSkillNames(contentBlocks)
   const subagentTypes = extractSubagentTypes(contentBlocks)
-  const costUSD = calculateCost(
+  const costUSD = pricing.calculateCost(
     msg.model,
     tokens.inputTokens,
     tokens.outputTokens,
@@ -1663,30 +1662,33 @@ export function parseApiCall(entry: JournalEntry, toolResultMeta?: Map<string, T
     }
   }
 
-  return applyLocalModelSavings({
-    provider: 'claude',
-    model: msg.model,
-    usage: tokens,
-    costUSD,
-    tools,
-    mcpTools: extractMcpTools(tools),
-    skills,
-    subagentTypes,
-    hasAgentSpawn: tools.includes('Agent'),
-    hasPlanMode: tools.includes('EnterPlanMode'),
-    speed: usage.speed ?? 'standard',
-    timestamp: entry.timestamp ?? '',
-    bashCommands: bashCmds,
-    deduplicationKey: msg.id ?? `claude:${entry.timestamp}`,
-    cacheCreationOneHourTokens: cacheCreation.oneHourTokens || undefined,
-    toolSequence: toolSeq.length > 0 ? toolSeq : undefined,
-    ...(spawnIds.length > 0 ? { spawnToolUseIds: spawnIds } : {}),
-    ...(locAdded ? { locAdded } : {}),
-    ...(locRemoved ? { locRemoved } : {}),
-    ...(interrupted ? { interrupted: true } : {}),
-    ...(userModified ? { userModified: true } : {}),
-    ...(toolErrors ? { toolErrors } : {}),
-  })
+  return applyLocalModelSavings(
+    {
+      provider: 'claude',
+      model: msg.model,
+      usage: tokens,
+      costUSD,
+      tools,
+      mcpTools: extractMcpTools(tools),
+      skills,
+      subagentTypes,
+      hasAgentSpawn: tools.includes('Agent'),
+      hasPlanMode: tools.includes('EnterPlanMode'),
+      speed: usage.speed ?? 'standard',
+      timestamp: entry.timestamp ?? '',
+      bashCommands: bashCmds,
+      deduplicationKey: msg.id ?? `claude:${entry.timestamp}`,
+      cacheCreationOneHourTokens: cacheCreation.oneHourTokens || undefined,
+      toolSequence: toolSeq.length > 0 ? toolSeq : undefined,
+      ...(spawnIds.length > 0 ? { spawnToolUseIds: spawnIds } : {}),
+      ...(locAdded ? { locAdded } : {}),
+      ...(locRemoved ? { locRemoved } : {}),
+      ...(interrupted ? { interrupted: true } : {}),
+      ...(userModified ? { userModified: true } : {}),
+      ...(toolErrors ? { toolErrors } : {}),
+    },
+    pricing,
+  )
 }
 
 /// Claude Code's advisor tool (/advisor) escalates hard decisions to a stronger
@@ -1695,7 +1697,7 @@ export function parseApiCall(entry: JournalEntry, toolResultMeta?: Map<string, T
 /// are excluded from the top-level `message.usage` totals that `parseApiCall`
 /// reads. Emit them as separate calls so the advisor's spend is counted and
 /// attributed to the advisor model rather than silently dropped.
-export function parseAdvisorCalls(entry: JournalEntry): ParsedApiCall[] {
+export function parseAdvisorCalls(entry: JournalEntry, pricing: ScanPricing = captureScanPricing()): ParsedApiCall[] {
   if (entry.type !== 'assistant') return []
   const msg = entry.message as AssistantMessageContent | undefined
   const iterations = msg?.usage?.iterations
@@ -1724,7 +1726,7 @@ export function parseAdvisorCalls(entry: JournalEntry): ParsedApiCall[] {
       webSearchRequests: it.server_tool_use?.web_search_requests ?? 0,
     }
     const speed = it.speed ?? msg.usage.speed ?? 'standard'
-    const costUSD = calculateCost(
+    const costUSD = pricing.calculateCost(
       model,
       tokens.inputTokens,
       tokens.outputTokens,
@@ -1736,23 +1738,26 @@ export function parseAdvisorCalls(entry: JournalEntry): ParsedApiCall[] {
     )
 
     calls.push(
-      applyLocalModelSavings({
-        provider: 'claude',
-        model,
-        usage: tokens,
-        costUSD,
-        tools: [],
-        mcpTools: [],
-        skills: [],
-        subagentTypes: [],
-        hasAgentSpawn: false,
-        hasPlanMode: false,
-        speed,
-        timestamp: entry.timestamp ?? '',
-        bashCommands: [],
-        deduplicationKey: `${baseKey}:advisor:${index}`,
-        cacheCreationOneHourTokens: cacheCreation.oneHourTokens || undefined,
-      }),
+      applyLocalModelSavings(
+        {
+          provider: 'claude',
+          model,
+          usage: tokens,
+          costUSD,
+          tools: [],
+          mcpTools: [],
+          skills: [],
+          subagentTypes: [],
+          hasAgentSpawn: false,
+          hasPlanMode: false,
+          speed,
+          timestamp: entry.timestamp ?? '',
+          bashCommands: [],
+          deduplicationKey: `${baseKey}:advisor:${index}`,
+          cacheCreationOneHourTokens: cacheCreation.oneHourTokens || undefined,
+        },
+        pricing,
+      ),
     )
   }
   return calls
@@ -1786,6 +1791,7 @@ export function groupIntoTurns(
   entries: JournalEntry[],
   seenMsgIds: Set<string>,
   toolResultMeta?: Map<string, ToolResultMeta>,
+  pricing: ScanPricing = captureScanPricing(),
 ): ParsedTurn[] {
   const turns: ParsedTurn[] = []
   let currentUserMessage = ''
@@ -1841,13 +1847,13 @@ export function groupIntoTurns(
       const msgId = getMessageId(entry)
       if (msgId && seenMsgIds.has(msgId)) continue
       if (msgId) seenMsgIds.add(msgId)
-      const call = parseApiCall(entry, toolResultMeta)
+      const call = parseApiCall(entry, toolResultMeta, pricing)
       if (call) {
         currentCalls.push(call)
         if (call.spawnToolUseIds)
           for (const id of call.spawnToolUseIds) if (!currentSpawnIds.includes(id)) currentSpawnIds.push(id)
       }
-      for (const advisorCall of parseAdvisorCalls(entry)) currentCalls.push(advisorCall)
+      for (const advisorCall of parseAdvisorCalls(entry, pricing)) currentCalls.push(advisorCall)
     } else if (entry.type === 'pr-link') {
       const url = (entry as Record<string, unknown>)['prUrl']
       if (typeof url === 'string' && url && !currentPrRefs.includes(url)) currentPrRefs.push(url)
@@ -2088,6 +2094,7 @@ async function parseSessionFile(
   project: string,
   seenMsgIds: Set<string>,
   dateRange?: DateRange,
+  pricing: ScanPricing = captureScanPricing(),
 ): Promise<{ session: SessionSummary; canonicalCwd?: string } | null> {
   // Skip files whose mtime is older than the range start. A session file
   // can only contain entries up to its last-modified time; if that predates
@@ -2122,7 +2129,7 @@ async function parseSessionFile(
 
   const sessionId = basename(filePath, '.jsonl')
   const dedupedEntries = dedupeStreamingMessageIds(entries)
-  let turns = groupIntoTurns(dedupedEntries, seenMsgIds)
+  let turns = groupIntoTurns(dedupedEntries, seenMsgIds, undefined, pricing)
   if (dateRange) {
     // Bucket a turn by the timestamp of its first assistant call (when the cost was
     // actually incurred). Filtering entries directly produced orphan assistant calls
@@ -2215,6 +2222,7 @@ async function scanProjectDirs(
   readOnly = false,
   onDelta?: DeltaHandler,
   signal?: AbortSignal,
+  pricing: ScanPricing = captureScanPricing(),
 ): Promise<ProjectSummary[]> {
   throwIfScanAborted(signal)
   const section = getOrCreateProviderSection(diskCache, 'claude')
@@ -2387,7 +2395,7 @@ async function scanProjectDirs(
         if (!straddles) {
           const newTurns = newEntries
             ? parsedTurnsToCachedTurns(
-                groupIntoTurns(dedupeStreamingMessageIds(newEntries), seenMsgIds, toolResultMeta),
+                groupIntoTurns(dedupeStreamingMessageIds(newEntries), seenMsgIds, toolResultMeta, pricing),
               )
             : []
 
@@ -2493,7 +2501,7 @@ async function scanProjectDirs(
         continue
       }
 
-      const turns = groupIntoTurns(dedupeStreamingMessageIds(entries), seenMsgIds, toolResultMeta)
+      const turns = groupIntoTurns(dedupeStreamingMessageIds(entries), seenMsgIds, toolResultMeta, pricing)
       const cwd = extractCanonicalCwd(entries)
       const canonical = cwd && !isCoworkSession(cwd, filePath) ? await resolveCanonicalProjectPath(cwd) : undefined
       throwIfScanAborted(signal)
@@ -2577,7 +2585,7 @@ async function scanProjectDirs(
     ;(diskCache as { _dirty?: boolean })._dirty = true
   }
   if (!onDelta) {
-    return buildClaudeProjectSummaries(unchangedFiles, changedFiles, section, dateRange)
+    return buildClaudeProjectSummaries(unchangedFiles, changedFiles, section, dateRange, pricing)
   }
   return []
 }
@@ -2591,7 +2599,8 @@ async function buildClaudeProjectSummaries(
     verdict: 'new' | 'appended' | 'modified'
   }>,
   section: ProviderSection,
-  dateRange?: DateRange,
+  dateRange: DateRange | undefined,
+  pricing: ScanPricing,
 ): Promise<ProjectSummary[]> {
   const projectMap = new Map<
     string,
@@ -2635,7 +2644,7 @@ async function buildClaudeProjectSummaries(
         }
       }
       if (turn.prRefs?.length) carriedPrRefs = turn.prRefs
-      return cachedTurnToClassified(turn, carriedBranch)
+      return cachedTurnToClassified(turn, carriedBranch, pricing)
     })
     // Captured from the FULL turn list, before the date slice below can drop the
     // turn a branch was first seen on. Lets the by-branch report keep this
@@ -2788,7 +2797,7 @@ function summarizeProject(
 // ever pasting a link). Providers that persist richer surfaces (Claude
 // assistant / tool-result text) add those before compaction; see
 // collectPrUrlsFromEntry.
-function providerCallToTurn(call: ParsedProviderCall): ParsedTurn {
+function providerCallToTurn(call: ParsedProviderCall, pricing: ScanPricing): ParsedTurn {
   const tools = call.tools
   const usage: TokenUsage = {
     inputTokens: call.inputTokens,
@@ -2800,23 +2809,26 @@ function providerCallToTurn(call: ParsedProviderCall): ParsedTurn {
     webSearchRequests: call.webSearchRequests,
   }
 
-  const apiCall: ParsedApiCall = applyLocalModelSavings({
-    provider: call.provider,
-    model: call.model,
-    usage,
-    costUSD: call.costUSD,
-    tools,
-    mcpTools: extractMcpTools(tools),
-    skills: call.skills ?? [],
-    subagentTypes: call.subagentTypes ?? [],
-    hasAgentSpawn: tools.includes('Agent'),
-    hasPlanMode: tools.includes('EnterPlanMode'),
-    speed: call.speed,
-    timestamp: call.timestamp,
-    bashCommands: call.bashCommands,
-    deduplicationKey: call.deduplicationKey,
-    isEstimated: call.costIsEstimated,
-  })
+  const apiCall: ParsedApiCall = applyLocalModelSavings(
+    {
+      provider: call.provider,
+      model: call.model,
+      usage,
+      costUSD: call.costUSD,
+      tools,
+      mcpTools: extractMcpTools(tools),
+      skills: call.skills ?? [],
+      subagentTypes: call.subagentTypes ?? [],
+      hasAgentSpawn: tools.includes('Agent'),
+      hasPlanMode: tools.includes('EnterPlanMode'),
+      speed: call.speed,
+      timestamp: call.timestamp,
+      bashCommands: call.bashCommands,
+      deduplicationKey: call.deduplicationKey,
+      isEstimated: call.costIsEstimated,
+    },
+    pricing,
+  )
 
   const prRefs = extractPrUrlsFromProviderCall(call)
   return {
@@ -2982,10 +2994,10 @@ function providerCallsToCachedTurns(calls: ParsedProviderCall[]): CachedTurn[] {
   return turns
 }
 
-function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
+function cachedCallToApiCall(call: CachedCall, pricing: ScanPricing): ParsedApiCall {
   const u = call.usage
   const outputForCost = billableOutputTokens(call.provider, u.outputTokens, u.reasoningTokens)
-  const costUSD = calculateCost(
+  const costUSD = pricing.calculateCost(
     call.model,
     u.inputTokens,
     outputForCost,
@@ -2995,33 +3007,36 @@ function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
     call.speed,
     u.cacheCreationOneHourTokens,
   )
-  return applyLocalModelSavings({
-    provider: call.provider,
-    model: call.model,
-    usage: {
-      inputTokens: u.inputTokens,
-      outputTokens: u.outputTokens,
-      cacheCreationInputTokens: u.cacheCreationInputTokens,
-      cacheReadInputTokens: u.cacheReadInputTokens,
-      cachedInputTokens: u.cachedInputTokens,
-      reasoningTokens: u.reasoningTokens,
-      webSearchRequests: u.webSearchRequests,
+  return applyLocalModelSavings(
+    {
+      provider: call.provider,
+      model: call.model,
+      usage: {
+        inputTokens: u.inputTokens,
+        outputTokens: u.outputTokens,
+        cacheCreationInputTokens: u.cacheCreationInputTokens,
+        cacheReadInputTokens: u.cacheReadInputTokens,
+        cachedInputTokens: u.cachedInputTokens,
+        reasoningTokens: u.reasoningTokens,
+        webSearchRequests: u.webSearchRequests,
+      },
+      costUSD: call.costUSD ?? costUSD,
+      isEstimated: call.isEstimated,
+      tools: call.tools,
+      mcpTools: extractMcpTools(call.tools),
+      skills: call.skills,
+      subagentTypes: call.subagentTypes ?? [],
+      hasAgentSpawn: call.tools.includes('Agent'),
+      hasPlanMode: call.tools.includes('EnterPlanMode'),
+      speed: call.speed,
+      timestamp: call.timestamp,
+      bashCommands: call.bashCommands,
+      deduplicationKey: call.deduplicationKey,
+      cacheCreationOneHourTokens: u.cacheCreationOneHourTokens || undefined,
+      toolSequence: call.toolSequence,
     },
-    costUSD: call.costUSD ?? costUSD,
-    isEstimated: call.isEstimated,
-    tools: call.tools,
-    mcpTools: extractMcpTools(call.tools),
-    skills: call.skills,
-    subagentTypes: call.subagentTypes ?? [],
-    hasAgentSpawn: call.tools.includes('Agent'),
-    hasPlanMode: call.tools.includes('EnterPlanMode'),
-    speed: call.speed,
-    timestamp: call.timestamp,
-    bashCommands: call.bashCommands,
-    deduplicationKey: call.deduplicationKey,
-    cacheCreationOneHourTokens: u.cacheCreationOneHourTokens || undefined,
-    toolSequence: call.toolSequence,
-  })
+    pricing,
+  )
 }
 
 // `resolvedBranch` restores the turn's git branch after the cache's per-turn
@@ -3029,7 +3044,11 @@ function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
 // turns in order carry the last stored value forward and pass it here, so each
 // reconstructed turn regains the "branch active for this turn" the cache elided —
 // and downstream date/day filtering can slice turns without losing the anchor.
-export function cachedTurnToClassified(turn: CachedTurn, resolvedBranch?: string): ClassifiedTurn {
+export function cachedTurnToClassified(
+  turn: CachedTurn,
+  resolvedBranch?: string,
+  pricing: ScanPricing = captureScanPricing(),
+): ClassifiedTurn {
   const branch = turn.gitBranch ?? resolvedBranch
   // Re-extract when the cached turn predates PR capture (or a narrower URL
   // shape): the user message plus every call's executed commands, so already
@@ -3043,7 +3062,7 @@ export function cachedTurnToClassified(turn: CachedTurn, resolvedBranch?: string
       })
   const parsed: ParsedTurn = {
     userMessage: turn.userMessage,
-    assistantCalls: turn.calls.map(cachedCallToApiCall),
+    assistantCalls: turn.calls.map(call => cachedCallToApiCall(call, pricing)),
     timestamp: turn.timestamp,
     sessionId: turn.sessionId,
     ...(branch ? { gitBranch: branch } : {}),
@@ -3302,6 +3321,7 @@ async function parseProviderSources(
   context: ProviderScanContext = {},
 ): Promise<ProjectSummary[]> {
   const { signal } = context
+  const pricing = context.pricing ?? captureScanPricing()
   throwIfScanAborted(signal)
   const provider = await getProvider(providerName)
   throwIfScanAborted(signal)
@@ -3645,7 +3665,7 @@ async function parseProviderSources(
         if (ts < dateRange.start || ts > dateRange.end) continue
       }
 
-      const classified = cachedTurnToClassified(turn)
+      const classified = cachedTurnToClassified(turn, undefined, pricing)
       const project = turn.calls[0]?.project ?? source.project
       const key = `${providerName}:${turn.sessionId}:${project}`
 
@@ -3695,7 +3715,7 @@ async function parseProviderSources(
           if (ts < dateRange.start || ts > dateRange.end) continue
         }
 
-        const classified = cachedTurnToClassified(turn)
+        const classified = cachedTurnToClassified(turn, undefined, pricing)
         const project = turn.calls[0]?.project ?? providerName
         const key = `${providerName}:${turn.sessionId}:${project}`
 
@@ -4211,8 +4231,10 @@ export async function parseAllSessions(
   signal?: AbortSignal,
   services: ProviderScanServices = {},
 ): Promise<ProjectSummary[]> {
-  const context: ProviderScanContext = { ...services, signal }
   throwIfScanAborted(signal)
+  const pricing = services.pricing ?? captureScanPricing()
+  const context: ProviderScanContext = { ...services, signal, pricing }
+  const pricedDelta: DeltaHandler | undefined = onDelta ? delta => onDelta(delta, pricing) : undefined
   const key = cacheKey(dateRange, providerFilter)
   const cached = sessionCache.get(key)
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data
@@ -4237,7 +4259,16 @@ export async function parseAllSessions(
       if (hydration.waited) diskCache = await loadCache()
       throwIfScanAborted(signal)
       const isCold = !isCacheComplete(diskCache)
-      const result = await runParse(key, diskCache, dateRange, providerFilter, { isCold }, onDelta, onUnparsed, context)
+      const result = await runParse(
+        key,
+        diskCache,
+        dateRange,
+        providerFilter,
+        { isCold },
+        pricedDelta,
+        onUnparsed,
+        context,
+      )
       throwIfScanAborted(signal)
       return result
     } finally {
@@ -4258,7 +4289,7 @@ export async function parseAllSessions(
       dateRange,
       providerFilter,
       { readOnly: true },
-      onDelta,
+      pricedDelta,
       onUnparsed,
       context,
     )
@@ -4275,7 +4306,7 @@ export async function parseAllSessions(
       dateRange,
       providerFilter,
       { readOnly: true },
-      onDelta,
+      pricedDelta,
       onUnparsed,
       context,
     )
@@ -4295,7 +4326,7 @@ export async function parseAllSessions(
       dateRange,
       providerFilter,
       { refreshLock: refresh.handle },
-      onDelta,
+      pricedDelta,
       onUnparsed,
       context,
     )
@@ -4304,7 +4335,7 @@ export async function parseAllSessions(
     throwIfScanAborted(signal)
     diskCache = await loadCache()
     throwIfScanAborted(signal)
-    return runParse(key, diskCache, dateRange, providerFilter, { readOnly: true }, onDelta, onUnparsed, context)
+    return runParse(key, diskCache, dateRange, providerFilter, { readOnly: true }, pricedDelta, onUnparsed, context)
   } finally {
     await refresh.handle.release()
   }
@@ -4395,6 +4426,7 @@ async function runParse(
       readOnly,
       onDelta,
       signal,
+      context.pricing,
     )
     throwIfScanAborted(signal)
     if (claudeSources.length > 0)

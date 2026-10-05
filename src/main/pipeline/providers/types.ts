@@ -1,8 +1,13 @@
+import type { ScanPricing } from '../scan-pricing.js'
 import type { DateRange, ToolCall } from '../types.js'
 import type { GatewayReportRow } from './gateway-report.js'
 
 /** Promise boundary services supplied by the scan's composition root. */
 export interface ProviderScanServices {
+  /** Production scans supply this after loading pricing. Factories capture a
+   * fallback only for direct legacy callers; remove those fallbacks when all
+   * direct factory/helper and ingest callers supply scan-owned pricing. */
+  readonly pricing?: ScanPricing
   readonly gatewayEnabled?: boolean
   readonly fetchGatewayReport?: (range: DateRange, signal?: AbortSignal) => Promise<GatewayReportRow[]>
 }

@@ -44,9 +44,10 @@ vi.mock('../src/main/pipeline/cache-refresh-lock.js', () => ({
   acquireCacheRefreshLock: vi.fn(async () => ({ outcome: 'acquired', handle: { release: async () => undefined } })),
 }))
 
+import { captureScanPricing } from '../src/main/pipeline/models.js'
 import { clearSessionCache, parseAllSessions } from '../src/main/pipeline/parser.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { Provider } from '../src/main/pipeline/providers/types.js'
+import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { CachedFile, SessionCache } from '../src/shared/schemas/session-cache.js'
 
 const source = (provider: string, path: string) => ({ provider, path, project: 'test-project' })
@@ -212,14 +213,19 @@ describe('parser cooperative stop', () => {
     }))
     hooks.getProvider.mockResolvedValue({ network: false, durableSources: false, createSessionParser: factory })
     const controller = new AbortController()
-    const services = { gatewayEnabled: true, fetchGatewayReport: vi.fn(async () => []) }
+    const pricing = captureScanPricing()
+    const services = { gatewayEnabled: true, fetchGatewayReport: vi.fn(async () => []), pricing }
+    const onDelta = vi.fn()
 
-    await parseAllSessions(undefined, undefined, undefined, undefined, controller.signal, services)
+    await parseAllSessions(undefined, undefined, onDelta, undefined, controller.signal, services)
 
     const context = hooks.discovered.mock.calls[0][2]
     expect(context).toEqual({ ...services, signal: controller.signal })
     expect(context.fetchGatewayReport).toBe(services.fetchGatewayReport)
     expect(factory).toHaveBeenCalledOnce()
     expect(factory.mock.calls[0][3]).toBe(context)
+    expect(context.pricing).toBe(pricing)
+    expect(onDelta).toHaveBeenCalledOnce()
+    expect(onDelta.mock.calls[0][1]).toBe(pricing)
   })
 })

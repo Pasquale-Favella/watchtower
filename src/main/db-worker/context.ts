@@ -49,6 +49,7 @@ import {
   captureProxyPaths,
   refreshPricingNowEffect,
 } from '../pipeline/models.js'
+import type { DeltaHandler } from '../pipeline/parser.js'
 import { getClaudeConfigDirs } from '../pipeline/providers/claude.js'
 import {
   buildScanSummaryRecords,
@@ -59,7 +60,6 @@ import {
 } from '../pipeline/scan.js'
 import type { DateRange } from '../pipeline/types.js'
 import { LedgerStore } from '../store/ledger.js'
-import type { PortInput } from '../store/port.js'
 import {
   buildProjectRowsFromLedger,
   getSessionDetailFromLedger,
@@ -189,7 +189,7 @@ export class DbWorkerContext {
   ): Effect.Effect<ScanMetadata, unknown, HttpFetch | Env | OperationalLog> {
     const range = lifetimeRange()
     const repoUrlCache = new Map<string, Promise<string | undefined>>()
-    const portIn = async (delta: PortInput): Promise<void> => {
+    const portIn: DeltaHandler = async (delta, pricing) => {
       if (delta.cachedFile.failed) return
       if (owner.aborted) throw abortedScanError()
       // Repository badge (#106): resolve from the canonical project path for
@@ -209,7 +209,7 @@ export class DbWorkerContext {
       // The git lookup is an external Promise and may outlive interruption.
       // Check on both sides so an old scan can never write after cancellation.
       if (owner.aborted) throw abortedScanError()
-      this.ledger.portIn({ ...delta, repoUrl })
+      this.ledger.portIn({ ...delta, repoUrl }, pricing)
     }
     return runScan(
       { range, provider: options?.provider },

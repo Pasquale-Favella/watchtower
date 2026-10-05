@@ -16,11 +16,12 @@ import type {
 import type { LedgerMcpStartupMode } from '../../shared/schemas/ledger-mcp.js'
 import type { PortInput } from '../../shared/schemas/port.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
+import type { ScanPricing } from '../pipeline/scan-pricing.js'
 import type { LedgerCallFactsRow } from './read-projections.js'
 
 /** Scan-derived fact writes and source removal. */
 export interface LedgerIngestPort {
-  portIn(input: PortInput): Effect.Effect<PortResult, SqlError>
+  portIn(input: PortInput, pricing?: ScanPricing): Effect.Effect<PortResult, SqlError>
   deleteSource(provider: string, envFingerprint: string, filePath: string): Effect.Effect<void, SqlError>
   clear(): Effect.Effect<void, SqlError>
 }

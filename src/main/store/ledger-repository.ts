@@ -24,6 +24,7 @@ import {
 import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../shared/schemas/ledger-mcp.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { DEFAULT_CADENCE } from '../cadence.js'
+import type { ScanPricing } from '../pipeline/scan-pricing.js'
 import {
   LedgerConfig,
   type LedgerConfigPort,
@@ -547,6 +548,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
 
       const portIn = Effect.fn('LedgerIngest.portIn')(function* (
         input: PortInput,
+        pricing?: ScanPricing,
       ): Effect.fn.Return<PortResult, SqlError> {
         const { provider, envFingerprint, filePath, verdict, cachedFile, repoUrl, durable } = input
 
@@ -557,7 +559,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
           }
         }
 
-        const mapped = mapFileToLedgerRows(input)
+        const mapped = mapFileToLedgerRows(input, pricing)
         const now = new Date().toISOString()
 
         return yield* sql.withTransaction(
