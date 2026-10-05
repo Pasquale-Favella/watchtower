@@ -1,7 +1,6 @@
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
 import { displayShortcutForAction } from '@/app/shortcuts'
 import { useScanStore } from '@/app/stores/scan-store'
-import { orbControls } from '@/shared/lib/api'
 import { cn } from '@/shared/lib/utils'
 
 import { ORB_SIZE } from '../../../shared/schemas/orb.js'
@@ -11,7 +10,13 @@ import { useOrbPlacementStore } from './placement-store'
 /** The orb itself: the brand mark in a primary-ringed disc, with a beacon
  * sweeping its rim (faster while a scan runs — whichever window started it).
  * Drag to move; click to open the spend panel (its own window, beside the
- * orb); double-click for the full app. It holds no ledger data. */
+ * orb). It holds no ledger data.
+ *
+ * A click is its only gesture — deliberately no double-click: every double-
+ * click begins with a click that already toggles the panel, and the release
+ * of a drag counts as a click too, so "open then quickly fold" and "drag then
+ * click" would both reopen the full app by accident. The app opens from the
+ * panel's buttons, the summon shortcut pressed twice, or the tray. */
 export function OrbBeacon({ className }: { className?: string }) {
   const expanded = useOrbPlacementStore(s => s.placement.expanded)
   const setExpanded = useOrbPlacementStore(s => s.setExpanded)
@@ -28,7 +33,6 @@ export function OrbBeacon({ className }: { className?: string }) {
       // A native title: the 64px window would clip a rendered tooltip.
       title={expanded ? undefined : `Watchtower · ${summon}`}
       {...drag}
-      onDoubleClick={() => orbControls.openApp()}
       onKeyDown={event => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
