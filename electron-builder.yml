@@ -8,6 +8,11 @@ directories:
 artifactName: ${productName}-${os}-${arch}.${ext}
 files:
   - out/**
+# The tray icon (background shell): build/ itself isn't shipped, so the brand
+# PNG is copied beside the asar as resources/icon.png.
+extraResources:
+  - from: build/icon.png
+    to: icon.png
 # Bundled ACP engines (ADR 0016 map 47 ticket 49): codex ships the Codex
 # engine and claude-agent-acp ships the Claude Agent SDK as native binaries
 # inside per-platform npm packages (@openai/codex-*, @anthropic-ai/

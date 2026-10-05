@@ -2,6 +2,7 @@ import type { Hotkey } from '@tanstack/react-hotkeys'
 import type { ComponentType } from 'react'
 
 import type { ModelReportRow } from './models.js'
+import type { Section } from './navigation.js'
 import type { SessionRow } from './views.js'
 
 /** Renderer-local UI shapes have no IPC wire counterpart and no parse site. */
@@ -17,10 +18,7 @@ export interface SplashProviderProgress {
   done: boolean
 }
 
-export type Section =
-  'overview' | 'sessions' | 'pullRequests' | 'spend' | 'optimize' | 'models' | 'compare' | 'coachSkills' | 'settings'
-
-export type ShortcutAction = Section | 'refresh' | 'toggleSidebar' | 'commandPalette'
+export type ShortcutAction = Section | 'refresh' | 'toggleSidebar' | 'commandPalette' | 'summonOrb'
 
 export type Platform = 'mac' | 'windows' | 'linux'
 
@@ -28,6 +26,9 @@ export interface ShortcutDef {
   action: ShortcutAction
   hotkey: Hotkey
   label: string
+  /** `global`: registered OS-wide by the main process (Electron
+   * `globalShortcut`), never by the renderer's in-window `useHotkeys`. */
+  scope?: 'global'
 }
 
 export interface OnboardingStep {

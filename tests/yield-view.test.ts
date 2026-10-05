@@ -1,16 +1,31 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import type { SessionSummary } from '../src/main/pipeline/types.js'
 import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
+import type { SessionSummary } from '../src/main/pipeline/types.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
-import { buildYieldPayload, buildYieldViewFromLedger } from '../src/main/yield-view.js'
-import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
+import {
+  buildYieldPayload as buildYieldPayloadLive,
+  buildYieldViewFromLedger as buildYieldViewFromLedgerLive,
+} from '../src/main/yield-view.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+
+/** These tests run real git. On a loaded CI runner one spawn can exceed the
+ * live inspection's 5 s per-call budget, which turns a repo into "unknown" and
+ * flips the classification under test — so they give git a generous budget
+ * (still below vitest's 20 s test timeout). */
+const TEST_GIT_TIMEOUT_MS = 15_000
+
+const buildYieldPayload: typeof buildYieldPayloadLive = (projects, scope, opts = {}) =>
+  buildYieldPayloadLive(projects, scope, { gitTimeoutMs: TEST_GIT_TIMEOUT_MS, ...opts })
+
+const buildYieldViewFromLedger: typeof buildYieldViewFromLedgerLive = (store, scope, opts = {}) =>
+  buildYieldViewFromLedgerLive(store, scope, { gitTimeoutMs: TEST_GIT_TIMEOUT_MS, ...opts })
 
 function git(cwd: string, args: string[], env: Record<string, string> = {}): string {
   return execFileSync('git', args, {

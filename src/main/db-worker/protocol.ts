@@ -58,7 +58,9 @@ export type DbWorkerEvent =
     }
 
 /** Pure-read ops: safe to coalesce when the same op+args is already in
- * flight (double-mounts, tick+mount races). Everything else — scans, writes,
+ * flight (double-mounts, tick+mount races). `scan:active` is deliberately NOT
+ * here: it is a time-varying flag, and a coalesced answer computed before a
+ * scan started could be served to a window booting a tick later. Everything else — scans, writes,
  * config changes, exports, clears — always executes: dropping one would drop
  * its broadcast or its write. */
 export const DEDUPABLE_OPS: ReadonlySet<string> = new Set([

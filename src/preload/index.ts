@@ -47,6 +47,8 @@ import type {
   CoachRunRequest,
   CoachRunResult,
 } from '../shared/schemas/agents.js'
+import type { Section } from '../shared/schemas/navigation.js'
+import type { OrbPanelRequest, OrbPlacement } from '../shared/schemas/orb.js'
 
 export type {
   PricingRefreshResult,
@@ -103,6 +105,9 @@ const api = {
    * "never scanned" sentinel; the replacement for the old `getReport()` boot
    * read. */
   getScanStatus: (): Promise<ScanStatus> => ipcRenderer.invoke('store:status'),
+  /** Whether a scan is in flight right now (main-owned, app-wide): a window
+   * reads it once at boot, then follows the scan lifecycle broadcasts. */
+  getScanActive: (): Promise<boolean> => ipcRenderer.invoke('scan:active'),
   /** Fired when a config write (price override / model alias) lands, so the
    * mounted view refetches with the fresh query-time config (ADR 0004).
    * Distinct from `store:changed` — no rebuild, no rescan. */
@@ -213,6 +218,35 @@ const api = {
     const listener = (_event: IpcRendererEvent, message: CoachEventEnvelope): void => callback(message)
     ipcRenderer.on('coach:event', listener)
     return () => ipcRenderer.removeListener('coach:event', listener)
+  },
+  /** Main window: the background orb asked to open the app on a section. */
+  onNavigate: (callback: (section: Section) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, section: Section): void => callback(section)
+    ipcRenderer.on('app:navigate', listener)
+    return () => ipcRenderer.removeListener('app:navigate', listener)
+  },
+  /** The floating background orb's window controls. The main process ignores
+   * these from any window but the orb's own two (the orb and its panel). */
+  orb: {
+    getPlacement: (): Promise<OrbPlacement | null> => ipcRenderer.invoke('orb:placement:get'),
+    /** Asks the main process to open (`open`: focused, `peek`: not) or fold the panel. */
+    requestPanel: (request: OrbPanelRequest): Promise<OrbPlacement | null> =>
+      ipcRenderer.invoke('orb:panel:request', request),
+    dragStart: (): void => ipcRenderer.send('orb:drag-start'),
+    dragMove: (dx: number, dy: number): void => ipcRenderer.send('orb:drag-move', dx, dy),
+    dragEnd: (): void => ipcRenderer.send('orb:drag-end'),
+    openApp: (section?: Section): void => ipcRenderer.send('orb:open-app', section),
+    hide: (): void => ipcRenderer.send('orb:hide'),
+    quit: (): void => ipcRenderer.send('orb:quit'),
+    /** The panel painted its first frame after opening (flicker-free reveal). */
+    panelPainted: (): void => ipcRenderer.send('orb:panel-painted'),
+    /** The panel's data is loaded: the first-close peek may open (main decides). */
+    panelDataReady: (): void => ipcRenderer.send('orb:panel-data-ready'),
+    onPlacement: (callback: (placement: OrbPlacement) => void): (() => void) => {
+      const listener = (_event: IpcRendererEvent, placement: OrbPlacement): void => callback(placement)
+      ipcRenderer.on('orb:placement', listener)
+      return () => ipcRenderer.removeListener('orb:placement', listener)
+    },
   },
 }
 

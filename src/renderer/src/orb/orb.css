@@ -1,0 +1,42 @@
+@import '../assets/main.css';
+
+/* The orb's windows (the orb, its panel) are frameless and transparent:
+ * only the orb and the panel card paint; the rest shows the desktop. */
+html,
+body,
+#root {
+  background: transparent !important;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* The watchtower's beacon: a soft primary light sweeping around the orb. */
+.orb-disc {
+  --orb-beam: color-mix(in oklch, var(--primary) 55%, transparent);
+}
+.orb-beacon {
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    transparent 250deg,
+    var(--orb-beam) 330deg,
+    transparent 360deg
+  );
+  animation: orb-sweep 6s linear infinite;
+}
+.orb-beacon[data-scanning='true'] {
+  animation-duration: 1.2s;
+}
+@keyframes orb-sweep {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb-beacon {
+    animation: none;
+  }
+}

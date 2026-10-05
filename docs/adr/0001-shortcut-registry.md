@@ -7,3 +7,5 @@ The app declares every keyboard shortcut exactly once in `src/renderer/src/app/s
 The `Mod` modifier resolves to `⌘` on macOS and `Ctrl` on Windows/Linux, and display is platform-aware. The shadcn sidebar primitive explicitly refuses to register the sidebar toggle itself — it documents that the shortcut "is registered at the app level from the shortcuts registry (ADR 0001), not here" (`ui/sidebar.tsx`).
 
 **Why:** a shortcut has two lives — it must be registered and it must be rendered (badge, tooltip, footer). Keeping them as one artifact means adding or changing a shortcut is a one-line table edit and both follow automatically; there is no second source to drift.
+
+**Amendment (background orb):** the table itself now lives in `src/shared/lib/shortcuts.ts`, re-exported unchanged by `app/shortcuts.ts`, because one entry is OS-global: `summonOrb` carries `scope: 'global'` and is registered by the main process with Electron's `globalShortcut` (its accelerator derived from the same `hotkey` via `acceleratorFor`), never by the renderer's `useHotkeys`. Rendering still goes through `displayShortcutForAction`.

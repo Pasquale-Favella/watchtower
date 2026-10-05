@@ -5,9 +5,10 @@ import { cn } from '@/shared/lib/utils'
 import { Panel } from '@/shared/components/Panel'
 import { BarList, type BarItem } from '@/features/overview/BarList'
 import { DailySpendChart } from '@/features/overview/DailySpendChart'
+import { formatChartDate, formatChartValue } from '@/features/overview/lib'
 import { KpiBento, KpiBentoSkeleton } from '@/features/overview/KpiBento'
 import { motionClass } from '@/shared/lib/motion'
-import { formatUsd, formatConverted } from '@/shared/lib/models'
+import { formatUsd } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { LoadingRegion, SkeletonCard, SkeletonLines, SkeletonBars } from '@/shared/components/skeletons'
 import { useOverviewStore } from '@/features/overview/store'
@@ -28,11 +29,6 @@ function formatRate(rate: number | null): string {
 function formatDuration(ms: number): string {
   if (ms >= 60_000) return `${Math.round(ms / 60_000)}m`
   return `${Math.round(ms / 1000)}s`
-}
-
-function formatChartDate(dateKey: string): string {
-  const [year, month, day] = dateKey.split('-').map(Number)
-  return new Date(year, (month ?? 1) - 1, day ?? 1).toLocaleString('en-US', { month: 'short', day: 'numeric' })
 }
 
 function emptyNote(text: string) {
@@ -295,11 +291,7 @@ export function OverviewView() {
             {chartData.length === 0 ? (
               emptyNote('No spend yet.')
             ) : (
-              <DailySpendChart
-                data={chartData}
-                formatDate={formatChartDate}
-                formatValue={(v: number) => formatConverted(v).replace(/\.\d+$/, '')}
-              />
+              <DailySpendChart data={chartData} formatDate={formatChartDate} formatValue={formatChartValue} />
             )}
             {payload.dataStart !== null && (chartData[0]?.date ?? '') < payload.dataStart && (
               <p className="text-muted-foreground mt-1.5 text-[10.5px]">

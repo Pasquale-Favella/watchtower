@@ -55,7 +55,9 @@ import {
   type PriceOverride,
   priceOverrideSchema,
 } from '../../../../shared/schemas/models.js'
+import { type Section, sectionSchema } from '../../../../shared/schemas/navigation.js'
 import { type OptimizePayload, optimizePayloadSchema } from '../../../../shared/schemas/optimize.js'
+import { type OrbPanelRequest, type OrbPlacement, orbPlacementSchema } from '../../../../shared/schemas/orb.js'
 import { type OverviewPayload, overviewPayloadSchema, type OverviewScope } from '../../../../shared/schemas/overview.js'
 import { type PullRequestsPayload, pullRequestsPayloadSchema } from '../../../../shared/schemas/pull-requests.js'
 import {
@@ -156,6 +158,10 @@ export type OkEnvelope = Schema.Schema.Type<typeof okEnvelopeSchema>
 
 export function fetchScanStatus(): Promise<ApiResult<ScanStatus>> {
   return fetchPayload('scan status', scanStatusSchema, () => window.api.getScanStatus())
+}
+
+export function fetchScanActive(): Promise<ApiResult<boolean>> {
+  return fetchPayload('scan active', Schema.Boolean, () => window.api.getScanActive())
 }
 
 export function fetchViews(): Promise<ApiResult<DashboardViews | null>> {
@@ -367,4 +373,45 @@ export function fetchCoachInspect(request: CoachInspectRequest): Promise<ApiResu
 
 export function fetchCoachRun(request: CoachRunRequest): Promise<ApiResult<CoachRunResult>> {
   return fetchPayload('coach run', coachRunResultSchema, () => window.api.startCoachRun(request))
+}
+
+/** Background orb (main/background-shell.ts): the orb pages' window controls.
+ * Placement is decoded like any other payload (ADR 0005); the
+ * fire-and-forget controls carry no payload back. */
+const nullableOrbPlacementSchema = Schema.NullOr(orbPlacementSchema)
+
+export function fetchOrbPlacement(): Promise<ApiResult<OrbPlacement | null>> {
+  return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.getPlacement())
+}
+
+/** `open` (the user's own request, focused) or `fold`. Resolves with the
+ * placement the main process applied. */
+export function fetchOrbPanelRequest(request: OrbPanelRequest): Promise<ApiResult<OrbPlacement | null>> {
+  return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.requestPanel(request))
+}
+
+export const orbControls = {
+  dragStart: (): void => window.api.orb.dragStart(),
+  dragMove: (dx: number, dy: number): void => window.api.orb.dragMove(dx, dy),
+  dragEnd: (): void => window.api.orb.dragEnd(),
+  openApp: (section?: Section): void => window.api.orb.openApp(section),
+  hide: (): void => window.api.orb.hide(),
+  quit: (): void => window.api.orb.quit(),
+  panelPainted: (): void => window.api.orb.panelPainted(),
+  panelDataReady: (): void => window.api.orb.panelDataReady(),
+}
+
+export function onOrbPlacement(callback: (placement: OrbPlacement) => void): () => void {
+  return window.api.orb.onPlacement(raw => {
+    const parsed = parseEvent(orbPlacementSchema, 'orb placement', raw)
+    if (parsed) callback(parsed)
+  })
+}
+
+/** Main window: the orb asked to open the app on a section. */
+export function onAppNavigate(callback: (section: Section) => void): () => void {
+  return window.api.onNavigate(raw => {
+    const parsed = parseEvent(sectionSchema, 'app navigate', raw)
+    if (parsed) callback(parsed)
+  })
 }

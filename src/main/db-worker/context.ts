@@ -530,6 +530,12 @@ export class DbWorkerContext {
         }
       }
 
+      /** Whether a scan (manual or background) is in flight — the worker owns
+       * the scan, so it is the one authority; a window reads it once at boot
+       * and follows the broadcast lifecycle from there. */
+      case 'scan:active':
+        return this.activeScan !== null
+
       case 'scan:abort': {
         // Set the cooperative stop state before interruption. The scan owner
         // remains active until the underlying parser Promise has drained.

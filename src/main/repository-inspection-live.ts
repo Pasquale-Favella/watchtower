@@ -15,6 +15,7 @@ import {
   RepositoryInspectionError,
 } from './application/repository-inspection.js'
 
+/** Per-git-call budget: a wedged repo must not stall the Yield view. */
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_OUTPUT_BYTES = 1024 * 1024
 const SAFE_REF_PATTERN = /^(?!-)[A-Za-z0-9._/-]+$/
@@ -23,7 +24,7 @@ function inspectionError(operation: string, message: string): RepositoryInspecti
   return new RepositoryInspectionError({ operation, message })
 }
 
-function makeLiveInspection(runner: CommandRunner['Service']): RepositoryInspection['Service'] {
+function makeLiveInspection(runner: CommandRunner['Service'], gitTimeoutMs: number): RepositoryInspection['Service'] {
   const runGit = Effect.fn('RepositoryInspection.runGit')(function* (
     args: readonly string[],
     cwd: string,
@@ -58,9 +59,9 @@ function makeLiveInspection(runner: CommandRunner['Service']): RepositoryInspect
           .trim()
       }),
     )
-    const outcome = yield* operation.pipe(Effect.timeoutOption(Duration.millis(GIT_TIMEOUT_MS)))
+    const outcome = yield* operation.pipe(Effect.timeoutOption(Duration.millis(gitTimeoutMs)))
     if (Option.isNone(outcome)) {
-      return yield* Effect.fail(inspectionError(args[0] ?? 'git', `git timed out after ${GIT_TIMEOUT_MS}ms`))
+      return yield* Effect.fail(inspectionError(args[0] ?? 'git', `git timed out after ${gitTimeoutMs}ms`))
     }
     return outcome.value
   })
@@ -150,7 +151,20 @@ function makeLiveInspection(runner: CommandRunner['Service']): RepositoryInspect
   return { resolveIdentity, getMainBranch, getCommitFacts }
 }
 
-export const RepositoryInspectionLive: Layer.Layer<RepositoryInspection, never, CommandRunner> = Layer.effect(
-  RepositoryInspection,
-  Effect.map(CommandRunner, makeLiveInspection),
-)
+/** The live inspection with a custom per-git-call budget. Production uses
+ * `RepositoryInspectionLive` (5 s); tests that run real git on a loaded CI
+ * host give it more, so a slow spawn cannot flip their result. */
+export function makeRepositoryInspectionLive(
+  options: {
+    readonly gitTimeoutMs?: number
+  } = {},
+): Layer.Layer<RepositoryInspection, never, CommandRunner> {
+  const gitTimeoutMs = options.gitTimeoutMs ?? GIT_TIMEOUT_MS
+  return Layer.effect(
+    RepositoryInspection,
+    Effect.map(CommandRunner, runner => makeLiveInspection(runner, gitTimeoutMs)),
+  )
+}
+
+export const RepositoryInspectionLive: Layer.Layer<RepositoryInspection, never, CommandRunner> =
+  makeRepositoryInspectionLive()
