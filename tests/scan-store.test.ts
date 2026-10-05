@@ -221,4 +221,32 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
     await useScanStore.getState().syncActivity()
     expect(useScanStore.getState().scanning).toBe(false)
   })
+
+  it('hydrate: a ledger applies the change path and adopts a scan in flight', async () => {
+    mockWindow({
+      getScanStatus: vi.fn(async () => statusScanned),
+      getAnalytics: vi.fn(async () => null),
+      getScanActive: vi.fn(async () => true),
+    })
+    await expect(useScanStore.getState().hydrate()).resolves.toBe('scanned')
+    expect(useScanStore.getState().hydrated).toBe(true)
+    expect(useScanStore.getState().scanning).toBe(true)
+  })
+
+  it('hydrate: no ledger yet reports unscanned (the app window fires the first scan)', async () => {
+    const getScanActive = vi.fn(async () => true)
+    mockWindow({ getScanStatus: vi.fn(async () => ({ scanned: false })), getScanActive })
+    await expect(useScanStore.getState().hydrate()).resolves.toBe('unscanned')
+    expect(useScanStore.getState().hydrated).toBe(false)
+    // Another window's first scan already running still shows here.
+    expect(getScanActive).toHaveBeenCalled()
+    expect(useScanStore.getState().scanning).toBe(true)
+  })
+
+  it('hydrate: an unreadable status reports failed and touches nothing', async () => {
+    const getScanActive = vi.fn(async () => true)
+    mockWindow({ getScanStatus: vi.fn(async () => ({ bogus: 1 })), getScanActive })
+    await expect(useScanStore.getState().hydrate()).resolves.toBe('failed')
+    expect(getScanActive).not.toHaveBeenCalled()
+  })
 })

@@ -25,9 +25,15 @@ export const orbPlacementSchema = Schema.Struct({
 })
 export type OrbPlacement = Schema.Schema.Type<typeof orbPlacementSchema>
 
-/** One-off nudges from the main process to the orb: `backgrounded` after the
- * main window was closed to the tray, `summoned` after the global shortcut. */
+/** What an orb page asks of the panel: `open` (the user's own request — a
+ * click — so it takes focus), `peek` (opens without taking focus), `fold`. */
+export const orbPanelRequestSchema = Schema.Literals(['open', 'peek', 'fold'])
+export type OrbPanelRequest = Schema.Schema.Type<typeof orbPanelRequestSchema>
+
+/** One-off nudges from the main process to the panel page: `backgrounded`
+ * after the main window was first closed to the tray (it peeks, with a note,
+ * once its data is in). */
 export const orbNoticeSchema = Schema.Struct({
-  kind: writable(Schema.Literals(['backgrounded', 'summoned'])),
+  kind: writable(Schema.Literals(['backgrounded'])),
 })
 export type OrbNotice = Schema.Schema.Type<typeof orbNoticeSchema>

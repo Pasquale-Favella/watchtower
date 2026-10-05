@@ -19,7 +19,7 @@ The renderer is built from three cooperating layers, all store-driven:
   - the data plane: `store:changed` / `config:changed` driving the shared refresh tick, plus FX updates
   - settings sync across windows, via the `storage` event
 - `app/stores/subscribe.ts` (the app window) adds Coach events and the orb's `app:navigate`.
-- `orb/beacon-wiring.ts` (the 64px orb) mounts only the scan lifecycle and its placement: no ledger data.
-- `orb/panel-wiring.ts` (the spend panel) mounts the full data plane, placement and the main process's notices.
+- `orb/beacon-wiring.ts` (the 64px orb) mounts the scan lifecycle, its placement and settings sync (for the theme): no ledger data.
+- `orb/panel-wiring.ts` (the spend panel) mounts the full data plane, settings sync, placement and the main process's notices.
 
 The rule is unchanged: wiring modules and `lib/api.ts` are the only code that touches `window`, and every subscription feeds a store action, never component state. The split exists so that each window's bundle loads only the stores it uses. A single module statically importing every store made the orb load the Coach store and the app load the orb store.

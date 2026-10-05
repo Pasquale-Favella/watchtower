@@ -60,6 +60,7 @@ import { type OptimizePayload, optimizePayloadSchema } from '../../../../shared/
 import {
   type OrbNotice,
   orbNoticeSchema,
+  type OrbPanelRequest,
   type OrbPlacement,
   orbPlacementSchema,
 } from '../../../../shared/schemas/orb.js'
@@ -390,10 +391,10 @@ export function fetchOrbPlacement(): Promise<ApiResult<OrbPlacement | null>> {
   return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.getPlacement())
 }
 
-/** `focus`: the user's own request (a click, the summon shortcut); a peek
- * opens the panel without taking focus. */
-export function fetchSetOrbExpanded(expanded: boolean, focus = false): Promise<ApiResult<OrbPlacement | null>> {
-  return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.setExpanded(expanded, focus))
+/** `open` is the user's own request (focused), `peek` opens without taking
+ * focus, `fold` closes. Resolves with the placement the main process applied. */
+export function fetchOrbPanelRequest(request: OrbPanelRequest): Promise<ApiResult<OrbPlacement | null>> {
+  return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.requestPanel(request))
 }
 
 export function fetchPendingOrbNotice(): Promise<ApiResult<OrbNotice | null>> {

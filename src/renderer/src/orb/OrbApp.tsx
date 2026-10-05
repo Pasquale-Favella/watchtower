@@ -1,6 +1,6 @@
 import { useThemeEffect } from '@/app/hooks/use-theme-effect'
 
-import { useOrbBeaconBootstrap } from './hooks'
+import { useOrbBeaconBootstrap } from './beacon-hooks'
 import { OrbBeacon } from './OrbBeacon'
 
 /**

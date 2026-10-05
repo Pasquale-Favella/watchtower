@@ -36,6 +36,11 @@ export function OrbPanel({ className }: { className?: string }) {
   const peek = useOrbPanelStore(s => s.peek)
   const today = useOrbPanelStore(s => s.today.data)
   const recent = useOrbPanelStore(s => s.recent.data)
+  // A slice that settled without data — a failed fetch, or no ledger yet —
+  // shows a dash rather than a skeleton that would never resolve.
+  const todaySettled = useOrbPanelStore(s => s.today.status === 'ready')
+  const recentSettled = useOrbPanelStore(s => s.recent.status === 'ready')
+  const loadError = useOrbPanelStore(s => s.today.error ?? s.recent.error)
   const scanning = useScanStore(s => s.scanning)
   const refresh = useScanStore(s => s.refresh)
   // Re-render money values when the display currency changes (ADR 0009).
@@ -63,6 +68,8 @@ export function OrbPanel({ className }: { className?: string }) {
               >
                 {formatUsd(today.kpis.cost)}
               </span>
+            ) : todaySettled ? (
+              <Empty />
             ) : (
               <Skeleton className="h-5 w-28" />
             )}
@@ -73,7 +80,7 @@ export function OrbPanel({ className }: { className?: string }) {
                 {today.kpis.sessions.toLocaleString('en-US')} session{today.kpis.sessions === 1 ? '' : 's'} ·{' '}
                 {today.kpis.calls.toLocaleString('en-US')} calls
               </small>
-            ) : (
+            ) : todaySettled ? null : (
               <Skeleton className="h-3 w-32" />
             )}
           </Slot>
@@ -114,6 +121,8 @@ export function OrbPanel({ className }: { className?: string }) {
                     </span>
                   )}
                 </p>
+              ) : recentSettled ? (
+                <Empty />
               ) : (
                 <Skeleton className="h-4 w-20" />
               )}
@@ -126,6 +135,8 @@ export function OrbPanel({ className }: { className?: string }) {
                 <p className={cn(FADE_IN, 'text-foreground truncate font-mono text-[16px] font-semibold tabular-nums')}>
                   {formatUsd(recent.kpis.savingsUSD)}
                 </p>
+              ) : recentSettled ? (
+                <Empty />
               ) : (
                 <Skeleton className="h-4 w-16" />
               )}
@@ -148,9 +159,16 @@ export function OrbPanel({ className }: { className?: string }) {
           {/* The chart fills whatever height is left — it can never push the
               footer, whatever the header and stats measure. */}
           <div className="relative mt-1 min-h-0 flex-1">
-            {recent === null ? (
+            {recent === null && loadError ? (
+              <p
+                className="text-muted-foreground grid h-full place-items-center text-center text-[11.5px]"
+                title={loadError}
+              >
+                Couldn&apos;t load spend data — open Watchtower for details.
+              </p>
+            ) : recent === null && !recentSettled ? (
               <SkeletonBars className="absolute inset-0" />
-            ) : recent.daily.length === 0 ? (
+            ) : recent === null || recent.daily.length === 0 ? (
               <p className="text-muted-foreground grid h-full place-items-center text-[11.5px]">No spend yet.</p>
             ) : (
               <DailySpendChart
@@ -207,4 +225,9 @@ function IconAction({
       <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>
   )
+}
+
+/** A settled value that has nothing to show. */
+function Empty() {
+  return <span className="text-muted-foreground font-mono text-[16px]">—</span>
 }

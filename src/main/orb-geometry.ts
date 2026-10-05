@@ -25,6 +25,15 @@ function clampInto(value: number, min: number, max: number): number {
   return Math.round(Math.min(Math.max(value, min), max))
 }
 
+/** The anchor `dx`/`dy` away from `origin` (a drag), in whole DIPs. */
+export function offsetAnchor(origin: Point, dx: number, dy: number): Point {
+  return { x: Math.round(origin.x + dx), y: Math.round(origin.y + dy) }
+}
+
+export function containsPoint(rect: Electron.Rectangle, point: Point): boolean {
+  return point.x >= rect.x && point.x < rect.x + rect.width && point.y >= rect.y && point.y < rect.y + rect.height
+}
+
 /** Keeps the orb fully on the display it is closest to. */
 export function clampToWorkArea(anchor: Point): Point {
   const area = workAreaAround(anchor)

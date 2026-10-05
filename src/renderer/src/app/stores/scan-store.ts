@@ -1,7 +1,9 @@
 import { create } from 'zustand'
+
 import { fetchAnalytics, fetchScan, fetchScanActive, fetchScanStatus } from '@/shared/lib/api'
-import type { ScanMetadata } from '../../../../shared/schemas/scan.js'
+
 import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
+import type { ScanMetadata } from '../../../../shared/schemas/scan.js'
 
 /** Rows/blobs the last scan skipped because a declared field failed the
  * extraction schema — the drift signal ADR 0003 says must be visible. */
@@ -47,6 +49,11 @@ export interface ScanState {
    * a window's boot, so a window opened mid-scan shows it immediately; the
    * broadcast lifecycle events take over from there. */
   syncActivity: () => Promise<void>
+  /** The boot hydration every window shares: read the scan status; with a
+   * ledger, apply the change path; either way adopt a scan already in flight.
+   * Reports what it found — the app window fires the first scan on
+   * `unscanned`; other windows never do. */
+  hydrate: () => Promise<'scanned' | 'unscanned' | 'failed'>
   onProgress: (provider: string, processed: number, total: number, done: boolean) => void
   onError: (message: string) => void
   onIdle: () => void
@@ -117,6 +124,18 @@ export const useScanStore = create<ScanState>()((set, get) => ({
         scanning: false,
       })
     }
+  },
+  hydrate: async () => {
+    const status = await fetchScanStatus()
+    if (!status.ok) return 'failed'
+    if (status.data.scanned) {
+      set({ hydrated: true })
+      await get().applyChange()
+    }
+    // A scan already in flight (another window's, the tray's, a cadence tick)
+    // shows here immediately rather than at its next progress event.
+    await get().syncActivity()
+    return status.data.scanned ? 'scanned' : 'unscanned'
   },
   syncActivity: async () => {
     const result = await fetchScanActive()
