@@ -1,10 +1,11 @@
-import { readFile, mkdir, stat, open, rename, unlink } from 'fs/promises'
-import { existsSync } from 'fs'
 import { randomBytes } from 'crypto'
+import { existsSync } from 'fs'
+import { mkdir, open, readFile, rename, stat, unlink } from 'fs/promises'
 import { join } from 'path'
 
 import { resolveCacheDir } from '../env.js'
 import type { ParsedProviderCall } from './providers/types.js'
+import { isScanAbortedError, throwIfScanAborted } from './scan-control.js'
 
 // v4: attribute MCP calls emitted as event_msg/mcp_tool_call_end (issue #478).
 // Recent Codex sessions cached under v3 dropped these, so force a re-parse.
@@ -43,16 +44,23 @@ function getCachePath(): string {
 
 let memCache: ResultCache | null = null
 
-async function loadCache(): Promise<ResultCache> {
+async function loadCache(signal?: AbortSignal): Promise<ResultCache> {
+  throwIfScanAborted(signal)
   if (memCache) return memCache
   try {
-    const raw = await readFile(getCachePath(), 'utf-8')
+    const raw = await readFile(getCachePath(), { encoding: 'utf-8', ...(signal ? { signal } : {}) })
+    throwIfScanAborted(signal)
     const cache = JSON.parse(raw) as ResultCache
     if (cache.version === CODEX_CACHE_VERSION && cache.files && typeof cache.files === 'object') {
+      throwIfScanAborted(signal)
       memCache = cache
       return cache
     }
-  } catch {}
+  } catch (error) {
+    throwIfScanAborted(signal)
+    if (isScanAbortedError(error)) throw error
+  }
+  throwIfScanAborted(signal)
   memCache = { version: CODEX_CACHE_VERSION, files: {} }
   return memCache
 }
@@ -66,31 +74,52 @@ function getEntry(cache: ResultCache, filePath: string, fp: FileFingerprint): Fi
   return null
 }
 
-export async function readCachedCodexResults(filePath: string): Promise<ParsedProviderCall[] | null> {
+export async function readCachedCodexResults(
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<ParsedProviderCall[] | null> {
+  throwIfScanAborted(signal)
   try {
     const s = await stat(filePath)
-    const cache = await loadCache()
+    throwIfScanAborted(signal)
+    const cache = await loadCache(signal)
+    throwIfScanAborted(signal)
     const entry = getEntry(cache, filePath, { mtimeMs: s.mtimeMs, sizeBytes: s.size })
     return entry?.calls ?? null
-  } catch {}
+  } catch (error) {
+    throwIfScanAborted(signal)
+    if (isScanAbortedError(error)) throw error
+  }
+  throwIfScanAborted(signal)
   return null
 }
 
-export async function getCachedCodexProject(filePath: string): Promise<string | null> {
+export async function getCachedCodexProject(filePath: string, signal?: AbortSignal): Promise<string | null> {
+  throwIfScanAborted(signal)
   try {
     const s = await stat(filePath)
-    const cache = await loadCache()
+    throwIfScanAborted(signal)
+    const cache = await loadCache(signal)
+    throwIfScanAborted(signal)
     const entry = getEntry(cache, filePath, { mtimeMs: s.mtimeMs, sizeBytes: s.size })
     return entry?.project ?? null
-  } catch {}
+  } catch (error) {
+    throwIfScanAborted(signal)
+    if (isScanAbortedError(error)) throw error
+  }
+  throwIfScanAborted(signal)
   return null
 }
 
-export async function fingerprintFile(filePath: string): Promise<FileFingerprint | null> {
+export async function fingerprintFile(filePath: string, signal?: AbortSignal): Promise<FileFingerprint | null> {
+  throwIfScanAborted(signal)
   try {
     const s = await stat(filePath)
+    throwIfScanAborted(signal)
     return { mtimeMs: s.mtimeMs, sizeBytes: s.size }
-  } catch {
+  } catch (error) {
+    throwIfScanAborted(signal)
+    if (isScanAbortedError(error)) throw error
     return null
   }
 }
@@ -100,50 +129,96 @@ export async function writeCachedCodexResults(
   project: string,
   calls: ParsedProviderCall[],
   fingerprint: FileFingerprint,
+  signal?: AbortSignal,
 ): Promise<void> {
+  throwIfScanAborted(signal)
   try {
-    const cache = await loadCache()
+    const cache = await loadCache(signal)
+    throwIfScanAborted(signal)
     cache.files[filePath] = {
       mtimeMs: fingerprint.mtimeMs,
       sizeBytes: fingerprint.sizeBytes,
       project,
       calls,
     }
-  } catch {}
+  } catch (error) {
+    throwIfScanAborted(signal)
+    if (isScanAbortedError(error)) throw error
+  }
 }
 
-export async function flushCodexCache(): Promise<void> {
+export async function flushCodexCache(signal?: AbortSignal): Promise<void> {
+  throwIfScanAborted(signal)
   if (!memCache) return
+  const original = memCache
+  const originalFiles = { ...original.files }
+  const cache = { ...original, files: { ...originalFiles } }
+  const missing = new Set<string>()
+  let tempPath: string | undefined
+  let handle: Awaited<ReturnType<typeof open>> | undefined
   try {
     // Evict entries for files that no longer exist on disk
-    const paths = Object.keys(memCache.files)
+    const paths = Object.keys(cache.files)
     for (const p of paths) {
+      throwIfScanAborted(signal)
       try {
         await stat(p)
-      } catch {
-        delete memCache.files[p]
+        throwIfScanAborted(signal)
+      } catch (error) {
+        throwIfScanAborted(signal)
+        if (isScanAbortedError(error)) throw error
+        missing.add(p)
       }
     }
+    if (missing.size > 0) {
+      cache.files = Object.fromEntries(Object.entries(cache.files).filter(([path]) => !missing.has(path)))
+    }
 
+    throwIfScanAborted(signal)
     const dir = getCacheDir()
-    if (!existsSync(dir)) await mkdir(dir, { recursive: true })
+    if (!existsSync(dir)) {
+      await mkdir(dir, { recursive: true })
+      throwIfScanAborted(signal)
+    }
     const finalPath = getCachePath()
-    const tempPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
-    const payload = JSON.stringify(memCache)
-    const handle = await open(tempPath, 'w', 0o600)
-    try {
-      await handle.writeFile(payload, { encoding: 'utf-8' })
-      await handle.sync()
-    } finally {
-      await handle.close()
+    tempPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
+    const payload = JSON.stringify(cache)
+    throwIfScanAborted(signal)
+    handle = await open(tempPath, 'w', 0o600)
+    throwIfScanAborted(signal)
+    await handle.writeFile(payload, { encoding: 'utf-8' })
+    throwIfScanAborted(signal)
+    await handle.sync()
+    throwIfScanAborted(signal)
+    await handle.close()
+    handle = undefined
+    throwIfScanAborted(signal)
+    await rename(tempPath, finalPath)
+    tempPath = undefined
+    throwIfScanAborted(signal)
+    if (memCache === original) {
+      const concurrentWrites = Object.fromEntries(
+        Object.entries(original.files).filter(([path, entry]) => originalFiles[path] !== entry),
+      )
+      memCache = { ...cache, files: { ...cache.files, ...concurrentWrites } }
+    } else if (memCache) {
+      const unchangedEntriesEvicted = new Set(
+        [...missing].filter(path => memCache?.files[path] === original.files[path]),
+      )
+      if (unchangedEntriesEvicted.size > 0) {
+        memCache = {
+          ...memCache,
+          files: Object.fromEntries(
+            Object.entries(memCache.files).filter(([path]) => !unchangedEntriesEvicted.has(path)),
+          ),
+        }
+      }
     }
-    try {
-      await rename(tempPath, finalPath)
-    } catch (err) {
-      try {
-        await unlink(tempPath)
-      } catch {}
-      throw err
-    }
-  } catch {}
+  } catch (error) {
+    throwIfScanAborted(signal)
+    if (isScanAbortedError(error)) throw error
+  } finally {
+    if (handle) await handle.close().catch(() => {})
+    if (tempPath) await unlink(tempPath).catch(() => {})
+  }
 }

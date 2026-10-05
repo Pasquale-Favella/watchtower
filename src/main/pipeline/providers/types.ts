@@ -1,4 +1,16 @@
 import type { DateRange, ToolCall } from '../types.js'
+import type { GatewayReportRow } from './gateway-report.js'
+
+/** Promise boundary services supplied by the scan's composition root. */
+export interface ProviderScanServices {
+  readonly gatewayEnabled?: boolean
+  readonly fetchGatewayReport?: (range: DateRange, signal?: AbortSignal) => Promise<GatewayReportRow[]>
+}
+
+/** Each scan supplies its own stop signal to provider discovery and parsing. */
+export interface ProviderScanContext extends ProviderScanServices {
+  readonly signal?: AbortSignal
+}
 
 export type SessionSource = {
   path: string
@@ -83,8 +95,13 @@ export type Provider = {
   durableSources?: boolean
   modelDisplayName(model: string): string
   toolDisplayName(rawTool: string): string
-  discoverSessions(): Promise<SessionSource[]>
-  createSessionParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser
+  discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]>
+  createSessionParser(
+    source: SessionSource,
+    seenKeys: Set<string>,
+    dateRange?: DateRange,
+    context?: ProviderScanContext,
+  ): SessionParser
   // The exact directories/dbs discoverSessions() scans, resolved the same way.
   // Optional: providers that implement it let the diagnostic probe show and
   // existence-check the probed paths even when zero sessions are found (so

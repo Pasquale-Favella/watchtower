@@ -24,8 +24,9 @@ import { quickdesk } from './quickdesk.js'
 import { rooCode } from './roo-code.js'
 import { zerostack } from './zerostack.js'
 import { grok } from './grok.js'
-import type { Provider, SessionSource } from './types.js'
+import type { Provider, ProviderScanContext, SessionSource } from './types.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
+import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
 
 let antigravityProvider: Provider | null = null
 let antigravityLoadAttempted = false
@@ -283,10 +284,18 @@ export const providers = coreProviders
 // provider per run, then skip it. Mirrors the parse-failure isolation already
 // used per-file in parser.ts.
 const warnedDiscoveryFailures = new Set<string>()
-export async function safeDiscoverSessions(provider: Provider): Promise<SessionSource[]> {
+export async function safeDiscoverSessions(
+  provider: Provider,
+  context: ProviderScanContext = {},
+): Promise<SessionSource[]> {
+  throwIfScanAborted(context.signal)
   try {
-    return await provider.discoverSessions()
+    const sessions = await provider.discoverSessions(context)
+    throwIfScanAborted(context.signal)
+    return sessions
   } catch (err) {
+    throwIfScanAborted(context.signal)
+    if (isScanAbortedError(err)) throw err
     if (!warnedDiscoveryFailures.has(provider.name)) {
       warnedDiscoveryFailures.add(provider.name)
       reportProviderIssue(provider.name, fileErrorCode(err, 'discovery-failed'))
@@ -300,13 +309,17 @@ export async function discoverAllSessions(
   // Injectable for tests so the isolation loop itself is exercised, not just
   // the helper. Defaults to the real registry.
   providerList?: Provider[],
+  context: ProviderScanContext = {},
 ): Promise<SessionSource[]> {
+  throwIfScanAborted(context.signal)
   const allProviders = providerList ?? (await getAllProviders())
+  throwIfScanAborted(context.signal)
   const filtered =
     providerFilter && providerFilter !== 'all' ? allProviders.filter(p => p.name === providerFilter) : allProviders
   const all: SessionSource[] = []
   for (const provider of filtered) {
-    const sessions = await safeDiscoverSessions(provider)
+    throwIfScanAborted(context.signal)
+    const sessions = await safeDiscoverSessions(provider, context)
     all.push(...sessions)
   }
   return all

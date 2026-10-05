@@ -1,22 +1,30 @@
-import { readdir, stat } from 'fs/promises'
 import { createReadStream } from 'fs'
-import { createInterface } from 'readline'
+import { readdir, stat } from 'fs/promises'
 import { basename, join } from 'path'
+import { createInterface } from 'readline'
 
-import { appPaths, resolveCodexHome, type AppPaths } from '../../env.js'
-import { readSessionLines } from '../fs-utils.js'
+import { type AppPaths, appPaths, resolveCodexHome } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
-import { calculateCost } from '../models.js'
 import {
+  fingerprintFile,
+  getCachedCodexProject,
   readCachedCodexResults,
   writeCachedCodexResults,
-  getCachedCodexProject,
-  fingerprintFile,
 } from '../codex-cache.js'
 import { normalizeContentBlocks } from '../content-utils.js'
+import { readSessionLines } from '../fs-utils.js'
+import { calculateCost } from '../models.js'
+import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
-import type { ToolCall } from '../types.js'
-import type { Provider, ProbeRoot, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import type { DateRange, ToolCall } from '../types.js'
+import type {
+  ParsedProviderCall,
+  ProbeRoot,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from './types.js'
 
 const modelDisplayNames: Record<string, string> = {
   'codex-auto-review': 'Codex Auto Review',
@@ -79,8 +87,11 @@ function mcpToolFromShellCommand(command: unknown): string | null {
   if (!text) return null
   const m = MCP_CLI_CALL.exec(text)
   if (!m) return null
-  const server = m[1]!.replace(/['"]/g, '')
-  const tool = m[2]!.replace(/['"]/g, '')
+  const serverMatch = m[1]
+  const toolMatch = m[2]
+  if (!serverMatch || !toolMatch) return null
+  const server = serverMatch.replace(/['"]/g, '')
+  const tool = toolMatch.replace(/['"]/g, '')
   if (!server || !tool) return null
   return `mcp__${server}__${tool}`
 }
@@ -143,7 +154,8 @@ function sanitizeProject(cwd: string): string {
 // keeping memory bounded if a corrupt file has no newline at all.
 const FIRST_LINE_READ_CAP = 1024 * 1024
 
-async function readFirstLine(filePath: string): Promise<CodexEntry | null> {
+async function readFirstLine(filePath: string, signal?: AbortSignal): Promise<CodexEntry | null> {
+  throwIfScanAborted(signal)
   // Codex CLI 0.128+ writes a session_meta line that can exceed 20 KB because
   // it embeds the full base_instructions / system prompt. A fixed-size buffer
   // would miss the trailing newline and reject the session as invalid.
@@ -153,6 +165,7 @@ async function readFirstLine(filePath: string): Promise<CodexEntry | null> {
     encoding: 'utf-8',
     start: 0,
     end: FIRST_LINE_READ_CAP - 1,
+    ...(signal ? { signal } : {}),
   })
   // Silence stream errors so a late read-ahead error after we've already
   // returned the first line cannot escape as an unhandled 'error' event.
@@ -160,6 +173,7 @@ async function readFirstLine(filePath: string): Promise<CodexEntry | null> {
   // EACCES, etc.) on Node 16+, which the catch below handles for the cases
   // that matter for validation.
   stream.on('error', () => {})
+  const closed = new Promise<void>(resolve => stream.once('close', resolve))
   const rl = createInterface({ input: stream, crlfDelay: Infinity })
   let firstLine: string | undefined
   try {
@@ -167,12 +181,16 @@ async function readFirstLine(filePath: string): Promise<CodexEntry | null> {
       firstLine = line
       break
     }
-  } catch {
+  } catch (error) {
+    throwIfScanAborted(signal)
+    if (isScanAbortedError(error)) throw error
     return null
   } finally {
     rl.close()
     stream.destroy()
+    await closed
   }
+  throwIfScanAborted(signal)
   if (!firstLine || !firstLine.trim()) return null
   try {
     return JSON.parse(firstLine) as CodexEntry
@@ -181,8 +199,13 @@ async function readFirstLine(filePath: string): Promise<CodexEntry | null> {
   }
 }
 
-async function isValidCodexSession(filePath: string): Promise<{ valid: boolean; meta?: CodexEntry }> {
-  const entry = await readFirstLine(filePath)
+async function isValidCodexSession(
+  filePath: string,
+  signal?: AbortSignal,
+): Promise<{ valid: boolean; meta?: CodexEntry }> {
+  throwIfScanAborted(signal)
+  const entry = await readFirstLine(filePath, signal)
+  throwIfScanAborted(signal)
   if (!entry) return { valid: false }
   const valid =
     entry.type === 'session_meta' &&
@@ -292,28 +315,35 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
       name: getRawJsonStringField(pHead, 'name'),
     },
   }
+  const payload = entry.payload
+  if (!payload) return entry
 
   if (type === 'response_item' && payloadType === 'message' && role === 'user') {
-    entry.payload!.content = [{ type: 'input_text', text: extractFirstJsonText(line) }]
+    payload.content = [{ type: 'input_text', text: extractFirstJsonText(line) }]
   } else if (type === 'response_item' && payloadType === 'message' && role === 'assistant') {
-    entry.payload!.content = [
-      { type: 'output_text', text: 'x'.repeat(Math.min(countFirstJsonText(line), LARGE_TEXT_CAP)) },
-    ]
+    payload.content = [{ type: 'output_text', text: 'x'.repeat(Math.min(countFirstJsonText(line), LARGE_TEXT_CAP)) }]
   }
 
   return entry
 }
 
-async function discoverSessionFile(filePath: string): Promise<SessionSource | null> {
-  const s = await stat(filePath).catch(() => null)
+async function discoverSessionFile(filePath: string, signal?: AbortSignal): Promise<SessionSource | null> {
+  throwIfScanAborted(signal)
+  const s = await stat(filePath).catch(() => {
+    throwIfScanAborted(signal)
+    return null
+  })
+  throwIfScanAborted(signal)
   if (!s?.isFile()) return null
 
-  const cachedProject = await getCachedCodexProject(filePath)
+  const cachedProject = await getCachedCodexProject(filePath, signal)
+  throwIfScanAborted(signal)
   if (cachedProject) {
     return { path: filePath, project: cachedProject, provider: 'codex' }
   }
 
-  const { valid, meta } = await isValidCodexSession(filePath)
+  const { valid, meta } = await isValidCodexSession(filePath, signal)
+  throwIfScanAborted(signal)
   if (!valid || !meta) return null
 
   const cwd = meta.payload?.cwd ?? 'unknown'
@@ -330,31 +360,50 @@ async function discoverSessionFile(filePath: string): Promise<SessionSource | nu
   }
 }
 
-async function discoverSessionsInDir(codexDir: string): Promise<SessionSource[]> {
+async function readdirOrEmpty(path: string, signal?: AbortSignal): Promise<string[]> {
+  throwIfScanAborted(signal)
+  try {
+    const entries = await readdir(path)
+    throwIfScanAborted(signal)
+    return entries
+  } catch (error) {
+    throwIfScanAborted(signal)
+    if (isScanAbortedError(error)) throw error
+    return []
+  }
+}
+
+async function discoverSessionsInDir(codexDir: string, signal?: AbortSignal): Promise<SessionSource[]> {
+  throwIfScanAborted(signal)
   const sources: SessionSource[] = []
   const sessionsDir = join(codexDir, 'sessions')
 
-  const years = await readdir(sessionsDir).catch(() => [] as string[])
+  const years = await readdirOrEmpty(sessionsDir, signal)
 
   for (const year of years) {
+    throwIfScanAborted(signal)
     if (!/^\d{4}$/.test(year)) continue
     const yearDir = join(sessionsDir, year)
-    const months = await readdir(yearDir).catch(() => [] as string[])
+    const months = await readdirOrEmpty(yearDir, signal)
 
     for (const month of months) {
+      throwIfScanAborted(signal)
       if (!/^\d{2}$/.test(month)) continue
       const monthDir = join(yearDir, month)
-      const days = await readdir(monthDir).catch(() => [] as string[])
+      const days = await readdirOrEmpty(monthDir, signal)
 
       for (const day of days) {
+        throwIfScanAborted(signal)
         if (!/^\d{2}$/.test(day)) continue
         const dayDir = join(monthDir, day)
-        const files = await readdir(dayDir).catch(() => [] as string[])
+        const files = await readdirOrEmpty(dayDir, signal)
 
         for (const file of files) {
+          throwIfScanAborted(signal)
           if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue
           const filePath = join(dayDir, file)
-          const source = await discoverSessionFile(filePath)
+          const source = await discoverSessionFile(filePath, signal)
+          throwIfScanAborted(signal)
           if (source) sources.push(source)
         }
       }
@@ -364,10 +413,12 @@ async function discoverSessionsInDir(codexDir: string): Promise<SessionSource[]>
   // Codex moves archived sessions into a flat directory. Keep them in usage
   // reports so archiving a conversation does not erase its historical usage.
   const archivedDir = join(codexDir, 'archived_sessions')
-  const archivedFiles = await readdir(archivedDir).catch(() => [] as string[])
+  const archivedFiles = await readdirOrEmpty(archivedDir, signal)
   for (const file of archivedFiles) {
+    throwIfScanAborted(signal)
     if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue
-    const source = await discoverSessionFile(join(archivedDir, file))
+    const source = await discoverSessionFile(join(archivedDir, file), signal)
+    throwIfScanAborted(signal)
     if (source) sources.push(source)
   }
 
@@ -378,12 +429,16 @@ function resolveModel(info: CodexEntry['payload'], sessionModel?: string): strin
   return info?.model ?? info?.info?.model ?? info?.info?.model_name ?? sessionModel ?? 'gpt-5'
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const cached = await readCachedCodexResults(source.path)
+      const { signal } = context ?? {}
+      throwIfScanAborted(signal)
+      const cached = await readCachedCodexResults(source.path, signal)
+      throwIfScanAborted(signal)
       if (cached) {
         for (const call of cached) {
+          throwIfScanAborted(signal)
           if (seenKeys.has(call.deduplicationKey)) continue
           seenKeys.add(call.deduplicationKey)
           yield call
@@ -391,7 +446,8 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         return
       }
 
-      const fp = await fingerprintFile(source.path)
+      const fp = await fingerprintFile(source.path, signal)
+      throwIfScanAborted(signal)
       if (!fp) return
 
       let sessionModel: string | undefined
@@ -433,7 +489,11 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       // the readSessionFile cap or push V8 toward its 512 MB string limit
       // after split('\n'). readSessionLines streams raw buffers and hands
       // huge lines to the compact parser without full string conversion.
-      for await (const rawLine of readSessionLines(source.path, undefined, { largeLineAsBuffer: true })) {
+      for await (const rawLine of readSessionLines(source.path, undefined, {
+        largeLineAsBuffer: true,
+        ...(signal ? { signal } : {}),
+      })) {
+        throwIfScanAborted(signal)
         sawAnyLine = true
         const entry = parseCodexLine(rawLine)
         if (!entry) continue
@@ -749,11 +809,14 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       // If the stream yielded nothing the file was unreadable, oversized, or
       // empty. Skip cache write so a transient failure can't pin an empty
       // result set against a fingerprint that would otherwise be re-parsed.
+      throwIfScanAborted(signal)
       if (!sawAnyLine) return
 
-      await writeCachedCodexResults(source.path, source.project, results, fp)
+      await writeCachedCodexResults(source.path, source.project, results, fp, signal)
+      throwIfScanAborted(signal)
 
       for (const call of results) {
+        throwIfScanAborted(signal)
         yield call
       }
     },
@@ -800,12 +863,18 @@ export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provid
       ]
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      return discoverSessionsInDir(dir())
+    async discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      throwIfScanAborted(context?.signal)
+      return discoverSessionsInDir(dir(), context?.signal)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

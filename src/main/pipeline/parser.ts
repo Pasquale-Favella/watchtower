@@ -45,7 +45,7 @@ import {
 } from './providers/antigravity.js'
 import { getDesktopSessionsDirs } from './providers/claude.js'
 import { discoverAllSessions, getProvider } from './providers/index.js'
-import type { ParsedProviderCall, SessionSource } from './providers/types.js'
+import type { ParsedProviderCall, ProviderScanContext, ProviderScanServices, SessionSource } from './providers/types.js'
 import { isScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
 import {
   beginColdHydration,
@@ -3299,8 +3299,9 @@ async function parseProviderSources(
   readOnly = false,
   onDelta?: DeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
-  signal?: AbortSignal,
+  context: ProviderScanContext = {},
 ): Promise<ProjectSummary[]> {
+  const { signal } = context
   throwIfScanAborted(signal)
   const provider = await getProvider(providerName)
   throwIfScanAborted(signal)
@@ -3444,7 +3445,7 @@ async function parseProviderSources(
         clearedPaths.add(source.path)
       }
 
-      const parser = provider.createSessionParser(source, parserDedup, dateRange)
+      const parser = provider.createSessionParser(source, parserDedup, dateRange, context)
 
       try {
         // Extraction seam (ADR 0003): every provider's emitted call runs through
@@ -3519,7 +3520,7 @@ async function parseProviderSources(
       }
     }
   } finally {
-    if (!signal?.aborted && didParse && providerName === 'codex') await flushCodexCache()
+    if (!signal?.aborted && didParse && providerName === 'codex') await flushCodexCache(signal)
     if (!signal?.aborted && didParse && providerName === 'antigravity') {
       const liveIds = new Set(sources.map(s => antigravityCascadeIdFromPath(s.path)))
       await flushAntigravityCache(liveIds)
@@ -4208,7 +4209,9 @@ export async function parseAllSessions(
   onDelta?: DeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
   signal?: AbortSignal,
+  services: ProviderScanServices = {},
 ): Promise<ProjectSummary[]> {
+  const context: ProviderScanContext = { ...services, signal }
   throwIfScanAborted(signal)
   const key = cacheKey(dateRange, providerFilter)
   const cached = sessionCache.get(key)
@@ -4234,7 +4237,7 @@ export async function parseAllSessions(
       if (hydration.waited) diskCache = await loadCache()
       throwIfScanAborted(signal)
       const isCold = !isCacheComplete(diskCache)
-      const result = await runParse(key, diskCache, dateRange, providerFilter, { isCold }, onDelta, onUnparsed, signal)
+      const result = await runParse(key, diskCache, dateRange, providerFilter, { isCold }, onDelta, onUnparsed, context)
       throwIfScanAborted(signal)
       return result
     } finally {
@@ -4257,7 +4260,7 @@ export async function parseAllSessions(
       { readOnly: true },
       onDelta,
       onUnparsed,
-      signal,
+      context,
     )
     throwIfScanAborted(signal)
     return result
@@ -4274,7 +4277,7 @@ export async function parseAllSessions(
       { readOnly: true },
       onDelta,
       onUnparsed,
-      signal,
+      context,
     )
     throwIfScanAborted(signal)
     return result
@@ -4294,14 +4297,14 @@ export async function parseAllSessions(
       { refreshLock: refresh.handle },
       onDelta,
       onUnparsed,
-      signal,
+      context,
     )
   } catch (err) {
     if (!(err instanceof RefreshFenceLostError) && !(err instanceof RefreshPublicationUnavailableError)) throw err
     throwIfScanAborted(signal)
     diskCache = await loadCache()
     throwIfScanAborted(signal)
-    return runParse(key, diskCache, dateRange, providerFilter, { readOnly: true }, onDelta, onUnparsed, signal)
+    return runParse(key, diskCache, dateRange, providerFilter, { readOnly: true }, onDelta, onUnparsed, context)
   } finally {
     await refresh.handle.release()
   }
@@ -4324,13 +4327,14 @@ async function runParse(
   options: RunParseOptions = {},
   onDelta?: DeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
-  signal?: AbortSignal,
+  context: ProviderScanContext = {},
 ): Promise<ProjectSummary[]> {
+  const { signal } = context
   throwIfScanAborted(signal)
   const { isCold = false, readOnly = false, refreshLock } = options
   const seenMsgIds = new Set<string>()
   const seenKeys = new Set<string>()
-  const allSources = await discoverAllSessions(providerFilter)
+  const allSources = await discoverAllSessions(providerFilter, undefined, context)
   throwIfScanAborted(signal)
 
   const claudeSources = allSources.filter(s => s.provider === 'claude')
@@ -4420,7 +4424,7 @@ async function runParse(
         readOnly,
         onDelta,
         onUnparsed,
-        signal,
+        context,
       )
       throwIfScanAborted(signal)
       emitScanProgress({ kind: 'provider', provider: providerName, state: 'done', files: sources.length })
@@ -4466,7 +4470,7 @@ async function runParse(
       readOnly,
       onDelta,
       onUnparsed,
-      signal,
+      context,
     )
     throwIfScanAborted(signal)
     otherProjects.push(...projects)

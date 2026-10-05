@@ -46,6 +46,7 @@ vi.mock('../src/main/pipeline/cache-refresh-lock.js', () => ({
 
 import { clearSessionCache, parseAllSessions } from '../src/main/pipeline/parser.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import type { Provider } from '../src/main/pipeline/providers/types.js'
 import type { CachedFile, SessionCache } from '../src/shared/schemas/session-cache.js'
 
 const source = (provider: string, path: string) => ({ provider, path, project: 'test-project' })
@@ -197,5 +198,28 @@ describe('parser cooperative stop', () => {
     await expect(parseAllSessions(undefined, undefined, undefined, undefined, controller.signal)).rejects.toBe(abort)
     expect(cache.providers['test-provider']?.files[path]).toEqual(priorFile)
     expect(hooks.saveCache).not.toHaveBeenCalled()
+  })
+
+  it('forwards the same scan context to discovery and provider factories', async () => {
+    const path = '/test/context.session'
+    hooks.cache = makeCache('test-provider', [path])
+    hooks.discovered.mockResolvedValue([source('test-provider', path)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    const factory = vi.fn<Provider['createSessionParser']>(() => ({
+      parse: async function* () {
+        yield parsedCall()
+      },
+    }))
+    hooks.getProvider.mockResolvedValue({ network: false, durableSources: false, createSessionParser: factory })
+    const controller = new AbortController()
+    const services = { gatewayEnabled: true, fetchGatewayReport: vi.fn(async () => []) }
+
+    await parseAllSessions(undefined, undefined, undefined, undefined, controller.signal, services)
+
+    const context = hooks.discovered.mock.calls[0][2]
+    expect(context).toEqual({ ...services, signal: controller.signal })
+    expect(context.fetchGatewayReport).toBe(services.fetchGatewayReport)
+    expect(factory).toHaveBeenCalledOnce()
+    expect(factory.mock.calls[0][3]).toBe(context)
   })
 })

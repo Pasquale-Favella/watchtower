@@ -10,6 +10,7 @@ import { HttpFetch } from './fetch-utils.js'
 import { loadPricingEffect } from './models.js'
 import type { DeltaHandler } from './parser.js'
 import { parseAllSessions } from './parser.js'
+import type { ProviderScanServices } from './providers/types.js'
 import { abortedScanError, ScanAbortedError } from './scan-control.js'
 
 export type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress, ScanStage } from '../../shared/schemas/scan.js'
@@ -120,6 +121,7 @@ export const runScan = Effect.fnUntraced(function* (
   onProgress?: (progress: ScanProgress) => void,
   abort?: { isAborted(): boolean },
   onDelta?: DeltaHandler,
+  providerServices: ProviderScanServices = {},
 ): Effect.fn.Return<ScanMetadata, ScanAbortedError | Error, HttpFetch | Env | OperationalLog> {
   // Wall-duration start via the Effect Clock so TestClock governs duration in
   // tests (mirrors `refreshFxRateWithRates` staleness + fetch-timeout Clock).
@@ -181,7 +183,7 @@ export const runScan = Effect.fnUntraced(function* (
     // Parser work observes this per-run signal, but the Promise remains owned
     // until every parser and callback has actually settled after interruption.
     yield* runOwnedScanPromise(signal =>
-      parseAllSessions(options.range, options.provider, countingDelta, onUnparsed, signal),
+      parseAllSessions(options.range, options.provider, countingDelta, onUnparsed, signal, providerServices),
     )
 
     if (onDelta && abort?.isAborted()) {

@@ -54,14 +54,21 @@ function notice(filePath: string, code: string): void {
   })
 }
 
-export async function readSessionFile(filePath: string, encoding: BufferEncoding = 'utf-8'): Promise<string | null> {
+export async function readSessionFile(
+  filePath: string,
+  encoding: BufferEncoding = 'utf-8',
+  options: { readonly signal?: AbortSignal } = {},
+): Promise<string | null> {
+  throwIfScanAborted(options.signal)
   let size: number
   try {
     size = (await stat(filePath)).size
   } catch (err) {
+    throwIfScanAborted(options.signal)
     warn(`stat failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
     return null
   }
+  throwIfScanAborted(options.signal)
 
   if (size > MAX_SESSION_FILE_BYTES) {
     warn(`skipped oversize file ${shortPath(filePath)} (${size} bytes > cap ${MAX_SESSION_FILE_BYTES})`)
@@ -69,8 +76,11 @@ export async function readSessionFile(filePath: string, encoding: BufferEncoding
   }
 
   try {
-    return await readFile(filePath, encoding)
+    const contents = await readFile(filePath, { encoding, signal: options.signal })
+    throwIfScanAborted(options.signal)
+    return contents
   } catch (err) {
+    throwIfScanAborted(options.signal)
     warn(`read failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
     return null
   }
@@ -112,6 +122,11 @@ type ReadSessionLinesOptions = {
 export function readSessionLines(filePath: string, shouldSkipHead?: (head: string) => boolean): AsyncGenerator<string>
 export function readSessionLines(
   filePath: string,
+  shouldSkipHead: ((head: string) => boolean) | undefined,
+  options: ReadSessionLinesOptions & { largeLineAsBuffer?: false },
+): AsyncGenerator<string>
+export function readSessionLines(
+  filePath: string,
   shouldSkipHead?: (head: string) => boolean,
   options?: ReadSessionLinesOptions & { largeLineAsBuffer: true },
 ): AsyncGenerator<SessionLine>
@@ -141,6 +156,7 @@ export async function* readSessionLines(
     ...(options.startByteOffset !== undefined ? { start: options.startByteOffset } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
   })
+  const closed = new Promise<void>(resolve => stream.once('close', () => resolve()))
   const SKIP_HEAD = 2048
   const largeLineThreshold = options.largeLineThresholdBytes ?? LARGE_STREAM_LINE_BYTES
   const formatLine = (buf: Buffer, lineLen: number, head?: string): SessionLine => {
@@ -243,5 +259,6 @@ export async function* readSessionLines(
     warn(`stream read failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
   } finally {
     stream.destroy()
+    await closed
   }
 }
