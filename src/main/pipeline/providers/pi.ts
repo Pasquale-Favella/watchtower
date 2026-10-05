@@ -1,12 +1,13 @@
 import { readdir, stat } from 'fs/promises'
-import { basename, join } from 'path'
 import { homedir } from 'os'
+import { basename, join } from 'path'
 
-import { readSessionFile } from '../fs-utils.js'
-import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { normalizeContentBlocks } from '../content-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { readSessionFile } from '../fs-utils.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const modelDisplayNames: Record<string, string> = {
   'gpt-5.4': 'GPT-5.4',
@@ -150,7 +151,8 @@ async function discoverSessionsInDir(sessionsDir: string, providerName: string):
   return sources
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const content = await readSessionFile(source.path)
@@ -236,7 +238,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             return typeof cmd === 'string' ? extractBashCommands(cmd) : []
           })
 
-        const costUSD = calculateCost(model, input, output, cacheWrite, cacheRead, 0)
+        const costUSD = pricing.calculateCost(model, input, output, cacheWrite, cacheRead, 0)
         const timestamp = entry.timestamp ?? ''
 
         yield {
@@ -289,8 +291,13 @@ export function createPiProvider(sessionsDir?: string): Provider {
       return discoverSessionsInDir(dir, 'pi')
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }
@@ -319,8 +326,13 @@ export function createOmpProvider(sessionsDir?: string): Provider {
       return discoverSessionsInDir(dir, 'omp')
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

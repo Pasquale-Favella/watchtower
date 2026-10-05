@@ -1,10 +1,11 @@
-import { join } from 'path'
 import { homedir } from 'os'
+import { join } from 'path'
 
-import { calculateCost } from '../models.js'
-import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing } from '../models.js'
+import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 /// ZCode (CLI v0.14.x) records usage in a single SQLite database at
 /// ~/.zcode/cli/db/db.sqlite. We read it because the other on-disk sources are
@@ -87,7 +88,8 @@ function discover(dbPath: string): SessionSource[] {
   }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
@@ -168,7 +170,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
           }
 
           const model = row.model_id
-          const costUSD = calculateCost(model, freshInput, output, cacheCreation, cacheRead, 0)
+          const costUSD = pricing.calculateCost(model, freshInput, output, cacheCreation, cacheRead, 0)
 
           yield {
             provider: 'zcode',
@@ -217,8 +219,13 @@ export function createZcodeProvider(dbPathOverride?: string): Provider {
       return discover(dbPath)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

@@ -1,12 +1,13 @@
 import { readdir, stat } from 'fs/promises'
-import { basename, join } from 'path'
 import { homedir } from 'os'
+import { basename, join } from 'path'
 
+import { extractBashCommands } from '../bash-utils.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { readSessionFile } from '../fs-utils.js'
-import { calculateCost } from '../models.js'
-import { extractBashCommands } from '../bash-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const toolNameMap: Record<string, string> = {
   read_file: 'Read',
@@ -76,7 +77,8 @@ function extractTools(parts: QwenPart[]): { tools: string[]; bashCommands: strin
   return { tools, bashCommands }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const raw = await readSessionFile(source.path)
@@ -121,7 +123,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         // Gemini-shaped usage: `thoughtsTokenCount` sits beside
         // `candidatesTokenCount`, it is not a breakdown of it, so the
         // reasoning fold still applies here.
-        const costUSD = calculateCost(
+        const costUSD = pricing.calculateCost(
           model,
           inputTokens,
           billableOutputTokens('qwen', outputTokens, reasoningTokens),
@@ -204,8 +206,13 @@ export function createQwenProvider(overrideDir?: string): Provider {
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

@@ -1,10 +1,11 @@
 import { readdir } from 'fs/promises'
-import { basename, join } from 'path'
 import { homedir, platform } from 'os'
+import { basename, join } from 'path'
 
 import { readSessionFile } from '../fs-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // zerostack (https://github.com/gi-dellav/zerostack) is a minimal Rust coding
 // agent. Each session is a single JSON file under <dataDir>/zerostack/sessions/.
@@ -75,7 +76,8 @@ async function readSession(path: string): Promise<ZerostackSession | null> {
   }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const session = await readSession(source.path)
@@ -103,7 +105,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         cachedInputTokens: 0,
         reasoningTokens: 0,
         webSearchRequests: 0,
-        costUSD: calculateCost(model, input, output, 0, 0, 0),
+        costUSD: pricing.calculateCost(model, input, output, 0, 0, 0),
         // zerostack persists only final assistant text, not tool-call records,
         // so there is nothing to extract here.
         tools: [],
@@ -156,8 +158,13 @@ export function createZerostackProvider(sessionsDir?: string): Provider {
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }
