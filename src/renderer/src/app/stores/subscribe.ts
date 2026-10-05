@@ -3,7 +3,7 @@ import { onAppNavigate, onCoachHarnessesChanged, parseEvent } from '@/shared/lib
 import { coachEventEnvelopeSchema } from '../../../../shared/schemas/agents.js'
 import { useCoachSkillsStore } from '../../features/coach-skills/store'
 import { navigateToSection } from '../navigation'
-import { subscribeToDataPlane } from './shared-wiring'
+import { combine, subscribeToDataPlane } from './shared-wiring'
 
 /** The app window's IPC wiring (ADR 0011): the shared data plane plus the
  * channels only this window serves — Coach events and the orb's "open on a
@@ -35,7 +35,5 @@ export function subscribeToIpc(): () => void {
   // entry point is app/navigation.ts (ADR 0014), the same the sidebar uses.
   unsubs.push(onAppNavigate(navigateToSection))
 
-  return () => {
-    for (const unsub of unsubs) unsub()
-  }
+  return combine(unsubs)
 }

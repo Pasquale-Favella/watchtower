@@ -80,6 +80,10 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     expect(status.scanned).toBe(false)
   })
 
+  it('answers scan:active from its own scan ownership (idle when nothing runs)', async () => {
+    expect(await open().dispatch('scan:active', [])).toBe(false)
+  })
+
   it('round-trips the refresh cadence and reschedules without throwing', async () => {
     const c = open()
     expect(await c.dispatch('cadence:get', [])).toBe('1m')
@@ -270,8 +274,10 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     const request = c.dispatch('scan:start', [])
     await vi.waitFor(() => expect((c as unknown as { activeScan: unknown }).activeScan).not.toBeNull())
     await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: false, alreadyRunning: true })
+    await expect(c.dispatch('scan:active', [])).resolves.toBe(true)
     await expect(c.dispatch('scan:abort', [])).resolves.toBeNull()
     await expect(request).resolves.toMatchObject({ ok: false, aborted: true })
+    await expect(c.dispatch('scan:active', [])).resolves.toBe(false)
     expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
   })
 

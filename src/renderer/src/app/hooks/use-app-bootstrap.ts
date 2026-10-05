@@ -1,9 +1,8 @@
 import { useEffect } from 'react'
 
-import { fetchScanStatus } from '@/shared/lib/api'
 import { useScanStore } from '@/app/stores/scan-store'
-import { useSettingsStore } from '@/features/settings/store'
 import { subscribeToIpc } from '@/app/stores/subscribe'
+import { useSettingsStore } from '@/features/settings/store'
 
 /** The initial hydration flow + subscription lifecycle, relocated out of
  * AppRoot (ADR 0011): wires the six IPC subscriptions, then hydrates
@@ -14,17 +13,10 @@ export function useAppBootstrap(): void {
   useEffect(() => {
     const unsubscribe = subscribeToIpc()
     void (async () => {
-      const status = await fetchScanStatus()
-      if (!status.ok) return
-      if (status.data.scanned) {
-        useScanStore.setState({ hydrated: true })
-        await useScanStore.getState().applyChange()
-        // A scan already in flight (the orb's, the tray's, a cadence tick)
-        // shows here immediately rather than at its next progress event.
-        await useScanStore.getState().syncActivity()
-      } else {
-        await useScanStore.getState().refresh()
-      }
+      const hydrated = await useScanStore.getState().hydrate()
+      if (hydrated === 'failed') return
+      // The app window owns the first scan.
+      if (hydrated === 'unscanned') await useScanStore.getState().refresh()
       await Promise.all([
         useSettingsStore.getState().loadCadence(),
         useSettingsStore.getState().loadCurrency(),

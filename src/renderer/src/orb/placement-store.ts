@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 
-import { fetchOrbPlacement, fetchSetOrbExpanded } from '@/shared/lib/api'
+import { fetchOrbPanelRequest, fetchOrbPlacement } from '@/shared/lib/api'
 
-import type { OrbPlacement } from '../../../shared/schemas/orb.js'
+import type { OrbPanelRequest, OrbPlacement } from '../../../shared/schemas/orb.js'
 
 /** Whether the orb's panel is open, and on which side of it the orb sits —
  * state the main process owns (it shows, hides and places both windows) and
@@ -13,9 +13,9 @@ export interface OrbPlacementState {
   onPlacement: (placement: OrbPlacement) => void
   /** Reads the current placement once, at a page's boot. */
   sync: () => Promise<void>
-  /** Asks the main process to open/fold the panel. `focus` is for the user's
-   * own requests (a click, the summon shortcut); a peek opens inactive. */
-  setExpanded: (expanded: boolean, focus?: boolean) => Promise<void>
+  /** Asks the main process to open the panel (`open`: the user's own
+   * request, focused; `peek`: without focus) or to fold it. */
+  request: (request: OrbPanelRequest) => Promise<void>
 }
 
 export const useOrbPlacementStore = create<OrbPlacementState>()(set => ({
@@ -25,8 +25,8 @@ export const useOrbPlacementStore = create<OrbPlacementState>()(set => ({
     const result = await fetchOrbPlacement()
     if (result.ok && result.data) set({ placement: result.data })
   },
-  setExpanded: async (expanded, focus = false) => {
-    const result = await fetchSetOrbExpanded(expanded, focus)
+  request: async request => {
+    const result = await fetchOrbPanelRequest(request)
     if (result.ok && result.data) set({ placement: result.data })
   },
 }))

@@ -18,9 +18,22 @@ import { join } from 'path'
 
 import { acceleratorFor, SHORTCUTS } from '../shared/lib/shortcuts.js'
 import { type Section, sectionSchema } from '../shared/schemas/navigation.js'
-import type { OrbNotice, OrbPlacement } from '../shared/schemas/orb.js'
+import {
+  type OrbNotice,
+  type OrbPanelRequest,
+  orbPanelRequestSchema,
+  type OrbPlacement,
+} from '../shared/schemas/orb.js'
 import { logCodeFor, safeLogOperationalEvent } from './operational-log.js'
-import { clampToWorkArea, defaultOrbPosition, orbBounds, panelLayout, type Point } from './orb-geometry.js'
+import {
+  clampToWorkArea,
+  containsPoint,
+  defaultOrbPosition,
+  offsetAnchor,
+  orbBounds,
+  panelLayout,
+  type Point,
+} from './orb-geometry.js'
 import { loadShellPreferences, saveShellPreferences } from './shell-preferences.js'
 
 /**
@@ -42,6 +55,7 @@ import { loadShellPreferences, saveShellPreferences } from './shell-preferences.
  */
 
 const isSection = Schema.is(sectionSchema)
+const isPanelRequest = Schema.is(orbPanelRequestSchema)
 
 /** How long a revealed panel may wait, transparent, for its page to report a
  * painted frame before it is made opaque regardless. */
@@ -122,9 +136,17 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   let visibilityTimer: NodeJS.Timeout | null = null
   /** Set while the panel is shown but still transparent (see revealPanel). */
   let revealTimer: NodeJS.Timeout | null = null
+  /** An open asked for while the orb is still on its way to the screen (the
+   * visibility settle, its page loading): applied once the orb is shown,
+   * never dropped. */
+  let pendingOpen: Exclude<OrbPanelRequest, 'fold'> | null = null
 
   function mainWindowAway(): boolean {
     return !mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()
+  }
+
+  function orbWanted(): boolean {
+    return prefs.orbEnabled && !quitting && mainWindowShown && mainWindowAway()
   }
 
   /** Either orb window (the orb or its panel). */
@@ -150,27 +172,29 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   /** Shows the hidden panel without a flicker. A hidden transparent window
    * reappears with its stale (or evicted) surface for a frame before Chromium
    * paints a fresh one — it reads as the panel opening twice. So it is shown
-   * fully transparent and made opaque once its page reports a painted frame
-   * (`orb:panel-painted`), or after a short fallback so it can never stay
-   * invisible. (`setOpacity` is a no-op on Linux: there it simply shows.) */
+   * fully transparent — only once its page can paint at all — and made opaque
+   * when the page reports a painted frame (`orb:panel-painted`), or after a
+   * short fallback so it can never stay invisible. (`setOpacity` is a no-op on
+   * Linux: there it simply shows.) */
   function revealPanel(panel: BrowserWindow, focus: boolean): void {
     panel.setOpacity(0)
-    if (focus) {
-      panel.show()
-      panel.focus()
-    } else {
-      panel.showInactive()
-    }
-    if (revealTimer) clearTimeout(revealTimer)
-    revealTimer = setTimeout(finishReveal, REVEAL_FALLBACK_MS)
+    showWhenReady(panel, () => {
+      if (!expanded || panel.isDestroyed()) return // folded while loading
+      if (focus) {
+        panel.show()
+        panel.focus()
+      } else {
+        panel.showInactive()
+      }
+      if (revealTimer) clearTimeout(revealTimer)
+      revealTimer = setTimeout(finishReveal, REVEAL_FALLBACK_MS)
+    })
   }
 
-  /** Opens or folds the panel window beside the orb. `focus` is for the
-   * user's own requests (a click, the summon shortcut); a peek opens inactive. */
-  function setExpanded(next: boolean, focus = false): OrbPlacement {
+  /** Opens (focused or not) or folds the panel window beside the visible orb. */
+  function applyPanel(open: boolean, focus = false): OrbPlacement {
     const panel = live(panelWindow)
-    // The panel only ever opens next to a visible orb.
-    expanded = next && !!panel && !!live(orbWindow)?.isVisible()
+    expanded = open && !!panel
     const { bounds, placement } = panelLayout(anchor, expanded)
     if (panel && expanded) {
       panel.setBounds(bounds)
@@ -183,6 +207,21 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     }
     broadcastPlacement(placement)
     return placement
+  }
+
+  /** Every panel request — an orb page's, the summon shortcut's — lands here.
+   * The panel only ever opens beside a visible orb: an open that arrives while
+   * the orb is still on its way is held and applied when it shows. */
+  function requestPanel(request: OrbPanelRequest): OrbPlacement {
+    if (request === 'fold') {
+      pendingOpen = null
+      return applyPanel(false)
+    }
+    if (!live(orbWindow)?.isVisible()) {
+      if (orbWanted()) pendingOpen = request
+      return panelLayout(anchor, false).placement
+    }
+    return applyPanel(true, request === 'open')
   }
 
   function surfaceWindow(page: 'orb.html' | 'orb-panel.html', extra: BrowserWindowConstructorOptions): BrowserWindow {
@@ -234,12 +273,14 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
       // Keep rendering while hidden, so it opens on a painted, current frame.
       webPreferences: { backgroundThrottling: false },
     })
-    // Clicking anywhere else folds the panel — except a click on the orb,
-    // whose own toggle decides (else it would fold and instantly reopen).
+    // Clicking anywhere else folds the panel — except a press on the orb
+    // itself: there the orb decides (its click toggles, its drag folds), else
+    // the panel would fold here and the same click reopen it. Decided by where
+    // the cursor is, not by which window took focus — no timing to race.
     panel.on('blur', () => {
-      setTimeout(() => {
-        if (expanded && BrowserWindow.getFocusedWindow() !== live(orbWindow)) setExpanded(false)
-      }, 0)
+      const orb = live(orbWindow)
+      if (!expanded || (orb && containsPoint(orb.getBounds(), screen.getCursorScreenPoint()))) return
+      applyPanel(false)
     })
     panel.on('closed', () => {
       if (panelWindow === panel) panelWindow = null
@@ -259,14 +300,21 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   }
 
   function updateOrbVisibility(): void {
-    const wanted = prefs.orbEnabled && !quitting && mainWindowShown && mainWindowAway()
-    if (wanted) {
+    if (orbWanted()) {
       const orb = ensureSurfaces()
       if (orb.isVisible()) return
       orb.setBounds(orbBounds(anchor))
-      showWhenReady(orb, () => orb.showInactive())
-    } else if (live(orbWindow)?.isVisible()) {
-      if (expanded) setExpanded(false)
+      showWhenReady(orb, () => {
+        orb.showInactive()
+        // An open that arrived while the orb was on its way.
+        const request = pendingOpen
+        pendingOpen = null
+        if (request) requestPanel(request)
+      })
+    } else {
+      pendingOpen = null
+      if (!live(orbWindow)?.isVisible()) return
+      if (expanded) applyPanel(false)
       live(orbWindow)?.hide()
     }
   }
@@ -305,23 +353,24 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   /** The global shortcut: brings Watchtower back from wherever it went.
    * - the main window is on screen → focus it;
    * - the panel is already open → open the full app (press twice);
-   * - otherwise → float the orb and have the panel open focused, so Escape
-   *   or a click elsewhere folds it again. Summoning a hidden orb turns
-   *   "Show floating orb" back on: pressing it is asking for the orb. */
+   * - otherwise → float the orb and open the panel focused, here and now (it
+   *   shows whatever it holds — never gated on a load), so Escape or a click
+   *   elsewhere folds it again. Summoning a hidden orb turns "Show floating
+   *   orb" back on: pressing it is asking for the orb. */
   function summon(): void {
     if (!mainWindowAway()) {
       showMainWindow()
       return
     }
     if (expanded && live(panelWindow)?.isVisible()) {
-      setExpanded(false)
+      applyPanel(false)
       showMainWindow()
       return
     }
     mainWindowShown = true
     if (!prefs.orbEnabled) setOrbEnabled(true)
     else updateOrbVisibility()
-    notifyPanel({ kind: 'summoned' })
+    requestPanel('open')
   }
 
   function registerSummonShortcut(): void {
@@ -386,19 +435,20 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
       pendingNotice = null
       return notice
     })
-    ipcMain.handle('orb:expanded:set', (event, next: unknown, focus: unknown) =>
-      isOrbSurface(event) ? setExpanded(next === true, focus === true) : null,
+    ipcMain.handle('orb:panel:request', (event, request: unknown) =>
+      isOrbSurface(event) && isPanelRequest(request) ? requestPanel(request) : null,
     )
     ipcMain.on('orb:drag-start', event => {
       if (!isOrbSender(event)) return
-      if (expanded) setExpanded(false)
+      // The panel is anchored to the orb: a drag folds it rather than leave it behind.
+      if (expanded) applyPanel(false)
       dragOrigin = { ...anchor }
     })
     ipcMain.on('orb:drag-move', (event, dx: unknown, dy: unknown) => {
       if (!isOrbSender(event) || !dragOrigin || typeof dx !== 'number' || typeof dy !== 'number') return
       if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
       // Free movement while dragging; the clamp to the work area lands on drop.
-      anchor = { x: Math.round(dragOrigin.x + dx), y: Math.round(dragOrigin.y + dy) }
+      anchor = offsetAnchor(dragOrigin, dx, dy)
       live(orbWindow)?.setBounds(orbBounds(anchor))
     })
     ipcMain.on('orb:drag-end', event => {
@@ -412,7 +462,7 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     })
     ipcMain.on('orb:open-app', (event, section: unknown) => {
       if (!isOrbSurface(event)) return
-      if (expanded) setExpanded(false)
+      if (expanded) applyPanel(false)
       showMainWindow(isSection(section) ? section : undefined)
     })
     ipcMain.on('orb:hide', event => {
@@ -438,7 +488,7 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   screen.on('display-removed', () => {
     anchor = clampToWorkArea(anchor)
     live(orbWindow)?.setBounds(orbBounds(anchor))
-    setExpanded(expanded)
+    applyPanel(expanded)
   })
 
   return {

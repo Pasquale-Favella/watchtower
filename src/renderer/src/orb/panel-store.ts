@@ -2,7 +2,7 @@ import { create } from 'zustand'
 
 import { fetchOverview } from '@/shared/lib/api'
 
-import type { OrbNotice } from '../../../shared/schemas/orb.js'
+import type { OrbNotice, OrbPlacement } from '../../../shared/schemas/orb.js'
 import type { OverviewPayload, OverviewScope } from '../../../shared/schemas/overview.js'
 import { type ScopedDataSlice, scopedDataSlice } from '../app/stores/data-store'
 import { subscribeToRefresh } from '../app/stores/scan-store'
@@ -18,8 +18,13 @@ export const ORB_SCOPES = {
 
 export const BACKGROUNDED_PEEK = 'Still watching in the background'
 
+/** A peek folds itself away after this long unless the pointer rests on it. */
+export const PEEK_MS = 6000
+
 /** The load in flight: concurrent callers (bootstrap, a notice) share it. */
 let inFlight: Promise<void> | null = null
+/** The pending peek fold, if any. */
+let peekTimer: ReturnType<typeof setTimeout> | null = null
 
 /** The spend panel's store (ADR 0011 shape) — the only orb page that holds
  * ledger data. Two scope-keyed Overview slices on the shared refresh tick:
@@ -31,14 +36,24 @@ export interface OrbPanelState {
   /** A transient note shown while the panel peeks open on its own (after the
    * first close to the tray). */
   peek: string | null
+  /** Whether the pointer rests on the panel (it holds a peek open). */
+  hovered: boolean
   load: () => Promise<void>
   /** Resolves once both slices have loaded at least once (no refetch after). */
   whenLoaded: () => Promise<void>
-  /** Both notices open the panel — once there is data to show, so it never
-   * opens onto skeletons. A summon opens it focused; the backgrounded peek
-   * opens it inactive, with its note. */
+  /** The backgrounded notice peeks the panel open — once there is data to
+   * show, so it does not open onto skeletons — without taking focus, with
+   * its note, and folds it after `PEEK_MS` unless hovered. */
   onNotice: (notice: OrbNotice) => void
-  clearPeek: () => void
+  /** The placement the main process broadcast: mirrored for the page, and
+   * a fold ends any peek. */
+  onPlacement: (placement: OrbPlacement) => void
+  setHovered: (hovered: boolean) => void
+}
+
+function clearPeekTimer(): void {
+  if (peekTimer) clearTimeout(peekTimer)
+  peekTimer = null
 }
 
 export const useOrbPanelStore = create<OrbPanelState>()((set, get) => ({
@@ -53,6 +68,7 @@ export const useOrbPanelStore = create<OrbPanelState>()((set, get) => ({
     () => get().recent,
   ),
   peek: null,
+  hovered: false,
   load: () =>
     (inFlight ??= (async () => {
       try {
@@ -67,14 +83,36 @@ export const useOrbPanelStore = create<OrbPanelState>()((set, get) => ({
     return today.status === 'ready' && recent.status === 'ready' ? Promise.resolve() : get().load()
   },
   onNotice: notice => {
-    const summoned = notice.kind === 'summoned'
+    if (notice.kind !== 'backgrounded') return
     void get()
       .whenLoaded()
-      .then(() => useOrbPlacementStore.getState().setExpanded(true, summoned))
-      .then(() => set({ peek: summoned ? null : BACKGROUNDED_PEEK }))
+      .then(() => useOrbPlacementStore.getState().request('peek'))
+      .then(() => {
+        if (!useOrbPlacementStore.getState().placement.expanded) return
+        set({ peek: BACKGROUNDED_PEEK })
+        if (!get().hovered) schedulePeekFold()
+      })
   },
-  clearPeek: () => set({ peek: null }),
+  onPlacement: placement => {
+    useOrbPlacementStore.getState().onPlacement(placement)
+    if (placement.expanded) return
+    clearPeekTimer()
+    set({ peek: null })
+  },
+  setHovered: hovered => {
+    set({ hovered })
+    clearPeekTimer()
+    if (!hovered && get().peek) schedulePeekFold()
+  },
 }))
+
+function schedulePeekFold(): void {
+  clearPeekTimer()
+  peekTimer = setTimeout(() => {
+    peekTimer = null
+    void useOrbPlacementStore.getState().request('fold')
+  }, PEEK_MS)
+}
 
 // Lazy like every slice (ADR 0011): `reload()` no-ops until the first load.
 subscribeToRefresh(() => {

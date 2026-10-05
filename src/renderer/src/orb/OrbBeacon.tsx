@@ -4,7 +4,7 @@ import { useScanStore } from '@/app/stores/scan-store'
 import { cn } from '@/shared/lib/utils'
 
 import { ORB_SIZE } from '../../../shared/schemas/orb.js'
-import { useOrbDrag } from './hooks'
+import { useOrbDrag } from './beacon-hooks'
 import { useOrbPlacementStore } from './placement-store'
 
 /** The orb itself: the brand mark in a primary-ringed disc, with a beacon
@@ -19,10 +19,10 @@ import { useOrbPlacementStore } from './placement-store'
  * panel's buttons, the summon shortcut pressed twice, or the tray. */
 export function OrbBeacon({ className }: { className?: string }) {
   const expanded = useOrbPlacementStore(s => s.placement.expanded)
-  const setExpanded = useOrbPlacementStore(s => s.setExpanded)
+  const request = useOrbPlacementStore(s => s.request)
   const scanning = useScanStore(s => s.scanning)
   // A click is the user's own request: the panel opens focused.
-  const toggle = (): void => void setExpanded(!expanded, true)
+  const toggle = (): void => void request(expanded ? 'fold' : 'open')
   const drag = useOrbDrag(toggle)
   const summon = displayShortcutForAction('summonOrb')
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 
 import { useThemeEffect } from '@/app/hooks/use-theme-effect'
 import { TooltipProvider } from '@/shared/components/ui/tooltip'
@@ -8,9 +8,6 @@ import { OrbPanel } from './OrbPanel'
 import { useOrbPanelBootstrap } from './panel-hooks'
 import { useOrbPanelStore } from './panel-store'
 import { useOrbPlacementStore } from './placement-store'
-
-/** A peek folds itself away after this long unless the pointer rests on it. */
-const PEEK_MS = 6000
 
 /**
  * The panel window's composition root (see main/background-shell.ts): the
@@ -23,19 +20,15 @@ export function OrbPanelApp() {
   useOrbPanelBootstrap()
   useThemeEffect()
   const expanded = useOrbPlacementStore(s => s.placement.expanded)
-  const setExpanded = useOrbPlacementStore(s => s.setExpanded)
-  const peek = useOrbPanelStore(s => s.peek)
-  const [hovered, setHovered] = useState(false)
+  const request = useOrbPlacementStore(s => s.request)
+  const setHovered = useOrbPanelStore(s => s.setHovered)
   const rootRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (!peek || hovered) return
-    const timer = window.setTimeout(() => void setExpanded(false), PEEK_MS)
-    return () => window.clearTimeout(timer)
-  }, [peek, hovered, setExpanded])
-
-  // Open, the root takes DOM focus so Escape reaches it (focusing an element
-  // never activates the window: a peek still steals nothing). Then, once a
+  // Open, the root takes DOM focus, so Escape folds a panel the user opened
+  // (a click, the summon shortcut — the window is focused). A peek is shown
+  // without focus, so the OS sends it no keys: it folds on its timer, a click
+  // elsewhere, or a click on the orb. Focusing an element never activates the
+  // window, so a peek still steals nothing. Then, once a
   // fresh frame is on screen — two animation frames — tell the main process,
   // which reveals the window it showed transparent (no stale-frame flicker).
   useEffect(() => {
@@ -56,7 +49,7 @@ export function OrbPanelApp() {
         onPointerEnter={() => setHovered(true)}
         onPointerLeave={() => setHovered(false)}
         onKeyDown={event => {
-          if (event.key === 'Escape' && expanded) void setExpanded(false)
+          if (event.key === 'Escape' && expanded) void request('fold')
         }}
       >
         <OrbPanel className="h-full w-full" />

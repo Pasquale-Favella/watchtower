@@ -60,10 +60,6 @@ const mainRuntime = makeMainRuntime({
  * default and is prewarmed after the data worker is ready when the persisted
  * startup setting requests it. */
 const sidecarPool = createSidecarPool({ spawn: ctx => startLedgerMcpHttp(ctx) })
-/** Whether a scan is in flight — app-wide state the main process owns, so a
- * window that opens mid-scan (the orb, a restored main window) can ask
- * instead of waiting for the next progress event. */
-let scanActive = false
 /** Tray + floating orb + hide-on-close (set once the app is ready). */
 let backgroundShell: BackgroundShell | null = null
 
@@ -138,19 +134,15 @@ function relayWorkerEvents(db: DbWorkerClient): void {
     if (event.event === 'ready' || event.event === 'init-error') return
     switch (event.event) {
       case 'scan:progress':
-        scanActive = true
         broadcast('scan:progress', event.progress)
         break
       case 'scan:error':
-        scanActive = false
         broadcast('scan:error', event.message)
         break
       case 'store:changed':
-        scanActive = false
         broadcast('store:changed', event.metadata)
         break
       case 'scan:idle':
-        scanActive = false
         broadcast('scan:idle')
         break
       case 'config:changed':
@@ -166,22 +158,6 @@ function relayWorkerEvents(db: DbWorkerClient): void {
         break
     }
   })
-}
-
-/** Every manual scan — any window's, the tray's — goes through here. Active
- * from the request on, not only from the first progress event; a concurrent
- * caller gets `alreadyRunning` from the worker, and the scan that is running
- * stays active until its own lifecycle events end it. */
-async function startScan(db: DbWorkerClient, options?: { provider?: string }): Promise<unknown> {
-  scanActive = true
-  let result: unknown
-  try {
-    result = await db.request('scan:start', options)
-    return result
-  } finally {
-    const alreadyRunning = (result as { alreadyRunning?: boolean } | undefined)?.alreadyRunning === true
-    if (!alreadyRunning) scanActive = false
-  }
 }
 
 function registerIpc(db: DbWorkerClient): void {
@@ -200,11 +176,12 @@ function registerIpc(db: DbWorkerClient): void {
     return { ok: true }
   })
 
-  handleLogged('scan:start', (_event, options?: { provider?: string }) => startScan(db, options))
+  handleLogged('scan:start', (_event, options?: { provider?: string }) => db.request('scan:start', options))
 
-  /** Whether a scan is in flight — a window's bootstrap reads it once, then
-   * follows the broadcast lifecycle events. */
-  handleLogged('scan:active', (): boolean => scanActive)
+  /** Whether a scan is in flight — asked of the worker, which owns the scan
+   * (ADR 0023). A window's bootstrap reads it once, then follows the
+   * broadcast lifecycle events. */
+  handleLogged('scan:active', () => db.request('scan:active'))
 
   ipcMain.on('scan:abort', () => {
     // Fire-and-forget like the renderer's send: a dead worker must never turn
@@ -521,9 +498,9 @@ app.whenReady().then(async () => {
     rendererDir: join(__dirname, '../renderer'),
     iconPath: app.isPackaged ? join(process.resourcesPath, 'icon.png') : devIcon,
     createMainWindow: createWindow,
-    // Tray "Scan now": the same path as any window's scan. A concurrent scan
-    // answers `alreadyRunning` — fine here.
-    requestScan: () => void startScan(db).catch(() => {}),
+    // Tray "Scan now": the same worker op as any window's scan; its lifecycle
+    // fans out to every window. A concurrent scan answers `alreadyRunning`.
+    requestScan: () => void db.request('scan:start').catch(() => {}),
   })
   createWindow()
 

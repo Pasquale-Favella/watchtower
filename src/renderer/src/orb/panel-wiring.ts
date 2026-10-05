@@ -2,7 +2,6 @@ import { combine, subscribeToDataPlane, subscribeToSettingsSync } from '@/app/st
 import { fetchPendingOrbNotice, onOrbNotice, onOrbPlacement } from '@/shared/lib/api'
 
 import { useOrbPanelStore } from './panel-store'
-import { useOrbPlacementStore } from './placement-store'
 
 /** The panel window's IPC wiring (ADR 0011, amended: one wiring module per
  * window, composed from the shared one): the full data plane — it refetches
@@ -12,10 +11,7 @@ export function subscribeToOrbPanel(): () => void {
   const teardown = combine([
     subscribeToDataPlane(),
     subscribeToSettingsSync(),
-    onOrbPlacement(placement => {
-      useOrbPlacementStore.getState().onPlacement(placement)
-      if (!placement.expanded) useOrbPanelStore.getState().clearPeek()
-    }),
+    onOrbPlacement(placement => useOrbPanelStore.getState().onPlacement(placement)),
     onOrbNotice(notice => useOrbPanelStore.getState().onNotice(notice)),
   ])
   // A notice raised before this page could listen (the first close).

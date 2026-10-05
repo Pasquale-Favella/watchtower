@@ -63,6 +63,7 @@ export type DbWorkerEvent =
  * its broadcast or its write. */
 export const DEDUPABLE_OPS: ReadonlySet<string> = new Set([
   'cadence:get',
+  'scan:active',
   'store:status',
   'store:views',
   'store:projects',

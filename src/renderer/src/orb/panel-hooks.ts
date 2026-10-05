@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 
 import { useScanStore } from '@/app/stores/scan-store'
 import { useSettingsStore } from '@/features/settings/store'
-import { fetchScanStatus } from '@/shared/lib/api'
 
 import { useOrbPanelStore } from './panel-store'
 import { subscribeToOrbPanel } from './panel-wiring'
@@ -16,14 +15,9 @@ export function useOrbPanelBootstrap(): void {
   useEffect(() => {
     const unsubscribe = subscribeToOrbPanel()
     void (async () => {
-      const status = await fetchScanStatus()
-      if (status.ok && status.data.scanned) {
-        useScanStore.setState({ hydrated: true })
-        await useScanStore.getState().applyChange()
-      }
+      await useScanStore.getState().hydrate()
       await Promise.all([
         useOrbPlacementStore.getState().sync(),
-        useScanStore.getState().syncActivity(),
         useSettingsStore.getState().loadCurrency(),
         useOrbPanelStore.getState().whenLoaded(),
       ])

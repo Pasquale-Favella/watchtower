@@ -48,7 +48,7 @@ import type {
   CoachRunResult,
 } from '../shared/schemas/agents.js'
 import type { Section } from '../shared/schemas/navigation.js'
-import type { OrbNotice, OrbPlacement } from '../shared/schemas/orb.js'
+import type { OrbNotice, OrbPanelRequest, OrbPlacement } from '../shared/schemas/orb.js'
 
 export type {
   PricingRefreshResult,
@@ -231,9 +231,9 @@ const api = {
     getPlacement: (): Promise<OrbPlacement | null> => ipcRenderer.invoke('orb:placement:get'),
     /** A notice raised before this page could listen (e.g. the first close). */
     takePendingNotice: (): Promise<OrbNotice | null> => ipcRenderer.invoke('orb:notice:take'),
-    /** Opens/folds the panel window; `focus` for the user's own requests. */
-    setExpanded: (expanded: boolean, focus = false): Promise<OrbPlacement | null> =>
-      ipcRenderer.invoke('orb:expanded:set', expanded, focus),
+    /** Asks the main process to open (`open`: focused, `peek`: not) or fold the panel. */
+    requestPanel: (request: OrbPanelRequest): Promise<OrbPlacement | null> =>
+      ipcRenderer.invoke('orb:panel:request', request),
     dragStart: (): void => ipcRenderer.send('orb:drag-start'),
     dragMove: (dx: number, dy: number): void => ipcRenderer.send('orb:drag-move', dx, dy),
     dragEnd: (): void => ipcRenderer.send('orb:drag-end'),

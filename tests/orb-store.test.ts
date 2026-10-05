@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
-import { BACKGROUNDED_PEEK, ORB_SCOPES, useOrbPanelStore } from '../src/renderer/src/orb/panel-store.js'
+import { BACKGROUNDED_PEEK, ORB_SCOPES, PEEK_MS, useOrbPanelStore } from '../src/renderer/src/orb/panel-store.js'
 import { useOrbPlacementStore } from '../src/renderer/src/orb/placement-store.js'
 
 /** Stub the preload surface for the fetch wrappers' IPC-call sites. */
@@ -13,12 +13,12 @@ const expanded = { expanded: true, horizontal: 'right', vertical: 'bottom' }
 const collapsed = { ...expanded, expanded: false }
 
 function orbApi(overrides: Record<string, unknown> = {}) {
-  const setExpanded = vi.fn(async (...args: [boolean, boolean?]) => (args[0] ? expanded : collapsed))
+  const requestPanel = vi.fn(async (request: string) => (request === 'fold' ? collapsed : expanded))
   return {
     getOverview: vi.fn(async () => null),
     getScanStatus: vi.fn(async () => ({ scanned: false })),
     getAnalytics: vi.fn(async () => null),
-    orb: { setExpanded },
+    orb: { requestPanel },
     ...overrides,
   }
 }
@@ -29,18 +29,24 @@ beforeEach(() => {
   useScanStore.setState(useScanStore.getInitialState(), true)
 })
 
+afterEach(() => {
+  vi.useRealTimers()
+})
+
 describe('useOrbPlacementStore', () => {
-  it('mirrors the placement the main process applies, passing focus through', async () => {
+  it('sends one intent and mirrors the placement the main process applied', async () => {
     const api = orbApi()
     mockWindow(api)
-    await useOrbPlacementStore.getState().setExpanded(true, true)
-    expect(api.orb.setExpanded).toHaveBeenCalledWith(true, true)
+    await useOrbPlacementStore.getState().request('open')
+    expect(api.orb.requestPanel).toHaveBeenCalledWith('open')
     expect(useOrbPlacementStore.getState().placement).toEqual(expanded)
+    await useOrbPlacementStore.getState().request('fold')
+    expect(useOrbPlacementStore.getState().placement).toEqual(collapsed)
   })
 
   it('drops a malformed placement instead of painting it', async () => {
-    mockWindow(orbApi({ orb: { setExpanded: vi.fn(async () => ({ expanded: 'yes' })) } }))
-    await useOrbPlacementStore.getState().setExpanded(true)
+    mockWindow(orbApi({ orb: { requestPanel: vi.fn(async () => ({ expanded: 'yes' })) } }))
+    await useOrbPlacementStore.getState().request('open')
     expect(useOrbPlacementStore.getState().placement.expanded).toBe(false)
   })
 })
@@ -62,8 +68,8 @@ describe('useOrbPanelStore', () => {
     mockWindow(api)
     await useOrbPanelStore.getState().load()
     api.getOverview.mockClear()
-    await useOrbPlacementStore.getState().setExpanded(true)
-    await useOrbPlacementStore.getState().setExpanded(false)
+    await useOrbPlacementStore.getState().request('open')
+    await useOrbPlacementStore.getState().request('fold')
     expect(api.getOverview).not.toHaveBeenCalled()
   })
 
@@ -74,24 +80,40 @@ describe('useOrbPanelStore', () => {
     expect(api.getOverview).toHaveBeenCalledTimes(2)
   })
 
-  it('peeks open inactive with a note once its data is loaded', async () => {
+  it('peeks once its data is loaded, without focus, with its note', async () => {
     const api = orbApi()
     mockWindow(api)
     useOrbPanelStore.getState().onNotice({ kind: 'backgrounded' })
     await vi.waitFor(() => expect(useOrbPanelStore.getState().peek).toBe(BACKGROUNDED_PEEK))
     expect(api.getOverview).toHaveBeenCalledTimes(2)
-    expect(api.orb.setExpanded).toHaveBeenCalledWith(true, false)
-    useOrbPanelStore.getState().clearPeek()
-    expect(useOrbPanelStore.getState().peek).toBeNull()
+    expect(api.orb.requestPanel).toHaveBeenCalledExactlyOnceWith('peek')
   })
 
-  it('a summon opens the panel focused, without a note', async () => {
+  it('folds a peek after PEEK_MS — unless the pointer rests on it', async () => {
+    vi.useFakeTimers()
     const api = orbApi()
     mockWindow(api)
-    useOrbPanelStore.getState().onNotice({ kind: 'summoned' })
-    await vi.waitFor(() => expect(useOrbPlacementStore.getState().placement.expanded).toBe(true))
-    expect(api.orb.setExpanded).toHaveBeenCalledWith(true, true)
+    await useOrbPanelStore.getState().load()
+    useOrbPanelStore.getState().onNotice({ kind: 'backgrounded' })
+    await vi.waitFor(() => expect(useOrbPanelStore.getState().peek).toBe(BACKGROUNDED_PEEK))
+
+    useOrbPanelStore.getState().setHovered(true)
+    vi.advanceTimersByTime(PEEK_MS * 2)
+    expect(api.orb.requestPanel).not.toHaveBeenCalledWith('fold')
+
+    useOrbPanelStore.getState().setHovered(false)
+    vi.advanceTimersByTime(PEEK_MS)
+    expect(api.orb.requestPanel).toHaveBeenCalledWith('fold')
+  })
+
+  it('a fold ends the peek and its timer; an open leaves it be', () => {
+    useOrbPanelStore.setState({ peek: BACKGROUNDED_PEEK })
+    useOrbPanelStore.getState().onPlacement(expanded as never)
+    expect(useOrbPanelStore.getState().peek).toBe(BACKGROUNDED_PEEK)
+    expect(useOrbPlacementStore.getState().placement).toEqual(expanded)
+    useOrbPanelStore.getState().onPlacement(collapsed as never)
     expect(useOrbPanelStore.getState().peek).toBeNull()
+    expect(useOrbPlacementStore.getState().placement).toEqual(collapsed)
   })
 
   it('reloads on the shared refresh tick only once it has loaded', async () => {

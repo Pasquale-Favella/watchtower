@@ -54,7 +54,7 @@ function orbWindow(takePendingNotice: () => Promise<unknown> = vi.fn(async () =>
       onPlacement: capture('onPlacement'),
       onNotice: capture('onNotice'),
       takePendingNotice,
-      setExpanded: vi.fn(async () => ({ ...placement, expanded: true })),
+      requestPanel: vi.fn(async () => ({ ...placement, expanded: true })),
     },
   }
   vi.stubGlobal('window', {
@@ -124,7 +124,7 @@ describe('subscribeToOrbPanel (ADR 0011)', () => {
   })
 
   it('pulls a notice raised before the page could listen', async () => {
-    orbWindow(vi.fn(async () => ({ kind: 'summoned' })))
+    orbWindow(vi.fn(async () => ({ kind: 'backgrounded' })))
     const teardown = subscribeToOrbPanel()
     await vi.waitFor(() => expect(useOrbPlacementStore.getState().placement.expanded).toBe(true))
     teardown()
