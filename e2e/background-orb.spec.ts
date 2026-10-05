@@ -62,7 +62,32 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     // Escape folds the panel (the open root holds DOM focus).
     await panel.keyboard.press('Escape')
     await expect.poll(() => visible('panel')).toBe(false)
-    await orbButton.click()
+
+    // A click is the orb's only gesture: neither a quick open-then-fold nor a
+    // drag followed by a click — both double-clicks to the OS (clickCount 2)
+    // — may reopen the full app.
+    const box = await orbButton.boundingBox()
+    expect(box).not.toBeNull()
+    if (box) {
+      const cx = box.x + box.width / 2
+      const cy = box.y + box.height / 2
+      await orb.mouse.click(cx, cy)
+      await expect.poll(() => visible('panel')).toBe(true)
+      await orb.mouse.down({ clickCount: 2 })
+      await orb.mouse.up({ clickCount: 2 })
+      await expect.poll(() => visible('panel')).toBe(false)
+
+      await orb.mouse.move(cx, cy)
+      await orb.mouse.down()
+      await orb.mouse.move(cx + 12, cy, { steps: 3 })
+      await orb.mouse.move(cx, cy, { steps: 3 })
+      await orb.mouse.up()
+      await orb.mouse.down({ clickCount: 2 })
+      await orb.mouse.up({ clickCount: 2 })
+      await orb.waitForTimeout(800)
+      expect(await visible('main')).toBe(false)
+    }
+    if (!(await visible('panel'))) await orbButton.click()
     await expect.poll(() => visible('panel')).toBe(true)
 
     // One scan, every window: a scan started from the panel streams its
