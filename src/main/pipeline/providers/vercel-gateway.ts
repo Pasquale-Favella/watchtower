@@ -1,29 +1,17 @@
 import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 
 import { Env } from '../../env.js'
 import { HttpFetch, HttpFetchError, retryTransientFetch } from '../fetch-utils.js'
 import { fileErrorCode, queueLogRecord } from '../file-errors.js'
+import { scanAbortError, ScanAbortedError, throwIfScanAborted } from '../scan-control.js'
 import type { DateRange } from '../types.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
+import { gatewayReportSchema, type GatewayReportRow } from './gateway-report.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const REPORT_URL = 'https://ai-gateway.vercel.sh/v1/report'
 
-export type ReportRow = {
-  day?: string
-  model?: string
-  total_cost?: number
-  input_tokens?: number
-  output_tokens?: number
-  cached_input_tokens?: number
-  cache_creation_input_tokens?: number
-  reasoning_tokens?: number
-  request_count?: number
-}
-
-// Wave-3 named condition #2 done this slice: `getVercelGatewayApiKey` deleted.
-// Discovery runs through the env layer (`Env.layer` provided at this
-// composition root, mirroring the parser seam below); `resolveGatewayKey`
-// stays in `Env` (read-only here).
+export type ReportRow = GatewayReportRow
 
 function formatUtcDate(d: Date): string {
   const y = d.getUTCFullYear()
@@ -53,9 +41,11 @@ function queueGatewayWarn(code: string): void {
   })
 }
 
-export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
+export const fetchVercelGatewayReportEffect = Effect.fn('fetchVercelGatewayReport')(function* (
   dateRange: DateRange,
-): Effect.fn.Return<ReportRow[], never, HttpFetch | Env> {
+  signal?: AbortSignal,
+): Effect.fn.Return<ReportRow[], ScanAbortedError, HttpFetch | Env> {
+  if (signal?.aborted) return yield* scanAbortError(signal)
   const { vercelGatewayApiKey: key } = yield* Env
   if (!key) return []
 
@@ -67,55 +57,101 @@ export const fetchVercelGatewayReportEffect = Effect.fnUntraced(function* (
   })
 
   const http = yield* HttpFetch
-  return yield* Effect.gen(function* () {
-    // Bounded transient retry (F15/A1) on the fetch only: discovery used to
-    // answer "no sessions" (plus one `unreachable` warn) off a single blip,
-    // which silently zeroes a whole provider's cost for the scan. The
-    // non-2xx arm below stays OUTSIDE the retry — a 401/500 is a real answer,
-    // and the warn code it logs is byte-identical to today's.
-    const res = yield* http
-      .fetch(`${REPORT_URL}?${params}`, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${key}`,
-          Accept: 'application/json',
-        },
-      })
-      .pipe(retryTransientFetch)
+  return yield* Effect.acquireUseRelease(
+    Effect.sync(() => new AbortController()),
+    controller =>
+      Effect.gen(function* () {
+        // Bounded transient retry (F15/A1) on the fetch only: discovery used to
+        // answer "no sessions" (plus one `unreachable` warn) off a single blip,
+        // which silently zeroes a whole provider's cost for the scan. The
+        // non-2xx arm below stays OUTSIDE the retry — a 401/500 is a real answer,
+        // and the warn code it logs is byte-identical to today's.
+        const res = yield* http
+          .fetch(`${REPORT_URL}?${params}`, {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${key}`,
+              Accept: 'application/json',
+            },
+            signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+          })
+          .pipe(retryTransientFetch)
 
-    if (!res.ok) {
-      // The gateway error body can carry request echoes — status only.
-      yield* Effect.sync(() => queueGatewayWarn(`http-${res.status}`))
-      return []
-    }
+        if (!res.ok) {
+          // The gateway error body can carry request echoes — status only.
+          yield* Effect.sync(() => queueGatewayWarn(`http-${res.status}`))
+          return []
+        }
 
-    const body = yield* Effect.tryPromise({
-      try: () => res.json() as Promise<{ results?: ReportRow[] }>,
-      catch: cause => cause,
-    })
-    return body.results ?? []
-  }).pipe(
-    Effect.catch(err =>
-      Effect.sync(() => {
-        queueGatewayWarn(gatewayFailureCode(err))
-        return []
+        // Stop the native response body before joining the actual JSON promise.
+        // Interrupting its Effect wrapper alone would leave body work unowned.
+        const body = yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            const promise: Promise<unknown> = Promise.resolve().then(() => res.json())
+            return {
+              promise,
+              drain: promise.then(
+                () => undefined,
+                () => undefined,
+              ),
+            }
+          }),
+          owned => Effect.tryPromise({ try: () => owned.promise, catch: cause => cause }),
+          owned =>
+            Effect.promise(() => {
+              controller.abort()
+              return owned.drain
+            }),
+        )
+        if (signal?.aborted) return yield* scanAbortError(signal)
+        const report = yield* Schema.decodeUnknownEffect(gatewayReportSchema)(body)
+        return report.results ?? []
       }),
+    controller => Effect.sync(() => controller.abort()),
+  ).pipe(
+    Effect.catch(err =>
+      signal?.aborted
+        ? Effect.fail(scanAbortError(signal))
+        : Effect.sync(() => {
+            queueGatewayWarn(gatewayFailureCode(err))
+            return []
+          }),
     ),
   )
 })
 
-function createParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
+function createParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  dateRange?: DateRange,
+  context: ProviderScanContext = {},
+): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
+      throwIfScanAborted(context.signal)
       if (!dateRange) return
 
-      const rows = await Effect.runPromise(
-        fetchVercelGatewayReportEffect(dateRange).pipe(
-          Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
-          Effect.provide(Env.layer),
-        ),
-      )
+      // Compatibility for direct parser callers only. The worker injects its
+      // one runtime through this Promise boundary. Delete the fallback after
+      // all standalone test callers supply the GatewayReports capability.
+      const pending = context.fetchGatewayReport
+        ? context.fetchGatewayReport(dateRange, context.signal)
+        : Effect.runPromise(
+            fetchVercelGatewayReportEffect(dateRange, context.signal).pipe(
+              Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
+              Effect.provide(Env.layer),
+            ),
+            { signal: context.signal },
+          )
+      const rows = await pending.catch(error => {
+        throwIfScanAborted(context.signal)
+        // Promise parser boundary; unexpected failures retain their identity.
+        // eslint-disable-next-line no-restricted-syntax
+        throw error
+      })
+      throwIfScanAborted(context.signal)
       for (const row of rows) {
+        throwIfScanAborted(context.signal)
         const day = row.day ?? ''
         const model = row.model ?? 'unknown'
         const costUSD = row.total_cost ?? 0
@@ -182,11 +218,22 @@ export const vercelGateway: Provider = {
     return rawTool
   },
 
-  async discoverSessions(): Promise<SessionSource[]> {
+  async discoverSessions(context: ProviderScanContext = {}): Promise<SessionSource[]> {
+    throwIfScanAborted(context.signal)
+    if (context.gatewayEnabled !== undefined) {
+      return context.gatewayEnabled
+        ? [{ path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' }]
+        : []
+    }
     return Effect.runPromise(discoverVercelGatewaySessionsEffect().pipe(Effect.provide(Env.layer)))
   },
 
-  createSessionParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
-    return createParser(source, seenKeys, dateRange)
+  createSessionParser(
+    source: SessionSource,
+    seenKeys: Set<string>,
+    dateRange?: DateRange,
+    context?: ProviderScanContext,
+  ): SessionParser {
+    return createParser(source, seenKeys, dateRange, context)
   },
 }

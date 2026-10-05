@@ -35,6 +35,7 @@ import * as Layer from 'effect/Layer'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
+import { GatewayReports } from '../src/main/application/gateway-reports.js'
 import { Env } from '../src/main/env.js'
 import { FxRates } from '../src/main/fx.js'
 import { OperationalLog, type OperationalLogSink } from '../src/main/operational-log.js'
@@ -98,6 +99,43 @@ function worker<Overrides extends WorkerOverrides = never>(layerFor?: () => Laye
 }
 
 describe('WorkerLive: Env is constructed once per worker lifetime', () => {
+  it('the worker GatewayReports adapter captures substituted HTTP and environment services once', async () => {
+    const dir = tempDir()
+    const builds: string[] = []
+    const requests: RequestInit[] = []
+    const results = [{ day: '2026-01-05', model: 'test-model', total_cost: 2 }]
+    const overrides = Layer.mergeAll(
+      Layer.effect(
+        Env,
+        Effect.sync(() => {
+          builds.push('env')
+          return Env.of({ vercelGatewayApiKey: 'root-test-key', pricingCacheTtlMs: Infinity })
+        }),
+      ),
+      HttpFetch.layerWithFetch((async (_input, init) => {
+        requests.push(init ?? {})
+        return new Response(JSON.stringify({ results }))
+      }) as typeof fetch),
+    )
+    const owner = openWorkerOwner(join(dir, 'ledger.db'), undefined, overrides)
+    const range = { start: new Date('2026-01-01T00:00:00Z'), end: new Date('2026-01-31T00:00:00Z') }
+    try {
+      const reports = owner.runtime.runSync(GatewayReports)
+      expect(reports.enabled).toBe(true)
+      await expect(owner.runtime.runPromise(reports.getReport(range))).resolves.toEqual(results)
+      await expect(owner.runtime.runPromise(reports.getReport(range))).resolves.toEqual(results)
+      expect(builds).toEqual(['env'])
+      expect(requests).toHaveLength(2)
+      expect(requests.map(request => new Headers(request.headers).get('Authorization'))).toEqual([
+        'Bearer root-test-key',
+        'Bearer root-test-key',
+      ])
+    } finally {
+      await owner.runtime.dispose()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('a counting Env layer is built exactly once no matter how many arms run', async () => {
     let builds = 0
     const countingEnv = Layer.effect(

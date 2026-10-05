@@ -1,6 +1,7 @@
 import * as Context from 'effect/Context'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
@@ -242,20 +243,39 @@ function makeFetch(
     init: RequestInit = {},
     timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
   ): Effect.fn.Return<Response, HttpFetchError> {
-    const attempt = Effect.tryPromise({
-      try: signal => {
-        const combined = init.signal ? AbortSignal.any([init.signal, signal]) : signal
-        return fetchImpl(url, { ...init, signal: combined })
-      },
-      catch: cause => {
-        const message = errorMessage(cause)
-        return new HttpFetchError({
-          reason: isAbortError(cause) ? 'abort' : 'network',
-          message,
-          url,
-        })
-      },
-    })
+    const attempt = Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const controller = new AbortController()
+        const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal
+        const promise = (async () => fetchImpl(url, { ...init, signal }))()
+        return {
+          controller,
+          promise,
+          drain: promise.then(
+            () => undefined,
+            () => undefined,
+          ),
+        }
+      }),
+      owned =>
+        Effect.tryPromise({
+          try: () => owned.promise,
+          catch: cause =>
+            new HttpFetchError({
+              reason: init.signal?.aborted || isAbortError(cause) ? 'abort' : 'network',
+              message: errorMessage(cause),
+              url,
+            }),
+        }),
+      (owned, exit) =>
+        Effect.promise(() => {
+          if (Exit.isSuccess(exit)) return Promise.resolve()
+          owned.controller.abort()
+          // A caller stopping its producer waits for the native Promise. The
+          // existing HTTP deadline retains bounded recovery for a stuck transport.
+          return init.signal?.aborted ? owned.drain : Promise.resolve()
+        }),
+    )
     const outcome = yield* attempt.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)))
     if (Option.isNone(outcome)) {
       return yield* fileFetchTimeout(counters, timeoutMs, url)

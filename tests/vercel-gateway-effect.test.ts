@@ -113,6 +113,22 @@ describe('fetchVercelGatewayReportEffect (Effect-native gateway boundary)', () =
     expect(loggedCodes()).toEqual(['unreachable'])
   })
 
+  it('decodes nullable report fields and rejects malformed usage without logging the payload', async () => {
+    const valid = [{ day: null, model: null, input_tokens: null, total_cost: 2 }]
+    await expect(runEffect(RANGE, fakeJsonFetch(200, { results: valid }), 'test-key')).resolves.toEqual(valid)
+    expect(loggedCodes()).toEqual([])
+    await expect(
+      runEffect(RANGE, fakeJsonFetch(200, { results: [{ input_tokens: 'private-invalid-usage' }] }), 'test-key'),
+    ).resolves.toEqual([])
+    expect(takeQueuedLogRecords()).toEqual([
+      {
+        logEvent: 'scan.file-error',
+        level: 'warn',
+        fields: { op: 'scan', provider: 'vercel-gateway', code: 'schema' },
+      },
+    ])
+  })
+
   it('timeout via TestClock returns []', async () => {
     const rows = await runEffectTest(
       Effect.gen(function* () {

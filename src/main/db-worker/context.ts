@@ -17,6 +17,7 @@ import {
 } from '../../shared/schemas/skills.js'
 import { queryCompareView } from '../application/compare-query.js'
 import { queryExport } from '../application/export-query.js'
+import { GatewayReports } from '../application/gateway-reports.js'
 import { queryModelsView } from '../application/models-query.js'
 import { queryOptimizeView } from '../application/optimize-query.js'
 import { queryOverview } from '../application/overview-query.js'
@@ -218,6 +219,14 @@ export class DbWorkerContext {
       // to the ledger while the parse runs. The scan's delta wrapper already
       // gates out failed parses; `unchanged` is a no-op inside portIn.
       portIn,
+      {
+        gatewayEnabled: this.runtime.runSync(Effect.map(GatewayReports, reports => reports.enabled)),
+        fetchGatewayReport: (range, signal) =>
+          this.runtime.runPromise(
+            Effect.flatMap(GatewayReports, reports => reports.getReport(range, signal)),
+            { signal },
+          ),
+      },
       // Effect-native typed-abort proof (Wave 5 §2): `catchTag` on the `_tag`
       // (NOT `instanceof`, NOT `either`). No `either` here, so no span-inside
       // trap — any future `withSpan` must wrap OUTSIDE this `catchTag`, never

@@ -10,12 +10,14 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { CommandRunner } from './agents/command-runner.js'
 import { AssistantSetup } from './application/assistant-setup.js'
 import { ExportFiles } from './application/export-files.js'
+import { GatewayReports } from './application/gateway-reports.js'
 import { PricingDiagnostics } from './application/pricing-diagnostics.js'
 import { RepositoryInspection } from './application/repository-inspection.js'
 import { AssistantSetupLive } from './assistant-setup-live.js'
 import { Env } from './env.js'
 import { ExportFilesLive } from './export-files-live.js'
 import { FxRates } from './fx.js'
+import { GatewayReportsLive } from './gateway-reports-live.js'
 import {
   OperationalLog,
   OperationalLogLoggerLayer,
@@ -33,6 +35,7 @@ import { LedgerConfig, LedgerIngest, LedgerPortsLayer, LedgerQueries } from './s
 export type WorkerServices =
   | AssistantSetup
   | ExportFiles
+  | GatewayReports
   | RepositoryInspection
   | CommandRunner
   | PricingDiagnostics
@@ -58,6 +61,7 @@ export type WorkerOverrides =
   | RepositoryInspection
   | CommandRunner
   | ExportFiles
+  | GatewayReports
 export type WorkerSqlLayer = Layer.Layer<Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient>
 export type WorkerRuntime = ManagedRuntime.ManagedRuntime<WorkerServices, never>
 
@@ -69,21 +73,28 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
   sqliteLayer: WorkerSqlLayer = Sqlite.SqliteClient.layer({ filename: dbPath }),
 ): Layer.Layer<WorkerServices> {
   const ledger = LedgerPortsLayer.pipe(Layer.provideMerge(sqliteLayer))
-  const capabilities = Layer.mergeAll(ledger, AssistantSetupLive, ExportFilesLive, CommandRunner.layer)
+  const liveFetch = HttpFetch.layerWithFetch((input, init) => globalThis.fetch(input, init))
+  const capabilities = Layer.mergeAll(
+    ledger,
+    AssistantSetupLive,
+    ExportFilesLive,
+    CommandRunner.layer,
+    Env.layer,
+    liveFetch,
+  )
   const dependencies = overrides ? Layer.mergeAll(capabilities, overrides) : capabilities
   const fxRates = FxRates.layer.pipe(Layer.provide(dependencies))
   const repositoryInspection = RepositoryInspectionLive.pipe(Layer.provide(dependencies))
-  const liveFetch = HttpFetch.layerWithFetch((input, init) => globalThis.fetch(input, init))
+  const gatewayReports = GatewayReportsLive.pipe(Layer.provide(dependencies))
 
   const live = Layer.mergeAll(
     sink ? operationalLogLoggerLayerWithSink(sink, 'worker') : OperationalLogLoggerLayer,
     OperationalLogTracerLayer('worker', sink),
-    Env.layer,
     sink ? OperationalLog.layerWithSink(sink, 'worker') : OperationalLog.layer,
-    liveFetch,
     PricingDiagnosticsLive,
     fxRates,
     repositoryInspection,
+    gatewayReports,
     dependencies,
   )
   return overrides ? Layer.mergeAll(live, overrides) : live
