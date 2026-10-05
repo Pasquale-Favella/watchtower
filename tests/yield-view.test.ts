@@ -13,7 +13,7 @@ import {
   buildYieldPayload as buildYieldPayloadLive,
   buildYieldViewFromLedger as buildYieldViewFromLedgerLive,
 } from '../src/main/yield-view.js'
-import { buildFixtureCachedCall,buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 /** These tests run real git. On a loaded CI runner one spawn can exceed the
  * live inspection's 5 s per-call budget, which turns a repo into "unknown" and
