@@ -176,4 +176,34 @@ describe('scan lifetime ownership', () => {
     await interruption
     expect(interrupted).toBe(true)
   })
+
+  it('requests parser stop independently, then drains its callback before releasing scope', async () => {
+    const release = deferred<undefined>()
+    const parserEntered = deferred<AbortSignal>()
+    const parent = Effect.runFork(
+      Effect.gen(function* () {
+        yield* Effect.forkChild(
+          runOwnedScanPromise(signal => {
+            parserEntered.resolve(signal)
+            return release.promise
+          }),
+        )
+        yield* Effect.promise(() => new Promise<never>(() => undefined))
+      }),
+    )
+    const signal = await parserEntered.promise
+    const interruption = Effect.runPromise(Fiber.interrupt(parent))
+    await Promise.resolve()
+
+    expect(signal.aborted).toBe(true)
+    let interrupted = false
+    void interruption.then(() => {
+      interrupted = true
+    })
+    expect(interrupted).toBe(false)
+
+    release.resolve(undefined)
+    await interruption
+    expect(interrupted).toBe(true)
+  })
 })

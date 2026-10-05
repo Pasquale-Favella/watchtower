@@ -1,8 +1,11 @@
-import { readFile, stat } from 'fs/promises'
-import { readFileSync, statSync, createReadStream } from 'fs'
 import { basename } from 'node:path'
+
+import { createReadStream, readFileSync, statSync } from 'fs'
+import { readFile, stat } from 'fs/promises'
+
 import { type AppPaths, overrideFor } from '../env.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
+import { throwIfScanAborted } from './scan-control.js'
 
 // Hard cap well below V8's 512 MB string limit. Callers that need line-by-line
 // processing should use readSessionLines(), which avoids materializing the
@@ -103,6 +106,7 @@ type ReadSessionLinesOptions = {
   startByteOffset?: number
   byteOffsetTracker?: { lastCompleteLineOffset: number }
   maxBytes?: number
+  signal?: AbortSignal
 }
 
 export function readSessionLines(filePath: string, shouldSkipHead?: (head: string) => boolean): AsyncGenerator<string>
@@ -116,13 +120,16 @@ export async function* readSessionLines(
   shouldSkipHead?: (head: string) => boolean,
   options: ReadSessionLinesOptions = {},
 ): AsyncGenerator<SessionLine> {
+  throwIfScanAborted(options.signal)
   let size: number
   try {
     size = (await stat(filePath)).size
   } catch (err) {
+    throwIfScanAborted(options.signal)
     warn(`stat failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
     return
   }
+  throwIfScanAborted(options.signal)
 
   const maxBytes = options.maxBytes ?? MAX_STREAM_SESSION_FILE_BYTES
   if (size > maxBytes) {
@@ -130,10 +137,10 @@ export async function* readSessionLines(
     return
   }
 
-  const stream = createReadStream(
-    filePath,
-    options.startByteOffset !== undefined ? { start: options.startByteOffset } : undefined,
-  )
+  const stream = createReadStream(filePath, {
+    ...(options.startByteOffset !== undefined ? { start: options.startByteOffset } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
+  })
   const SKIP_HEAD = 2048
   const largeLineThreshold = options.largeLineThresholdBytes ?? LARGE_STREAM_LINE_BYTES
   const formatLine = (buf: Buffer, lineLen: number, head?: string): SessionLine => {
@@ -149,10 +156,12 @@ export async function* readSessionLines(
 
   try {
     for await (const raw of stream) {
+      throwIfScanAborted(options.signal)
       const chunk = raw as Buffer
       let pos = 0
 
       while (pos < chunk.length) {
+        throwIfScanAborted(options.signal)
         const nl = chunk.indexOf(0x0a, pos)
 
         if (skipping) {
@@ -215,6 +224,7 @@ export async function* readSessionLines(
       }
       chunkBase += chunk.length
     }
+    throwIfScanAborted(options.signal)
 
     if (!skipping && len > 0) {
       const buf = parts.length === 1 ? parts[0]! : Buffer.concat(parts, len)
@@ -229,6 +239,7 @@ export async function* readSessionLines(
       }
     }
   } catch (err) {
+    throwIfScanAborted(options.signal)
     warn(`stream read failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
   } finally {
     stream.destroy()

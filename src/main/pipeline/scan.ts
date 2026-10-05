@@ -2,7 +2,6 @@ import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
-import * as Schema from 'effect/Schema'
 
 import type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress } from '../../shared/schemas/scan.js'
 import type { Env } from '../env.js'
@@ -11,48 +10,55 @@ import { HttpFetch } from './fetch-utils.js'
 import { loadPricingEffect } from './models.js'
 import type { DeltaHandler } from './parser.js'
 import { parseAllSessions } from './parser.js'
+import { abortedScanError, ScanAbortedError } from './scan-control.js'
 
 export type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress, ScanStage } from '../../shared/schemas/scan.js'
-
-/** Typed abort sentinel (Wave 5, issue #148 §2): `Schema.TaggedError` with
- * `_tag: 'ScanAbortedError'` for Effect-native `catchTag` handling. The class
- * NAME stays `ScanAbortedError` (so `instanceof` keeps working) and
- * `TaggedError` sets `prototype.name` to the tag (so the parser's
- * `err.name === 'ScanAbortedError'` re-throw-by-name in `parser.ts`
- * `safeEmitDelta` keeps working — verified by regression + explicit
- * name/instanceof tests). Message stays `'scan aborted'` so the
- * `scan:error` envelope and `{ok:false, aborted:true}` wire stay
- * byte-identical. Mirrors `HttpFetchError`/`PricingRefreshError`. */
-export class ScanAbortedError extends Schema.TaggedError<ScanAbortedError>()('ScanAbortedError', {
-  message: Schema.String,
-}) {}
+export { ScanAbortedError } from './scan-control.js'
 
 type ScanDurationOutcome = 'success' | 'aborted' | 'failed'
 
-function abortedScanError(): ScanAbortedError {
-  return new ScanAbortedError({ message: 'scan aborted' })
+interface OwnedScanPromise<A> {
+  readonly promise: Promise<A>
+  readonly drain: Promise<void>
+  readonly controller: AbortController
+  settled: boolean
 }
 
-/** Owns parser work across interruption. F31 is partial: there is no parser
- * stop handle, so release waits indefinitely if the parser never settles. */
-export function runOwnedScanPromise<A>(start: () => Promise<A>): Effect.Effect<A, ScanAbortedError | Error> {
+/** Starts the parser only after its per-run stop signal has an owner. */
+export function runOwnedScanPromise<A>(
+  start: (signal: AbortSignal) => Promise<A>,
+): Effect.Effect<A, ScanAbortedError | Error> {
   return Effect.acquireUseRelease(
-    Effect.try({
-      try: start,
-      catch: cause => cause as ScanAbortedError | Error,
+    Effect.sync(() => {
+      const controller = new AbortController()
+      const promise = Promise.resolve().then(() =>
+        controller.signal.aborted ? Promise.reject(abortedScanError()) : start(controller.signal),
+      )
+      const owned: OwnedScanPromise<A> = {
+        promise,
+        controller,
+        settled: false,
+        drain: promise.then(
+          () => {
+            owned.settled = true
+          },
+          () => {
+            owned.settled = true
+          },
+        ),
+      }
+      return owned
     }),
-    promise =>
+    owned =>
       Effect.tryPromise({
-        try: () => promise,
+        try: () => owned.promise,
         catch: cause => cause as ScanAbortedError | Error,
       }),
-    promise =>
-      Effect.promise(() =>
-        promise.then(
-          () => undefined,
-          () => undefined,
-        ),
-      ),
+    owned =>
+      Effect.promise(() => {
+        if (!owned.settled) owned.controller.abort(abortedScanError())
+        return owned.drain
+      }),
   )
 }
 
@@ -172,9 +178,11 @@ export const runScan = Effect.fnUntraced(function* (
       ensureProvider(provider).unparsed += count
     }
 
-    // The parser Promise API does not observe fiber interruption. Start it only
-    // after acquireUseRelease has installed ownership, then drain it on release.
-    yield* runOwnedScanPromise(() => parseAllSessions(options.range, options.provider, countingDelta, onUnparsed))
+    // Parser work observes this per-run signal, but the Promise remains owned
+    // until every parser and callback has actually settled after interruption.
+    yield* runOwnedScanPromise(signal =>
+      parseAllSessions(options.range, options.provider, countingDelta, onUnparsed, signal),
+    )
 
     if (onDelta && abort?.isAborted()) {
       aborted = true
