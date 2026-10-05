@@ -57,13 +57,7 @@ import {
 } from '../../../../shared/schemas/models.js'
 import { type Section, sectionSchema } from '../../../../shared/schemas/navigation.js'
 import { type OptimizePayload, optimizePayloadSchema } from '../../../../shared/schemas/optimize.js'
-import {
-  type OrbNotice,
-  orbNoticeSchema,
-  type OrbPanelRequest,
-  type OrbPlacement,
-  orbPlacementSchema,
-} from '../../../../shared/schemas/orb.js'
+import { type OrbPanelRequest, type OrbPlacement, orbPlacementSchema } from '../../../../shared/schemas/orb.js'
 import { type OverviewPayload, overviewPayloadSchema, type OverviewScope } from '../../../../shared/schemas/overview.js'
 import { type PullRequestsPayload, pullRequestsPayloadSchema } from '../../../../shared/schemas/pull-requests.js'
 import {
@@ -381,24 +375,19 @@ export function fetchCoachRun(request: CoachRunRequest): Promise<ApiResult<Coach
   return fetchPayload('coach run', coachRunResultSchema, () => window.api.startCoachRun(request))
 }
 
-/** Background orb (main/background-shell.ts): the orb page's window controls.
- * Placement and notices are decoded like any other payload (ADR 0005); the
+/** Background orb (main/background-shell.ts): the orb pages' window controls.
+ * Placement is decoded like any other payload (ADR 0005); the
  * fire-and-forget controls carry no payload back. */
 const nullableOrbPlacementSchema = Schema.NullOr(orbPlacementSchema)
-const nullableOrbNoticeSchema = Schema.NullOr(orbNoticeSchema)
 
 export function fetchOrbPlacement(): Promise<ApiResult<OrbPlacement | null>> {
   return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.getPlacement())
 }
 
-/** `open` is the user's own request (focused), `peek` opens without taking
- * focus, `fold` closes. Resolves with the placement the main process applied. */
+/** `open` (the user's own request, focused) or `fold`. Resolves with the
+ * placement the main process applied. */
 export function fetchOrbPanelRequest(request: OrbPanelRequest): Promise<ApiResult<OrbPlacement | null>> {
   return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.requestPanel(request))
-}
-
-export function fetchPendingOrbNotice(): Promise<ApiResult<OrbNotice | null>> {
-  return fetchPayload('orb notice', nullableOrbNoticeSchema, () => window.api.orb.takePendingNotice())
 }
 
 export const orbControls = {
@@ -409,18 +398,12 @@ export const orbControls = {
   hide: (): void => window.api.orb.hide(),
   quit: (): void => window.api.orb.quit(),
   panelPainted: (): void => window.api.orb.panelPainted(),
+  panelDataReady: (): void => window.api.orb.panelDataReady(),
 }
 
 export function onOrbPlacement(callback: (placement: OrbPlacement) => void): () => void {
   return window.api.orb.onPlacement(raw => {
     const parsed = parseEvent(orbPlacementSchema, 'orb placement', raw)
-    if (parsed) callback(parsed)
-  })
-}
-
-export function onOrbNotice(callback: (notice: OrbNotice) => void): () => void {
-  return window.api.orb.onNotice(raw => {
-    const parsed = parseEvent(orbNoticeSchema, 'orb notice', raw)
     if (parsed) callback(parsed)
   })
 }

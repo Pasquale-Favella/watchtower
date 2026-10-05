@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'fs'
 
-import type { Point } from './orb-geometry.js'
+import type { Point } from './orb-policy.js'
 
 /** The background shell's persisted toggles (`userData/shell-preferences.json`). */
 export interface ShellPreferences {

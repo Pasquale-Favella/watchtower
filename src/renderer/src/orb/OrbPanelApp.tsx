@@ -6,7 +6,6 @@ import { orbControls } from '@/shared/lib/api'
 
 import { OrbPanel } from './OrbPanel'
 import { useOrbPanelBootstrap } from './panel-hooks'
-import { useOrbPanelStore } from './panel-store'
 import { useOrbPlacementStore } from './placement-store'
 
 /**
@@ -21,16 +20,16 @@ export function OrbPanelApp() {
   useThemeEffect()
   const expanded = useOrbPlacementStore(s => s.placement.expanded)
   const request = useOrbPlacementStore(s => s.request)
-  const setHovered = useOrbPanelStore(s => s.setHovered)
   const rootRef = useRef<HTMLDivElement>(null)
 
   // Open, the root takes DOM focus, so Escape folds a panel the user opened
-  // (a click, the summon shortcut — the window is focused). A peek is shown
-  // without focus, so the OS sends it no keys: it folds on its timer, a click
-  // elsewhere, or a click on the orb. Focusing an element never activates the
-  // window, so a peek still steals nothing. Then, once a
-  // fresh frame is on screen — two animation frames — tell the main process,
-  // which reveals the window it showed transparent (no stale-frame flicker).
+  // (a click, the summon shortcut: the window is focused). A peek is shown
+  // without focus, so the OS sends it no keys until it is clicked; it folds
+  // on its own (the main process's timer) or on a click elsewhere. Focusing
+  // an element never activates the window, so a peek still steals nothing.
+  //
+  // Once a fresh frame is on screen (two animation frames), the page tells
+  // the main process, which reveals the window it showed transparent.
   useEffect(() => {
     if (!expanded) return
     rootRef.current?.focus({ preventScroll: true })
@@ -46,8 +45,6 @@ export function OrbPanelApp() {
         ref={rootRef}
         tabIndex={-1}
         className="text-foreground h-full w-full p-1 font-sans outline-none"
-        onPointerEnter={() => setHovered(true)}
-        onPointerLeave={() => setHovered(false)}
         onKeyDown={event => {
           if (event.key === 'Escape' && expanded) void request('fold')
         }}

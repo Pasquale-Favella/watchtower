@@ -20,20 +20,16 @@ export const ORB_PANEL_SIZE = { width: 360, height: 320 } as const
  * the right edge has its panel to the left. */
 export const orbPlacementSchema = Schema.Struct({
   expanded: writable(Schema.Boolean),
+  /** The open is the first-close "still watching" peek: shown without focus,
+   * with its note, folding on its own. The main process owns it end to end
+   * (its timer included); the panel only renders the note. */
+  peek: writable(Schema.Boolean),
   horizontal: writable(Schema.Literals(['left', 'right'])),
   vertical: writable(Schema.Literals(['top', 'bottom'])),
 })
 export type OrbPlacement = Schema.Schema.Type<typeof orbPlacementSchema>
 
 /** What an orb page asks of the panel: `open` (the user's own request — a
- * click — so it takes focus), `peek` (opens without taking focus), `fold`. */
-export const orbPanelRequestSchema = Schema.Literals(['open', 'peek', 'fold'])
+ * click — so it takes focus) or `fold`. Peeks are the main process's own. */
+export const orbPanelRequestSchema = Schema.Literals(['open', 'fold'])
 export type OrbPanelRequest = Schema.Schema.Type<typeof orbPanelRequestSchema>
-
-/** One-off nudges from the main process to the panel page: `backgrounded`
- * after the main window was first closed to the tray (it peeks, with a note,
- * once its data is in). */
-export const orbNoticeSchema = Schema.Struct({
-  kind: writable(Schema.Literals(['backgrounded'])),
-})
-export type OrbNotice = Schema.Schema.Type<typeof orbNoticeSchema>

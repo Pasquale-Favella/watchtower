@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { OrbPlacement } from '../src/shared/schemas/orb.js'
+
 // The settings store's persist API exists only when `localStorage` does at
 // module load (see settings-store.test.ts): install a memory storage BEFORE
 // the dynamic imports, since the orb wiring rehydrates through it.
@@ -12,12 +14,11 @@ vi.stubGlobal('localStorage', {
 
 const { subscribeToOrbBeacon } = await import('../src/renderer/src/orb/beacon-wiring.js')
 const { subscribeToOrbPanel } = await import('../src/renderer/src/orb/panel-wiring.js')
-const { useOrbPanelStore } = await import('../src/renderer/src/orb/panel-store.js')
 const { useOrbPlacementStore } = await import('../src/renderer/src/orb/placement-store.js')
 const { useScanStore } = await import('../src/renderer/src/app/stores/scan-store.js')
 const { useSettingsStore } = await import('../src/renderer/src/features/settings/store.js')
 
-const placement = { expanded: false, horizontal: 'left', vertical: 'top' }
+const placement = { expanded: false, peek: false, horizontal: 'left', vertical: 'top' } satisfies OrbPlacement
 const storeChanged = {
   scanId: 'scan-1',
   startedAt: '2026-01-01T00:00:00Z',
@@ -30,7 +31,7 @@ const storeChanged = {
 }
 
 /** A window whose every `on*` channel is captured for manual firing. */
-function orbWindow(takePendingNotice: () => Promise<unknown> = vi.fn(async () => null)) {
+function orbWindow() {
   const listeners: Record<string, (payload?: unknown) => void> = {}
   const events = new Map<string, (event: unknown) => void>()
   const unsub = vi.fn()
@@ -52,8 +53,6 @@ function orbWindow(takePendingNotice: () => Promise<unknown> = vi.fn(async () =>
     getOverview: vi.fn(async () => null),
     orb: {
       onPlacement: capture('onPlacement'),
-      onNotice: capture('onNotice'),
-      takePendingNotice,
       requestPanel: vi.fn(async () => ({ ...placement, expanded: true })),
     },
   }
@@ -66,7 +65,6 @@ function orbWindow(takePendingNotice: () => Promise<unknown> = vi.fn(async () =>
 }
 
 beforeEach(() => {
-  useOrbPanelStore.setState(useOrbPanelStore.getInitialState(), true)
   useOrbPlacementStore.setState(useOrbPlacementStore.getInitialState(), true)
   useScanStore.setState(useScanStore.getInitialState(), true)
 })
@@ -94,10 +92,9 @@ describe('subscribeToOrbBeacon — the light orb (ADR 0011)', () => {
     teardown()
   })
 
-  it('subscribes to no notices and no data-plane refetch channels', () => {
+  it('subscribes to no data-plane refetch channels', () => {
     const { listeners } = orbWindow()
     subscribeToOrbBeacon()()
-    expect(listeners.onNotice).toBeUndefined()
     expect(listeners.onConfigChanged).toBeUndefined()
     expect(listeners.onCurrencyChanged).toBeUndefined()
   })
@@ -112,21 +109,14 @@ describe('subscribeToOrbPanel (ADR 0011)', () => {
     teardown()
   })
 
-  it('folding clears the peek note', () => {
+  it('mirrors the placement — the peek flag included — into the placement store', () => {
     const { listeners } = orbWindow()
     const teardown = subscribeToOrbPanel()
-    useOrbPanelStore.setState({ peek: 'note' })
-    listeners.onPlacement?.({ ...placement, expanded: true })
-    expect(useOrbPanelStore.getState().peek).toBe('note')
+    const peeking = { ...placement, expanded: true, peek: true } satisfies OrbPlacement
+    listeners.onPlacement?.(peeking)
+    expect(useOrbPlacementStore.getState().placement).toEqual(peeking)
     listeners.onPlacement?.(placement)
-    expect(useOrbPanelStore.getState().peek).toBeNull()
-    teardown()
-  })
-
-  it('pulls a notice raised before the page could listen', async () => {
-    orbWindow(vi.fn(async () => ({ kind: 'backgrounded' })))
-    const teardown = subscribeToOrbPanel()
-    await vi.waitFor(() => expect(useOrbPlacementStore.getState().placement.expanded).toBe(true))
+    expect(useOrbPlacementStore.getState().placement).toEqual(placement)
     teardown()
   })
 
@@ -146,7 +136,7 @@ describe('subscribeToOrbPanel (ADR 0011)', () => {
   it('teardown unsubscribes every channel', () => {
     const { unsub } = orbWindow()
     subscribeToOrbPanel()()
-    // Data plane: 4 scan lifecycle + config + currency; then placement + notice.
-    expect(unsub).toHaveBeenCalledTimes(8)
+    // Data plane: 4 scan lifecycle + config + currency; then placement.
+    expect(unsub).toHaveBeenCalledTimes(7)
   })
 })

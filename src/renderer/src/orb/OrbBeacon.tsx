@@ -33,6 +33,12 @@ export function OrbBeacon({ className }: { className?: string }) {
       // A native title: the 64px window would clip a rendered tooltip.
       title={expanded ? undefined : `Watchtower · ${summon}`}
       {...drag}
+      // A secondary/middle press is not a toggle (or a drag), but it does take
+      // focus from an open panel: fold it rather than strand it unfocused.
+      onPointerDownCapture={event => {
+        if (event.button !== 0 && expanded) void request('fold')
+      }}
+      onContextMenu={event => event.preventDefault()}
       onKeyDown={event => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()

@@ -18,22 +18,10 @@ import { join } from 'path'
 
 import { acceleratorFor, SHORTCUTS } from '../shared/lib/shortcuts.js'
 import { type Section, sectionSchema } from '../shared/schemas/navigation.js'
-import {
-  type OrbNotice,
-  type OrbPanelRequest,
-  orbPanelRequestSchema,
-  type OrbPlacement,
-} from '../shared/schemas/orb.js'
+import { orbPanelRequestSchema, type OrbPlacement } from '../shared/schemas/orb.js'
 import { logCodeFor, safeLogOperationalEvent } from './operational-log.js'
-import {
-  clampToWorkArea,
-  containsPoint,
-  defaultOrbPosition,
-  offsetAnchor,
-  orbBounds,
-  panelLayout,
-  type Point,
-} from './orb-geometry.js'
+import { clampToWorkArea, defaultOrbPosition, orbBounds, panelLayout } from './orb-geometry.js'
+import { containsPoint, createHeldRequest, createPeekGate, offsetAnchor, type Point } from './orb-policy.js'
 import { loadShellPreferences, saveShellPreferences } from './shell-preferences.js'
 
 /**
@@ -52,6 +40,9 @@ import { loadShellPreferences, saveShellPreferences } from './shell-preferences.
  * Both are shown only while the main window is not (hidden or minimized):
  * with the full app on screen they would just be clutter. Neither takes
  * focus on its own — only a click on the orb or the summon shortcut does.
+ *
+ * Every panel open/fold decision is made here, the first-close peek included
+ * (when it opens, its note, its timer): the pages only ask and render.
  */
 
 const isSection = Schema.is(sectionSchema)
@@ -60,12 +51,25 @@ const isPanelRequest = Schema.is(orbPanelRequestSchema)
 /** How long a revealed panel may wait, transparent, for its page to report a
  * painted frame before it is made opaque regardless. */
 const REVEAL_FALLBACK_MS = 200
+/** How long a window may take to become ready before it is shown anyway. */
+const READY_FALLBACK_MS = 2_000
+/** How long an open may wait for the orb to reach the screen before it is
+ * considered stale and dropped. */
+const HELD_OPEN_TTL_MS = 3_000
+/** A peek folds itself after this long — unless the pointer rests on the
+ * panel, in which case it re-checks every `PEEK_RECHECK_MS`. */
+const PEEK_MS = 6_000
+const PEEK_RECHECK_MS = 1_000
 
 /** The registry's OS-wide summon shortcut, as an Electron accelerator. */
 const SUMMON_ACCELERATOR = (() => {
   const def = SHORTCUTS.find(entry => entry.action === 'summonOrb' && entry.scope === 'global')
   return def ? acceleratorFor(def.hotkey) : null
 })()
+
+/** How the panel opens: `open` is the user's own request (focused), `peek`
+ * is the first-close note (inactive, folds on its own). */
+type PanelMode = 'open' | 'peek'
 
 export interface BackgroundShellOptions {
   preloadPath: string
@@ -103,10 +107,22 @@ async function trayIcon(iconPath: string | null): Promise<NativeImage> {
   return image.isEmpty() ? image : image.resize({ width: size, height: size, quality: 'best' })
 }
 
-/** Runs `show` now, or once the window's page can paint. */
+/** Runs `show` once the window's page can paint — or after a fallback, so a
+ * page that never reports ready cannot leave the window unshown forever. */
 function showWhenReady(win: BrowserWindow, show: () => void): void {
-  if (win.webContents.isLoading()) win.once('ready-to-show', show)
-  else show()
+  if (!win.webContents.isLoading()) {
+    show()
+    return
+  }
+  let done = false
+  const once = (): void => {
+    if (done || win.isDestroyed()) return
+    done = true
+    clearTimeout(fallback)
+    show()
+  }
+  const fallback = setTimeout(once, READY_FALLBACK_MS)
+  win.once('ready-to-show', once)
 }
 
 function live(win: BrowserWindow | null): BrowserWindow | null {
@@ -123,23 +139,25 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   let tray: Tray | null = null
   let quitting = false
   let anchor: Point = clampToWorkArea(prefs.orbPosition ?? defaultOrbPosition())
+  /** The panel is open (or opening — see revealPanel). */
   let expanded = false
+  /** The open is the first-close peek: inactive, with its note, folding on
+   * its own until the user interacts with it. */
+  let peeking = false
+  let peekTimer: NodeJS.Timeout | null = null
   let dragOrigin: Point | null = null
-  /** A notice raised before the panel page could listen (pulled on mount). */
-  let pendingNotice: OrbNotice | null = null
-  /** The "still watching" peek explains the orb once per session, on the
-   * first close to the tray while the orb is on — not on every close. */
-  let backgroundedNoticeSent = false
+  /** The first-close peek: once per session, once the close and the panel's
+   * data have both happened. */
+  const peekGate = createPeekGate()
+  /** An open asked for while the orb is still on its way to the screen: applied
+   * when the orb shows, unless it has gone stale meanwhile. */
+  const heldOpen = createHeldRequest<PanelMode>(HELD_OPEN_TTL_MS)
   /** The orb is about the app being *away*: never float it during boot,
    * before the main window has been on screen once. */
   let mainWindowShown = false
   let visibilityTimer: NodeJS.Timeout | null = null
   /** Set while the panel is shown but still transparent (see revealPanel). */
   let revealTimer: NodeJS.Timeout | null = null
-  /** An open asked for while the orb is still on its way to the screen (the
-   * visibility settle, its page loading): applied once the orb is shown,
-   * never dropped. */
-  let pendingOpen: Exclude<OrbPanelRequest, 'fold'> | null = null
 
   function mainWindowAway(): boolean {
     return !mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()
@@ -159,8 +177,38 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     return event.sender === live(orbWindow)?.webContents
   }
 
-  function broadcastPlacement(placement: OrbPlacement): void {
+  function isPanelSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
+    return event.sender === live(panelWindow)?.webContents
+  }
+
+  function currentPlacement(): OrbPlacement {
+    return panelLayout(anchor, expanded, peeking).placement
+  }
+
+  function broadcastPlacement(): OrbPlacement {
+    const placement = currentPlacement()
     for (const win of [live(orbWindow), live(panelWindow)]) win?.webContents.send('orb:placement', placement)
+    return placement
+  }
+
+  function clearPeekTimer(): void {
+    if (peekTimer) clearTimeout(peekTimer)
+    peekTimer = null
+  }
+
+  /** The peek folds on its own — but not from under a pointer resting on it. */
+  function schedulePeekFold(delayMs: number): void {
+    clearPeekTimer()
+    peekTimer = setTimeout(() => {
+      peekTimer = null
+      if (!peeking) return
+      const panel = live(panelWindow)
+      if (panel && containsPoint(panel.getBounds(), screen.getCursorScreenPoint())) {
+        schedulePeekFold(PEEK_RECHECK_MS)
+        return
+      }
+      applyPanel(false)
+    }, delayMs)
   }
 
   function finishReveal(): void {
@@ -172,14 +220,15 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   /** Shows the hidden panel without a flicker. A hidden transparent window
    * reappears with its stale (or evicted) surface for a frame before Chromium
    * paints a fresh one — it reads as the panel opening twice. So it is shown
-   * fully transparent — only once its page can paint at all — and made opaque
-   * when the page reports a painted frame (`orb:panel-painted`), or after a
-   * short fallback so it can never stay invisible. (`setOpacity` is a no-op on
-   * Linux: there it simply shows.) */
+   * fully transparent — once its page can paint (or a fallback passes) — and
+   * made opaque when the page reports a painted frame (`orb:panel-painted`),
+   * or after a short fallback so it can never stay invisible. (`setOpacity` is
+   * a no-op on Linux: there it simply shows.) */
   function revealPanel(panel: BrowserWindow, focus: boolean): void {
     panel.setOpacity(0)
     showWhenReady(panel, () => {
-      if (!expanded || panel.isDestroyed()) return // folded while loading
+      // Folded or quitting while the page got ready: show nothing.
+      if (!expanded || quitting || panel.isDestroyed()) return
       if (focus) {
         panel.show()
         panel.focus()
@@ -191,37 +240,38 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     })
   }
 
-  /** Opens (focused or not) or folds the panel window beside the visible orb. */
-  function applyPanel(open: boolean, focus = false): OrbPlacement {
+  /** Opens (as `mode`) or folds the panel window beside the visible orb. */
+  function applyPanel(open: false): OrbPlacement
+  function applyPanel(open: true, mode: PanelMode): OrbPlacement
+  function applyPanel(open: boolean, mode: PanelMode = 'open'): OrbPlacement {
     const panel = live(panelWindow)
+    const wasOpen = expanded
     expanded = open && !!panel
-    const { bounds, placement } = panelLayout(anchor, expanded)
+    // A peek stays a peek only while nothing else asks for the panel.
+    peeking = expanded && mode === 'peek' && (!wasOpen || peeking)
+    clearPeekTimer()
+    if (peeking) schedulePeekFold(PEEK_MS)
     if (panel && expanded) {
-      panel.setBounds(bounds)
-      if (!panel.isVisible()) revealPanel(panel, focus)
-      else if (focus) panel.focus()
-    } else if (panel?.isVisible()) {
+      panel.setBounds(panelLayout(anchor, true).bounds)
+      if (!panel.isVisible()) revealPanel(panel, mode === 'open')
+      else if (mode === 'open') panel.focus()
+    } else {
+      heldOpen.clear()
       if (revealTimer) clearTimeout(revealTimer)
       revealTimer = null
-      panel.hide()
+      if (panel?.isVisible()) panel.hide()
     }
-    broadcastPlacement(placement)
-    return placement
+    return broadcastPlacement()
   }
 
-  /** Every panel request — an orb page's, the summon shortcut's — lands here.
-   * The panel only ever opens beside a visible orb: an open that arrives while
+  /** Opens the panel as `mode` — beside a visible orb. One that arrives while
    * the orb is still on its way is held and applied when it shows. */
-  function requestPanel(request: OrbPanelRequest): OrbPlacement {
-    if (request === 'fold') {
-      pendingOpen = null
-      return applyPanel(false)
-    }
+  function openPanel(mode: PanelMode): OrbPlacement {
     if (!live(orbWindow)?.isVisible()) {
-      if (orbWanted()) pendingOpen = request
-      return panelLayout(anchor, false).placement
+      if (orbWanted()) heldOpen.hold(mode)
+      return currentPlacement()
     }
-    return applyPanel(true, request === 'open')
+    return applyPanel(true, mode)
   }
 
   function surfaceWindow(page: 'orb.html' | 'orb-panel.html', extra: BrowserWindowConstructorOptions): BrowserWindow {
@@ -274,13 +324,20 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
       webPreferences: { backgroundThrottling: false },
     })
     // Clicking anywhere else folds the panel — except a press on the orb
-    // itself: there the orb decides (its click toggles, its drag folds), else
+    // itself: there the orb decides (any click toggles, a drag folds), else
     // the panel would fold here and the same click reopen it. Decided by where
     // the cursor is, not by which window took focus — no timing to race.
     panel.on('blur', () => {
-      const orb = live(orbWindow)
-      if (!expanded || (orb && containsPoint(orb.getBounds(), screen.getCursorScreenPoint()))) return
+      const orbRect = live(orbWindow)?.getBounds()
+      if (!expanded || (orbRect && containsPoint(orbRect, screen.getCursorScreenPoint()))) return
       applyPanel(false)
+    })
+    // Interacting with a peek makes it an ordinary open: no more self-fold.
+    panel.on('focus', () => {
+      if (!peeking) return
+      peeking = false
+      clearPeekTimer()
+      broadcastPlacement()
     })
     panel.on('closed', () => {
       if (panelWindow === panel) panelWindow = null
@@ -305,27 +362,18 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
       if (orb.isVisible()) return
       orb.setBounds(orbBounds(anchor))
       showWhenReady(orb, () => {
+        if (!orbWanted()) return // the app came back while the orb was loading
         orb.showInactive()
-        // An open that arrived while the orb was on its way.
-        const request = pendingOpen
-        pendingOpen = null
-        if (request) requestPanel(request)
+        // An open that arrived while the orb was on its way (if still fresh).
+        const mode = heldOpen.take()
+        if (mode) applyPanel(true, mode)
       })
     } else {
-      pendingOpen = null
+      heldOpen.clear()
       if (!live(orbWindow)?.isVisible()) return
       if (expanded) applyPanel(false)
       live(orbWindow)?.hide()
     }
-  }
-
-  function notifyPanel(notice: OrbNotice): void {
-    if (!prefs.orbEnabled) return
-    const panel = live(panelWindow)
-    // The panel may not exist yet (the window's `hide` event can land after
-    // this call) or may still be loading: hold the notice until it can listen.
-    if (!panel || panel.webContents.isLoading()) pendingNotice = notice
-    else panel.webContents.send('orb:notice', notice)
   }
 
   /** The main window navigates itself (`navigateToSection`): only the
@@ -352,17 +400,17 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
 
   /** The global shortcut: brings Watchtower back from wherever it went.
    * - the main window is on screen → focus it;
-   * - the panel is already open → open the full app (press twice);
-   * - otherwise → float the orb and open the panel focused, here and now (it
-   *   shows whatever it holds — never gated on a load), so Escape or a click
-   *   elsewhere folds it again. Summoning a hidden orb turns "Show floating
+   * - the panel is open (or opening) → open the full app (press twice);
+   * - otherwise → float the orb and open the panel focused. Not gated on the
+   *   panel's data: it shows whatever the panel holds (only the orb's own
+   *   first paint can delay it). Summoning a hidden orb turns "Show floating
    *   orb" back on: pressing it is asking for the orb. */
   function summon(): void {
     if (!mainWindowAway()) {
       showMainWindow()
       return
     }
-    if (expanded && live(panelWindow)?.isVisible()) {
+    if (expanded) {
       applyPanel(false)
       showMainWindow()
       return
@@ -370,7 +418,7 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     mainWindowShown = true
     if (!prefs.orbEnabled) setOrbEnabled(true)
     else updateOrbVisibility()
-    requestPanel('open')
+    openPanel('open')
   }
 
   function registerSummonShortcut(): void {
@@ -426,18 +474,15 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   }
 
   function registerOrbIpc(): void {
-    ipcMain.handle('orb:placement:get', event => (isOrbSurface(event) ? panelLayout(anchor, expanded).placement : null))
-    // Pulled by the panel page once its listeners are live: a push on
-    // `did-finish-load` can land before React has subscribed.
-    ipcMain.handle('orb:notice:take', event => {
-      if (!isOrbSurface(event)) return null
-      const notice = pendingNotice
-      pendingNotice = null
-      return notice
+    ipcMain.handle('orb:placement:get', event => (isOrbSurface(event) ? currentPlacement() : null))
+    ipcMain.handle('orb:panel:request', (event, request: unknown) => {
+      if (!isOrbSurface(event) || !isPanelRequest(request)) return null
+      return request === 'fold' ? applyPanel(false) : openPanel('open')
     })
-    ipcMain.handle('orb:panel:request', (event, request: unknown) =>
-      isOrbSurface(event) && isPanelRequest(request) ? requestPanel(request) : null,
-    )
+    // The panel's data is in: the first-close peek may open now (once).
+    ipcMain.on('orb:panel-data-ready', event => {
+      if (isPanelSender(event) && peekGate.dataReady()) openPanel('peek')
+    })
     ipcMain.on('orb:drag-start', event => {
       if (!isOrbSender(event)) return
       // The panel is anchored to the orb: a drag folds it rather than leave it behind.
@@ -456,7 +501,7 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
       dragOrigin = null
       anchor = clampToWorkArea(anchor)
       live(orbWindow)?.setBounds(orbBounds(anchor))
-      broadcastPlacement(panelLayout(anchor, expanded).placement)
+      broadcastPlacement()
       prefs.orbPosition = anchor
       savePreferences()
     })
@@ -473,7 +518,7 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     })
     // The panel page painted a fresh frame after opening: reveal it.
     ipcMain.on('orb:panel-painted', event => {
-      if (revealTimer && event.sender === live(panelWindow)?.webContents) finishReveal()
+      if (revealTimer && isPanelSender(event)) finishReveal()
     })
   }
 
@@ -488,7 +533,8 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   screen.on('display-removed', () => {
     anchor = clampToWorkArea(anchor)
     live(orbWindow)?.setBounds(orbBounds(anchor))
-    applyPanel(expanded)
+    if (expanded) live(panelWindow)?.setBounds(panelLayout(anchor, true).bounds)
+    broadcastPlacement()
   })
 
   return {
@@ -503,10 +549,7 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
         }
         win.hide()
         // "Once" means once it can be seen: with the orb off, nothing is spent.
-        if (!backgroundedNoticeSent && prefs.orbEnabled) {
-          backgroundedNoticeSent = true
-          notifyPanel({ kind: 'backgrounded' })
-        }
+        if (prefs.orbEnabled && peekGate.closed()) openPanel('peek')
       })
       win.on('show', () => {
         mainWindowShown = true
@@ -523,6 +566,7 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     showMainWindow,
     markQuitting: () => {
       quitting = true
+      clearPeekTimer()
       if (SUMMON_ACCELERATOR) globalShortcut.unregister(SUMMON_ACCELERATOR)
       live(panelWindow)?.hide()
       live(orbWindow)?.hide()
