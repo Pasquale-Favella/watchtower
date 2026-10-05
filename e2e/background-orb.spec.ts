@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import { ORB_SUMMON_SHORTCUT } from '../src/shared/schemas/orb'
+import { acceleratorFor, SHORTCUTS } from '../src/shared/lib/shortcuts'
 import { dismissOnboarding, withApp } from './app'
 
 /**
@@ -39,18 +39,50 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     await expect(seeOverview).toBeHidden({ timeout: 15_000 })
     await orbButton.click()
     await expect(orb.getByText('Spend over time', { exact: true })).toBeVisible()
-    await seeOverview.click()
 
+    // Escape folds the panel (the unfolded root holds DOM focus).
+    await orb.keyboard.press('Escape')
+    await expect(seeOverview).toBeHidden()
+    await orbButton.click()
+    await expect(seeOverview).toBeVisible()
+
+    // Both pages share one origin even in a build (file://): a theme the
+    // main window persists reaches the orb live through the `storage` event.
+    await window.evaluate(() => {
+      const raw = JSON.parse(localStorage.getItem('watchtower:settings') ?? '{"state":{},"version":0}')
+      raw.state.theme = 'dark'
+      localStorage.setItem('watchtower:settings', JSON.stringify(raw))
+    })
+    await expect(orb.locator('html')).toHaveClass(/(^|\s)dark(\s|$)/)
+
+    await seeOverview.click()
     await expect.poll(mainVisible).toBe(true)
     await expect(window.getByText('Total spend', { exact: true })).toBeVisible()
 
-    // The summon shortcut is live for as long as the app runs, so the orb can
-    // come back even after it was hidden from its own panel.
-    const registered = await app.evaluate(
-      ({ globalShortcut }, accelerator) => globalShortcut.isRegistered(accelerator),
-      ORB_SUMMON_SHORTCUT.accelerator,
+    // The peek explains the orb once per session: a second close floats the
+    // orb folded, without the note.
+    await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()
+        .find(win => !win.webContents.getURL().includes('orb.html'))
+        ?.close(),
     )
-    expect(registered).toBe(true)
+    await expect.poll(mainVisible).toBe(false)
+    await expect(orbButton).toBeVisible()
+    await orb.waitForTimeout(2_000)
+    await expect(orb.getByText(/^Still watching in the background/)).toHaveCount(0)
+    await expect(seeOverview).toBeHidden()
+
+    // The registry's global summon shortcut is live for as long as the app
+    // runs, so the orb can come back even after it was hidden from its panel.
+    const summon = SHORTCUTS.find(def => def.action === 'summonOrb' && def.scope === 'global')
+    expect(summon).toBeDefined()
+    if (summon) {
+      const registered = await app.evaluate(
+        ({ globalShortcut }, accelerator) => globalShortcut.isRegistered(accelerator),
+        acceleratorFor(summon.hotkey),
+      )
+      expect(registered).toBe(true)
+    }
     expect(orbErrors).toEqual([])
   })
 })

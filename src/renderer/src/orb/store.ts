@@ -15,31 +15,26 @@ export const ORB_SCOPES = {
   recent: { period: '30days' },
 } as const satisfies Record<string, OverviewScope>
 
-/** Data younger than this is not refetched just because the panel opened. */
-export const ORB_FRESH_MS = 60 * 1000
-
 export const BACKGROUNDED_PEEK = 'Still watching in the background'
 
 /** The load in flight: concurrent callers (bootstrap, a notice) share it. */
 let inFlight: Promise<void> | null = null
 
 /** The background orb's store (ADR 0011 shape): two scope-keyed Overview
- * slices on the shared refresh tick — so a scan or config change repaints the
- * orb the same way it repaints the Overview — plus the orb's window UI state.
- * Window placement is owned by the main process; this store mirrors it. */
+ * slices on the shared refresh tick — the orb refetches exactly when the
+ * Overview does, on `store:changed` / `config:changed` (ADR 0004), and never
+ * on a clock of its own — plus the orb's window UI state. Window placement
+ * is owned by the main process; this store mirrors it. */
 export interface OrbState {
   today: ScopedDataSlice<OverviewPayload>
   recent: ScopedDataSlice<OverviewPayload>
-  /** When the slices last finished loading (ms epoch); 0 = never. */
-  loadedAt: number
   placement: OrbPlacement
   /** A transient note shown while the panel peeks open on its own (after the
-   * window was closed to the tray). */
+   * first close to the tray). */
   peek: string | null
   load: () => Promise<void>
-  /** Resolves once the slices have loaded at least once (no refetch after). */
+  /** Resolves once both slices have loaded at least once (no refetch after). */
   whenLoaded: () => Promise<void>
-  /** Unfolds/folds the panel. Unfolding refetches stale data. */
   setExpanded: (expanded: boolean) => Promise<void>
   onPlacement: (placement: OrbPlacement) => void
   onNotice: (notice: OrbNotice) => void
@@ -56,7 +51,6 @@ export const useOrbStore = create<OrbState>()((set, get) => ({
     patch => set(state => ({ recent: { ...state.recent, ...patch } })),
     () => get().recent,
   ),
-  loadedAt: 0,
   placement: { expanded: false, horizontal: 'right', vertical: 'bottom' },
   peek: null,
   load: () =>
@@ -64,14 +58,15 @@ export const useOrbStore = create<OrbState>()((set, get) => ({
       try {
         const { today, recent } = get()
         await Promise.all([today.load(ORB_SCOPES.today), recent.load(ORB_SCOPES.recent)])
-        set({ loadedAt: Date.now() })
       } finally {
         inFlight = null
       }
     })()),
-  whenLoaded: () => (get().loadedAt ? Promise.resolve() : get().load()),
+  whenLoaded: () => {
+    const { today, recent } = get()
+    return today.status === 'ready' && recent.status === 'ready' ? Promise.resolve() : get().load()
+  },
   setExpanded: async expanded => {
-    if (expanded && Date.now() - get().loadedAt > ORB_FRESH_MS) void get().load()
     set({ peek: null })
     const result = await fetchSetOrbExpanded(expanded)
     if (result.ok && result.data) set({ placement: result.data })
@@ -89,9 +84,8 @@ export const useOrbStore = create<OrbState>()((set, get) => ({
   },
 }))
 
-// Lazy like every slice (ADR 0011): nothing refetches until the orb loaded once.
+// Lazy like every slice (ADR 0011): `reload()` no-ops until the first load.
 subscribeToRefresh(() => {
-  const { today, recent, loadedAt } = useOrbStore.getState()
-  if (!loadedAt) return
-  void Promise.all([today.reload(), recent.reload()]).then(() => useOrbStore.setState({ loadedAt: Date.now() }))
+  void useOrbStore.getState().today.reload()
+  void useOrbStore.getState().recent.reload()
 })

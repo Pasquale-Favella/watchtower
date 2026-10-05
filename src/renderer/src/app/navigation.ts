@@ -1,8 +1,7 @@
 import { ROUTES, type Section, SECTIONS } from '../../../shared/schemas/navigation.js'
 
-/** Sections + routes are declared once in shared/schemas/navigation.ts (ADR
- * 0014) and re-exported here, the renderer's navigation entry point. */
-export { ROUTES, SECTIONS }
+// The renderer's navigation entry point (ADR 0014). Sections and routes
+// themselves are declared once in shared/schemas/navigation.ts.
 
 /** The route path for a section. */
 export function routeFor(section: Section): string {

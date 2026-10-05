@@ -37,7 +37,6 @@ describe('useOrbStore', () => {
     expect(api.getOverview).toHaveBeenCalledTimes(2)
     const state = useOrbStore.getState()
     expect([state.today.status, state.recent.status]).toEqual(['ready', 'ready'])
-    expect(state.loadedAt).toBeGreaterThan(0)
   })
 
   it('mirrors the placement the main process applies', async () => {
@@ -46,6 +45,24 @@ describe('useOrbStore', () => {
     await useOrbStore.getState().setExpanded(true)
     expect(api.orb.setExpanded).toHaveBeenCalledWith(true)
     expect(useOrbStore.getState().placement).toEqual(expanded)
+  })
+
+  it('never refetches just because the panel opens (ADR 0004)', async () => {
+    const api = orbApi()
+    mockWindow(api)
+    await useOrbStore.getState().load()
+    api.getOverview.mockClear()
+    await useOrbStore.getState().setExpanded(true)
+    await useOrbStore.getState().setExpanded(false)
+    await useOrbStore.getState().setExpanded(true)
+    expect(api.getOverview).not.toHaveBeenCalled()
+  })
+
+  it('shares one load between concurrent callers', async () => {
+    const api = orbApi()
+    mockWindow(api)
+    await Promise.all([useOrbStore.getState().load(), useOrbStore.getState().whenLoaded()])
+    expect(api.getOverview).toHaveBeenCalledTimes(2)
   })
 
   it('drops a malformed placement instead of painting it', async () => {

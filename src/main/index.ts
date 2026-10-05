@@ -20,6 +20,7 @@ import { type LedgerMcpAttachment, registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { createSidecarPool } from './agents/ledger-mcp/pool.js'
 import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
+import { type BackgroundShell, createBackgroundShell } from './background-shell.js'
 import type { ComparePair } from './compare-view.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths } from './env.js'
@@ -33,7 +34,6 @@ import {
   safeLogOperationalEvent,
 } from './operational-log.js'
 import type { OverviewScope } from './overview.js'
-import { type BackgroundShell, createBackgroundShell } from './background-shell.js'
 import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
 
 /**

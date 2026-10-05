@@ -1,12 +1,11 @@
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef } from 'react'
 
 import { useScanStore } from '@/app/stores/scan-store'
-import { subscribeToIpc } from '@/app/stores/subscribe'
+import { subscribeToIpc, subscribeToOrbIpc } from '@/app/stores/subscribe'
 import { useSettingsStore } from '@/features/settings/store'
 import { fetchOrbPlacement, fetchScanStatus, orbControls } from '@/shared/lib/api'
 
 import { useOrbStore } from './store'
-import { subscribeToOrbIpc } from './subscribe'
 
 /** The orb's bootstrap — the counterpart of `useAppBootstrap`: the shared IPC
  * wiring (scan lifecycle, store:changed tick, currency) plus the orb's own,

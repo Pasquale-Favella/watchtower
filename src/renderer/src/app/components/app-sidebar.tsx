@@ -19,7 +19,8 @@ import {
 import { PERIOD_LABELS } from '@/shared/lib/settings-constants'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { useRouterState } from '@tanstack/react-router'
-import { SECTIONS, navigateToSection, sectionForPath } from '@/app/navigation'
+import { navigateToSection, sectionForPath } from '@/app/navigation'
+import { SECTIONS } from '../../../../shared/schemas/navigation.js'
 import { useScopeStore } from '@/app/stores/scope-store'
 import { useScanStore } from '@/app/stores/scan-store'
 

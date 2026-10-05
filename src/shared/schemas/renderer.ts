@@ -18,11 +18,7 @@ export interface SplashProviderProgress {
   done: boolean
 }
 
-/** `Section` crosses the wire (the orb opens the app on one): it is declared
- * with its schema in navigation.ts. */
-export type { Section }
-
-export type ShortcutAction = Section | 'refresh' | 'toggleSidebar' | 'commandPalette'
+export type ShortcutAction = Section | 'refresh' | 'toggleSidebar' | 'commandPalette' | 'summonOrb'
 
 export type Platform = 'mac' | 'windows' | 'linux'
 
@@ -30,6 +26,9 @@ export interface ShortcutDef {
   action: ShortcutAction
   hotkey: Hotkey
   label: string
+  /** `global`: registered OS-wide by the main process (Electron
+   * `globalShortcut`), never by the renderer's in-window `useHotkeys`. */
+  scope?: 'global'
 }
 
 export interface OnboardingStep {

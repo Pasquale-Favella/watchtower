@@ -1,7 +1,7 @@
 import { ExternalLink, EyeOff, Power, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-import { displayShortcut } from '@/app/shortcuts'
+import { displayShortcutForAction } from '@/app/shortcuts'
 import { useScanStore } from '@/app/stores/scan-store'
 import { DailySpendChart } from '@/features/overview/DailySpendChart'
 import { formatChartDate, formatChartValue, spendTrend } from '@/features/overview/lib'
@@ -15,7 +15,6 @@ import { orbControls } from '@/shared/lib/api'
 import { formatUsd } from '@/shared/lib/models'
 import { cn } from '@/shared/lib/utils'
 
-import { ORB_SUMMON_SHORTCUT } from '../../../shared/schemas/orb.js'
 import { useOrbStore } from './store'
 
 /** The KpiBento's metric label style. */
@@ -84,7 +83,7 @@ export function OrbPanel({ className }: { className?: string }) {
             <RefreshCw className={cn(scanning && 'animate-spin')} />
           </IconAction>
           <IconAction
-            label={`Hide orb · ${displayShortcut(ORB_SUMMON_SHORTCUT.hotkey)} brings it back`}
+            label={`Hide orb · ${displayShortcutForAction('summonOrb')} brings it back`}
             onClick={orbControls.hide}
           >
             <EyeOff />

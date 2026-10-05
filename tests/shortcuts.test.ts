@@ -8,6 +8,7 @@ import {
   displayShortcutForAction,
   sectionsRangeLabel,
 } from '../src/renderer/src/app/shortcuts.js'
+import { acceleratorFor } from '../src/shared/lib/shortcuts.js'
 
 describe('shortcut registry', () => {
   it('maps Mod+1–Mod+N to the numbered sections in nav order', () => {
@@ -53,5 +54,19 @@ describe('shortcut registry', () => {
     expect(sectionsRangeLabel('mac')).toBe('⌘1–⌘8')
     expect(sectionsRangeLabel('windows')).toBe('Ctrl+1–Ctrl+8')
     expect(sectionsRangeLabel('linux')).toBe('Ctrl+1–Ctrl+8')
+  })
+
+  it('declares the orb summon as the one OS-global shortcut, outside the numbered range', () => {
+    const globals = SHORTCUTS.filter(def => def.scope === 'global')
+    expect(globals.map(def => def.action)).toEqual(['summonOrb'])
+    expect(shortcutForAction('summonOrb')?.hotkey).toBe('Mod+Alt+O')
+    expect(NUMBERED_SECTION_SHORTCUTS.some(def => def.action === 'summonOrb')).toBe(false)
+    expect(displayShortcutForAction('summonOrb', 'windows')).toBe('Ctrl+Alt+O')
+  })
+
+  it('maps a registry hotkey to an Electron accelerator', () => {
+    expect(acceleratorFor('Mod+Alt+O')).toBe('CommandOrControl+Alt+O')
+    expect(acceleratorFor('Mod+,')).toBe('CommandOrControl+,')
+    expect(acceleratorFor('Alt+Shift+K')).toBe('Alt+Shift+K')
   })
 })
