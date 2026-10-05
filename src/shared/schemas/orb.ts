@@ -1,21 +1,23 @@
 import * as Schema from 'effect/Schema'
 
 /**
- * The background orb's wire contract (main ↔ orb renderer). Decoded on the
- * renderer side like every other payload-bearing channel (ADR 0005/0034),
- * even though the main process is the only producer.
+ * The background orb's wire contract (main ↔ the orb's two windows: the
+ * 64px orb itself and its spend panel). Decoded on the renderer side like
+ * every other payload-bearing channel (ADR 0005/0034), even though the main
+ * process is the only producer.
  */
 
 const writable = Schema.mutableKey
 
-/** Diameter of the orb, in DIPs. The collapsed orb window is exactly this. */
+/** Diameter of the orb, in DIPs. The orb window is exactly this and never resizes. */
 export const ORB_SIZE = 64
 
-/** The expanded orb window (orb + hint panel), in DIPs. */
-export const ORB_PANEL_SIZE = { width: 360, height: 392 } as const
+/** The spend panel's own window, in DIPs. */
+export const ORB_PANEL_SIZE = { width: 360, height: 320 } as const
 
-/** Where the orb sits inside its window. The panel always grows toward the
- * centre of the display, so an orb parked on the right edge opens leftwards. */
+/** Whether the panel is open, and which side of it the orb sits on. The
+ * panel always opens toward the centre of the display, so an orb parked on
+ * the right edge has its panel to the left. */
 export const orbPlacementSchema = Schema.Struct({
   expanded: writable(Schema.Boolean),
   horizontal: writable(Schema.Literals(['left', 'right'])),

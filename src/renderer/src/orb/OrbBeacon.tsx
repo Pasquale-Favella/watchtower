@@ -1,25 +1,24 @@
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
 import { displayShortcutForAction } from '@/app/shortcuts'
 import { useScanStore } from '@/app/stores/scan-store'
-import { useSettingsStore } from '@/features/settings/store'
 import { orbControls } from '@/shared/lib/api'
-import { formatUsd } from '@/shared/lib/models'
 import { cn } from '@/shared/lib/utils'
 
 import { ORB_SIZE } from '../../../shared/schemas/orb.js'
 import { useOrbDrag } from './hooks'
-import { useOrbStore } from './store'
+import { useOrbPlacementStore } from './placement-store'
 
 /** The orb itself: the brand mark in a primary-ringed disc, with a beacon
- * sweeping its rim (faster while a scan runs). Drag to move; click to unfold
- * the spend panel; double-click for the full app. */
+ * sweeping its rim (faster while a scan runs — whichever window started it).
+ * Drag to move; click to open the spend panel (its own window, beside the
+ * orb); double-click for the full app. It holds no ledger data. */
 export function OrbBeacon({ className }: { className?: string }) {
-  const expanded = useOrbStore(s => s.placement.expanded)
-  const setExpanded = useOrbStore(s => s.setExpanded)
-  const today = useOrbStore(s => s.today.data)
+  const expanded = useOrbPlacementStore(s => s.placement.expanded)
+  const setExpanded = useOrbPlacementStore(s => s.setExpanded)
   const scanning = useScanStore(s => s.scanning)
-  useSettingsStore(s => s.activeCurrency)
-  const drag = useOrbDrag(() => void setExpanded(!expanded))
+  // A click is the user's own request: the panel opens focused.
+  const toggle = (): void => void setExpanded(!expanded, true)
+  const drag = useOrbDrag(toggle)
   const summon = displayShortcutForAction('summonOrb')
 
   return (
@@ -27,13 +26,13 @@ export function OrbBeacon({ className }: { className?: string }) {
       type="button"
       aria-label={expanded ? 'Fold Watchtower panel' : 'Show Watchtower panel'}
       // A native title: the 64px window would clip a rendered tooltip.
-      title={expanded ? undefined : `${today ? `Today ${formatUsd(today.kpis.cost)}` : 'Watchtower'} · ${summon}`}
+      title={expanded ? undefined : `Watchtower · ${summon}`}
       {...drag}
       onDoubleClick={() => orbControls.openApp()}
       onKeyDown={event => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault()
-          void setExpanded(!expanded)
+          toggle()
         }
       }}
       className={cn('grid cursor-grab place-items-center p-1 outline-none active:cursor-grabbing', className)}

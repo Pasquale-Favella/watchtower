@@ -1,33 +1,20 @@
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef } from 'react'
 
 import { useScanStore } from '@/app/stores/scan-store'
-import { subscribeToIpc, subscribeToOrbIpc } from '@/app/stores/subscribe'
-import { useSettingsStore } from '@/features/settings/store'
-import { fetchOrbPlacement, fetchScanStatus, orbControls } from '@/shared/lib/api'
+import { orbControls } from '@/shared/lib/api'
 
-import { useOrbStore } from './store'
+import { subscribeToOrbBeacon } from './beacon-wiring'
+import { useOrbPlacementStore } from './placement-store'
 
-/** The orb's bootstrap — the counterpart of `useAppBootstrap`: the shared IPC
- * wiring (scan lifecycle, store:changed tick, currency) plus the orb's own,
- * then hydration. It never fires the first scan: the main window owns that. */
-export function useOrbBootstrap(): void {
+/** The orb window's bootstrap: its light wiring, then the two things it
+ * shows — where it sits and whether a scan is running (asked once, so an orb
+ * that appears mid-scan spins at once; the lifecycle broadcasts take over). */
+export function useOrbBeaconBootstrap(): void {
   useEffect(() => {
-    const unsubscribe = subscribeToIpc()
-    const unsubscribeOrb = subscribeToOrbIpc()
-    void (async () => {
-      const status = await fetchScanStatus()
-      if (status.ok && status.data.scanned) {
-        useScanStore.setState({ hydrated: true })
-        await useScanStore.getState().applyChange()
-      }
-      const placement = await fetchOrbPlacement()
-      if (placement.ok && placement.data) useOrbStore.getState().onPlacement(placement.data)
-      await Promise.all([useSettingsStore.getState().loadCurrency(), useOrbStore.getState().whenLoaded()])
-    })()
-    return () => {
-      unsubscribe()
-      unsubscribeOrb()
-    }
+    const unsubscribe = subscribeToOrbBeacon()
+    void useOrbPlacementStore.getState().sync()
+    void useScanStore.getState().syncActivity()
+    return unsubscribe
   }, [])
 }
 

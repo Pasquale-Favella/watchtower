@@ -209,4 +209,16 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
     expect(s.scanning).toBe(false)
     expect(s.scanError).toMatch(/Invalid scan payload/)
   })
+
+  it('syncActivity adopts a scan already in flight in the main process', async () => {
+    mockWindow({ getScanActive: vi.fn(async () => true) })
+    await useScanStore.getState().syncActivity()
+    expect(useScanStore.getState().scanning).toBe(true)
+  })
+
+  it('syncActivity leaves an idle store idle', async () => {
+    mockWindow({ getScanActive: vi.fn(async () => false) })
+    await useScanStore.getState().syncActivity()
+    expect(useScanStore.getState().scanning).toBe(false)
+  })
 })

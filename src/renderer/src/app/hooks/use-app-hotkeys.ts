@@ -28,7 +28,9 @@ export function useAppHotkeys(): void {
           case 'toggleSidebar':
             break // owned by SidebarToggleShortcut, filtered above
           case 'summonOrb':
-            break // global: registered by the main process, filtered above
+            // Never reached (global entries are filtered above) — kept so the
+            // `default` branch's action narrows to a Section.
+            break
           default:
             navigateToSection(def.action)
         }

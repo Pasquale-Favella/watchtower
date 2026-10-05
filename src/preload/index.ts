@@ -105,6 +105,9 @@ const api = {
    * "never scanned" sentinel; the replacement for the old `getReport()` boot
    * read. */
   getScanStatus: (): Promise<ScanStatus> => ipcRenderer.invoke('store:status'),
+  /** Whether a scan is in flight right now (main-owned, app-wide): a window
+   * reads it once at boot, then follows the scan lifecycle broadcasts. */
+  getScanActive: (): Promise<boolean> => ipcRenderer.invoke('scan:active'),
   /** Fired when a config write (price override / model alias) lands, so the
    * mounted view refetches with the fresh query-time config (ADR 0004).
    * Distinct from `store:changed` — no rebuild, no rescan. */
@@ -223,12 +226,14 @@ const api = {
     return () => ipcRenderer.removeListener('app:navigate', listener)
   },
   /** The floating background orb's window controls. The main process ignores
-   * these from any window but the orb's own. */
+   * these from any window but the orb's own two (the orb and its panel). */
   orb: {
     getPlacement: (): Promise<OrbPlacement | null> => ipcRenderer.invoke('orb:placement:get'),
     /** A notice raised before this page could listen (e.g. the first close). */
     takePendingNotice: (): Promise<OrbNotice | null> => ipcRenderer.invoke('orb:notice:take'),
-    setExpanded: (expanded: boolean): Promise<OrbPlacement | null> => ipcRenderer.invoke('orb:expanded:set', expanded),
+    /** Opens/folds the panel window; `focus` for the user's own requests. */
+    setExpanded: (expanded: boolean, focus = false): Promise<OrbPlacement | null> =>
+      ipcRenderer.invoke('orb:expanded:set', expanded, focus),
     dragStart: (): void => ipcRenderer.send('orb:drag-start'),
     dragMove: (dx: number, dy: number): void => ipcRenderer.send('orb:drag-move', dx, dy),
     dragEnd: (): void => ipcRenderer.send('orb:drag-end'),

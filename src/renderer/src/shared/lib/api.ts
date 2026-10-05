@@ -165,6 +165,10 @@ export function fetchScanStatus(): Promise<ApiResult<ScanStatus>> {
   return fetchPayload('scan status', scanStatusSchema, () => window.api.getScanStatus())
 }
 
+export function fetchScanActive(): Promise<ApiResult<boolean>> {
+  return fetchPayload('scan active', Schema.Boolean, () => window.api.getScanActive())
+}
+
 export function fetchViews(): Promise<ApiResult<DashboardViews | null>> {
   return fetchPayload('dashboard views', Schema.NullOr(dashboardViewsSchema), () => window.api.getViews())
 }
@@ -386,8 +390,10 @@ export function fetchOrbPlacement(): Promise<ApiResult<OrbPlacement | null>> {
   return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.getPlacement())
 }
 
-export function fetchSetOrbExpanded(expanded: boolean): Promise<ApiResult<OrbPlacement | null>> {
-  return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.setExpanded(expanded))
+/** `focus`: the user's own request (a click, the summon shortcut); a peek
+ * opens the panel without taking focus. */
+export function fetchSetOrbExpanded(expanded: boolean, focus = false): Promise<ApiResult<OrbPlacement | null>> {
+  return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.setExpanded(expanded, focus))
 }
 
 export function fetchPendingOrbNotice(): Promise<ApiResult<OrbNotice | null>> {
