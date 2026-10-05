@@ -407,6 +407,7 @@ export const orbControls = {
   openApp: (section?: Section): void => window.api.orb.openApp(section),
   hide: (): void => window.api.orb.hide(),
   quit: (): void => window.api.orb.quit(),
+  panelPainted: (): void => window.api.orb.panelPainted(),
 }
 
 export function onOrbPlacement(callback: (placement: OrbPlacement) => void): () => void {

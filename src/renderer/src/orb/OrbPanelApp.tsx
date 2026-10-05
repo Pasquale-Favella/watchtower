@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { useThemeEffect } from '@/app/hooks/use-theme-effect'
 import { TooltipProvider } from '@/shared/components/ui/tooltip'
+import { orbControls } from '@/shared/lib/api'
 
 import { OrbPanel } from './OrbPanel'
 import { useOrbPanelBootstrap } from './panel-hooks'
@@ -33,10 +34,17 @@ export function OrbPanelApp() {
     return () => window.clearTimeout(timer)
   }, [peek, hovered, setExpanded])
 
-  // Open, the root takes DOM focus so Escape reaches it. Focusing an element
-  // never activates the window itself: a peek still steals nothing.
+  // Open, the root takes DOM focus so Escape reaches it (focusing an element
+  // never activates the window: a peek still steals nothing). Then, once a
+  // fresh frame is on screen — two animation frames — tell the main process,
+  // which reveals the window it showed transparent (no stale-frame flicker).
   useEffect(() => {
-    if (expanded) rootRef.current?.focus({ preventScroll: true })
+    if (!expanded) return
+    rootRef.current?.focus({ preventScroll: true })
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => orbControls.panelPainted())
+    })
+    return () => cancelAnimationFrame(frame)
   }, [expanded])
 
   return (

@@ -27,7 +27,7 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     const surface = (which: Surface) =>
       app.evaluate(({ BrowserWindow }, page) => {
         const win = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith(page))
-        return win ? { visible: win.isVisible(), bounds: win.getBounds() } : null
+        return win ? { visible: win.isVisible(), bounds: win.getBounds(), opacity: win.getOpacity() } : null
       }, PAGE[which])
     const visible = async (which: Surface): Promise<boolean> => (await surface(which))?.visible ?? false
     const opened = (which: Surface): Promise<Page> =>
@@ -58,6 +58,9 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     await expect.poll(() => visible('panel')).toBe(true)
     await expect(panel.getByText('Spend over time', { exact: true })).toBeVisible()
     expect((await surface('orb'))?.bounds).toEqual(before)
+    // It is shown transparent and revealed once its page painted a fresh
+    // frame (no stale-frame flicker) — and always ends up fully opaque.
+    await expect.poll(async () => (await surface('panel'))?.opacity).toBe(1)
 
     // Escape folds the panel (the open root holds DOM focus).
     await panel.keyboard.press('Escape')

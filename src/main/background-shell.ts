@@ -43,6 +43,10 @@ import { loadShellPreferences, saveShellPreferences } from './shell-preferences.
 
 const isSection = Schema.is(sectionSchema)
 
+/** How long a revealed panel may wait, transparent, for its page to report a
+ * painted frame before it is made opaque regardless. */
+const REVEAL_FALLBACK_MS = 200
+
 /** The registry's OS-wide summon shortcut, as an Electron accelerator. */
 const SUMMON_ACCELERATOR = (() => {
   const def = SHORTCUTS.find(entry => entry.action === 'summonOrb' && entry.scope === 'global')
@@ -116,6 +120,8 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
    * before the main window has been on screen once. */
   let mainWindowShown = false
   let visibilityTimer: NodeJS.Timeout | null = null
+  /** Set while the panel is shown but still transparent (see revealPanel). */
+  let revealTimer: NodeJS.Timeout | null = null
 
   function mainWindowAway(): boolean {
     return !mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()
@@ -135,6 +141,30 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     for (const win of [live(orbWindow), live(panelWindow)]) win?.webContents.send('orb:placement', placement)
   }
 
+  function finishReveal(): void {
+    if (revealTimer) clearTimeout(revealTimer)
+    revealTimer = null
+    live(panelWindow)?.setOpacity(1)
+  }
+
+  /** Shows the hidden panel without a flicker. A hidden transparent window
+   * reappears with its stale (or evicted) surface for a frame before Chromium
+   * paints a fresh one — it reads as the panel opening twice. So it is shown
+   * fully transparent and made opaque once its page reports a painted frame
+   * (`orb:panel-painted`), or after a short fallback so it can never stay
+   * invisible. (`setOpacity` is a no-op on Linux: there it simply shows.) */
+  function revealPanel(panel: BrowserWindow, focus: boolean): void {
+    panel.setOpacity(0)
+    if (focus) {
+      panel.show()
+      panel.focus()
+    } else {
+      panel.showInactive()
+    }
+    if (revealTimer) clearTimeout(revealTimer)
+    revealTimer = setTimeout(finishReveal, REVEAL_FALLBACK_MS)
+  }
+
   /** Opens or folds the panel window beside the orb. `focus` is for the
    * user's own requests (a click, the summon shortcut); a peek opens inactive. */
   function setExpanded(next: boolean, focus = false): OrbPlacement {
@@ -144,13 +174,11 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     const { bounds, placement } = panelLayout(anchor, expanded)
     if (panel && expanded) {
       panel.setBounds(bounds)
-      if (focus) {
-        panel.show()
-        panel.focus()
-      } else if (!panel.isVisible()) {
-        panel.showInactive()
-      }
+      if (!panel.isVisible()) revealPanel(panel, focus)
+      else if (focus) panel.focus()
     } else if (panel?.isVisible()) {
+      if (revealTimer) clearTimeout(revealTimer)
+      revealTimer = null
       panel.hide()
     }
     broadcastPlacement(placement)
@@ -392,6 +420,10 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     })
     ipcMain.on('orb:quit', event => {
       if (isOrbSurface(event)) app.quit()
+    })
+    // The panel page painted a fresh frame after opening: reveal it.
+    ipcMain.on('orb:panel-painted', event => {
+      if (revealTimer && event.sender === live(panelWindow)?.webContents) finishReveal()
     })
   }
 
