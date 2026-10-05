@@ -12,13 +12,16 @@ const roots = [
   'src/main/spend-calculation.ts',
   'src/main/compare-calculation.ts',
   'src/main/pull-requests-calculation.ts',
+  'src/main/skills-calculation.ts',
+  'src/main/yield-calculation.ts',
+  'src/main/optimize-calculation.ts',
   'src/main/pipeline/pr-attribution.ts',
   'src/main/overview-scope.ts',
   'src/main/store/aggregate-calculation.ts',
   'src/main/pipeline/parser-calculations.ts',
 ]
 const forbiddenModule =
-  /\/main\/(?:pipeline\/(?:models|parser|sessions-report)|store\/(?:query-snapshot|ledger|ledger-repository|port))\.ts$/
+  /\/main\/(?:pipeline\/(?:models|parser|sessions-report)|store\/(?:query-snapshot|ledger|ledger-repository|port)|(?:skills|yield|optimize)-view)\.ts$/
 const forbiddenPackage = /^(?:electron|node:|fs(?:\/|$)|path$)/
 
 function runtimeImports(filePath: string, source = readFileSync(filePath, 'utf8')): string[] {
@@ -89,6 +92,9 @@ describe('pure view calculation boundary', () => {
         'src/main/application/spend-query.ts',
         'src/main/application/compare-query.ts',
         'src/main/application/pull-requests-query.ts',
+        'src/main/application/skills-query.ts',
+        'src/main/application/yield-query.ts',
+        'src/main/application/optimize-query.ts',
       ]),
     ).toEqual([])
   })

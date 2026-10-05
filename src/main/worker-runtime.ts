@@ -7,7 +7,11 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
+import { CommandRunner } from './agents/command-runner.js'
+import { AssistantSetup } from './application/assistant-setup.js'
 import { PricingDiagnostics } from './application/pricing-diagnostics.js'
+import { RepositoryInspection } from './application/repository-inspection.js'
+import { AssistantSetupLive } from './assistant-setup-live.js'
 import { Env } from './env.js'
 import { FxRates } from './fx.js'
 import {
@@ -19,11 +23,15 @@ import {
 } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 import { PricingDiagnosticsLive } from './pipeline/pricing-diagnostics.js'
+import { RepositoryInspectionLive } from './repository-inspection-live.js'
 import { LedgerStore } from './store/ledger.js'
 import { initializeLedger } from './store/ledger-initialization.js'
 import { LedgerConfig, LedgerIngest, LedgerPortsLayer, LedgerQueries } from './store/ledger-repository.js'
 
 export type WorkerServices =
+  | AssistantSetup
+  | RepositoryInspection
+  | CommandRunner
   | PricingDiagnostics
   | OperationalLog
   | Env
@@ -35,7 +43,17 @@ export type WorkerServices =
   | Sqlite.SqliteClient.SqliteClient
   | SqlClient.SqlClient
 export type WorkerOverrides =
-  OperationalLog | Env | HttpFetch | FxRates | LedgerIngest | LedgerQueries | LedgerConfig | PricingDiagnostics
+  | OperationalLog
+  | Env
+  | HttpFetch
+  | FxRates
+  | LedgerIngest
+  | LedgerQueries
+  | LedgerConfig
+  | PricingDiagnostics
+  | AssistantSetup
+  | RepositoryInspection
+  | CommandRunner
 export type WorkerSqlLayer = Layer.Layer<Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient>
 export type WorkerRuntime = ManagedRuntime.ManagedRuntime<WorkerServices, never>
 
@@ -47,8 +65,10 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
   sqliteLayer: WorkerSqlLayer = Sqlite.SqliteClient.layer({ filename: dbPath }),
 ): Layer.Layer<WorkerServices> {
   const ledger = LedgerPortsLayer.pipe(Layer.provideMerge(sqliteLayer))
-  const dependencies = overrides ? Layer.mergeAll(ledger, overrides) : ledger
+  const capabilities = Layer.mergeAll(ledger, AssistantSetupLive, CommandRunner.layer)
+  const dependencies = overrides ? Layer.mergeAll(capabilities, overrides) : capabilities
   const fxRates = FxRates.layer.pipe(Layer.provide(dependencies))
+  const repositoryInspection = RepositoryInspectionLive.pipe(Layer.provide(dependencies))
   const liveFetch = HttpFetch.layerWithFetch((input, init) => globalThis.fetch(input, init))
 
   const live = Layer.mergeAll(
@@ -59,6 +79,7 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
     liveFetch,
     PricingDiagnosticsLive,
     fxRates,
+    repositoryInspection,
     dependencies,
   )
   return overrides ? Layer.mergeAll(live, overrides) : live

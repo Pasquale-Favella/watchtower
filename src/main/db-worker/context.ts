@@ -17,11 +17,14 @@ import {
 } from '../../shared/schemas/skills.js'
 import { queryCompareView } from '../application/compare-query.js'
 import { queryModelsView } from '../application/models-query.js'
+import { queryOptimizeView } from '../application/optimize-query.js'
 import { queryOverview } from '../application/overview-query.js'
 import { queryPullRequestsView } from '../application/pull-requests-query.js'
 import { querySessionsView } from '../application/sessions-query.js'
+import { querySkillsView } from '../application/skills-query.js'
 import { querySpendView } from '../application/spend-query.js'
 import { queryAnalyticalViews, queryDashboardViews } from '../application/view-queries.js'
+import { queryYieldView } from '../application/yield-query.js'
 import { resolveCadenceMs } from '../cadence.js'
 import type { Env } from '../env.js'
 import type { ExportResult } from '../export.js'
@@ -36,7 +39,6 @@ import {
   refreshFxRateWithRates,
 } from '../fx.js'
 import type { OperationalLog } from '../operational-log.js'
-import { buildOptimizeViewFromLedger, type OptimizePayload } from '../optimize-view.js'
 import type { OverviewScope } from '../overview.js'
 import type { HttpFetch } from '../pipeline/fetch-utils.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
@@ -56,7 +58,6 @@ import {
   type ScanProgress,
 } from '../pipeline/scan.js'
 import type { DateRange } from '../pipeline/types.js'
-import { buildSkillsViewFromLedger, type SkillsPayload } from '../skills-view.js'
 import { LedgerStore } from '../store/ledger.js'
 import type { PortInput } from '../store/port.js'
 import {
@@ -67,7 +68,6 @@ import {
   searchSessionsFromLedger,
 } from '../views.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
-import { buildYieldViewFromLedger, type YieldPayload } from '../yield-view.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 
 export type DbWorkerEmit = (event: DbWorkerEvent) => void
@@ -654,12 +654,13 @@ export class DbWorkerContext {
         )
       }
 
-      /** The Optimize section's scoped payload (ADR 0008): a read-only setup-health
-       * grade plus Waste/Fixes findings from the 16 ported detectors. Unlike the
-       * other sections this is async (ghost detectors walk ~/.claude on disk). */
+      /** Optimize combines captured ledger data and assistant setup facts in
+       * pure detectors, then validates the section payload (ADR 0008). */
       case 'optimize:view': {
         const scope = args[0] as OverviewScope
-        return (await buildOptimizeViewFromLedger(ledger, scope)) satisfies OptimizePayload | null
+        return this.runtime.runPromise(
+          queryOptimizeView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
+        )
       }
 
       /** The Skills section's detection payload (ticket 24): pure local mining
@@ -669,19 +670,19 @@ export class DbWorkerContext {
       case 'skills:view': {
         const scope = args[0] as OverviewScope
         const thresholds = args[1] as SkillsThresholds | undefined
-        // Tripwire (ADR 0005): IPC args are `unknown` — schema decoding applies the
-        // schema's .int().min(1) guards and .default()s, falling back to the
-        // defaults on garbage so a malformed renderer value can never flip every
-        // pattern into a draft.
+        // Schema decoding requires positive integer thresholds and applies
+        // defaults. Invalid IPC values use the default pair (ADR 0005).
         const parsed = Schema.decodeUnknownResult(skillsThresholdsSchema)(thresholds)
         // Dismissals ride every fetch (ticket 25): the not-a-skill store filters
         // rejected patterns out of drafts AND opportunities before the gate.
-        return (await buildSkillsViewFromLedger(
-          ledger,
-          scope,
-          parsed._tag === 'Success' ? parsed.success : DEFAULT_SKILLS_THRESHOLDS,
-          { dismissals: ledger.getSkillDismissals() },
-        )) satisfies SkillsPayload | null
+        return this.runtime.runPromise(
+          querySkillsView({
+            scope,
+            thresholds: parsed._tag === 'Success' ? parsed.success : DEFAULT_SKILLS_THRESHOLDS,
+            catalogue: captureModelPricingCatalogue(),
+            proxyPaths: captureProxyPaths(),
+          }),
+        )
       }
 
       /** Not-a-skill dismissal write (ticket 25): a ledger config-table upsert,
@@ -692,14 +693,13 @@ export class DbWorkerContext {
         return { ok: true }
       }
 
-      /** The Optimize section's Reverts/Abandoned payload (ADR 0008): yield
-       * computed query-time from live git calls on each project's repo, only
-       * fetched when that Section is actually viewed — never persisted at scan time.
-       * All git failures degrade to empty, so a missing/non-git repo simply shows
-       * nothing rather than erroring the section. */
+      /** Yield inspects repositories at query time (ADR 0008). Expected git
+       * failures use partial or empty facts; defects remain query failures. */
       case 'optimize:yield': {
         const scope = args[0] as OverviewScope
-        return (await buildYieldViewFromLedger(ledger, scope)) satisfies YieldPayload | null
+        return this.runtime.runPromise(
+          queryYieldView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
+        )
       }
 
       /** Quick-add alias (ADR 0010): map an unpriced model to a priced one,

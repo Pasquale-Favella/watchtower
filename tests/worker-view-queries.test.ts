@@ -1,23 +1,29 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/unstable/sql/SqlError'
 import { describe, expect, it, vi } from 'vitest'
 
+import { AssistantSetup } from '../src/main/application/assistant-setup.js'
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
+import { RepositoryInspection, RepositoryInspectionError } from '../src/main/application/repository-inspection.js'
 import { buildCompareViewFromLedger } from '../src/main/compare-view.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { buildModelsViewFromLedger } from '../src/main/models-view.js'
+import { buildOptimizeViewFromLedger } from '../src/main/optimize-view.js'
 import { buildOverviewFromLedger } from '../src/main/overview.js'
 import { buildPullRequestsViewFromLedger } from '../src/main/pull-requests-view.js'
 import { buildSessionsViewFromLedger } from '../src/main/sessions-view.js'
+import { buildSkillsViewFromLedger } from '../src/main/skills-view.js'
 import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
-import { LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
+import { LedgerConfig, LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
 import { buildAnalyticalViewsFromLedger, buildDashboardViewsFromLedger } from '../src/main/views.js'
 import { openWorkerOwner } from '../src/main/worker-runtime.js'
+import { buildYieldViewFromLedger } from '../src/main/yield-view.js'
 import {
   buildFixtureCachedCall,
   buildFixtureCachedFile,
@@ -29,7 +35,31 @@ async function withWorker(
   run: (context: DbWorkerContext, owner: ReturnType<typeof openWorkerOwner>) => Promise<void>,
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-view-query-'))
-  const owner = openWorkerOwner(join(directory, 'ledger.db'))
+  const setup = Layer.succeed(
+    AssistantSetup,
+    AssistantSetup.of({
+      getSkillInventory: () => Effect.succeed([]),
+      getOptimizeSetup: () =>
+        Effect.succeed({
+          home: directory,
+          mcpConfigs: new Map(),
+          envSettings: new Map(),
+          agents: [],
+          skills: [],
+          commands: [],
+        }),
+    }),
+  )
+  const repositories = Layer.succeed(
+    RepositoryInspection,
+    RepositoryInspection.of({
+      resolveIdentity: () =>
+        Effect.fail(new RepositoryInspectionError({ operation: 'identity', message: 'not a repository' })),
+      getMainBranch: () => Effect.succeed('main'),
+      getCommitFacts: () => Effect.succeed([]),
+    }),
+  )
+  const owner = openWorkerOwner(join(directory, 'ledger.db'), undefined, Layer.mergeAll(setup, repositories))
   const context = new DbWorkerContext(
     { dbPath: owner.ledger.dbPath, dataDir: directory, cacheDir: join(directory, 'cache') },
     () => {},
@@ -53,11 +83,14 @@ const operations = [
   'spend:view',
   'compare:view',
   'pullRequests:view',
+  'skills:view',
+  'optimize:view',
+  'optimize:yield',
 ] as const
 type ViewOperation = (typeof operations)[number]
-const scope = { period: 'lifetime' } as const
+const scope = { period: 'lifetime', range: { since: '2026-07-01', until: '2026-07-02' } } as const
 
-function expectedPayload(operation: ViewOperation, owner: ReturnType<typeof openWorkerOwner>) {
+async function expectedPayload(operation: ViewOperation, owner: ReturnType<typeof openWorkerOwner>) {
   switch (operation) {
     case 'store:views':
       return buildDashboardViewsFromLedger(owner.ledger)
@@ -78,6 +111,15 @@ function expectedPayload(operation: ViewOperation, owner: ReturnType<typeof open
       return buildCompareViewFromLedger(owner.ledger, scope)
     case 'pullRequests:view':
       return buildPullRequestsViewFromLedger(owner.ledger, scope)
+    case 'skills:view':
+      return buildSkillsViewFromLedger(owner.ledger, scope, undefined, {
+        homeDir: dirname(owner.ledger.dbPath),
+        dismissals: owner.ledger.getSkillDismissals(),
+      })
+    case 'optimize:view':
+      return buildOptimizeViewFromLedger(owner.ledger, scope, { homeDir: dirname(owner.ledger.dbPath) })
+    case 'optimize:yield':
+      return buildYieldViewFromLedger(owner.ledger, scope)
   }
 }
 
@@ -86,6 +128,10 @@ function seedLedger(owner: ReturnType<typeof openWorkerOwner>): void {
     turns: [
       buildFixtureCachedTurn(0, 'Refactor the auth module', {
         prRefs: ['https://github.com/acme/demo-project/pull/7'],
+        calls: [{ ...buildFixtureCachedCall(0), skills: ['demo-skill'] }],
+      }),
+      buildFixtureCachedTurn(1, 'Continue the skill', {
+        calls: [{ ...buildFixtureCachedCall(1), skills: ['demo-skill'] }],
       }),
     ],
   })
@@ -99,6 +145,33 @@ function seedLedger(owner: ReturnType<typeof openWorkerOwner>): void {
 }
 
 describe('worker view queries', () => {
+  it('applies live Skills dismissals through the configuration port', async () => {
+    await withWorker(async (context, owner) => {
+      seedLedger(owner)
+      const thresholds = { frequency: 1, spread: 1 }
+
+      await expect(context.dispatch('skills:view', [scope, thresholds])).resolves.toMatchObject({
+        drafts: [{ name: 'demo-skill' }],
+      })
+      owner.ledger.dismissSkill('skill', 'demo-skill', 'Already covered')
+      await expect(context.dispatch('skills:view', [scope, thresholds])).resolves.toMatchObject({
+        drafts: [],
+        opportunities: [],
+      })
+    })
+  })
+
+  it('falls back to default Skills thresholds for malformed arguments', async () => {
+    await withWorker(async (context, owner) => {
+      seedLedger(owner)
+
+      await expect(context.dispatch('skills:view', [scope, { frequency: 0, spread: 0 }])).resolves.toMatchObject({
+        drafts: [],
+        opportunities: [{ name: 'demo-skill' }],
+      })
+    })
+  })
+
   it('passes the requested Compare pair through to the application query', async () => {
     await withWorker(async (context, owner) => {
       owner.ledger.portIn({
@@ -145,7 +218,7 @@ describe('worker view queries', () => {
   it.each(operations)('loads one port snapshot for %s without running the synchronous facade', async operation => {
     await withWorker(async (context, owner) => {
       seedLedger(owner)
-      const expected = expectedPayload(operation, owner)
+      const expected = await expectedPayload(operation, owner)
       const queries = owner.runtime.runSync(LedgerQueries)
       const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
       const facade = vi.spyOn(owner.ledger, 'runQueriesSync').mockImplementation(() => {
@@ -160,6 +233,11 @@ describe('worker view queries', () => {
       const overrides = vi.spyOn(owner.ledger, 'getPriceOverrides').mockImplementation(() => {
         throw new Error('separate override read must not run')
       })
+      const dismissals = vi.spyOn(owner.ledger, 'getSkillDismissals').mockImplementation(() => {
+        throw new Error('legacy dismissal read must not run')
+      })
+      const config = owner.runtime.runSync(LedgerConfig)
+      const dismissalRead = vi.spyOn(config, 'getSkillDismissals')
 
       await expect(context.dispatch(operation, [scope])).resolves.toEqual(expected)
       expect(snapshot).toHaveBeenCalledTimes(1)
@@ -167,6 +245,8 @@ describe('worker view queries', () => {
       expect(repository).not.toHaveBeenCalled()
       expect(aliases).not.toHaveBeenCalled()
       expect(overrides).not.toHaveBeenCalled()
+      expect(dismissals).not.toHaveBeenCalled()
+      expect(dismissalRead).toHaveBeenCalledTimes(operation === 'skills:view' ? 1 : 0)
     })
   })
 
@@ -179,7 +259,7 @@ describe('worker view queries', () => {
 
       owner.ledger.setModelAlias('demo-model', 'second-effective-model')
       owner.ledger.setPriceOverride('second-effective-model', { inputPricePerMillion: 7, outputPricePerMillion: 14 })
-      const expected = expectedPayload(operation, owner)
+      const expected = await expectedPayload(operation, owner)
 
       const next = await context.dispatch(operation, [scope])
       expect(next).toEqual(expected)
