@@ -12,7 +12,7 @@ const hooks = vi.hoisted(() => ({
 }))
 
 vi.mock('fs/promises', () => ({
-  lstat: vi.fn(),
+  lstat: vi.fn().mockRejectedValue(Object.assign(new Error('missing fixture path'), { code: 'ENOENT' })),
   readdir: (...args: unknown[]) => hooks.readdir(...args),
   readFile: vi.fn(),
   stat: vi.fn(),
