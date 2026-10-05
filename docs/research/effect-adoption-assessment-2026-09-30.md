@@ -305,3 +305,27 @@ F31 remains partial. Each scan owns an AbortSignal before parser work begins; in
 Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module. The six canonical snapshot SELECTs are unchanged. No speedup, SQL reduction or memory improvement is claimed. Other application queries, purpose-specific detail/search reads, persistent MCP read-only root adoption, compatibility facade retirement, one pricing catalogue per scan, main/Coach failure mapping, comparable 1k/50k/500k measurements and installer/macOS/Linux packaged acceptance remain open.
 
 Both renderer stores remain byte-identical to `ce81593`. Their original scope key and direct applyChange flow are preserved, without added `let` variables, request IDs or coalescing.
+
+## Current census after cooperative provider IO, 2026-10-05
+
+This snapshot covers production and test source `f8c2fdf`, following `89516ca`. The TypeScript AST runtime-import and nonblank-line method is unchanged. Import percentages measure library use, not architectural completion.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,515 / 1,625 |         93.2% |
+| Store                              |                   10 / 12 |         83.3% |                     1,803 / 2,417 |         74.6% |
+| Agents                             |                   12 / 44 |         27.3% |                     3,802 / 5,818 |         65.3% |
+| Pipeline                           |                    8 / 76 |         10.5% |                    2,676 / 28,258 |          9.5% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                         380 / 380 |        100.0% |
+| All main-process code              |                  71 / 191 |         37.2% |                   13,817 / 46,837 |         29.5% |
+| Shared schema modules              |                   23 / 24 |         95.8% |                     1,868 / 1,926 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+The shared provider context now carries the scan signal through discovery and parser factories. Codex and Copilot readers consume it, shared session streams await native closure, and the worker composes GatewayReports once over captured environment/HTTP dependencies. Gateway rows derive from a native Effect Schema and decode at the HTTP boundary. Tests verify local producer settlement before parser rejection, no late rows or dedupe mutation, native stream closure, staged cache flush cleanup and Copilot coverage publication only after successful database close.
+
+F31 remains partial for other providers. In-flight filesystem operations without native cancellation and synchronous SQLite queries still drain before checkpoints can stop further work. Atomic rename cannot be undone once admitted. The existing host recovery remains. Standalone Gateway compatibility callers retain their removal condition.
+
+Section-query ownership remains 11/11, 100%; scoped dedicated queries remain 9/9, 100%; export remains a separate 2/2 route slice. Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23 baseline modules, 95.7%, with one UI-only plain TypeScript module. The new Gateway Schema is outside that baseline contract denominator. Six canonical snapshot SELECTs remain unchanged. No speedup, SQL reduction or memory improvement is claimed.
+
+Remaining work includes one captured scan pricing catalogue, other application queries, purpose-specific detail/search reads, persistent MCP query ownership, facade and compatibility retirement, main/Coach failure mapping, comparable 1k/50k/500k measurements, installer acceptance and macOS/Linux packaged execution. Both renderer stores remain byte-identical to `ce81593`, without new `let` variables, request identities or applyChange coalescing.
