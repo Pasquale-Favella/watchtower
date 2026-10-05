@@ -240,6 +240,8 @@ const api = {
     openApp: (section?: Section): void => ipcRenderer.send('orb:open-app', section),
     hide: (): void => ipcRenderer.send('orb:hide'),
     quit: (): void => ipcRenderer.send('orb:quit'),
+    /** The panel painted its first frame after opening (flicker-free reveal). */
+    panelPainted: (): void => ipcRenderer.send('orb:panel-painted'),
     onPlacement: (callback: (placement: OrbPlacement) => void): (() => void) => {
       const listener = (_event: IpcRendererEvent, placement: OrbPlacement): void => callback(placement)
       ipcRenderer.on('orb:placement', listener)
