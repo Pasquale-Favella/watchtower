@@ -1,16 +1,17 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
-import { join } from 'path'
 import { homedir } from 'os'
+import { join } from 'path'
 
 import type { AppPaths } from '../../env.js'
-import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { readCachedResults, writeCachedResults } from '../cursor-cache.js'
-import { isSqliteAvailable, isSqliteBusyError, openDatabase, blobToText, type SqliteDatabase } from '../sqlite.js'
-import { estimateTokensFromChars } from '../token-estimate.js'
 import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../file-errors.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { estimateTokensFromChars } from '../token-estimate.js'
 import type { DateRange } from '../types.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 /** Matches cli-date.ts "all" period cap (6 months). */
 const CURSOR_MAX_LOOKBACK_MONTHS = 6
@@ -710,6 +711,7 @@ function parseBubbles(
   seenKeys: Set<string>,
   timeFloor: string,
   agentKvTimestamp: string,
+  pricing: ScanPricing,
 ): { calls: ParsedProviderCall[] } {
   const results: ParsedProviderCall[] = []
   let skipped = 0
@@ -868,7 +870,7 @@ function parseBubbles(
       const effectiveModel =
         row.model ?? scans.get(conversationId)?.model ?? agentStreams.get(conversationId)?.model ?? null
       const pricingModel = resolveModel(effectiveModel)
-      const costUSD = calculateCost(pricingModel, inputTokens, outputTokens, 0, 0, 0)
+      const costUSD = pricing.calculateCost(pricingModel, inputTokens, outputTokens, 0, 0, 0)
 
       const userQuestion = lastUserMsg.get(conversationId) ?? ''
       const assistantText = blobToText(row.user_text)
@@ -939,7 +941,7 @@ function parseBubbles(
       model: modelForDisplay(effectiveModel),
       inputTokens,
       outputTokens,
-      costUSD: calculateCost(resolveModel(effectiveModel), inputTokens, outputTokens, 0, 0, 0),
+      costUSD: pricing.calculateCost(resolveModel(effectiveModel), inputTokens, outputTokens, 0, 0, 0),
       tools: stream?.tools ?? [],
       bashCommands: stream?.bash ?? [],
       timestamp,
@@ -965,7 +967,7 @@ function parseBubbles(
       model: modelForDisplay(stream.model),
       inputTokens,
       outputTokens,
-      costUSD: calculateCost(resolveModel(stream.model), inputTokens, outputTokens, 0, 0, 0),
+      costUSD: pricing.calculateCost(resolveModel(stream.model), inputTokens, outputTokens, 0, 0, 0),
       tools: stream.tools,
       bashCommands: stream.bash,
       timestamp: agentKvTimestamp,
@@ -991,6 +993,7 @@ function createParser(
   seenKeys: Set<string>,
   dateRange?: DateRange,
   paths?: AppPaths,
+  pricing = captureScanPricing(),
 ): SessionParser {
   const timeFloor = getCursorTimeFloor(dateRange)
 
@@ -1067,7 +1070,7 @@ function createParser(
           } catch {
             agentKvTimestamp = new Date().toISOString()
           }
-          const { calls: bubbleCalls } = parseBubbles(db, localSeen, timeFloor, agentKvTimestamp)
+          const { calls: bubbleCalls } = parseBubbles(db, localSeen, timeFloor, agentKvTimestamp, pricing)
           allCalls = bubbleCalls
           // Suppression comes off the `AppPaths` snapshot threaded by
           // `createCursorProvider`; `undefined` (no snapshot threaded) falls
@@ -1136,8 +1139,13 @@ export function createCursorProvider(dbPathOverride?: string, paths?: AppPaths):
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
-      return createParser(source, seenKeys, dateRange, paths)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, dateRange, paths, context?.pricing ?? captureScanPricing())
     },
   }
 }

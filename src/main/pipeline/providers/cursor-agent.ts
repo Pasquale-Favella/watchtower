@@ -1,16 +1,18 @@
 import { createHash } from 'crypto'
 import { existsSync } from 'fs'
 import { readdir, readFile, stat } from 'fs/promises'
-import { join, basename } from 'path'
 import { homedir } from 'os'
+import { basename, join } from 'path'
 
 import { billableOutputTokens } from '../billable-output.js'
-import { calculateCost } from '../models.js'
-import { openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { normalizeContentBlocks } from '../content-utils.js'
-import { estimateTokensFromChars } from '../token-estimate.js'
 import { reportProviderIssue } from '../file-errors.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import { openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { estimateTokensFromChars } from '../token-estimate.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type ConversationSummary = {
   conversationId: string
@@ -384,6 +386,7 @@ function createParser(
   seenKeys: Set<string>,
   dbPath: string,
   summariesByConversationId: Map<string, ConversationSummary>,
+  pricing: ScanPricing,
 ): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
@@ -452,7 +455,7 @@ function createParser(
 
           // Both counters are char estimates over disjoint text (the assistant
           // body and its reasoning body), so the reasoning fold still applies.
-          const costUSD = calculateCost(
+          const costUSD = pricing.calculateCost(
             costModel(model),
             inputTokens,
             billableOutputTokens('cursor-agent', outputTokens, reasoningTokens),
@@ -532,8 +535,13 @@ export function createCursorAgentProvider(baseDirOverride?: string): Provider {
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys, dbPath, summariesByConversationId)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, dbPath, summariesByConversationId, context?.pricing ?? captureScanPricing())
     },
   }
 }

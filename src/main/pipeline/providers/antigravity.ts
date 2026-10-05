@@ -1,16 +1,18 @@
-import { readdir, readFile, mkdir, stat, open, rename, unlink } from 'fs/promises'
 import { execFile } from 'child_process'
 import { randomBytes } from 'crypto'
-import { basename, join } from 'path'
-import { homedir } from 'os'
-import { fileURLToPath } from 'url'
+import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises'
 import https from 'https'
+import { homedir } from 'os'
+import { basename, join } from 'path'
+import { fileURLToPath } from 'url'
 
-import { billableOutputTokens } from '../billable-output.js'
-import { calculateCost } from '../models.js'
 import { resolveCacheDir } from '../../env.js'
+import { billableOutputTokens } from '../billable-output.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
 import { isSqliteAvailable, isSqliteBusyError, openDatabase } from '../sqlite.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type AntigravityConversationRoot = {
   dir: string
@@ -795,6 +797,7 @@ function antigravitySqliteCreatedAt(chatFields: readonly ProtoField[]): string {
 function buildCallFromSqliteGenMetadataRow(
   cascadeId: string,
   row: AntigravityGenMetadataRow,
+  pricing: ScanPricing,
 ): ParsedProviderCall | null {
   const rootFields = parseProtoFields(genMetadataDataBytes(row.data))
   const chatFields = parseProtoFields(protoFieldBytes(firstProtoField(rootFields, 1)) ?? new Uint8Array())
@@ -820,7 +823,7 @@ function buildCallFromSqliteGenMetadataRow(
   const responseId = antigravitySqliteResponseId(usageFields, String(row.idx))
   const model = antigravitySqliteModel(chatFields)
   const pricingModel = normalizePricingModel(model)
-  const costUSD = calculateCost(
+  const costUSD = pricing.calculateCost(
     pricingModel,
     inputTokens,
     billableOutputTokens('antigravity', responseTokens, thinkingTokens),
@@ -850,12 +853,16 @@ function buildCallFromSqliteGenMetadataRow(
   }
 }
 
-function buildCallsFromSqliteGenMetadata(cascadeId: string, rows: AntigravityGenMetadataRow[]): ParsedProviderCall[] {
+function buildCallsFromSqliteGenMetadata(
+  cascadeId: string,
+  rows: AntigravityGenMetadataRow[],
+  pricing: ScanPricing,
+): ParsedProviderCall[] {
   const calls: ParsedProviderCall[] = []
   const seenResponseIds = new Set<string>()
 
   for (const row of rows) {
-    const call = buildCallFromSqliteGenMetadataRow(cascadeId, row)
+    const call = buildCallFromSqliteGenMetadataRow(cascadeId, row, pricing)
     if (!call) continue
     if (seenResponseIds.has(call.deduplicationKey)) continue
     seenResponseIds.add(call.deduplicationKey)
@@ -865,7 +872,11 @@ function buildCallsFromSqliteGenMetadata(cascadeId: string, rows: AntigravityGen
   return calls
 }
 
-async function parseSqliteGenMetadataCalls(filePath: string, cascadeId: string): Promise<ParsedProviderCall[]> {
+async function parseSqliteGenMetadataCalls(
+  filePath: string,
+  cascadeId: string,
+  pricing: ScanPricing,
+): Promise<ParsedProviderCall[]> {
   if (!filePath.toLowerCase().endsWith('.db')) return []
   if (!isSqliteAvailable()) return []
 
@@ -873,7 +884,7 @@ async function parseSqliteGenMetadataCalls(filePath: string, cascadeId: string):
   try {
     db = openDatabase(filePath)
     const rows = db.query<AntigravityGenMetadataRow>('SELECT idx, data FROM gen_metadata ORDER BY idx')
-    return buildCallsFromSqliteGenMetadata(cascadeId, rows)
+    return buildCallsFromSqliteGenMetadata(cascadeId, rows, pricing)
   } catch (err) {
     // Let a transient lock propagate so the run retries this file on the next
     // refresh instead of treating it as empty (see parser.ts busy handling).
@@ -928,6 +939,7 @@ function buildCallsFromGeneratorMetadata(
   cascadeId: string,
   metadata: GeneratorMetadata[],
   modelMap: ModelMap,
+  pricing: ScanPricing,
 ): ParsedProviderCall[] {
   const results: ParsedProviderCall[] = []
 
@@ -949,7 +961,7 @@ function buildCallsFromGeneratorMetadata(
     const model = dropPlaceholderModelId(modelMap[usage.model] ?? usage.model)
     const pricingModel = normalizePricingModel(model)
     const timestamp = entry.chatModel?.chatStartMetadata?.createdAt ?? ''
-    const costUSD = calculateCost(
+    const costUSD = pricing.calculateCost(
       pricingModel,
       inputTokens,
       billableOutputTokens('antigravity', responseTokens, thinkingTokens),
@@ -1121,7 +1133,11 @@ function hasRpcCacheForConversation(seenKeys: Set<string>, conversationId: strin
   return false
 }
 
-async function parseStatusLineCalls(source: SessionSource, seenKeys: Set<string>): Promise<ParsedProviderCall[]> {
+async function parseStatusLineCalls(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  pricing: ScanPricing,
+): Promise<ParsedProviderCall[]> {
   const raw = await readFile(source.path, 'utf-8').catch(() => '')
   const runsByConversation = new Map<string, Array<{ event: StatusLineEvent; signature: string; count: number }>>()
 
@@ -1174,7 +1190,7 @@ async function parseStatusLineCalls(source: SessionSource, seenKeys: Set<string>
       if (seenKeys.has(dedupKey)) continue
 
       const u = billableUsage
-      const costUSD = calculateCost(
+      const costUSD = pricing.calculateCost(
         normalizePricingModel(event.model),
         u.inputTokens,
         u.outputTokens,
@@ -1231,6 +1247,7 @@ async function findCascadeSource(cascadeId: string): Promise<SessionSource | nul
 }
 
 export async function snapshotAntigravityStatusLinePayload(input: unknown): Promise<boolean> {
+  const pricing = captureScanPricing()
   const event = parseStatusLinePayload(input)
   if (!event) return false
 
@@ -1256,7 +1273,7 @@ export async function snapshotAntigravityStatusLinePayload(input: unknown): Prom
     metadata = extractAntigravityGeneratorMetadata(
       await rpc(server, 'GetCascadeTrajectoryGeneratorMetadata', { cascadeId }),
     )
-    const snapshotCalls = buildCallsFromGeneratorMetadata(cascadeId, metadata, modelMap)
+    const snapshotCalls = buildCallsFromGeneratorMetadata(cascadeId, metadata, modelMap, pricing)
     assignStableTimestamps(snapshotCalls, cached?.calls, new Date(s.mtimeMs).toISOString())
     cache.cascades[cascadeId] = {
       mtimeMs: s.mtimeMs,
@@ -1276,10 +1293,13 @@ async function extractWorkspacePath(filePath: string): Promise<string | undefine
   if (filePath.endsWith('.db') && isSqliteAvailable()) {
     try {
       const db = openDatabase(filePath)
-      const rows = db.query<{ data: Uint8Array }>('SELECT data FROM trajectory_metadata_blob')
-      db.close()
-      const textDecoder = new TextDecoder('utf-8', { fatal: false })
-      text = rows.map(r => textDecoder.decode(r.data)).join(' ')
+      try {
+        const rows = db.query<{ data: Uint8Array }>('SELECT data FROM trajectory_metadata_blob')
+        const textDecoder = new TextDecoder('utf-8', { fatal: false })
+        text = rows.map(r => textDecoder.decode(r.data)).join(' ')
+      } finally {
+        db.close()
+      }
     } catch {
       /* ignore and fallback */
     }
@@ -1362,11 +1382,11 @@ function withFallbackTimestamp(call: ParsedProviderCall, fallbackTimestamp: stri
   return call.timestamp ? call : { ...call, timestamp: fallbackTimestamp }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, pricing = captureScanPricing()): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (isAntigravityStatusLineEventsPath(source.path)) {
-        for (const call of await parseStatusLineCalls(source, seenKeys)) {
+        for (const call of await parseStatusLineCalls(source, seenKeys, pricing)) {
           seenKeys.add(call.deduplicationKey)
           yield call
         }
@@ -1393,7 +1413,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         return
       }
 
-      const sqliteResults = await parseSqliteGenMetadataCalls(source.path, cascadeId)
+      const sqliteResults = await parseSqliteGenMetadataCalls(source.path, cascadeId, pricing)
       if (sqliteResults.length > 0) {
         assignStableTimestamps(sqliteResults, cached?.calls, fallbackTimestamp)
         for (const call of sqliteResults) {
@@ -1447,7 +1467,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         return
       }
 
-      const results = buildCallsFromGeneratorMetadata(cascadeId, metadata, modelMap)
+      const results = buildCallsFromGeneratorMetadata(cascadeId, metadata, modelMap, pricing)
       assignStableTimestamps(results, cached?.calls, fallbackTimestamp)
       for (const call of results) {
         applyAntigravityProject(call, source, projectPath)
@@ -1506,8 +1526,13 @@ export function createAntigravityProvider(): Provider {
       return discoverAntigravitySessionSources()
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context?.pricing ?? captureScanPricing())
     },
   }
 }
