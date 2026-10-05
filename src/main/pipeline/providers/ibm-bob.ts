@@ -1,9 +1,11 @@
-import { join } from 'path'
 import { homedir } from 'os'
+import { join } from 'path'
 
 import { getShortModelName } from '../models.js'
-import { discoverClineTasksInBaseDirs, createClineParser } from './vscode-cline-parser.js'
-import type { Provider, SessionSource, SessionParser } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { createClineParser, discoverClineTasksInBaseDirs } from './vscode-cline-parser.js'
 
 const PROVIDER_NAME = 'ibm-bob'
 const DISPLAY_NAME = 'IBM Bob'
@@ -50,8 +52,14 @@ export function createIBMBobProvider(overrideDir?: string): Provider {
       return discoverClineTasksInBaseDirs(dirs, PROVIDER_NAME, DISPLAY_NAME)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createClineParser(source, seenKeys, PROVIDER_NAME, FALLBACK_MODEL)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createClineParser(source, seenKeys, PROVIDER_NAME, FALLBACK_MODEL, pricing)
     },
   }
 }

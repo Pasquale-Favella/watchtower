@@ -3,7 +3,8 @@ import { join } from 'path'
 
 import { type AppPaths, overrideFor } from '../../env.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
-import { calculateCost } from '../models.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
 import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { buildAssistantCall, type MessageData, parseTimestamp, type PartData, sanitize } from './session-message.js'
 import type { ParsedProviderCall, SessionParser, SessionSource } from './types.js'
@@ -600,7 +601,9 @@ export function createSqliteSessionParser(
   seenKeys: Set<string>,
   config: SqliteProviderConfig,
   paths?: AppPaths,
+  pricing?: ScanPricing,
 ): SessionParser {
+  const activePricing = pricing ?? captureScanPricing(paths)
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
@@ -688,6 +691,7 @@ export function createSqliteSessionParser(
             timeCreatedMs: msg.time_created,
             userMessage: currentUserMessageBySession.get(msg.session_id) ?? '',
             ...(sessionDir ? { directory: sessionDir } : {}),
+            pricing: activePricing,
           })
           if (!call) continue
 
@@ -703,7 +707,7 @@ export function createSqliteSessionParser(
             if (!seenKeys.has(dedupKey)) {
               seenKeys.add(dedupKey)
               const model = sessionTokens.model ?? 'unknown'
-              let costUSD = calculateCost(
+              let costUSD = activePricing.calculateCost(
                 model,
                 sessionTokens.input,
                 sessionTokens.output,

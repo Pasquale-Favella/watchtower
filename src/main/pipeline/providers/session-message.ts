@@ -1,6 +1,7 @@
-import { billableOutputTokens } from '../billable-output.js'
-import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
+import { billableOutputTokens } from '../billable-output.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
 import type { ParsedProviderCall } from './types.js'
 
 // The message/part shape shared by OpenCode-style stores (OpenCode SQLite, the
@@ -85,6 +86,7 @@ export function buildAssistantCall(opts: {
   /// Exact session directory when the store records one (drives the
   /// canonical project identity; copilot/codex carry the same pair).
   directory?: string
+  pricing?: ScanPricing
 }): ParsedProviderCall | null {
   const { data, parts } = opts
 
@@ -141,7 +143,8 @@ export function buildAssistantCall(opts: {
     .filter(Boolean)
 
   const model = data.modelID ?? data.model ?? 'unknown'
-  let costUSD = calculateCost(
+  const pricing = opts.pricing ?? captureScanPricing()
+  let costUSD = pricing.calculateCost(
     model,
     tokens.input,
     billableOutputTokens(opts.providerName, tokens.output, tokens.reasoning),

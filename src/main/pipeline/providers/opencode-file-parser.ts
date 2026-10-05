@@ -1,8 +1,10 @@
 import { readdir, readFile } from 'fs/promises'
 import { join } from 'path'
 
-import { buildAssistantCall, sanitize, type MessageData, type PartData } from './session-message.js'
-import type { SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import { buildAssistantCall, type MessageData, type PartData, sanitize } from './session-message.js'
+import type { ParsedProviderCall, SessionParser, SessionSource } from './types.js'
 
 // OpenCode 1.1+ stores sessions as file-based JSON instead of a SQLite DB:
 //   storage/session/<projectID>/<sessionID>.json   session metadata
@@ -86,7 +88,9 @@ export function createOpenCodeFileSessionParser(
   seenKeys: Set<string>,
   dataDir: string,
   providerName: string,
+  pricing?: ScanPricing,
 ): SessionParser {
+  const activePricing = pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const meta = await readJson<SessionMeta>(source.path)
@@ -142,6 +146,7 @@ export function createOpenCodeFileSessionParser(
           timeCreatedMs: data.time?.created ?? meta.time?.created ?? 0,
           userMessage: currentUserMessage,
           ...(meta.directory ? { directory: meta.directory } : {}),
+          pricing: activePricing,
         })
         if (!call) continue
 

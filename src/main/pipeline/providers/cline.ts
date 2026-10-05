@@ -2,8 +2,10 @@ import { stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 
-import { discoverClineTasks, createClineParser, getVSCodeGlobalStoragePath } from './vscode-cline-parser.js'
-import type { Provider, SessionSource, SessionParser } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { createClineParser, discoverClineTasks, getVSCodeGlobalStoragePath } from './vscode-cline-parser.js'
 
 const EXTENSION_ID = 'saoudrizwan.claude-dev'
 
@@ -61,8 +63,14 @@ export function createClineProvider(overrideDirs?: string | string[]): Provider 
       return dedupeTaskSources(sources.flat())
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createClineParser(source, seenKeys, 'cline')
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createClineParser(source, seenKeys, 'cline', 'cline-auto', pricing)
     },
   }
 }

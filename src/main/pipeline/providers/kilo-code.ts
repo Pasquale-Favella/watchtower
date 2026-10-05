@@ -1,14 +1,16 @@
-import { join } from 'path'
 import { homedir } from 'os'
+import { join } from 'path'
 
-import { discoverClineTasks, createClineParser } from './vscode-cline-parser.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
 import {
-  discoverSqliteSessions,
   createSqliteSessionParser,
+  discoverSqliteSessions,
   OPENCODE_FAMILY_1X,
   type SqliteProviderConfig,
 } from './opencode-family-sqlite.js'
-import type { Provider, SessionSource, SessionParser } from './types.js'
+import type { Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { createClineParser, discoverClineTasks } from './vscode-cline-parser.js'
 
 const EXTENSION_ID = 'kilocode.kilo-code'
 const PROVIDER_NAME = 'kilo-code'
@@ -55,11 +57,17 @@ export function createKiloCodeProvider(overrideDir?: string | string[]): Provide
       return [...oldSessions, ...dbSessions]
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
       if (source.path.includes('.db:')) {
-        return createSqliteSessionParser(source, seenKeys, sqliteConfig)
+        return createSqliteSessionParser(source, seenKeys, sqliteConfig, undefined, pricing)
       }
-      return createClineParser(source, seenKeys, PROVIDER_NAME)
+      return createClineParser(source, seenKeys, PROVIDER_NAME, 'cline-auto', pricing)
     },
   }
 }

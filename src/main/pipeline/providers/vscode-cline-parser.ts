@@ -1,9 +1,10 @@
 import { readdir, readFile, stat } from 'fs/promises'
-import { basename, join, posix, win32 } from 'path'
 import { homedir } from 'os'
+import { basename, join, posix, win32 } from 'path'
 
-import { calculateCost } from '../models.js'
-import type { SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import type { ParsedProviderCall, SessionParser, SessionSource } from './types.js'
 
 type UiMessage = {
   type?: string
@@ -149,7 +150,9 @@ export function createClineParser(
   seenKeys: Set<string>,
   providerName: string,
   fallbackModel = 'cline-auto',
+  pricing?: ScanPricing,
 ): SessionParser {
+  const activePricing = pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const taskDir = source.path
@@ -217,7 +220,7 @@ export function createClineParser(
         if (tokensIn === 0 && tokensOut === 0) continue
 
         const timestamp = entry.ts ? new Date(entry.ts).toISOString() : ''
-        const costUSD = cost ?? calculateCost(model, tokensIn, tokensOut, cacheWrites, cacheReads, 0)
+        const costUSD = cost ?? activePricing.calculateCost(model, tokensIn, tokensOut, cacheWrites, cacheReads, 0)
 
         yield {
           provider: providerName,

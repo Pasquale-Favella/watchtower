@@ -1,17 +1,19 @@
-import { join } from 'path'
 import { homedir } from 'os'
+import { join } from 'path'
 
 import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { getShortModelName } from '../models.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
 import {
-  discoverSqliteSessions,
   createSqliteSessionParser,
+  discoverSqliteSessions,
   OPENCODE_FAMILY_1X,
   OPENCODE_FAMILY_2X,
   type SqliteProviderConfig,
 } from './opencode-family-sqlite.js'
-import { discoverOpenCodeFileSessions, createOpenCodeFileSessionParser } from './opencode-file-parser.js'
-import type { Provider, ProbeRoot, SessionSource, SessionParser } from './types.js'
+import { createOpenCodeFileSessionParser, discoverOpenCodeFileSessions } from './opencode-file-parser.js'
+import type { ProbeRoot, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const toolNameMap: Record<string, string> = {
   bash: 'Bash',
@@ -112,15 +114,21 @@ export function createOpenCodeProvider(dataDir?: string, paths?: AppPaths): Prov
       return [...fileSessions, ...sqliteSessions]
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing(paths)
       if (source.path.endsWith('.json')) {
-        return createOpenCodeFileSessionParser(source, seenKeys, resolvedDataDir, 'opencode')
+        return createOpenCodeFileSessionParser(source, seenKeys, resolvedDataDir, 'opencode', pricing)
       }
       // `paths` threads straight through to the shared reader's verbose gate:
       // one trailing seam slot, no second override argument. A caller that
       // omitted it (`kilo-code.ts`) resolves `appPaths()` there instead — the
       // same lookup, at the reader rather than at the root.
-      return createSqliteSessionParser(source, seenKeys, sqliteConfig, paths)
+      return createSqliteSessionParser(source, seenKeys, sqliteConfig, paths, pricing)
     },
   }
 }
