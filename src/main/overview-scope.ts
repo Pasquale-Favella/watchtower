@@ -41,6 +41,17 @@ export function overviewDateRange(scope: OverviewScope, now = new Date()): DateR
   return { start: parseDay(periodWindowStart(scope.period, now)), end }
 }
 
+/** Detector periods end at the captured instant, or the custom range's final local day. */
+export function scopeDateRange(scope: OverviewScope, now: Date): DateRange | null {
+  if (scope.range) {
+    return {
+      start: new Date(`${scope.range.since}T00:00:00`),
+      end: new Date(`${scope.range.until}T23:59:59.999`),
+    }
+  }
+  return { start: new Date(`${periodWindowStart(scope.period, now)}T00:00:00`), end: now }
+}
+
 export function sessionFirstDateKey(sess: SessionSummary): string {
   const ms = Date.parse(sess.firstTimestamp)
   return Number.isNaN(ms) ? '' : localDateKey(new Date(ms))

@@ -9,6 +9,7 @@ import {
   localDateKey,
   overviewDateRange,
   periodWindowStart,
+  scopeDateRange,
 } from '../src/main/overview-scope.js'
 import type { SessionSummary } from '../src/main/pipeline/types.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
@@ -33,6 +34,31 @@ describe('overview scope module boundary', () => {
 })
 
 describe('local calendar windows', () => {
+  it('ends detector periods at the captured instant', () => {
+    const now = new Date(2026, 0, 3, 12, 34, 56, 789)
+
+    expect(scopeDateRange({ period: 'week' }, now)).toEqual({
+      start: new Date(2025, 11, 27),
+      end: now,
+    })
+    expect(scopeDateRange({ period: 'lifetime' }, now)).toEqual({
+      start: new Date(1970, 0, 1),
+      end: now,
+    })
+  })
+
+  it('ends custom detector periods at the final local day', () => {
+    const scope: OverviewScope = {
+      period: 'today',
+      range: { since: '2025-12-31', until: '2026-01-02' },
+    }
+
+    expect(scopeDateRange(scope, new Date(2026, 0, 3, 12))).toEqual({
+      start: new Date(2025, 11, 31),
+      end: new Date(2026, 0, 2, 23, 59, 59, 999),
+    })
+  })
+
   it('formats local dates and crosses month and year boundaries', () => {
     expect(localDateKey(new Date(2026, 0, 3, 12))).toBe('2026-01-03')
     expect(periodWindowStart('week', new Date(2026, 0, 3, 12))).toBe('2025-12-27')

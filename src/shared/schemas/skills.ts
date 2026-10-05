@@ -1,6 +1,10 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
+import { DEFAULT_SKILLS_THRESHOLDS } from '../skills-defaults.js'
+
+export { DEFAULT_SKILLS_THRESHOLDS } from '../skills-defaults.js'
+
 const finiteNumber = Schema.Finite
 const writable = Schema.mutableKey
 const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))
@@ -21,12 +25,12 @@ export type SkillsSource = Schema.Schema.Type<typeof skillsSourceSchema>
  * constants: the renderer owns the values (Settings › Skills) and passes
  * them with every view request. */
 export const skillsThresholdsSchema = Schema.Struct({
-  frequency: writable(positiveInteger.pipe(Schema.withDecodingDefault(Effect.succeed(5)))),
-  spread: writable(positiveInteger.pipe(Schema.withDecodingDefault(Effect.succeed(2)))),
+  frequency: writable(
+    positiveInteger.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_SKILLS_THRESHOLDS.frequency))),
+  ),
+  spread: writable(positiveInteger.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_SKILLS_THRESHOLDS.spread)))),
 })
 export type SkillsThresholds = Schema.Schema.Type<typeof skillsThresholdsSchema>
-
-export const DEFAULT_SKILLS_THRESHOLDS: SkillsThresholds = { frequency: 5, spread: 2 }
 
 /** One session where a candidate pattern appeared (evidence rows, newest
  * first, capped per candidate). */
