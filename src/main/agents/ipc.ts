@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { BrowserWindow, ipcMain } from 'electron'
 
@@ -24,13 +25,11 @@ import {
   skillsDismissalRequestSchema,
   type SkillsDismissalResult,
 } from '../../shared/schemas/skills.js'
+import type { MainRuntime } from '../main-runtime.js'
 import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
-import { detectHarnesses } from './detect.js'
-import { resolveBundledEntry } from './harnesses/bundled.js'
 import { harnessSpecs } from './harnesses/index.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import { openLoginTerminal } from './login-terminal.js'
-import { probeHarness } from './probe.js'
 import { buildCoachPrompt, buildLedgerBriefing, buildScopeUpdate } from './prompts.js'
 import { decodeResumeCursor } from './resume-cursor.js'
 import {
@@ -42,7 +41,7 @@ import {
   isAuthFailureMessage,
   loadHarnessSdk,
 } from './runtime.js'
-import { createHarnessSnapshotStore, type HarnessInstance, type HarnessSnapshotStore } from './snapshot.js'
+import { type HarnessInstance, HarnessSnapshot } from './snapshot.js'
 
 /**
  * Coach & Skills IPC (ADR 0017, reshaped by map 53): the wire between the
@@ -620,11 +619,8 @@ export interface SkillsDismissalSource {
 
 export interface AgentsIpcSources {
   dismissals: SkillsDismissalSource
-  /** The app root (`app.getAppPath()`): bundled ACP servers (e.g. codex)
-   *  are resolved from `<appPath>/node_modules`, so no global install is
-   *  needed (ADR 0016 map 47 ticket 49). */
-  appPath: string
-  clientVersion: string
+  /** The single main-owned graph contains the versioned, scoped harness snapshot. */
+  runtime: MainRuntime
   /** Acquires the in-app ledger MCP server for a harness registry key
    *  (map 53) — the runner's app-specific dep, supplied by the composition
    *  root (main/index.ts). Takes no scope: the server serves the full
@@ -641,20 +637,18 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
   reset: () => Promise<void>
   dispose: () => Promise<void>
 } {
-  const { dismissals, appPath, clientVersion, ledgerMcpServer } = sources
+  const { dismissals, runtime: mainRuntime, ledgerMcpServer } = sources
   let runtimePromise: Promise<HarnessRuntime> | null = null
-  const harnessStore: HarnessSnapshotStore = createHarnessSnapshotStore({
-    detect: () =>
-      detectHarnesses({
-        resolveBundled: spec => resolveBundledEntry(spec, appPath),
-      }),
-    probe: info => probeHarness(info, { clientVersion }),
-    onChange: rows => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) win.webContents.send('coach:harnesses-changed', rows)
-      }
+  const harnesses: HarnessSource = {
+    list: () => mainRuntime.runPromise(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.list())),
+    refresh: () => mainRuntime.runPromise(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.refresh())),
+    get: instanceId => mainRuntime.runPromise(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.get(instanceId))),
+    reportAuth: (instanceId, status) => {
+      void mainRuntime
+        .runPromise(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.reportAuth(instanceId, status)))
+        .catch(() => {})
     },
-  })
+  }
   const runner = createCoachRunner({
     // The SDK is ESM and heavy; boot stays independent of it (the seam's
     // lazy-wire design). First run pays the load once.
@@ -662,7 +656,7 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
       runtimePromise ??= loadHarnessSdk().then(createHarnessRuntime)
       return runtimePromise
     },
-    harnesses: harnessStore,
+    harnesses,
     ledgerMcpServer,
   })
 
@@ -671,7 +665,7 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
   ipcMain.handle('coach:open-login-terminal', async (_event, request: unknown): Promise<CoachLoginTerminalResult> => {
     const parsed = Schema.decodeUnknownResult(coachOpenLoginTerminalRequestSchema)(request)
     if (parsed._tag === 'Failure') return { ok: false, error: 'invalid harness instance id' }
-    const instance = await harnessStore.get(parsed.success)
+    const instance = await harnesses.get(parsed.success)
     const loginCommand = instance
       ? harnessSpecs.find(spec => spec.kind === instance.info.kind)?.auth?.loginCommand
       : undefined
@@ -731,15 +725,17 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
     return { ok: true }
   })
 
-  const startup = setTimeout(() => harnessStore.start(), 1500)
+  const startup = setTimeout(() => {
+    void mainRuntime.runPromise(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.start())).catch(() => {})
+  }, 1500)
   startup.unref?.()
   return {
     reset: async () => {
       await runner.reset()
     },
     dispose: async () => {
+      clearTimeout(startup)
       await runner.reset()
-      await harnessStore.dispose()
     },
   }
 }

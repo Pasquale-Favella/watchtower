@@ -3,16 +3,26 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
+import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { ProbeResult } from '../src/main/agents/probe.js'
 import {
-  createHarnessSnapshotStore,
+  type HarnessInstance,
+  HarnessProbe,
+  HarnessSnapshot,
   type HarnessSnapshotCounters,
-  type HarnessSnapshotStore,
+  harnessSnapshotLayer,
+  type HarnessSnapshotService,
 } from '../src/main/agents/snapshot.js'
-import { closeOperationalLog, initOperationalLog, PROBE_OUTCOME_COUNTER } from '../src/main/operational-log.js'
+import {
+  closeOperationalLog,
+  initOperationalLog,
+  OperationalLogLoggerLayer,
+  PROBE_OUTCOME_COUNTER,
+} from '../src/main/operational-log.js'
 import type { CoachHarnessRow } from '../src/shared/schemas/agents.js'
 
 const infos: HarnessInfo[] = [
@@ -31,6 +41,15 @@ const infos: HarnessInfo[] = [
 const ready: ProbeResult = { status: 'ready', auth: { status: 'configured' }, version: '1.0.0' }
 const warning: ProbeResult = { status: 'warning', auth: { status: 'unknown' }, message: 'Sign-in not verified' }
 
+interface HarnessSnapshotStore {
+  list: () => Promise<CoachHarnessRow[]>
+  refresh: () => Promise<CoachHarnessRow[]>
+  get: (instanceId: string) => Promise<HarnessInstance | undefined>
+  reportAuth: (instanceId: string, status: 'configured' | 'unauthenticated') => void
+  start: () => void
+  dispose: () => Promise<void>
+}
+
 let stores: HarnessSnapshotStore[] = []
 afterEach(async () => {
   await Promise.all(stores.map(store => store.dispose()))
@@ -43,7 +62,28 @@ function makeStore(
   onChange: (rows: CoachHarnessRow[]) => void = () => {},
   counters?: HarnessSnapshotCounters,
 ): HarnessSnapshotStore {
-  const store = createHarnessSnapshotStore({ detect, probe, onChange, ...(counters ? { counters } : {}) })
+  const runtime = ManagedRuntime.make(
+    Layer.mergeAll(
+      OperationalLogLoggerLayer,
+      harnessSnapshotLayer({ detect, onChange, ...(counters ? { counters } : {}) }).pipe(
+        Layer.provideMerge(HarnessProbe.layerWithProbe(probe)),
+      ),
+    ),
+  )
+  const use = <A>(effect: (service: HarnessSnapshotService) => Effect.Effect<A, unknown>) =>
+    runtime.runPromise(Effect.flatMap(HarnessSnapshot, service => effect(service)))
+  const store: HarnessSnapshotStore = {
+    list: () => use(service => service.list()),
+    refresh: () => use(service => service.refresh()),
+    get: instanceId => use(service => service.get(instanceId)),
+    reportAuth: (instanceId, status) => {
+      runtime.runSync(Effect.flatMap(HarnessSnapshot, service => service.reportAuth(instanceId, status)))
+    },
+    start: () => {
+      void use(service => service.start()).catch(() => {})
+    },
+    dispose: () => Effect.runPromise(runtime.disposeEffect),
+  }
   stores.push(store)
   return store
 }

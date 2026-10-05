@@ -24,7 +24,7 @@ import type { ComparePair } from './compare-view.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths } from './env.js'
 import type { ExportResult } from './export.js'
-import { mainRuntime } from './main-runtime.js'
+import { makeMainRuntime } from './main-runtime.js'
 import {
   closeOperationalLog,
   initOperationalLog,
@@ -49,6 +49,11 @@ let updateChecker: UpdateCheckerEffect | null = null
 let agentsCleanup: { reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
 let dbClient: DbWorkerClient | null = null
+const mainRuntime = makeMainRuntime({
+  clientVersion: app.getVersion(),
+  appPath: app.getAppPath(),
+  onHarnessChange: rows => broadcast('coach:harnesses-changed', rows),
+})
 /** App-level loopback-HTTP ledger sidecar: shared by Copilot, local external
  * MCP clients, and any future harness that rejects stdio. It remains lazy by
  * default and is prewarmed after the data worker is ready when the persisted
@@ -389,14 +394,12 @@ function registerIpc(db: DbWorkerClient): void {
   // from the unified Coach & Skills surface (ADR 0017); dismissals are a
   // ledger config table (written through the worker) so they survive clear().
   agentsCleanup = registerAgentsIpc({
+    runtime: mainRuntime,
     dismissals: {
       dismiss: async (source, name, reason) => {
         await db.request('skills:dismiss', { source, name, reason })
       },
     },
-    // The app root: bundled ACP servers (codex) resolve from its node_modules.
-    appPath: app.getAppPath(),
-    clientVersion: app.getVersion(),
     // The in-app ledger MCP server (map 53): the harness agent spawns the app
     // itself as plain node (ELECTRON_RUN_AS_NODE=1) and reads the FULL
     // lifetime ledger read-only — no scope is baked at spawn (the harness
@@ -529,25 +532,25 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-// Tear down the coach conversation's temp workspace (map 53) so a reset or a
-// quit never leaks a scratch directory under the OS temp root. Best-effort:
-// the runner awaits run teardowns and retries the delete, and a leftover
-// scratch dir is cleaned by the OS — quitting must never block on it. The
-// data worker gets the same best-effort treatment: a chance to checkpoint
-// and close the ledger before the process dies.
-app.on('before-quit', () => {
-  // The pool kill is synchronous (the signal is delivered even as this
-  // process exits). Belt-and-braces with the child's own parent-liveness
-  // watch so a main-process crash cannot leave a local sidecar behind.
+// Wait for the owned resources before allowing Electron to exit. Repeated
+// quit requests during cleanup share this shutdown instead of closing early.
+let quitState: 'running' | 'closing' | 'closed' = 'running'
+app.on('before-quit', event => {
+  if (quitState === 'closed') return
+  event.preventDefault()
+  if (quitState === 'closing') return
+  quitState = 'closing'
   sidecarPool.releaseAll()
-  void agentsCleanup?.dispose()
-  void dbClient?.shutdown().catch(() => {})
-  // Release main-runtime layers (resourceless today; harness capabilities
-  // join MainLive later) — best-effort like the shutdowns above.
-  void mainRuntime.dispose()
-  try {
-    closeOperationalLog()
-  } catch {
-    /* best effort */
-  }
+  const coachShutdown = Promise.resolve()
+    .then(() => agentsCleanup?.dispose())
+    .finally(() => mainRuntime.dispose())
+  void Promise.allSettled([coachShutdown, dbClient?.shutdown()]).then(() => {
+    try {
+      closeOperationalLog()
+    } catch {
+      /* best effort */
+    }
+    quitState = 'closed'
+    app.quit()
+  })
 })

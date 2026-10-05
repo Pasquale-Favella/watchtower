@@ -1,54 +1,66 @@
+import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 
-import { HarnessProbe } from './agents/snapshot.js'
+import type { CoachHarnessRow } from '../shared/schemas/agents.js'
+import { CommandRunner } from './agents/command-runner.js'
+import { detectHarnesses, type HarnessInfo } from './agents/detect.js'
+import { resolveBundledEntry } from './agents/harnesses/bundled.js'
+import type { ProbeResult } from './agents/probe.js'
+import { HarnessProbe, HarnessSnapshot, harnessSnapshotLayer } from './agents/snapshot.js'
 import { Env } from './env.js'
 import { OperationalLogLoggerLayer, OperationalLogTracerLayer } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 
-/**
- * Main-process application runtime (ADR 0032): the ONE Effect runtime owned
- * by the Electron main isolate, composed from focused service layers.
- *
- * Separate lifecycles/resources from the db-worker runtime by design — this
- * runtime NEVER touches the ledger connection or db-worker scopes (the
- * worker owns the ledger on its own thread behind DbWorkerClient; sharing
- * SQLite state across isolates would break the single-writer invariant).
- *
- * Flat composition via `Layer.mergeAll` — no second runtime, no `run*`
- * spreading through domain code: external callbacks and Promise APIs (IPC
- * handlers) enter Effect here. `HarnessProbe` is the minimal harness
- * capability seam (§4.3): the never-fails ACP handshake probe with
- * test-friendly fakes (`layerWithProbe`), mirroring `HttpFetch.layerWithFetch`.
- * `Env` is the startup-immutable env-only Config seam: provided once at this
- * root via `Env.layer`, never per-call — tests substitute
- * `Env.layerWithValues` fakes with zero `process.env` mutation.
- * The snapshot store itself stays Promise-bound (its `deps.detect` Promise
- * boundary + `onChange` IPC push never cross into Effect), and the run
- * seam stays injectable via `HarnessSdk` fakes — platform adoption
- * (`@effect/platform` HttpClient/FileSystem/Command) stays a sequenced
- * follow-up, pinned + asar-proven like ADR 0030. `OperationalLogTracerLayer`
- * and `OperationalLogLoggerLayer` are References, not `Context.Service`s, so
- * they add nothing to `R` and the declared service set is unchanged.
- */
-export const MainLive: Layer.Layer<HttpFetch | HarnessProbe | Env> = Layer.mergeAll(
+/** Stable services available through the Electron main isolate's one runtime. */
+export type MainServices = HttpFetch | Env | CommandRunner | HarnessProbe | HarnessSnapshot
+export type MainRuntime = ManagedRuntime.ManagedRuntime<MainServices, never>
+
+export interface MainRuntimeOptions {
+  readonly clientVersion: string
+  readonly appPath: string
+  readonly onHarnessChange: (rows: CoachHarnessRow[]) => void
+}
+
+/** Focused overrides for composition tests. Production uses the live detector and probe. */
+export interface MainRuntimeOverrides {
+  readonly detect?: () => Promise<HarnessInfo[]>
+  readonly probe?: (info: HarnessInfo, clientVersion: string) => Effect.Effect<ProbeResult>
+  readonly readPath?: () => string | undefined
+}
+
+/** Shared main-process dependencies with no Electron or harness state. */
+export const MainLive: Layer.Layer<HttpFetch | Env> = Layer.mergeAll(
   HttpFetch.layer,
-  HarnessProbe.layer,
   Env.layer,
-  // A12: the Logger half, and the reason the operational records in this
-  // isolate reach the file at all. `Effect.log*` is the one logging path, so a
-  // converted site only files when the `Logger` reference is installed here —
-  // exactly as the worker root has installed it since A7. It also REPLACES
-  // Effect's default console loggers, so main's logs land in the Operational
-  // file and nowhere else (no console duplication).
+  // The main isolate owns these references; child work inherits this context.
   OperationalLogLoggerLayer,
-  // A7: the main isolate gets the tracer too. Worker-only would leave every
-  // `Effect.fn('…')` span built here dangling — the problem relocated, not
-  // solved. Unlike the worker's copy, these records DO reach the file: main owns
-  // the Operational-log writer (ADR 0029).
   OperationalLogTracerLayer('main'),
 )
 
-export const mainRuntime = ManagedRuntime.make(MainLive)
+/** Compose the main process's actual app-version-aware, scoped harness snapshot. */
+export function makeMainLive(
+  options: MainRuntimeOptions,
+  overrides: MainRuntimeOverrides = {},
+): Layer.Layer<MainServices> {
+  const commandRunner = CommandRunner.layer
+  const probeImpl = overrides.probe
+  const probe = probeImpl
+    ? HarnessProbe.layerWithProbe(info => probeImpl(info, options.clientVersion))
+    : HarnessProbe.layerWithClientVersion(options.clientVersion)
+  const probeAndRunner = probe.pipe(Layer.provideMerge(commandRunner))
+  const snapshot = harnessSnapshotLayer({
+    detect:
+      overrides.detect ??
+      (() => detectHarnesses({ resolveBundled: spec => resolveBundledEntry(spec, options.appPath) })),
+    onChange: options.onHarnessChange,
+    ...(overrides.readPath ? { readPath: overrides.readPath } : {}),
+  }).pipe(Layer.provideMerge(probeAndRunner))
 
-export type MainRuntime = typeof mainRuntime
+  return Layer.merge(MainLive, snapshot)
+}
+
+/** The only runtime constructor for this isolate; the root disposes its scope on quit. */
+export function makeMainRuntime(options: MainRuntimeOptions, overrides: MainRuntimeOverrides = {}): MainRuntime {
+  return ManagedRuntime.make(makeMainLive(options, overrides))
+}

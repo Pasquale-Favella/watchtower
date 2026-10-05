@@ -13,7 +13,8 @@ import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 
-import { probeClaudeAuthStatus } from './auth-probe.js'
+import { probeClaudeAuthStatus, runClaudeAuthProbe } from './auth-probe.js'
+import type { CommandRunner } from './command-runner.js'
 import type { HarnessInfo } from './detect.js'
 import { probeTimeoutFor } from './harness-timeouts.js'
 import { killProcessTree } from './process-tree.js'
@@ -127,7 +128,11 @@ function authFromInitialize(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<P
   return Effect.succeed('unknown')
 }
 
-function initializeProbe(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<ProbeResult, unknown> {
+function initializeProbe<R = never>(
+  info: HarnessInfo,
+  deps: ProbeDeps,
+  authenticate: (info: HarnessInfo, deps: ProbeDeps) => Effect.Effect<ProbeAuthStatus, unknown, R> = authFromInitialize,
+): Effect.Effect<ProbeResult, unknown, R> {
   const timeoutMs = deps.timeoutMs ?? probeTimeoutFor(info.kind)
   const platform = deps.platform ?? process.platform
   return Effect.scoped(
@@ -187,7 +192,7 @@ function initializeProbe(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<Prob
             ),
           ),
           Effect.flatMap(response =>
-            authFromInitialize(info, deps).pipe(
+            authenticate(info, deps).pipe(
               Effect.map(auth => handshakeResult(info, auth, response.agentInfo?.version ?? undefined)),
             ),
           ),
@@ -207,6 +212,22 @@ function initializeProbe(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<Prob
 /** Runs only ACP initialize and always degrades failures to an honest row. */
 export function probeHarness(info: HarnessInfo, deps: ProbeDeps = {}): Effect.Effect<ProbeResult, never> {
   return initializeProbe(info, deps).pipe(
+    Effect.catchIf(
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the type predicate exhausts the unknown error channel
+      (_error): _error is unknown => true,
+      error => Effect.succeed(errorResult(info, error instanceof Error ? error.message : String(error))),
+    ),
+  )
+}
+
+/** Live main-root path: auth probing stays in the supplied CommandRunner graph. */
+export function probeHarnessWithCommandRunner(
+  info: HarnessInfo,
+  clientVersion: string,
+): Effect.Effect<ProbeResult, never, CommandRunner> {
+  return initializeProbe(info, { clientVersion }, harness =>
+    harness.kind === 'claude' ? runClaudeAuthProbe('claude', ['auth', 'status', '--json']) : Effect.succeed('unknown'),
+  ).pipe(
     Effect.catchIf(
       // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the type predicate exhausts the unknown error channel
       (_error): _error is unknown => true,
