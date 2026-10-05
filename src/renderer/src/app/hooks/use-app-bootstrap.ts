@@ -19,6 +19,9 @@ export function useAppBootstrap(): void {
       if (status.data.scanned) {
         useScanStore.setState({ hydrated: true })
         await useScanStore.getState().applyChange()
+        // A scan already in flight (the orb's, the tray's, a cadence tick)
+        // shows here immediately rather than at its next progress event.
+        await useScanStore.getState().syncActivity()
       } else {
         await useScanStore.getState().refresh()
       }

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { fetchAnalytics, fetchScan, fetchScanStatus } from '@/shared/lib/api'
+import { fetchAnalytics, fetchScan, fetchScanActive, fetchScanStatus } from '@/shared/lib/api'
 import type { ScanMetadata } from '../../../../shared/schemas/scan.js'
 import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
 
@@ -43,6 +43,10 @@ export interface ScanState {
    * this function's return value — the same path a background-cadence scan
    * takes. Only failures are handled here. */
   refresh: () => Promise<void>
+  /** Adopts the main process's answer to "is a scan running?" — read once at
+   * a window's boot, so a window opened mid-scan shows it immediately; the
+   * broadcast lifecycle events take over from there. */
+  syncActivity: () => Promise<void>
   onProgress: (provider: string, processed: number, total: number, done: boolean) => void
   onError: (message: string) => void
   onIdle: () => void
@@ -113,6 +117,10 @@ export const useScanStore = create<ScanState>()((set, get) => ({
         scanning: false,
       })
     }
+  },
+  syncActivity: async () => {
+    const result = await fetchScanActive()
+    if (result.ok && result.data) set({ scanning: true })
   },
   onProgress: (provider, processed, total, done) => {
     // Parity with AppRoot's handler: every progress event marks the shell as

@@ -1,7 +1,7 @@
 @import '../assets/main.css';
 
-/* The orb window is frameless and transparent: only the orb and its panel
- * paint, everything else must show the desktop through. */
+/* The orb's windows (the orb, its panel) are frameless and transparent:
+ * only the orb and the panel card paint; the rest shows the desktop. */
 html,
 body,
 #root {
@@ -35,19 +35,8 @@ body,
   }
 }
 
-.orb-panel-in {
-  animation: orb-panel-in 160ms ease-out;
-}
-@keyframes orb-panel-in {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .orb-beacon,
-  .orb-panel-in {
+  .orb-beacon {
     animation: none;
   }
 }

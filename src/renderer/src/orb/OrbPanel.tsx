@@ -15,7 +15,7 @@ import { orbControls } from '@/shared/lib/api'
 import { formatUsd } from '@/shared/lib/models'
 import { cn } from '@/shared/lib/utils'
 
-import { useOrbStore } from './store'
+import { useOrbPanelStore } from './panel-store'
 
 /** The KpiBento's metric label style. */
 const LABEL = 'text-muted-foreground text-[10px] font-medium tracking-wide uppercase'
@@ -33,9 +33,9 @@ function Slot({ className, children }: { className?: string; children: ReactNode
  * the 30-day total with its week-over-week trend, local-model savings, and
  * the same daily-spend chart — plus the way back into the full app. */
 export function OrbPanel({ className }: { className?: string }) {
-  const peek = useOrbStore(s => s.peek)
-  const today = useOrbStore(s => s.today.data)
-  const recent = useOrbStore(s => s.recent.data)
+  const peek = useOrbPanelStore(s => s.peek)
+  const today = useOrbPanelStore(s => s.today.data)
+  const recent = useOrbPanelStore(s => s.recent.data)
   const scanning = useScanStore(s => s.scanning)
   const refresh = useScanStore(s => s.refresh)
   // Re-render money values when the display currency changes (ADR 0009).
@@ -46,7 +46,7 @@ export function OrbPanel({ className }: { className?: string }) {
   return (
     <Card
       className={cn(
-        'orb-panel-in border-border bg-card gap-0 overflow-hidden rounded-xl border shadow-xl ring-0 [--card-spacing:0px]',
+        'border-border bg-card gap-0 overflow-hidden rounded-xl border shadow-xl ring-0 [--card-spacing:0px]',
         className,
       )}
     >

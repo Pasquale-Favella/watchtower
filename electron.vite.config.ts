@@ -33,10 +33,12 @@ export default defineConfig({
     plugins: [react(), tailwindcss()],
     build: {
       rollupOptions: {
-        // Two pages: the full app and the floating background orb.
+        // Three pages: the full app, the floating background orb, and the
+        // orb's spend panel (its own window, so the orb never resizes).
         input: {
           index: resolve('src/renderer/index.html'),
-          orb: resolve('src/renderer/orb.html')
+          orb: resolve('src/renderer/orb.html'),
+          'orb-panel': resolve('src/renderer/orb-panel.html')
         }
       }
     }
