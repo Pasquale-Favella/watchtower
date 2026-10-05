@@ -4,9 +4,10 @@ import { join } from 'path'
 
 import { extractBashCommands } from '../bash-utils.js'
 import { readSessionFile } from '../fs-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
 import type { ToolCall } from '../types.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const METADATA_PREFIX_BYTES = 64 * 1024
 
@@ -365,7 +366,8 @@ function reportedCost(cost: CodeWhaleCost | undefined): { value: number; exact: 
   }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const raw = await readSessionFile(source.path)
@@ -387,7 +389,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       const totalTokens = safeTokenCount(metadata.total_tokens)
       const model = metadata.model ?? metadata.model_provider ?? 'unknown'
       const localCost = reportedCost(metadata.cost)
-      const costUSD = localCost.exact ? localCost.value : calculateCost(model, totalTokens, 0, 0, 0, 0)
+      const costUSD = localCost.exact ? localCost.value : pricing.calculateCost(model, totalTokens, 0, 0, 0, 0)
       if (totalTokens === 0 && costUSD === 0) return
 
       const deduplicationKey = `codewhale:${metadata.id}`
@@ -467,8 +469,13 @@ export function createCodeWhaleProvider(overrideDirs?: string | string[]): Provi
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

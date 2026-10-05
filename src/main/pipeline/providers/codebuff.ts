@@ -1,10 +1,11 @@
 import { readdir, readFile, stat } from 'fs/promises'
-import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
+import { basename, dirname, join } from 'path'
 
-import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // Codebuff (formerly Manicode) uses a credit-based billing system. The local
 // chat-messages.json doesn't record per-call token counts the way Claude Code
@@ -334,7 +335,8 @@ function extractChannelFromChatDir(chatDir: string): string | null {
   return channel ? channel : null
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const chatDir = source.path
@@ -396,7 +398,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         // Prefer calculated cost from tokens when available (multi-provider
         // models routed through Codebuff still show up in LiteLLM); otherwise
         // fall back to the credit-based approximation.
-        let costUSD = calculateCost(model, usage.input, usage.output, usage.cacheWrite, usage.cacheRead, 0)
+        let costUSD = pricing.calculateCost(model, usage.input, usage.output, usage.cacheWrite, usage.cacheRead, 0)
         if (costUSD === 0 && credits > 0) {
           costUSD = credits * USD_PER_CREDIT
         }
@@ -446,8 +448,13 @@ export function createCodebuffProvider(baseDir?: string): Provider {
       return discoverSessionsInBase(dir)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

@@ -2,11 +2,20 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 
-import { calculateCost } from '../models.js'
-import { estimateTokensFromChars } from '../token-estimate.js'
-import { blobToText, isSqliteAvailable, openDatabase } from '../sqlite.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
 import type { SqliteDatabase } from '../sqlite.js'
-import type { ParsedProviderCall, ProbeRoot, Provider, SessionParser, SessionSource } from './types.js'
+import { blobToText, isSqliteAvailable, openDatabase } from '../sqlite.js'
+import { estimateTokensFromChars } from '../token-estimate.js'
+import type { DateRange } from '../types.js'
+import type {
+  ParsedProviderCall,
+  ProbeRoot,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from './types.js'
 
 const METRICS_FILE_RE = /^metrics-(\d{4})-(\d{2})-(\d{2})\.jsonl$/
 
@@ -438,7 +447,7 @@ function commonCallFields(source: SessionSource, basePath: string) {
   }
 }
 
-function createMetricsParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createMetricsParser(source: SessionSource, seenKeys: Set<string>, pricing: ScanPricing): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const records = await readMetricsRecords(source.path)
@@ -474,7 +483,7 @@ function createMetricsParser(source: SessionSource, seenKeys: Set<string>): Sess
           model,
           inputTokens,
           outputTokens,
-          costUSD: recordedCost ?? calculateCost(model, inputTokens, outputTokens, 0, 0, 0),
+          costUSD: recordedCost ?? pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0),
           costIsEstimated,
           tools,
           timestamp,
@@ -487,7 +496,7 @@ function createMetricsParser(source: SessionSource, seenKeys: Set<string>): Sess
   }
 }
 
-function createDatabaseParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createDatabaseParser(source: SessionSource, seenKeys: Set<string>, pricing: ScanPricing): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const basePath = basePathFor(source)
@@ -514,7 +523,7 @@ function createDatabaseParser(source: SessionSource, seenKeys: Set<string>): Ses
           model,
           inputTokens,
           outputTokens,
-          costUSD: calculateCost(model, inputTokens, outputTokens, 0, 0, 0),
+          costUSD: pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0),
           costIsEstimated: true,
           tools: metadata.tools,
           timestamp,
@@ -549,9 +558,15 @@ export const quickdesk: Provider = {
     return discoverSources()
   },
 
-  createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+  createSessionParser(
+    source: SessionSource,
+    seenKeys: Set<string>,
+    _dateRange?: DateRange,
+    context?: ProviderScanContext,
+  ): SessionParser {
+    const pricing = context?.pricing ?? captureScanPricing()
     return source.sourceId === 'sessions-db' || basename(source.path) === 'sessions.db'
-      ? createDatabaseParser(source, seenKeys)
-      : createMetricsParser(source, seenKeys)
+      ? createDatabaseParser(source, seenKeys, pricing)
+      : createMetricsParser(source, seenKeys, pricing)
   },
 }

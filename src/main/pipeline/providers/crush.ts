@@ -1,12 +1,13 @@
 import { readFile } from 'fs/promises'
-import { join, resolve } from 'path'
 import { homedir, platform } from 'os'
+import { join, resolve } from 'path'
 
 import { type AppPaths, overrideFor, platformFor } from '../../env.js'
-import { calculateCost } from '../models.js'
-import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing } from '../models.js'
+import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 /// Crush stores per-project SQLite databases discovered through a JSON registry.
 /// We only read both. Schema source: charmbracelet/crush
@@ -129,7 +130,8 @@ function dominantModel(db: SqliteDatabase, sessionId: string): string {
   }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
@@ -175,7 +177,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         const model = dominantModel(db, sessionId)
         // Crush already records cost in dollars; trust it. Fall back to
         // pricing-table calculation only when the row is missing a cost.
-        const costUSD = cost > 0 ? cost : calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
+        const costUSD = cost > 0 ? cost : pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
 
         yield {
           provider: 'crush',
@@ -256,8 +258,13 @@ export function createCrushProvider(paths?: AppPaths): Provider {
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

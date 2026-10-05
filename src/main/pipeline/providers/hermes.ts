@@ -1,13 +1,14 @@
 import { readdir, stat } from 'fs/promises'
-import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
+import { basename, dirname, join } from 'path'
 
 import { billableOutputTokens } from '../billable-output.js'
-import { calculateCost, getShortModelName } from '../models.js'
-import { isSqliteAvailable, openDatabase, isSqliteBusyError, type SqliteDatabase } from '../sqlite.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import { isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import type { DateRange } from '../types.js'
 import type { ToolCall } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type HermesSessionRow = {
   id: string
@@ -309,7 +310,13 @@ async function discoverFromDb(dbPath: string, profile: string): Promise<SessionS
   }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>, hermesHome: string): SessionParser {
+function createParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  hermesHome: string,
+  context?: ProviderScanContext,
+): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
@@ -398,7 +405,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, hermesHome: 
         // Hermes bills reasoning tokens at the output rate (same as Gemini).
         // The LiteLLM model table is used as a fallback when Hermes has not
         // stored an actual or estimated cost for the session.
-        const calculatedCost = calculateCost(
+        const calculatedCost = pricing.calculateCost(
           model,
           inputTokens,
           billableOutputTokens('hermes', outputTokens, reasoningTokens),
@@ -480,8 +487,13 @@ export function createHermesProvider(hermesHomeOverride?: string): Provider {
       return sessions
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys, hermesHome)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, hermesHome, context)
     },
   }
 }

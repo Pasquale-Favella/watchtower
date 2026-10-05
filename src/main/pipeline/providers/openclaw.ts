@@ -1,11 +1,12 @@
 import { readdir, readFile } from 'fs/promises'
-import { basename, join } from 'path'
 import { homedir } from 'os'
+import { basename, join } from 'path'
 
-import { readSessionFile } from '../fs-utils.js'
-import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { readSessionFile } from '../fs-utils.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const toolNameMap: Record<string, string> = {
   bash: 'Bash',
@@ -91,7 +92,8 @@ function extractTools(
   return { tools, bashCommands }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const raw = await readSessionFile(source.path)
@@ -180,7 +182,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         const costUSD =
           costFromProvider > 0
             ? costFromProvider
-            : calculateCost(call.model, u.input, u.output, u.cacheWrite, u.cacheRead, 0)
+            : pricing.calculateCost(call.model, u.input, u.output, u.cacheWrite, u.cacheRead, 0)
 
         const ts = new Date(call.timestamp)
         if (isNaN(ts.getTime()) || ts.getTime() < 1_000_000_000_000) continue
@@ -283,8 +285,13 @@ export function createOpenClawProvider(overrideDir?: string): Provider {
       return all
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }
