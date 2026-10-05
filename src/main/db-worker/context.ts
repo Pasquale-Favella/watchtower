@@ -16,6 +16,7 @@ import {
   skillsThresholdsSchema,
 } from '../../shared/schemas/skills.js'
 import { queryCompareView } from '../application/compare-query.js'
+import { queryExport } from '../application/export-query.js'
 import { queryModelsView } from '../application/models-query.js'
 import { queryOptimizeView } from '../application/optimize-query.js'
 import { queryOverview } from '../application/overview-query.js'
@@ -27,8 +28,6 @@ import { queryAnalyticalViews, queryDashboardViews } from '../application/view-q
 import { queryYieldView } from '../application/yield-query.js'
 import { resolveCadenceMs } from '../cadence.js'
 import type { Env } from '../env.js'
-import type { ExportResult } from '../export.js'
-import { exportCsv, exportJson } from '../export.js'
 import {
   type ActiveCurrency,
   type CurrencyOption,
@@ -62,7 +61,6 @@ import { LedgerStore } from '../store/ledger.js'
 import type { PortInput } from '../store/port.js'
 import {
   buildProjectRowsFromLedger,
-  buildProjectsFromLedger,
   getSessionDetailFromLedger,
   querySessionRowsFromLedger,
   searchSessionsFromLedger,
@@ -474,29 +472,6 @@ export class DbWorkerContext {
     return { ...this.userDataPaths(), claudeConfigDirs }
   }
 
-  /** CSV/JSON export in the selected display currency (ADR 0009 seam for
-   * ADR 0013's Export pane). The destination is always resolved — the main
-   * process shows the folder/file picker before calling. Reads the FULL
-   * ledger history through the aggregation layer (ADR 0013): the gate is
-   * "ledger has any rows", and there is no date-range filter — exports cover
-   * full history. Cost figures stay USD-anchored in the ledger; conversion is
-   * applied only to the files produced here. */
-  private async runExport(kind: 'csv' | 'json', target: string): Promise<ExportResult> {
-    const projects = buildProjectsFromLedger(this.ledger)
-    if (projects.length === 0) {
-      return { ok: false, error: 'no data to export yet — scan first' }
-    }
-    try {
-      const path =
-        kind === 'csv'
-          ? await exportCsv(projects, target, this.ledger)
-          : await exportJson(projects, target, this.ledger)
-      return { ok: true, path }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  }
-
   // ── Op dispatch (one arm per renderer IPC channel that touches data) ──
 
   async dispatch(op: string, args: unknown[]): Promise<unknown> {
@@ -866,13 +841,25 @@ export class DbWorkerContext {
         return listCurrencies() satisfies CurrencyOption[]
 
       case 'export:csv': {
-        const target = args[0] as string
-        return this.runExport('csv', target)
+        return this.runtime.runPromise(
+          queryExport({
+            kind: 'csv',
+            outputPath: args[0] as string,
+            catalogue: captureModelPricingCatalogue(),
+            proxyPaths: captureProxyPaths(),
+          }),
+        )
       }
 
       case 'export:json': {
-        const target = args[0] as string
-        return this.runExport('json', target)
+        return this.runtime.runPromise(
+          queryExport({
+            kind: 'json',
+            outputPath: args[0] as string,
+            catalogue: captureModelPricingCatalogue(),
+            proxyPaths: captureProxyPaths(),
+          }),
+        )
       }
 
       default:

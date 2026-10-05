@@ -15,6 +15,8 @@ const roots = [
   'src/main/skills-calculation.ts',
   'src/main/yield-calculation.ts',
   'src/main/optimize-calculation.ts',
+  'src/main/export-calculation.ts',
+  'src/main/fx-calculation.ts',
   'src/main/pipeline/pr-attribution.ts',
   'src/main/overview-scope.ts',
   'src/main/store/aggregate-calculation.ts',
@@ -95,6 +97,7 @@ describe('pure view calculation boundary', () => {
         'src/main/application/skills-query.ts',
         'src/main/application/yield-query.ts',
         'src/main/application/optimize-query.ts',
+        'src/main/application/export-query.ts',
       ]),
     ).toEqual([])
   })

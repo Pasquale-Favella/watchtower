@@ -5,13 +5,22 @@ import * as Layer from 'effect/Layer'
 import type { SchemaError } from 'effect/Schema'
 import type { SqlError } from 'effect/unstable/sql/SqlError'
 
-import type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
+import type { ActiveCurrency } from '../shared/schemas/fx.js'
 import type { CurrencyRate } from '../shared/schemas/ledger.js'
+import { activeFromCachedRate, isValidCurrencyCode, resolveSymbol, USD_CURRENCY } from './fx-calculation.js'
 import { HttpFetch, retryTransientFetch } from './pipeline/fetch-utils.js'
 import type { LedgerStore } from './store/ledger.js'
 import { LedgerConfig } from './store/ledger-repository.js'
 
 export type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
+export {
+  convertCost,
+  formatCost,
+  getFractionDigits,
+  isValidCurrencyCode,
+  listCurrencies,
+  roundForActiveCurrency,
+} from './fx-calculation.js'
 
 /**
  * The Frankfurter-backed FX layer (ADR 0009). The main process is the only
@@ -37,73 +46,8 @@ const FRANKFURTER_URL = 'https://api.frankfurter.app/latest?from=USD&to='
 const MIN_VALID_FX_RATE = 0.0001
 const MAX_VALID_FX_RATE = 1_000_000
 
-const USD_CURRENCY: ActiveCurrency = { code: 'USD', symbol: '$', rate: 1 }
-
-const SYMBOL_OVERRIDES: Record<string, string> = {
-  CNY: '¥',
-  RON: 'lei',
-}
-
-/** The canonical ISO 4217 currency set the runtime ships with (162 codes in
- * this ICU). This is the authoritative membership list: Intl.NumberFormat
- * alone ACCEPTS any three-letter string (ZZZ, ABC, …), so it can't tell a
- * real currency from a fake one — membership here can. Used by the selector
- * and by every validation point, so a bogus code can never be persisted or
- * fetched against. */
-const SUPPORTED_CURRENCY_CODES: ReadonlySet<string> = (() => {
-  try {
-    return new Set(Intl.supportedValuesOf('currency'))
-  } catch {
-    return new Set()
-  }
-})()
-
-export function isValidCurrencyCode(code: string): boolean {
-  if (typeof code !== 'string' || !/^[A-Z]{3}$/.test(code)) return false
-  if (SUPPORTED_CURRENCY_CODES.size > 0) return SUPPORTED_CURRENCY_CODES.has(code)
-  // Fallback for runtimes without Intl.supportedValuesOf: Intl.NumberFormat
-  // throws only on structurally invalid codes there.
-  try {
-    new Intl.NumberFormat('en', { style: 'currency', currency: code })
-    return true
-  } catch {
-    return false
-  }
-}
-
-function resolveSymbol(code: string): string {
-  if (SYMBOL_OVERRIDES[code]) return SYMBOL_OVERRIDES[code]
-  const parts = new Intl.NumberFormat('en', {
-    style: 'currency',
-    currency: code,
-    currencyDisplay: 'symbol',
-  }).formatToParts(0)
-  return parts.find(p => p.type === 'currency')?.value ?? code
-}
-
-export function getFractionDigits(code: string): number {
-  return (
-    new Intl.NumberFormat('en', {
-      style: 'currency',
-      currency: code,
-    }).resolvedOptions().maximumFractionDigits ?? 2
-  )
-}
-
 function isValidRate(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= MIN_VALID_FX_RATE && value <= MAX_VALID_FX_RATE
-}
-
-/** Every ISO 4217 currency code the runtime supports (162 in this Node/ICU),
- * each with its display symbol — the full selector list, not a reduced set.
- * Frankfurter/ECB only publishes a ~30-currency subset; codes outside it
- * simply fall back per the graceful-degrade rule until a fetch succeeds. */
-export function listCurrencies(): CurrencyOption[] {
-  const codes = SUPPORTED_CURRENCY_CODES.size > 0 ? [...SUPPORTED_CURRENCY_CODES] : Intl.supportedValuesOf('currency')
-  return codes
-    .filter(isValidCurrencyCode)
-    .map(code => ({ code, symbol: resolveSymbol(code) }))
-    .sort((a, b) => a.code.localeCompare(b.code))
 }
 
 /** The persisted display-currency code (always valid; USD default). */
@@ -118,21 +62,6 @@ function displayCurrencyCode(store: LedgerStore): string {
  * temporary standalone adapter. */
 function sanitizeDisplayCurrencyCode(code: string): string {
   return /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'
-}
-
-/** The one place the "cached rate, else the USD-equivalent rate 1" rule is
- * spelled out. Every `ActiveCurrency` the two read paths build goes through
- * it: the sync `getActiveCurrency`, the refresh core's fresh-cache arm, and
- * its fallback arm. The `??` chain is the "a stale rate beats no rate"
- * degrade — `CurrencyRate`'s fields are all required, so for a present cache
- * the fallbacks never fire. */
-function activeFromCachedRate(code: string, cached: CurrencyRate | null | undefined): ActiveCurrency {
-  return {
-    code,
-    symbol: cached?.symbol ?? resolveSymbol(code),
-    rate: cached?.rate ?? 1,
-    updatedAt: cached?.updatedAt,
-  }
 }
 
 /** The active display currency: the persisted code plus its cached rate.
@@ -278,35 +207,3 @@ export const refreshFxRateWithRates = Effect.fnUntraced(function* (
     return activeFromCachedRate(safe, latest)
   }).pipe(Effect.catchTag('HttpFetchError', () => Effect.succeed(fallback())))
 })
-
-// --- Display/export-boundary conversion. Costs in the store are always USD;
-// these are the only places FX is applied. ---
-
-export function convertCost(costUSD: number, currency: ActiveCurrency): number {
-  // Unrounded — see the reference app: rounding here would clamp zero-fraction
-  // currencies (JPY/KRW/CLP) before aggregation. roundForActiveCurrency /
-  // formatCost round at the display boundary instead.
-  return costUSD * currency.rate
-}
-
-export function roundForActiveCurrency(value: number, currency: ActiveCurrency): number {
-  const digits = getFractionDigits(currency.code)
-  const factor = Math.pow(10, digits)
-  return Math.round(value * factor) / factor
-}
-
-/** Format a USD figure in the active display currency (used by exports and
- * any main-process money rendering). Zero-fraction currencies (JPY, KRW,
- * CLP) drop the decimals; small sub-cent costs keep up to 4 places so they
- * don't collapse to $0.00. */
-export function formatCost(costUSD: number, currency: ActiveCurrency): string {
-  const { symbol, code } = currency
-  const cost = costUSD * currency.rate
-  const digits = getFractionDigits(code)
-
-  if (digits === 0) return `${symbol}${Math.round(cost)}`
-  if (cost >= 1) return `${symbol}${cost.toFixed(2)}`
-  if (cost >= 0.01) return `${symbol}${cost.toFixed(3)}`
-  if (cost >= 0.0001) return `${symbol}${cost.toFixed(4)}`
-  return `${symbol}${cost.toFixed(2)}`
-}

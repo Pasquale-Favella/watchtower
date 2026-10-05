@@ -143,6 +143,7 @@ const CONSUMER_FILES = [
   'src/main/pull-requests-view.ts',
   'src/main/pull-requests-calculation.ts',
   'src/main/export.ts',
+  'src/main/export-calculation.ts',
   'src/main/pipeline/sessions-report.ts',
   'src/main/pipeline/pr-attribution.ts',
   'src/main/pipeline/session-row.ts',
@@ -281,8 +282,7 @@ describe('no consumer of the seam reads a dropped column', () => {
     expect(droppedFieldReceivers()).toEqual({
       callKey: [],
       projectPath: [
-        'src/main/export.ts:p',
-        'src/main/export.ts:project',
+        'src/main/export-calculation.ts:project',
         'src/main/optimize-calculation.ts:a',
         'src/main/optimize-calculation.ts:b',
         'src/main/optimize-calculation.ts:p',

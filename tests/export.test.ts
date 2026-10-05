@@ -1,16 +1,20 @@
-import { mkdtempSync, readFileSync, readdirSync, mkdirSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import * as Effect from 'effect/Effect'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
+import { exportCsv, exportJson } from '../src/main/export.js'
+import { buildCsvExportFiles, buildJsonExport } from '../src/main/export-calculation.js'
 import { FxRates } from '../src/main/fx.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import { buildProjectsFromLedger } from '../src/main/views.js'
-import { buildFixtureReport } from './fixtures/report.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
-import { exportCsv, exportJson } from '../src/main/export.js'
+
+const GENERATED = '2026-07-14T12:34:56.000Z'
+const USD = { code: 'USD', symbol: '$', rate: 1 } as const
+import { buildFixtureReport } from './fixtures/report.js'
 
 function makeStore(): LedgerStore {
   const dir = mkdtempSync(join(tmpdir(), 'tr-export-'))
@@ -80,6 +84,161 @@ describe('exportJson (ADR 0009: carries the selected display currency at export 
   })
 })
 
+describe('pure export serialization', () => {
+  it('keeps the literal CSV table set, headers, values, escaping and JSON contract', () => {
+    const projects = buildFixtureReport()
+    const files = buildCsvExportFiles(projects, USD, GENERATED)
+    expect(files.map(file => file.name)).toEqual([
+      'README.txt',
+      'daily.csv',
+      'activity.csv',
+      'models.csv',
+      'records.csv',
+      'projects.csv',
+      'sessions.csv',
+      'tools.csv',
+      'mcp.csv',
+      'shell-commands.csv',
+    ])
+    expect(Object.fromEntries(files.map(file => [file.name, file.contents]))).toEqual({
+      'README.txt': [
+        'Watchtower Usage Export',
+        '========================',
+        '',
+        `Generated: ${GENERATED}`,
+        'Currency:  USD',
+        '',
+        'Files',
+        '-----',
+        '  daily.csv             Day-by-day breakdown.',
+        '  activity.csv          Time spent per task category (Coding, Debugging, Exploration, etc.).',
+        '  models.csv            Spend per model with token totals and cache usage.',
+        '  records.csv           One row per API call.',
+        '  projects.csv          Spend per project folder.',
+        '  sessions.csv          One row per session.',
+        '  tools.csv             Tool invocations and share.',
+        '  mcp.csv               MCP server invocations and share.',
+        '  shell-commands.csv    Shell commands executed via Bash tool.',
+        '',
+        'Notes',
+        '-----',
+        '  Every cost column is already converted to the active currency (USD). Tokens are raw',
+        '  integer counts from provider telemetry. Share (%) is relative to the table total.',
+        '  repoUrl is the git origin URL when the project path is a git checkout with a',
+        '  configured origin, otherwise empty (CSV) / absent (JSON).',
+        '',
+      ].join('\n'),
+      'daily.csv':
+        'Date,Cost (USD),Saved (USD),API Calls,Sessions,Input Tokens,Output Tokens,Cache Read Tokens,Cache Write Tokens\n' +
+        '2026-07-01,0.42,0,1,1,100,50,20,0\n',
+      'activity.csv':
+        'Activity,Cost (USD),Share (%),Turns\n' +
+        'Coding,0.42,100,1\n' +
+        'Debugging,0,0,0\nFeature Dev,0,0,0\nRefactoring,0,0,0\nTesting,0,0,0\nExploration,0,0,0\n' +
+        'Planning,0,0,0\nDelegation,0,0,0\nGit Ops,0,0,0\nBuild/Deploy,0,0,0\nConversation,0,0,0\nBrainstorming,0,0,0\nGeneral,0,0,0\n',
+      'models.csv':
+        'Model,Cost (USD),Saved (USD),Share (%),API Calls,Input Tokens,Output Tokens,Cache Read Tokens,Cache Write Tokens\n' +
+        'demo-model,0.42,0,100,1,100,50,20,0\n',
+      'records.csv':
+        'project,repoUrl,sessionId,timestamp,category,provider,model,inputTokens,outputTokens,reasoningTokens,cacheWriteTokens,cacheReadTokens,cost,savings\n' +
+        '/tmp/demo,,sess-0,2026-07-01T10:00:00.000Z,coding,opencode,demo-model,100,50,5,0,20,0.42,0\n',
+      'projects.csv':
+        'Project,repoUrl,Cost (USD),Saved (USD),Avg/Session (USD),Share (%),API Calls,Sessions\n' +
+        '/tmp/demo,,0.42,0,0.42,100,1,1\n',
+      'sessions.csv':
+        'Project,repoUrl,Session ID,Started At,Cost (USD),Saved (USD),API Calls,Turns,model\n' +
+        '/tmp/demo,,sess-0,2026-07-01T09:00:00.000Z,0.42,0,1,1,demo-model\n',
+      'tools.csv': 'Tool,Calls,Share (%)\nbash,1,100\n',
+      'mcp.csv': '',
+      'shell-commands.csv': 'Command,Calls,Share (%)\nls,1,100\n',
+    })
+
+    const json = JSON.parse(buildJsonExport(projects, USD, GENERATED)) as Record<string, unknown>
+    expect(json).toEqual({
+      schema: 'watchtower.export.v1',
+      generated: GENERATED,
+      currency: { code: 'USD', symbol: '$', rate: 1 },
+      daily: [
+        {
+          Date: '2026-07-01',
+          'Cost (USD)': 0.42,
+          'Saved (USD)': 0,
+          'API Calls': 1,
+          Sessions: 1,
+          'Input Tokens': 100,
+          'Output Tokens': 50,
+          'Cache Read Tokens': 20,
+          'Cache Write Tokens': 0,
+        },
+      ],
+      activity: expect.any(Array),
+      models: [
+        {
+          Model: 'demo-model',
+          'Cost (USD)': 0.42,
+          'Saved (USD)': 0,
+          'Share (%)': 100,
+          'API Calls': 1,
+          'Input Tokens': 100,
+          'Output Tokens': 50,
+          'Cache Read Tokens': 20,
+          'Cache Write Tokens': 0,
+        },
+      ],
+      projects: [
+        {
+          Project: '/tmp/demo',
+          'Cost (USD)': 0.42,
+          'Saved (USD)': 0,
+          'Avg/Session (USD)': 0.42,
+          'Share (%)': 100,
+          'API Calls': 1,
+          Sessions: 1,
+        },
+      ],
+      sessions: [
+        {
+          Project: '/tmp/demo',
+          'Session ID': 'sess-0',
+          'Started At': '2026-07-01T09:00:00.000Z',
+          'Cost (USD)': 0.42,
+          'Saved (USD)': 0,
+          'API Calls': 1,
+          Turns: 1,
+          model: 'demo-model',
+        },
+      ],
+      records: [
+        {
+          project: '/tmp/demo',
+          sessionId: 'sess-0',
+          timestamp: '2026-07-01T10:00:00.000Z',
+          category: 'coding',
+          provider: 'opencode',
+          model: 'demo-model',
+          inputTokens: 100,
+          outputTokens: 50,
+          reasoningTokens: 5,
+          cacheWriteTokens: 0,
+          cacheReadTokens: 20,
+          cost: 0.42,
+          savings: 0,
+        },
+      ],
+      tools: [{ Tool: 'bash', Calls: 1, 'Share (%)': 100 }],
+      mcp: [],
+      shellCommands: [{ Command: 'ls', Calls: 1, 'Share (%)': 100 }],
+    })
+
+    const call = projects[0]?.sessions[0]?.turns[0]?.assistantCalls[0]
+    if (!call) throw new Error('fixture call missing')
+    call.model = '=SUM(1,2)'
+    expect(buildCsvExportFiles(projects, USD, GENERATED).find(file => file.name === 'records.csv')?.contents).toContain(
+      '"\'=SUM(1,2)"',
+    )
+  })
+})
+
 describe('exportCsv (ADR 0009: folder of CSVs in the selected display currency)', () => {
   it('writes one-table-per-file with currency-labeled headers and converted values', async () => {
     const store = makeStore()
@@ -119,9 +278,24 @@ describe('exportCsv (ADR 0009: folder of CSVs in the selected display currency)'
     const store = makeStore()
     const dir = mkdtempSync(join(tmpdir(), 'tr-export-guard-'))
     mkdirSync(join(dir, 'occupied'), { recursive: true })
-    await expect(exportCsv(buildFixtureReport(), join(dir, 'occupied'), store)).rejects.toThrow(
-      'no .watchtower-export marker',
-    )
+    await expect(exportCsv(buildFixtureReport(), join(dir, 'occupied'), store)).rejects.toMatchObject({
+      reason: 'csv-unmarked-directory',
+    })
+    store.close()
+  })
+
+  it('captures the currency once before compatibility export file work', async () => {
+    const store = makeStore()
+    pinDisplayCurrency(store, 'EUR')
+    store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: new Date().toISOString() })
+    const displayRead = vi.spyOn(store, 'getDisplayCurrency')
+    const rateRead = vi.spyOn(store, 'getCurrencyRate')
+
+    await exportJson(buildFixtureReport(), tempPath(), store)
+
+    expect(displayRead).toHaveBeenCalledTimes(1)
+    expect(rateRead).toHaveBeenCalledTimes(1)
+    expect(rateRead).toHaveBeenCalledWith('EUR')
     store.close()
   })
 })

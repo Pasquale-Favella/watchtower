@@ -9,10 +9,12 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
 import { CommandRunner } from './agents/command-runner.js'
 import { AssistantSetup } from './application/assistant-setup.js'
+import { ExportFiles } from './application/export-files.js'
 import { PricingDiagnostics } from './application/pricing-diagnostics.js'
 import { RepositoryInspection } from './application/repository-inspection.js'
 import { AssistantSetupLive } from './assistant-setup-live.js'
 import { Env } from './env.js'
+import { ExportFilesLive } from './export-files-live.js'
 import { FxRates } from './fx.js'
 import {
   OperationalLog,
@@ -30,6 +32,7 @@ import { LedgerConfig, LedgerIngest, LedgerPortsLayer, LedgerQueries } from './s
 
 export type WorkerServices =
   | AssistantSetup
+  | ExportFiles
   | RepositoryInspection
   | CommandRunner
   | PricingDiagnostics
@@ -54,6 +57,7 @@ export type WorkerOverrides =
   | AssistantSetup
   | RepositoryInspection
   | CommandRunner
+  | ExportFiles
 export type WorkerSqlLayer = Layer.Layer<Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient>
 export type WorkerRuntime = ManagedRuntime.ManagedRuntime<WorkerServices, never>
 
@@ -65,7 +69,7 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
   sqliteLayer: WorkerSqlLayer = Sqlite.SqliteClient.layer({ filename: dbPath }),
 ): Layer.Layer<WorkerServices> {
   const ledger = LedgerPortsLayer.pipe(Layer.provideMerge(sqliteLayer))
-  const capabilities = Layer.mergeAll(ledger, AssistantSetupLive, CommandRunner.layer)
+  const capabilities = Layer.mergeAll(ledger, AssistantSetupLive, ExportFilesLive, CommandRunner.layer)
   const dependencies = overrides ? Layer.mergeAll(capabilities, overrides) : capabilities
   const fxRates = FxRates.layer.pipe(Layer.provide(dependencies))
   const repositoryInspection = RepositoryInspectionLive.pipe(Layer.provide(dependencies))
