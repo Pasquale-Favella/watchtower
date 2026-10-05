@@ -253,3 +253,29 @@ The new queries capture request time once before loading one canonical snapshot.
 Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module. Six snapshot SELECTs remain unchanged. Forty-one worker checks cover the eight read paths and explicit Compare pair forwarding. Pure import-graph and narrow-column audits cover all new calculation modules. No speedup or memory improvement is claimed.
 
 F29 remains partial. Remaining work includes the three IO-dependent section queries, other application queries and compatibility callers, facade retirement, purpose-specific reads, scan-boundary input capture, cooperative parser stop and callback drain, main/Coach ownership and error mapping, comparable 1k/50k/500k measurements, installer acceptance and macOS/Linux packaged execution. Both renderer stores remain byte-identical to `ce81593`, with no added `let` variables, request identities or applyChange coalescing.
+
+## Current census after Skills, Yield and Optimize migration, 2026-10-05
+
+This snapshot covers production and test source `249db58`, following `426dfd7`. It uses the same TypeScript AST runtime-import and nonblank-line method. Import coverage measures library use; it does not measure completion of the migration.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,518 / 1,628 |         93.2% |
+| Store                              |                   10 / 12 |         83.3% |                     1,803 / 2,417 |         74.6% |
+| Agents                             |                   12 / 44 |         27.3% |                     3,873 / 5,889 |         65.8% |
+| Pipeline                           |                    6 / 74 |          8.1% |                    2,554 / 27,637 |          9.2% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                         380 / 380 |        100.0% |
+| All main-process code              |                  64 / 182 |         35.2% |                   13,609 / 46,101 |         29.5% |
+| Shared schema modules              |                   23 / 24 |         95.8% |                     1,868 / 1,926 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+Named application queries now cover **11/11 aggregate and dedicated section read paths, 100%**. Scoped dedicated queries cover **9/9, 100%**. The denominator is unchanged: dashboard and analytics, plus Overview, Sessions, Pull Requests, Spend, Models, Compare, Optimize, Yield and Skills. These percentages describe worker query ownership only. Other reads, writes, compatibility builders and MCP facade callers remain.
+
+Skills and Optimize share an AssistantSetup capability composed in the existing worker root. Setup files and shell profiles are captured once per request and reused across Optimize detectors. Skills obtains inventory and current dismissals explicitly. Yield uses a RepositoryInspection capability over the existing CommandRunner, with scoped child cleanup, a five-second limit per Git command and a one-mebibyte stdout limit. Operational inspection failures retain the previous partial or empty facts policy; defects remain failures. Repository identity deduplicates Git facts across related project directories.
+
+Each new query captures the Clock once before loading one canonical ledger snapshot, reports pricing diagnostics once and validates its output through Effect Schema. Calculation modules have no runtime Effect or filesystem/process imports. The import census therefore records fewer lines in modules importing Effect after pure detector extraction. All 16 Optimize detectors remain; 56 extracted helper bodies are mechanically identical to the baseline, and seven discovery-dependent helpers now consume explicit setup facts.
+
+Owned Zod removal remains **23/23 baseline modules, 100%**; native Effect Schema remains **22/23, 95.7%**, with one UI-only plain TypeScript module. Fifty-eight worker checks cover all eleven reads, including current Skills dismissals, invalid threshold fallback, live configuration edits, one snapshot and typed SQL/Schema failures. Six snapshot SELECTs remain unchanged. No SQL reduction, speedup or memory improvement is claimed.
+
+F29 remains partial. Remaining work includes other application queries, facade and compatibility adapter retirement, purpose-specific reads, scan-boundary input capture, cooperative parser stop and callback drain, main/Coach ownership and failure mapping, comparable 1k/50k/500k measurements including refresh/detail/search, installer acceptance and macOS/Linux packaged execution. Both renderer stores remain byte-identical to `ce81593`, with no added `let` variables, request identities or applyChange coalescing.
