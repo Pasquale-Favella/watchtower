@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
+import { setRouter } from '../src/renderer/src/app/navigation.js'
 import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
 import { useCoachSkillsStore } from '../src/renderer/src/features/coach-skills/store.js'
 import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
@@ -40,6 +41,10 @@ function captureApi(extra?: Record<string, unknown>): Record<string, (payload?: 
     },
     onCoachHarnessesChanged: (cb: (p: unknown) => void) => {
       listeners.onCoachHarnessesChanged = cb
+      return () => {}
+    },
+    onNavigate: (cb: (p: unknown) => void) => {
+      listeners.onNavigate = cb
       return () => {}
     },
     ...extra,
@@ -237,10 +242,14 @@ describe('subscribeToIpc (ADR 0011)', () => {
         listeners.onCoachHarnessesChanged = cb
         return unsub
       },
+      onNavigate: (cb: (p: unknown) => void) => {
+        listeners.onNavigate = cb
+        return unsub
+      },
     })
     const teardown = subscribeToIpc()
     teardown()
-    expect(unsub).toHaveBeenCalledTimes(8)
+    expect(unsub).toHaveBeenCalledTimes(9)
   })
 
   it('feeds a coach:harnesses-changed broadcast into the coach store, dropping malformed ones', () => {
@@ -261,5 +270,20 @@ describe('subscribeToIpc (ADR 0011)', () => {
     expect(useCoachSkillsStore.getState().harnesses).toEqual([row])
 
     teardown()
+  })
+
+  it('opens the section the orb asked for through navigation, dropping unknown ones', () => {
+    const navigate = vi.fn()
+    setRouter(navigate)
+    const listeners = captureApi()
+    const teardown = subscribeToIpc()
+
+    listeners.onNavigate!('optimize')
+    expect(navigate).toHaveBeenCalledExactlyOnceWith('/optimize')
+
+    listeners.onNavigate!('/etc/passwd')
+    expect(navigate).toHaveBeenCalledTimes(1)
+    teardown()
+    setRouter(() => {})
   })
 })

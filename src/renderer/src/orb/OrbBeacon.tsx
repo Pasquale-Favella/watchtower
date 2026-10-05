@@ -1,12 +1,12 @@
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
-import { displayShortcut } from '@/app/shortcuts'
+import { displayShortcutForAction } from '@/app/shortcuts'
 import { useScanStore } from '@/app/stores/scan-store'
 import { useSettingsStore } from '@/features/settings/store'
 import { orbControls } from '@/shared/lib/api'
 import { formatUsd } from '@/shared/lib/models'
 import { cn } from '@/shared/lib/utils'
 
-import { ORB_SIZE, ORB_SUMMON_SHORTCUT } from '../../../shared/schemas/orb.js'
+import { ORB_SIZE } from '../../../shared/schemas/orb.js'
 import { useOrbDrag } from './hooks'
 import { useOrbStore } from './store'
 
@@ -20,7 +20,7 @@ export function OrbBeacon({ className }: { className?: string }) {
   const scanning = useScanStore(s => s.scanning)
   useSettingsStore(s => s.activeCurrency)
   const drag = useOrbDrag(() => void setExpanded(!expanded))
-  const summon = displayShortcut(ORB_SUMMON_SHORTCUT.hotkey)
+  const summon = displayShortcutForAction('summonOrb')
 
   return (
     <button

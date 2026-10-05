@@ -14,11 +14,6 @@ export const ORB_SIZE = 64
 /** The expanded orb window (orb + hint panel), in DIPs. */
 export const ORB_PANEL_SIZE = { width: 360, height: 392 } as const
 
-/** The global "summon Watchtower" shortcut. Registered by the main process
- * (Electron accelerator syntax) and rendered through the shortcut registry's
- * `displayShortcut` (TanStack hotkey syntax) — declared once, here. */
-export const ORB_SUMMON_SHORTCUT = { accelerator: 'CommandOrControl+Alt+O', hotkey: 'Mod+Alt+O' } as const
-
 /** Where the orb sits inside its window. The panel always grows toward the
  * centre of the display, so an orb parked on the right edge opens leftwards. */
 export const orbPlacementSchema = Schema.Struct({

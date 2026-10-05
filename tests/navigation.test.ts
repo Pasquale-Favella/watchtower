@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { ROUTES, SECTIONS } from '../src/shared/schemas/navigation.js'
 import {
-  ROUTES,
-  SECTIONS,
   navigateToSection,
   navigateToSession,
   routeFor,

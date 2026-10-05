@@ -14,7 +14,8 @@ export function useAppHotkeys(): void {
   const refresh = useScanStore(s => s.refresh)
   const togglePalette = usePaletteStore(s => s.toggle)
   useHotkeys(
-    SHORTCUTS.filter(def => def.action !== 'toggleSidebar').map(def => ({
+    // `global` shortcuts are the main process's (OS-wide), not this window's.
+    SHORTCUTS.filter(def => def.action !== 'toggleSidebar' && def.scope !== 'global').map(def => ({
       hotkey: def.hotkey,
       callback: () => {
         switch (def.action) {
@@ -26,6 +27,8 @@ export function useAppHotkeys(): void {
             break
           case 'toggleSidebar':
             break // owned by SidebarToggleShortcut, filtered above
+          case 'summonOrb':
+            break // global: registered by the main process, filtered above
           default:
             navigateToSection(def.action)
         }

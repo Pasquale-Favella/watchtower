@@ -24,6 +24,7 @@ import { registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
 import { saveSkill } from './application/save-skill.js'
+import { type BackgroundShell, createBackgroundShell } from './background-shell.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths, readAppPathsEffect } from './env.js'
 import { makeMainRuntime } from './main-runtime.js'
@@ -34,7 +35,6 @@ import {
   logIpcError,
   safeLogOperationalEvent,
 } from './operational-log.js'
-import { type BackgroundShell, createBackgroundShell } from './background-shell.js'
 import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
 
 /**

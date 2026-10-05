@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useThemeEffect } from '@/app/hooks/use-theme-effect'
 import { TooltipProvider } from '@/shared/components/ui/tooltip'
@@ -27,6 +27,14 @@ export function OrbApp() {
   const peek = useOrbStore(s => s.peek)
   const setExpanded = useOrbStore(s => s.setExpanded)
   const [hovered, setHovered] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  // Unfolded, the root takes DOM focus so Escape reaches it even when the
+  // panel opened from a summon or a peek rather than a click. Focusing an
+  // element never activates the window itself: a peek still steals nothing.
+  useEffect(() => {
+    if (placement.expanded) rootRef.current?.focus({ preventScroll: true })
+  }, [placement.expanded])
 
   useEffect(() => {
     if (!peek || hovered) return
@@ -39,7 +47,9 @@ export function OrbApp() {
   return (
     <TooltipProvider delay={300}>
       <div
-        className="text-foreground relative h-full w-full font-sans"
+        ref={rootRef}
+        tabIndex={-1}
+        className="text-foreground relative h-full w-full font-sans outline-none"
         onKeyDown={event => {
           if (event.key === 'Escape' && placement.expanded) void setExpanded(false)
         }}

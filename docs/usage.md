@@ -7,23 +7,32 @@ detail.
 ## Keyboard shortcuts
 
 Shortcuts are declared once in the shortcut registry
-(`src/renderer/src/app/shortcuts.ts`, ADR 0001), which drives both their
+(`src/renderer/src/app/shortcuts.ts`, over the table in
+`src/shared/lib/shortcuts.ts`, ADR 0001), which drives both their
 registration and every place the UI renders them. `Mod` resolves to `⌘` on
 macOS and `Ctrl` on Windows and Linux.
 
-| Shortcut | Action         |
-| -------- | -------------- |
-| `Mod+1`  | Overview       |
-| `Mod+2`  | Sessions       |
-| `Mod+3`  | Pull requests  |
-| `Mod+4`  | Spend          |
-| `Mod+5`  | Optimize       |
-| `Mod+6`  | Models         |
-| `Mod+7`  | Compare        |
-| `Mod+8`  | Coach & Skills |
-| `Mod+,`  | Settings       |
-| `Mod+R`  | Refresh        |
-| `Mod+B`  | Toggle sidebar |
+| Shortcut    | Action                                                      |
+| ----------- | ----------------------------------------------------------- |
+| `Mod+1`     | Overview                                                    |
+| `Mod+2`     | Sessions                                                    |
+| `Mod+3`     | Pull requests                                               |
+| `Mod+4`     | Spend                                                       |
+| `Mod+5`     | Optimize                                                    |
+| `Mod+6`     | Models                                                      |
+| `Mod+7`     | Compare                                                     |
+| `Mod+8`     | Coach & Skills                                              |
+| `Mod+,`     | Settings                                                    |
+| `Mod+R`     | Refresh                                                     |
+| `Mod+B`     | Toggle sidebar                                              |
+| `Mod+K`     | Command palette                                             |
+| `Mod+Alt+O` | Summon Watchtower (global — works with every window hidden) |
+
+**Summon Watchtower** is the one OS-wide shortcut: the main process registers
+it, so it works while Watchtower lives in the tray. With the app window on
+screen it focuses the window; otherwise it floats the orb and unfolds its spend
+panel (turning _Show floating orb_ back on if it was off); pressed again with
+the panel open, it opens the full app.
 
 ## Scope: period and provider
 
