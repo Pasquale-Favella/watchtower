@@ -2,6 +2,7 @@ import type { Hotkey } from '@tanstack/react-hotkeys'
 import type { ComponentType } from 'react'
 
 import type { ModelReportRow } from './models.js'
+import type { Section } from './navigation.js'
 import type { SessionRow } from './views.js'
 
 /** Renderer-local UI shapes have no IPC wire counterpart and no parse site. */
@@ -17,8 +18,9 @@ export interface SplashProviderProgress {
   done: boolean
 }
 
-export type Section =
-  'overview' | 'sessions' | 'pullRequests' | 'spend' | 'optimize' | 'models' | 'compare' | 'coachSkills' | 'settings'
+/** `Section` crosses the wire (the orb opens the app on one): it is declared
+ * with its schema in navigation.ts. */
+export type { Section }
 
 export type ShortcutAction = Section | 'refresh' | 'toggleSidebar' | 'commandPalette'
 

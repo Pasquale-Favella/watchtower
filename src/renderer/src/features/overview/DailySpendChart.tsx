@@ -1,6 +1,7 @@
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from 'recharts'
 
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/shared/components/ui/chart'
+import { cn } from '@/shared/lib/utils'
 import type { OverviewDailyEntry } from '../../../../shared/schemas/overview.js'
 
 /** Single-series daily-spend bar chart config (shadcn `ChartContainer`). The
@@ -21,10 +22,13 @@ export function DailySpendChart({
   data,
   formatDate,
   formatValue,
+  className,
 }: {
   data: OverviewDailyEntry[]
   formatDate: (dateKey: string) => string
   formatValue: (n: number) => string
+  /** Overrides the chart's box (default `h-48 w-full`), e.g. a compact height. */
+  className?: string
 }) {
   if (!data.length) return null
 
@@ -33,7 +37,7 @@ export function DailySpendChart({
   const second = ranked[1] && ranked[1].v > 0 ? ranked[1].i : -1
 
   return (
-    <ChartContainer config={overviewChartConfig} className="h-48 w-full">
+    <ChartContainer config={overviewChartConfig} className={cn('h-48 w-full', className)}>
       <BarChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
         <XAxis

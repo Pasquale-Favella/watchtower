@@ -55,7 +55,14 @@ import {
   type PriceOverride,
   priceOverrideSchema,
 } from '../../../../shared/schemas/models.js'
+import { type Section, sectionSchema } from '../../../../shared/schemas/navigation.js'
 import { type OptimizePayload, optimizePayloadSchema } from '../../../../shared/schemas/optimize.js'
+import {
+  type OrbNotice,
+  orbNoticeSchema,
+  type OrbPlacement,
+  orbPlacementSchema,
+} from '../../../../shared/schemas/orb.js'
 import { type OverviewPayload, overviewPayloadSchema, type OverviewScope } from '../../../../shared/schemas/overview.js'
 import { type PullRequestsPayload, pullRequestsPayloadSchema } from '../../../../shared/schemas/pull-requests.js'
 import {
@@ -367,4 +374,53 @@ export function fetchCoachInspect(request: CoachInspectRequest): Promise<ApiResu
 
 export function fetchCoachRun(request: CoachRunRequest): Promise<ApiResult<CoachRunResult>> {
   return fetchPayload('coach run', coachRunResultSchema, () => window.api.startCoachRun(request))
+}
+
+/** Background orb (main/background-shell.ts): the orb page's window controls.
+ * Placement and notices are decoded like any other payload (ADR 0005); the
+ * fire-and-forget controls carry no payload back. */
+const nullableOrbPlacementSchema = Schema.NullOr(orbPlacementSchema)
+const nullableOrbNoticeSchema = Schema.NullOr(orbNoticeSchema)
+
+export function fetchOrbPlacement(): Promise<ApiResult<OrbPlacement | null>> {
+  return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.getPlacement())
+}
+
+export function fetchSetOrbExpanded(expanded: boolean): Promise<ApiResult<OrbPlacement | null>> {
+  return fetchPayload('orb placement', nullableOrbPlacementSchema, () => window.api.orb.setExpanded(expanded))
+}
+
+export function fetchPendingOrbNotice(): Promise<ApiResult<OrbNotice | null>> {
+  return fetchPayload('orb notice', nullableOrbNoticeSchema, () => window.api.orb.takePendingNotice())
+}
+
+export const orbControls = {
+  dragStart: (): void => window.api.orb.dragStart(),
+  dragMove: (dx: number, dy: number): void => window.api.orb.dragMove(dx, dy),
+  dragEnd: (): void => window.api.orb.dragEnd(),
+  openApp: (section?: Section): void => window.api.orb.openApp(section),
+  hide: (): void => window.api.orb.hide(),
+  quit: (): void => window.api.orb.quit(),
+}
+
+export function onOrbPlacement(callback: (placement: OrbPlacement) => void): () => void {
+  return window.api.orb.onPlacement(raw => {
+    const parsed = parseEvent(orbPlacementSchema, 'orb placement', raw)
+    if (parsed) callback(parsed)
+  })
+}
+
+export function onOrbNotice(callback: (notice: OrbNotice) => void): () => void {
+  return window.api.orb.onNotice(raw => {
+    const parsed = parseEvent(orbNoticeSchema, 'orb notice', raw)
+    if (parsed) callback(parsed)
+  })
+}
+
+/** Main window: the orb asked to open the app on a section. */
+export function onAppNavigate(callback: (section: Section) => void): () => void {
+  return window.api.onNavigate(raw => {
+    const parsed = parseEvent(sectionSchema, 'app navigate', raw)
+    if (parsed) callback(parsed)
+  })
 }

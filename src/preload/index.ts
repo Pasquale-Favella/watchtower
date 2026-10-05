@@ -47,6 +47,8 @@ import type {
   CoachRunRequest,
   CoachRunResult,
 } from '../shared/schemas/agents.js'
+import type { Section } from '../shared/schemas/navigation.js'
+import type { OrbNotice, OrbPlacement } from '../shared/schemas/orb.js'
 
 export type {
   PricingRefreshResult,
@@ -213,6 +215,36 @@ const api = {
     const listener = (_event: IpcRendererEvent, message: CoachEventEnvelope): void => callback(message)
     ipcRenderer.on('coach:event', listener)
     return () => ipcRenderer.removeListener('coach:event', listener)
+  },
+  /** Main window: the background orb asked to open the app on a section. */
+  onNavigate: (callback: (section: Section) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, section: Section): void => callback(section)
+    ipcRenderer.on('app:navigate', listener)
+    return () => ipcRenderer.removeListener('app:navigate', listener)
+  },
+  /** The floating background orb's window controls. The main process ignores
+   * these from any window but the orb's own. */
+  orb: {
+    getPlacement: (): Promise<OrbPlacement | null> => ipcRenderer.invoke('orb:placement:get'),
+    /** A notice raised before this page could listen (e.g. the first close). */
+    takePendingNotice: (): Promise<OrbNotice | null> => ipcRenderer.invoke('orb:notice:take'),
+    setExpanded: (expanded: boolean): Promise<OrbPlacement | null> => ipcRenderer.invoke('orb:expanded:set', expanded),
+    dragStart: (): void => ipcRenderer.send('orb:drag-start'),
+    dragMove: (dx: number, dy: number): void => ipcRenderer.send('orb:drag-move', dx, dy),
+    dragEnd: (): void => ipcRenderer.send('orb:drag-end'),
+    openApp: (section?: Section): void => ipcRenderer.send('orb:open-app', section),
+    hide: (): void => ipcRenderer.send('orb:hide'),
+    quit: (): void => ipcRenderer.send('orb:quit'),
+    onPlacement: (callback: (placement: OrbPlacement) => void): (() => void) => {
+      const listener = (_event: IpcRendererEvent, placement: OrbPlacement): void => callback(placement)
+      ipcRenderer.on('orb:placement', listener)
+      return () => ipcRenderer.removeListener('orb:placement', listener)
+    },
+    onNotice: (callback: (notice: OrbNotice) => void): (() => void) => {
+      const listener = (_event: IpcRendererEvent, notice: OrbNotice): void => callback(notice)
+      ipcRenderer.on('orb:notice', listener)
+      return () => ipcRenderer.removeListener('orb:notice', listener)
+    },
   },
 }
 

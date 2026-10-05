@@ -33,6 +33,7 @@ import {
   safeLogOperationalEvent,
 } from './operational-log.js'
 import type { OverviewScope } from './overview.js'
+import { type BackgroundShell, createBackgroundShell } from './background-shell.js'
 import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
 
 /**
@@ -61,6 +62,16 @@ const mainRuntime = makeMainRuntime({
 const sidecarPool = createSidecarPool({ spawn: ctx => startLedgerMcpHttp(ctx) })
 /** The requesting window of the in-flight manual scan (progress/error routing). */
 let scanRequester: WebContents | null = null
+/** Tray + floating orb + hide-on-close (set once the app is ready). */
+let backgroundShell: BackgroundShell | null = null
+
+// One Watchtower per profile: with the app living in the tray, launching it
+// again must bring the existing window back rather than boot a second ledger
+// owner. The e2e suite runs each launch on its own `--user-data-dir`, so its
+// instances never contend for this lock.
+const hasInstanceLock = app.requestSingleInstanceLock()
+if (!hasInstanceLock) app.quit()
+app.on('second-instance', () => backgroundShell?.showMainWindow())
 
 function broadcast(channel: string, data?: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -433,11 +444,12 @@ function registerIpc(db: DbWorkerClient): void {
   })
 }
 
-function createWindow(): void {
-  // Dev/standalone windows get the generated brand icon (ADR 0015); packaged
-  // builds carry it in the exe/dmg/AppImage, and build/ isn't shipped (files:
-  // out/**), so this resolves to no icon at runtime.
-  const devIcon = join(__dirname, '../../build/icon.png')
+// Dev/standalone windows get the generated brand icon (ADR 0015); packaged
+// builds carry it in the exe/dmg/AppImage, and build/ isn't shipped (files:
+// out/**), so this resolves to no icon at runtime.
+const devIcon = join(__dirname, '../../build/icon.png')
+
+function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -453,15 +465,18 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
+  backgroundShell?.attachMainWindow(mainWindow)
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+  return mainWindow
 }
 
 app.whenReady().then(async () => {
+  if (!hasInstanceLock) return
   const dataDir = app.getPath('userData')
   try {
     await initOperationalLog({ logDir: join(dataDir, 'logs'), isPackaged: app.isPackaged })
@@ -488,6 +503,16 @@ app.whenReady().then(async () => {
   // dependency is provided there, so the IPC handler just runs check().
   updateChecker = await mainRuntime.runPromise(createUpdateCheckerEffect({ currentVersion: app.getVersion() }))
   registerIpc(db)
+  backgroundShell = createBackgroundShell({
+    preloadPath: join(__dirname, '../preload/index.js'),
+    rendererUrl: process.env['ELECTRON_RENDERER_URL'],
+    rendererDir: join(__dirname, '../renderer'),
+    iconPath: app.isPackaged ? join(process.resourcesPath, 'icon.png') : devIcon,
+    createMainWindow: createWindow,
+    // Tray "Scan now": no requesting window, so progress fans out like a
+    // cadence scan. A concurrent scan answers `alreadyRunning` — fine here.
+    requestScan: () => void db.request('scan:start').catch(() => {}),
+  })
   createWindow()
 
   // Optional app-level prewarm: the persisted setting is read only after the
@@ -523,12 +548,14 @@ app.whenReady().then(async () => {
     app.quit()
   })
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  // macOS dock click: bring the (possibly hidden) window back.
+  app.on('activate', () => backgroundShell?.showMainWindow())
 })
 
 app.on('window-all-closed', () => {
+  // Living in the tray: with no window left (the orb disabled) the app keeps
+  // running until the user quits from the tray.
+  if (backgroundShell?.keepsRunning()) return
   if (process.platform !== 'darwin') app.quit()
 })
 
@@ -537,6 +564,8 @@ app.on('window-all-closed', () => {
 let quitState: 'running' | 'closing' | 'closed' = 'running'
 app.on('before-quit', event => {
   if (quitState === 'closed') return
+  // From here on a window close is a real close, not a hide-to-tray.
+  backgroundShell?.markQuitting()
   event.preventDefault()
   if (quitState === 'closing') return
   quitState = 'closing'

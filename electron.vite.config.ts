@@ -30,6 +30,15 @@ export default defineConfig({
         '@': resolve('src/renderer/src')
       }
     },
-    plugins: [react(), tailwindcss()]
+    plugins: [react(), tailwindcss()],
+    build: {
+      rollupOptions: {
+        // Two pages: the full app and the floating background orb.
+        input: {
+          index: resolve('src/renderer/index.html'),
+          orb: resolve('src/renderer/orb.html')
+        }
+      }
+    }
   }
 })
