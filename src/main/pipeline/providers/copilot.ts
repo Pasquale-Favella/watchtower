@@ -75,21 +75,24 @@
 //     changes the schema, this parser will need updating.
 // =============================================================================
 
+import { createHash } from 'crypto'
+import { existsSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { homedir, platform } from 'os'
-import { join, basename, dirname, posix, win32 } from 'path'
-import { existsSync } from 'fs'
-import { createHash } from 'crypto'
+import { basename, dirname, join, posix, win32 } from 'path'
+
+import { type AppPaths, overrideFor, platformFor } from '../../env.js'
+import { extractBashCommands } from '../bash-utils.js'
+import { billableOutputTokens } from '../billable-output.js'
+import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import { readSessionFile } from '../fs-utils.js'
 import { calculateCost } from '../models.js'
-import { billableOutputTokens } from '../billable-output.js'
-import { extractBashCommands } from '../bash-utils.js'
+import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
-import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
-import { overrideFor, type AppPaths, platformFor } from '../../env.js'
+import type { DateRange } from '../types.js'
 
 const estimateTokens = (text: string) => estimateTokensFromChars(text.length)
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // ---------------------------------------------------------------------------
 // Model display names (unchanged from original)
@@ -488,14 +491,18 @@ function parseCwd(yaml: string): string | null {
 function loadSpanAttributesFromTable(
   db: ReturnType<(typeof import('../sqlite.js'))['openDatabase']>,
   spanId: string,
+  signal?: AbortSignal,
 ): SpanAttributes {
   try {
+    throwIfScanAborted(signal)
     const rows = db.query<{ key: string; value: string | null }>(
       `SELECT key, value FROM span_attributes WHERE span_id = ?`,
       [spanId],
     )
+    throwIfScanAborted(signal)
     const attrs: SpanAttributes = {}
     for (const row of rows) {
+      throwIfScanAborted(signal)
       if (row.key && row.value) {
         try {
           // Try to parse numeric values
@@ -508,6 +515,7 @@ function loadSpanAttributesFromTable(
     }
     return attrs
   } catch {
+    throwIfScanAborted(signal)
     return {}
   }
 }
@@ -868,10 +876,17 @@ function inferTranscriptModel(lines: string[]): string {
  * OTel / chatSessions / JetBrains / transcript sources never consult it: they
  * describe different tools' sessions, which the store does not record.
  */
-function createJsonlParser(source: SessionSource, seenKeys: Set<string>, coveredStoreKeys: Set<string>): SessionParser {
+function createJsonlParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  coveredStoreKeys: Set<string>,
+  context?: ProviderScanContext,
+): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const content = await readSessionFile(source.path)
+      throwIfScanAborted(context?.signal)
+      const content = await readSessionFile(source.path, 'utf8', { signal: context?.signal })
+      throwIfScanAborted(context?.signal)
       if (!content) return
       const sessionId = basename(dirname(source.path))
       const lines = content.split('\n').filter(l => l.trim())
@@ -915,6 +930,7 @@ function createJsonlParser(source: SessionSource, seenKeys: Set<string>, covered
       >()
 
       for (const line of lines) {
+        throwIfScanAborted(context?.signal)
         let event: CopilotEvent
         try {
           event = JSON.parse(line) as CopilotEvent
@@ -1115,6 +1131,7 @@ function createJsonlParser(source: SessionSource, seenKeys: Set<string>, covered
       // cumulative figure. Output is excluded on purpose: the per-turn
       // `assistant.message` events above already carry it.
       for (const [model, rollup] of rollupByModel) {
+        throwIfScanAborted(context?.signal)
         const dedupKey = `copilot:${sessionId}:shutdown:${model}`
         if (seenKeys.has(dedupKey)) continue
         seenKeys.add(dedupKey)
@@ -1151,10 +1168,16 @@ function createJsonlParser(source: SessionSource, seenKeys: Set<string>, covered
   }
 }
 
-function createChatSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createChatSessionParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  context?: ProviderScanContext,
+): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const content = await readSessionFile(source.path)
+      throwIfScanAborted(context?.signal)
+      const content = await readSessionFile(source.path, 'utf8', { signal: context?.signal })
+      throwIfScanAborted(context?.signal)
       if (!content) return
 
       const root = replayChatSessionJournal(content)
@@ -1165,6 +1188,7 @@ function createChatSessionParser(source: SessionSource, seenKeys: Set<string>): 
       const requests = Array.isArray(root['requests']) ? root['requests'] : []
 
       for (let index = 0; index < requests.length; index++) {
+        throwIfScanAborted(context?.signal)
         const rawReq = requests[index]
         if (!isRecord(rawReq)) continue
 
@@ -1337,10 +1361,13 @@ function createSessionStoreParser(
   source: SessionStoreSource,
   seenKeys: Set<string>,
   coveredStoreKeys: Set<string>,
+  context?: ProviderScanContext,
 ): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
+      throwIfScanAborted(context?.signal)
       const { openDatabase } = await import('../sqlite.js')
+      throwIfScanAborted(context?.signal)
 
       let db: ReturnType<typeof openDatabase>
       try {
@@ -1353,29 +1380,32 @@ function createSessionStoreParser(
         return
       }
 
-      let rows: SessionStoreUsageRow[]
+      const sourceCoveredKeys = new Set<string>()
       try {
-        rows = db.query<SessionStoreUsageRow>(
-          `SELECT
-             u.id, u.session_id, u.model,
-             u.input_tokens, u.output_tokens,
-             u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,
-             u.initiator, u.created_at,
-             s.cwd, s.repository
-           FROM assistant_usage_events u
-           LEFT JOIN sessions s ON s.id = u.session_id
-           ORDER BY u.id ASC`,
-        )
-      } catch (err) {
-        // Opened but unreadable as a usage store: a foreign / older schema, or
-        // a page the WAL has not checkpointed into the main file yet.
-        reportProviderIssue('copilot', fileErrorCode(err, 'session-store-unreadable'), source.path)
-        db.close()
-        return
-      }
+        let rows: SessionStoreUsageRow[]
+        try {
+          throwIfScanAborted(context?.signal)
+          rows = db.query<SessionStoreUsageRow>(
+            `SELECT
+               u.id, u.session_id, u.model,
+               u.input_tokens, u.output_tokens,
+               u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,
+               u.initiator, u.created_at,
+               s.cwd, s.repository
+             FROM assistant_usage_events u
+             LEFT JOIN sessions s ON s.id = u.session_id
+             ORDER BY u.id ASC`,
+          )
+        } catch (err) {
+          if (isScanAbortedError(err)) throw err
+          // Opened but unreadable as a usage store: a foreign / older schema, or
+          // a page the WAL has not checkpointed into the main file yet.
+          reportProviderIssue('copilot', fileErrorCode(err, 'session-store-unreadable'), source.path)
+          return
+        }
 
-      try {
         for (const row of rows) {
+          throwIfScanAborted(context?.signal)
           const sessionId = readString(row.session_id)
           if (!sessionId) continue
 
@@ -1407,7 +1437,7 @@ function createSessionStoreParser(
           // This (session, model) is now described by the store, so the
           // events.jsonl rollup for it must stand down. See createJsonlParser
           // for what that costs.
-          coveredStoreKeys.add(`${sessionId}\n${model}`)
+          const coveredKey = `${sessionId}\n${model}`
 
           // OUTPUT OWNERSHIP — the one place this source could double-count.
           //
@@ -1455,6 +1485,7 @@ function createSessionStoreParser(
             reasoningTokens,
             initiator,
           })}`
+          sourceCoveredKeys.add(coveredKey)
           if (seenKeys.has(dedupKey)) continue
           seenKeys.add(dedupKey)
 
@@ -1491,9 +1522,11 @@ function createSessionStoreParser(
             ...(cwd ? { projectPath: cwd, workingDirectory: cwd } : {}),
           }
         }
+        throwIfScanAborted(context?.signal)
       } finally {
         db.close()
       }
+      for (const key of sourceCoveredKeys) coveredStoreKeys.add(key)
     },
   }
 }
@@ -2027,9 +2060,14 @@ function extractJetBrainsDbTurns(raw: string): JBDbTurn[] {
 // JetBrains parser: one ParsedProviderCall per assistant turn in the .db
 // ---------------------------------------------------------------------------
 
-function createJetBrainsParser(source: JetBrainsSessionSource, seenKeys: Set<string>): SessionParser {
+function createJetBrainsParser(
+  source: JetBrainsSessionSource,
+  seenKeys: Set<string>,
+  context?: ProviderScanContext,
+): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
+      throwIfScanAborted(context?.signal)
       const sessionId = source.sessionId
 
       // Nitrite .db (the store's authoritative session content). Read as latin1
@@ -2037,10 +2075,12 @@ function createJetBrainsParser(source: JetBrainsSessionSource, seenKeys: Set<str
       if (source.dbPath) {
         let dbRaw: string | null = null
         try {
-          dbRaw = await readSessionFile(source.dbPath, 'latin1')
-        } catch {
+          dbRaw = await readSessionFile(source.dbPath, 'latin1', { signal: context?.signal })
+        } catch (error) {
+          if (isScanAbortedError(error)) throw error
           dbRaw = null
         }
+        throwIfScanAborted(context?.signal)
         if (dbRaw) {
           const storeModel = inferJetBrainsModel(dbRaw)
           const turns = extractJetBrainsDbTurns(dbRaw)
@@ -2055,6 +2095,7 @@ function createJetBrainsParser(source: JetBrainsSessionSource, seenKeys: Set<str
           // share replyText '') distinct within a conversation.
           const perContentIndex = new Map<string, number>()
           for (const turn of turns) {
+            throwIfScanAborted(context?.signal)
             // One .db holds many chat tabs; group each turn under its own
             // conversation so the user sees one session per tab, not per file.
             const convId = turn.conversationId || sessionId
@@ -2115,16 +2156,19 @@ function createJetBrainsParser(source: JetBrainsSessionSource, seenKeys: Set<str
 // OTel SQLite parser — reads agent-traces.db for FULL token data
 // ---------------------------------------------------------------------------
 
-function createOtelParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createOtelParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
+      throwIfScanAborted(context?.signal)
       // Lazy-load the SQLite module (same pattern as Cursor/OpenCode providers)
       const { openDatabase } = await import('../sqlite.js')
+      throwIfScanAborted(context?.signal)
 
       // One DB open handles ALL conversations — avoids N opens for N conversations.
       const db = openDatabase(source.path)
 
       try {
+        throwIfScanAborted(context?.signal)
         // ---------------------------------------------------------------
         // Get all distinct conversations in the DB with their project names.
         // ---------------------------------------------------------------
@@ -2146,8 +2190,10 @@ function createOtelParser(source: SessionSource, seenKeys: Set<string>): Session
            GROUP BY sa_conv.value
            ORDER BY min_start DESC`,
         )
+        throwIfScanAborted(context?.signal)
 
         for (const convRow of conversationRows) {
+          throwIfScanAborted(context?.signal)
           const conversationId = convRow.conversation_id
           if (!conversationId) continue
 
@@ -2168,10 +2214,12 @@ function createOtelParser(source: SessionSource, seenKeys: Set<string>): Session
              ORDER BY s.start_time_ms ASC`,
             [conversationId],
           )
+          throwIfScanAborted(context?.signal)
 
           // Collect trace IDs and span IDs belonging to this conversation
           const traceIds = new Set<string>()
           for (const row of spanIdRows) {
+            throwIfScanAborted(context?.signal)
             traceIds.add(row.trace_id)
           }
 
@@ -2194,6 +2242,7 @@ function createOtelParser(source: SessionSource, seenKeys: Set<string>): Session
             `SELECT span_id, trace_id, operation_name, start_time_ms, response_model FROM spans WHERE trace_id IN (${tracePlaceholders})`,
             traceIdArr,
           )
+          throwIfScanAborted(context?.signal)
 
           // Collect tool names, shell commands and subagent names from the
           // execute_tool / invoke_agent spans for each trace. These mirror the
@@ -2219,6 +2268,7 @@ function createOtelParser(source: SessionSource, seenKeys: Set<string>): Session
           >()
 
           for (const span of traceSpans) {
+            throwIfScanAborted(context?.signal)
             const opName = span.operation_name || ''
             spanMetaById.set(span.span_id, span)
 
@@ -2229,7 +2279,7 @@ function createOtelParser(source: SessionSource, seenKeys: Set<string>): Session
 
             if (opName === 'execute_tool') {
               // Load tool name from attributes and normalise to display form
-              const attrs = loadSpanAttributesFromTable(db, span.span_id)
+              const attrs = loadSpanAttributesFromTable(db, span.span_id, context?.signal)
               const rawToolName = attrs['gen_ai.tool.name'] as string | undefined
               if (rawToolName) {
                 const existing = toolsByTrace.get(span.trace_id) ?? []
@@ -2255,7 +2305,7 @@ function createOtelParser(source: SessionSource, seenKeys: Set<string>): Session
             // chat session. The root turn agent ('GitHub Copilot Chat') has no
             // parent session and is skipped to avoid a bogus agents-view entry.
             if (opName === 'invoke_agent') {
-              const attrs = loadSpanAttributesFromTable(db, span.span_id)
+              const attrs = loadSpanAttributesFromTable(db, span.span_id, context?.signal)
               const parentSession = attrs['copilot_chat.parent_chat_session_id']
               const agentName = attrs['gen_ai.agent.name'] as string | undefined
               if (parentSession && agentName) {
@@ -2268,7 +2318,8 @@ function createOtelParser(source: SessionSource, seenKeys: Set<string>): Session
 
           // Yield one ParsedProviderCall per chat span
           for (const spanId of chatSpanIds) {
-            const attrs = loadSpanAttributesFromTable(db, spanId)
+            throwIfScanAborted(context?.signal)
+            const attrs = loadSpanAttributesFromTable(db, spanId, context?.signal)
 
             const spanMetadata = spanMetaById.get(spanId)
             if (!spanMetadata) continue
@@ -2424,31 +2475,43 @@ function isSessionStoreSource(source: SessionSource): source is SessionStoreSour
 // Session discovery: JSONL (original)
 // ---------------------------------------------------------------------------
 
-async function discoverJsonlSessions(sessionStateDir: string): Promise<JsonlSessionSource[]> {
+async function discoverJsonlSessions(
+  sessionStateDir: string,
+  context?: ProviderScanContext,
+): Promise<JsonlSessionSource[]> {
   const sources: JsonlSessionSource[] = []
 
   let sessionDirs: string[]
   try {
     sessionDirs = await readdir(sessionStateDir)
   } catch {
+    throwIfScanAborted(context?.signal)
     return sources
   }
 
   for (const sessionId of sessionDirs) {
+    throwIfScanAborted(context?.signal)
     const eventsPath = join(sessionStateDir, sessionId, 'events.jsonl')
-    const s = await stat(eventsPath).catch(() => null)
+    const s = await stat(eventsPath).catch(() => {
+      throwIfScanAborted(context?.signal)
+      return null
+    })
+    throwIfScanAborted(context?.signal)
     if (!s?.isFile()) continue
 
     let project = sessionId
     let workingDirectory: string | undefined
     try {
-      const yaml = await readSessionFile(join(sessionStateDir, sessionId, 'workspace.yaml'))
+      const yaml = await readSessionFile(join(sessionStateDir, sessionId, 'workspace.yaml'), 'utf8', {
+        signal: context?.signal,
+      })
       const cwd = parseCwd(yaml ?? '')
       if (cwd) {
         project = basename(cwd)
         workingDirectory = cwd
       }
     } catch {
+      throwIfScanAborted(context?.signal)
       // workspace.yaml may not exist
     }
 
@@ -2469,15 +2532,17 @@ async function discoverJsonlSessions(sessionStateDir: string): Promise<JsonlSess
 // Session discovery: OTel SQLite
 // ---------------------------------------------------------------------------
 
-async function discoverOtelSessions(dbPath: string): Promise<OTelSessionSource[]> {
+async function discoverOtelSessions(dbPath: string, context?: ProviderScanContext): Promise<OTelSessionSource[]> {
   // Verify the DB file exists. Return one source per DB file; the parser
   // opens the DB once and iterates all conversations in a single DB open,
   // which is far more efficient than one source (and one DB open) per conversation.
   try {
     await stat(dbPath)
   } catch {
+    throwIfScanAborted(context?.signal)
     return []
   }
+  throwIfScanAborted(context?.signal)
   return [{ path: dbPath, project: 'copilot-chat', provider: 'copilot', sourceType: 'otel' }]
 }
 
@@ -2498,9 +2563,14 @@ async function discoverOtelSessions(dbPath: string): Promise<OTelSessionSource[]
  * store records it. The placeholder only applies to a row whose session has
  * neither.
  */
-async function discoverSessionStoreSessions(dbPath: string): Promise<SessionStoreSource[]> {
+async function discoverSessionStoreSessions(
+  dbPath: string,
+  context?: ProviderScanContext,
+): Promise<SessionStoreSource[]> {
   try {
+    throwIfScanAborted(context?.signal)
     const dbStat = await stat(dbPath)
+    throwIfScanAborted(context?.signal)
     if (!dbStat.isFile()) return []
     return [
       {
@@ -2512,6 +2582,7 @@ async function discoverSessionStoreSessions(dbPath: string): Promise<SessionStor
       },
     ]
   } catch {
+    throwIfScanAborted(context?.signal)
     return []
   }
 }
@@ -2532,16 +2603,28 @@ const JETBRAINS_DB_NAMES: Record<string, string> = {
 }
 
 /** Locate the Nitrite .db in a store dir (known name, else any *-nitrite.db). */
-async function findNitriteDbPath(storeDir: string, kind: string): Promise<string | null> {
+async function findNitriteDbPath(
+  storeDir: string,
+  kind: string,
+  context?: ProviderScanContext,
+): Promise<string | null> {
   const known = JETBRAINS_DB_NAMES[kind]
   if (known) {
     const p = join(storeDir, known)
-    if ((await stat(p).catch(() => null))?.isFile()) return p
+    try {
+      throwIfScanAborted(context?.signal)
+      const fileStat = await stat(p)
+      throwIfScanAborted(context?.signal)
+      if (fileStat.isFile()) return p
+    } catch {
+      throwIfScanAborted(context?.signal)
+    }
   }
   let files: string[]
   try {
     files = await readdir(storeDir)
   } catch {
+    throwIfScanAborted(context?.signal)
     return null
   }
   const db = files.find(f => f.endsWith('-nitrite.db'))
@@ -2559,32 +2642,43 @@ async function findNitriteDbPath(storeDir: string, kind: string): Promise<string
  * records no token counts, so the parser estimates output tokens from the
  * assistant reply text (see createJetBrainsParser).
  */
-async function discoverJetBrainsSessions(root: string): Promise<JetBrainsSessionSource[]> {
+async function discoverJetBrainsSessions(
+  root: string,
+  context?: ProviderScanContext,
+): Promise<JetBrainsSessionSource[]> {
   const sources: JetBrainsSessionSource[] = []
 
   let ideDirs: string[]
   try {
     ideDirs = await readdir(root)
   } catch {
+    throwIfScanAborted(context?.signal)
     return sources
   }
 
   for (const ide of ideDirs) {
+    throwIfScanAborted(context?.signal)
     for (const kind of JETBRAINS_SESSION_KINDS) {
       const kindDir = join(root, ide, kind)
       let storeDirs: string[]
       try {
         storeDirs = await readdir(kindDir)
       } catch {
+        throwIfScanAborted(context?.signal)
         continue // this IDE doesn't have this session kind
       }
 
       for (const storeId of storeDirs) {
+        throwIfScanAborted(context?.signal)
         const storeDir = join(kindDir, storeId)
-        const dbPath = await findNitriteDbPath(storeDir, kind)
+        const dbPath = await findNitriteDbPath(storeDir, kind, context)
         if (!dbPath) continue
 
-        const dbStat = await stat(dbPath).catch(() => null)
+        const dbStat = await stat(dbPath).catch(() => {
+          throwIfScanAborted(context?.signal)
+          return null
+        })
+        throwIfScanAborted(context?.signal)
         const mtime = (dbStat?.mtime ?? new Date(0)).toISOString()
 
         sources.push({
@@ -2606,7 +2700,7 @@ async function discoverJetBrainsSessions(root: string): Promise<JetBrainsSession
   // store — NOT the chat-agent-sessions store where the billable turns live.
   // Without this join, every current agent session falls to the generic bucket
   // even though its repo name is sitting one store dir over.
-  await resolveJetBrainsProjectNames(sources)
+  await resolveJetBrainsProjectNames(sources, context)
 
   return sources
 }
@@ -2617,22 +2711,29 @@ async function discoverJetBrainsSessions(root: string): Promise<JetBrainsSession
  * own .db lacks the field inherits it from a sibling-kind store with the same
  * id. Best-effort — read/parse failures leave projectName undefined.
  */
-async function resolveJetBrainsProjectNames(sources: JetBrainsSessionSource[]): Promise<void> {
+async function resolveJetBrainsProjectNames(
+  sources: JetBrainsSessionSource[],
+  context?: ProviderScanContext,
+): Promise<void> {
   const byStore = new Map<string, string>()
   for (const src of sources) {
+    throwIfScanAborted(context?.signal)
     // Already found this store's name via a sibling-kind source — skip the read.
     if (!src.dbPath || byStore.has(src.storeId)) continue
     let raw: string | null = null
     try {
-      raw = await readSessionFile(src.dbPath, 'latin1')
-    } catch {
+      raw = await readSessionFile(src.dbPath, 'latin1', { signal: context?.signal })
+    } catch (error) {
+      if (isScanAbortedError(error)) throw error
       raw = null
     }
+    throwIfScanAborted(context?.signal)
     if (!raw) continue
     const name = extractJetBrainsProjectName(raw)
     if (name) byStore.set(src.storeId, name)
   }
   for (const src of sources) {
+    throwIfScanAborted(context?.signal)
     const name = byStore.get(src.storeId)
     if (name) src.projectName = name
   }
@@ -2718,11 +2819,14 @@ function copilotWorkspaceFsPath(uri: string): string | undefined {
 async function resolveWorkspaceProject(
   wsDir: string,
   hashDir: string,
+  context?: ProviderScanContext,
 ): Promise<{ project: string; workingDirectory?: string }> {
   let project = hashDir
   let workingDirectory: string | undefined
   try {
-    const wsJson = await readSessionFile(join(wsDir, hashDir, 'workspace.json'))
+    const wsJson = await readSessionFile(join(wsDir, hashDir, 'workspace.json'), 'utf8', {
+      signal: context?.signal,
+    })
     if (wsJson) {
       const data = JSON.parse(wsJson) as { folder?: string }
       if (typeof data.folder === 'string') {
@@ -2741,23 +2845,30 @@ async function resolveWorkspaceProject(
         }
       }
     }
-  } catch {
+  } catch (error) {
+    if (isScanAbortedError(error)) throw error
     // workspace.json may be absent or malformed
   }
   return workingDirectory ? { project, workingDirectory } : { project }
 }
 
-async function hasChatSessionFiles(chatSessionsDir: string): Promise<boolean> {
+async function hasChatSessionFiles(chatSessionsDir: string, context?: ProviderScanContext): Promise<boolean> {
   let files: string[]
   try {
     files = await readdir(chatSessionsDir)
   } catch {
+    throwIfScanAborted(context?.signal)
     return false
   }
 
   for (const file of files) {
+    throwIfScanAborted(context?.signal)
     if (!file.endsWith('.jsonl')) continue
-    const s = await stat(join(chatSessionsDir, file)).catch(() => null)
+    const s = await stat(join(chatSessionsDir, file)).catch(() => {
+      throwIfScanAborted(context?.signal)
+      return null
+    })
+    throwIfScanAborted(context?.signal)
     if (s?.isFile()) return true
   }
   return false
@@ -2767,31 +2878,43 @@ async function hasChatSessionFiles(chatSessionsDir: string): Promise<boolean> {
 // Session discovery: VS Code core chatSessions
 // ---------------------------------------------------------------------------
 
-async function discoverWorkspaceChatSessions(workspaceStorageDirs: string[]): Promise<ChatSessionSource[]> {
+async function discoverWorkspaceChatSessions(
+  workspaceStorageDirs: string[],
+  context?: ProviderScanContext,
+): Promise<ChatSessionSource[]> {
   const sources: ChatSessionSource[] = []
 
   for (const wsDir of workspaceStorageDirs) {
+    throwIfScanAborted(context?.signal)
     let hashDirs: string[]
     try {
       hashDirs = await readdir(wsDir)
     } catch {
+      throwIfScanAborted(context?.signal)
       continue
     }
 
     for (const hashDir of hashDirs) {
+      throwIfScanAborted(context?.signal)
       const chatSessionsDir = join(wsDir, hashDir, 'chatSessions')
       let files: string[]
       try {
         files = await readdir(chatSessionsDir)
       } catch {
+        throwIfScanAborted(context?.signal)
         continue
       }
 
-      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir)
+      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir, context)
       for (const file of files) {
+        throwIfScanAborted(context?.signal)
         if (!file.endsWith('.jsonl')) continue
         const path = join(chatSessionsDir, file)
-        const s = await stat(path).catch(() => null)
+        const s = await stat(path).catch(() => {
+          throwIfScanAborted(context?.signal)
+          return null
+        })
+        throwIfScanAborted(context?.signal)
         if (!s?.isFile()) continue
         sources.push({
           path,
@@ -2807,22 +2930,32 @@ async function discoverWorkspaceChatSessions(workspaceStorageDirs: string[]): Pr
   return sources
 }
 
-async function discoverEmptyWindowChatSessions(globalStorageDirs: string[]): Promise<ChatSessionSource[]> {
+async function discoverEmptyWindowChatSessions(
+  globalStorageDirs: string[],
+  context?: ProviderScanContext,
+): Promise<ChatSessionSource[]> {
   const sources: ChatSessionSource[] = []
 
   for (const globalDir of globalStorageDirs) {
+    throwIfScanAborted(context?.signal)
     const chatSessionsDir = join(globalDir, 'emptyWindowChatSessions')
     let files: string[]
     try {
       files = await readdir(chatSessionsDir)
     } catch {
+      throwIfScanAborted(context?.signal)
       continue
     }
 
     for (const file of files) {
+      throwIfScanAborted(context?.signal)
       if (!file.endsWith('.jsonl')) continue
       const path = join(chatSessionsDir, file)
-      const s = await stat(path).catch(() => null)
+      const s = await stat(path).catch(() => {
+        throwIfScanAborted(context?.signal)
+        return null
+      })
+      throwIfScanAborted(context?.signal)
       if (!s?.isFile()) continue
       sources.push({
         path,
@@ -2845,34 +2978,46 @@ async function discoverEmptyWindowChatSessions(globalStorageDirs: string[]): Pro
  * Structure: {wsDir}/{hash}/GitHub.copilot-chat/transcripts/{session}.jsonl
  * Project is read from {wsDir}/{hash}/workspace.json (folder URI).
  */
-async function discoverTranscriptSessions(workspaceStorageDirs: string[]): Promise<JsonlSessionSource[]> {
+async function discoverTranscriptSessions(
+  workspaceStorageDirs: string[],
+  context?: ProviderScanContext,
+): Promise<JsonlSessionSource[]> {
   const sources: JsonlSessionSource[] = []
 
   for (const wsDir of workspaceStorageDirs) {
+    throwIfScanAborted(context?.signal)
     let hashDirs: string[]
     try {
       hashDirs = await readdir(wsDir)
     } catch {
+      throwIfScanAborted(context?.signal)
       continue
     }
 
     for (const hashDir of hashDirs) {
+      throwIfScanAborted(context?.signal)
       const chatSessionsDir = join(wsDir, hashDir, 'chatSessions')
-      if (await hasChatSessionFiles(chatSessionsDir)) continue
+      if (await hasChatSessionFiles(chatSessionsDir, context)) continue
 
       const transcriptsDir = join(wsDir, hashDir, 'GitHub.copilot-chat', 'transcripts')
-      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir)
+      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir, context)
 
       let transcriptFiles: string[]
       try {
         transcriptFiles = await readdir(transcriptsDir)
       } catch {
+        throwIfScanAborted(context?.signal)
         continue
       }
 
       for (const file of transcriptFiles) {
+        throwIfScanAborted(context?.signal)
         if (!file.endsWith('.jsonl')) continue
-        const s = await stat(join(transcriptsDir, file)).catch(() => null)
+        const s = await stat(join(transcriptsDir, file)).catch(() => {
+          throwIfScanAborted(context?.signal)
+          return null
+        })
+        throwIfScanAborted(context?.signal)
         if (!s?.isFile()) continue
         sources.push({
           path: join(transcriptsDir, file),
@@ -2965,7 +3110,8 @@ export function createCopilotProvider(
       return normalizeTool(rawTool)
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
+    async discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      throwIfScanAborted(context?.signal)
       const sources: SessionSource[] = []
       let discoveredOtel = false
 
@@ -2982,10 +3128,11 @@ export function createCopilotProvider(
       try {
         const storePath = getSessionStorePath()
         if (storePath) {
-          const storeSources = await discoverSessionStoreSessions(storePath)
+          const storeSources = await discoverSessionStoreSessions(storePath, context)
           sources.push(...storeSources)
         }
       } catch {
+        throwIfScanAborted(context?.signal)
         // session-store discovery failed — the events.jsonl rollup stays the
         // fallback, which is exactly the pre-store behaviour.
       }
@@ -2998,10 +3145,11 @@ export function createCopilotProvider(
         const dbPath = getAgentTracesDbPath(paths)
         if (dbPath) {
           try {
-            const otelSources = await discoverOtelSessions(dbPath)
+            const otelSources = await discoverOtelSessions(dbPath, context)
             discoveredOtel = otelSources.length > 0
             sources.push(...otelSources)
           } catch {
+            throwIfScanAborted(context?.signal)
             // OTel discovery failed — fall through to JSONL
           }
         }
@@ -3010,9 +3158,10 @@ export function createCopilotProvider(
       // 3. Discover JSONL sessions (fallback — output tokens only)
       try {
         const jsonlDir = getCopilotSessionStateDir(sessionStateDir, paths)
-        const jsonlSources = await discoverJsonlSessions(jsonlDir)
+        const jsonlSources = await discoverJsonlSessions(jsonlDir, context)
         sources.push(...jsonlSources)
       } catch {
+        throwIfScanAborted(context?.signal)
         // JSONL discovery failed
       }
 
@@ -3021,26 +3170,29 @@ export function createCopilotProvider(
       if (!discoveredOtel) {
         // 4. Discover VS Code core chatSessions journals
         try {
-          const chatSessionSources = await discoverWorkspaceChatSessions(getWsDirs())
+          const chatSessionSources = await discoverWorkspaceChatSessions(getWsDirs(), context)
           sources.push(...chatSessionSources)
         } catch {
+          throwIfScanAborted(context?.signal)
           // Workspace chatSessions discovery failed
         }
 
         // 5. Discover VS Code empty-window chatSessions journals
         try {
-          const emptyWindowSources = await discoverEmptyWindowChatSessions(getGlobalDirs())
+          const emptyWindowSources = await discoverEmptyWindowChatSessions(getGlobalDirs(), context)
           sources.push(...emptyWindowSources)
         } catch {
+          throwIfScanAborted(context?.signal)
           // Empty-window chatSessions discovery failed
         }
       }
 
       // 6. Discover VS Code workspace transcript sessions
       try {
-        const transcriptSources = await discoverTranscriptSessions(getWsDirs())
+        const transcriptSources = await discoverTranscriptSessions(getWsDirs(), context)
         sources.push(...transcriptSources)
       } catch {
+        throwIfScanAborted(context?.signal)
         // Transcript discovery failed
       }
 
@@ -3048,33 +3200,41 @@ export function createCopilotProvider(
       // in a store none of the VS Code / CLI sources touch, so there is no
       // overlap to dedupe against; the shared seenKeys set still guards it.
       try {
-        const jetbrainsSources = await discoverJetBrainsSessions(getJetBrainsCopilotRoot(jetbrainsDir, paths))
+        const jetbrainsSources = await discoverJetBrainsSessions(getJetBrainsCopilotRoot(jetbrainsDir, paths), context)
         sources.push(...jetbrainsSources)
       } catch {
+        throwIfScanAborted(context?.signal)
         // JetBrains discovery failed
       }
 
+      throwIfScanAborted(context?.signal)
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      throwIfScanAborted(context?.signal)
       // Route to the correct parser based on source type.
       // The dedup key set (seenKeys) is shared across both parsers,
       // so if OTel already yielded a span, the JSONL parser will skip
       // the matching assistant.message (and vice versa).
       if (isSessionStoreSource(source)) {
-        return createSessionStoreParser(source, seenKeys, coveredStoreKeys)
+        return createSessionStoreParser(source, seenKeys, coveredStoreKeys, context)
       }
       if (isOtelSource(source)) {
-        return createOtelParser(source, seenKeys)
+        return createOtelParser(source, seenKeys, context)
       }
       if (isChatSessionSource(source)) {
-        return createChatSessionParser(source, seenKeys)
+        return createChatSessionParser(source, seenKeys, context)
       }
       if (isJetBrainsSource(source)) {
-        return createJetBrainsParser(source, seenKeys)
+        return createJetBrainsParser(source, seenKeys, context)
       }
-      return createJsonlParser(source, seenKeys, coveredStoreKeys)
+      return createJsonlParser(source, seenKeys, coveredStoreKeys, context)
     },
   }
 }
