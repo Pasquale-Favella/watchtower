@@ -1,36 +1,8 @@
-import type { Section } from '../../../shared/schemas/renderer.js'
+import { ROUTES, type Section, SECTIONS } from '../../../shared/schemas/navigation.js'
 
-/** The canonical section order, shared by nav and shortcuts (ADR 0014).
- * Mirrors NAV_SECTIONS in app/shortcuts.ts, which stays the registry's own
- * copy (ADR 0001). */
-export const SECTIONS: readonly Section[] = [
-  // Coach & Skills (ADR 0017): one unified surface where every harness run is
-  // a free-form coach prompt (coaching or skill authoring, same agent).
-  'overview',
-  'sessions',
-  'pullRequests',
-  'spend',
-  'optimize',
-  'models',
-  'compare',
-  'coachSkills',
-  'settings',
-]
-
-/** Route paths (ADR 0014). The router owns identity; every nav entry point
- * (sidebar, shortcuts, "See all ›", session rows) routes through here. */
-export const ROUTES = {
-  overview: '/',
-  sessions: '/sessions',
-  sessionDetail: (id: string) => `/sessions/${id}`,
-  pullRequests: '/pull-requests',
-  spend: '/spend',
-  optimize: '/optimize',
-  models: '/models',
-  compare: '/compare',
-  coachSkills: '/coach-skills',
-  settings: '/settings',
-} as const
+/** Sections + routes are declared once in shared/schemas/navigation.ts (ADR
+ * 0014) and re-exported here, the renderer's navigation entry point. */
+export { ROUTES, SECTIONS }
 
 /** The route path for a section. */
 export function routeFor(section: Section): string {

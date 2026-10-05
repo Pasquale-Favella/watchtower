@@ -7,23 +7,7 @@ import { navigateToSection } from '@/app/navigation'
 import type { OverviewPayload } from '../../../../shared/schemas/overview.js'
 import { Sparkline } from '@/features/overview/Sparkline'
 import { EfficiencyGauge } from '@/features/overview/EfficiencyGauge'
-
-/** Week-over-week spend delta from the daily series (last 7 vs prior 7).
- * Null when there isn't enough history — the hero then hides the badge
- * instead of inventing a trend. */
-function spendTrend(daily: OverviewPayload['daily']): number | null {
-  if (daily.length < 14) return null
-  const last = daily.slice(-7).reduce((s, d) => s + d.costUSD, 0)
-  const prev = daily.slice(-14, -7).reduce((s, d) => s + d.costUSD, 0)
-  if (prev <= 0) return last > 0 ? 1 : null
-  return (last - prev) / prev
-}
-
-/** Short day label for sparkline tooltips ("Jul 3"). */
-function formatDayLabel(dateKey: string): string {
-  const [year, month, day] = dateKey.split('-').map(Number)
-  return new Date(year, (month ?? 1) - 1, day ?? 1).toLocaleString('en-US', { month: 'short', day: 'numeric' })
-}
+import { formatChartDate, spendTrend } from '@/features/overview/lib'
 
 function formatCount(unit: string): (v: number) => string {
   return (v: number) => `${Math.round(v).toLocaleString('en-US')} ${unit}`
@@ -73,7 +57,7 @@ function SpendHero({ payload }: { payload: OverviewPayload }) {
 
       <div className="mt-3">
         <Sparkline
-          data={payload.daily.map(d => ({ v: d.costUSD, label: formatDayLabel(d.date) }))}
+          data={payload.daily.map(d => ({ v: d.costUSD, label: formatChartDate(d.date) }))}
           height={52}
           formatValue={(v: number) => `${formatUsd(v)} spend`}
         />
@@ -115,7 +99,7 @@ function EfficiencyHero({ payload }: { payload: OverviewPayload }) {
             {payload.kpis.sessions.toLocaleString('en-US')}
           </p>
           <Sparkline
-            data={payload.daily.map(d => ({ v: d.sessions, label: formatDayLabel(d.date) }))}
+            data={payload.daily.map(d => ({ v: d.sessions, label: formatChartDate(d.date) }))}
             height={34}
             className="mt-1.5"
             formatValue={formatCount('sessions')}
@@ -127,7 +111,7 @@ function EfficiencyHero({ payload }: { payload: OverviewPayload }) {
             {payload.kpis.calls.toLocaleString('en-US')}
           </p>
           <Sparkline
-            data={payload.daily.map(d => ({ v: d.calls, label: formatDayLabel(d.date) }))}
+            data={payload.daily.map(d => ({ v: d.calls, label: formatChartDate(d.date) }))}
             height={34}
             className="mt-1.5"
             formatValue={formatCount('calls')}
