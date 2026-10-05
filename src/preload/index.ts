@@ -49,7 +49,7 @@ import type {
 } from '../shared/schemas/views.js'
 import type { YieldPayload } from '../shared/schemas/yield.js'
 import type { Section } from '../shared/schemas/navigation.js'
-import type { OrbNotice, OrbPanelRequest, OrbPlacement } from '../shared/schemas/orb.js'
+import type { OrbPanelRequest, OrbPlacement } from '../shared/schemas/orb.js'
 
 export type {
   CoachEventEnvelope,
@@ -230,8 +230,6 @@ const api = {
    * these from any window but the orb's own two (the orb and its panel). */
   orb: {
     getPlacement: (): Promise<OrbPlacement | null> => ipcRenderer.invoke('orb:placement:get'),
-    /** A notice raised before this page could listen (e.g. the first close). */
-    takePendingNotice: (): Promise<OrbNotice | null> => ipcRenderer.invoke('orb:notice:take'),
     /** Asks the main process to open (`open`: focused, `peek`: not) or fold the panel. */
     requestPanel: (request: OrbPanelRequest): Promise<OrbPlacement | null> =>
       ipcRenderer.invoke('orb:panel:request', request),
@@ -243,15 +241,12 @@ const api = {
     quit: (): void => ipcRenderer.send('orb:quit'),
     /** The panel painted its first frame after opening (flicker-free reveal). */
     panelPainted: (): void => ipcRenderer.send('orb:panel-painted'),
+    /** The panel's data is loaded: the first-close peek may open (main decides). */
+    panelDataReady: (): void => ipcRenderer.send('orb:panel-data-ready'),
     onPlacement: (callback: (placement: OrbPlacement) => void): (() => void) => {
       const listener = (_event: IpcRendererEvent, placement: OrbPlacement): void => callback(placement)
       ipcRenderer.on('orb:placement', listener)
       return () => ipcRenderer.removeListener('orb:placement', listener)
-    },
-    onNotice: (callback: (notice: OrbNotice) => void): (() => void) => {
-      const listener = (_event: IpcRendererEvent, notice: OrbNotice): void => callback(notice)
-      ipcRenderer.on('orb:notice', listener)
-      return () => ipcRenderer.removeListener('orb:notice', listener)
     },
   },
 }

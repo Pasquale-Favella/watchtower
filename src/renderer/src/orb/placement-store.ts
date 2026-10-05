@@ -13,20 +13,20 @@ export interface OrbPlacementState {
   onPlacement: (placement: OrbPlacement) => void
   /** Reads the current placement once, at a page's boot. */
   sync: () => Promise<void>
-  /** Asks the main process to open the panel (`open`: the user's own
-   * request, focused; `peek`: without focus) or to fold it. */
+  /** Asks the main process to open the panel (the user's own request, so it
+   * takes focus) or to fold it. Peeks are the main process's own. */
   request: (request: OrbPanelRequest) => Promise<void>
 }
 
 export const useOrbPlacementStore = create<OrbPlacementState>()(set => ({
-  placement: { expanded: false, horizontal: 'right', vertical: 'bottom' },
+  placement: { expanded: false, peek: false, horizontal: 'right', vertical: 'bottom' },
   onPlacement: placement => set({ placement }),
   sync: async () => {
     const result = await fetchOrbPlacement()
     if (result.ok && result.data) set({ placement: result.data })
   },
-  request: async request => {
-    const result = await fetchOrbPanelRequest(request)
+  request: async intent => {
+    const result = await fetchOrbPanelRequest(intent)
     if (result.ok && result.data) set({ placement: result.data })
   },
 }))

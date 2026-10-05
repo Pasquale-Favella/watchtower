@@ -1,12 +1,7 @@
 import { screen } from 'electron'
 
 import { ORB_PANEL_SIZE, ORB_SIZE, type OrbPlacement } from '../shared/schemas/orb.js'
-
-/** A screen position in DIPs — the orb's anchor is its circle's top-left. */
-export interface Point {
-  x: number
-  y: number
-}
+import type { Point } from './orb-policy.js'
 
 /** Gap kept between the orb and the work-area edge. */
 const EDGE_MARGIN = 12
@@ -23,15 +18,6 @@ function workAreaAround(anchor: Point): Electron.Rectangle {
 
 function clampInto(value: number, min: number, max: number): number {
   return Math.round(Math.min(Math.max(value, min), max))
-}
-
-/** The anchor `dx`/`dy` away from `origin` (a drag), in whole DIPs. */
-export function offsetAnchor(origin: Point, dx: number, dy: number): Point {
-  return { x: Math.round(origin.x + dx), y: Math.round(origin.y + dy) }
-}
-
-export function containsPoint(rect: Electron.Rectangle, point: Point): boolean {
-  return point.x >= rect.x && point.x < rect.x + rect.width && point.y >= rect.y && point.y < rect.y + rect.height
 }
 
 /** Keeps the orb fully on the display it is closest to. */
@@ -62,8 +48,13 @@ export function orbBounds(anchor: Point): Electron.Rectangle {
 /** The panel window's bounds beside the orb at `anchor`: it opens toward the
  * display's centre (above an orb parked low, left of an orb parked right) so
  * it never runs off the edge the orb sits on, and is clamped onto the display.
- * `placement` says which side of the panel the orb is on. */
-export function panelLayout(anchor: Point, expanded: boolean): { bounds: Electron.Rectangle; placement: OrbPlacement } {
+ * `placement` says which side of the panel the orb is on, and whether the
+ * open is a peek (`peek`). */
+export function panelLayout(
+  anchor: Point,
+  expanded: boolean,
+  peek = false,
+): { bounds: Electron.Rectangle; placement: OrbPlacement } {
   const area = workAreaAround(anchor)
   const onRight = anchor.x + ORB_SIZE / 2 > area.x + area.width / 2
   const onBottom = anchor.y + ORB_SIZE / 2 > area.y + area.height / 2
@@ -79,6 +70,11 @@ export function panelLayout(anchor: Point, expanded: boolean): { bounds: Electro
       width,
       height,
     },
-    placement: { expanded, horizontal: onRight ? 'right' : 'left', vertical: onBottom ? 'bottom' : 'top' },
+    placement: {
+      expanded,
+      peek: expanded && peek,
+      horizontal: onRight ? 'right' : 'left',
+      vertical: onBottom ? 'bottom' : 'top',
+    },
   }
 }
