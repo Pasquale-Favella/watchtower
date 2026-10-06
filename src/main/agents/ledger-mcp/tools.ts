@@ -55,6 +55,8 @@ function defineTool<S extends Schema.ConstraintDecoder<unknown>>(
     run: args => {
       const decoded = Schema.decodeUnknownResult(inputSchema)(args)
       if (decoded._tag === 'Failure') {
+        // Direct callers retain synchronous validation; the SDK maps this error.
+        // eslint-disable-next-line no-restricted-syntax
         throw new LedgerToolInputError({
           message: `Invalid arguments for tool ${name}`,
         })

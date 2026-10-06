@@ -92,7 +92,7 @@ describe('Ledger MCP query runtime', () => {
     }
   })
 
-  it('prepares the six request-snapshot SELECTs for a Models query on its persistent connection', async () => {
+  it('executes six snapshot SELECTs for both cold and warm Models queries on one connection', async () => {
     const { store, dbPath } = makeLedger()
     const runtime = await openRuntime(dbPath)
     const prepared: Array<{ database: DatabaseSync; sql: string }> = []

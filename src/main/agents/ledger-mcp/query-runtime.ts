@@ -45,6 +45,8 @@ export async function createLedgerMcpQueryRuntime(dbPath: string): Promise<{
     )
   } catch (error) {
     await runtime.dispose()
+    // Preserve the original rejection at this external Promise boundary.
+    // eslint-disable-next-line no-restricted-syntax
     throw error
   }
 

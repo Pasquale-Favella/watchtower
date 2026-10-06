@@ -12,8 +12,8 @@ import {
 import * as Schema from 'effect/Schema'
 
 import { buildLedgerPrompts } from './prompts.js'
-import { buildLedgerResources } from './resources.js'
 import type { LedgerMcpQueries } from './query-api.js'
+import { buildLedgerResources } from './resources.js'
 import { buildLedgerTools, LedgerToolInputError } from './tools.js'
 
 /** The `watchtower-ledger` MCP server (ADR 0020). The advanced SDK Server API
