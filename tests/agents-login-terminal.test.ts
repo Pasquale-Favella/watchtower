@@ -73,4 +73,19 @@ describe('openLoginTerminal', () => {
     expect(() => spawned.emit('error', new Error('terminal unavailable'))).not.toThrow()
     expect(result).toEqual({ ok: true })
   })
+
+  it.each(['win32', 'darwin', 'linux'] as const)('bounds synchronous native launch failures on %s', platform => {
+    const fail = () => {
+      throw new Error('private path C:\\Users\\person\\terminal token=secret')
+    }
+    const result = openLoginTerminal('codex', () => ['codex', 'login'], {
+      platform,
+      spawn: fail,
+      execFile: fail as never,
+    })
+    expect(result).toEqual({
+      ok: false,
+      error: 'The login terminal could not be opened. Run the harness login command in a terminal.',
+    })
+  })
 })

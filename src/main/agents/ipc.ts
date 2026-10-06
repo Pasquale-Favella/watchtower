@@ -27,6 +27,8 @@ import {
 } from '../../shared/schemas/skills.js'
 import type { MainRuntime } from '../main-runtime.js'
 import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
+import { CoachSdkFailure, coachSdkFailureMessage } from './coach-errors.js'
+import { coachProtocolError } from './coach-protocol-errors.js'
 import { harnessSpecs } from './harnesses/index.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import { openLoginTerminal } from './login-terminal.js'
@@ -275,10 +277,8 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
       }
     } catch (err) {
       if (!probeIsCurrent(attempt)) return cancelledProbeResult
-      // Everything (detect included) becomes an ok:false arm — a rejection
-      // must NEVER propagate: the chain's slot-release depends on runProbe
-      // settling, and a wedged slot would hang every later probe.
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      if (err instanceof CoachSdkFailure) return { ok: false, error: coachSdkFailureMessage('The agent', err) }
+      throw err
     }
   }
 
@@ -319,12 +319,9 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         releaseProbeSlot(attempt)
         return result
       },
-      // Belt-and-braces: runProbe catches everything, so this should never
-      // fire — but if it ever did, the slot must still free or every later
-      // probe would queue onto a dead chain forever.
       error => {
         releaseProbeSlot(attempt)
-        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+        throw error
       },
     )
     return probedChain
@@ -487,10 +484,8 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
           })()
         activeRuns.set(runId, { run, kind: req.harnessKind })
 
-        // Stream in the background — the ack returns immediately; events land
-        // on the push channel as they stream. A generator throw (SDK failure)
-        // becomes an error event, never a crash. Lifecycle lands in the
-        // Operational log by harness kind only — never prompts (#130).
+        // The ack returns immediately. Failures after it become bounded error
+        // events; the operational log records only harness kind and code.
         safeLogOperationalEvent('info', 'harness.start', { kind: req.harnessKind })
         const canPublish = (): boolean => activeRuns.get(runId)?.run === run && runGeneration === conversationGeneration
         void (async () => {
@@ -518,7 +513,7 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
             settled = true
           } catch (err) {
             if (canPublish()) {
-              emit(runId, { kind: 'error', message: err instanceof Error ? err.message : String(err) })
+              emit(runId, { kind: 'error', message: coachProtocolError(err) })
               safeLogOperationalEvent('error', 'harness.error', { kind: req.harnessKind, code: logCodeFor(err) })
             }
           } finally {
@@ -532,7 +527,9 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
         return { ok: true, runId }
       } catch (err) {
         releaseAttachment(runId, attachment)
-        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+        if (err instanceof CoachSdkFailure)
+          return { ok: false, error: coachSdkFailureMessage(harness.displayName, err) }
+        throw err
       }
     },
 
@@ -660,16 +657,30 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
     ledgerMcpServer,
   })
 
-  ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> => runner.harnesses())
-  ipcMain.handle('coach:harnesses-refresh', async (): Promise<CoachHarnessRow[]> => runner.refreshHarnesses())
+  ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> =>
+    runner.harnesses().catch(error => {
+      throw new Error(coachProtocolError(error), { cause: error })
+    }),
+  )
+  ipcMain.handle('coach:harnesses-refresh', async (): Promise<CoachHarnessRow[]> =>
+    runner.refreshHarnesses().catch(error => {
+      throw new Error(coachProtocolError(error), { cause: error })
+    }),
+  )
   ipcMain.handle('coach:open-login-terminal', async (_event, request: unknown): Promise<CoachLoginTerminalResult> => {
     const parsed = Schema.decodeUnknownResult(coachOpenLoginTerminalRequestSchema)(request)
     if (parsed._tag === 'Failure') return { ok: false, error: 'invalid harness instance id' }
-    const instance = await harnesses.get(parsed.success)
-    const loginCommand = instance
-      ? harnessSpecs.find(spec => spec.kind === instance.info.kind)?.auth?.loginCommand
-      : undefined
-    return openLoginTerminal(parsed.success, instanceId => (instanceId === parsed.success ? loginCommand : undefined))
+    return harnesses
+      .get(parsed.success)
+      .then(instance => {
+        const loginCommand = instance
+          ? harnessSpecs.find(spec => spec.kind === instance.info.kind)?.auth?.loginCommand
+          : undefined
+        return openLoginTerminal(parsed.success, instanceId =>
+          instanceId === parsed.success ? loginCommand : undefined,
+        )
+      })
+      .catch(error => ({ ok: false, error: coachProtocolError(error) }))
   })
 
   /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
@@ -680,21 +691,23 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
   ipcMain.handle('coach:inspect', async (_event, request: unknown): Promise<CoachInspectResult> => {
     // The runner validates (bare key or { kind, allowApiKeyEnv }) — a probe
     // failure is `{ ok: false }` (pickers absent, chat unaffected).
-    return runner.inspect(request)
+    return runner.inspect(request).catch(error => ({ ok: false, error: coachProtocolError(error) }))
   })
 
   ipcMain.handle('coach:run', async (event, request: unknown): Promise<CoachRunResult> => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win) return { ok: false, error: 'no window' }
-    return runner.start(request, (runId, coachEvent) => {
-      if (!win.isDestroyed()) {
-        win.webContents.send('coach:event', { runId, event: coachEvent } satisfies CoachEventEnvelope)
-      } else {
-        // The window that launched the run is gone — stop pulling the stream
-        // so the ACP child process is torn down instead of leaking.
-        runner.cancel(runId)
-      }
-    })
+    return runner
+      .start(request, (runId, coachEvent) => {
+        if (!win.isDestroyed()) {
+          win.webContents.send('coach:event', { runId, event: coachEvent } satisfies CoachEventEnvelope)
+        } else {
+          // The window that launched the run is gone — stop pulling the stream
+          // so the ACP child process is torn down instead of leaking.
+          runner.cancel(runId)
+        }
+      })
+      .catch(error => ({ ok: false, error: coachProtocolError(error) }))
   })
 
   ipcMain.on('coach:cancel', (_event, runId: string) => {

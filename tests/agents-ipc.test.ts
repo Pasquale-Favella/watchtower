@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { Mock } from 'vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CoachSdkFailure } from '../src/main/agents/coach-errors.js'
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
 import {
@@ -417,7 +418,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     releaseLedgerMcp.mockClear()
     const runner = ownRunner({
       getRuntime: async () => {
-        throw new Error('no sdk')
+        throw new CoachSdkFailure({ stage: 'provider-create', reason: 'rejected', authentication: false })
       },
       harnesses: harnessSource,
       ledgerMcpServer,
@@ -426,6 +427,20 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     const result = await runner.start(request, () => {})
 
     expect(result.ok).toBe(false)
+    expect(releaseLedgerMcp).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves an unexpected launch rejection and releases the attachment', async () => {
+    releaseLedgerMcp.mockClear()
+    const defect = new Error('private launch defect')
+    const runner = ownRunner({
+      getRuntime: async () => {
+        throw defect
+      },
+      harnesses: harnessSource,
+      ledgerMcpServer,
+    })
+    await expect(runner.start(request, () => {})).rejects.toBe(defect)
     expect(releaseLedgerMcp).toHaveBeenCalledTimes(1)
   })
 
@@ -941,9 +956,9 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
     expect(inspect).not.toHaveBeenCalled()
   })
 
-  it('wraps a runtime probe failure into the ok:false arm (pickers stay absent, chat unaffected)', async () => {
+  it('maps an expected runtime probe failure to a bounded ok:false arm', async () => {
     const inspect = vi.fn(async (_input: HarnessProviderInput) => {
-      throw new Error('agent binary not found')
+      throw new CoachSdkFailure({ stage: 'session-init', reason: 'rejected', authentication: false })
     })
     const runner = makeRunner({
       run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
@@ -954,7 +969,10 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
 
     const result = await runner.inspect('claude')
 
-    expect(result).toEqual({ ok: false, error: 'agent binary not found' })
+    expect(result).toEqual({
+      ok: false,
+      error: 'The agent could not complete its session handshake. Check the installation and try again.',
+    })
   })
 })
 
@@ -1281,8 +1299,9 @@ describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () 
     expect(gemini.ok).toBe(true)
   })
 
-  it('a detect failure settles as ok:false and FREES the probe slot (the chain cannot wedge)', async () => {
-    detect.mockRejectedValueOnce(new Error('fs boom'))
+  it('preserves an unexpected detect failure and frees the probe slot for the queued caller', async () => {
+    const defect = new Error('fs boom')
+    detect.mockRejectedValueOnce(defect)
     const { inspect, order } = trackedRuntime()
     const runner = makeRunner({
       run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
@@ -1291,13 +1310,24 @@ describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () 
       inspect,
     })
 
-    const [failed, next] = await Promise.all([runner.inspect('claude'), runner.inspect('codex')])
-
-    // The failed probe resolves (never rejects) and the queued one still runs
-    // — had the rejection wedged the slot, `next` would hang forever.
-    expect(failed).toEqual({ ok: false, error: 'fs boom' })
-    expect(next.ok).toBe(true)
+    const [failed, next] = await Promise.allSettled([runner.inspect('claude'), runner.inspect('codex')])
+    expect(failed).toEqual({ status: 'rejected', reason: defect })
+    expect(next).toMatchObject({ status: 'fulfilled', value: { ok: true } })
     expect(order).toEqual(['codex'])
+  })
+
+  it('rejects a failed queued inspection and releases its slot for a later caller', async () => {
+    const defect = new Error('queued inspection defect')
+    const inspect = vi.fn(async ({ harness }: HarnessProviderInput) => {
+      if (harness.kind === 'codex') throw defect
+      return {}
+    })
+    const runner = makeRunner({ ...scriptedRuntime([]), inspect })
+    const [first, queued] = await Promise.allSettled([runner.inspect('claude'), runner.inspect('codex')])
+    expect(first).toMatchObject({ status: 'fulfilled', value: { ok: true } })
+    expect(queued).toEqual({ status: 'rejected', reason: defect })
+    await expect(runner.inspect('gemini')).resolves.toEqual({ ok: true })
+    expect(inspect.mock.calls.map(([input]) => input.harness.kind)).toEqual(['claude', 'codex', 'gemini'])
   })
 })
 
@@ -1391,7 +1421,7 @@ describe('Harness lifecycle records (#130) — kind only, never prompts', () => 
     await vi.waitFor(() => {
       expect(readRecords().filter(r => r['event'] === 'harness.error')).toHaveLength(1)
     })
-    expect(events).toContainEqual({ kind: 'error', message: 'boom' })
+    expect(events).toContainEqual({ kind: 'error', message: 'An unexpected Coach failure occurred. Please retry.' })
     const record = readRecords().find(r => r['event'] === 'harness.error')!
     expect(record['kind']).toBe('claude')
     expect(record['code']).toBe('failed')
