@@ -1,7 +1,11 @@
+import { EventEmitter } from 'node:events'
+import { Readable, Writable } from 'node:stream'
+
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/main/agents/detect.js'
+import { type ProbeChild, probeHarness } from '../src/main/agents/probe.js'
 import { HarnessSnapshot } from '../src/main/agents/snapshot.js'
 import { type MainRuntime, makeMainRuntime } from '../src/main/main-runtime.js'
 import type { CoachHarnessRow } from '../src/shared/schemas/agents.js'
@@ -17,6 +21,16 @@ const info: HarnessInfo = {
 
 const runtimes: MainRuntime[] = []
 
+class RuntimeProbeChild extends EventEmitter implements ProbeChild {
+  stdin = new Writable({ write: (_chunk, _encoding, callback) => callback() })
+  stdout = Readable.from([])
+  stderr = Readable.from([])
+
+  kill(): boolean {
+    return true
+  }
+}
+
 function makeRuntime(options: Parameters<typeof makeMainRuntime>[0], overrides: Parameters<typeof makeMainRuntime>[1]) {
   const runtime = makeMainRuntime(options, overrides)
   runtimes.push(runtime)
@@ -28,6 +42,41 @@ afterEach(async () => {
 })
 
 describe('main-owned harness snapshot', () => {
+  it('publishes the real probe’s bounded operational result while keeping the binary path in its row field', async () => {
+    const published: CoachHarnessRow[][] = []
+    const runtime = makeRuntime(
+      {
+        clientVersion: '4.2.1',
+        appPath: '/app',
+        onHarnessChange: rows => published.push(rows),
+      },
+      {
+        detect: async () => [info],
+        probe: harness =>
+          probeHarness(harness, {
+            spawn: () => new RuntimeProbeChild(),
+            connectionFactory: () => ({
+              initialize: async () => {
+                throw new Error(`SDK details from ${info.bin}: token=secret`)
+              },
+            }),
+          }),
+      },
+    )
+
+    await runtime.runPromise(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.list()))
+    await vi.waitFor(() => expect(published.at(-1)?.[0]?.status).toBe('error'))
+
+    expect(published.at(-1)?.[0]).toMatchObject({
+      status: 'error',
+      binaryPath: info.bin,
+      message: 'Codex did not complete the ACP handshake. Check the installation and try again.',
+      auth: { status: 'unknown', loginCommand: 'codex login' },
+    })
+    expect(published.at(-1)?.[0]?.message).not.toContain(info.bin)
+    expect(published.at(-1)?.[0]?.message).not.toContain('token=secret')
+  })
+
   it('uses the root version and the same probe capability for the live snapshot route', async () => {
     const versions: string[] = []
     const published: CoachHarnessRow[][] = []
