@@ -10,8 +10,8 @@ import * as Schema from 'effect/Schema'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LedgerSessionReads } from '../src/main/store/ledger-session-reads.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 const directories: string[] = []
 

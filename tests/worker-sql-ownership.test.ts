@@ -10,12 +10,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LedgerConfig } from '../src/main/store/ledger-repository.js'
 import { NodeSqliteDatabase } from '../src/main/store/node-sqlite-client.js'
-import {
-  makeWorkerRuntime,
-  openWorkerOwner,
-  type WorkerRuntime,
-  type WorkerSqlLayer,
-} from '../src/main/worker-runtime.js'
+import { makeWorkerRuntime, type WorkerRuntime, type WorkerSqlLayer } from '../src/main/worker-runtime.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 function observedDriver(
   filename: string,

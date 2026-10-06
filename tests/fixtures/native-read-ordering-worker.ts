@@ -6,8 +6,8 @@ import * as Effect from 'effect/Effect'
 import { DbWorkerContext } from '../../src/main/db-worker/context.js'
 import type { DbWorkerData, DbWorkerRequest } from '../../src/main/db-worker/protocol.js'
 import { LedgerQueries } from '../../src/main/store/ledger-repository.js'
-import { openWorkerOwner } from '../../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './cached-file.js'
+import { openWorkerOwner } from './worker-owner.js'
 
 const port = parentPort
 if (!port) throw new Error('native read-ordering fixture must run on a worker thread')

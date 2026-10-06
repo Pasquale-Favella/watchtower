@@ -15,7 +15,9 @@ import {
   type SkillsThresholds,
   skillsThresholdsSchema,
 } from '../../shared/schemas/skills.js'
+import { clearLedger } from '../application/clear-ledger.js'
 import { queryCompareView } from '../application/compare-query.js'
+import { queryActiveCurrency, selectDisplayCurrency } from '../application/currency-commands.js'
 import { queryExport } from '../application/export-query.js'
 import { GatewayReports } from '../application/gateway-reports.js'
 import {
@@ -41,15 +43,7 @@ import { queryAnalyticalViews, queryDashboardViews } from '../application/view-q
 import { queryYieldView } from '../application/yield-query.js'
 import { resolveCadenceMs } from '../cadence.js'
 import type { Env } from '../env.js'
-import {
-  type ActiveCurrency,
-  type CurrencyOption,
-  FxRates,
-  getActiveCurrency,
-  isValidCurrencyCode,
-  listCurrencies,
-  refreshFxRateWithRates,
-} from '../fx.js'
+import { type CurrencyOption, FxRates, isValidCurrencyCode, listCurrencies, refreshFxRateWithRates } from '../fx.js'
 import type { OperationalLog } from '../operational-log.js'
 import type { OverviewScope } from '../overview.js'
 import type { HttpFetch } from '../pipeline/fetch-utils.js'
@@ -71,8 +65,7 @@ import {
   type ScanProgress,
 } from '../pipeline/scan.js'
 import type { DateRange } from '../pipeline/types.js'
-import { LedgerStore } from '../store/ledger.js'
-import { LedgerConfig, LedgerQueries } from '../store/ledger-ports.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../store/ledger-ports.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 
@@ -109,15 +102,10 @@ function abortedScanError(): ScanAbortedError {
 }
 
 /**
- * What the composition root (`db-worker/entry.ts`, ADR 0023) hands in: the
- * single-writer ledger this thread owns, and the worker's application runtime
- * built from it. They are constructed together because `WorkerLive`'s `FxRates`
- * layer is bound to that store instance — the runtime is the ONLY place worker
- * workflows obtain their capabilities now (no per-call `Effect.provide`), so a
- * test can substitute any of them by handing in a differently-composed runtime.
+ * The composition root supplies the runtime that owns the worker's SQL client
+ * and application capabilities. Tests can substitute services in that runtime.
  */
 export interface DbWorkerDeps {
-  readonly ledger: LedgerStore
   readonly runtime: WorkerRuntime
 }
 
@@ -136,7 +124,6 @@ interface ActiveScan {
  * event loop.
  */
 export class DbWorkerContext {
-  private ledger: LedgerStore
   private runtime: WorkerRuntime
   private dataDir: string
   private cacheDir: string
@@ -161,7 +148,6 @@ export class DbWorkerContext {
     this.dataDir = init.dataDir
     this.cacheDir = init.cacheDir
     this.emit = emit
-    this.ledger = deps.ledger
     this.runtime = deps.runtime
     void this.scheduleCadence()
     // Prime the FX side-table for the persisted display currency at startup,
@@ -172,88 +158,72 @@ export class DbWorkerContext {
 
   // ── Scan pipeline ───────────────────────────────────────────────────
 
-  /** Runs one scan pass: parse streams per-file deltas into the ledger (ticket
-   * 03) and the scan returns metadata — never a `ProjectSummary[]`, never a
-   * `saveReport`. Shared by the manual ⌘R-triggered path and the
-   * background-cadence timer, so both go through identical port-in + broadcast
-   * semantics. Repo URLs are resolved per unique project cwd (memoized) so the
-   * ledger's per-source `repo_url` is captured at port-in without a rescan.
-   *
-   * `HttpFetch | Env | OperationalLog` are UNSATISFIED requirements (ADR 0032
-   * P2: a workflow widens its `R`; it never provides a layer). `runTrackedScan`
-   * supplies them from the worker runtime — which used to be a per-call
-   * `Effect.provide(Layer.mergeAll(liveFetchLayer(), Env.layer,
-   * OperationalLog.layer))` here, so `Env` was rebuilt on every scan. The
-   * `R`-channel `OperationalLog` over the snapshot-style optional value-seam is
-   * unchanged: the live layer still delegates to the main-owned Operational-log writer
-   * (same sink/allowlist/`main` context, never a second sink), tests still
-   * substitute `OperationalLog.layerWithSink`, and never-throw filing lives in
-   * `runScan`'s `onExit` (`catchCause`) so forked scan fibers stay green. */
+  /** Manual and background scans share one lifetime range and stream deltas
+   * through LedgerIngest. Repository lookups are memoized per project path.
+   * HttpFetch, Env, OperationalLog and LedgerIngest come from the worker runtime;
+   * this workflow does not construct layers. */
   private performScan(
     options: { provider?: string } | undefined,
     emit: (progress: ScanProgress) => void,
     owner: ActiveScan,
-  ): Effect.Effect<ScanMetadata, unknown, HttpFetch | Env | OperationalLog> {
-    const range = lifetimeRange()
-    const repoUrlCache = new Map<string, Promise<string | undefined>>()
-    const portIn: DeltaHandler = async (delta, pricing) => {
-      if (delta.cachedFile.failed) return
-      if (owner.aborted) throw abortedScanError()
-      // Repository badge (#106): resolve from the canonical project path for
-      // every provider — the worktree-folded cwd when the parser derived one,
-      // else the provider's exact working directory. Same memoized-per-scan,
-      // silent-when-absent semantics as before; never an identity key.
-      const cwd = delta.cachedFile.canonicalCwd ?? delta.workingDirectory ?? delta.cachedFile.workingDirectory
-      let repoUrl: string | undefined
-      if (cwd) {
-        let lookup = repoUrlCache.get(cwd)
-        if (!lookup) {
-          lookup = getRepoUrl(cwd)
-          repoUrlCache.set(cwd, lookup)
+  ): Effect.Effect<ScanMetadata, unknown, HttpFetch | Env | OperationalLog | LedgerIngest> {
+    return Effect.flatMap(LedgerIngest, ingest => {
+      const range = lifetimeRange()
+      const repoUrlCache = new Map<string, Promise<string | undefined>>()
+      const portIn: DeltaHandler = async (delta, pricing) => {
+        if (delta.cachedFile.failed) return
+        if (owner.aborted) throw abortedScanError()
+        // Repository badge (#106): resolve from the canonical project path for
+        // every provider — the worktree-folded cwd when the parser derived one,
+        // else the provider's exact working directory. Same memoized-per-scan,
+        // silent-when-absent semantics as before; never an identity key.
+        const cwd = delta.cachedFile.canonicalCwd ?? delta.workingDirectory ?? delta.cachedFile.workingDirectory
+        let repoUrl: string | undefined
+        if (cwd) {
+          let lookup = repoUrlCache.get(cwd)
+          if (!lookup) {
+            lookup = getRepoUrl(cwd)
+            repoUrlCache.set(cwd, lookup)
+          }
+          repoUrl = await lookup
         }
-        repoUrl = await lookup
+        // The git lookup is an external Promise and may outlive interruption.
+        // Check on both sides so an old scan can never write after cancellation.
+        await this.runtime.runPromise(
+          Effect.gen(function* () {
+            if (owner.aborted) return yield* Effect.fail(abortedScanError())
+            return yield* ingest.portIn({ ...delta, repoUrl }, pricing)
+          }),
+        )
       }
-      // The git lookup is an external Promise and may outlive interruption.
-      // Check on both sides so an old scan can never write after cancellation.
-      if (owner.aborted) throw abortedScanError()
-      this.ledger.portIn({ ...delta, repoUrl }, pricing)
-    }
-    return runScan(
-      { range, provider: options?.provider },
-      emit,
-      { isAborted: () => owner.aborted },
-      // Ledger port-in seam (ADR 0002): every settled session file is streamed
-      // to the ledger while the parse runs. The scan's delta wrapper already
-      // gates out failed parses; `unchanged` is a no-op inside portIn.
-      portIn,
-      {
-        gatewayEnabled: this.runtime.runSync(Effect.map(GatewayReports, reports => reports.enabled)),
-        fetchGatewayReport: (range, signal) =>
-          this.runtime.runPromise(
-            Effect.flatMap(GatewayReports, reports => reports.getReport(range, signal)),
-            { signal },
-          ),
-      },
-      // Effect-native typed-abort proof (Wave 5 §2): `catchTag` on the `_tag`
-      // (NOT `instanceof`, NOT `either`). No `either` here, so no span-inside
-      // trap — any future `withSpan` must wrap OUTSIDE this `catchTag`, never
-      // inside a branch. Re-fails unchanged so envelopes/flag semantics stay
-      // byte-identical downstream (Promise-boundary `instanceof` + flag in the
-      // `scan:start`/background catches). Defects stay in Cause (no catchAll).
-    ).pipe(Effect.catchTag('ScanAbortedError', err => Effect.fail(err)))
+      return runScan(
+        { range, provider: options?.provider },
+        emit,
+        { isAborted: () => owner.aborted },
+        // Ledger port-in seam (ADR 0002): every settled session file is streamed
+        // to the ledger while the parse runs. The scan's delta wrapper already
+        // gates out failed parses; `unchanged` is a no-op inside portIn.
+        portIn,
+        {
+          gatewayEnabled: this.runtime.runSync(Effect.map(GatewayReports, reports => reports.enabled)),
+          fetchGatewayReport: (range, signal) =>
+            this.runtime.runPromise(
+              Effect.flatMap(GatewayReports, reports => reports.getReport(range, signal)),
+              { signal },
+            ),
+        },
+        // Effect-native typed-abort proof (Wave 5 §2): `catchTag` on the `_tag`
+        // (NOT `instanceof`, NOT `either`). No `either` here, so no span-inside
+        // trap — any future `withSpan` must wrap OUTSIDE this `catchTag`, never
+        // inside a branch. Re-fails unchanged so envelopes/flag semantics stay
+        // byte-identical downstream (Promise-boundary `instanceof` + flag in the
+        // `scan:start`/background catches). Defects stay in Cause (no catchAll).
+      ).pipe(Effect.catchTag('ScanAbortedError', err => Effect.fail(err)))
+    })
   }
 
-  /**
-   * Forks the scan into `scanScope` and joins it.
-   *
-   * `runtime.runSync(Effect.forkIn(...))` — NOT `Effect.runSync`: forking is the
-   * only reason this is synchronous, and the runtime supplies `performScan`'s
-   * `HttpFetch | Env | OperationalLog` requirements from the memoised
-   * `WorkerLive` context (it used to build a fresh layer per scan). The join
-   * stays Promise-returning at the `dispatch` boundary: the scan fiber's own
-   * lifecycle is owned by `scanScope` and is deliberately unchanged by this
-   * slice, interruption and all.
-   */
+  /** Forks into scanScope using the worker's services, then joins at the
+   * Promise dispatch boundary. Parser callbacks drain before the scan exits. */
   private async runTrackedScan(
     owner: ActiveScan,
     options: { provider?: string } | undefined,
@@ -270,12 +240,8 @@ export class DbWorkerContext {
     }
   }
 
-  /**
-   * Forks non-blocking background FX work into `backgroundScope` (startup prime,
-   * cadence tick, post-`currency:set` refresh). Runs through the runtime, so
-   * `HttpFetch | FxRates` come from the one memoised `WorkerLive` graph instead
-   * of a per-call `liveFxLayer(this.ledger)` rebuild.
-   */
+  /** Startup, cadence and selection refreshes share the worker's HttpFetch
+   * and FxRates services. backgroundScope owns their shutdown. */
   private startBackgroundFx(work: Effect.Effect<void, SqlError | SchemaError, HttpFetch | FxRates>): void {
     if (this.closed) return
     const observed = work.pipe(
@@ -492,7 +458,6 @@ export class DbWorkerContext {
 
   async dispatch(op: string, args: unknown[]): Promise<unknown> {
     if (this.closed && op !== 'shutdown') throw new Error('db-worker is shutting down')
-    const ledger = this.ledger
     switch (op) {
       case 'scan:start': {
         const options = args[0] as { provider?: string } | undefined
@@ -765,7 +730,7 @@ export class DbWorkerContext {
         return this.runtime.runPromise(setLedgerMcpStartupMode(args[0]))
 
       case 'settings:clear': {
-        ledger.clear()
+        await this.runtime.runPromise(clearLedger())
         this.lastScanMetadata = null
         return this.settingsInfo()
       }
@@ -788,7 +753,7 @@ export class DbWorkerContext {
       /** The active display currency (ADR 0009): the persisted code plus its
        * CACHED rate from the FX side-table. Never touches the network. */
       case 'currency:get':
-        return getActiveCurrency(ledger) satisfies ActiveCurrency
+        return this.runtime.runPromise(queryActiveCurrency())
 
       /** Select a display currency (ADR 0009): persists the choice, kicks off a
        * non-blocking Frankfurter refresh in the background when the cached rate
@@ -796,16 +761,8 @@ export class DbWorkerContext {
        * keep working on the last cached rate (or USD) while the fetch runs.
        * When the fetch lands, `currency:changed` is emitted. */
       case 'currency:set': {
-        const code = args[0] as string
-        if (typeof code !== 'string' || !isValidCurrencyCode(code)) {
-          throw new Error('invalid ISO 4217 currency code')
-        }
-        // Repository-direct write (ADR 0032 follow-up): through the `FxRates`
-        // port straight to `LedgerConfig`, bypassing the store facade —
-        // `LedgerStore.setDisplayCurrency` is gone. The port comes from the
-        // worker runtime, so the SAME `FxRates` instance serves this write, the
-        // background FX refresh below, and the cadence tick.
-        this.runtime.runSync(Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)))
+        const selected = await this.runtime.runPromise(selectDisplayCurrency(args[0]))
+        const code = args[0] as string // Validated by selectDisplayCurrency.
         const emit = this.emit
         const isClosed = (): boolean => this.closed
         this.startBackgroundFx(
@@ -814,7 +771,7 @@ export class DbWorkerContext {
             if (!isClosed()) yield* Effect.sync(() => emit({ event: 'currency:changed', currency }))
           }),
         )
-        return getActiveCurrency(ledger) satisfies ActiveCurrency
+        return selected
       }
 
       /** The full ISO 4217 currency list (162 codes) for the Settings selector. */
@@ -859,16 +816,13 @@ export class DbWorkerContext {
     const backgroundScope = this.backgroundScope
     const scanScope = this.scanScope
     const currentScan = (): Fiber.Fiber<ScanMetadata, unknown> | null => activeScan?.fiber ?? null
-    const closeLedger = (): void => this.ledger.close()
     const disposeRuntime = this.runtime.disposeEffect
     const shutdown = Effect.gen(function* () {
       yield* Scope.close(backgroundScope, Exit.void)
       const scan = yield* Effect.sync(currentScan)
       if (scan) yield* Fiber.join(scan).pipe(Effect.catch(() => Effect.void))
       yield* Scope.close(scanScope, Exit.void)
-      yield* Effect.sync(closeLedger)
-      // The borrowed facade's close does not own the connection. Release the
-      // root scope and its SQLite driver only after background and scan work drain.
+      // Release the SQL client only after background work and parser callbacks drain.
       yield* disposeRuntime
     })
     this.closeFiber = Effect.runFork(shutdown)

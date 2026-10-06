@@ -25,7 +25,8 @@ import { Env } from '../src/main/env.js'
 import { OperationalLog, type OperationalLogSink, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { runScan, ScanAbortedError, type ScanMetadata } from '../src/main/pipeline/scan.js'
-import { openWorkerOwner, type WorkerOverrides } from '../src/main/worker-runtime.js'
+import { type WorkerOverrides } from '../src/main/worker-runtime.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'watchtower-dbworker-'))

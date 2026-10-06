@@ -3,7 +3,7 @@ import { parentPort, workerData } from 'node:worker_threads'
 import * as Effect from 'effect/Effect'
 
 import { initAppPaths } from '../env.js'
-import { openWorkerOwner } from '../worker-runtime.js'
+import { openWorkerRuntime } from '../worker-runtime.js'
 import { DbWorkerContext } from './context.js'
 import { makeWorkerOperationalLogSink } from './operational-log-sink.js'
 import type { DbWorkerData, DbWorkerRequest, DbWorkerResponse } from './protocol.js'
@@ -37,13 +37,13 @@ try {
   initAppPaths({ cacheDir: init.cacheDir })
 
   const logSink = makeWorkerOperationalLogSink(event => port.postMessage(event))
-  const owner = openWorkerOwner(init.dbPath, logSink)
+  const runtime = openWorkerRuntime(init.dbPath, logSink)
   let ctx: DbWorkerContext
   try {
-    ctx = new DbWorkerContext(init, event => port.postMessage(event), owner)
+    ctx = new DbWorkerContext(init, event => port.postMessage(event), { runtime })
   } catch (error) {
     try {
-      Effect.runSync(owner.runtime.disposeEffect)
+      Effect.runSync(runtime.disposeEffect)
     } catch {
       // Keep the context-construction failure as the boot error.
     }

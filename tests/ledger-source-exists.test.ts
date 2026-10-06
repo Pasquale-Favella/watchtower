@@ -12,8 +12,8 @@ import * as SqlError from 'effect/unstable/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 const directories: string[] = []
 

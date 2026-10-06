@@ -22,7 +22,6 @@ import { buildSkillsViewFromLedger } from '../src/main/skills-view.js'
 import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
 import { LedgerConfig, LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
 import { buildAnalyticalViewsFromLedger, buildDashboardViewsFromLedger } from '../src/main/views.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
 import { buildYieldViewFromLedger } from '../src/main/yield-view.js'
 import {
   buildFixtureCachedCall,
@@ -30,6 +29,7 @@ import {
   buildFixtureCachedTurn,
   FIXTURE_SOURCE_PATH,
 } from './fixtures/cached-file.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 async function withWorker(
   run: (context: DbWorkerContext, owner: ReturnType<typeof openWorkerOwner>) => Promise<void>,

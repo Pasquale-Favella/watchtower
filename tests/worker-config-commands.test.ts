@@ -19,7 +19,7 @@ import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { workerProtocolError } from '../src/main/db-worker/protocol-errors.js'
 import { LedgerConfig } from '../src/main/store/ledger-ports.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 function fakeConfig(overrides: Partial<LedgerConfig['Service']> = {}): LedgerConfig['Service'] {
   return LedgerConfig.of({

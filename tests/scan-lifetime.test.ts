@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
@@ -31,10 +32,10 @@ import {
 import type { DeltaHandler } from '../src/main/pipeline/parser.js'
 import type { ProviderScanServices } from '../src/main/pipeline/providers/types.js'
 import { runOwnedScanPromise } from '../src/main/pipeline/scan.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
+import { LedgerIngest } from '../src/main/store/ledger-ports.js'
 import type { ScanDelta } from '../src/shared/schemas/scan.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 function deferred<A>(): { promise: Promise<A>; resolve(value: A): void } {
   let resolve!: (value: A) => void
@@ -60,7 +61,7 @@ describe('scan lifetime ownership', () => {
   let context: DbWorkerContext | null = null
   const events: DbWorkerEvent[] = []
 
-  function open(): DbWorkerContext {
+  function open() {
     dir = mkdtempSync(join(tmpdir(), 'watchtower-scan-lifetime-'))
     const dbPath = join(dir, 'ledger.db')
     const owner = openWorkerOwner(dbPath)
@@ -69,10 +70,11 @@ describe('scan lifetime ownership', () => {
       event => events.push(event),
       owner,
     )
-    return context
+    return { context, ...owner }
   }
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     hooks.parse.mockReset()
     hooks.repoUrl.mockReset()
     setPriceOverrides({})
@@ -86,9 +88,8 @@ describe('scan lifetime ownership', () => {
   })
 
   it('persists scan-owned costs and savings after pricing changes during repository lookup', async () => {
-    const c = open()
-    const ledger = (c as unknown as { ledger: LedgerStore }).ledger
-    const portIn = vi.spyOn(ledger, 'portIn')
+    const { context: c, ledger, runtime } = open()
+    const portIn = vi.spyOn(runtime.runSync(LedgerIngest), 'portIn')
     const repoEntered = deferred<undefined>()
     const releaseRepo = deferred<string | undefined>()
     const model = 'scan-owned-model'
@@ -178,11 +179,10 @@ describe('scan lifetime ownership', () => {
   })
 
   it('does not complete interruption until the real parser Promise and callback drain', async () => {
-    const c = open()
+    const { context: c, runtime } = open()
     const parserEntered = deferred<undefined>()
     const releaseRepoLookup = deferred<string | undefined>()
-    const ledger = (c as unknown as { ledger: LedgerStore }).ledger
-    const portIn = vi.spyOn(ledger, 'portIn')
+    const portIn = vi.spyOn(runtime.runSync(LedgerIngest), 'portIn')
     hooks.repoUrl.mockReturnValue(releaseRepoLookup.promise)
     hooks.parse.mockResolvedValue(undefined)
     hooks.parse.mockImplementationOnce(
@@ -218,12 +218,11 @@ describe('scan lifetime ownership', () => {
   })
 
   it('holds ledger close until an interrupted parser callback drains', async () => {
-    const c = open()
+    const { context: c, runtime } = open()
     const parserEntered = deferred<undefined>()
     const releaseRepoLookup = deferred<string | undefined>()
-    const ledger = (c as unknown as { ledger: LedgerStore }).ledger
-    const portIn = vi.spyOn(ledger, 'portIn')
-    const closeLedger = vi.spyOn(ledger, 'close')
+    const portIn = vi.spyOn(runtime.runSync(LedgerIngest), 'portIn')
+    const closeLedger = vi.spyOn(DatabaseSync.prototype, 'close')
     hooks.repoUrl.mockReturnValue(releaseRepoLookup.promise)
     hooks.parse.mockImplementation(
       async (_range: unknown, _provider: unknown, onDelta: (value: ScanDelta) => Promise<void>) => {

@@ -11,7 +11,6 @@ import { searchSessionsFromData } from '../src/main/session-search-calculation.j
 import { LedgerSessionReads } from '../src/main/store/ledger-session-reads.js'
 import type { SessionSummaryData } from '../src/main/store/session-read-projections.js'
 import { buildProjectRowsFromSessionData, querySessionRowsFromSessionData } from '../src/main/store-rows-calculation.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import {
   legacyBuildProjectRowsFromLedger,
@@ -19,6 +18,7 @@ import {
   legacySearchSessionsFromLedger,
 } from './fixtures/pre-wave17-store-views.js'
 import { projectRows, sessionRows, sessionSearch } from './fixtures/store-view-queries.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 const catalogue = capturePricingCatalogue({
   prices: new Map(),

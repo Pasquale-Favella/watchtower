@@ -16,8 +16,8 @@ import { querySessionSearch } from '../src/main/application/session-search-query
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { captureModelPricingCatalogue } from '../src/main/pipeline/models.js'
 import { LedgerSessionReads } from '../src/main/store/ledger-session-reads.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 const directories: string[] = []
 

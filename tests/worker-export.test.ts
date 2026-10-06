@@ -14,8 +14,8 @@ import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { ExportFileContent } from '../src/main/export-calculation.js'
 import { FxRates } from '../src/main/fx.js'
 import { LedgerConfig, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 interface ExportWrite {
   path: string

@@ -13,7 +13,7 @@ import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { OperationalLog, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerConfig } from '../src/main/store/ledger-repository.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 describe('worker operational log forwarding', () => {
   it('logs a malformed FX cache once without fetching or publishing a successful currency', async () => {

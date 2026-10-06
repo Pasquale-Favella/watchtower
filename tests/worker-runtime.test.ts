@@ -34,19 +34,15 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { GatewayReports } from '../src/main/application/gateway-reports.js'
+import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { Env } from '../src/main/env.js'
 import { FxRates } from '../src/main/fx.js'
 import { OperationalLog, type OperationalLogSink } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
-import {
-  makeWorkerLive,
-  openWorkerOwner,
-  type WorkerOverrides,
-  type WorkerServices,
-} from '../src/main/worker-runtime.js'
+import { makeWorkerLive, type WorkerOverrides, type WorkerServices } from '../src/main/worker-runtime.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -81,13 +77,10 @@ function worker<Overrides extends WorkerOverrides = never>(layerFor?: () => Laye
   const dir = tempDir()
   const { ledger, runtime } = openWorkerOwner(join(dir, 'ledger.db'), undefined, layerFor?.())
   const ctx = new DbWorkerContext({ dbPath: ledger.dbPath, dataDir: dir, cacheDir: join(dir, 'cache') }, () => {}, {
-    ledger,
     runtime,
   })
   open.push(async () => {
-    // `ctx.close()` retires BOTH deps (the store and the runtime) — closing
-    // either again here would run a second `disposeEffect` on an
-    // already-disposed `ManagedRuntime`, which dies by design.
+    // The context owns runtime disposal; fixtures must not dispose it again.
     try {
       await ctx.close()
     } catch {
@@ -237,11 +230,8 @@ describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
       ),
     )
 
-    // The arm's own return value is the REAL store's active currency
-    // (`getActiveCurrency(ledger)`, a sync read by design), so it still says
-    // USD: proof that the ledger was never written and the substituted port
-    // really is the write path. Pre-slice the layer was welded at the arm, so
-    // this state was unreachable no matter what a test did.
+    // The fake keeps reporting USD after a write. Both reads and writes must
+    // use that substituted service, including the cached selection response.
     await expect(ctx.dispatch('currency:set', ['EUR'])).resolves.toMatchObject({ code: 'USD' })
     expect(writes).toEqual(['EUR'])
   })

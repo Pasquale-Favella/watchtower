@@ -10,9 +10,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
 import type { ScanMetadata } from '../src/shared/schemas/scan.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 async function withWorker(
   run: (context: DbWorkerContext, owner: ReturnType<typeof openWorkerOwner>) => Promise<void>,
