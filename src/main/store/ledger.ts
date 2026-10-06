@@ -22,7 +22,7 @@ import { DEFAULT_CADENCE, isValidCadence } from '../cadence.js'
 import type { ScanPricing } from '../pipeline/scan-pricing.js'
 import { initializeLedger } from './ledger-initialization.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from './ledger-repository.js'
-import { type LedgerRuntime, NodeSqliteDatabase } from './node-sqlite-client.js'
+import { type LedgerPorts, type LedgerRuntime, NodeSqliteDatabase } from './node-sqlite-client.js'
 import type { PortInput } from './port.js'
 import type { LedgerCallFactsRow } from './read-projections.js'
 
@@ -260,7 +260,7 @@ export class LedgerStore {
    * builders and standalone adapters no longer depend on its synchronous
    * methods or compatibility layer.
    */
-  get portsLayer(): Layer.Layer<LedgerIngest | LedgerQueries | LedgerConfig> {
+  get portsLayer(): Layer.Layer<LedgerPorts> {
     return this.db.portsLayer
   }
 

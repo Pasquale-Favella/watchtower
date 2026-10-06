@@ -30,7 +30,13 @@ import { PricingDiagnosticsLive } from './pipeline/pricing-diagnostics.js'
 import { RepositoryInspectionLive } from './repository-inspection-live.js'
 import { LedgerStore } from './store/ledger.js'
 import { initializeLedger } from './store/ledger-initialization.js'
-import { LedgerConfig, LedgerIngest, LedgerPortsLayer, LedgerQueries } from './store/ledger-repository.js'
+import {
+  LedgerConfig,
+  LedgerIngest,
+  LedgerPortsLayer,
+  LedgerQueries,
+  LedgerSessionReads,
+} from './store/ledger-repository.js'
 
 export type WorkerServices =
   | AssistantSetup
@@ -45,6 +51,7 @@ export type WorkerServices =
   | FxRates
   | LedgerIngest
   | LedgerQueries
+  | LedgerSessionReads
   | LedgerConfig
   | Sqlite.SqliteClient.SqliteClient
   | SqlClient.SqlClient
@@ -55,6 +62,7 @@ export type WorkerOverrides =
   | FxRates
   | LedgerIngest
   | LedgerQueries
+  | LedgerSessionReads
   | LedgerConfig
   | PricingDiagnostics
   | AssistantSetup
