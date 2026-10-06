@@ -417,3 +417,29 @@ Ownership denominators remain section queries 11/11, scoped queries 9/9, former 
 Both renderer stores remain byte-identical to `ce81593`, without added `let` variables, request IDs, promise tracking or `applyChange` coalescing. The programme remains open for scan ingest/clear/currency facade callers, compatibility retirement, remaining cooperative provider IO, comparable scaled measurements and installer/macOS/Linux packaged acceptance. Full local and published-head verification is recorded in the living issue assessment.
 
 Node/web and strict test types, full formatting and build pass. Lint has zero errors and 1,118 advisory warnings. The final full unit suite passes 177 files, with 2,386 passed and two skipped in 461.82 seconds, one worker and unchanged existing assertions/timeouts. Standards and Spec reviews have no unresolved findings.
+
+## Current census after worker facade retirement, 2026-10-06
+
+This snapshot covers production and test source `042ea33`, following `e908282`. The TypeScript AST runtime-import/nonblank-line method is unchanged. These percentages measure library imports, not architectural completion. Pure calculations remain ordinary TypeScript.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,441 / 1,551 |         92.9% |
+| Store                              |                   12 / 14 |         85.7% |                     2,075 / 2,666 |         77.8% |
+| Agents                             |                   17 / 48 |         35.4% |                     4,587 / 6,056 |         75.7% |
+| Pipeline                           |                    8 / 77 |         10.4% |                    2,689 / 28,691 |          9.4% |
+| View builders ending in `-view.ts` |                     8 / 8 |          100% |                         380 / 380 |          100% |
+| All main-process code              |                  87 / 212 |           41% |                   14,943 / 48,322 |         30.9% |
+| Shared schema modules              |                   24 / 25 |           96% |                     1,903 / 1,961 |           97% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,066 |          2.9% |
+| Preload                            |                     0 / 1 |            0% |                           0 / 217 |            0% |
+
+The production worker now owns one initialized runtime without constructing LedgerStore. Scan writes, clear/reclaim and cached currency commands use that runtime's services. SQL reclamation runs after fact deletion, outside its transaction, on the same SQL client. Expected reclamation SQL errors preserve successful clear behavior; defects and interruption remain failures. Worker boot failure cleanup and callback drainage before native SQL close retain their existing checks. Remaining compatibility fixture calls live under tests, with removal conditioned on migrating their setup/assertions to ledger ports.
+
+Compare commits the report's default pair with the payload and its scope/pair key, avoiding the redundant first-pair fetch. Explicit pairs remain unchanged. Both shared renderer stores remain byte-identical to `ce81593`, without added let variables, request IDs, promise tracking or applyChange coalescing. No general speedup or local Compare timeout fix is claimed.
+
+Ownership denominators remain section queries 11/11, scoped queries 9/9, former compatibility reads 4/4, exports 2/2, MCP tools/data resources 6/6 and 2/2; scan pricing 32/32 producers and 47/47 preserved billing arguments. Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema 22/23, 95.7%, plus one UI-only plain TypeScript module.
+
+Standards review's stale runtime comments are corrected. Final Standards and Spec reviews have no unresolved findings. Focused integration verification passes 107 tests across ten files. Node/web and strict test types, full formatting and build pass. Lint has zero errors and 1,114 advisory warnings. Full local and published-head evidence is maintained in the living assessment.
+
+The programme remains open for remaining compatibility builders and test/script callers, cooperative provider IO, worker decomposition, comparable 1k/50k/500k refresh/detail/search measurements, installers and macOS/Linux packaged acceptance. The legacy measurement script still constructs LedgerStore; it must migrate to measure the new application path.

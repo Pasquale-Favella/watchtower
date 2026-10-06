@@ -5,7 +5,8 @@ import type { OperationalLogSink } from '../../src/main/operational-log.js'
 import { LedgerStore } from '../../src/main/store/ledger.js'
 import { openWorkerRuntime, type WorkerOverrides, type WorkerRuntime } from '../../src/main/worker-runtime.js'
 
-/** Compatibility fixture for tests still seeding or reading through LedgerStore. */
+/** Compatibility fixture for tests still seeding or reading through LedgerStore.
+ * Remove after those callers use ledger ports for setup and assertions. */
 export function openWorkerOwner<Overrides extends WorkerOverrides = never>(
   dbPath: string,
   sink?: OperationalLogSink,
