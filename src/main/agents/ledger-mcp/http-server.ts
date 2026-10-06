@@ -2,8 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 
-import type { LedgerStore } from '../../store/ledger.js'
 import { hasBearerAuthorization } from './auth.js'
+import type { LedgerMcpQueries } from './query-api.js'
 import { createLedgerMcpServer } from './server.js'
 import { reportSidecarRequestFailure } from './sidecar-log.js'
 
@@ -55,7 +55,7 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 export function createLedgerMcpHttpHandler(
-  store: LedgerStore,
+  queries: LedgerMcpQueries,
   token: string,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
@@ -79,7 +79,7 @@ export function createLedgerMcpHttpHandler(
       sendJson(res, 400, { error: err instanceof Error ? err.message : 'bad request' })
       return
     }
-    const mcpServer = createLedgerMcpServer(store)
+    const mcpServer = createLedgerMcpServer(queries)
     try {
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
       await mcpServer.connect(transport)
@@ -89,8 +89,8 @@ export function createLedgerMcpHttpHandler(
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' })
     } finally {
       // This is a stateless, per-request SDK server. Its transport and protocol
-      // handlers end with the HTTP response; the LedgerStore belongs to the
-      // process and remains open for the next request.
+      // handlers end with the HTTP response; the process-owned query runtime
+      // remains open for the next request.
       await mcpServer.close()
     }
   }

@@ -10,6 +10,7 @@ import { buildSessionsViewFromLedger } from '../src/main/sessions-view.js'
 import { buildSkillsViewFromLedger, collectSkillCandidates } from '../src/main/skills-view.js'
 import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
 import { buildLedgerTools } from '../src/main/agents/ledger-mcp/tools.js'
+import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'
 import { buildSessionSummaries, defaultRange } from '../src/main/store/aggregate.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 import { buildProjectsFromLedger } from '../src/main/views.js'
@@ -266,26 +267,30 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
     port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
     store.setModelAlias('weird-model', 'claude-sonnet-4-6')
 
-    const tools = buildLedgerTools(store)
-    const ui = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
-    const mcpOverview = await (tools.find(t => t.name === 'ledger_overview')!.run({}) as Promise<{
-      kpis: { cost: number }
-    }>)
-    expect(mcpOverview.kpis.cost).toBeCloseTo(ui.kpis.cost, 9)
+    const runtime = await createLedgerMcpQueryRuntime(store.dbPath)
+    try {
+      const tools = buildLedgerTools(runtime.queries)
+      const ui = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
+      const mcpOverview = (await tools.find(t => t.name === 'ledger_overview')!.run({})) as {
+        kpis: { cost: number }
+      }
+      expect(mcpOverview.kpis.cost).toBeCloseTo(ui.kpis.cost, 9)
 
-    const mcpSessions = await (tools.find(t => t.name === 'ledger_sessions')!.run({}) as Promise<
-      Array<{ cost: number }>
-    >)
-    expect(mcpSessions[0]!.cost).toBeCloseTo(ui.kpis.cost, 9)
+      const mcpSessions = (await tools.find(t => t.name === 'ledger_sessions')!.run({})) as Array<{
+        cost: number
+      }>
+      expect(mcpSessions[0]!.cost).toBeCloseTo(ui.kpis.cost, 9)
 
-    const mcpCalls = tools.find(t => t.name === 'ledger_calls')!.run({}) as Array<{
-      model: string
-      display_cost_usd: number
-    }>
-    expect(mcpCalls[0]!.model).toBe('claude-sonnet-4-6')
-    expect(mcpCalls[0]!.display_cost_usd).toBeCloseTo(0.0105, 4)
-
-    store.close()
+      const mcpCalls = (await tools.find(t => t.name === 'ledger_calls')!.run({})) as Array<{
+        model: string
+        display_cost_usd: number
+      }>
+      expect(mcpCalls[0]!.model).toBe('claude-sonnet-4-6')
+      expect(mcpCalls[0]!.display_cost_usd).toBeCloseTo(0.0105, 4)
+    } finally {
+      await runtime.dispose()
+      store.close()
+    }
   })
 
   it('Skills cost evidence reprices through the seam', async () => {

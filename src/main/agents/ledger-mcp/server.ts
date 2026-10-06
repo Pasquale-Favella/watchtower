@@ -11,23 +11,23 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import * as Schema from 'effect/Schema'
 
-import type { LedgerStore } from '../../store/ledger.js'
 import { buildLedgerPrompts } from './prompts.js'
 import { buildLedgerResources } from './resources.js'
-import { buildLedgerTools } from './tools.js'
+import type { LedgerMcpQueries } from './query-api.js'
+import { buildLedgerTools, LedgerToolInputError } from './tools.js'
 
 /** The `watchtower-ledger` MCP server (ADR 0020). The advanced SDK Server API
  *  owns protocol negotiation, request validation, framing, protocol errors,
  *  and transport shutdown. One handler per MCP primitive keeps handler
  *  ownership here while Effect Schemas validate application arguments and
  *  generate the advertised tool metadata. */
-export function createLedgerMcpServer(store: LedgerStore): Server {
+export function createLedgerMcpServer(queries: LedgerMcpQueries): Server {
   const server = new Server(
     { name: 'watchtower-ledger', version: '0.1.0' },
     { capabilities: { tools: {}, resources: {}, prompts: {} } },
   )
-  const tools = buildLedgerTools(store)
-  const resources = buildLedgerResources(store)
+  const tools = buildLedgerTools(queries)
+  const resources = buildLedgerResources(queries)
   const prompts = buildLedgerPrompts()
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({
@@ -55,7 +55,7 @@ export function createLedgerMcpServer(store: LedgerStore): Server {
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (error) {
       return {
-        content: [{ type: 'text', text: error instanceof Error ? error.message : 'Tool call failed' }],
+        content: [{ type: 'text', text: toolErrorMessage(error) }],
         isError: true,
       }
     }
@@ -71,13 +71,19 @@ export function createLedgerMcpServer(store: LedgerStore): Server {
     })),
   }))
 
-  server.setRequestHandler(ReadResourceRequestSchema, request => {
+  server.setRequestHandler(ReadResourceRequestSchema, async request => {
     const resource = resources.find(definition => definition.uri === request.params.uri)
     // Throw the SDK's protocol error so this remains JSON-RPC InvalidParams.
     // eslint-disable-next-line no-restricted-syntax
     if (!resource) throw new McpError(ErrorCode.InvalidParams, `Resource ${request.params.uri} not found`)
-    return {
-      contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: resource.read() }],
+    try {
+      return {
+        contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: await resource.read() }],
+      }
+    } catch {
+      // Keep database and filesystem details inside the process boundary.
+      // eslint-disable-next-line no-restricted-syntax
+      throw new McpError(ErrorCode.InternalError, 'Ledger resource query failed')
     }
   })
 
@@ -96,4 +102,8 @@ export function createLedgerMcpServer(store: LedgerStore): Server {
   })
 
   return server
+}
+
+function toolErrorMessage(error: unknown): string {
+  return error instanceof LedgerToolInputError ? error.message : 'Ledger query failed'
 }
