@@ -1,11 +1,6 @@
+import { canonicalSessionProject } from '../canonical-session-project.js'
 import { getShortModelName } from '../pipeline/model-names.js'
-import {
-  buildSpawnPrSets,
-  deriveCanonicalProjectKey,
-  extractPrUrlsFromProviderCall,
-  isAbsoluteProjectPath,
-  projectNameFromPath,
-} from '../pipeline/parser-calculations.js'
+import { buildSpawnPrSets, extractPrUrlsFromProviderCall } from '../pipeline/parser-calculations.js'
 import {
   calculateRepricedCostResult,
   type PricingCatalogue,
@@ -474,25 +469,7 @@ export function sessionProjectKey(summary: SessionSummary): string {
  * per-view special cases.
  */
 function attachCanonicalIdentity(summary: SessionSummary, session: LedgerSessionRow, provider: string): void {
-  const storedPath = session.projectPath?.trim()
-  const pathCandidate = storedPath && isAbsoluteProjectPath(storedPath) ? storedPath : undefined
-  summary.projectKey = deriveCanonicalProjectKey(
-    pathCandidate,
-    session.workingDirectory,
-    provider,
-    session.canonicalCwd,
-  )
-  const canonicalPath = (session.canonicalCwd ?? session.workingDirectory ?? pathCandidate ?? '').trim()
-  if (canonicalPath) {
-    summary.projectPath = canonicalPath
-  }
-  // Display precedence: the explicit canonical project name first (Claude
-  // worktrees — set from this same canonical path at parse time, so identical
-  // for real data), then the path leaf in original case, then the legacy
-  // label for orphans via the bucket name (set below).
-  summary.project =
-    session.canonicalProject ??
-    (canonicalPath ? projectNameFromPath(summary.projectPath!, summary.project) : summary.projectKey)
+  Object.assign(summary, canonicalSessionProject(session, provider))
 }
 
 /**

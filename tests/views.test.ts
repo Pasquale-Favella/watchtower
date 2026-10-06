@@ -1,21 +1,16 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync, StatementSync } from 'node:sqlite'
 
 import { describe, expect, it, vi } from 'vitest'
 
 import { buildOverviewFromLedger } from '../src/main/overview.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
-import {
-  buildAnalyticalViewsFromLedger,
-  buildDashboardViewsFromLedger,
-  buildProjectRowsFromLedger,
-  getSessionDetailFromLedger,
-  querySessionRowsFromLedger,
-  searchSessionsFromLedger,
-} from '../src/main/views.js'
+import { buildAnalyticalViewsFromLedger, buildDashboardViewsFromLedger } from '../src/main/views.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { projectRows, sessionDetail, sessionRows, sessionSearch } from './fixtures/store-view-queries.js'
 
 // ── Ledger-backed views family (map 03) ─────────────────────────────────────
 // The dashboard/projects/session-rows/detail/analytics/search builders consume
@@ -199,7 +194,7 @@ describe('request snapshots', () => {
     store.close()
   })
 
-  it('keeps project provenance reads constant as the source count grows', () => {
+  it('keeps project SELECT count constant as the source count grows', async () => {
     for (const sourceCount of [2, 8]) {
       const store = makeLedger()
       portViews(
@@ -209,19 +204,34 @@ describe('request snapshots', () => {
           sessionId: `session-${sourceCount}-${index}`,
         })),
       )
-      expect(store.getSources()).toHaveLength(sourceCount)
-      const reads = trackSnapshotReads(store)
-
-      buildProjectRowsFromLedger(store)
-
-      expect(reads).toMatchObject({
-        getSources: 1,
-        getSessions: 1,
-        getTurns: 1,
-        getCallFacts: 1,
-        getModelAliases: 1,
-        getPriceOverrides: 1,
+      const statementSql = new WeakMap<StatementSync, string>()
+      const statementConnection = new WeakMap<StatementSync, DatabaseSync>()
+      const executions: string[] = []
+      const connections = new Set<DatabaseSync>()
+      const nativePrepare = DatabaseSync.prototype.prepare
+      const nativeAll = StatementSync.prototype.all
+      vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function (this: DatabaseSync, query: string) {
+        const statement = Reflect.apply(nativePrepare, this, [query])
+        statementSql.set(statement, query)
+        statementConnection.set(statement, this)
+        return statement
       })
+      vi.spyOn(StatementSync.prototype, 'all').mockImplementation(function (
+        this: StatementSync,
+        ...parameters: unknown[]
+      ) {
+        const result = Reflect.apply(nativeAll, this, parameters)
+        executions.push(statementSql.get(this) ?? '')
+        const connection = statementConnection.get(this)
+        if (connection) connections.add(connection)
+        return result
+      })
+      expect(await projectRows(store)).toHaveLength(1)
+      const selects = executions.filter(sql => /^\s*SELECT\b/i.test(sql))
+      expect(selects).toHaveLength(5)
+      expect(new Set(selects).size).toBe(5)
+      expect(connections.size).toBe(1)
+      vi.restoreAllMocks()
       store.close()
     }
   })
@@ -259,7 +269,7 @@ describe('ledger-backed views family (aggregation seam)', () => {
     store.close()
   })
 
-  it('returns null-safe aggregates for an empty ledger', () => {
+  it('returns null-safe aggregates for an empty ledger', async () => {
     const store = makeLedger()
     const views = buildDashboardViewsFromLedger(store)
     expect(views.kpis.totalCost).toBe(0)
@@ -267,17 +277,17 @@ describe('ledger-backed views family (aggregation seam)', () => {
     expect(views.byProvider).toEqual([])
     expect(views.byProject).toEqual([])
     expect(views.byCategory).toEqual([])
-    expect(buildProjectRowsFromLedger(store)).toEqual([])
+    expect(await projectRows(store)).toEqual([])
     expect(buildAnalyticalViewsFromLedger(store).subagents).toEqual([])
-    expect(getSessionDetailFromLedger(store, 'nope')).toBeNull()
-    expect(searchSessionsFromLedger(store, 'anything')).toEqual([])
+    expect(await sessionDetail(store, 'nope')).toBeNull()
+    expect(await sessionSearch(store, 'anything')).toEqual([])
     store.close()
   })
 
-  it('builds project rows grouped by project with aggregated spans', () => {
+  it('builds project rows grouped by project with aggregated spans', async () => {
     const store = makeLedger()
     portViews(store, VIEWS_SPECS)
-    const rows = buildProjectRowsFromLedger(store)
+    const rows = await projectRows(store)
     expect(rows).toHaveLength(2)
     expect(rows[0]).toMatchObject({ project: 'api', cost: 18, calls: 2, sessions: 2 })
     expect(rows[0].firstTimestamp.slice(0, 10)).toBe('2026-07-10')
@@ -286,20 +296,20 @@ describe('ledger-backed views family (aggregation seam)', () => {
     store.close()
   })
 
-  it('filters session rows by project and date range at query time', () => {
+  it('filters session rows by project and date range at query time', async () => {
     const store = makeLedger()
     portViews(store, VIEWS_SPECS)
-    expect(querySessionRowsFromLedger(store, {})).toHaveLength(3)
-    expect(querySessionRowsFromLedger(store, { project: 'api' }).map(r => r.sessionId)).toEqual(['sess-cc', 'sess-aa'])
-    const inRange = querySessionRowsFromLedger(store, { since: '2026-07-15', until: '2026-07-31' })
+    expect(await sessionRows(store)).toHaveLength(3)
+    expect((await sessionRows(store, { project: 'api' })).map(r => r.sessionId)).toEqual(['sess-cc', 'sess-aa'])
+    const inRange = await sessionRows(store, { since: '2026-07-15', until: '2026-07-31' })
     expect(inRange.map(r => r.sessionId)).toEqual(['sess-bb'])
     store.close()
   })
 
-  it('returns the full session detail and null for a missing session', () => {
+  it('returns the full session detail and null for a missing session', async () => {
     const store = makeLedger()
     portViews(store, VIEWS_SPECS)
-    const detail = getSessionDetailFromLedger(store, 'sess-aa')
+    const detail = await sessionDetail(store, 'sess-aa')
     expect(detail).not.toBeNull()
     expect(detail!.provider).toBe('claude')
     expect(detail!.title).toBe('Refactor auth')
@@ -307,7 +317,7 @@ describe('ledger-backed views family (aggregation seam)', () => {
     expect(detail!.prLinks).toEqual(['https://github.com/acme/api/pull/7'])
     expect(detail!.turns).toHaveLength(1)
     expect(detail!.turns[0].assistantCalls[0].usage.inputTokens).toBe(100)
-    expect(getSessionDetailFromLedger(store, 'does-not-exist')).toBeNull()
+    expect(await sessionDetail(store, 'does-not-exist')).toBeNull()
     store.close()
   })
 
@@ -323,17 +333,17 @@ describe('ledger-backed views family (aggregation seam)', () => {
     store.close()
   })
 
-  it('finds sessions across user messages and bash commands', () => {
+  it('finds sessions across user messages and bash commands', async () => {
     const store = makeLedger()
     portViews(store, VIEWS_SPECS)
-    const byMessage = searchSessionsFromLedger(store, 'refactor the auth')
+    const byMessage = await sessionSearch(store, 'refactor the auth')
     expect(byMessage).toHaveLength(1)
     expect(byMessage[0]).toMatchObject({ sessionId: 'sess-aa', kind: 'message', project: 'api' })
-    const byBash = searchSessionsFromLedger(store, 'npm run deploy')
+    const byBash = await sessionSearch(store, 'npm run deploy')
     expect(byBash).toHaveLength(1)
     expect(byBash[0]).toMatchObject({ sessionId: 'sess-bb', kind: 'bash' })
-    expect(searchSessionsFromLedger(store, '')).toEqual([])
-    expect(searchSessionsFromLedger(store, 'zzz-nothing')).toEqual([])
+    expect(await sessionSearch(store, '')).toEqual([])
+    expect(await sessionSearch(store, 'zzz-nothing')).toEqual([])
     store.close()
   })
 })

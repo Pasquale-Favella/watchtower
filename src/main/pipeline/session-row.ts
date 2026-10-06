@@ -20,18 +20,22 @@ export type SessionRow = {
   durationMs: number
 }
 
-export function inferProvider(session: SessionSummary): string {
-  for (const turn of session.turns) {
-    const provider = turn.assistantCalls[0]?.provider
-    if (provider) return provider
-  }
-  const model = Object.keys(session.modelBreakdown)[0]?.toLowerCase() ?? ''
+export function providerFromModel(modelName: string): string {
+  const model = modelName.toLowerCase()
   if (model.startsWith('claude')) return 'claude'
   if (model.startsWith('gpt-') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4'))
     return 'codex'
   if (model.startsWith('gemini')) return 'gemini'
   if (model.includes('/')) return model.split('/', 1)[0] || 'unknown'
   return 'unknown'
+}
+
+export function inferProvider(session: SessionSummary): string {
+  for (const turn of session.turns) {
+    const provider = turn.assistantCalls[0]?.provider
+    if (provider) return provider
+  }
+  return providerFromModel(Object.keys(session.modelBreakdown)[0] ?? '')
 }
 
 function durationMs(startedAt: string, endedAt: string): number {

@@ -42,8 +42,10 @@ import { buildSessionSummaries, queryScope } from '../src/main/store/aggregate.j
 import { LedgerStore } from '../src/main/store/ledger.js'
 import { LedgerQueries } from '../src/main/store/ledger-repository.js'
 import type { LedgerCallFactsRow } from '../src/main/store/read-projections.js'
-import { buildDashboardViewsFromLedger, getSessionDetailFromLedger } from '../src/main/views.js'
+import { buildDashboardViewsFromLedger } from '../src/main/views.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import { legacyGetSessionDetailFromLedger } from './fixtures/pre-wave17-store-views.js'
+import { sessionDetail } from './fixtures/store-view-queries.js'
 
 const tempDirs: string[] = []
 const closers: Array<() => void> = []
@@ -123,6 +125,11 @@ const CONSUMER_FILES = [
   'src/main/store/aggregate-calculation.ts',
   'src/main/views.ts',
   'src/main/views-calculation.ts',
+  'src/main/canonical-session-project.ts',
+  'src/main/session-detail-calculation.ts',
+  'src/main/session-search-calculation.ts',
+  'src/main/store-rows-calculation.ts',
+  'src/main/ledger-mcp-calculation.ts',
   'src/main/overview.ts',
   'src/main/overview-calculation.ts',
   'src/main/overview-scope.ts',
@@ -282,17 +289,18 @@ describe('no consumer of the seam reads a dropped column', () => {
     expect(droppedFieldReceivers()).toEqual({
       callKey: [],
       projectPath: [
+        'src/main/canonical-session-project.ts:session',
         'src/main/export-calculation.ts:project',
         'src/main/optimize-calculation.ts:a',
         'src/main/optimize-calculation.ts:b',
         'src/main/optimize-calculation.ts:p',
         'src/main/optimize-calculation.ts:project',
         'src/main/optimize-view.ts:project',
+        'src/main/store-rows-calculation.ts:canonical',
+        'src/main/store-rows-calculation.ts:item',
+        'src/main/store-rows-calculation.ts:session',
         'src/main/store/aggregate-calculation.ts:s',
-        'src/main/store/aggregate-calculation.ts:session',
-        'src/main/store/aggregate-calculation.ts:summary',
         'src/main/views-calculation.ts:session',
-        'src/main/views.ts:s',
       ],
       agentType: ['src/main/store/aggregate-calculation.ts:session', 'src/main/store/aggregate-calculation.ts:summary'],
       locAdded: [],
@@ -310,7 +318,7 @@ describe('no consumer of the seam reads a dropped column', () => {
     expect(found).toEqual(['projectPath', 'locAdded'])
   })
 
-  it('the behavioural backstop: the dropped values are IN the ledger and appear nowhere downstream', () => {
+  it('the behavioural backstop: the dropped values are IN the ledger and appear nowhere downstream', async () => {
     const store = makeStore()
     portRich(store)
 
@@ -328,17 +336,19 @@ describe('no consumer of the seam reads a dropped column', () => {
     const downstream = JSON.stringify([
       buildSessionSummaries(store, { range: RANGE }),
       buildDashboardViewsFromLedger(store),
-      getSessionDetailFromLedger(store, 'sess-0'),
+      await sessionDetail(store, 'sess-0'),
     ])
     expect(downstream).not.toContain('/call/level/path')
   })
 })
 
 describe('the wire is unchanged: payloads deep-equal their pre-slice shape', () => {
-  it('getSessionDetailFromLedger — the Session detail wire payload', () => {
+  it('querySessionDetail — the Session detail wire payload', async () => {
     const store = makeStore()
     portRich(store)
-    expect(getSessionDetailFromLedger(store, 'sess-0')).toEqual(SESSION_DETAIL)
+    const actual = await sessionDetail(store, 'sess-0')
+    expect(actual).toEqual(SESSION_DETAIL)
+    expect(actual).toStrictEqual(legacyGetSessionDetailFromLedger(store, 'sess-0'))
   })
 
   it('buildDashboardViewsFromLedger — the store:views wire payload', () => {

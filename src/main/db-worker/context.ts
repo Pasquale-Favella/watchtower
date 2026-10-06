@@ -22,9 +22,12 @@ import { queryModelsView } from '../application/models-query.js'
 import { queryOptimizeView } from '../application/optimize-query.js'
 import { queryOverview } from '../application/overview-query.js'
 import { queryPullRequestsView } from '../application/pull-requests-query.js'
+import { querySessionDetail } from '../application/session-detail-query.js'
+import { querySessionSearch } from '../application/session-search-query.js'
 import { querySessionsView } from '../application/sessions-query.js'
 import { querySkillsView } from '../application/skills-query.js'
 import { querySpendView } from '../application/spend-query.js'
+import { queryProjectRows, querySessionRows } from '../application/store-row-queries.js'
 import { queryAnalyticalViews, queryDashboardViews } from '../application/view-queries.js'
 import { queryYieldView } from '../application/yield-query.js'
 import { resolveCadenceMs } from '../cadence.js'
@@ -60,12 +63,6 @@ import {
 } from '../pipeline/scan.js'
 import type { DateRange } from '../pipeline/types.js'
 import { LedgerStore } from '../store/ledger.js'
-import {
-  buildProjectRowsFromLedger,
-  getSessionDetailFromLedger,
-  querySessionRowsFromLedger,
-  searchSessionsFromLedger,
-} from '../views.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 
@@ -588,11 +585,11 @@ export class DbWorkerContext {
         )
 
       case 'store:projects':
-        return buildProjectRowsFromLedger(ledger)
+        return this.runtime.runPromise(queryProjectRows({ catalogue: captureModelPricingCatalogue() }))
 
       case 'store:sessions': {
         const filter = (args[0] ?? {}) as { project?: string; since?: string; until?: string }
-        return querySessionRowsFromLedger(ledger, filter)
+        return this.runtime.runPromise(querySessionRows({ catalogue: captureModelPricingCatalogue(), filter }))
       }
 
       case 'sessions:view': {
@@ -758,7 +755,9 @@ export class DbWorkerContext {
 
       case 'store:session': {
         const sessionId = args[0] as string
-        return getSessionDetailFromLedger(ledger, sessionId)
+        return this.runtime.runPromise(
+          querySessionDetail({ sessionId, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
+        )
       }
 
       case 'store:analytics':
@@ -780,7 +779,7 @@ export class DbWorkerContext {
 
       case 'store:search': {
         const query = args[0] as string
-        return searchSessionsFromLedger(ledger, query)
+        return this.runtime.runPromise(querySessionSearch({ query, catalogue: captureModelPricingCatalogue() }))
       }
 
       case 'settings:info':

@@ -1,18 +1,21 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
-import { LedgerStore } from '../src/main/store/ledger.js'
+
 import { normalizeProjectPathKey } from '../src/main/pipeline/parser.js'
+import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
 import {
   buildSessionRows,
   buildSessionSummaries,
   defaultRange,
   groupSummariesIntoProjects,
 } from '../src/main/store/aggregate.js'
-import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
-import { buildProjectsFromLedger, buildProjectRowsFromLedger } from '../src/main/views.js'
+import { LedgerStore } from '../src/main/store/ledger.js'
+import { buildProjectsFromLedger } from '../src/main/views.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { projectRows } from './fixtures/store-view-queries.js'
 
 // Uniform project identity (#102/#105): ledger rows in, canonical project
 // shells out. One checkout spelled four ways by four providers must form one
@@ -188,7 +191,7 @@ describe('canonical project identity at the aggregation seam', () => {
     store.close()
   })
 
-  it('keeps same-leaf checkouts as separate Projects/Spend buckets keyed by canonical path', () => {
+  it('keeps same-leaf checkouts as separate Projects/Spend buckets keyed by canonical path', async () => {
     const store = makeStore()
     portSession(store, {
       provider: 'codex',
@@ -213,7 +216,7 @@ describe('canonical project identity at the aggregation seam', () => {
     // The leaf survives only as the display label.
     expect(summaries.map(s => s.project)).toEqual(['src', 'src'])
 
-    const rows = buildProjectRowsFromLedger(store)
+    const rows = await projectRows(store)
     expect(rows).toHaveLength(2)
     expect(rows.map(r => r.project)).toEqual(['src', 'src'])
     expect(rows.map(r => r.cost).sort((a, b) => a - b)).toEqual([1, 2])
