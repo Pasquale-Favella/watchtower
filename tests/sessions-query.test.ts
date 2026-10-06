@@ -124,6 +124,7 @@ function queryPort(
     return forbiddenBulkRead()
   }
   return {
+    hasSources: () => Effect.succeed(false),
     getSources: bulkRead,
     getSessions: bulkRead,
     getTurns: bulkRead,

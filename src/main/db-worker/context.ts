@@ -72,7 +72,7 @@ import {
 } from '../pipeline/scan.js'
 import type { DateRange } from '../pipeline/types.js'
 import { LedgerStore } from '../store/ledger.js'
-import { LedgerConfig } from '../store/ledger-ports.js'
+import { LedgerConfig, LedgerQueries } from '../store/ledger-ports.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 
@@ -571,11 +571,12 @@ export class DbWorkerContext {
       /** Scan status (ADR 0004): the most recent completed scan's metadata,
        * or a "never scanned" sentinel when the ledger has no rows at all. */
       case 'store:status': {
-        const hasRows = ledger.getSources().length > 0
-        return {
-          scanned: hasRows || this.lastScanMetadata !== null,
-          ...(this.lastScanMetadata ? { metadata: this.lastScanMetadata } : {}),
-        }
+        const metadata = this.lastScanMetadata
+        return this.runtime.runPromise(
+          Effect.flatMap(LedgerQueries, queries => queries.hasSources()).pipe(
+            Effect.map(hasRows => ({ scanned: hasRows || metadata !== null, ...(metadata ? { metadata } : {}) })),
+          ),
+        )
       }
 
       case 'store:views':

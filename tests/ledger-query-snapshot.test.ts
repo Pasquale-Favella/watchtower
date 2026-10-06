@@ -64,6 +64,7 @@ describe('Effect query snapshot loader', () => {
         Effect.gen(function* () {
           const actual = yield* LedgerQueries
           const queries = LedgerQueries.of({
+            hasSources: actual.hasSources,
             getSources: actual.getSources,
             getSessions: actual.getSessions,
             getTurns: actual.getTurns,

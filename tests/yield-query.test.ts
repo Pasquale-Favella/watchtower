@@ -109,6 +109,7 @@ function testClock(read: () => number, count: () => void): Clock.Clock {
 function queryPort(data: LedgerRequestSnapshotData, onSnapshot: () => void): LedgerQueriesPort {
   const noBulkRead = () => Effect.die(new Error('bulk ledger reads are forbidden'))
   return {
+    hasSources: () => Effect.succeed(false),
     getSources: noBulkRead,
     getSessions: noBulkRead,
     getTurns: noBulkRead,

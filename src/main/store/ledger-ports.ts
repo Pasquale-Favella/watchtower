@@ -37,6 +37,7 @@ export type LedgerRequestSnapshotData = {
 }
 
 export interface LedgerQueriesPort {
+  hasSources(): Effect.Effect<boolean, SqlError>
   getSources(): Effect.Effect<LedgerSourceRow[], SqlError | Schema.SchemaError>
   getSessions(): Effect.Effect<LedgerSessionRow[], SqlError | Schema.SchemaError>
   getTurns(): Effect.Effect<LedgerTurnRow[], SqlError | Schema.SchemaError>

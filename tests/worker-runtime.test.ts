@@ -388,6 +388,7 @@ describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => 
       }),
     )
     const fakeQueries = LedgerQueries.of({
+      hasSources: () => Effect.succeed(false),
       getSources: () => Effect.succeed([]),
       getSessions: () => Effect.succeed([]),
       getTurns: () => Effect.succeed([]),

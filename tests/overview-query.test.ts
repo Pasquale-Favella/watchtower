@@ -93,6 +93,7 @@ function queryPort(
   read: () => Effect.Effect<LedgerRequestSnapshotData, SqlError.SqlError | Schema.SchemaError>,
 ): LedgerQueriesPort {
   return {
+    hasSources: () => Effect.succeed(false),
     getSources: () => Effect.succeed([]),
     getSessions: () => Effect.succeed([]),
     getTurns: () => Effect.succeed([]),

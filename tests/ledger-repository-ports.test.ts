@@ -95,6 +95,7 @@ describe('each port is providable in isolation, with the other two absent', () =
     const fakeQueries = Layer.succeed(
       LedgerQueries,
       LedgerQueries.of({
+        hasSources: () => Effect.succeed(false),
         getSources: () => Effect.sync(() => (calls.push('getSources'), [])),
         getSessions: () => Effect.sync(() => (calls.push('getSessions'), [])),
         getTurns: () => Effect.sync(() => (calls.push('getTurns'), [])),

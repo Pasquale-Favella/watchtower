@@ -81,6 +81,7 @@ const SELECT_SOURCES = `
          fingerprint_mtime_ms, fingerprint_size_bytes, last_ported_at
   FROM ledger_source ORDER BY id ASC
 `
+const SELECT_HAS_SOURCES = 'SELECT 1 FROM ledger_source LIMIT 1'
 const SELECT_SESSIONS = `
   SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
          agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
@@ -247,6 +248,11 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
       const getSources = Effect.fn('LedgerQueries.getSources')(function* () {
         const rows = yield* sql.unsafe(SELECT_SOURCES)
         return yield* decodeRows(ledgerSourceRowSchema)(rows)
+      })
+
+      const hasSources = Effect.fn('LedgerQueries.hasSources')(function* () {
+        const rows = yield* sql.unsafe(SELECT_HAS_SOURCES)
+        return rows.length > 0
       })
 
       const getSessions = Effect.fn('LedgerQueries.getSessions')(function* () {
@@ -719,6 +725,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
         portIn,
         clear,
         deleteSource,
+        hasSources,
         setModelAlias,
         removeModelAlias,
         getModelAliases,
@@ -764,6 +771,7 @@ const ledgerQueriesLayer = Layer.effect(
   LedgerQueries,
   Effect.map(LedgerImplementation, implementation =>
     LedgerQueries.of({
+      hasSources: implementation.hasSources,
       getSources: implementation.getSources,
       getSessions: implementation.getSessions,
       getTurns: implementation.getTurns,

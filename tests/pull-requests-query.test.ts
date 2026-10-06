@@ -118,6 +118,7 @@ function queryPort(
     return Effect.die(new Error('individual ledger reads must not be used'))
   }
   return {
+    hasSources: () => Effect.succeed(false),
     getSources: forbiddenBulkRead,
     getSessions: forbiddenBulkRead,
     getTurns: forbiddenBulkRead,
