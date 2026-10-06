@@ -361,3 +361,33 @@ Section-query ownership remains 11/11, scoped dedicated queries 9/9, and export 
 Final focused verification passes 56 tests across six files, including nine lifetime tests. The final review fixed ineffective cleanup recovery around Effect.promise and direct EOF stop signaling. Node/web and strict test types, full formatting and the production build pass. Lint has zero errors and 1,104 advisory warnings. The final full unit suite passes 166 files, with 2,292 passed and two skipped in 219.98 seconds, one worker and unchanged existing assertions/timeouts. Packaging and exact-head CI evidence are maintained in the [living assessment](https://github.com/Pasquale-Favella/watchtower/issues/148#issuecomment-5913654224).
 
 Remaining work includes the four worker compatibility reads, purpose-specific detail/search SQL, commands, facade and compatibility retirement, cooperative provider IO, main/Coach failure mapping, comparable scaled measurements and installer/macOS/Linux packaged acceptance. Both renderer stores remain byte-identical to `ce81593`. Issue #148 remains open.
+
+## Current census after focused session queries, 2026-10-06
+
+This snapshot covers production and test source `32fafe8`, following `05d56de`. The TypeScript AST runtime-import/nonblank-line method is unchanged. These percentages measure library imports, not architectural completion. Pure calculations remain ordinary TypeScript.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,514 / 1,624 |         93.2% |
+| Store                              |                   12 / 14 |         85.7% |                     2,067 / 2,658 |         77.8% |
+| Agents                             |                   14 / 46 |         30.4% |                     4,012 / 5,917 |         67.8% |
+| Pipeline                           |                    8 / 77 |         10.4% |                    2,689 / 28,691 |          9.4% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                         380 / 380 |        100.0% |
+| All main-process code              |                  79 / 205 |         38.5% |                   14,261 / 48,076 |         29.7% |
+| Shared schema modules              |                   24 / 25 |         96.0% |                     1,903 / 1,961 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+The four previously compatible worker read routes now use named application queries, 4/4. `LedgerSessionReads` provides focused summary, targeted detail and text-search facts through the existing worker SQL root. Projects/session rows execute five SELECTs, detail six filtered SELECTs, and search four on both cold and warm requests. Blank search executes zero. The previous builders used six full snapshot reads. Smaller projections and fewer statements are verified; broad speed or memory gains remain unmeasured.
+
+The new calculations preserve canonical project/source identity, whole-turn admission, first matching public session ID, query-time pricing, optional fields, model provenance, date/order rules, first-hit search and its 500 limit. Their four production compatibility builders are retired, and all test callers use the application queries. A test-only baseline reference and hardcoded payload assertions provide parity evidence. The separate project-summary adapter and synchronous ledger facade remain until their callers migrate.
+
+Expected harness probe failures now have bounded messages and an explicit error tag. Defects and interruption retain their failure causes. Main-owned probe lifetime, status/auth/version fields and known sign-out behavior remain.
+
+Section-query ownership remains 11/11, scoped dedicated queries 9/9, export routes 2/2 and MCP tools/data resources 6/6 and 2/2. Captured scan pricing remains 32/32 producers with 47/47 billing arguments preserved. Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module.
+
+Final focused verification passes 160 tests across 14 files. Node/web and strict test types, full formatting and build pass. Lint has zero errors and 1,099 advisory warnings. Final reviews have no blocking findings. Full verification and published-head evidence are maintained in the living assessment.
+
+The programme remains open for commands, facade/compatibility retirement, cooperative provider IO, Coach failure mapping, comparable scaled measurements and installer/macOS/Linux packaged acceptance. Both renderer stores remain byte-identical to `ce81593`, without added let variables, request IDs or applyChange coalescing.
+
+The final full unit suite passes 170 files, with 2,325 passed and two skipped in 209.63 seconds, one worker and unchanged existing assertions/timeouts. Electron, fresh Windows packaging, actual packaged IPC/MCP and published-head CI evidence are maintained in the living assessment after terminal results are inspected.
