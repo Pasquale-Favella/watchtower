@@ -155,8 +155,8 @@ describe('worker configuration commands use the owned ports', () => {
   })
 
   it('broadcasts only after a substituted write finishes', async () => {
-    const started = Deferred.makeUnsafe<void>()
-    const finish = Deferred.makeUnsafe<void>()
+    const started = Deferred.makeUnsafe<undefined>()
+    const finish = Deferred.makeUnsafe<undefined>()
     const config = fakeConfig({
       setModelAlias: (model, aliasOf) =>
         Effect.gen(function* () {
