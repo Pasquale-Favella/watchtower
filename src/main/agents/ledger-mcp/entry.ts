@@ -152,7 +152,7 @@ export async function serveStdio(
             Effect.sync(() => createProtocol(runtime.queries)),
             owned =>
               Effect.gen(function* () {
-                yield* Effect.promise(() => owned.transport.close()).pipe(Effect.catch(() => Effect.void))
+                yield* Effect.tryPromise(() => owned.transport.close()).pipe(Effect.catch(() => Effect.void))
                 yield* Effect.promise(() => owned.server.close())
               }),
           )
@@ -163,7 +163,10 @@ export async function serveStdio(
           server.onclose = stop
           yield* Effect.acquireRelease(
             Effect.sync(() => {
-              const onInputEnd = (): void => closeTransport()
+              const onInputEnd = (): void => {
+                stop()
+                closeTransport()
+              }
               process.stdin.once('end', onInputEnd)
               const removeProcessHandlers = installProcessStopHandlers(() => {
                 stop()

@@ -54,6 +54,63 @@ afterEach(() => {
 })
 
 describe('ledger MCP scoped process lifetime', () => {
+  it.each(['connect failure', 'stdin EOF'] as const)(
+    'closes the SDK and query owner when transport close rejects after %s',
+    async shutdown => {
+      const database = makeDatabase()
+      const stdinListeners = process.stdin.listeners('end')
+      const signalListeners = process.listeners('SIGTERM')
+      const cleanup: string[] = []
+      const protocol = {
+        server: {
+          connect: vi.fn(async () => {
+            if (shutdown === 'connect failure') throw new Error('connect failed')
+          }),
+          close: async () => {
+            cleanup.push('server')
+          },
+        },
+        transport: {
+          close: async () => {
+            throw new Error('transport close failed')
+          },
+        } as unknown as StdioServerTransport,
+      }
+      const serving = serveStdio(
+        database.dbPath,
+        async path => {
+          const owner = await createLedgerMcpQueryRuntime(path)
+          return {
+            ...owner,
+            dispose: async () => {
+              cleanup.push('runtime')
+              await owner.dispose()
+            },
+          }
+        },
+        () => protocol,
+      )
+      try {
+        if (shutdown === 'connect failure') {
+          await expect(serving).rejects.toThrow('connect failed')
+        } else {
+          await vi.waitFor(() => expect(protocol.server.connect).toHaveBeenCalledOnce())
+          const onEnd = process.stdin.listeners('end').find(listener => !stdinListeners.includes(listener))
+          expect(onEnd).toBeDefined()
+          onEnd?.call(process.stdin)
+          await expect(serving).resolves.toBeUndefined()
+        }
+        expect(cleanup).toEqual(['server', 'runtime'])
+        expect(process.stdin.listeners('end')).toEqual(stdinListeners)
+        expect(process.listeners('SIGTERM')).toEqual(signalListeners)
+      } finally {
+        process.emit('SIGTERM')
+        await serving.catch(() => {})
+        database.cleanup()
+      }
+    },
+  )
+
   it('serves HTTP until SIGTERM, then drains the listener and disposes its owner once', async () => {
     let disposals = 0
     const dir = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-entry-'))
