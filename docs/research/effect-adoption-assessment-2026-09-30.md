@@ -335,3 +335,29 @@ Section-query ownership remains 11/11, 100%; scoped dedicated queries remain 9/9
 F31 remains partial for other provider IO. Cooperative Codex/Copilot streams and Gateway fetch/body work retain their stop/drain checks; filesystem operations without native cancellation and synchronous SQLite statements still drain before checkpoints can stop further work. Existing host recovery remains.
 
 Other application queries, purpose-specific detail/search reads, persistent MCP query ownership, facade and compatibility retirement, main/Coach failure mapping, comparable 1k/50k/500k measurements, installer acceptance and macOS/Linux packaged execution remain open. Both renderer stores remain byte-identical to `ce81593`, without added let variables, request identities or applyChange coalescing. Full verification and exact-head CI evidence are maintained in the living issue #148 assessment.
+
+## Current census after MCP query ownership, 2026-10-06
+
+This snapshot covers production and test source `76ddfc6`, following `6923063`. The TypeScript AST runtime-import and nonblank-line method is unchanged. These percentages measure library imports, not architectural completion. Pure calculations remain ordinary TypeScript.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,515 / 1,625 |         93.2% |
+| Store                              |                   10 / 12 |         83.3% |                     1,809 / 2,423 |         74.7% |
+| Agents                             |                   14 / 46 |         30.4% |                     3,993 / 5,898 |         67.7% |
+| Pipeline                           |                    8 / 77 |         10.4% |                    2,689 / 28,688 |          9.4% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                         380 / 380 |        100.0% |
+| All main-process code              |                  74 / 196 |         37.8% |                   14,083 / 47,491 |         29.7% |
+| Shared schema modules              |                   24 / 25 |         96.0% |                     1,903 / 1,961 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+MCP tools now use named application queries, 6/6, and query-backed resources use those queries when read, 2/2. Both stdio and HTTP share one persistent read-only runtime per process. The SDK remains responsible for protocol framing, request validation and transports; only application arguments and payloads use Watchtower's Effect Schemas. The third resource remains static schema documentation.
+
+Models reuses aliases and price overrides in its snapshot. Instrumented native SELECT execution counts six statements on both cold and warm requests, versus eight in the legacy path. The canonical snapshot still has six reads. No broad latency or memory gain is claimed. Fresh external edits and schema/read failures are tested; scoped transports close before their borrowed runtime is disposed.
+
+Section-query ownership remains 11/11, scoped dedicated queries 9/9, and export routes 2/2. Captured scan pricing remains 32/32 producer modules with 47/47 billing argument expressions preserved. Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module. Gateway and MCP result schemas are outside that baseline denominator.
+
+Final focused verification passes 56 tests across six files, including nine lifetime tests. The final review fixed ineffective cleanup recovery around Effect.promise and direct EOF stop signaling. Node/web and strict test types, full formatting and the production build pass. Lint has zero errors and 1,104 advisory warnings. The final full unit suite passes 166 files, with 2,292 passed and two skipped in 219.98 seconds, one worker and unchanged existing assertions/timeouts. Packaging and exact-head CI evidence are maintained in the [living assessment](https://github.com/Pasquale-Favella/watchtower/issues/148#issuecomment-5913654224).
+
+Remaining work includes the four worker compatibility reads, purpose-specific detail/search SQL, commands, facade and compatibility retirement, cooperative provider IO, main/Coach failure mapping, comparable scaled measurements and installer/macOS/Linux packaged acceptance. Both renderer stores remain byte-identical to `ce81593`. Issue #148 remains open.

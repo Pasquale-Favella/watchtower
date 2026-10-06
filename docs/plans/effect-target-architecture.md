@@ -448,3 +448,26 @@ Standards and Spec review found a missing compatibility removal condition; Provi
 Production Node/web and strict test typechecks, full formatting and the production build passed. Lint passed with zero errors and 1,103 advisory warnings. The complete unit suite used one worker with unchanged existing assertions/timeouts and passed all 163 files, with 2,273 tests passed and two skipped in 247.89 seconds. Electron, fresh packaging and actual packaged app/MCP results are recorded separately in the living assessment.
 
 Both renderer stores remain byte-identical to `ce81593`. Remaining programme work includes other worker reads and commands, purpose-specific SQL, persistent MCP query ownership, facade and compatibility retirement, remaining cooperative provider IO, main/Coach failure mapping, comparable scaled measurements and installer/cross-platform packaged acceptance. The established section-query, export and owned-schema denominators are unchanged. No SQL reduction or speedup is claimed.
+
+### Persistent MCP application queries, 2026-10-06
+
+Production and test source is `76ddfc6`, following `6923063`.
+
+- `c9ddc1c` adds one persistent read-only query runtime. Its eager ledger read must succeed before serving starts. Overview, Sessions, Models and Skills reuse the worker's named application queries. Scope and calls have named queries over the canonical snapshot, pure calculations and Schema-derived payloads. Application code imports ledger ports rather than the SDK or concrete database.
+- `9adb336` routes all six tools and the two query-backed resources through borrowed query methods. Resource reads compute current facts. Tool names, descriptions, argument schemas, defaults and response fields retain their contracts. Unexpected query failures use bounded tool/resource messages. The static schema resource and prompt retain their existing behavior.
+- `a7e6178` scopes HTTP servers, SDK transports, stop handlers and parent polling under the process query owner. HTTP requests dispose their own protocol server while preserving the borrowed runtime. Connect/listen and native cleanup settle before root disposal. Held HTTP bodies cannot keep shutdown pending.
+- `0aba96e` records ADR 0020's ownership decision and clarifies the deliberate Promise boundaries. `76ddfc6` fixes rejected transport close handling and signals stop directly on stdin EOF. The original connect failure survives cleanup; SDK close is attempted before runtime disposal even when transport close rejects.
+
+Final Standards and Spec reviews have no blocking findings. The final focused suite passes 56 tests across six files, including native SQLite read-only enforcement, one connection, fresh external config edits, eager boot failure cleanup and transport shutdown ordering. Node/web and strict test typechecks, full formatting and the production build pass. Lint has zero errors and 1,104 advisory warnings. The final complete unit suite passes 166 files, with 2,292 passed and two skipped in 219.98 seconds, one worker and unchanged existing assertions/timeouts. Packaging and exact-head CI evidence are recorded in the [living assessment](https://github.com/Pasquale-Favella/watchtower/issues/148#issuecomment-5913654224).
+
+All six MCP tools and both data resources now use application queries. This is a separate denominator from the existing 11/11 section queries and 2/2 export routes. Native statement execution instrumentation counts six SELECTs for each cold and warm Models request on the same connection, compared with the legacy eight. The reduction removes two separate config reads; the six canonical snapshot reads remain. No wall-time or memory improvement is claimed.
+
+#### Next frontier after `76ddfc6`
+
+The worker still has four compatibility read routes: projects, session rows, session detail and search. Introduce their purpose-shaped repository operations first because ports, SQL wiring and dispatch are shared files. Then implement the independent application queries and pure calculations, with one integration owner for dispatch. Remove their compatibility builders after every production and test caller migrates. Keep the separate export/pricing project-summary adapter until its remaining callers migrate.
+
+Detail must preserve composite storage identity and the existing first matching public session ID. Search must preserve session/turn/call ordering, message-before-command matching, one first hit per public session ID and the 500-hit limit. Empty search avoids reads. Project/session rows retain canonical checkout grouping, query-time display pricing and existing date/order rules. Summary calculations must preserve whole-turn range semantics. Measure narrower projections before claiming performance gains.
+
+Main probe mapping can proceed independently. Preserve typed failures, defects and interruption when mapping probe messages. Coach Promise failures need an expected-error tag inside the external SDK adapter before IPC can map them safely. Keep the existing controlled stop/drain ownership and wire shapes.
+
+Both renderer stores remain byte-identical to `ce81593`. Remaining work includes these reads, commands, compatibility retirement, cooperative provider IO, main/Coach failure mapping, comparable 1k/50k/500k measurements and installer/macOS/Linux packaged acceptance. The overall migration remains open.
