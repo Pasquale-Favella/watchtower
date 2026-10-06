@@ -4,6 +4,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { CoachSdkFailure } from '../src/main/agents/coach-errors.js'
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { CoachStreamPart } from '../src/main/agents/events.js'
 import { harnessSpecs } from '../src/main/agents/harnesses/index.js'
@@ -285,7 +286,10 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
 
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'error', message: 'agent binary not found' },
+      {
+        kind: 'error',
+        message: 'Claude Code could not complete its session handshake. Check the installation and try again.',
+      },
     ])
     expect(streamText).not.toHaveBeenCalled()
     expect(provider.cleanup).toHaveBeenCalledOnce()
@@ -307,7 +311,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
       { kind: 'session', resumeCursor: expect.any(String) },
-      { kind: 'error', message: 'credential wall' },
+      { kind: 'error', message: 'Claude Code could not complete the request. Check its sign-in and try again.' },
     ])
   })
 
@@ -351,7 +355,8 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
       { kind: 'status', state: 'starting' },
       { kind: 'error', message: expect.stringContaining('claude auth login') },
     ])
-    expect((events[1] as { message: string }).message).toContain('OAuth session expired')
+    expect((events[1] as { message: string }).message).not.toContain('OAuth session expired')
+    expect((events[1] as { message: string }).message).not.toContain('Internal error')
     expect(streamText).not.toHaveBeenCalled()
     expect(provider.cleanup).toHaveBeenCalledOnce()
   })
@@ -419,6 +424,159 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     // An ACP resume-handle expiry has its own retry path — mapping it to a
     // sign-in hint would mislead.
     expect(isAuthFailureMessage('ACP session expired, resume with a fresh id')).toBe(false)
+  })
+
+  it('tags a synchronous provider factory rejection without exposing its detail', async () => {
+    const { sdk } = fakeSdk([])
+    sdk.createACPProvider = vi.fn(() => {
+      throw new Error('secret binary path and raw provider diagnostic')
+    })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const events = []
+
+    for await (const event of runtime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      {
+        kind: 'error',
+        message: 'Claude Code could not be started. Check that it is installed and try again.',
+      },
+    ])
+    expect(JSON.stringify(events)).not.toContain('secret binary path')
+  })
+
+  it('keeps selection SDK rejection typed while preserving unavailable-selection guidance', async () => {
+    const { sdk, provider } = fakeSdk([])
+    Object.assign(provider, {
+      setModel: vi.fn(async () => {
+        throw new Error('secret rejected model details')
+      }),
+    })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const run = runtime.run({
+      harness: claudeHarness,
+      modelId: 'requested-model',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })
+
+    const events = []
+    for await (const event of run) events.push(event)
+    expect(events.at(-1)).toEqual({
+      kind: 'error',
+      message: 'Claude Code could not apply the selected model or mode. Refresh the selection and try again.',
+    })
+    expect(JSON.stringify(events)).not.toContain('secret rejected model details')
+
+    const { sdk: unavailableSdk, provider: unavailableProvider } = fakeSdk([])
+    unavailableProvider.initSession.mockImplementation(async () => ({
+      sessionId: 'sess_9',
+      models: { availableModels: [{ modelId: 'available', name: 'Available' }], currentModelId: 'available' },
+    }))
+    const unavailableRuntime = createHarnessRuntime(unavailableSdk, { platform: 'linux' })
+    const unavailableEvents = []
+    for await (const event of unavailableRuntime.run({
+      harness: claudeHarness,
+      modelId: 'missing-model',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
+      unavailableEvents.push(event)
+    }
+    expect(unavailableEvents.at(-1)).toEqual({ kind: 'error', message: 'Model "missing-model" is not available' })
+  })
+
+  it('types synchronous stream creation and rejected iterator pulls as SDK failures', async () => {
+    const createSdk = fakeSdk([]).sdk
+    createSdk.streamText = vi.fn(() => {
+      throw new Error('raw stream constructor diagnostic')
+    })
+    const createRuntime = createHarnessRuntime(createSdk, { platform: 'linux' })
+    const createRun = createRuntime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+    await expect(
+      (async () => {
+        for await (const _event of createRun) {
+          // consume
+        }
+      })(),
+    ).rejects.toMatchObject({ _tag: 'CoachSdkFailure', stage: 'stream-create', authentication: false })
+
+    const pullSdk = fakeSdk([]).sdk
+    pullSdk.streamText = vi.fn(() => ({
+      [Symbol.asyncIterator]: () => ({ next: async () => Promise.reject(new Error('raw iterator diagnostic')) }),
+    }))
+    const pullRuntime = createHarnessRuntime(pullSdk, { platform: 'linux' })
+    const pullRun = pullRuntime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+    await expect(
+      (async () => {
+        for await (const _event of pullRun) {
+          // consume
+        }
+      })(),
+    ).rejects.toMatchObject({ _tag: 'CoachSdkFailure', stage: 'stream-next', authentication: false })
+  })
+
+  it('keeps catalogue and stream normalization defects outside the expected SDK failure channel', async () => {
+    const catalogDefect = new Error('catalogue computation defect')
+    const { sdk, provider } = fakeSdk([])
+    provider.initSession.mockImplementation(async () => ({
+      sessionId: 'sess_9',
+      models: {
+        availableModels: [
+          new Proxy(
+            {},
+            {
+              get: () => {
+                throw catalogDefect
+              },
+            },
+          ),
+        ],
+        currentModelId: 'available',
+      },
+    }))
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const run = runtime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+
+    await expect(
+      (async () => {
+        for await (const _event of run) {
+          // consume
+        }
+      })(),
+    ).rejects.toBe(catalogDefect)
+
+    const normalizerDefect = new Error('stream normalization defect')
+    const streamSdk = fakeSdk([]).sdk
+    streamSdk.streamText = vi.fn(
+      () =>
+        ({
+          [Symbol.asyncIterator]: () => ({
+            next: async () => ({
+              done: false as const,
+              value: new Proxy(
+                {},
+                {
+                  get: () => {
+                    throw normalizerDefect
+                  },
+                },
+              ),
+            }),
+          }),
+        }) as unknown as AsyncIterable<CoachStreamPart>,
+    )
+    const streamRuntime = createHarnessRuntime(streamSdk, { platform: 'linux' })
+    const streamRun = streamRuntime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+    await expect(
+      (async () => {
+        for await (const _event of streamRun) {
+          // consume
+        }
+      })(),
+    ).rejects.toBe(normalizerDefect)
   })
 
   it('cancelling the run interrupts the SAME SDK iterator and cleans up the provider', async () => {
@@ -592,7 +750,11 @@ describe('createHarnessRuntime — inspect (the pre-flight handshake probe, map 
     const inspection = runtime.inspectControlled!({ harness: claudeHarness, workspacePath: realWorkspace() })
 
     await vi.waitFor(() => expect(provider.initSession).toHaveBeenCalledOnce())
-    const result = expect(inspection.result).rejects.toThrow('cancelled')
+    const result = expect(inspection.result).rejects.toMatchObject({
+      _tag: 'CoachSdkFailure',
+      stage: 'inspection',
+      reason: 'cancelled',
+    })
     await inspection.stop()
     await result
 
@@ -661,9 +823,12 @@ describe('createHarnessRuntime — inspect (the pre-flight handshake probe, map 
     provider.initSession.mockRejectedValue(new Error('agent binary not found'))
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
-    await expect(runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() })).rejects.toThrow(
-      'agent binary not found',
+    const failure = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() }).then(
+      () => undefined,
+      error => error,
     )
+    expect(failure).toBeInstanceOf(CoachSdkFailure)
+    expect(failure).toMatchObject({ _tag: 'CoachSdkFailure', stage: 'inspection', reason: 'rejected' })
     expect(provider.cleanup).toHaveBeenCalledOnce()
   })
 
@@ -851,7 +1016,10 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
       { kind: 'session', resumeCursor: expect.any(String), models: expect.anything(), modes: expect.anything() },
-      { kind: 'error', message: 'Invalid params' },
+      {
+        kind: 'error',
+        message: 'Claude Code could not apply the selected model or mode. Refresh the selection and try again.',
+      },
     ])
     expect(streamText).not.toHaveBeenCalled()
   })
@@ -948,7 +1116,10 @@ describe('createHarnessRuntime — stale resume fallback', () => {
 
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'error', message: 'agent down' },
+      {
+        kind: 'error',
+        message: 'Claude Code could not complete its session handshake. Check the installation and try again.',
+      },
     ])
     expect(streamText).not.toHaveBeenCalled()
     expect(createACPProvider).toHaveBeenCalledTimes(2)

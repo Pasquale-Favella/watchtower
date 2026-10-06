@@ -7,6 +7,7 @@ import * as Exit from 'effect/Exit'
 import * as Scope from 'effect/Scope'
 
 import type { CoachEvent, CoachSessionModels, CoachSessionModes } from '../../shared/schemas/agents.js'
+import { CoachSdkFailure, coachSdkFailureMessage, type CoachSdkFailureStage } from './coach-errors.js'
 import type { HarnessInfo } from './detect.js'
 import { type CoachStreamPart, createCoachEventNormalizer } from './events.js'
 import { HARNESS_HANDSHAKE_TIMEOUT_MS } from './harness-timeouts.js'
@@ -20,6 +21,7 @@ import {
   planModeSelection,
   routingPolicyFor,
   type SelectionProvider,
+  SelectionUnavailableError,
 } from './model-routing.js'
 import { killProcessTreeSync } from './process-tree.js'
 import { encodeResumeCursor } from './resume-cursor.js'
@@ -187,8 +189,9 @@ function asString(value: unknown): string | undefined {
 async function warmSession(
   provider: AcpProvider,
   instanceId: string,
+  stage: 'session-init' | 'inspection' = 'session-init',
 ): Promise<{ sessionId?: string; event?: CoachEvent; catalog: HarnessCatalog }> {
-  const session = (await provider.initSession()) as unknown
+  const session = (await sdkPromise(stage, () => provider.initSession())) as unknown
   const catalog = describeCatalog(session)
   const sessionId = isRecord(session) ? asString(session.sessionId) : undefined
   if (!sessionId) return { catalog }
@@ -226,6 +229,7 @@ const AUTH_FAILURE_PATTERNS = [
   /authrequired/i,
   /please run \/login/i,
   /not logged in/i,
+  /sign-in required/i,
 ]
 
 /** True when a raw agent/provider error message reports an authentication
@@ -259,18 +263,54 @@ function authHintForHarness(kind: string, displayName: string): string {
   return signInHint
 }
 
-/** Raw auth-wall detail is truncated for the hint — the full message stays in
- *  logs, the renderer shows just enough to debug. */
-const AUTH_DETAIL_MAX_CHARS = 300
+function failureFromSdk(stage: CoachSdkFailureStage, error: unknown): CoachSdkFailure {
+  const rawMessage = error instanceof Error ? error.message : String(error)
+  return new CoachSdkFailure({ stage, reason: 'rejected', authentication: isAuthFailureMessage(rawMessage) })
+}
 
-/** Maps a raw run failure onto the CoachEvent the renderer shows: auth walls
- *  become the actionable hint (with the raw detail appended for
- *  debuggability); everything else passes through untouched. */
-function toHarnessError(harness: HarnessInfo, rawMessage: string): CoachEvent {
-  if (!isAuthFailureMessage(rawMessage)) return { kind: 'error', message: rawMessage }
-  const detail =
-    rawMessage.length > AUTH_DETAIL_MAX_CHARS ? `${rawMessage.slice(0, AUTH_DETAIL_MAX_CHARS)}…` : rawMessage
-  return { kind: 'error', message: `${authHintForHarness(harness.kind, harness.displayName)} (detail: ${detail})` }
+/** Convert only a call that directly enters an SDK promise API. */
+async function sdkPromise<T>(stage: CoachSdkFailureStage, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation()
+  } catch (error) {
+    throw failureFromSdk(stage, error)
+  }
+}
+
+/** Convert only a synchronous SDK call; surrounding local computations remain
+ *  outside this boundary and therefore keep defect semantics. */
+function sdkSync<T>(stage: CoachSdkFailureStage, operation: () => T): T {
+  try {
+    return operation()
+  } catch (error) {
+    throw failureFromSdk(stage, error)
+  }
+}
+
+function toHarnessError(harness: HarnessInfo, failure: CoachSdkFailure): CoachEvent {
+  const message = coachSdkFailureMessage(
+    harness.displayName,
+    failure,
+    authHintForHarness(harness.kind, harness.displayName),
+  )
+  return { kind: 'error', message }
+}
+
+function selectionBoundary(provider: AcpProvider): SelectionProvider {
+  return {
+    ...(provider.setConfigOption
+      ? {
+          setConfigOption: (args: { sessionId: string; configId: string; value: string }) =>
+            sdkPromise('selection', () => provider.setConfigOption!(args)),
+        }
+      : {}),
+    ...(provider.setModel
+      ? { setModel: (modelId: string) => sdkPromise('selection', () => provider.setModel!(modelId)) }
+      : {}),
+    ...(provider.setMode
+      ? { setMode: (modeId: string) => sdkPromise('selection', () => provider.setMode!(modeId)) }
+      : {}),
+  }
 }
 
 export interface HarnessRuntimeOptions {
@@ -409,18 +449,20 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
     const acp = acpConfigFor(input.harness.kind)
     const spawn = createHarnessSpawn(input.harness, input.workspacePath, platform, input.allowApiKeyEnv)
 
-    return sdk.createACPProvider({
-      command: spawn.command,
-      args: spawn.args,
-      env: spawn.env,
-      session: {
-        cwd: input.workspacePath,
-        mcpServers: [...(acp.mcpServers ?? []), ...(input.mcpServers ?? [])],
-      },
-      ...(acp.authMethodId ? { authMethodId: acp.authMethodId } : {}),
-      ...(acp.sessionDelayMs ? { sessionDelayMs: acp.sessionDelayMs } : {}),
-      ...(input.sessionId ? { existingSessionId: input.sessionId } : {}),
-    })
+    return sdkSync('provider-create', () =>
+      sdk.createACPProvider({
+        command: spawn.command,
+        args: spawn.args,
+        env: spawn.env,
+        session: {
+          cwd: input.workspacePath,
+          mcpServers: [...(acp.mcpServers ?? []), ...(input.mcpServers ?? [])],
+        },
+        ...(acp.authMethodId ? { authMethodId: acp.authMethodId } : {}),
+        ...(acp.sessionDelayMs ? { sessionDelayMs: acp.sessionDelayMs } : {}),
+        ...(input.sessionId ? { existingSessionId: input.sessionId } : {}),
+      }),
+    )
   }
 
   function createControlledRun(input: HarnessRunInput): OwnedHarnessRun {
@@ -454,7 +496,14 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
     }
 
     const source = (async function* (): AsyncGenerator<CoachEvent> {
-      let provider = createProvider(input)
+      let provider: AcpProvider
+      try {
+        provider = createProvider(input)
+      } catch (error) {
+        if (!(error instanceof CoachSdkFailure)) throw error
+        yield toHarnessError(input.harness, error)
+        return
+      }
       activeProvider = provider
       if (stopped) {
         await cleanupCurrentProvider()
@@ -482,10 +531,10 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           warmCatalog = warm.catalog
           if (warm.event) yield warm.event
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
+          if (!(err instanceof CoachSdkFailure)) throw err
           if (stopped) return
           if (!input.sessionId) {
-            yield toHarnessError(input.harness, message)
+            yield toHarnessError(input.harness, err)
             return
           }
           // A stale resume is recoverable: discard the failed provider, create
@@ -512,7 +561,8 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
             if (warm.event) yield warm.event
           } catch (err2) {
             if (stopped) return
-            yield toHarnessError(input.harness, err2 instanceof Error ? err2.message : String(err2))
+            if (!(err2 instanceof CoachSdkFailure)) throw err2
+            yield toHarnessError(input.harness, err2)
             return
           }
         }
@@ -538,17 +588,23 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
             const policy = routingPolicyFor(input.harness.kind)
             if (input.modelId) {
               languageModelId = await executeSelectionPlan(
-                provider,
+                selectionBoundary(provider),
                 sessionId,
                 planModelSelection(policy, catalog, input.modelId),
               )
             }
             if (input.modeId) {
-              await executeSelectionPlan(provider, sessionId, planModeSelection(policy, catalog, input.modeId))
+              await executeSelectionPlan(
+                selectionBoundary(provider),
+                sessionId,
+                planModeSelection(policy, catalog, input.modeId),
+              )
             }
             if (stopped) return
           } catch (err) {
-            yield { kind: 'error', message: err instanceof Error ? err.message : String(err) }
+            if (err instanceof CoachSdkFailure) yield toHarnessError(input.harness, err)
+            else if (err instanceof SelectionUnavailableError) yield { kind: 'error', message: err.message }
+            else throw err
             return
           }
         }
@@ -563,12 +619,16 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         let iterator: AsyncIterator<CoachStreamPart> | undefined
         let endedNormally = false
         try {
-          const stream = sdk.streamText({
-            model: provider.languageModel(languageModelId, input.modeId),
-            prompt: restartedFresh ? (input.freshPrompt ?? input.prompt) : input.prompt,
-            tools: provider.tools,
-            abortSignal: controller.signal,
-          })
+          const model = sdkSync('stream-create', () => provider.languageModel(languageModelId, input.modeId))
+          const tools = sdkSync('stream-create', () => provider.tools)
+          const stream = sdkSync('stream-create', () =>
+            sdk.streamText({
+              model,
+              prompt: restartedFresh ? (input.freshPrompt ?? input.prompt) : input.prompt,
+              tools,
+              abortSignal: controller.signal,
+            }),
+          )
 
           // ONE iterator, used for both the loop and cancellation. Holding a
           // single handle means the Scope finalizer's return() interrupts the SAME
@@ -578,7 +638,7 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           // the loop must drive it with explicit next() calls — a `for await`
           // over the held iterator throws 'not async iterable' (the fake SDK's
           // async-generator mask hides this; the real stream does not).
-          iterator = stream[Symbol.asyncIterator]() as AsyncIterator<CoachStreamPart>
+          iterator = sdkSync('stream-create', () => stream[Symbol.asyncIterator]()) as AsyncIterator<CoachStreamPart>
           streamIterator = iterator as AsyncIterator<CoachStreamPart> & { return?: () => Promise<unknown> }
           const normalize = createCoachEventNormalizer()
           // Abort before drain (both bounded + ignored): runs on Scope.close
@@ -602,7 +662,7 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
             ),
           )
           for (;;) {
-            const { done, value } = await iterator.next()
+            const { done, value } = await sdkPromise('stream-next', () => iterator!.next())
             if (done) {
               endedNormally = true
               break
@@ -612,7 +672,9 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
             // the actionable hint here too, at the point the harness is
             // still known (events.ts stays harness-agnostic).
             for (const event of normalize(value as CoachStreamPart)) {
-              yield event.kind === 'error' ? toHarnessError(input.harness, event.message) : event
+              yield event.kind === 'error'
+                ? toHarnessError(input.harness, failureFromSdk('stream-next', event.message))
+                : event
             }
           }
         } finally {
@@ -721,10 +783,10 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
       const provider = createProvider(input)
       activeProvider = provider
       try {
-        if (stopped) throw new Error('harness inspection cancelled')
+        if (stopped) throw new CoachSdkFailure({ stage: 'inspection', reason: 'cancelled', authentication: false })
         const outcome = await Effect.runPromise(
           Effect.tryPromise({
-            try: () => provider.initSession() as Promise<unknown>,
+            try: () => sdkPromise('inspection', () => provider.initSession() as Promise<unknown>),
             catch: error => error,
           }).pipe(
             Effect.map(session => describeCatalog(session)),
@@ -732,9 +794,9 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
           ),
         )
         if (outcome._tag === 'None') {
-          throw new Error(`harness did not answer initSession within ${HARNESS_HANDSHAKE_TIMEOUT_MS / 1000}s`)
+          throw new CoachSdkFailure({ stage: 'inspection', reason: 'timeout', authentication: false })
         }
-        if (stopped) throw new Error('harness inspection cancelled')
+        if (stopped) throw new CoachSdkFailure({ stage: 'inspection', reason: 'cancelled', authentication: false })
         const catalog = outcome.value
         return {
           ...(catalog.models ? { models: catalog.models } : {}),
@@ -747,7 +809,9 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
 
     const result = Promise.race([
       operation,
-      stoppedSignal.then(() => Promise.reject(new Error('harness inspection cancelled'))),
+      stoppedSignal.then(() =>
+        Promise.reject(new CoachSdkFailure({ stage: 'inspection', reason: 'cancelled', authentication: false })),
+      ),
     ])
 
     function stop(): Promise<void> {
@@ -825,7 +889,9 @@ export async function loadHarnessSdk(): Promise<HarnessSdk> {
   const [{ streamText }, { createACPProvider }] = await Promise.all([
     import('ai'),
     import('@mcpc-tech/acp-ai-provider'),
-  ])
+  ]).catch(() => {
+    throw new CoachSdkFailure({ stage: 'sdk-load', reason: 'rejected', authentication: false })
+  })
   return {
     // The real factory's signature IS `(config: ACPProviderSettings) =>
     // ACPProvider` — the seam's `AcpProviderConfig`/`AcpProvider` are that

@@ -1,4 +1,13 @@
-import type { CoachSessionModes, CoachSessionModels } from '../../shared/schemas/agents.js'
+import * as Schema from 'effect/Schema'
+
+import type { CoachSessionModels, CoachSessionModes } from '../../shared/schemas/agents.js'
+
+/** A valid UI selection that the advertised session cannot apply because the
+ *  agent exposed no matching setter. This is separate from SDK rejection. */
+export class SelectionUnavailableError extends Schema.TaggedError<SelectionUnavailableError>()(
+  'SelectionUnavailableError',
+  { message: Schema.String },
+) {}
 
 interface AcpSessionResponse {
   models?: unknown
@@ -478,5 +487,5 @@ export async function executeSelectionPlan(
     if (!failed) return candidate.appliedId
   }
   if (lastError) throw lastError
-  throw new Error(plan.unavailableMessage)
+  throw new SelectionUnavailableError({ message: plan.unavailableMessage })
 }

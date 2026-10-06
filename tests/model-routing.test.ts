@@ -3,12 +3,13 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   describeCatalog,
   executeSelectionPlan,
-  MODEL_ROUTING,
-  planModeSelection,
-  planModelSelection,
-  routingPolicyFor,
   type HarnessCatalog,
+  MODEL_ROUTING,
+  planModelSelection,
+  planModeSelection,
+  routingPolicyFor,
   type SelectionProvider,
+  SelectionUnavailableError,
 } from '../src/main/agents/model-routing.js'
 
 function select(id: string, category: string, currentValue: string, values: string[]) {
@@ -278,5 +279,19 @@ describe('model-routing executor', () => {
       'a',
     )
     await expect(executeSelectionPlan(provider, 'sess', plan)).rejects.toThrow('legacy rejected')
+  })
+
+  it('tags a valid but unavailable selection separately from SDK setter rejection', async () => {
+    const plan = planModelSelection(
+      routingPolicyFor('default'),
+      catalog({ models: { availableModels: [{ modelId: 'a', name: 'A' }], currentModelId: 'a' } }),
+      'missing-model',
+    )
+
+    await expect(executeSelectionPlan({}, 'sess', plan)).rejects.toMatchObject({
+      _tag: 'SelectionUnavailableError',
+      message: 'Model "missing-model" is not available',
+    })
+    await expect(executeSelectionPlan({}, 'sess', plan)).rejects.toBeInstanceOf(SelectionUnavailableError)
   })
 })
