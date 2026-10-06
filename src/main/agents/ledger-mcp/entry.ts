@@ -1,118 +1,217 @@
-import { createServer } from 'node:http'
+import { createServer, type Server } from 'node:http'
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
 
-import { LedgerStore } from '../../store/ledger.js'
 import { createLedgerMcpHttpHandler } from './http-server.js'
+import type { LedgerMcpQueries } from './query-api.js'
+import { createLedgerMcpQueryRuntime } from './query-runtime.js'
 import { createLedgerMcpServer } from './server.js'
-import { readContext, readHttpContext, type LedgerMcpContext, type LedgerMcpHttpContext } from './spawn-env.js'
-import { reportSidecarBootFailure } from './sidecar-log.js'
+import { reportSidecarBootFailure, reportSidecarRequestFailure } from './sidecar-log.js'
+import { readContext, readHttpContext } from './spawn-env.js'
 
-/**
- * The `watchtower-ledger` MCP server CLI entry (map 53, ADR 0020). The harness
- * agent spawns this exactly like any stdio MCP server: `command:
- * process.execPath`, `args: [<this bundle>, '--ledger-mcp']`, with
- * `ELECTRON_RUN_AS_NODE=1` and the spawn context in `WATCHTOWER_LEDGER_MCP`
- * (the main process builds that config via `buildLedgerMcpServer`).
- *
- * The server always serves the FULL lifetime ledger: filtering is the harness's
- * job through each tool's optional `scope` argument, so the spawn context
- * carries only `dbPath` — nothing per-conversation is baked at spawn.
- *
- * Electron-free except for the app's own (also electron-free) data layer — the
- * ledger store (read-only second connection), the aggregation seam, and the
- * view builders the UI uses — so plain-node mode runs it from the dev `out/`
- * tree AND the packaged asar. The protocol layer is the official
- * `@modelcontextprotocol/sdk` (newline-delimited JSON over stdin/stdout);
- * the server exits when the agent closes stdin.
- */
-
-function openStoreReadOnly(dbPath: string): LedgerStore {
-  try {
-    return new LedgerStore(dbPath, { readOnly: true })
-  } catch (err) {
-    reportSidecarBootFailure((err as NodeJS.ErrnoException | undefined)?.code ?? 'db-open-failed')
-    process.exit(1)
-  }
+/** The process owns this runtime; transports only borrow its query methods. */
+interface OwnedQueryRuntime {
+  queries: LedgerMcpQueries
+  run<A, E>(effect: Effect.Effect<A, E>): Promise<A>
+  dispose: () => Promise<void>
 }
 
-/** The parent is the only thing that should ever outlive this process: if
- *  the main process dies without killing its sidecar (a crash between spawn
- *  and release), exit instead of lingering on a loopback port holding a
- *  read-only DB handle. `kill(pid, 0)` only tests existence — ESRCH means the
- *  parent is gone (reparenting aside, the handle is useless anyway); any
- *  other outcome, including EPERM, means it is alive. */
-function watchParentLiveness(): void {
+type QueryRuntimeFactory = (dbPath: string) => Promise<OwnedQueryRuntime>
+
+interface StdioProtocol {
+  server: {
+    connect(transport: StdioServerTransport): Promise<void>
+    close(): Promise<void>
+    onclose?: () => void
+  }
+  transport: StdioServerTransport
+}
+
+type StdioProtocolFactory = (queries: LedgerMcpQueries) => StdioProtocol
+
+function installProcessStopHandlers(onStop: () => void): () => void {
+  const stop = (): void => {
+    onStop()
+  }
+  process.once('SIGTERM', stop)
+  process.once('SIGINT', stop)
   const parentPid = process.ppid
-  if (!parentPid) return
-  const timer = setInterval(() => {
-    try {
-      process.kill(parentPid, 0)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') process.exit(0)
-    }
-  }, 5_000)
-  timer.unref()
+  const timer = parentPid
+    ? setInterval(() => {
+        try {
+          process.kill(parentPid, 0)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code === 'ESRCH') stop()
+        }
+      }, 5_000)
+    : undefined
+  timer?.unref()
+  return () => {
+    process.off('SIGTERM', stop)
+    process.off('SIGINT', stop)
+    if (timer) clearInterval(timer)
+  }
 }
 
-/** Loopback-HTTP mode (`--ledger-mcp-http`): the same ledger over
- *  StreamableHTTP for harnesses that reject client-provided stdio servers.
- *  Binds port 0 itself and reports the bound port on stdout (`READY
- *  {"port": N}`) — the spawner never picks ports, so there is no probe and
- *  no bind race. Every route needs the per-spawn bearer token. The process
- *  lives until the spawner's pool releases it (app quit), or
- *  until its parent dies — whichever comes first. */
-async function serveHttp(): Promise<void> {
-  let ctx: LedgerMcpHttpContext
-  try {
-    ctx = readHttpContext()
-  } catch {
-    reportSidecarBootFailure('bad-context')
-    process.exit(1)
-    return
-  }
-  const store = openStoreReadOnly(ctx.dbPath)
-  const handler = createLedgerMcpHttpHandler(store, ctx.token)
-  const port = await new Promise<number>((resolve, reject) => {
-    const server = createServer((req, res) => {
-      void handler(req, res)
-    })
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
+function closeHttpServer(server: Server): Promise<void> {
+  if (!server.listening) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    server.close(error => (error ? reject(error) : resolve()))
+    server.closeAllConnections()
+  })
+}
+
+function listenLoopback(server: Server): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error): void => {
+      server.off('listening', onListening)
+      reject(error)
+    }
+    const onListening = (): void => {
+      server.off('error', onError)
       const address = server.address()
       if (typeof address === 'object' && address) resolve(address.port)
       else reject(new Error('no loopback address'))
-    })
+    }
+    server.once('error', onError)
+    server.once('listening', onListening)
+    server.listen(0, '127.0.0.1')
   })
-  process.stdout.write(`READY ${JSON.stringify({ port })}\n`)
-  watchParentLiveness()
+}
+
+/** Start the loopback HTTP transport and retain its query runtime until shutdown. */
+export async function serveHttp(
+  ctx: { dbPath: string; token: string },
+  createRuntime: QueryRuntimeFactory = createLedgerMcpQueryRuntime,
+): Promise<void> {
+  const runtime = await createRuntime(ctx.dbPath)
+  const stopped = Deferred.makeUnsafe<undefined>()
+  const stop = (): void => {
+    Deferred.doneUnsafe(stopped, Effect.succeed(undefined))
+  }
+  try {
+    await runtime.run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const handler = createLedgerMcpHttpHandler(runtime.queries, ctx.token)
+          const server = yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              createServer((req, res) => {
+                void handler(req, res).catch(error => {
+                  reportSidecarRequestFailure(req.method, new URL(req.url ?? '/', 'http://127.0.0.1').pathname, error)
+                  if (!res.headersSent) {
+                    res.writeHead(500, { 'content-type': 'application/json' })
+                    res.end('{"error":"internal error"}')
+                  } else {
+                    res.destroy()
+                  }
+                })
+              }),
+            ),
+            server => Effect.promise(() => closeHttpServer(server)),
+          )
+          yield* Effect.acquireRelease(
+            Effect.sync(() => installProcessStopHandlers(stop)),
+            removeHandlers => Effect.sync(removeHandlers),
+          )
+
+          // The native listen operation is allowed to settle before the scope can
+          // release the server or its borrowed runtime.
+          const port = yield* Effect.tryPromise({ try: () => listenLoopback(server), catch: error => error })
+          if (!Deferred.isDoneUnsafe(stopped)) process.stdout.write(`READY ${JSON.stringify({ port })}\n`)
+          yield* Deferred.await(stopped)
+        }),
+      ),
+    )
+  } finally {
+    await runtime.dispose()
+  }
+}
+
+/** Connect stdio to one process-owned query runtime. EOF and shutdown close the transport. */
+export async function serveStdio(
+  dbPath: string,
+  createRuntime: QueryRuntimeFactory = createLedgerMcpQueryRuntime,
+  createProtocol: StdioProtocolFactory = queries => ({
+    server: createLedgerMcpServer(queries),
+    transport: new StdioServerTransport(),
+  }),
+): Promise<void> {
+  const runtime = await createRuntime(dbPath)
+  const stopped = Deferred.makeUnsafe<undefined>()
+  const stop = (): void => {
+    Deferred.doneUnsafe(stopped, Effect.succeed(undefined))
+  }
+  try {
+    await runtime.run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const protocol = yield* Effect.acquireRelease(
+            Effect.sync(() => createProtocol(runtime.queries)),
+            owned =>
+              Effect.gen(function* () {
+                yield* Effect.promise(() => owned.transport.close()).pipe(Effect.catch(() => Effect.void))
+                yield* Effect.promise(() => owned.server.close())
+              }),
+          )
+          const { server, transport } = protocol
+          const closeTransport = (): void => {
+            void transport.close().catch(() => {})
+          }
+          server.onclose = stop
+          yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              const onInputEnd = (): void => closeTransport()
+              process.stdin.once('end', onInputEnd)
+              const removeProcessHandlers = installProcessStopHandlers(() => {
+                stop()
+                closeTransport()
+              })
+              return () => {
+                process.stdin.off('end', onInputEnd)
+                removeProcessHandlers()
+              }
+            }),
+            removeHandlers => Effect.sync(removeHandlers),
+          )
+
+          // Connect is awaited to completion before scope release. If shutdown
+          // arrives first, closing transport unblocks the SDK connection path.
+          yield* Effect.tryPromise({
+            try: () => server.connect(transport),
+            catch: error => error,
+          }).pipe(Effect.catch(error => (Deferred.isDoneUnsafe(stopped) ? Effect.void : Effect.fail(error))))
+          yield* Deferred.await(stopped)
+        }),
+      ),
+    )
+  } finally {
+    await runtime.dispose()
+  }
 }
 
 async function main(): Promise<void> {
-  // Safety: never boot as the app — this bundle only ever runs as the MCP
-  // server. (In dev the main entry is separate; this guard is belt-and-suspenders.)
+  // This bundle is a self-serve MCP child, never the Electron main entry.
   if (process.argv.includes('--ledger-mcp-http')) {
-    await serveHttp()
+    try {
+      await serveHttp(readHttpContext())
+    } catch (error) {
+      reportSidecarBootFailure((error as NodeJS.ErrnoException | undefined)?.code ?? 'sidecar-failed')
+      process.exitCode = 1
+    }
     return
   }
   if (!process.argv.includes('--ledger-mcp')) return
 
-  let ctx: LedgerMcpContext
   try {
-    ctx = readContext()
-  } catch {
-    reportSidecarBootFailure('bad-context')
-    process.exit(1)
-    return
+    const context = readContext()
+    await serveStdio(context.dbPath)
+  } catch (error) {
+    reportSidecarBootFailure((error as NodeJS.ErrnoException | undefined)?.code ?? 'sidecar-failed')
+    process.exitCode = 1
   }
-
-  const store = openStoreReadOnly(ctx.dbPath)
-
-  const server = createLedgerMcpServer(store)
-  const transport = new StdioServerTransport()
-  await server.connect(transport)
-  // The transport closes when the agent closes stdin → the SDK closes the
-  // server → no handles remain → the process exits naturally.
 }
 
 void main()
