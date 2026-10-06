@@ -391,3 +391,29 @@ Final focused verification passes 160 tests across 14 files. Node/web and strict
 The programme remains open for commands, facade/compatibility retirement, cooperative provider IO, Coach failure mapping, comparable scaled measurements and installer/macOS/Linux packaged acceptance. Both renderer stores remain byte-identical to `ce81593`, without added let variables, request IDs or applyChange coalescing.
 
 The final full unit suite passes 170 files, with 2,325 passed and two skipped in 209.63 seconds, one worker and unchanged existing assertions/timeouts. Electron, fresh Windows packaging, actual packaged IPC/MCP and published-head CI evidence are maintained in the living assessment after terminal results are inspected.
+
+## Current census after worker configuration and Coach failures, 2026-10-06
+
+This snapshot covers production and test source `d19b1b6`, following `75a4964`. The TypeScript AST runtime-import/nonblank-line method is unchanged. These percentages measure library imports, not architectural completion. Pure calculations remain ordinary TypeScript.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,487 / 1,597 |         93.1% |
+| Store                              |                   12 / 14 |         85.7% |                     2,075 / 2,666 |         77.8% |
+| Agents                             |                   17 / 48 |         35.4% |                     4,587 / 6,056 |         75.7% |
+| Pipeline                           |                    8 / 77 |         10.4% |                    2,689 / 28,691 |          9.4% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                         380 / 380 |        100.0% |
+| All main-process code              |                  83 / 208 |         39.9% |                   14,908 / 48,287 |         30.9% |
+| Shared schema modules              |                   24 / 25 |         96.0% |                     1,903 / 1,961 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+Eleven worker configuration routes and cadence scheduling now use `LedgerConfig` in the existing runtime. Seven named write commands preserve validation/fallbacks and await persistence before broadcasting. Scan status uses an existence query on the same writer connection, one SELECT and at most one returned row for cold and warm requests. It preserves completed zero-source metadata and avoids unrelated source decoding. This is reduced materialization, without a general performance claim.
+
+Coach SDK imports, construction, handshake, selection and stream calls now classify expected failures with a finite tagged error. Local programming failures retain their internal failure identity. IPC and background events publish bounded guidance without native error text; rejected probes release their queue slots. Existing stop/drain, attachment ownership and authentication guidance remain. Native login-terminal errors are bounded too.
+
+Ownership denominators remain section queries 11/11, scoped queries 9/9, former worker compatibility reads 4/4, exports 2/2 and MCP tools/data resources 6/6 and 2/2. Captured scan pricing remains 32/32 producers with 47/47 billing arguments preserved. Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module. New schemas outside that baseline do not change its denominator.
+
+Both renderer stores remain byte-identical to `ce81593`, without added `let` variables, request IDs, promise tracking or `applyChange` coalescing. The programme remains open for scan ingest/clear/currency facade callers, compatibility retirement, remaining cooperative provider IO, comparable scaled measurements and installer/macOS/Linux packaged acceptance. Full local and published-head verification is recorded in the living issue assessment.
+
+Node/web and strict test types, full formatting and build pass. Lint has zero errors and 1,118 advisory warnings. The final full unit suite passes 177 files, with 2,386 passed and two skipped in 461.82 seconds, one worker and unchanged existing assertions/timeouts. Standards and Spec reviews have no unresolved findings.
