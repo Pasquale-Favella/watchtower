@@ -18,6 +18,15 @@ import {
 import { queryCompareView } from '../application/compare-query.js'
 import { queryExport } from '../application/export-query.js'
 import { GatewayReports } from '../application/gateway-reports.js'
+import {
+  addModelAlias,
+  dismissSkill,
+  removeModelAlias,
+  removeModelPrice,
+  setLedgerMcpStartupMode,
+  setModelPrice,
+  setRefreshCadence,
+} from '../application/ledger-config-commands.js'
 import { queryModelsView } from '../application/models-query.js'
 import { queryOptimizeView } from '../application/optimize-query.js'
 import { queryOverview } from '../application/overview-query.js'
@@ -63,6 +72,7 @@ import {
 } from '../pipeline/scan.js'
 import type { DateRange } from '../pipeline/types.js'
 import { LedgerStore } from '../store/ledger.js'
+import { LedgerConfig } from '../store/ledger-ports.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 
@@ -355,8 +365,7 @@ export class DbWorkerContext {
   /** (Re)schedules the background scan in the worker scope from the persisted
    * cadence. Ticks remain delayed and fixed-rate; scan coalescing stays in
    * triggerBackgroundScan. */
-  private scheduleCadenceEffect(): Effect.Effect<void> {
-    const ledger = this.ledger
+  private scheduleCadenceEffect(): Effect.Effect<void, SqlError, LedgerConfig> {
     const backgroundScope = this.backgroundScope
     const nextGeneration = (): { generation: number; previous: Fiber.Fiber<unknown, never> | null } => {
       const generation = ++this.cadenceGeneration
@@ -378,7 +387,8 @@ export class DbWorkerContext {
       if (previous) yield* Fiber.interrupt(previous)
       if (yield* Effect.sync(() => isStale(generation))) return
 
-      const ms = resolveCadenceMs(ledger.getRefreshCadence())
+      const config = yield* LedgerConfig
+      const ms = resolveCadenceMs(yield* config.getRefreshCadence())
       if (ms === null) return // Manual: no background timer
       // Scheduling-hygiene verdicts (Wave 7 §4.4 — the "Schedule retry/jitter
       // + Cron" item, closed honestly):
@@ -411,7 +421,7 @@ export class DbWorkerContext {
   }
 
   private async scheduleCadence(): Promise<void> {
-    await Effect.runPromise(this.scheduleCadenceEffect())
+    await this.runtime.runPromise(this.scheduleCadenceEffect())
   }
 
   /** The FX half of the background cadence tick (and the startup prime):
@@ -543,28 +553,17 @@ export class DbWorkerContext {
         await this.close()
         return null
 
-      /** Persisted cadence read. Plain sync store call: the `Effect.runPromise(
-       * Effect.sync(...))` wrapper this used to wear added a microtask and a
-       * `never`-typed `R` around a synchronous `node:sqlite` read, and rejected
-       * with the SAME squashed error when it threw — so the wrapper was
-       * ceremony with no composition in it. `dispatch` is already Promise-
-       * returning (a `worker_threads` handler IS a composition root, ADR 0023),
-       * so the arm stays async with no Effect at all. */
-      case 'cadence:get': {
-        return ledger.getRefreshCadence()
-      }
+      case 'cadence:get':
+        return this.runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()))
 
       case 'cadence:set': {
-        const value = args[0] as string
         const reschedule = this.scheduleCadenceEffect()
-        // Only `reschedule` is genuinely effectful (it interrupts the prior
-        // cadence fiber and forks the new one into `backgroundScope`), so only
-        // it stays an Effect, run through the worker runtime.
         return this.runtime.runPromise(
           Effect.gen(function* () {
-            ledger.setRefreshCadence(value)
+            yield* setRefreshCadence(args[0])
             yield* reschedule
-            return ledger.getRefreshCadence()
+            const config = yield* LedgerConfig
+            return yield* config.getRefreshCadence()
           }),
         )
       }
@@ -670,7 +669,7 @@ export class DbWorkerContext {
        * so dismissals survive `clear()`. */
       case 'skills:dismiss': {
         const req = args[0] as { source: 'skill' | 'bash' | 'tool'; name: string; reason: string }
-        ledger.dismissSkill(req.source, req.name, req.reason)
+        await this.runtime.runPromise(dismissSkill(req))
         return { ok: true }
       }
 
@@ -688,44 +687,31 @@ export class DbWorkerContext {
        * `config:changed` event tells the mounted view to refetch (query-time
        * config — no rescan). */
       case 'models:addAlias': {
-        const model = args[0] as string
-        const aliasOf = args[1] as string
-        if (typeof model !== 'string' || !model.trim() || typeof aliasOf !== 'string' || !aliasOf.trim()) {
-          throw new Error('model and alias target must be non-empty strings')
-        }
-        ledger.setModelAlias(model.trim(), aliasOf.trim())
+        await this.runtime.runPromise(addModelAlias(args[0], args[1]))
         this.emit({ event: 'config:changed' })
         return { ok: true }
       }
 
       /** Read the current model-alias config (Settings › Model aliases CRUD). */
       case 'models:getAliases':
-        return ledger.getModelAliases()
+        return this.runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getModelAliases()))
 
       /** Remove a model alias (Settings › Model aliases CRUD). */
       case 'models:removeAlias': {
-        const model = args[0] as string
-        if (typeof model !== 'string' || !model.trim()) {
-          throw new Error('model must be a non-empty string')
-        }
-        ledger.removeModelAlias(model.trim())
+        await this.runtime.runPromise(removeModelAlias(args[0]))
         this.emit({ event: 'config:changed' })
         return { ok: true }
       }
 
       /** Read the current price-override config (Settings › Pricing CRUD). */
       case 'models:getPriceOverrides':
-        return ledger.getPriceOverrides()
+        return this.runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getPriceOverrides()))
 
       /** Remove a price override (Settings › Pricing CRUD): a pure config delete —
        * display cost reverts to the stored base on the next query (query-time
        * pricing), no row updates, no rescan. */
       case 'models:removePriceOverride': {
-        const model = args[0] as string
-        if (typeof model !== 'string' || !model.trim()) {
-          throw new Error('model must be a non-empty string')
-        }
-        ledger.removePriceOverride(model.trim())
+        await this.runtime.runPromise(removeModelPrice(args[0]))
         this.emit({ event: 'config:changed' })
         return { ok: true }
       }
@@ -734,21 +720,7 @@ export class DbWorkerContext {
        * for a model, a pure upsert on the ledger's `price_override` config table
        * (display cost recomputes on read) plus a `config:changed` event. */
       case 'models:setPrice': {
-        const model = args[0] as string
-        const inputPricePerMillion = args[1] as number
-        const outputPricePerMillion = args[2] as number
-        if (typeof model !== 'string' || !model.trim()) {
-          throw new Error('model must be a non-empty string')
-        }
-        if (
-          !Number.isFinite(inputPricePerMillion) ||
-          inputPricePerMillion < 0 ||
-          !Number.isFinite(outputPricePerMillion) ||
-          outputPricePerMillion < 0
-        ) {
-          throw new Error('prices must be non-negative numbers')
-        }
-        ledger.setPriceOverride(model.trim(), { inputPricePerMillion, outputPricePerMillion })
+        await this.runtime.runPromise(setModelPrice(args[0], args[1], args[2]))
         this.emit({ event: 'config:changed' })
         return { ok: true }
       }
@@ -786,10 +758,10 @@ export class DbWorkerContext {
         return this.settingsInfo()
 
       case 'ledger-mcp:startup:get':
-        return this.ledger.getLedgerMcpStartupMode()
+        return this.runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getLedgerMcpStartupMode()))
 
       case 'ledger-mcp:startup:set':
-        return this.ledger.setLedgerMcpStartupMode(args[0])
+        return this.runtime.runPromise(setLedgerMcpStartupMode(args[0]))
 
       case 'settings:clear': {
         ledger.clear()
