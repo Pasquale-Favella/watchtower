@@ -37,17 +37,63 @@ import { fileURLToPath } from 'node:url'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { queryModelsView } from '../src/main/application/models-query.js'
 import { Env } from '../src/main/env.js'
-import { buildModelsViewFromLedger, type ModelsConfig } from '../src/main/models-view.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import * as Models from '../src/main/pipeline/models.js'
 import { calculateCost, type ModelCosts } from '../src/main/pipeline/models.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
+import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
 import { isAuditEstimated } from '../src/renderer/src/shared/lib/models.js'
+import type { ModelsConfig, ModelsPayload } from '../src/shared/schemas/models.js'
+import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 const BUNDLER = fileURLToPath(new URL('../scripts/bundle-litellm.mjs', import.meta.url))
 const SNAPSHOT_MODULE = '../src/main/pipeline/data/litellm-snapshot.json'
+const VIEW_NOW = new Date(2026, 6, 15)
+
+type TestRuntime = ReturnType<typeof openLedgerFixture>['runtime']
+
+function modelsView(runtime: TestRuntime, scope: OverviewScope = { period: 'lifetime' }): ModelsPayload {
+  return runtime.runSync(atTime(queryModelsView(viewInputs(scope)), VIEW_NOW))
+}
+
+function portModelsCall(runtime: TestRuntime, provider: string, call: ReturnType<typeof buildFixtureCachedCall>): void {
+  const iso = call.timestamp
+  const turn = buildFixtureCachedTurn(0, 'pricing seam', {
+    sessionId: 'sess-pricing-seam',
+    timestamp: iso,
+    calls: [call],
+  })
+  runtime.runSync(
+    Effect.flatMap(LedgerIngest, ingest =>
+      ingest.portIn({
+        provider,
+        envFingerprint: 'env-demo',
+        filePath: `/cache/${provider}/sess-pricing-seam.jsonl`,
+        verdict: 'new',
+        cachedFile: buildFixtureCachedFile({ canonicalProjectName: 'demo-project', title: '', turns: [turn] }),
+      }),
+    ),
+  )
+}
+
+function setModelsConfig(runtime: TestRuntime, config: ModelsConfig): void {
+  runtime.runSync(
+    Effect.flatMap(LedgerConfig, ledgerConfig =>
+      Effect.gen(function* () {
+        for (const alias of config.aliases) yield* ledgerConfig.setModelAlias(alias.model, alias.aliasOf)
+        for (const override of config.overrides) {
+          yield* ledgerConfig.setPriceOverride(override.model, {
+            inputPricePerMillion: override.inputPricePerMillion,
+            outputPricePerMillion: override.outputPricePerMillion,
+          })
+        }
+      }),
+    ),
+  )
+}
 
 /** A cache dir the effects can write to without touching the user's real one. */
 function freshCacheDir(): string {
@@ -645,15 +691,10 @@ describe('the Models view reports the output the scan billed', () => {
   // lens that adds them shows a row with more output than was billed AND
   // attributes cost to tokens the ledger never charged for.
   //
-  // The fixture approach is `tests/models-view.test.ts`'s: a `LedgerStore` in a
-  // temp dir, one `portIn` per call, then `buildModelsViewFromLedger`. No
-  // network, no scan, no provider parser.
-  const NOW = new Date(2026, 6, 15)
-  const EMPTY_CONFIG: ModelsConfig = { aliases: [], overrides: [] }
-
-  function storeWith(provider: string, output: number, reasoning: number, model: string): LedgerStore {
-    const dir = mkdtempSync(join(tmpdir(), 'tr-price-seams-view-'))
-    const store = new LedgerStore(join(dir, 'data.db'))
+  // The fixture uses the real worker runtime and the ingest/query ports. No
+  // network, scan, or provider parser is involved.
+  function runtimeWith(provider: string, output: number, reasoning: number, model: string): TestRuntime {
+    const { runtime } = openLedgerFixture()
     const iso = new Date('2026-07-10T12:00:00').toISOString()
     const base = buildFixtureCachedCall(0)
     const call = {
@@ -673,19 +714,8 @@ describe('the Models view reports the output the scan billed', () => {
       costUSD: 0,
       timestamp: iso,
     }
-    const turn = buildFixtureCachedTurn(0, 'reasoning seam', {
-      sessionId: 'sess-reasoning-seam',
-      timestamp: iso,
-      calls: [call],
-    })
-    store.portIn({
-      provider,
-      envFingerprint: 'env-demo',
-      filePath: `/cache/${provider}/sess-reasoning-seam.jsonl`,
-      verdict: 'new',
-      cachedFile: buildFixtureCachedFile({ canonicalProjectName: 'demo-project', title: '', turns: [turn] }),
-    })
-    return store
+    portModelsCall(runtime, provider, call)
+    return runtime
   }
 
   // A codex call: the OpenAI subset contract, so the billed output is the
@@ -695,27 +725,25 @@ describe('the Models view reports the output the scan billed', () => {
   const GEMINI = { provider: 'gemini', output: 100, reasoning: 40, model: 'gemini-3.1-pro-preview' }
 
   it('a codex by-model bucket reports the reported output, not output + reasoning', () => {
-    const store = storeWith(CODEX.provider, CODEX.output, CODEX.reasoning, CODEX.model)
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, EMPTY_CONFIG, NOW)
+    const runtime = runtimeWith(CODEX.provider, CODEX.output, CODEX.reasoning, CODEX.model)
+    const payload = modelsView(runtime)
     const row = payload.byModel[0]!
     // 30, not 40. `billableOutputTokens('codex', 30, 10)` is 30, and the scan
     // billed 30.
     expect(row.outputTokens).toBe(30)
     // The raw reasoning count is not lost — it is still in the audit row.
     expect(payload.audit[0]!.raw.reasoningTokens).toBe(10)
-    store.close()
   })
 
   it('a codex by-task bucket reports the same count as its by-model sibling', () => {
-    const store = storeWith(CODEX.provider, CODEX.output, CODEX.reasoning, CODEX.model)
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, EMPTY_CONFIG, NOW)
+    const runtime = runtimeWith(CODEX.provider, CODEX.output, CODEX.reasoning, CODEX.model)
+    const payload = modelsView(runtime)
     expect(payload.byTask[0]!.outputTokens).toBe(payload.byModel[0]!.outputTokens)
-    store.close()
   })
 
   it("a codex audit row's displayed output matches what the scan billed", () => {
-    const store = storeWith(CODEX.provider, CODEX.output, CODEX.reasoning, CODEX.model)
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, EMPTY_CONFIG, NOW)
+    const runtime = runtimeWith(CODEX.provider, CODEX.output, CODEX.reasoning, CODEX.model)
+    const payload = modelsView(runtime)
     const audit = payload.audit[0]!
     expect(audit.displayed.outputTokens).toBe(30)
     // And the cost block beneath it is computed from that same number, so the
@@ -724,18 +752,16 @@ describe('the Models view reports the output the scan billed', () => {
     expect(audit.cost.output).toBeCloseTo(30 * rates.outputCostPerToken, 12)
     // The sum the view reports is the sum the engine bills for that call.
     expect(audit.cost.recomputedTotalUSD).toBeCloseTo(calculateCost(CODEX.model, 1_000, 30, 0, 0, 0), 12)
-    store.close()
   })
 
   it('a provider outside the set still gets the fold, in all three places', () => {
-    const store = storeWith(GEMINI.provider, GEMINI.output, GEMINI.reasoning, GEMINI.model)
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, EMPTY_CONFIG, NOW)
+    const runtime = runtimeWith(GEMINI.provider, GEMINI.output, GEMINI.reasoning, GEMINI.model)
+    const payload = modelsView(runtime)
     // gemini reports thoughts as a separate counter, so 100 + 40 = 140 is the
     // whole bill and dropping the 40 would under-report it.
     expect(payload.byModel[0]!.outputTokens).toBe(140)
     expect(payload.byTask[0]!.outputTokens).toBe(140)
     expect(payload.audit[0]!.displayed.outputTokens).toBe(140)
-    store.close()
   })
 
   it('a codex row repriced through an Alias bills the same output the scan billed', () => {
@@ -743,33 +769,33 @@ describe('the Models view reports the output the scan billed', () => {
     // through `calculateCost` instead of trusting the scan's recorded cost, and
     // that re-price used to pass the RAW output through, so an aliased codex row
     // cost more than the identical call as recorded by a scan.
-    const store = storeWith(CODEX.provider, CODEX.output, CODEX.reasoning, CODEX.model)
+    const runtime = runtimeWith(CODEX.provider, CODEX.output, CODEX.reasoning, CODEX.model)
     const config: ModelsConfig = {
       aliases: [{ model: CODEX.model, aliasOf: 'gpt-5.1' }],
       overrides: [],
     }
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, config, NOW)
+    setModelsConfig(runtime, config)
+    const payload = modelsView(runtime)
     const row = payload.byModel[0]!
     expect(row.model).toBe('gpt-5.1')
     expect(row.outputTokens).toBe(30)
     // 1000 in + 30 out at gpt-5.1's rates — 30 out, never 40.
     expect(row.costUSD).toBeCloseTo(calculateCost('gpt-5.1', 1_000, 30, 0, 0, 0), 12)
     expect(row.costUSD).not.toBeCloseTo(calculateCost('gpt-5.1', 1_000, 40, 0, 0, 0), 12)
-    store.close()
   })
 
   it('a codex row repriced through a Price override uses the same output count', () => {
-    const store = storeWith(CODEX.provider, CODEX.output, CODEX.reasoning, CODEX.model)
+    const runtime = runtimeWith(CODEX.provider, CODEX.output, CODEX.reasoning, CODEX.model)
     const config: ModelsConfig = {
       aliases: [],
       overrides: [{ model: CODEX.model, inputPricePerMillion: 3, outputPricePerMillion: 15 }],
     }
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, config, NOW)
+    setModelsConfig(runtime, config)
+    const payload = modelsView(runtime)
     const row = payload.byModel[0]!
     // 1000 @ $3/M + 30 @ $15/M.
     expect(row.costUSD).toBeCloseTo(0.003 + 30 * 15e-6, 12)
     expect(row.outputTokens).toBe(30)
-    store.close()
   })
 })
 
@@ -790,7 +816,6 @@ describe('the Models audit lens does not badge a correctly-priced tiered row', (
   // rather than from a cost this test hand-wrote — the two numbers under
   // comparison are produced by two different functions, which is the whole
   // point of the seam.
-  const NOW = new Date(2026, 6, 15)
   const XAI = 'xai/grok-4.6'
   const TIERED_PROMPT = 250_000
   // A re-hoster row in the fixture as well, so the lens has a second model it
@@ -808,8 +833,7 @@ describe('the Models audit lens does not badge a correctly-priced tiered row', (
   }
 
   function auditRowFor(opts: RowOptions) {
-    const dir = mkdtempSync(join(tmpdir(), 'tr-price-seams-audit-'))
-    const store = new LedgerStore(join(dir, 'data.db'))
+    const { runtime } = openLedgerFixture()
     const iso = new Date('2026-07-10T12:00:00').toISOString()
     const base = buildFixtureCachedCall(0)
     const call = {
@@ -835,24 +859,13 @@ describe('the Models audit lens does not badge a correctly-priced tiered row', (
       speed: opts.speed ?? 'standard',
       timestamp: iso,
     }
-    const turn = buildFixtureCachedTurn(0, 'tier audit seam', {
-      sessionId: 'sess-tier-audit',
-      timestamp: iso,
-      calls: [call],
-    })
-    store.portIn({
-      provider: 'xai',
-      envFingerprint: 'env-demo',
-      filePath: '/cache/xai/sess-tier-audit.jsonl',
-      verdict: 'new',
-      cachedFile: buildFixtureCachedFile({ canonicalProjectName: 'demo-project', title: '', turns: [turn] }),
-    })
+    portModelsCall(runtime, 'xai', call)
     const config: ModelsConfig = {
       aliases: opts.aliasOf ? [{ model: opts.rawModel, aliasOf: opts.aliasOf }] : [],
       overrides: [],
     }
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, config, NOW)
-    store.close()
+    setModelsConfig(runtime, config)
+    const payload = modelsView(runtime)
     return payload.audit[0]!
   }
 
@@ -949,7 +962,7 @@ describe('the Models audit lens does not badge a correctly-priced tiered row', (
 // MUST STAY LAST IN THIS FILE. These cases stub the bundled snapshot and
 // re-import the engine module, and `vi.resetModules()` cannot be undone: every
 // earlier case depends on `pricedBy` writing through the SAME module instance
-// the statically-imported `calculateCost` and `buildModelsViewFromLedger` read
+// the statically-imported `calculateCost` and `queryModelsView` read
 // from. A case added below this one would silently get the stubbed snapshot.
 describe('a user price override beats a tier in every form getModelCosts honours', () => {
   // Why the snapshot is stubbed: the prefix and case-insensitive override
