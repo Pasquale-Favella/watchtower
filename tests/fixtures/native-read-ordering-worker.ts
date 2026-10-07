@@ -5,7 +5,7 @@ import * as Effect from 'effect/Effect'
 
 import { DbWorkerContext } from '../../src/main/db-worker/context.js'
 import type { DbWorkerData, DbWorkerRequest } from '../../src/main/db-worker/protocol.js'
-import { LedgerQueries } from '../../src/main/store/ledger-repository.js'
+import { LedgerViewReads } from '../../src/main/store/ledger-view-reads.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './cached-file.js'
 import { openWorkerOwner } from './worker-owner.js'
 
@@ -25,11 +25,11 @@ owner.ledger.portIn({
 // Decorate the real repository read inside this fixture worker. The SQL read
 // and transaction complete first; only its result delivery is held for the
 // parent to coordinate with a config write.
-const queries = owner.runtime.runSync(LedgerQueries)
-const getSnapshotData = queries.getRequestSnapshotData.bind(queries)
+const reads = owner.runtime.runSync(LedgerViewReads)
+const getViewData = reads.getViewData.bind(reads)
 const snapshotGate = Deferred.makeUnsafe<undefined, never>()
-queries.getRequestSnapshotData = () =>
-  getSnapshotData().pipe(
+reads.getViewData = () =>
+  getViewData().pipe(
     Effect.flatMap(data =>
       Effect.sync(() =>
         port.postMessage({ fixture: 'snapshot-ready', aliases: data.aliases, overrides: data.overrides }),
