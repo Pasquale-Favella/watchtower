@@ -11,24 +11,31 @@ import { describe, expect, it, vi } from 'vitest'
 import { AssistantSetup } from '../src/main/application/assistant-setup.js'
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
 import { RepositoryInspection, RepositoryInspectionError } from '../src/main/application/repository-inspection.js'
-import { buildCompareViewFromLedger } from '../src/main/compare-view.js'
+import { calculateComparePayload } from '../src/main/compare-calculation.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import { buildModelsViewFromLedger } from '../src/main/models-view.js'
+import { calculateModelsPayload } from '../src/main/models-calculation.js'
 import { buildOptimizeViewFromLedger } from '../src/main/optimize-view.js'
 import { buildOverviewFromLedger } from '../src/main/overview.js'
-import { buildPullRequestsViewFromLedger } from '../src/main/pull-requests-view.js'
-import { buildSessionsViewFromLedger } from '../src/main/sessions-view.js'
+import { overviewDateRange } from '../src/main/overview-scope.js'
+import type { SessionSummary } from '../src/main/pipeline/types.js'
+import { calculatePullRequestsPayload } from '../src/main/pull-requests-calculation.js'
+import { calculateSessionsView } from '../src/main/sessions-calculation.js'
 import { buildSkillsViewFromLedger } from '../src/main/skills-view.js'
-import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
+import { calculateSpendView } from '../src/main/spend-calculation.js'
+import { buildSessionSummariesFromSnapshotResult } from '../src/main/store/aggregate-calculation.js'
 import { LedgerConfig, LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
+import type { LedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
+import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
 import { buildAnalyticalViewsFromLedger, buildDashboardViewsFromLedger } from '../src/main/views.js'
 import { buildYieldViewFromLedger } from '../src/main/yield-view.js'
+import { sessionRowSchema } from '../src/shared/schemas/views.js'
 import {
   buildFixtureCachedCall,
   buildFixtureCachedFile,
   buildFixtureCachedTurn,
   FIXTURE_SOURCE_PATH,
 } from './fixtures/cached-file.js'
+import { viewInputs } from './fixtures/ledger-runtime.js'
 import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 async function withWorker(
@@ -90,27 +97,53 @@ const operations = [
 type ViewOperation = (typeof operations)[number]
 const scope = { period: 'lifetime', range: { since: '2026-07-01', until: '2026-07-02' } } as const
 
+function expectedQueryInputs(owner: ReturnType<typeof openWorkerOwner>): { snapshot: LedgerQuerySnapshot; now: Date } {
+  const { catalogue, proxyPaths } = viewInputs(scope)
+  const snapshot = owner.runtime.runSync(loadLedgerQuerySnapshotEffect({ catalogue, proxyPaths }))
+  return { snapshot, now: new Date() }
+}
+
+function expectedSummaries(snapshot: LedgerQuerySnapshot, now: Date): SessionSummary[] {
+  const summaries = buildSessionSummariesFromSnapshotResult(snapshot, {
+    range: overviewDateRange(scope, now),
+  })
+  return summaries.summaries
+}
+
 async function expectedPayload(operation: ViewOperation, owner: ReturnType<typeof openWorkerOwner>) {
   switch (operation) {
     case 'store:views':
       return buildDashboardViewsFromLedger(owner.ledger)
     case 'store:analytics':
       return buildAnalyticalViewsFromLedger(owner.ledger)
-    case 'sessions:view':
-      return buildSessionsViewFromLedger(owner.ledger, scope)
-    case 'models:view':
-      return buildModelsViewFromLedger(owner.ledger, scope, {
-        aliases: owner.ledger.getModelAliases(),
-        overrides: owner.ledger.getPriceOverrides(),
-      })
+    case 'sessions:view': {
+      const { snapshot, now } = expectedQueryInputs(owner)
+      return Schema.decodeUnknownSync(Schema.mutable(Schema.Array(sessionRowSchema)))(
+        calculateSessionsView(snapshot, scope, now).rows,
+      )
+    }
+    case 'models:view': {
+      const { snapshot, now } = expectedQueryInputs(owner)
+      return calculateModelsPayload(
+        expectedSummaries(snapshot, now),
+        { aliases: [...snapshot.aliases], overrides: [...snapshot.overrides] },
+        snapshot.catalogue,
+      )
+    }
     case 'overview:query':
       return buildOverviewFromLedger(owner.ledger, scope)
-    case 'spend:view':
-      return buildSpendViewFromLedger(owner.ledger, scope)
-    case 'compare:view':
-      return buildCompareViewFromLedger(owner.ledger, scope)
-    case 'pullRequests:view':
-      return buildPullRequestsViewFromLedger(owner.ledger, scope)
+    case 'spend:view': {
+      const { snapshot, now } = expectedQueryInputs(owner)
+      return calculateSpendView(snapshot, scope, now).value
+    }
+    case 'compare:view': {
+      const { snapshot, now } = expectedQueryInputs(owner)
+      return calculateComparePayload(expectedSummaries(snapshot, now), snapshot.catalogue)
+    }
+    case 'pullRequests:view': {
+      const { snapshot, now } = expectedQueryInputs(owner)
+      return calculatePullRequestsPayload(expectedSummaries(snapshot, now), snapshot.catalogue)
+    }
     case 'skills:view':
       return buildSkillsViewFromLedger(owner.ledger, scope, undefined, {
         homeDir: dirname(owner.ledger.dbPath),
@@ -189,7 +222,8 @@ describe('worker view queries', () => {
         }),
       })
       const pair = { modelA: 'second-model', modelB: 'demo-model' }
-      const expected = buildCompareViewFromLedger(owner.ledger, scope, pair)
+      const { snapshot: querySnapshot, now } = expectedQueryInputs(owner)
+      const expected = calculateComparePayload(expectedSummaries(querySnapshot, now), querySnapshot.catalogue, pair)
       const queries = owner.runtime.runSync(LedgerQueries)
       const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
 

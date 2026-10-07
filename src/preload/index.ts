@@ -10,10 +10,10 @@ import type {
   SearchHit,
 } from '../main/views.js'
 import type { OverviewPayload, OverviewScope } from '../main/overview.js'
-import type { PullRequestsPayload } from '../main/pull-requests-view.js'
-import type { SpendPayload } from '../main/spend-view.js'
-import type { ModelsPayload } from '../main/models-view.js'
-import type { ComparePair, ComparePayload } from '../main/compare-view.js'
+import type { PullRequestsPayload } from '../shared/schemas/pull-requests.js'
+import type { SpendPayload } from '../shared/schemas/spend.js'
+import type { ModelsPayload } from '../shared/schemas/models.js'
+import type { ComparePair, ComparePayload } from '../shared/schemas/compare.js'
 import type { OptimizePayload } from '../main/optimize-view.js'
 import type { YieldPayload } from '../main/yield-view.js'
 import type {
