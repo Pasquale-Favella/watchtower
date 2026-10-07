@@ -2,9 +2,11 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
+import { queryPullRequestsView } from '../src/main/application/pull-requests-query.js'
 import {
   cachedTurnToClassified,
   collectPrUrlsFromEntry,
@@ -21,10 +23,12 @@ import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { sectionNeedsPrEvidenceReparse } from '../src/main/pipeline/session-cache.js'
 import { shortenPrUrl } from '../src/main/pipeline/sessions-report.js'
 import type { JournalEntry } from '../src/main/pipeline/types.js'
-import { buildPullRequestsViewFromLedger } from '../src/main/pull-requests-view.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
+import { LedgerIngest } from '../src/main/store/ledger-ports.js'
+import type { WorkerRuntime } from '../src/main/worker-runtime.js'
+import type { PortInput } from '../src/shared/schemas/port.js'
 import { providerSectionSchema } from '../src/shared/schemas/session-cache.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 const GH = 'https://github.com/acme/repo/pull/12'
 const GHE = 'https://ghe.corp.example.com/acme/widget/pull/34'
@@ -189,34 +193,39 @@ describe('cachedTurnToClassified fallback (pre-capture cache entries)', () => {
 })
 
 describe('end-to-end: pre-capture shaped sessions reach the PR section', () => {
-  function ledgerWithTurns(turns: CachedFile['turns'], prLinks?: string[]): LedgerStore {
-    const dir = mkdtempSync(join(tmpdir(), 'tr-pr-detect-'))
-    const store = new LedgerStore(join(dir, 'data.db'))
+  function ledgerWithTurns(turns: CachedFile['turns'], prLinks?: string[]): WorkerRuntime {
+    const { runtime } = openLedgerFixture()
     const file = buildFixtureCachedFile({ turns, ...(prLinks ? { prLinks } : {}) })
-    store.portIn({
-      provider: 'opencode',
-      envFingerprint: 'env-demo',
-      filePath: '/cache/opencode/sess-9.jsonl',
-      verdict: 'new',
-      cachedFile: file,
-    })
-    return store
+    runtime.runSync(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          provider: 'opencode',
+          envFingerprint: 'env-demo',
+          filePath: '/cache/opencode/sess-9.jsonl',
+          verdict: 'new',
+          cachedFile: file,
+        } satisfies PortInput),
+      ),
+    )
+    return runtime
   }
 
   it('a session whose only evidence is a GHE link in the prompt appears', () => {
-    const store = ledgerWithTurns([buildFixtureCachedTurn(0, `continue work on ${GHE}`)])
-    const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
+    const runtime = ledgerWithTurns([buildFixtureCachedTurn(0, `continue work on ${GHE}`)])
+    const payload = runtime.runSync(
+      atTime(queryPullRequestsView(viewInputs({ period: 'lifetime' })), new Date(2026, 7, 6)),
+    )
     expect(payload.rows.map(r => r.url)).toEqual([GHE])
     expect(payload.rows[0]!.label).toBe('acme/widget#34')
-    store.close()
   })
 
   it('a session whose only evidence is a gh command in the turn appears', () => {
     const call = { ...buildFixtureCachedCall(0), bashCommands: [`gh pr view ${GH} --comments`] }
-    const store = ledgerWithTurns([buildFixtureCachedTurn(0, 'look at the failing check', { calls: [call] })])
-    const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
+    const runtime = ledgerWithTurns([buildFixtureCachedTurn(0, 'look at the failing check', { calls: [call] })])
+    const payload = runtime.runSync(
+      atTime(queryPullRequestsView(viewInputs({ period: 'lifetime' })), new Date(2026, 7, 6)),
+    )
     expect(payload.rows.map(r => r.url)).toEqual([GH])
-    store.close()
   })
 })
 
