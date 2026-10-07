@@ -443,3 +443,33 @@ Ownership denominators remain section queries 11/11, scoped queries 9/9, former 
 Standards review's stale runtime comments are corrected. Final Standards and Spec reviews have no unresolved findings. Focused integration verification passes 107 tests across ten files. Node/web and strict test types, full formatting and build pass. Lint has zero errors and 1,114 advisory warnings. Full local and published-head evidence is maintained in the living assessment.
 
 The programme remains open for remaining compatibility builders and test/script callers, cooperative provider IO, worker decomposition, comparable 1k/50k/500k refresh/detail/search measurements, installers and macOS/Linux packaged acceptance. The legacy measurement script still constructs LedgerStore; it must migrate to measure the new application path.
+
+## Current census after section adapter retirement, 2026-10-07
+
+Production and test source is `2b844f5`, following `76cf31c`. The unchanged AST runtime-import/nonblank-line method measures library imports, not architecture completion. Removing five adapters lowers the main-process import percentage because their Effect Schema imports disappear with the unused code.
+
+| Area                                    | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| --------------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                               |                     4 / 6 |         66.7% |                     1,441 / 1,551 |         92.9% |
+| Store                                   |                   12 / 14 |         85.7% |                     2,075 / 2,666 |         77.8% |
+| Agents                                  |                   17 / 48 |         35.4% |                     4,587 / 6,056 |         75.7% |
+| Pipeline                                |                    8 / 77 |         10.4% |                    2,689 / 28,691 |          9.4% |
+| Remaining builders ending in `-view.ts` |                     3 / 3 |          100% |                         245 / 245 |          100% |
+| All main-process code                   |                  82 / 207 |         39.6% |                   14,808 / 48,187 |         30.7% |
+| Shared schema modules                   |                   24 / 25 |           96% |                     1,903 / 1,961 |           97% |
+| Renderer                                |                   2 / 123 |          1.6% |                      379 / 13,066 |          2.9% |
+| Preload                                 |                     0 / 1 |            0% |                           0 / 217 |            0% |
+
+Models, Compare, Sessions, Spend and Pull Requests no longer have synchronous section adapters. Their test callers use native ledger ports and the application queries, with one fixture-owned worker runtime. Custom-pricing tests retain a borrowed facade only for the other builders that still need it. Worker parity tests calculate expectations from decoded native snapshots and preserve the one-read and facade-bypass checks. Preload and main-process types come directly from the shared schemas.
+
+The ownership and owned-schema baseline denominators remain unchanged: section queries 11/11, scoped queries 9/9, former compatibility reads 4/4, exports 2/2, MCP tools/resources 6/6 and 2/2; scan pricing 32/32 producers and 47/47 preserved billing arguments; owned Zod removal 23/23, 100%; native Effect Schema 22/23, 95.7%, plus one UI-only plain TypeScript module.
+
+Both renderer stores remain identical to `ce81593`, without added let variables, request IDs, promise tracking or applyChange coalescing. Focused verification passes 268 tests across twelve files. Node/web and strict test types pass. Reviews have no unresolved findings in this adapter retirement. Full verification, measurement work and remaining programme scope are recorded in the living assessment.
+
+`e65ad24` measures the actual application path through one persistent worker runtime per operation child. The [measurement record and raw artifacts](./effect-query-path-2026-10-07.md) report first-request/warm latency, native statement executions and rows, connection identity and memory observations at 1k/50k/500k. The source census above is unchanged by the script update. Import coverage, ownership coverage and performance acceptance remain separate measurements.
+
+The optional legacy engine is current compatibility code, not a historical baseline; export workloads and retained-result memory baselines differ. Synthetic ingest and local FX refresh do not measure a complete provider scan/refresh cycle. Materialized rows are not selected/decoded bytes, and export cloneBytes is only its returned acknowledgment. A raw legacy aggregation note claiming an extra source read is stale; the current compatibility snapshot reads sources once. These limits and remaining historical comparisons stay open. Dashboard/analytics purpose-shaped projections and direct accumulators are the next performance candidate, with pricing, identity and configuration parity required. Broad LedgerStore test retirement, remaining cooperative provider IO, worker decomposition, installers and macOS/Linux packaged acceptance also remain open.
+
+The subsequent aggregate, views, Skills, Optimize, Yield and custom-pricing test migration removes the borrowed facade from all six files. They use the shared native fixture and ledger ports; MCP pricing checks retain a separately owned read-only runtime. The current test inventory has 31 LedgerStore-mentioning files and 28 construction files, compared with 37 and 33 at the measured revision. Two row-type imports now depend directly on shared schemas. Ownership and schema denominators above remain unchanged.
+
+The benchmark reliability follow-up waits for native child closure on timeout and rejects incomplete/malformed results, spawn errors and nonzero exits. Controlled checks, a real native-query smoke run and forced aggregate timeout reporting pass. Original scaled artifacts retain their measured source and semantic content. Node/web/test types and the 216-test focused suite pass; final integration evidence is maintained in the execution record and living assessment.
