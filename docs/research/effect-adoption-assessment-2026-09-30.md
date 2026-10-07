@@ -473,3 +473,29 @@ The optional legacy engine is current compatibility code, not a historical basel
 The subsequent aggregate, views, Skills, Optimize, Yield and custom-pricing test migration removes the borrowed facade from all six files. They use the shared native fixture and ledger ports; MCP pricing checks retain a separately owned read-only runtime. The current test inventory has 31 LedgerStore-mentioning files and 28 construction files, compared with 37 and 33 at the measured revision. Two row-type imports now depend directly on shared schemas. Ownership and schema denominators above remain unchanged.
 
 The benchmark reliability follow-up waits for native child closure on timeout and rejects incomplete/malformed results, spawn errors and nonzero exits. Controlled checks, a real native-query smoke run and forced aggregate timeout reporting pass. Original scaled artifacts retain their measured source and semantic content. Node/web/test types and the 216-test focused suite pass; final integration evidence is maintained in the execution record and living assessment.
+
+## Current census after dashboard and analytics projections, 2026-10-07
+
+Source is `f91efe1`, following `ab983bd`. The unchanged TypeScript AST runtime-import/nonblank-line method measures library imports, not architectural completion. Pure calculation code remains TypeScript.
+
+| Area                     | Effect imports / files | File coverage | Lines in those files / area lines | Line coverage |
+| ------------------------ | ---------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                |                    4/6 |         66.7% |                         1441/1551 |         92.9% |
+| Store                    |                  14/16 |         87.5% |                         2186/2777 |         78.7% |
+| Agents                   |                  17/48 |         35.4% |                         4589/6058 |         75.8% |
+| Pipeline                 |                   8/77 |         10.4% |                        2689/28691 |          9.4% |
+| Remaining -view adapters |                    3/3 |          100% |                           245/245 |          100% |
+| All main                 |                 84/210 |           40% |                       14927/48682 |         30.7% |
+| Shared schemas           |                  24/25 |           96% |                         1903/1961 |           97% |
+| Renderer                 |                  2/123 |          1.6% |                         379/13066 |          2.9% |
+| Preload                  |                    0/1 |            0% |                             0/217 |            0% |
+
+Dashboard and Analytics now use sufficient typed reads and direct accumulators, with five SELECTs instead of the broad snapshot's six. No production runtime or SQL client is added. Current aliases and strict overrides remain inside the request transaction. Analytics avoids calculating unused dashboard arrays. Composite source/session identity corrects duplicate public-ID project and proxy attribution; tests specify the changed result.
+
+The [measurement record and artifact](./effect-view-projections-2026-10-07.md) report cold/five-warm timings and untimed V8 input size proxies at all three fixture sizes. Method version 2 removes retained operation results between samples, so the earlier artifacts are not a clean speedup or memory comparison. Full scan/refresh measurements, controlled historical comparisons, sufficient Overview/export projections and profiling remain open.
+
+Owned Zod removal remains 23/23, 100%; native Effect Schema 22/23, 95.7%, plus one UI-only plain type. Ownership remains sections 11/11, scoped queries 9/9, former worker reads 4/4, exports 2/2 and MCP tools/resources 6/6 and 2/2. Scan pricing remains 32/32 producers with 47/47 billing arguments preserved. LedgerStore still appears in 31 test files, with 28 construction files.
+
+Node/web and strict test types, full formatting, build and lint pass. Lint has zero errors and 1,109 advisory warnings. Focused integration passes 156 tests across ten files; the native ordering follow-up passes 59 across two. Full units pass 183 files, 2423 tests and 2 skips in 356.15s with one worker. Existing assertions and timeouts remain. All four Electron checks pass in 7.8m. Fresh Windows x64 directory packaging and the full actual-package IPC/SDK gate exit zero. No renderer errors occur; app and SDK children close and the isolated profile is removed. Installer and macOS/Linux packaged acceptance remain open.
+
+Reviews have no unresolved blockers. Both renderer stores remain identical to ce81593, without added let variables, request IDs, promise tracking or applyChange coalescing. Remaining compatibility callers, cooperative provider IO, worker decomposition, performance acceptance, installers and cross-platform packaged execution keep the programme open.

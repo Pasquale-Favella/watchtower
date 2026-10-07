@@ -1,0 +1,2466 @@
+{
+  "generatedAt": "2026-10-07T12:44:46.422Z",
+  "measurementVersion": 2,
+  "measurementMethod": {
+    "resultRetention": "Both engines reduce each operation result to scalar rows/clone metadata after its memory snapshot; samples retain timing, memory deltas and native metadata only.",
+    "cloneMetadata": "Computed from the last warm result after the operation timer and memory snapshot.",
+    "childMaxRssBytes": "Process high-water mark through the timed samples, including module/runtime startup; the views/analytics value is captured before and excludes the untimed input probe.",
+    "viewInputProbe": "For store:views and store:analytics, calls LedgerViewReads.getViewData after timed samples on the same runtime/client. Raw selected rows are retained only for this untimed probe, then compared with the decoded DTO using node:v8 serialization."
+  },
+  "measurementLimits": [
+    "All ledger content is synthetic; cached costs are plausible fixture values, not live provider pricing.",
+    "FX refresh uses a controlled local HTTP response and does not contact Frankfurter or measure network latency.",
+    "Export reads and builds the JSON payload, but the file writer is an in-memory stub; disk output and disk space are not measured.",
+    "RSS and heap deltas are process observations. childMaxRssBytes includes module/runtime startup and timed samples; for views and analytics it excludes the later untimed input probe.",
+    "Method version 2 reduces operation results to scalar metadata before the next sample. Archived e65ad24 artifacts used a different result-retention pattern, so compare their heap/RSS and clone metrics only with that limitation in view; cold/warm timing definitions and sample counts are unchanged.",
+    "Dashboard and Analytics input probes run after timed samples on the same worker runtime and SQL client. Raw selected rows and decoded DTOs use node:v8 serialization as a size proxy, not SQLite page or physical bytes."
+  ],
+  "machine": {
+    "platform": "Windows_NT 10.0.26200 x64",
+    "node": "v24.13.0",
+    "cpus": 20,
+    "cpuModel": "12th Gen Intel(R) Core(TM) i7-12700H",
+    "totalMemoryBytes": 34029125632,
+    "tempDir": "C:\\Users\\P4BB6~1.FAV\\AppData\\Local\\Temp"
+  },
+  "git": {
+    "commit": "f91efe1623b0732836661a2f7d7fec47fb51f1ab",
+    "dirty": false,
+    "dirtyFiles": [],
+    "measuredSources": {
+      "scripts/measure-query-path.cjs": "53a29e8dfd3785aceb3b715363c09012f431848b850d6bf39ffdfe936d958aa8",
+      "scripts/query-sql-source.cjs": "fdd91ab5839d92c5c3cb7b6efb57252ca85e016168d2dfae3dbc03c0fcb3430d",
+      "src/main/store/ledger.ts": "937f327a2e157ab91b9e80b70271e430cc8bc192821aa1d79814d458a9e3b453",
+      "src/main/store/ledger-initialization.ts": "ea3ffa6beddc7ce5b015e095e9c6775c0493ab40d7e15da120043ebb8c2a6a39",
+      "src/main/store/ledger-ports.ts": "08a1ec1b5382b576b1237f4230cb7a51805bbfaaf2907dece64f5f4a57257578",
+      "src/main/store/ledger-repository.ts": "1e9729b4a0cadcab796eea9547bdffb81f5db0858655615e829aa03827602652",
+      "src/main/store/ledger-session-reads.ts": "93c8adcb2147f0578497054041ad3edfd028af761658202db9ceceb3edf232b9",
+      "src/main/store/session-read-projections.ts": "40da37efff07f84192215264d266bf3a9bc900138bd5f82ba5a388baa070b5a4",
+      "src/main/store/ledger-view-reads.ts": "ae627438b12ef70f0fbafeb1c706e72bdd1f1838cba1d2c394c23e7bf5e457e9",
+      "src/main/store/view-read-projections.ts": "909a7f08670a005b33ca03e0191384d785237c592c926ffdf9b8aed07b891bea",
+      "src/main/store/aggregate.ts": "68f1e603c3706da3cd3474635602ba1601a5b233dabcd6ef3144f15c10718213",
+      "src/main/store/aggregate-calculation.ts": "b17ffe019b42bccab6feaadfa2b820b4e49fa22e432c17afa51d2bfbb7ffca16",
+      "src/main/store/query-snapshot.ts": "2edae38d371c58feff0f244aad23433ee18fcbaeec79c09901030ad60434e53e",
+      "src/main/store/ledger-query-snapshot.ts": "2ec2fa693d8e125629d78fafb6a18d4a5e3fc69d069415e1d29028c16bfd501c",
+      "src/main/store/port.ts": "297377906a8d87cefa8fa82feb102ae9559fff8ac33b543f676c92cddd2e1bae",
+      "src/main/store/node-sqlite-client.ts": "8ca9041dbfddd23d7e6876e5f300bc2df7e754388f5aad231021917ad42795ef",
+      "src/main/store-rows-calculation.ts": "13a2f4c6e6187691220e4371169cbf00da6fa6b73641e5d861505b70d65db553",
+      "src/main/canonical-session-project.ts": "408a53978b9c59b81e6d519607da3d41daa22c97cab55aeefad7a7499dc8d91f",
+      "src/main/session-detail-calculation.ts": "c6316243590096be23a06efee21a333351c5f0c5b2ae229035857ef2ea1cc054",
+      "src/main/session-search-calculation.ts": "86ed7d1b2a8a5a692c98539f521eca748a16f7bfbdbc2240803f37eb8404b9fc",
+      "src/main/export-calculation.ts": "c5be3bff48cf567d4c549c210b80decb2cf6b25129d70f084e0cbf9513f3eea9",
+      "src/main/fx-calculation.ts": "d1615f2626450dcd82541277bb3cd71df41e47711f8b10ce060daa7530fe7259",
+      "src/main/worker-runtime.ts": "e14bd1623d7482feb59f2c441cbf813ab447128415c2a96c5b2ff9090e00ab92",
+      "src/main/application/store-row-queries.ts": "26305c389389c754fd2b8a167fb2bbac9f61527c4a74f7627140aa323f244c0c",
+      "src/main/application/session-detail-query.ts": "6e15ebefc6ed7028f117706f59243c15ebdb5194232ae70478b95e7d0245eb9c",
+      "src/main/application/session-search-query.ts": "084bcfa95368a8a89c9bc6f26c6299b13aa2302a40362ac91bb64d7e34bc8b23",
+      "src/main/application/overview-query.ts": "6555d72c835ef645f1d184acbdc927ab59ae3ac04f9bd63b056ceb6d3ad5a39a",
+      "src/main/views.ts": "3418d399adae4d5584a36dfa6cc6667bbaa3dc20b02858c40a5a8f0c02d8e34a",
+      "src/main/views-calculation.ts": "a46680567d2b51d0e70f5fb0fd12e2cc7bfa5160341b7d9c6ca60d9b379ff73e",
+      "src/main/view-aggregate-calculation.ts": "bb33c1631c192500972a40fae2389600402539048e2d312fe67a483d06f0ab35",
+      "src/main/application/view-queries.ts": "d509f32faa9b2e8a088892d8e012325458525aad1a02469318945abf9935926b",
+      "src/main/application/export-query.ts": "91a4ce064961f98a4c55e6dd514d509cb80d532028bc3235be8bc928ec27888c",
+      "src/main/application/export-files.ts": "53a8f1d982771a6fd846521662271f5e7ade38ba334c6a767b07ec9c8e86e38c",
+      "src/main/application/pricing-diagnostics.ts": "7a4a36e5f02001c835d132eb9bdf44b86ede110ad871a85345aced1f43d1df38",
+      "src/main/fx.ts": "bbe981ce509ec711294a0ec4c19123fe6802ba207d22f055d7c710510f1d588d",
+      "src/main/pipeline/fetch-utils.ts": "a550515ec794d1036f4945f2b717dc57d481c8bcefa9d4fc7c677a6f32455542",
+      "src/main/export-files-live.ts": "d6aa8cc2c2efcd28ab2d9a9f915b6562d398f980b170b52afe7c72b2b787a582",
+      "src/main/overview.ts": "4a8c619fd43412f4ee1777329d1c13f2224615e7a659086013c59b162bba43bd",
+      "src/main/db-worker/context.ts": "462cc097420fd3bb89cd805059b3e91081c3b9494cbedf811865a361c372d76b",
+      "src/main/pipeline/models.ts": "4e2afa47f4ad1b2787a821e09cd40c7bb5b15f69f63e1b5bda818eae2f083523",
+      "src/main/pipeline/types.ts": "3a313784ebce0f2116ce9c773d72430105bd09ba928d5f212dc5bb75705f7fdf",
+      "src/main/pipeline/scan-pricing.ts": "7e24c62be03f0e51e900ffcd0964c6581518f737bcbd7cf7c64ef286d0781ac1",
+      "src/main/pipeline/pricing-calculation.ts": "1c16fd75b377fdbd84f0c1144ce8f7bdcab8390e6d78891ddd406af4bf8a9af7",
+      "src/main/pipeline/pricing-diagnostics.ts": "14c5ebf5728eaeaa042d60b9da1f95bc80e5b2754b5de0f4fca68f99c8b16dca",
+      "src/main/pipeline/model-names.ts": "e3a6cc96f78e730484264f5c7c7f42f98c6dca666124552641a5c09429b14363",
+      "src/main/pipeline/proxy-paths.ts": "47e3b3162b72e9097be92747216ae4e05366410dc0a26dafe64fd10a9f70181e",
+      "src/main/pipeline/parser-calculations.ts": "37e9fc48ae8224bbfb829c0fb5520ee713d66b803d172687fd67f32c82ba02e1",
+      "src/main/pipeline/session-row.ts": "4f18100cbbbb8ca9c1aa2be7a6bf5f122fbac1962292227a859e3ba0934cd8a7",
+      "src/main/pipeline/parser.ts": "1402736c7f863e73eafe09d4e7c60969bd6e56ddebca036a9372330cc935d0c5",
+      "src/shared/schemas/session-cache.ts": "6cb26c7e1b721c25ffb93f6822ed8048af04ea45353420e388de516bdf062fa1",
+      "src/shared/schemas/export.ts": "f8da46cdd18e2e3f557dee5a1e7f2b6ce0dd743aa973ce44d4d161888e028be8",
+      "src/shared/schemas/fx.ts": "b8fbae49acfaa60cfa49428700341e75fa13ef8de853f7bfaa7c20b1a466af9d",
+      "src/shared/schemas/ledger.ts": "2e33fe1e02bd48da968a70f27dc259d562bcb33de29444fdf96162a553f51203",
+      "src/shared/schemas/views.ts": "d83fa5dd9c54fa2e259dee2e078a810c8c331723df1048c4f8c599ed27c031b3"
+    }
+  },
+  "shape": {
+    "seed": 20260929,
+    "sizes": [1000, 50000, 500000],
+    "runs": 5,
+    "warmup": 1,
+    "turnsPerSession": 12,
+    "callsPerTurn": 3,
+    "msgBytes": 512,
+    "toolsPerCall": 6
+  },
+  "engines": ["effect"],
+  "staticFacts": null,
+  "sizes": [
+    {
+      "dbPath": "C:\\Users\\P4BB6~1.FAV\\AppData\\Local\\Temp\\wt-query-path-cmppk1\\ledger-1000.db",
+      "buildMs": 254.73949999999968,
+      "dbBytes": 999424,
+      "rows": {
+        "ledger_source": 28,
+        "ledger_session": 28,
+        "ledger_turn": 336,
+        "ledger_call": 1008
+      },
+      "operations": [
+        {
+          "op": "store:analytics",
+          "engine": "effect",
+          "runs": 5,
+          "coldMs": 53.01,
+          "coldNative": {
+            "statementCount": 7,
+            "selectCount": 5,
+            "materializedRows": 1372,
+            "connectionIds": [1],
+            "statements": [
+              {
+                "sql": "BEGIN IMMEDIATE",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 28
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 336
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 1008
+              },
+              {
+                "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "COMMIT",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              }
+            ]
+          },
+          "coldHeapDeltaBytes": 19683480,
+          "coldRssDeltaBytes": 2252800,
+          "medianMs": 18.22,
+          "minMs": 15.44,
+          "maxMs": 21.02,
+          "maxRssDeltaBytes": 1884160,
+          "medianRssDeltaBytes": 229376,
+          "maxHeapDeltaBytes": 12418680,
+          "medianHeapDeltaBytes": 12249296,
+          "rows": null,
+          "cloneBytes": 1445,
+          "cloneBytesMethod": "exact: v8.serialize",
+          "warmNative": [
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            }
+          ],
+          "crossesWorkerBoundary": true,
+          "note": "queryAnalyticalViews over the purpose-shaped view read",
+          "samplesMs": [21.02, 18.64, 17.84, 18.22, 15.44],
+          "coldMeaning": "first request after runtime open; OS file cache is not flushed",
+          "viewInputProbe": {
+            "outsideTimedSamples": true,
+            "method": "same runtime/client; direct LedgerViewReads.getViewData; native SELECT rows captured without serialization in interception; node:v8.serialize byte lengths after the read",
+            "nativeStatements": {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            "selectedRows": 1372,
+            "rawSelectedSerializedBytes": 448705,
+            "decodedDtoSerializedBytes": 453855,
+            "serializationProxy": "node:v8.serialize; not physical SQLite bytes",
+            "connectionIdsMatchTimedSamples": true
+          },
+          "childMaxRssBytes": 345890816,
+          "childMaxRssScope": "Process high-water mark through the timed samples, including module/runtime startup; the views/analytics value is captured before and excludes the untimed input probe."
+        },
+        {
+          "op": "store:views",
+          "engine": "effect",
+          "runs": 5,
+          "coldMs": 51.6,
+          "coldNative": {
+            "statementCount": 7,
+            "selectCount": 5,
+            "materializedRows": 1372,
+            "connectionIds": [1],
+            "statements": [
+              {
+                "sql": "BEGIN IMMEDIATE",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 28
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 336
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 1008
+              },
+              {
+                "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "COMMIT",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              }
+            ]
+          },
+          "coldHeapDeltaBytes": 19785672,
+          "coldRssDeltaBytes": 1196032,
+          "medianMs": 18.02,
+          "minMs": 17.4,
+          "maxMs": 20.66,
+          "maxRssDeltaBytes": 405504,
+          "medianRssDeltaBytes": 0,
+          "maxHeapDeltaBytes": 12601176,
+          "medianHeapDeltaBytes": 12068992,
+          "rows": null,
+          "cloneBytes": 2777,
+          "cloneBytesMethod": "exact: v8.serialize",
+          "warmNative": [
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            }
+          ],
+          "crossesWorkerBoundary": true,
+          "note": "queryDashboardViews over the purpose-shaped view read",
+          "samplesMs": [20.66, 17.69, 17.4, 18.02, 18.65],
+          "coldMeaning": "first request after runtime open; OS file cache is not flushed",
+          "viewInputProbe": {
+            "outsideTimedSamples": true,
+            "method": "same runtime/client; direct LedgerViewReads.getViewData; native SELECT rows captured without serialization in interception; node:v8.serialize byte lengths after the read",
+            "nativeStatements": {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 1372,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 28
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 336
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1008
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            "selectedRows": 1372,
+            "rawSelectedSerializedBytes": 448705,
+            "decodedDtoSerializedBytes": 453855,
+            "serializationProxy": "node:v8.serialize; not physical SQLite bytes",
+            "connectionIdsMatchTimedSamples": true
+          },
+          "childMaxRssBytes": 347533312,
+          "childMaxRssScope": "Process high-water mark through the timed samples, including module/runtime startup; the views/analytics value is captured before and excludes the untimed input probe."
+        }
+      ],
+      "maxRssBytes": 347533312
+    },
+    {
+      "dbPath": "C:\\Users\\P4BB6~1.FAV\\AppData\\Local\\Temp\\wt-query-path-cmppk1\\ledger-50000.db",
+      "buildMs": 9361.543500000002,
+      "dbBytes": 44298240,
+      "rows": {
+        "ledger_source": 1389,
+        "ledger_session": 1389,
+        "ledger_turn": 16668,
+        "ledger_call": 50004
+      },
+      "operations": [
+        {
+          "op": "store:analytics",
+          "engine": "effect",
+          "runs": 5,
+          "coldMs": 547.1,
+          "coldNative": {
+            "statementCount": 7,
+            "selectCount": 5,
+            "materializedRows": 68061,
+            "connectionIds": [1],
+            "statements": [
+              {
+                "sql": "BEGIN IMMEDIATE",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 1389
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 16668
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 50004
+              },
+              {
+                "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "COMMIT",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              }
+            ]
+          },
+          "coldHeapDeltaBytes": 128646272,
+          "coldRssDeltaBytes": 17534976,
+          "medianMs": 541.74,
+          "minMs": 513.38,
+          "maxMs": 720.25,
+          "maxRssDeltaBytes": 9474048,
+          "medianRssDeltaBytes": 4763648,
+          "maxHeapDeltaBytes": 129551016,
+          "medianHeapDeltaBytes": 128702424,
+          "rows": null,
+          "cloneBytes": 1564,
+          "cloneBytesMethod": "exact: v8.serialize",
+          "warmNative": [
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            }
+          ],
+          "crossesWorkerBoundary": true,
+          "note": "queryAnalyticalViews over the purpose-shaped view read",
+          "samplesMs": [536.43, 720.25, 696.11, 513.38, 541.74],
+          "coldMeaning": "first request after runtime open; OS file cache is not flushed",
+          "viewInputProbe": {
+            "outsideTimedSamples": true,
+            "method": "same runtime/client; direct LedgerViewReads.getViewData; native SELECT rows captured without serialization in interception; node:v8.serialize byte lengths after the read",
+            "nativeStatements": {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            "selectedRows": 68061,
+            "rawSelectedSerializedBytes": 22365763,
+            "decodedDtoSerializedBytes": 22678165,
+            "serializationProxy": "node:v8.serialize; not physical SQLite bytes",
+            "connectionIdsMatchTimedSamples": true
+          },
+          "childMaxRssBytes": 470249472,
+          "childMaxRssScope": "Process high-water mark through the timed samples, including module/runtime startup; the views/analytics value is captured before and excludes the untimed input probe."
+        },
+        {
+          "op": "store:views",
+          "engine": "effect",
+          "runs": 5,
+          "coldMs": 900.64,
+          "coldNative": {
+            "statementCount": 7,
+            "selectCount": 5,
+            "materializedRows": 68061,
+            "connectionIds": [1],
+            "statements": [
+              {
+                "sql": "BEGIN IMMEDIATE",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 1389
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 16668
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 50004
+              },
+              {
+                "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "COMMIT",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              }
+            ]
+          },
+          "coldHeapDeltaBytes": 161553416,
+          "coldRssDeltaBytes": 54419456,
+          "medianMs": 713.2,
+          "minMs": 496.37,
+          "maxMs": 796.94,
+          "maxRssDeltaBytes": 6664192,
+          "medianRssDeltaBytes": 2449408,
+          "maxHeapDeltaBytes": 122731528,
+          "medianHeapDeltaBytes": 121435624,
+          "rows": null,
+          "cloneBytes": 21678,
+          "cloneBytesMethod": "exact: v8.serialize",
+          "warmNative": [
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            }
+          ],
+          "crossesWorkerBoundary": true,
+          "note": "queryDashboardViews over the purpose-shaped view read",
+          "samplesMs": [525.74, 496.37, 796.94, 713.2, 739.57],
+          "coldMeaning": "first request after runtime open; OS file cache is not flushed",
+          "viewInputProbe": {
+            "outsideTimedSamples": true,
+            "method": "same runtime/client; direct LedgerViewReads.getViewData; native SELECT rows captured without serialization in interception; node:v8.serialize byte lengths after the read",
+            "nativeStatements": {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 68061,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 1389
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 16668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 50004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            "selectedRows": 68061,
+            "rawSelectedSerializedBytes": 22365763,
+            "decodedDtoSerializedBytes": 22678165,
+            "serializationProxy": "node:v8.serialize; not physical SQLite bytes",
+            "connectionIdsMatchTimedSamples": true
+          },
+          "childMaxRssBytes": 461934592,
+          "childMaxRssScope": "Process high-water mark through the timed samples, including module/runtime startup; the views/analytics value is captured before and excludes the untimed input probe."
+        }
+      ],
+      "maxRssBytes": 470249472
+    },
+    {
+      "dbPath": "C:\\Users\\P4BB6~1.FAV\\AppData\\Local\\Temp\\wt-query-path-cmppk1\\ledger-500000.db",
+      "buildMs": 109432.00409999999,
+      "dbBytes": 444309504,
+      "rows": {
+        "ledger_source": 13889,
+        "ledger_session": 13889,
+        "ledger_turn": 166668,
+        "ledger_call": 500004
+      },
+      "operations": [
+        {
+          "op": "store:analytics",
+          "engine": "effect",
+          "runs": 5,
+          "coldMs": 8653.65,
+          "coldNative": {
+            "statementCount": 7,
+            "selectCount": 5,
+            "materializedRows": 680561,
+            "connectionIds": [1],
+            "statements": [
+              {
+                "sql": "BEGIN IMMEDIATE",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 13889
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 166668
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 500004
+              },
+              {
+                "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "COMMIT",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              }
+            ]
+          },
+          "coldHeapDeltaBytes": 992610408,
+          "coldRssDeltaBytes": 892764160,
+          "medianMs": 5729.29,
+          "minMs": 5690.56,
+          "maxMs": 17347.23,
+          "maxRssDeltaBytes": 70647808,
+          "medianRssDeltaBytes": 65265664,
+          "maxHeapDeltaBytes": 1010719024,
+          "medianHeapDeltaBytes": 968127328,
+          "rows": null,
+          "cloneBytes": 1580,
+          "cloneBytesMethod": "exact: v8.serialize",
+          "warmNative": [
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            }
+          ],
+          "crossesWorkerBoundary": true,
+          "note": "queryAnalyticalViews over the purpose-shaped view read",
+          "samplesMs": [17347.23, 5718.35, 5975.65, 5690.56, 5729.29],
+          "coldMeaning": "first request after runtime open; OS file cache is not flushed",
+          "viewInputProbe": {
+            "outsideTimedSamples": true,
+            "method": "same runtime/client; direct LedgerViewReads.getViewData; native SELECT rows captured without serialization in interception; node:v8.serialize byte lengths after the read",
+            "nativeStatements": {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            "selectedRows": 680561,
+            "rawSelectedSerializedBytes": 223966087,
+            "decodedDtoSerializedBytes": 227243906,
+            "serializationProxy": "node:v8.serialize; not physical SQLite bytes",
+            "connectionIdsMatchTimedSamples": true
+          },
+          "childMaxRssBytes": 2169319424,
+          "childMaxRssScope": "Process high-water mark through the timed samples, including module/runtime startup; the views/analytics value is captured before and excludes the untimed input probe."
+        },
+        {
+          "op": "store:views",
+          "engine": "effect",
+          "runs": 5,
+          "coldMs": 6765.83,
+          "coldNative": {
+            "statementCount": 7,
+            "selectCount": 5,
+            "materializedRows": 680561,
+            "connectionIds": [1],
+            "statements": [
+              {
+                "sql": "BEGIN IMMEDIATE",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 13889
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 166668
+              },
+              {
+                "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                "method": "all",
+                "select": true,
+                "materializedRows": 500004
+              },
+              {
+                "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                "method": "all",
+                "select": true,
+                "materializedRows": 0
+              },
+              {
+                "sql": "COMMIT",
+                "method": "run",
+                "select": false,
+                "materializedRows": 0
+              }
+            ]
+          },
+          "coldHeapDeltaBytes": 992131704,
+          "coldRssDeltaBytes": 886636544,
+          "medianMs": 7106.26,
+          "minMs": 6520.78,
+          "maxMs": 8777.26,
+          "maxRssDeltaBytes": 60678144,
+          "medianRssDeltaBytes": 40230912,
+          "maxHeapDeltaBytes": 1009312568,
+          "medianHeapDeltaBytes": 1007796248,
+          "rows": null,
+          "cloneBytes": 22950,
+          "cloneBytesMethod": "exact: v8.serialize",
+          "warmNative": [
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            }
+          ],
+          "crossesWorkerBoundary": true,
+          "note": "queryDashboardViews over the purpose-shaped view read",
+          "samplesMs": [6520.78, 7329.37, 7106.26, 6920.03, 8777.26],
+          "coldMeaning": "first request after runtime open; OS file cache is not flushed",
+          "viewInputProbe": {
+            "outsideTimedSamples": true,
+            "method": "same runtime/client; direct LedgerViewReads.getViewData; native SELECT rows captured without serialization in interception; node:v8.serialize byte lengths after the read",
+            "nativeStatements": {
+              "statementCount": 7,
+              "selectCount": 5,
+              "materializedRows": 680561,
+              "connectionIds": [1],
+              "statements": [
+                {
+                  "sql": "BEGIN IMMEDIATE",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project, s.project_path AS projectPath, s.working_directory AS workingDirectory, s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd, COALESCE(source.provider, 'unknown') AS sourceProvider FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id ORDER BY s.session_id ASC, s.rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 13889
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, timestamp, category, sub_category AS subCategory FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 166668
+                },
+                {
+                  "sql": "SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex, call_index AS callIndex, provider, model, timestamp, speed, base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated, input_tokens AS inputTokens, output_tokens AS outputTokens, cache_creation_input_tokens AS cacheCreationInputTokens, cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens, web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens, subagent_types_json AS subagentTypes FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 500004
+                },
+                {
+                  "sql": "SELECT model, alias_of AS aliasOf FROM model_alias",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "SELECT model, input_price_per_million AS inputPricePerMillion, output_price_per_million AS outputPricePerMillion FROM price_override",
+                  "method": "all",
+                  "select": true,
+                  "materializedRows": 0
+                },
+                {
+                  "sql": "COMMIT",
+                  "method": "run",
+                  "select": false,
+                  "materializedRows": 0
+                }
+              ]
+            },
+            "selectedRows": 680561,
+            "rawSelectedSerializedBytes": 223966087,
+            "decodedDtoSerializedBytes": 227243906,
+            "serializationProxy": "node:v8.serialize; not physical SQLite bytes",
+            "connectionIdsMatchTimedSamples": true
+          },
+          "childMaxRssBytes": 2179768320,
+          "childMaxRssScope": "Process high-water mark through the timed samples, including module/runtime startup; the views/analytics value is captured before and excludes the untimed input probe."
+        }
+      ],
+      "maxRssBytes": 2179768320
+    }
+  ],
+  "staticFactNotes": [],
+  "selectedOps": [
+    {
+      "engine": "effect",
+      "id": "store:analytics"
+    },
+    {
+      "engine": "effect",
+      "id": "store:views"
+    }
+  ],
+  "failures": [],
+  "totalWallClockMs": 279820
+}
