@@ -528,6 +528,7 @@ function loadEffectModules() {
     sessionSearch: load('src/main/application/session-search-query.ts'),
     overview: load('src/main/application/overview-query.ts'),
     views: load('src/main/application/view-queries.ts'),
+    viewReads: load('src/main/store/ledger-view-reads.ts'),
     exportQuery: load('src/main/application/export-query.ts'),
     exportFiles: load('src/main/application/export-files.ts'),
     pricingDiagnostics: load('src/main/application/pricing-diagnostics.ts'),
@@ -909,6 +910,7 @@ function watchNativeStatements() {
   let nextConnectionId = 1
   const executions = []
   const restorers = []
+  let capturedSelectRows = null
 
   const connectionId = connection => {
     let id = connectionIds.get(connection)
@@ -936,6 +938,7 @@ function watchNativeStatements() {
       select,
       materializedRows,
     })
+    if (capturedSelectRows && select && method === 'all') capturedSelectRows.push(result)
   }
   const replace = (prototype, name, wrap) => {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, name)
@@ -984,6 +987,17 @@ function watchNativeStatements() {
     reset() {
       executions.length = 0
     },
+    beginSelectRowCapture() {
+      if (capturedSelectRows) throw new Error('native SELECT row capture is already active')
+      executions.length = 0
+      capturedSelectRows = []
+    },
+    endSelectRowCapture() {
+      if (!capturedSelectRows) throw new Error('native SELECT row capture is not active')
+      const rows = capturedSelectRows
+      capturedSelectRows = null
+      return { nativeStatements: this.snapshot(), rows }
+    },
     snapshot() {
       const selects = executions.filter(execution => execution.select)
       return {
@@ -1015,7 +1029,7 @@ async function measureAsync(
   instrumentation,
   prepare,
 ) {
-  const measureOne = async isCold => {
+  const measureOne = async (isCold, includeCloneMetadata = false) => {
     if (prepare) await prepare()
     if (typeof global.gc === 'function') global.gc()
     instrumentation.reset()
@@ -1024,8 +1038,12 @@ async function measureAsync(
     const value = await run()
     const t1 = performance.now()
     const after = process.memoryUsage()
+    const rows = Array.isArray(value) ? value.length : null
+    const clone = includeCloneMetadata ? cloneBytes(value) : null
     return {
-      value,
+      rows,
+      cloneBytes: clone?.bytes ?? null,
+      cloneBytesMethod: clone?.method ?? null,
       ms: t1 - t0,
       rssDeltaBytes: after.rss - before.rss,
       heapDeltaBytes: after.heapUsed - before.heapUsed,
@@ -1037,7 +1055,7 @@ async function measureAsync(
   const cold = await measureOne(true)
   for (let index = 0; index < warmup; index++) await measureOne(false)
   const samples = []
-  for (let index = 0; index < runs; index++) samples.push(await measureOne(false))
+  for (let index = 0; index < runs; index++) samples.push(await measureOne(false, index === runs - 1))
   const times = samples.map(sample => sample.ms)
   const rss = samples.map(sample => sample.rssDeltaBytes)
   const heap = samples.map(sample => sample.heapDeltaBytes)
@@ -1056,9 +1074,9 @@ async function measureAsync(
     medianRssDeltaBytes: Math.round(median(rss)),
     maxHeapDeltaBytes: Math.max(...heap),
     medianHeapDeltaBytes: Math.round(median(heap)),
-    rows: Array.isArray(samples.at(-1)?.value) ? samples.at(-1).value.length : null,
-    cloneBytes: cloneBytes(samples.at(-1)?.value).bytes,
-    cloneBytesMethod: cloneBytes(samples.at(-1)?.value).method,
+    rows: samples.at(-1)?.rows ?? null,
+    cloneBytes: samples.at(-1)?.cloneBytes,
+    cloneBytesMethod: samples.at(-1)?.cloneBytesMethod,
     warmNative: samples.map(sample => sample.nativeStatements),
     crossesWorkerBoundary,
     note: note ?? null,
@@ -1067,24 +1085,64 @@ async function measureAsync(
   }
 }
 
+const MEASUREMENT_VERSION = 2
+const MEASUREMENT_METHOD = {
+  resultRetention:
+    'Both engines reduce each operation result to scalar rows/clone metadata after its memory snapshot; samples retain timing, memory deltas and native metadata only.',
+  cloneMetadata: 'Computed from the last warm result after the operation timer and memory snapshot.',
+  childMaxRssBytes:
+    'Process high-water mark through the timed samples, including module/runtime startup; the views/analytics value is captured before and excludes the untimed input probe.',
+  viewInputProbe:
+    'For store:views and store:analytics, calls LedgerViewReads.getViewData after timed samples on the same runtime/client. Raw selected rows are retained only for this untimed probe, then compared with the decoded DTO using node:v8 serialization.',
+}
+
+async function measureViewInputProbe(runtime, modules, instrumentation) {
+  instrumentation.beginSelectRowCapture()
+  let viewData
+  let captured
+  try {
+    viewData = await runtime.runPromise(
+      modules.Effect.flatMap(modules.viewReads.LedgerViewReads, reads => reads.getViewData()),
+    )
+  } finally {
+    captured = instrumentation.endSelectRowCapture()
+  }
+  return {
+    outsideTimedSamples: true,
+    method:
+      'same runtime/client; direct LedgerViewReads.getViewData; native SELECT rows captured without serialization in interception; node:v8.serialize byte lengths after the read',
+    nativeStatements: captured.nativeStatements,
+    selectedRows: captured.rows.reduce((sum, rows) => sum + rows.length, 0),
+    rawSelectedSerializedBytes: v8.serialize(captured.rows).byteLength,
+    decodedDtoSerializedBytes: v8.serialize(viewData).byteLength,
+    serializationProxy: 'node:v8.serialize; not physical SQLite bytes',
+  }
+}
+
 function measure(label, fn, { runs, warmup, crossesWorkerBoundary, note }) {
   for (let i = 0; i < warmup; i++) fn()
   const samples = []
-  let value
-  for (let i = 0; i < runs; i++) {
+  const measureOne = includeCloneMetadata => {
     if (typeof global.gc === 'function') global.gc()
     const before = process.memoryUsage()
     const t0 = performance.now()
-    value = fn()
+    const value = fn()
     const t1 = performance.now()
     const after = process.memoryUsage()
-    samples.push({
+    const rows = Array.isArray(value) ? value.length : null
+    const clone = includeCloneMetadata ? cloneBytes(value) : null
+    return {
       ms: t1 - t0,
       rssDeltaBytes: after.rss - before.rss,
       heapDeltaBytes: after.heapUsed - before.heapUsed,
-    })
+      rows,
+      cloneBytes: clone?.bytes ?? null,
+      cloneBytesMethod: clone?.method ?? null,
+    }
   }
-  const clone = cloneBytes(value)
+  for (let i = 0; i < runs; i++) {
+    samples.push(measureOne(i === runs - 1))
+  }
   const times = samples.map(sample => sample.ms)
   const rss = samples.map(sample => sample.rssDeltaBytes)
   const heap = samples.map(sample => sample.heapDeltaBytes)
@@ -1100,9 +1158,9 @@ function measure(label, fn, { runs, warmup, crossesWorkerBoundary, note }) {
     medianRssDeltaBytes: Math.round(median(rss)),
     maxHeapDeltaBytes: Math.max(...heap),
     medianHeapDeltaBytes: Math.round(median(heap)),
-    rows: Array.isArray(value) ? value.length : null,
-    cloneBytes: clone.bytes,
-    cloneBytesMethod: clone.method,
+    rows: samples.at(-1)?.rows ?? null,
+    cloneBytes: samples.at(-1)?.cloneBytes,
+    cloneBytesMethod: samples.at(-1)?.cloneBytesMethod,
     crossesWorkerBoundary,
     note: note ?? null,
     samplesMs: times.map(ms => Number(ms.toFixed(2))),
@@ -1176,8 +1234,8 @@ const EFFECT_OPERATIONS = [
   { id: 'store:search', description: 'querySessionSearch with a term taken from the fixture' },
   { id: 'store:search:blank', description: 'querySessionSearch with blank input' },
   { id: 'overview:query', description: 'queryOverview with an all-time scope and explicit local savings' },
-  { id: 'store:analytics', description: 'queryAnalyticalViews over the canonical snapshot' },
-  { id: 'store:views', description: 'queryDashboardViews over the canonical snapshot' },
+  { id: 'store:analytics', description: 'queryAnalyticalViews over the purpose-shaped view read' },
+  { id: 'store:views', description: 'queryDashboardViews over the purpose-shaped view read' },
   { id: 'export:read', description: 'queryExport with in-memory output files' },
 ]
 
@@ -1185,7 +1243,9 @@ const MEASUREMENT_LIMITS = [
   'All ledger content is synthetic; cached costs are plausible fixture values, not live provider pricing.',
   'FX refresh uses a controlled local HTTP response and does not contact Frankfurter or measure network latency.',
   'Export reads and builds the JSON payload, but the file writer is an in-memory stub; disk output and disk space are not measured.',
-  'RSS and heap deltas are process observations; childMaxRssBytes includes module loading and runtime startup.',
+  'RSS and heap deltas are process observations. childMaxRssBytes includes module/runtime startup and timed samples; for views and analytics it excludes the later untimed input probe.',
+  'Method version 2 reduces operation results to scalar metadata before the next sample. Archived e65ad24 artifacts used a different result-retention pattern, so compare their heap/RSS and clone metrics only with that limitation in view; cold/warm timing definitions and sample counts are unchanged.',
+  'Dashboard and Analytics input probes run after timed samples on the same worker runtime and SQL client. Raw selected rows and decoded DTOs use node:v8 serialization as a size proxy, not SQLite page or physical bytes.',
 ]
 
 function effectOperation(context, id, options, callTarget) {
@@ -1392,7 +1452,20 @@ async function runAsChild(options) {
         instrumentation,
         operation.prepare,
       )
-      payload = { results: [measured], maxRssBytes: process.resourceUsage().maxRSS * 1024 }
+      const maxRssBytes = process.resourceUsage().maxRSS * 1024
+      if (id === 'store:views' || id === 'store:analytics') {
+        measured.viewInputProbe = await measureViewInputProbe(runtime, modules, instrumentation)
+        const timedConnectionIds = new Set([
+          ...measured.coldNative.connectionIds,
+          ...measured.warmNative.flatMap(sample => sample.connectionIds),
+        ])
+        measured.viewInputProbe.connectionIdsMatchTimedSamples =
+          measured.viewInputProbe.nativeStatements.connectionIds.length > 0 &&
+          measured.viewInputProbe.nativeStatements.connectionIds.every(connectionId =>
+            timedConnectionIds.has(connectionId),
+          )
+      }
+      payload = { results: [measured], maxRssBytes }
     } finally {
       modules.Effect.runSync(runtime.disposeEffect)
       instrumentation.restore()
@@ -1425,6 +1498,7 @@ async function runAsChild(options) {
   for (const result of payload.results) {
     result.engine ??= options.engine
     result.childMaxRssBytes = payload.maxRssBytes
+    result.childMaxRssScope = MEASUREMENT_METHOD.childMaxRssBytes
   }
   process.stdout.write(`${RESULT_PREFIX}${JSON.stringify({ op: options.ops[0], ...payload })}\n`)
   return 0
@@ -1622,6 +1696,8 @@ function renderReport(result) {
     `git      HEAD ${result.git.commit}${result.git.dirty ? ' (measured files are modified in the working tree)' : ''}`,
   )
   lines.push(`engine   ${result.engines.join(', ')}`)
+  lines.push(`method   v${result.measurementVersion} · ${result.measurementMethod.resultRetention}`)
+  lines.push(`RSS      ${result.measurementMethod.childMaxRssBytes}`)
   for (const note of result.measurementLimits) lines.push(`LIMIT    ${note}`)
   lines.push(
     `shape    seed=${result.shape.seed} turnsPerSession=${result.shape.turnsPerSession} callsPerTurn=${result.shape.callsPerTurn} msgBytes=${result.shape.msgBytes} toolsPerCall=${result.shape.toolsPerCall} runs=${result.shape.runs} warmup=${result.shape.warmup}`,
@@ -1667,6 +1743,12 @@ function renderReport(result) {
       lines.push(
         `   ${`${entry.engine ?? 'legacy'}:${entry.op}`.padEnd(30)} ${coldCell} ${medianCell}    ${rangeCell}   ${rssCell}  ${heapCell}   ${cloneCell}  ${rowsCell}   ${entry.warmNative ? entry.warmNative.at(-1).statementCount : 'n/a'}`,
       )
+      if (entry.viewInputProbe) {
+        const probe = entry.viewInputProbe
+        lines.push(
+          `      untimed view input probe: ${probe.nativeStatements.selectCount} SELECTs, ${probe.selectedRows.toLocaleString('en-US')} rows, ${formatBytes(probe.rawSelectedSerializedBytes)} raw / ${formatBytes(probe.decodedDtoSerializedBytes)} decoded, connection match=${probe.connectionIdsMatchTimedSamples}`,
+        )
+      }
     }
     lines.push('')
     const column = size.operations.find(entry => entry.engine === 'legacy' && entry.op === 'agg:buildSessionSummaries')
@@ -1702,6 +1784,8 @@ async function runAsParent(options, log) {
   const parent = mkdtempSync(path.join(tempRoot, 'wt-query-path-'))
   const result = {
     generatedAt: new Date().toISOString(),
+    measurementVersion: MEASUREMENT_VERSION,
+    measurementMethod: MEASUREMENT_METHOD,
     measurementLimits: MEASUREMENT_LIMITS,
     machine,
     git,
@@ -1798,6 +1882,8 @@ const MEASURED_SOURCES = [
   'src/main/store/ledger-repository.ts',
   'src/main/store/ledger-session-reads.ts',
   'src/main/store/session-read-projections.ts',
+  'src/main/store/ledger-view-reads.ts',
+  'src/main/store/view-read-projections.ts',
   'src/main/store/aggregate.ts',
   'src/main/store/aggregate-calculation.ts',
   'src/main/store/query-snapshot.ts',
@@ -1805,6 +1891,7 @@ const MEASURED_SOURCES = [
   'src/main/store/port.ts',
   'src/main/store/node-sqlite-client.ts',
   'src/main/store-rows-calculation.ts',
+  'src/main/canonical-session-project.ts',
   'src/main/session-detail-calculation.ts',
   'src/main/session-search-calculation.ts',
   'src/main/export-calculation.ts',
@@ -1816,6 +1903,7 @@ const MEASURED_SOURCES = [
   'src/main/application/overview-query.ts',
   'src/main/views.ts',
   'src/main/views-calculation.ts',
+  'src/main/view-aggregate-calculation.ts',
   'src/main/application/view-queries.ts',
   'src/main/application/export-query.ts',
   'src/main/application/export-files.ts',
@@ -1826,6 +1914,8 @@ const MEASURED_SOURCES = [
   'src/main/overview.ts',
   'src/main/db-worker/context.ts',
   'src/main/pipeline/models.ts',
+  'src/main/pipeline/types.ts',
+  'src/main/pipeline/scan-pricing.ts',
   'src/main/pipeline/pricing-calculation.ts',
   'src/main/pipeline/pricing-diagnostics.ts',
   'src/main/pipeline/model-names.ts',
@@ -1837,6 +1927,7 @@ const MEASURED_SOURCES = [
   'src/shared/schemas/export.ts',
   'src/shared/schemas/fx.ts',
   'src/shared/schemas/ledger.ts',
+  'src/shared/schemas/views.ts',
 ]
 
 function readGitState() {
@@ -1893,12 +1984,16 @@ async function main() {
   return result.failures.length > 0 ? 1 : 0
 }
 
-main().then(
-  code => {
-    process.exitCode = code
-  },
-  error => {
-    process.stderr.write(`measure-query-path: ${error && error.stack ? error.stack : error}\n`)
-    process.exitCode = 1
-  },
-)
+if (require.main === module) {
+  main().then(
+    code => {
+      process.exitCode = code
+    },
+    error => {
+      process.stderr.write(`measure-query-path: ${error && error.stack ? error.stack : error}\n`)
+      process.exitCode = 1
+    },
+  )
+} else {
+  module.exports = { measure, measureAsync }
+}
