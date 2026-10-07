@@ -14,6 +14,7 @@ import { querySkillsView } from '../../application/skills-query.js'
 import { AssistantSetupLive } from '../../assistant-setup-live.js'
 import { captureLocalModelSavings, captureModelPricingCatalogue, captureProxyPaths } from '../../pipeline/models.js'
 import { PricingDiagnosticsLive } from '../../pipeline/pricing-diagnostics.js'
+import { LedgerExportReads } from '../../store/ledger-export-reads.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../../store/ledger-ports.js'
 import { LedgerPortsLayer } from '../../store/ledger-repository.js'
 import { LedgerViewReads } from '../../store/ledger-view-reads.js'
@@ -25,6 +26,7 @@ type LedgerMcpQueryRuntimeServices =
   | LedgerIngest
   | LedgerQueries
   | LedgerViewReads
+  | LedgerExportReads
   | PricingDiagnostics
   | SqlClient.SqlClient
   | Sqlite.SqliteClient.SqliteClient

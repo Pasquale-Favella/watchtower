@@ -33,6 +33,7 @@ import { RepositoryInspectionLive } from './repository-inspection-live.js'
 import { initializeLedger } from './store/ledger-initialization.js'
 import {
   LedgerConfig,
+  LedgerExportReads,
   LedgerIngest,
   LedgerPortsLayer,
   LedgerQueries,
@@ -55,6 +56,7 @@ export type WorkerServices =
   | LedgerQueries
   | LedgerSessionReads
   | LedgerViewReads
+  | LedgerExportReads
   | LedgerConfig
   | LedgerMaintenance
   | Sqlite.SqliteClient.SqliteClient
@@ -68,6 +70,7 @@ export type WorkerOverrides =
   | LedgerQueries
   | LedgerSessionReads
   | LedgerViewReads
+  | LedgerExportReads
   | LedgerConfig
   | PricingDiagnostics
   | AssistantSetup

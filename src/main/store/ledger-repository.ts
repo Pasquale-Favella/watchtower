@@ -21,6 +21,8 @@ import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../sha
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import { DEFAULT_CADENCE } from '../cadence.js'
 import type { ScanPricing } from '../pipeline/scan-pricing.js'
+import { type LedgerExportData, ledgerExportDataSchema } from './export-read-projections.js'
+import { LedgerExportReads, type LedgerExportReadsPort } from './ledger-export-reads.js'
 import {
   LedgerConfig,
   type LedgerConfigPort,
@@ -43,6 +45,7 @@ import {
 } from './session-read-projections.js'
 import { type LedgerViewData, ledgerViewDataSchema } from './view-read-projections.js'
 
+export { LedgerExportReads, type LedgerExportReadsPort } from './ledger-export-reads.js'
 export {
   LedgerConfig,
   type LedgerConfigPort,
@@ -193,6 +196,31 @@ const SELECT_VIEW_OVERRIDES = `
   FROM price_override
 `
 
+const SELECT_EXPORT_SESSIONS = `
+  SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project,
+         s.project_path AS projectPath, s.working_directory AS workingDirectory,
+         s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd,
+         COALESCE(source.provider, 'unknown') AS sourceProvider, source.repo_url AS repoUrl
+  FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id
+  ORDER BY s.session_id ASC, s.rowid ASC
+`
+const SELECT_EXPORT_TURNS = `
+  SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex,
+         timestamp, category
+  FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC
+`
+const SELECT_EXPORT_CALLS = `
+  SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex,
+         call_index AS callIndex, provider, model, timestamp, speed,
+         base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD,
+         input_tokens AS inputTokens, output_tokens AS outputTokens,
+         cache_creation_input_tokens AS cacheCreationInputTokens,
+         cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens,
+         web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens,
+         tools_json AS tools, mcp_tools_json AS mcpTools, bash_commands_json AS bashCommands
+  FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC
+`
+
 const SELECT_DETAIL_SOURCES = `
   SELECT id, provider, env_fingerprint, file_path, repo_url, project,
          CAST(fingerprint_dev AS TEXT) AS fingerprint_dev,
@@ -224,7 +252,13 @@ const SELECT_DETAIL_CALL_FACTS = `
 
 /** Shared implementation of the ledger's focused port capabilities. */
 export interface LedgerImplementationShape
-  extends LedgerIngestPort, LedgerQueriesPort, LedgerConfigPort, LedgerSessionReadsPort, LedgerViewReadsPort {}
+  extends
+    LedgerIngestPort,
+    LedgerQueriesPort,
+    LedgerConfigPort,
+    LedgerSessionReadsPort,
+    LedgerViewReadsPort,
+    LedgerExportReadsPort {}
 
 /**
  * One implementation for all ledger capabilities, over whatever `SqlClient`
@@ -424,6 +458,24 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
         )
 
         return yield* Schema.decodeUnknownEffect(ledgerViewDataSchema)(rawRows)
+      })
+
+      const getExportData = Effect.fn('LedgerExportReads.getExportData')(function* (): Effect.fn.Return<
+        LedgerExportData,
+        SqlError | Schema.SchemaError
+      > {
+        const rawRows = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const sessions = yield* sql.unsafe(SELECT_EXPORT_SESSIONS)
+            const turns = yield* sql.unsafe(SELECT_EXPORT_TURNS)
+            const calls = yield* sql.unsafe(SELECT_EXPORT_CALLS)
+            const aliases = yield* sql.unsafe(SELECT_VIEW_ALIASES)
+            const overrides = yield* sql.unsafe(SELECT_VIEW_OVERRIDES)
+            return { sessions, turns, calls, aliases, overrides }
+          }),
+        )
+
+        return yield* Schema.decodeUnknownEffect(ledgerExportDataSchema)(rawRows)
       })
 
       const getCurrencyRate = Effect.fn('LedgerConfig.getCurrencyRate')(function* (code: string) {
@@ -794,6 +846,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
         getSessionDetailData,
         getSessionSearchData,
         getViewData,
+        getExportData,
         getCurrencyRate,
         getDisplayCurrency,
         getRefreshCadence,
@@ -875,6 +928,13 @@ const ledgerViewReadsLayer = Layer.effect(
   Effect.map(LedgerImplementation, implementation => LedgerViewReads.of({ getViewData: implementation.getViewData })),
 )
 
+const ledgerExportReadsLayer = Layer.effect(
+  LedgerExportReads,
+  Effect.map(LedgerImplementation, implementation =>
+    LedgerExportReads.of({ getExportData: implementation.getExportData }),
+  ),
+)
+
 /**
  * All ledger ports from ONE `LedgerImplementation`, with the implementation kept
  * private (ADR 0032 §A3) and the `SqlClient` left as the layer's requirement —
@@ -885,7 +945,7 @@ const ledgerViewReadsLayer = Layer.effect(
  * connection.
  */
 export const LedgerPortsLayer: Layer.Layer<
-  LedgerIngest | LedgerQueries | LedgerConfig | LedgerSessionReads | LedgerViewReads,
+  LedgerIngest | LedgerQueries | LedgerConfig | LedgerSessionReads | LedgerViewReads | LedgerExportReads,
   never,
   SqlClient.SqlClient
 > = Layer.mergeAll(
@@ -894,4 +954,5 @@ export const LedgerPortsLayer: Layer.Layer<
   ledgerConfigLayer,
   ledgerSessionReadsLayer,
   ledgerViewReadsLayer,
+  ledgerExportReadsLayer,
 ).pipe(Layer.provide(LedgerImplementation.layer))
