@@ -1,6 +1,6 @@
 # Dashboard and analytics projections, 2026-10-07
 
-Measured source is `f91efe1623b0732836661a2f7d7fec47fb51f1ab`. The [raw artifact](./effect-view-projections-2026-10-07.json) records the actual application queries over the shared worker runtime and native SQL client at 1k/50k/500k requested calls. It has six operation records, no failures and 54 source hashes checked against the measured files. Operations and fixture sizes ran sequentially after local verification and agent work had settled. Seed and fixture shape match the earlier application-path reports.
+Measured source is `f91efe1623b0732836661a2f7d7fec47fb51f1ab`. The historical run covered the actual application queries over the shared worker runtime and native SQL client at 1k/50k/500k requested calls. On October 7, the user stopped profiling work and requested deletion of the profiling JSON files from docs. This summary remains as a historical record. The current priority is the overall Effect migration.
 
 ## Read and calculation changes
 

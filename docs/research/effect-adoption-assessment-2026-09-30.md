@@ -499,3 +499,27 @@ Owned Zod removal remains 23/23, 100%; native Effect Schema 22/23, 95.7%, plus o
 Node/web and strict test types, full formatting, build and lint pass. Lint has zero errors and 1,109 advisory warnings. Focused integration passes 156 tests across ten files; the native ordering follow-up passes 59 across two. Full units pass 183 files, 2423 tests and 2 skips in 356.15s with one worker. Existing assertions and timeouts remain. All four Electron checks pass in 7.8m. Fresh Windows x64 directory packaging and the full actual-package IPC/SDK gate exit zero. No renderer errors occur; app and SDK children close and the isolated profile is removed. Installer and macOS/Linux packaged acceptance remain open.
 
 Reviews have no unresolved blockers. Both renderer stores remain identical to ce81593, without added let variables, request IDs, promise tracking or applyChange coalescing. Remaining compatibility callers, cooperative provider IO, worker decomposition, performance acceptance, installers and cross-platform packaged execution keep the programme open.
+
+## Export migration census, 2026-10-07
+
+Source is `7387a617f848b72fc918cb7710e88ebdafaf780b`. The unchanged TypeScript AST method counts runtime Effect imports and nonblank lines. This measures library coverage, not architectural completion; pure calculations remain TypeScript.
+
+| Area                     | Effect imports / files | File coverage | Lines in those files / area lines | Line coverage |
+| ------------------------ | ---------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                |                    4/6 |         66.7% |                         1441/1551 |         92.9% |
+| Store                    |                  16/18 |         88.9% |                         2289/2880 |         79.5% |
+| Agents                   |                  17/48 |         35.4% |                         4591/6060 |         75.8% |
+| Pipeline                 |                   8/77 |         10.4% |                        2689/28691 |          9.4% |
+| Remaining -view adapters |                    3/3 |          100% |                           245/245 |          100% |
+| All main                 |                 86/213 |         40.4% |                       15034/49243 |         30.5% |
+| Shared schemas           |                  24/25 |           96% |                         1903/1961 |           97% |
+| Renderer                 |                  2/123 |          1.6% |                         379/13066 |          2.9% |
+| Preload                  |                    0/1 |            0% |                             0/217 |            0% |
+
+Both export routes now use sufficient transactional reads and pure table calculations. The [migration record](./effect-export-migration-2026-10-07.md) describes the implemented boundary and verification. The user stopped profiling work and requested deletion of the profiling JSON files from docs. Provider IO, cancellation, compatibility retirement and worker responsibilities are the current migration priorities.
+
+Owned Zod removal remains 23/23, 100%; native Effect Schema 22/23, 95.7%, plus one UI-only plain type. Ownership remains sections 11/11, scoped queries 9/9, former worker reads 4/4, exports 2/2 and MCP tools/resources 6/6 and 2/2. Scan pricing remains 32/32 producers with 47/47 billing arguments preserved. Export-query tests now own the actual worker runtime through the shared native fixture. The test tree has 30 TypeScript files mentioning LedgerStore and 27 construction files, including fixtures; the *.test.ts-only counts are 27 and 26. The previous 31/28 inventory included fixtures.
+
+Node/web and strict test types, full formatting, build and lint pass. Lint has zero errors and 1,109 advisory warnings. Final focused integration passes 163 tests across 13 files. Full units pass 185 files, 2448 tests and 2 skips in 315.81s with one worker. Existing assertions and timeouts remain. All four Electron checks pass in 8.8m. Fresh Windows x64 directory packaging and the full actual-package IPC/SDK gate exit zero. No renderer errors occur; app and SDK children close and the isolated profile is removed. Installer and macOS/Linux packaged acceptance remain open.
+
+Reviews have no unresolved blockers; temporary legacy export row-rule duplication remains a follow-up until callers migrate. Both renderer stores remain identical to ce81593. Sufficient Overview reads, compatibility retirement, cooperative provider IO, worker decomposition, performance acceptance, installers and actual cross-platform packaged execution keep the full programme open.

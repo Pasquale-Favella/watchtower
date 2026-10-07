@@ -4,6 +4,21 @@ This extends [the September 30 assessment](../research/effect-adoption-assessmen
 
 Full Effect adoption is complete when contracts have one Schema authority, application workflows compose ports, each isolate owns its resources, and product operations avoid redundant work. A library substitution alone does not establish those properties.
 
+## Current priority, 2026-10-07
+
+The user stopped profiling work and requested deletion of all profiling JSON files from docs. This instruction supersedes profiling and measurement follow-ups in the historical execution records below. Continue the overall Effect migration.
+
+Owned Zod removal is complete across the 23-module baseline. Twenty-two modules use native Effect Schema; one UI-only module uses plain TypeScript types. The production worker owns one initialized Effect/SQL graph and no longer constructs LedgerStore. The inventoried section queries, exports and MCP data operations enter through Effect application workflows. Dashboard, Analytics and exports use focused transactional reads and pure calculations.
+
+The programme is still incomplete. Runtime-import coverage is not a completion percentage, and pure calculations and React stores should stay simple TypeScript. The remaining work is:
+
+1. Complete provider IO and scan cancellation with explicit resource ownership, typed failures and underlying work that stops and drains before shutdown. The remaining Promise adapters must have a clear boundary and removal condition.
+2. Finish application/calculation separation where broad legacy summary reconstruction remains, starting with Overview. Migrate remaining compatibility callers and remove obsolete builders, serializers and LedgerStore test/script dependencies.
+3. Split worker transport, scan orchestration and application workflows along the existing ports. Keep one runtime/client owner and avoid services for pure helpers.
+4. Finish migration acceptance checks, including installer and macOS/Linux packaged execution. Profiling is no longer an active workstream.
+
+The Git content of data-store.ts and scan-store.ts still matches ce81593. Preserve their original scope guard and direct applyChange flow, without added request IDs, promise ownership or coalescing.
+
 ## Dependency direction
 
 ```mermaid
@@ -586,3 +601,17 @@ Sequential 1k/50k/500k results and their limits are in the [measurement record](
 The next frontier remains sufficient Overview/export reads, compatibility test/script retirement, cooperative provider IO and worker decomposition. Full provider scan/refresh measurements, controlled historical comparisons, profiling, installer and macOS/Linux packaged acceptance remain open. Published-head CI evidence is maintained in the living assessment after actual steps finish.
 
 The measured view path still allocates substantially: maximum observed heap delta is about 964 MiB at 500k, with child maximum RSS through timed samples near 2 GiB. Analytics warm samples span 5.69 to 17.35 seconds. Profile native materialization, Schema decoding and accumulation on these fixtures before choosing bounded row consumption or SQL aggregation. Preserve query-time pricing, numeric ordering and transaction consistency in that follow-up.
+
+### Export sufficient reads, 2026-10-07
+
+Source is `7387a61`, following `2aff3d9`.
+
+- `d36dea5` adds a focused LedgerExportReads capability over the existing repository/client. Five transactional SELECTs materialize sufficient fields; decoding follows commit. Current canonical aliases/strict overrides, source provider/repo URL and explicit native ordering remain.
+- `d946249` replaces export's full legacy summary graphs with minimal grouped facts and pure table calculations. It preserves nine-table output, diagnostics, whole-turn admission, stable duplicate-ID ordering and USD/JPY byte parity. Empty exports avoid currency/filesystem work; nonempty requests capture currency once. Compatibility serializers remain until their last callers migrate.
+  The [export migration record](../research/effect-export-migration-2026-10-07.md) describes these changes and completed verification. Profiling work is stopped and its JSON artifacts have been removed at the user's request.
+
+Node/web and strict test types, full formatting, build and lint pass. Lint has zero errors and 1,109 advisory warnings. Final focused integration passes 163 tests across 13 files. Full units pass 185 files, 2448 tests and 2 skips in 315.81s with one worker. Existing assertions and timeouts remain. All four Electron checks pass in 8.8m. Fresh Windows x64 directory packaging and the full actual-package IPC/SDK gate exit zero. No renderer errors occur; app and SDK children close and the isolated profile is removed. Installer and macOS/Linux packaged acceptance remain open.
+
+Reviews have no unresolved blockers after preserving complete-turn sorting before admission and correcting new fixtures. No existing assertions or timeouts changed. Both renderer stores still match ce81593 exactly. The unchanged AST method reports import coverage, not architectural completion; the current [census](../research/effect-adoption-assessment-2026-09-30.md) retains separate ownership/schema denominators.
+
+At 500k, view read probes take about 5 seconds, with 2.4-2.6 seconds native and 2.6-2.7 seconds residual; pure calculation takes about 1.7 seconds. Export's warm median is about 40 seconds, including serialization and excluding file IO. Bounded reads/output and performance acceptance remain open. Next frontiers are sufficient Overview reads, compatibility retirement, cooperative provider IO and worker decomposition. Full provider scan/refresh profiling, controlled historical comparisons, installers and macOS/Linux packaged acceptance remain open. Published-head CI follows in the living assessment after actual steps finish.

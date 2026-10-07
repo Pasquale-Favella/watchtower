@@ -1,6 +1,6 @@
 # Effect application query measurements, 2026-10-07
 
-Measured source is `e65ad24e6fc9fa68fb20537f6fbe40349f67f1cd`. [1k raw results](./effect-query-path-2026-10-07-1k.json), [50k raw results](./effect-query-path-2026-10-07-50k.json), [500k raw results](./effect-query-path-2026-10-07-500k.json). All three reports contain 26 result records and no failed or timed-out operations. Each report records the same 47 measured-source hashes, with no measured-source working-tree changes. Fixture sizes contain 1,008, 50,004, 500,004 calls respectively.
+Measured source is `e65ad24e6fc9fa68fb20537f6fbe40349f67f1cd`. The three historical runs each contained 26 result records and no failed or timed-out operations. Fixture sizes contained 1,008, 50,004, 500,004 calls respectively. On October 7, the user stopped profiling work and requested deletion of the profiling JSON files from docs. This summary remains as a historical record. The current priority is the overall Effect migration.
 
 ## Method
 
