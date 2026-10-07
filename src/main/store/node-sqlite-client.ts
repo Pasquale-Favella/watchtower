@@ -4,7 +4,14 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 
-import { LedgerConfig, LedgerIngest, LedgerPortsLayer, LedgerQueries, LedgerSessionReads } from './ledger-repository.js'
+import {
+  LedgerConfig,
+  LedgerIngest,
+  LedgerPortsLayer,
+  LedgerQueries,
+  LedgerSessionReads,
+  LedgerViewReads,
+} from './ledger-repository.js'
 import { makeSqliteMigrationLoader, type SqliteMigration } from './sqlite-migrations.js'
 
 type RunResult = {
@@ -20,7 +27,7 @@ type SqliteStatement = {
 
 /** The ledger port capabilities (ADR 0032 §A3) — the shape every ledger consumer
  *  should depend on, and the only `R` a `runSync` caller needs. */
-export type LedgerPorts = LedgerIngest | LedgerQueries | LedgerConfig | LedgerSessionReads
+export type LedgerPorts = LedgerIngest | LedgerQueries | LedgerConfig | LedgerSessionReads | LedgerViewReads
 type LedgerRuntimeServices = Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient | LedgerPorts
 export type LedgerRuntime = ManagedRuntime.ManagedRuntime<LedgerRuntimeServices, never>
 

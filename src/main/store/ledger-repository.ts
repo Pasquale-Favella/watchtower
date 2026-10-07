@@ -30,6 +30,7 @@ import {
   type LedgerQueriesPort,
 } from './ledger-ports.js'
 import { LedgerSessionReads, type LedgerSessionReadsPort } from './ledger-session-reads.js'
+import { LedgerViewReads, type LedgerViewReadsPort } from './ledger-view-reads.js'
 import { mapFileToLedgerRows, type PortInput } from './port.js'
 import { ledgerCallFactsRowSchema } from './read-projections.js'
 import {
@@ -40,6 +41,7 @@ import {
   sessionSummarySessionSchema,
   sessionSummaryTurnSchema,
 } from './session-read-projections.js'
+import { type LedgerViewData, ledgerViewDataSchema } from './view-read-projections.js'
 
 export {
   LedgerConfig,
@@ -51,6 +53,7 @@ export {
   type LedgerRequestSnapshotData,
 } from './ledger-ports.js'
 export { LedgerSessionReads, type LedgerSessionReadsPort } from './ledger-session-reads.js'
+export { LedgerViewReads, type LedgerViewReadsPort } from './ledger-view-reads.js'
 
 type SourceInput = ReturnType<typeof mapFileToLedgerRows>['source']
 type RunResult = { changes: number | bigint; lastInsertRowid: number | bigint }
@@ -159,6 +162,37 @@ const SELECT_SESSION_SEARCH_CALLS = `
   FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC
 `
 
+const SELECT_VIEW_SESSIONS = `
+  SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project,
+         s.project_path AS projectPath, s.working_directory AS workingDirectory,
+         s.canonical_project AS canonicalProject, s.canonical_cwd AS canonicalCwd,
+         COALESCE(source.provider, 'unknown') AS sourceProvider
+  FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id
+  ORDER BY s.session_id ASC, s.rowid ASC
+`
+const SELECT_VIEW_TURNS = `
+  SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex,
+         timestamp, category, sub_category AS subCategory
+  FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC
+`
+const SELECT_VIEW_CALLS = `
+  SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex,
+         call_index AS callIndex, provider, model, timestamp, speed,
+         base_cost_usd AS baseCostUSD, savings_usd AS savingsUSD, is_estimated AS isEstimated,
+         input_tokens AS inputTokens, output_tokens AS outputTokens,
+         cache_creation_input_tokens AS cacheCreationInputTokens,
+         cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens,
+         web_search_requests AS webSearchRequests, reasoning_tokens AS reasoningTokens,
+         subagent_types_json AS subagentTypes
+  FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC
+`
+const SELECT_VIEW_ALIASES = 'SELECT model, alias_of AS aliasOf FROM model_alias'
+const SELECT_VIEW_OVERRIDES = `
+  SELECT model, input_price_per_million AS inputPricePerMillion,
+         output_price_per_million AS outputPricePerMillion
+  FROM price_override
+`
+
 const SELECT_DETAIL_SOURCES = `
   SELECT id, provider, env_fingerprint, file_path, repo_url, project,
          CAST(fingerprint_dev AS TEXT) AS fingerprint_dev,
@@ -190,7 +224,7 @@ const SELECT_DETAIL_CALL_FACTS = `
 
 /** Shared implementation of the ledger's focused port capabilities. */
 export interface LedgerImplementationShape
-  extends LedgerIngestPort, LedgerQueriesPort, LedgerConfigPort, LedgerSessionReadsPort {}
+  extends LedgerIngestPort, LedgerQueriesPort, LedgerConfigPort, LedgerSessionReadsPort, LedgerViewReadsPort {}
 
 /**
  * One implementation for all ledger capabilities, over whatever `SqlClient`
@@ -372,6 +406,24 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
         const calls = yield* decodeRows(sessionSearchCallSchema)(rawRows.calls)
         const aliases = yield* decodeRows(modelAliasRowSchema)(rawRows.aliases)
         return { sessions, turns, calls, aliases }
+      })
+
+      const getViewData = Effect.fn('LedgerViewReads.getViewData')(function* (): Effect.fn.Return<
+        LedgerViewData,
+        SqlError | Schema.SchemaError
+      > {
+        const rawRows = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const sessions = yield* sql.unsafe(SELECT_VIEW_SESSIONS)
+            const turns = yield* sql.unsafe(SELECT_VIEW_TURNS)
+            const calls = yield* sql.unsafe(SELECT_VIEW_CALLS)
+            const aliases = yield* sql.unsafe(SELECT_VIEW_ALIASES)
+            const overrides = yield* sql.unsafe(SELECT_VIEW_OVERRIDES)
+            return { sessions, turns, calls, aliases, overrides }
+          }),
+        )
+
+        return yield* Schema.decodeUnknownEffect(ledgerViewDataSchema)(rawRows)
       })
 
       const getCurrencyRate = Effect.fn('LedgerConfig.getCurrencyRate')(function* (code: string) {
@@ -741,6 +793,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
         getSessionSummaryData,
         getSessionDetailData,
         getSessionSearchData,
+        getViewData,
         getCurrencyRate,
         getDisplayCurrency,
         getRefreshCadence,
@@ -817,6 +870,11 @@ const ledgerSessionReadsLayer = Layer.effect(
   ),
 )
 
+const ledgerViewReadsLayer = Layer.effect(
+  LedgerViewReads,
+  Effect.map(LedgerImplementation, implementation => LedgerViewReads.of({ getViewData: implementation.getViewData })),
+)
+
 /**
  * All ledger ports from ONE `LedgerImplementation`, with the implementation kept
  * private (ADR 0032 §A3) and the `SqlClient` left as the layer's requirement —
@@ -827,9 +885,13 @@ const ledgerSessionReadsLayer = Layer.effect(
  * connection.
  */
 export const LedgerPortsLayer: Layer.Layer<
-  LedgerIngest | LedgerQueries | LedgerConfig | LedgerSessionReads,
+  LedgerIngest | LedgerQueries | LedgerConfig | LedgerSessionReads | LedgerViewReads,
   never,
   SqlClient.SqlClient
-> = Layer.mergeAll(ledgerIngestLayer, ledgerQueriesLayer, ledgerConfigLayer, ledgerSessionReadsLayer).pipe(
-  Layer.provide(LedgerImplementation.layer),
-)
+> = Layer.mergeAll(
+  ledgerIngestLayer,
+  ledgerQueriesLayer,
+  ledgerConfigLayer,
+  ledgerSessionReadsLayer,
+  ledgerViewReadsLayer,
+).pipe(Layer.provide(LedgerImplementation.layer))

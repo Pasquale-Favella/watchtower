@@ -37,6 +37,7 @@ import {
   LedgerPortsLayer,
   LedgerQueries,
   LedgerSessionReads,
+  LedgerViewReads,
 } from './store/ledger-repository.js'
 
 export type WorkerServices =
@@ -53,6 +54,7 @@ export type WorkerServices =
   | LedgerIngest
   | LedgerQueries
   | LedgerSessionReads
+  | LedgerViewReads
   | LedgerConfig
   | LedgerMaintenance
   | Sqlite.SqliteClient.SqliteClient
@@ -65,6 +67,7 @@ export type WorkerOverrides =
   | LedgerIngest
   | LedgerQueries
   | LedgerSessionReads
+  | LedgerViewReads
   | LedgerConfig
   | PricingDiagnostics
   | AssistantSetup

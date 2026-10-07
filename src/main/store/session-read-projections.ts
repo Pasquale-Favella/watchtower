@@ -4,16 +4,16 @@ import * as SchemaGetter from 'effect/SchemaGetter'
 import { modelAliasRowSchema, priceOverrideRowSchema } from '../../shared/schemas/ledger.js'
 
 // Match the canonical ledger codecs' Number coercion for SQLite numeric columns.
-const finiteNumber = Schema.Unknown.pipe(
+export const finiteNumber = Schema.Unknown.pipe(
   Schema.decodeTo(Schema.Number.pipe(Schema.check(Schema.isFinite())), {
     decode: SchemaGetter.transform((value: unknown) => (typeof value === 'symbol' ? Number.NaN : Number(value))),
     encode: SchemaGetter.transform((value: number) => value),
   }),
 )
-const nullableString = Schema.NullOr(Schema.String)
-const jsonStringArray = Schema.fromJsonString(Schema.mutable(Schema.Array(Schema.String)))
+export const nullableString = Schema.NullOr(Schema.String)
+export const jsonStringArray = Schema.fromJsonString(Schema.mutable(Schema.Array(Schema.String)))
 
-const sessionProjectFields = {
+export const sessionProjectFields = {
   sourceId: finiteNumber,
   sessionId: Schema.String,
   project: nullableString,
@@ -41,7 +41,7 @@ export const sessionSummaryTurnSchema = Schema.Struct({
 export type SessionSummaryTurn = Schema.Schema.Type<typeof sessionSummaryTurnSchema>
 
 /** Billing inputs are kept raw so current aliases/overrides/catalogue price the row at query time. */
-export const sessionSummaryCallSchema = Schema.Struct({
+export const sessionSummaryCallFields = {
   sourceId: finiteNumber,
   sessionId: Schema.String,
   turnIndex: finiteNumber,
@@ -58,7 +58,8 @@ export const sessionSummaryCallSchema = Schema.Struct({
   cacheReadInputTokens: finiteNumber,
   cachedInputTokens: finiteNumber,
   webSearchRequests: finiteNumber,
-})
+}
+export const sessionSummaryCallSchema = Schema.Struct(sessionSummaryCallFields)
 export type SessionSummaryCall = Schema.Schema.Type<typeof sessionSummaryCallSchema>
 
 export const sessionSearchSessionSchema = Schema.Struct({

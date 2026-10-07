@@ -16,6 +16,7 @@ import { captureLocalModelSavings, captureModelPricingCatalogue, captureProxyPat
 import { PricingDiagnosticsLive } from '../../pipeline/pricing-diagnostics.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../../store/ledger-ports.js'
 import { LedgerPortsLayer } from '../../store/ledger-repository.js'
+import { LedgerViewReads } from '../../store/ledger-view-reads.js'
 import type { LedgerMcpQueries } from './query-api.js'
 
 type LedgerMcpQueryRuntimeServices =
@@ -23,6 +24,7 @@ type LedgerMcpQueryRuntimeServices =
   | LedgerConfig
   | LedgerIngest
   | LedgerQueries
+  | LedgerViewReads
   | PricingDiagnostics
   | SqlClient.SqlClient
   | Sqlite.SqliteClient.SqliteClient

@@ -26,6 +26,7 @@ import { buildSessionSummariesFromSnapshotResult } from '../src/main/store/aggre
 import { LedgerConfig, LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
 import type { LedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
 import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
+import { LedgerViewReads } from '../src/main/store/ledger-view-reads.js'
 import { buildAnalyticalViewsFromLedger, buildDashboardViewsFromLedger } from '../src/main/views.js'
 import { buildYieldViewFromLedger } from '../src/main/yield-view.js'
 import { sessionRowSchema } from '../src/shared/schemas/views.js'
@@ -95,6 +96,7 @@ const operations = [
   'optimize:yield',
 ] as const
 type ViewOperation = (typeof operations)[number]
+const projectedOperations = new Set<ViewOperation>(['store:views', 'store:analytics'])
 const scope = { period: 'lifetime', range: { since: '2026-07-01', until: '2026-07-02' } } as const
 
 function expectedQueryInputs(owner: ReturnType<typeof openWorkerOwner>): { snapshot: LedgerQuerySnapshot; now: Date } {
@@ -249,12 +251,13 @@ describe('worker view queries', () => {
     })
   })
 
-  it.each(operations)('loads one port snapshot for %s without running the synchronous facade', async operation => {
+  it.each(operations)('loads one port read for %s without running the synchronous facade', async operation => {
     await withWorker(async (context, owner) => {
       seedLedger(owner)
       const expected = await expectedPayload(operation, owner)
       const queries = owner.runtime.runSync(LedgerQueries)
       const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
+      const projection = vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getViewData')
       const facade = vi.spyOn(owner.ledger, 'runQueriesSync').mockImplementation(() => {
         throw new Error('legacy query facade must not run')
       })
@@ -274,7 +277,8 @@ describe('worker view queries', () => {
       const dismissalRead = vi.spyOn(config, 'getSkillDismissals')
 
       await expect(context.dispatch(operation, [scope])).resolves.toEqual(expected)
-      expect(snapshot).toHaveBeenCalledTimes(1)
+      expect(snapshot).toHaveBeenCalledTimes(projectedOperations.has(operation) ? 0 : 1)
+      expect(projection).toHaveBeenCalledTimes(projectedOperations.has(operation) ? 1 : 0)
       expect(facade).not.toHaveBeenCalled()
       expect(repository).not.toHaveBeenCalled()
       expect(aliases).not.toHaveBeenCalled()
@@ -307,7 +311,11 @@ describe('worker view queries', () => {
       const failure = new SqlError.SqlError({
         reason: new SqlError.SqlSyntaxError({ cause: new Error('controlled failure'), message: 'controlled failure' }),
       })
-      vi.spyOn(queries, 'getRequestSnapshotData').mockReturnValue(Effect.fail(failure))
+      if (projectedOperations.has(operation)) {
+        vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getViewData').mockReturnValue(Effect.fail(failure))
+      } else {
+        vi.spyOn(queries, 'getRequestSnapshotData').mockReturnValue(Effect.fail(failure))
+      }
 
       await expect(context.dispatch(operation, [scope])).rejects.toMatchObject({ _tag: 'SqlError' })
     })
@@ -324,9 +332,14 @@ describe('worker view queries', () => {
         aliases: [],
         overrides: [],
       }
-      vi.spyOn(queries, 'getRequestSnapshotData').mockReturnValue(
-        Schema.decodeUnknownEffect(Schema.Number)('invalid').pipe(Effect.as(empty)),
-      )
+      const failure = Schema.decodeUnknownEffect(Schema.Number)('invalid')
+      if (projectedOperations.has(operation)) {
+        vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getViewData').mockReturnValue(
+          failure.pipe(Effect.as({ sessions: [], turns: [], calls: [], aliases: [], overrides: [] })),
+        )
+      } else {
+        vi.spyOn(queries, 'getRequestSnapshotData').mockReturnValue(failure.pipe(Effect.as(empty)))
+      }
 
       await expect(context.dispatch(operation, [scope])).rejects.toMatchObject({ _tag: 'SchemaError' })
     })

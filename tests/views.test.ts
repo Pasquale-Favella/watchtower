@@ -9,8 +9,10 @@ import { querySessionSearch } from '../src/main/application/session-search-query
 import { queryProjectRows, querySessionRows } from '../src/main/application/store-row-queries.js'
 import { queryAnalyticalViews, queryDashboardViews } from '../src/main/application/view-queries.js'
 import { captureLocalModelSavings } from '../src/main/pipeline/models.js'
+import { normalizeProxyPath } from '../src/main/pipeline/proxy-paths.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { LedgerViewReads } from '../src/main/store/ledger-view-reads.js'
 import type { WorkerRuntime } from '../src/main/worker-runtime.js'
 import type { OverviewPayload, OverviewScope } from '../src/shared/schemas/overview.js'
 import type {
@@ -203,19 +205,27 @@ function expectRequestSnapshotReads(executions: NativeSelect[], start: number): 
 }
 
 describe('request snapshots', () => {
-  it('loads analytics provenance, facts, and pricing once for the payload', () => {
+  it('loads analytics projection and pricing once without a broad snapshot', () => {
     const { runtime } = openLedgerFixture()
     portViews(runtime, VIEWS_SPECS)
     const queries = runtime.runSync(LedgerQueries)
     const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
+    const projection = vi.spyOn(runtime.runSync(LedgerViewReads), 'getViewData')
     const executions = watchNativeSelects()
     const readStart = executions.length
 
     try {
       analyticalViews(runtime)
 
-      expect(snapshot).toHaveBeenCalledTimes(1)
-      expectRequestSnapshotReads(executions, readStart)
+      expect(projection).toHaveBeenCalledTimes(1)
+      expect(snapshot).not.toHaveBeenCalled()
+      expectNativeReads(executions, readStart, [
+        'ledger_session',
+        'ledger_turn',
+        'ledger_call',
+        'model_alias',
+        'price_override',
+      ])
     } finally {
       vi.restoreAllMocks()
     }
@@ -269,6 +279,50 @@ describe('request snapshots', () => {
 })
 
 describe('ledger-backed views family (aggregation seam)', () => {
+  it('keeps project and proxy attribution independent for duplicate public session IDs', () => {
+    const { runtime } = openLedgerFixture()
+    const root = process.platform === 'win32' ? 'C:/workspace' : '/workspace'
+    const projects = [
+      { name: 'proxied', path: `${root}/proxy/proxied`, cost: 9 },
+      { name: 'direct', path: `${root}/direct`, cost: 5 },
+    ]
+    runtime.runSync(
+      Effect.flatMap(LedgerIngest, ingest =>
+        Effect.forEach(projects, project =>
+          ingest.portIn({
+            provider: 'opencode',
+            envFingerprint: 'duplicate-view-identity',
+            filePath: `/cache/${project.name}.jsonl`,
+            verdict: 'new',
+            cachedFile: buildFixtureCachedFile({
+              canonicalCwd: project.path,
+              canonicalProjectName: project.name,
+              turns: [
+                buildFixtureCachedTurn(0, 'task', {
+                  sessionId: 'same-public-session',
+                  calls: [{ ...buildFixtureCachedCall(0), projectPath: project.path, costUSD: project.cost }],
+                }),
+              ],
+            }),
+          }),
+        ),
+      ),
+    )
+    const { catalogue } = viewInputs({ period: 'lifetime' })
+    const result = runtime.runSync(
+      queryDashboardViews({
+        catalogue,
+        proxyPaths: { paths: [normalizeProxyPath(`${root}/proxy`, false)], caseSensitive: false },
+      }),
+    )
+
+    expect(result.kpis).toMatchObject({ totalCost: 14, totalSessions: 2, totalProjects: 2, totalProxiedCost: 9 })
+    expect(result.byProject).toEqual([
+      { name: 'proxied', cost: 9, calls: 1 },
+      { name: 'direct', cost: 5, calls: 1 },
+    ])
+  })
+
   it('derives dashboard KPIs and buckets from ledger rows', () => {
     const { runtime } = openLedgerFixture()
     portViews(runtime, VIEWS_SPECS)

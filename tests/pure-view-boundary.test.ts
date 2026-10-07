@@ -5,6 +5,7 @@ import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 
 const roots = [
+  'src/main/view-aggregate-calculation.ts',
   'src/main/views-calculation.ts',
   'src/main/canonical-session-project.ts',
   'src/main/store-rows-calculation.ts',
