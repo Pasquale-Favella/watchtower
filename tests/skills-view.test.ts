@@ -2,21 +2,26 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
+import { AssistantSetup } from '../src/main/application/assistant-setup.js'
+import { querySkillsView } from '../src/main/application/skills-query.js'
+import { AssistantSetupLive } from '../src/main/assistant-setup-live.js'
 import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
 import type { ClassifiedTurn, ParsedApiCall, SessionSummary } from '../src/main/pipeline/types.js'
 import {
-  buildSkillsViewFromLedger,
   collectSkillCandidates,
   findGhostSkills,
   normalizeBashCommand,
   partitionSkillCandidates,
 } from '../src/main/skills-view.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { DEFAULT_SKILLS_THRESHOLDS, skillsThresholdsSchema } from '../src/shared/schemas/skills.js'
+import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
+import type { OverviewScope } from '../src/shared/schemas/overview.js'
+import { DEFAULT_SKILLS_THRESHOLDS, type SkillsPayload, skillsThresholdsSchema } from '../src/shared/schemas/skills.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 import { buildFixtureReport } from './fixtures/report.js'
 
 const BASE_SESSION = buildFixtureReport()[0]!.sessions[0]!
@@ -83,6 +88,31 @@ const NOW = new Date(2026, 6, 15)
 
 function tempHome(): string {
   return mkdtempSync(join(tmpdir(), 'skills-'))
+}
+
+type SkillsRuntime = ReturnType<typeof openLedgerFixture>['runtime']
+type AssistantSetupService = Parameters<typeof AssistantSetup.of>[0]
+
+const emptyAssistantSetup = AssistantSetup.of({
+  getSkillInventory: () => Effect.succeed([]),
+  getOptimizeSetup: () => Effect.die('not used'),
+})
+
+function skillsView(
+  runtime: SkillsRuntime,
+  scope: OverviewScope,
+  homeDir: string,
+  setup: AssistantSetupService | 'live' = emptyAssistantSetup,
+): Promise<SkillsPayload> {
+  const query = querySkillsView({ ...viewInputs(scope), homeDir })
+  return runtime.runPromise(
+    atTime(
+      setup === 'live'
+        ? Effect.provide(query, AssistantSetupLive)
+        : Effect.provideService(query, AssistantSetup, setup),
+      NOW,
+    ),
+  )
 }
 
 describe('normalizeBashCommand (seam b clustering)', () => {
@@ -262,12 +292,7 @@ describe('findGhostSkills', () => {
   })
 })
 
-// ── Ledger-backed Skills view (aggregation seam scope) ──────────────────────
-
-function makeLedger(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'skills-ledger-'))
-  return new LedgerStore(join(dir, 'data.db'))
-}
+// ── Application Skills query ──────────────────────────────────────────────
 
 function cachedCall(
   index: number,
@@ -291,50 +316,47 @@ function cachedCall(
   }
 }
 
-function portSession(store: LedgerStore, sessionId: string, calls: CachedCall[]): void {
+function portSession(runtime: SkillsRuntime, sessionId: string, calls: CachedCall[]): void {
   const iso = new Date('2026-07-13T12:00:00').toISOString()
   const turn = buildFixtureCachedTurn(0, `prompt ${sessionId}`, { sessionId, timestamp: iso, calls })
   const file: CachedFile = buildFixtureCachedFile({ canonicalProjectName: 'demo-project', turns: [turn] })
-  store.portIn({
-    provider: 'opencode',
-    envFingerprint: 'env-demo',
-    filePath: `/cache/opencode/${sessionId}.jsonl`,
-    verdict: 'new',
-    cachedFile: file,
-  })
+  runtime.runSync(
+    Effect.flatMap(LedgerIngest, ingest =>
+      ingest.portIn({
+        provider: 'opencode',
+        envFingerprint: 'env-demo',
+        filePath: `/cache/opencode/${sessionId}.jsonl`,
+        verdict: 'new',
+        cachedFile: file,
+      }),
+    ),
+  )
 }
 
-describe('buildSkillsViewFromLedger (aggregation seam scope)', () => {
+describe('querySkillsView (aggregation seam scope)', () => {
   it('returns a zero payload for an empty ledger', async () => {
-    const store = makeLedger()
-    const payload = await buildSkillsViewFromLedger(store, { period: 'lifetime' }, undefined, {
-      now: NOW,
-      homeDir: tempHome(),
-    })
+    const { runtime } = openLedgerFixture()
+    const payload = await skillsView(runtime, { period: 'lifetime' }, tempHome())
     expect(payload.drafts).toEqual([])
     expect(payload.opportunities).toEqual([])
     expect(payload.ghosts).toEqual([])
     expect(payload.summary).toMatchObject({ sessions: 0, calls: 0, drafts: 0, opportunities: 0, ghosts: 0 })
     expect(payload.period.start).not.toBeNull()
-    store.close()
   })
 
   it('promotes a ledger skill pattern to a draft with exact counts', async () => {
-    const store = makeLedger()
-    portSession(store, 'sess-a', [
+    const { runtime } = openLedgerFixture()
+    portSession(runtime, 'sess-a', [
       cachedCall(0, { sessionId: 'sess-a', skills: ['data-fetch'], cost: 1 }),
       cachedCall(1, { sessionId: 'sess-a', skills: ['data-fetch'], cost: 1 }),
       cachedCall(2, { sessionId: 'sess-a', skills: ['data-fetch'], cost: 1 }),
     ])
-    portSession(store, 'sess-b', [
+    portSession(runtime, 'sess-b', [
       cachedCall(3, { sessionId: 'sess-b', skills: ['data-fetch'], cost: 1 }),
       cachedCall(4, { sessionId: 'sess-b', skills: ['data-fetch'], cost: 1 }),
       cachedCall(5, { sessionId: 'sess-b', skills: ['data-fetch'], cost: 1 }),
     ])
-    const payload = await buildSkillsViewFromLedger(store, { period: 'lifetime' }, undefined, {
-      now: NOW,
-      homeDir: tempHome(),
-    })
+    const payload = await skillsView(runtime, { period: 'lifetime' }, tempHome())
     expect(payload.summary.sessions).toBe(2)
     expect(payload.summary.calls).toBe(6)
     // 6 per-call invocations + 2 classifier subCategory turns (the classifier
@@ -351,20 +373,16 @@ describe('buildSkillsViewFromLedger (aggregation seam scope)', () => {
       turns: 2,
     })
     expect(payload.opportunities).toEqual([])
-    store.close()
   })
 
   it('clusters ledger bash commands and sends below-gate patterns to opportunities', async () => {
-    const store = makeLedger()
-    portSession(store, 'sess-a', [
+    const { runtime } = openLedgerFixture()
+    portSession(runtime, 'sess-a', [
       cachedCall(0, { sessionId: 'sess-a', bashCommands: ['git commit -m "wip"'] }),
       cachedCall(1, { sessionId: 'sess-a', bashCommands: ['git commit -m "fix"'] }),
     ])
-    portSession(store, 'sess-b', [cachedCall(2, { sessionId: 'sess-b', bashCommands: ['git commit -m "lint"'] })])
-    const payload = await buildSkillsViewFromLedger(store, { period: 'lifetime' }, undefined, {
-      now: NOW,
-      homeDir: tempHome(),
-    })
+    portSession(runtime, 'sess-b', [cachedCall(2, { sessionId: 'sess-b', bashCommands: ['git commit -m "lint"'] })])
+    const payload = await skillsView(runtime, { period: 'lifetime' }, tempHome())
     expect(payload.summary.bashEvents).toBe(3)
     expect(payload.drafts).toEqual([])
     expect(payload.opportunities).toHaveLength(1)
@@ -374,7 +392,6 @@ describe('buildSkillsViewFromLedger (aggregation seam scope)', () => {
       frequency: 3,
       spreadSessions: 2,
     })
-    store.close()
   })
 
   it('flags home skill-dir entries never invoked as ghosts', async () => {
@@ -384,25 +401,22 @@ describe('buildSkillsViewFromLedger (aggregation seam scope)', () => {
     writeFileSync(join(home, '.claude', 'skills', 'debugger', 'SKILL.md'), '')
     writeFileSync(join(home, '.claude', 'skills', 'data-fetch', 'SKILL.md'), '')
 
-    const store = makeLedger()
-    portSession(store, 'sess-a', [cachedCall(0, { sessionId: 'sess-a', skills: ['data-fetch'] })])
-    const payload = await buildSkillsViewFromLedger(store, { period: 'lifetime' }, undefined, {
-      now: NOW,
-      homeDir: home,
-    })
+    const { runtime } = openLedgerFixture()
+    portSession(runtime, 'sess-a', [cachedCall(0, { sessionId: 'sess-a', skills: ['data-fetch'] })])
+    const payload = await skillsView(runtime, { period: 'lifetime' }, home, 'live')
     expect(payload.ghosts).toEqual([{ name: 'debugger', root: join(home, '.claude', 'skills') }])
-    store.close()
   })
 
-  it('filters dismissed patterns out of drafts and opportunities (ticket 25)', async () => {
-    const store = makeLedger()
-    portSession(store, 'sess-a', [cachedCall(0, { sessionId: 'sess-a', bashCommands: ['git commit -m "wip"'] })])
-    portSession(store, 'sess-b', [cachedCall(1, { sessionId: 'sess-b', bashCommands: ['git commit -m "lint"'] })])
-    const payload = await buildSkillsViewFromLedger(store, { period: 'lifetime' }, undefined, {
-      now: NOW,
-      homeDir: tempHome(),
-      dismissals: [{ source: 'bash', name: 'git commit', reason: 'not-a-skill', created: '2026-07-01T00:00:00.000Z' }],
-    })
+  it('filters persisted dismissals out of drafts and opportunities (ticket 25)', async () => {
+    const { runtime } = openLedgerFixture()
+    portSession(runtime, 'sess-a', [cachedCall(0, { sessionId: 'sess-a', bashCommands: ['git commit -m "wip"'] })])
+    portSession(runtime, 'sess-b', [cachedCall(1, { sessionId: 'sess-b', bashCommands: ['git commit -m "lint"'] })])
+    runtime.runSync(
+      Effect.flatMap(LedgerConfig, config =>
+        config.dismissSkill('bash', 'git commit', 'not-a-skill', '2026-07-01T00:00:00.000Z'),
+      ),
+    )
+    const payload = await skillsView(runtime, { period: 'lifetime' }, tempHome())
     // The dismissed candidate is filtered before the gate, so its events stop
     // counting as skill signals (a dismissed pattern is "not a skill") and it
     // never resurfaces as a draft or opportunity.
@@ -410,21 +424,18 @@ describe('buildSkillsViewFromLedger (aggregation seam scope)', () => {
     expect(payload.summary.sessions).toBe(2)
     expect(payload.opportunities).toEqual([])
     expect(payload.drafts).toEqual([])
-    store.close()
   })
 
-  it('honors a custom-range scope at the SQL read', async () => {
-    const store = makeLedger()
-    portSession(store, 'sess-a', [cachedCall(0, { sessionId: 'sess-a', date: '2026-07-13', skills: ['data-fetch'] })])
-    portSession(store, 'sess-b', [cachedCall(1, { sessionId: 'sess-b', date: '2026-07-20', skills: ['data-fetch'] })])
-    const payload = await buildSkillsViewFromLedger(
-      store,
+  it('honors a custom-range scope at the query', async () => {
+    const { runtime } = openLedgerFixture()
+    portSession(runtime, 'sess-a', [cachedCall(0, { sessionId: 'sess-a', date: '2026-07-13', skills: ['data-fetch'] })])
+    portSession(runtime, 'sess-b', [cachedCall(1, { sessionId: 'sess-b', date: '2026-07-20', skills: ['data-fetch'] })])
+    const payload = await skillsView(
+      runtime,
       { period: 'lifetime', range: { since: '2026-07-12', until: '2026-07-14' } },
-      undefined,
-      { now: NOW, homeDir: tempHome() },
+      tempHome(),
     )
     expect(payload.summary.sessions).toBe(1)
     expect(payload.summary.calls).toBe(1)
-    store.close()
   })
 })

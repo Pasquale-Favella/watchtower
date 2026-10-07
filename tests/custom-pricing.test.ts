@@ -1,71 +1,94 @@
-import { strict as assert } from 'node:assert'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
-
-import { describe, expect, it, onTestFinished } from 'vitest'
+import * as Effect from 'effect/Effect'
+import { describe, expect, it } from 'vitest'
 
 import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'
 import { buildLedgerTools } from '../src/main/agents/ledger-mcp/tools.js'
+import { AssistantSetup } from '../src/main/application/assistant-setup.js'
 import { queryCompareView } from '../src/main/application/compare-query.js'
 import { queryModelsView } from '../src/main/application/models-query.js'
+import { queryOptimizeView } from '../src/main/application/optimize-query.js'
+import { queryOverview } from '../src/main/application/overview-query.js'
 import { querySessionsView } from '../src/main/application/sessions-query.js'
+import { querySkillsView } from '../src/main/application/skills-query.js'
 import { querySpendView } from '../src/main/application/spend-query.js'
-import { buildOptimizeViewFromLedger, findLowWorthCandidates } from '../src/main/optimize-view.js'
-import { buildOverviewFromLedger } from '../src/main/overview.js'
+import { findLowWorthCandidates } from '../src/main/optimize-view.js'
+import { overviewDateRange } from '../src/main/overview-scope.js'
+import { captureLocalModelSavings } from '../src/main/pipeline/models.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { buildSkillsViewFromLedger, collectSkillCandidates } from '../src/main/skills-view.js'
-import { buildSessionSummaries, defaultRange } from '../src/main/store/aggregate.js'
-import type { LedgerStore } from '../src/main/store/ledger.js'
-import { buildProjectsFromLedger } from '../src/main/views.js'
+import { collectSkillCandidates } from '../src/main/skills-view.js'
+import { defaultRange } from '../src/main/store/aggregate.js'
+import {
+  type AggregateScope,
+  buildSessionSummariesFromSnapshot,
+  groupSummariesIntoProjects,
+} from '../src/main/store/aggregate-calculation.js'
+import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
+import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
 import type { ComparePayload } from '../src/shared/schemas/compare.js'
 import type { ModelsPayload } from '../src/shared/schemas/models.js'
-import type { OverviewScope } from '../src/shared/schemas/overview.js'
+import type { OptimizePayload } from '../src/shared/schemas/optimize.js'
+import type { OverviewPayload, OverviewScope } from '../src/shared/schemas/overview.js'
+import type { SkillsPayload } from '../src/shared/schemas/skills.js'
 import type { SpendPayload } from '../src/shared/schemas/spend.js'
 import type { SessionRow } from '../src/shared/schemas/views.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
-import { atTime, viewInputs } from './fixtures/ledger-runtime.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
+import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 const NOW = new Date(2026, 6, 15)
 const FULL_RANGE = defaultRange(new Date('2026-08-01T00:00:00.000Z'), 60)
+const ALL_TIME_RANGE = { start: new Date(-8640000000000000), end: new Date(8640000000000000) }
 
-function removeFixtureDirectory(directory: string): void {
-  assert.equal(dirname(directory), tmpdir())
-  assert.ok(basename(directory).startsWith('tr-custom-pricing-'))
-  rmSync(directory, { recursive: true, force: true })
+type TestRuntime = ReturnType<typeof openLedgerFixture>['runtime']
+
+const EMPTY_ASSISTANT_SETUP = AssistantSetup.of({
+  getSkillInventory: () => Effect.succeed([]),
+  getOptimizeSetup: (_directories, homeDir) =>
+    Effect.succeed({
+      home: homeDir ?? '',
+      mcpConfigs: new Map(),
+      envSettings: new Map(),
+      agents: [],
+      skills: [],
+      commands: [],
+    }),
+})
+
+function overviewView(runtime: TestRuntime, scope: OverviewScope): OverviewPayload {
+  return runtime.runSync(atTime(queryOverview({ ...viewInputs(scope), localSavings: captureLocalModelSavings() }), NOW))
 }
 
-function openOwner(directory: string): ReturnType<typeof openWorkerOwner> {
-  try {
-    return openWorkerOwner(join(directory, 'data.db'))
-  } catch (error) {
-    try {
-      removeFixtureDirectory(directory)
-    } catch {
-      // Keep the owner construction error as the test failure.
-    }
-    throw error
-  }
+function summariesFor(
+  runtime: TestRuntime,
+  scope: AggregateScope = { range: FULL_RANGE },
+): ReturnType<typeof buildSessionSummariesFromSnapshot> {
+  const snapshot = runtime.runSync(loadLedgerQuerySnapshotEffect(viewInputs({ period: 'lifetime' })))
+  return buildSessionSummariesFromSnapshot(snapshot, scope)
 }
 
-function makeStore(): {
-  readonly ledger: LedgerStore
-  readonly runtime: ReturnType<typeof openWorkerOwner>['runtime']
-} {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-custom-pricing-'))
-  const owner = openOwner(dir)
-  onTestFinished(async () => {
-    try {
-      await owner.runtime.dispose()
-    } finally {
-      removeFixtureDirectory(dir)
-    }
+function skillsView(runtime: TestRuntime): Promise<SkillsPayload> {
+  const query = querySkillsView({
+    ...viewInputs({ period: 'lifetime' }),
+    thresholds: { frequency: 1, spread: 1 },
   })
-  return owner
+  return runtime.runPromise(atTime(Effect.provideService(query, AssistantSetup, EMPTY_ASSISTANT_SETUP), NOW))
 }
 
-type TestRuntime = ReturnType<typeof openWorkerOwner>['runtime']
+function optimizeView(runtime: TestRuntime): Promise<OptimizePayload> {
+  const query = queryOptimizeView(viewInputs({ period: 'lifetime' }))
+  return runtime.runPromise(atTime(Effect.provideService(query, AssistantSetup, EMPTY_ASSISTANT_SETUP), NOW))
+}
+
+function setModelAlias(runtime: TestRuntime, model: string, aliasOf: string): void {
+  runtime.runSync(Effect.flatMap(LedgerConfig, config => config.setModelAlias(model, aliasOf)))
+}
+
+function setPriceOverride(
+  runtime: TestRuntime,
+  model: string,
+  override: { inputPricePerMillion: number; outputPricePerMillion: number },
+): void {
+  runtime.runSync(Effect.flatMap(LedgerConfig, config => config.setPriceOverride(model, override)))
+}
 
 function modelsView(runtime: TestRuntime, scope: OverviewScope = { period: 'lifetime' }): ModelsPayload {
   return runtime.runSync(atTime(queryModelsView(viewInputs(scope)), NOW))
@@ -125,28 +148,32 @@ function cachedFile(spec: Spec): CachedFile {
   return buildFixtureCachedFile({ canonicalProjectName: 'demo-project', title: '', turns: [turn] })
 }
 
-function port(store: LedgerStore, specs: Spec[]): void {
-  specs.forEach((spec, i) => {
-    store.portIn({
-      provider: spec.provider,
-      envFingerprint: 'env-demo',
-      filePath: `/cache/${spec.provider}/${spec.sessionId}-${i}.jsonl`,
-      verdict: 'new',
-      cachedFile: cachedFile(spec),
-    })
-  })
+function port(runtime: TestRuntime, specs: Spec[]): void {
+  runtime.runSync(
+    Effect.flatMap(LedgerIngest, ingest =>
+      Effect.forEach(specs, (spec, i) =>
+        ingest.portIn({
+          provider: spec.provider,
+          envFingerprint: 'env-demo',
+          filePath: `/cache/${spec.provider}/${spec.sessionId}-${i}.jsonl`,
+          verdict: 'new',
+          cachedFile: cachedFile(spec),
+        }),
+      ),
+    ),
+  )
 }
 
 describe('custom pricing applies query-time in every Section (issue 77)', () => {
   it('an Alias from a Models unpriced row reprices every Section with no rescan', () => {
-    const { ledger: store, runtime } = makeStore()
-    port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
-    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
+    const { runtime } = openLedgerFixture()
+    port(runtime, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
+    setModelAlias(runtime, 'weird-model', 'claude-sonnet-4-6')
 
-    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
-    expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.0105, 4)
+    const sessionSummaries = summariesFor(runtime)
+    expect(sessionSummaries[0]!.totalCostUSD).toBeCloseTo(0.0105, 4)
 
-    const overview = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
+    const overview = overviewView(runtime, { period: 'lifetime' })
     expect(overview.kpis.cost).toBeCloseTo(0.0105, 4)
 
     const sessions = sessionsView(runtime)
@@ -164,17 +191,17 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
   })
 
   it('a Price override reprices everywhere and wins over the Alias on the effective model', () => {
-    const { ledger: store, runtime } = makeStore()
-    port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
-    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
-    store.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+    const { runtime } = openLedgerFixture()
+    port(runtime, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
+    setModelAlias(runtime, 'weird-model', 'claude-sonnet-4-6')
+    setPriceOverride(runtime, 'claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
 
     // 1000 in @ $3/M + 500 out @ $15/M.
     const expected = 0.003 + 0.0075
-    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
-    expect(summaries[0]!.totalCostUSD).toBeCloseTo(expected, 9)
+    const sessionSummaries = summariesFor(runtime)
+    expect(sessionSummaries[0]!.totalCostUSD).toBeCloseTo(expected, 9)
 
-    const overview = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
+    const overview = overviewView(runtime, { period: 'lifetime' })
     expect(overview.kpis.cost).toBeCloseTo(expected, 9)
 
     const models = modelsView(runtime)
@@ -182,12 +209,12 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
   })
 
   it('Compare keeps raw row identity while its cost column is repriced', () => {
-    const { ledger: store, runtime } = makeStore()
-    port(store, [
+    const { runtime } = openLedgerFixture()
+    port(runtime, [
       { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' },
       { sessionId: 'sess-b', provider: 'claude', model: 'claude-opus-4', cost: 1, date: '2026-07-10' },
     ])
-    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
+    setModelAlias(runtime, 'weird-model', 'claude-sonnet-4-6')
 
     const payload = compareView(runtime)
     const ids = payload.models.map(m => m.model)
@@ -199,28 +226,28 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
 
     // A Price override on the effective model wins in Compare too, while raw
     // row identity is preserved: 1000 in @ $6/M + 500 out @ $30/M.
-    store.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 6, outputPricePerMillion: 30 })
+    setPriceOverride(runtime, 'claude-sonnet-4-6', { inputPricePerMillion: 6, outputPricePerMillion: 30 })
     const repriced = compareView(runtime)
     const weirdRepriced = repriced.models.find(m => m.model === 'weird-model')!
     expect(weirdRepriced.costUSD).toBeCloseTo(0.021, 9)
   })
 
   it('changing the Alias target reprices every Section to the new target', () => {
-    const { ledger: store, runtime } = makeStore()
-    port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
-    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
-    const first = buildSessionSummaries(store, { range: FULL_RANGE })[0]!
+    const { runtime } = openLedgerFixture()
+    port(runtime, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
+    setModelAlias(runtime, 'weird-model', 'claude-sonnet-4-6')
+    const first = summariesFor(runtime)[0]!
     expect(first.turns[0]!.assistantCalls[0]!.model).toBe('claude-sonnet-4-6')
 
-    store.setModelAlias('weird-model', 'claude-opus-4')
-    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
-    expect(summaries[0]!.turns[0]!.assistantCalls[0]!.model).toBe('claude-opus-4')
-    expect(summaries[0]!.turns[0]!.assistantCalls[0]!.rawModel).toBe('weird-model')
-    const key = Object.keys(summaries[0]!.modelBreakdown)[0]!
-    expect(summaries[0]!.modelBreakdown[key]!.sourceModels).toEqual(['weird-model'])
+    setModelAlias(runtime, 'weird-model', 'claude-opus-4')
+    const sessionSummaries = summariesFor(runtime)
+    expect(sessionSummaries[0]!.turns[0]!.assistantCalls[0]!.model).toBe('claude-opus-4')
+    expect(sessionSummaries[0]!.turns[0]!.assistantCalls[0]!.rawModel).toBe('weird-model')
+    const key = Object.keys(sessionSummaries[0]!.modelBreakdown)[0]!
+    expect(sessionSummaries[0]!.modelBreakdown[key]!.sourceModels).toEqual(['weird-model'])
 
-    const overview = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
-    expect(overview.kpis.cost).toBeCloseTo(summaries[0]!.totalCostUSD, 9)
+    const overview = overviewView(runtime, { period: 'lifetime' })
+    expect(overview.kpis.cost).toBeCloseTo(sessionSummaries[0]!.totalCostUSD, 9)
 
     const models = modelsView(runtime)
     expect(models.byModel[0]!.model).toBe('claude-opus-4')
@@ -230,63 +257,63 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
   })
 
   it('merged rows carry provenance; totals reconcile across Sections for the same Scope', () => {
-    const { ledger: store, runtime } = makeStore()
-    port(store, [
+    const { runtime } = openLedgerFixture()
+    port(runtime, [
       { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' },
       { sessionId: 'sess-b', provider: 'claude', model: 'claude-sonnet-4-6', cost: 0.0105, date: '2026-07-10' },
     ])
-    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
+    setModelAlias(runtime, 'weird-model', 'claude-sonnet-4-6')
 
-    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
-    const total = summaries.reduce((s, x) => s + x.totalCostUSD, 0)
+    const sessionSummaries = summariesFor(runtime)
+    const total = sessionSummaries.reduce((s, x) => s + x.totalCostUSD, 0)
 
-    const overview = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
+    const overview = overviewView(runtime, { period: 'lifetime' })
     expect(overview.kpis.cost).toBeCloseTo(total, 9)
 
     const sessions = sessionsView(runtime)
     expect(sessions.reduce((s, r) => s + r.cost, 0)).toBeCloseTo(total, 9)
 
     // Provenance: the merged breakdown names its raw feeders.
-    const merged = summaries.find(s => s.sessionId === 'sess-a')!
+    const merged = sessionSummaries.find(s => s.sessionId === 'sess-a')!
     const key = Object.keys(merged.modelBreakdown)[0]!
     expect(merged.modelBreakdown[key]!.sourceModels).toEqual(['weird-model'])
   })
 
   it('the active Scope still applies exactly under custom pricing', () => {
-    const { ledger: store } = makeStore()
-    port(store, [
+    const { runtime } = openLedgerFixture()
+    port(runtime, [
       { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' },
       { sessionId: 'sess-b', provider: 'opencode', model: 'weird-model', cost: 0, date: '2026-07-10' },
     ])
-    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
+    setModelAlias(runtime, 'weird-model', 'claude-sonnet-4-6')
 
-    const claude = buildSessionSummaries(store, { range: FULL_RANGE, provider: 'claude' })
-    const all = buildSessionSummaries(store, { range: FULL_RANGE })
+    const claude = summariesFor(runtime, { range: FULL_RANGE, provider: 'claude' })
+    const all = summariesFor(runtime)
     expect(claude).toHaveLength(1)
     expect(all).toHaveLength(2)
     expect(claude[0]!.totalCostUSD).toBeCloseTo(0.0105, 4)
   })
 
   it('exported data carries the same custom pricing the UI shows', () => {
-    const { ledger: store } = makeStore()
-    port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
-    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
+    const { runtime } = openLedgerFixture()
+    port(runtime, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
+    setModelAlias(runtime, 'weird-model', 'claude-sonnet-4-6')
 
-    const projects = buildProjectsFromLedger(store)
-    const ui = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
+    const projects = groupSummariesIntoProjects(summariesFor(runtime, { range: ALL_TIME_RANGE }))
+    const ui = overviewView(runtime, { period: 'lifetime' })
     expect(projects.reduce((s, p) => s + p.totalCostUSD, 0)).toBeCloseTo(ui.kpis.cost, 9)
     expect(projects[0]!.sessions[0]!.totalCostUSD).toBeCloseTo(0.0105, 4)
   })
 
   it('the Coach ledger MCP tools answer with the same pricing the UI shows', async () => {
-    const { ledger: store } = makeStore()
-    port(store, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
-    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
+    const { dbPath, runtime: worker } = openLedgerFixture()
+    port(worker, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
+    setModelAlias(worker, 'weird-model', 'claude-sonnet-4-6')
 
-    const runtime = await createLedgerMcpQueryRuntime(store.dbPath)
+    const runtime = await createLedgerMcpQueryRuntime(dbPath)
     try {
       const tools = buildLedgerTools(runtime.queries)
-      const ui = buildOverviewFromLedger(store, { period: 'lifetime' }, NOW)
+      const ui = overviewView(worker, { period: 'lifetime' })
       const mcpOverview = (await tools.find(t => t.name === 'ledger_overview')!.run({})) as {
         kpis: { cost: number }
       }
@@ -309,8 +336,8 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
   })
 
   it('Skills cost evidence reprices through the seam', async () => {
-    const { ledger: store } = makeStore()
-    port(store, [
+    const { runtime } = openLedgerFixture()
+    port(runtime, [
       {
         sessionId: 'sess-a',
         provider: 'claude',
@@ -320,44 +347,40 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
         skills: ['demo-skill'],
       },
     ])
-    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
+    setModelAlias(runtime, 'weird-model', 'claude-sonnet-4-6')
 
-    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
-    const aggs = collectSkillCandidates(summaries)
+    const sessionSummaries = summariesFor(runtime)
+    const aggs = collectSkillCandidates(sessionSummaries)
     const agg = aggs.find(a => a.name === 'demo-skill')!
     expect(agg).toBeDefined()
     // The classifier mirrors per-call skills into the turn subCategory, so one
     // call yields two skill events (turn + call) each at the display cost.
     expect(agg.costUSD).toBeCloseTo(0.021, 4)
 
-    const payload = await buildSkillsViewFromLedger(
-      store,
-      { period: 'lifetime' },
-      { frequency: 1, spread: 1 },
-      { now: NOW },
-    )
+    const payload = await skillsView(runtime)
     const draft = payload.drafts.find(d => d.name === 'demo-skill')
     expect(draft).toBeDefined()
     expect(draft!.costUSD).toBeCloseTo(0.02, 2)
   })
 
   it('Optimize waste figures reprice through the seam', async () => {
-    const { ledger: store } = makeStore()
-    port(store, [
+    const { runtime } = openLedgerFixture()
+    port(runtime, [
       { sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10', tools: ['Read'] },
     ])
     // No pricing: zero-cost session is never a low-worth candidate.
-    expect(findLowWorthCandidates(buildProjectsFromLedger(store))).toHaveLength(0)
+    const scope = { range: overviewDateRange({ period: 'lifetime' }, NOW) }
+    expect(findLowWorthCandidates(groupSummariesIntoProjects(summariesFor(runtime, scope)))).toHaveLength(0)
 
     // A Price override pushing the session to $3 (1000 in @ $2000/M + 500 out
     // @ $2000/M) makes the same read-only session flaggable with the repriced cost.
-    store.setPriceOverride('weird-model', { inputPricePerMillion: 2000, outputPricePerMillion: 2000 })
-    const projects = buildProjectsFromLedger(store)
+    setPriceOverride(runtime, 'weird-model', { inputPricePerMillion: 2000, outputPricePerMillion: 2000 })
+    const projects = groupSummariesIntoProjects(summariesFor(runtime, scope))
     const candidates = findLowWorthCandidates(projects)
     expect(candidates).toHaveLength(1)
     expect(candidates[0]!.cost).toBeCloseTo(3, 9)
 
-    const payload = await buildOptimizeViewFromLedger(store, { period: 'lifetime' }, { now: NOW })
+    const payload = await optimizeView(runtime)
     expect(payload).toBeDefined()
   })
 })

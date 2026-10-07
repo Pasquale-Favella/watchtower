@@ -1,23 +1,14 @@
-import { describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import type {
-  ClassifiedTurn,
-  ParsedApiCall,
-  ProjectSummary,
-  SessionSummary,
-  TokenUsage,
-  ToolCall,
-} from '../src/main/pipeline/types.js'
-import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
-import { buildFixtureReport } from './fixtures/report.js'
-import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
-import { buildSessionSummary, cachedTurnToClassified } from '../src/main/pipeline/parser.js'
+
+import * as Effect from 'effect/Effect'
+import { describe, expect, it } from 'vitest'
+
+import { AssistantSetup } from '../src/main/application/assistant-setup.js'
+import { queryOptimizeView } from '../src/main/application/optimize-query.js'
 import {
   aggregateMcpCoverage,
-  buildOptimizeViewFromLedger,
   computeHealth,
   computeInputCostRate,
   computeTrend,
@@ -30,19 +21,35 @@ import {
   detectGhostSkills,
   detectJunkReads,
   detectLowReadEditRatio,
+  detectLowWorthSessions,
   detectMcpAlwaysLoadHygiene,
   detectMcpDeferralOff,
   detectMcpDeferThreshold,
   detectMcpProfileAdvisor,
   detectMcpToolCoverage,
   detectSessionOutliers,
-  detectLowWorthSessions,
   findContextBloatCandidates,
+  type FindingId,
   findLowWorthCandidates,
   formatTokens,
-  type FindingId,
   type WasteAction,
 } from '../src/main/optimize-view.js'
+import { buildSessionSummary, cachedTurnToClassified } from '../src/main/pipeline/parser.js'
+import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
+import type {
+  ClassifiedTurn,
+  ParsedApiCall,
+  ProjectSummary,
+  SessionSummary,
+  TokenUsage,
+  ToolCall,
+} from '../src/main/pipeline/types.js'
+import { LedgerIngest } from '../src/main/store/ledger-ports.js'
+import type { OptimizePayload } from '../src/shared/schemas/optimize.js'
+import type { OverviewScope } from '../src/shared/schemas/overview.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
+import { buildFixtureReport } from './fixtures/report.js'
 
 const BASE_SESSION = buildFixtureReport()[0]!.sessions[0]!
 const BASE_TURN = BASE_SESSION.turns[0]!
@@ -181,7 +188,9 @@ function tempHome(): string {
   return mkdtempSync(join(tmpdir(), 'opt-'))
 }
 
-function readSteps(projects: ProjectSummary[]) {
+function readSteps(
+  projects: ProjectSummary[],
+): Array<{ name: string; filePath?: string; sessionId: string; project: string; recent: boolean }> {
   const steps: Array<{ name: string; filePath?: string; sessionId: string; project: string; recent: boolean }> = []
   for (const project of projects) {
     for (const session of project.sessions) {
@@ -205,11 +214,30 @@ function readSteps(projects: ProjectSummary[]) {
   return steps
 }
 
-// ── Ledger-backed Optimize view (map 06) ───────────────────────────────────
+// ── Application Optimize query ────────────────────────────────────────────
 
-function optMakeLedger(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-opt-'))
-  return new LedgerStore(join(dir, 'data.db'))
+type OptimizeRuntime = ReturnType<typeof openLedgerFixture>['runtime']
+
+const emptyAssistantSetup = AssistantSetup.of({
+  getSkillInventory: () => Effect.succeed([]),
+  getOptimizeSetup: (_directories, homeDir) =>
+    Effect.succeed({
+      home: homeDir ?? '',
+      mcpConfigs: new Map(),
+      envSettings: new Map(),
+      agents: [],
+      skills: [],
+      commands: [],
+    }),
+})
+
+function optimizeView(runtime: OptimizeRuntime, scope: OverviewScope, homeDir: string): Promise<OptimizePayload> {
+  return runtime.runPromise(
+    atTime(
+      Effect.provideService(queryOptimizeView({ ...viewInputs(scope), homeDir }), AssistantSetup, emptyAssistantSetup),
+      NOW,
+    ),
+  )
 }
 
 function optCachedFile(
@@ -236,22 +264,26 @@ function optCachedFile(
   return buildFixtureCachedFile({ canonicalProjectName: 'demo-project', title: '', turns: [turn] })
 }
 
-function optPort(store: LedgerStore, files: CachedFile[]): void {
+function optPort(runtime: OptimizeRuntime, files: CachedFile[]): void {
   files.forEach((file, i) => {
-    store.portIn({
-      provider: 'claude',
-      envFingerprint: 'env-demo',
-      filePath: `/cache/claude/${file.turns[0]?.sessionId ?? `sess-${i}`}.jsonl`,
-      verdict: 'new',
-      cachedFile: file,
-    })
+    runtime.runSync(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          provider: 'claude',
+          envFingerprint: 'env-demo',
+          filePath: `/cache/claude/${file.turns[0]?.sessionId ?? `sess-${i}`}.jsonl`,
+          verdict: 'new',
+          cachedFile: file,
+        }),
+      ),
+    )
   })
 }
 
-describe('buildOptimizeViewFromLedger (aggregation seam scope)', () => {
+describe('queryOptimizeView', () => {
   it('returns an empty A-grade payload for an empty ledger', async () => {
-    const store = optMakeLedger()
-    const payload = await buildOptimizeViewFromLedger(store, { period: 'lifetime' }, { now: NOW, homeDir: tempHome() })
+    const { runtime } = openLedgerFixture()
+    const payload = await optimizeView(runtime, { period: 'lifetime' }, tempHome())
     expect(payload.findings).toEqual([])
     expect(payload.summary).toMatchObject({
       healthScore: 100,
@@ -261,7 +293,6 @@ describe('buildOptimizeViewFromLedger (aggregation seam scope)', () => {
       calls: 0,
     })
     expect(payload.period.start).not.toBeNull()
-    store.close()
   })
 
   it('runs the read detectors over the ledger toolSequence and reports junk reads', async () => {
@@ -274,9 +305,9 @@ describe('buildOptimizeViewFromLedger (aggregation seam scope)', () => {
         [{ tool: 'Read', file: '/tmp/demo/node_modules/c/lib.js' }],
       ],
     })
-    const store = optMakeLedger()
-    optPort(store, [file])
-    const payload = await buildOptimizeViewFromLedger(store, { period: 'lifetime' }, { now: NOW, homeDir: tempHome() })
+    const { runtime } = openLedgerFixture()
+    optPort(runtime, [file])
+    const payload = await optimizeView(runtime, { period: 'lifetime' }, tempHome())
 
     const junk = payload.findings.find(f => f.id === 'build-folder-reads')
     expect(junk).toBeDefined()
@@ -285,22 +316,20 @@ describe('buildOptimizeViewFromLedger (aggregation seam scope)', () => {
     expect(payload.summary.findingCount).toBeGreaterThanOrEqual(1)
     expect(payload.summary.potentialSavingsTokens).toBeGreaterThan(0)
     expect(payload.summary.periodCostUSD).toBe(5)
-    store.close()
   })
 
-  it('honors the custom-range scope at the SQL read', async () => {
+  it('honors the custom-range scope at the query', async () => {
     const inRange = optCachedFile(0, { sessionId: 'sess-o1', date: '2026-07-13', cost: 1 })
     const outRange = optCachedFile(1, { sessionId: 'sess-o2', date: '2026-07-14', cost: 2 })
-    const store = optMakeLedger()
-    optPort(store, [inRange, outRange])
-    const payload = await buildOptimizeViewFromLedger(
-      store,
+    const { runtime } = openLedgerFixture()
+    optPort(runtime, [inRange, outRange])
+    const payload = await optimizeView(
+      runtime,
       { period: 'lifetime', range: { since: '2026-07-12', until: '2026-07-13' } },
-      { now: NOW, homeDir: tempHome() },
+      tempHome(),
     )
     expect(payload.summary.sessions).toBe(1)
     expect(payload.summary.calls).toBe(1)
-    store.close()
   })
 })
 

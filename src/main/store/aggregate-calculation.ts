@@ -1,3 +1,4 @@
+import type { LedgerSessionRow, LedgerTurnRow } from '../../shared/schemas/ledger.js'
 import { canonicalSessionProject } from '../canonical-session-project.js'
 import { getShortModelName } from '../pipeline/model-names.js'
 import { buildSpawnPrSets, extractPrUrlsFromProviderCall } from '../pipeline/parser-calculations.js'
@@ -17,7 +18,6 @@ import type {
   TaskCategory,
   TokenUsage,
 } from '../pipeline/types.js'
-import type { LedgerSessionRow, LedgerTurnRow } from './ledger.js'
 import type { LedgerQuerySnapshot } from './ledger-query-snapshot.js'
 import type { LedgerCallFactsRow } from './read-projections.js'
 

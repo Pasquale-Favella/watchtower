@@ -1,26 +1,34 @@
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { DatabaseSync, StatementSync } from 'node:sqlite'
 
+import * as Effect from 'effect/Effect'
 import { describe, expect, it, vi } from 'vitest'
 
-import { buildOverviewFromLedger } from '../src/main/overview.js'
+import { queryOverview } from '../src/main/application/overview-query.js'
+import { querySessionDetail } from '../src/main/application/session-detail-query.js'
+import { querySessionSearch } from '../src/main/application/session-search-query.js'
+import { queryProjectRows, querySessionRows } from '../src/main/application/store-row-queries.js'
+import { queryAnalyticalViews, queryDashboardViews } from '../src/main/application/view-queries.js'
+import { captureLocalModelSavings } from '../src/main/pipeline/models.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { buildAnalyticalViewsFromLedger, buildDashboardViewsFromLedger } from '../src/main/views.js'
+import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
+import type { WorkerRuntime } from '../src/main/worker-runtime.js'
+import type { OverviewPayload, OverviewScope } from '../src/shared/schemas/overview.js'
+import type {
+  AnalyticalViews,
+  DashboardViews,
+  ProjectRow,
+  SearchHit,
+  SessionDetail,
+  SessionRow,
+} from '../src/shared/schemas/views.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
-import { projectRows, sessionDetail, sessionRows, sessionSearch } from './fixtures/store-view-queries.js'
+import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 // ── Ledger-backed views family (map 03) ─────────────────────────────────────
-// The dashboard/projects/session-rows/detail/analytics/search builders consume
-// the aggregation seam (all-time scope) and must be byte-identical to the
-// report-based builders over the same ported facts.
+// Dashboard, project/session rows, detail, analytics, overview, and search
+// queries consume the same ported facts through their application boundaries.
 
-function makeLedger(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-views-'))
-  return new LedgerStore(join(dir, 'data.db'))
-}
+const NOW = new Date('2026-08-02T00:00:00.000Z')
 
 type ViewsSessionSpec = {
   sessionId: string
@@ -36,25 +44,43 @@ type ViewsSessionSpec = {
   prRefs?: string[]
 }
 
+type SessionFilter = { project?: string; since?: string; until?: string }
+
+function portViews(runtime: WorkerRuntime, specs: ViewsSessionSpec[]): void {
+  runtime.runSync(
+    Effect.flatMap(LedgerIngest, ingest =>
+      Effect.forEach(specs, spec =>
+        ingest.portIn({
+          provider: spec.provider,
+          envFingerprint: 'env-demo',
+          filePath: `/cache/${spec.provider}/${spec.sessionId}.jsonl`,
+          verdict: 'new',
+          cachedFile: viewsCachedFile(spec),
+        }),
+      ),
+    ),
+  )
+}
+
 function viewsCachedFile(spec: ViewsSessionSpec): CachedFile {
-  const ts = new Date(`${spec.date}T09:00:00`).toISOString()
+  const timestamp = new Date(`${spec.date}T09:00:00`).toISOString()
   const call = {
     ...buildFixtureCachedCall(0),
     provider: spec.provider,
     model: spec.model,
     costUSD: spec.cost,
-    timestamp: ts,
+    timestamp,
     bashCommands: spec.bashCommands ?? [],
     subagentTypes: spec.subagentTypes ?? [],
   }
   const turn = buildFixtureCachedTurn(0, spec.userMessage ?? 'task', {
     sessionId: spec.sessionId,
-    timestamp: ts,
+    timestamp,
     calls: [call],
     prRefs: spec.prRefs ?? [],
   })
-  // Distinct native checkouts per project label: the canonical key (not the
-  // display name) is the grouping identity.
+  // Distinct native checkouts per project label: the canonical key, not the
+  // display name, is the grouping identity.
   const root = process.platform === 'win32' ? 'C:/workspace' : '/workspace'
   return buildFixtureCachedFile({
     canonicalProjectName: spec.project,
@@ -64,16 +90,35 @@ function viewsCachedFile(spec: ViewsSessionSpec): CachedFile {
   })
 }
 
-function portViews(store: LedgerStore, specs: ViewsSessionSpec[]): void {
-  specs.forEach(spec => {
-    store.portIn({
-      provider: spec.provider,
-      envFingerprint: 'env-demo',
-      filePath: `/cache/${spec.provider}/${spec.sessionId}.jsonl`,
-      verdict: 'new',
-      cachedFile: viewsCachedFile(spec),
-    })
-  })
+function projectRows(runtime: WorkerRuntime): ProjectRow[] {
+  return runtime.runSync(queryProjectRows({ catalogue: viewInputs({ period: 'lifetime' }).catalogue }))
+}
+
+function sessionRows(runtime: WorkerRuntime, filter: SessionFilter = {}): SessionRow[] {
+  return runtime.runSync(querySessionRows({ catalogue: viewInputs({ period: 'lifetime' }).catalogue, filter }))
+}
+
+function sessionDetail(runtime: WorkerRuntime, sessionId: string): SessionDetail | null {
+  const { catalogue, proxyPaths } = viewInputs({ period: 'lifetime' })
+  return runtime.runSync(querySessionDetail({ catalogue, proxyPaths, sessionId }))
+}
+
+function sessionSearch(runtime: WorkerRuntime, query: string): SearchHit[] {
+  return runtime.runSync(querySessionSearch({ catalogue: viewInputs({ period: 'lifetime' }).catalogue, query }))
+}
+
+function dashboardViews(runtime: WorkerRuntime): DashboardViews {
+  const { catalogue, proxyPaths } = viewInputs({ period: 'lifetime' })
+  return runtime.runSync(queryDashboardViews({ catalogue, proxyPaths }))
+}
+
+function analyticalViews(runtime: WorkerRuntime): AnalyticalViews {
+  const { catalogue, proxyPaths } = viewInputs({ period: 'lifetime' })
+  return runtime.runSync(queryAnalyticalViews({ catalogue, proxyPaths }))
+}
+
+function overviewView(runtime: WorkerRuntime, scope: OverviewScope, now: Date): OverviewPayload {
+  return runtime.runSync(atTime(queryOverview({ ...viewInputs(scope), localSavings: captureLocalModelSavings() }), now))
 }
 
 const VIEWS_SPECS: ViewsSessionSpec[] = [
@@ -112,137 +157,123 @@ const VIEWS_SPECS: ViewsSessionSpec[] = [
   },
 ]
 
-function trackSnapshotReads(store: LedgerStore) {
-  const counts: Record<string, number> = {}
-  const runQueriesSync = store.runQueriesSync.bind(store)
-  const runRepositorySync = store.runRepositorySync.bind(store)
-  vi.spyOn(store, 'runQueriesSync').mockImplementation(operation =>
-    runQueriesSync(queries =>
-      operation(
-        new Proxy(queries, {
-          get(target, property, receiver) {
-            const member = Reflect.get(target, property, receiver)
-            if (typeof member !== 'function') return member
-            return (...args: unknown[]) => {
-              const name = String(property)
-              counts[name] = (counts[name] ?? 0) + 1
-              return member(...args)
-            }
-          },
-        }),
-      ),
-    ),
-  )
-  vi.spyOn(store, 'runRepositorySync').mockImplementation(operation =>
-    runRepositorySync(config =>
-      operation(
-        new Proxy(config, {
-          get(target, property, receiver) {
-            const member = Reflect.get(target, property, receiver)
-            if (typeof member !== 'function') return member
-            return (...args: unknown[]) => {
-              const name = String(property)
-              counts[name] = (counts[name] ?? 0) + 1
-              return member(...args)
-            }
-          },
-        }),
-      ),
-    ),
-  )
-  return counts
+type NativeSelect = { readonly sql: string; readonly connection: DatabaseSync }
+const SELECT_TARGET = /\bFROM\s+(?:ledger_source|ledger_session|ledger_turn|ledger_call|model_alias|price_override)\b/i
+
+function watchNativeSelects(): NativeSelect[] {
+  const executions: NativeSelect[] = []
+  const sqlByStatement = new WeakMap<StatementSync, string>()
+  const connectionByStatement = new WeakMap<StatementSync, DatabaseSync>()
+  const nativePrepare = DatabaseSync.prototype.prepare
+  const nativeAll = StatementSync.prototype.all
+
+  vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function (this: DatabaseSync, sql: string) {
+    const statement = Reflect.apply(nativePrepare, this, [sql])
+    sqlByStatement.set(statement, sql)
+    connectionByStatement.set(statement, this)
+    return statement
+  })
+  vi.spyOn(StatementSync.prototype, 'all').mockImplementation(function (this: StatementSync, ...parameters: unknown[]) {
+    const result = Reflect.apply(nativeAll, this, parameters)
+    const sql = sqlByStatement.get(this) ?? ''
+    const connection = connectionByStatement.get(this)
+    if (connection && /^\s*SELECT\b/i.test(sql) && SELECT_TARGET.test(sql)) executions.push({ sql, connection })
+    return result
+  })
+
+  return executions
+}
+
+function expectNativeReads(executions: NativeSelect[], start: number, tables: string[]): void {
+  const reads = executions.slice(start)
+  const selectedTables = reads.map(({ sql }) => /\bFROM\s+([a-z_]+)/i.exec(sql)?.[1])
+  expect(selectedTables).toEqual(tables)
+  expect(new Set(reads.map(({ connection }) => connection)).size).toBe(1)
+}
+
+function expectRequestSnapshotReads(executions: NativeSelect[], start: number): void {
+  expectNativeReads(executions, start, [
+    'ledger_source',
+    'ledger_session',
+    'ledger_turn',
+    'ledger_call',
+    'model_alias',
+    'price_override',
+  ])
 }
 
 describe('request snapshots', () => {
-  it('loads analytics provenance, facts, and pricing once for both payloads', () => {
-    const store = makeLedger()
-    portViews(store, VIEWS_SPECS)
-    const reads = trackSnapshotReads(store)
+  it('loads analytics provenance, facts, and pricing once for the payload', () => {
+    const { runtime } = openLedgerFixture()
+    portViews(runtime, VIEWS_SPECS)
+    const queries = runtime.runSync(LedgerQueries)
+    const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
+    const executions = watchNativeSelects()
+    const readStart = executions.length
 
-    buildAnalyticalViewsFromLedger(store)
+    try {
+      analyticalViews(runtime)
 
-    expect(reads).toMatchObject({
-      getSources: 1,
-      getSessions: 1,
-      getTurns: 1,
-      getCallFacts: 1,
-      getModelAliases: 1,
-      getPriceOverrides: 1,
-    })
-    store.close()
+      expect(snapshot).toHaveBeenCalledTimes(1)
+      expectRequestSnapshotReads(executions, readStart)
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 
   it('reuses one snapshot for lifetime data start and the scoped overview', () => {
-    const store = makeLedger()
-    portViews(store, VIEWS_SPECS)
-    const reads = trackSnapshotReads(store)
+    const { runtime } = openLedgerFixture()
+    portViews(runtime, VIEWS_SPECS)
+    const queries = runtime.runSync(LedgerQueries)
+    const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
+    const executions = watchNativeSelects()
+    const readStart = executions.length
 
-    buildOverviewFromLedger(
-      store,
-      { period: 'all', range: { since: '2026-07-01', until: '2026-08-01' } },
-      new Date('2026-08-02T00:00:00.000Z'),
-    )
+    try {
+      overviewView(runtime, { period: 'all', range: { since: '2026-07-01', until: '2026-08-01' } }, NOW)
 
-    expect(reads).toMatchObject({
-      getSources: 1,
-      getSessions: 1,
-      getTurns: 1,
-      getCallFacts: 1,
-      getModelAliases: 1,
-      getPriceOverrides: 1,
-    })
-    store.close()
+      expect(snapshot).toHaveBeenCalledTimes(1)
+      expectRequestSnapshotReads(executions, readStart)
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 
-  it('keeps project SELECT count constant as the source count grows', async () => {
-    for (const sourceCount of [2, 8]) {
-      const store = makeLedger()
-      portViews(
-        store,
-        Array.from({ length: sourceCount }, (_, index) => ({
-          ...VIEWS_SPECS[0]!,
-          sessionId: `session-${sourceCount}-${index}`,
-        })),
-      )
-      const statementSql = new WeakMap<StatementSync, string>()
-      const statementConnection = new WeakMap<StatementSync, DatabaseSync>()
-      const executions: string[] = []
-      const connections = new Set<DatabaseSync>()
-      const nativePrepare = DatabaseSync.prototype.prepare
-      const nativeAll = StatementSync.prototype.all
-      vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function (this: DatabaseSync, query: string) {
-        const statement = Reflect.apply(nativePrepare, this, [query])
-        statementSql.set(statement, query)
-        statementConnection.set(statement, this)
-        return statement
-      })
-      vi.spyOn(StatementSync.prototype, 'all').mockImplementation(function (
-        this: StatementSync,
-        ...parameters: unknown[]
-      ) {
-        const result = Reflect.apply(nativeAll, this, parameters)
-        executions.push(statementSql.get(this) ?? '')
-        const connection = statementConnection.get(this)
-        if (connection) connections.add(connection)
-        return result
-      })
-      expect(await projectRows(store)).toHaveLength(1)
-      const selects = executions.filter(sql => /^\s*SELECT\b/i.test(sql))
-      expect(selects).toHaveLength(5)
-      expect(new Set(selects).size).toBe(5)
-      expect(connections.size).toBe(1)
+  it('keeps project SELECT count constant as the source count grows', () => {
+    const executions = watchNativeSelects()
+    try {
+      for (const sourceCount of [2, 8]) {
+        const { runtime } = openLedgerFixture()
+        portViews(
+          runtime,
+          Array.from({ length: sourceCount }, (_, index) => ({
+            ...VIEWS_SPECS[0]!,
+            sessionId: `session-${sourceCount}-${index}`,
+          })),
+        )
+        const readStart = executions.length
+
+        expect(projectRows(runtime)).toHaveLength(1)
+        expectNativeReads(executions, readStart, [
+          'ledger_session',
+          'ledger_turn',
+          'ledger_call',
+          'model_alias',
+          'price_override',
+        ])
+      }
+    } finally {
       vi.restoreAllMocks()
-      store.close()
     }
   })
 })
 
 describe('ledger-backed views family (aggregation seam)', () => {
   it('derives dashboard KPIs and buckets from ledger rows', () => {
-    const store = makeLedger()
-    portViews(store, VIEWS_SPECS)
+    const { runtime } = openLedgerFixture()
+    portViews(runtime, VIEWS_SPECS)
 
-    const views = buildDashboardViewsFromLedger(store)
+    const views = dashboardViews(runtime)
     expect(views.kpis).toMatchObject({
       totalCost: 23,
       totalSessions: 3,
@@ -266,84 +297,77 @@ describe('ledger-backed views family (aggregation seam)', () => {
       { name: 'claude', cost: 18, calls: 2, sessions: 2 },
       { name: 'opencode', cost: 5, calls: 1, sessions: 1 },
     ])
-    store.close()
   })
 
-  it('returns null-safe aggregates for an empty ledger', async () => {
-    const store = makeLedger()
-    const views = buildDashboardViewsFromLedger(store)
+  it('returns null-safe aggregates for an empty ledger', () => {
+    const { runtime } = openLedgerFixture()
+    const views = dashboardViews(runtime)
     expect(views.kpis.totalCost).toBe(0)
     expect(views.costOverTime).toEqual([])
     expect(views.byProvider).toEqual([])
     expect(views.byProject).toEqual([])
     expect(views.byCategory).toEqual([])
-    expect(await projectRows(store)).toEqual([])
-    expect(buildAnalyticalViewsFromLedger(store).subagents).toEqual([])
-    expect(await sessionDetail(store, 'nope')).toBeNull()
-    expect(await sessionSearch(store, 'anything')).toEqual([])
-    store.close()
+    expect(projectRows(runtime)).toEqual([])
+    expect(analyticalViews(runtime).subagents).toEqual([])
+    expect(sessionDetail(runtime, 'nope')).toBeNull()
+    expect(sessionSearch(runtime, 'anything')).toEqual([])
   })
 
-  it('builds project rows grouped by project with aggregated spans', async () => {
-    const store = makeLedger()
-    portViews(store, VIEWS_SPECS)
-    const rows = await projectRows(store)
+  it('builds project rows grouped by project with aggregated spans', () => {
+    const { runtime } = openLedgerFixture()
+    portViews(runtime, VIEWS_SPECS)
+    const rows = projectRows(runtime)
     expect(rows).toHaveLength(2)
     expect(rows[0]).toMatchObject({ project: 'api', cost: 18, calls: 2, sessions: 2 })
     expect(rows[0].firstTimestamp.slice(0, 10)).toBe('2026-07-10')
     expect(rows[0].lastTimestamp.slice(0, 10)).toBe('2026-08-01')
     expect(rows[1]).toMatchObject({ project: 'web', cost: 5, calls: 1, sessions: 1 })
-    store.close()
   })
 
-  it('filters session rows by project and date range at query time', async () => {
-    const store = makeLedger()
-    portViews(store, VIEWS_SPECS)
-    expect(await sessionRows(store)).toHaveLength(3)
-    expect((await sessionRows(store, { project: 'api' })).map(r => r.sessionId)).toEqual(['sess-cc', 'sess-aa'])
-    const inRange = await sessionRows(store, { since: '2026-07-15', until: '2026-07-31' })
-    expect(inRange.map(r => r.sessionId)).toEqual(['sess-bb'])
-    store.close()
+  it('filters session rows by project and date range at query time', () => {
+    const { runtime } = openLedgerFixture()
+    portViews(runtime, VIEWS_SPECS)
+    expect(sessionRows(runtime)).toHaveLength(3)
+    expect(sessionRows(runtime, { project: 'api' }).map(row => row.sessionId)).toEqual(['sess-cc', 'sess-aa'])
+    const inRange = sessionRows(runtime, { since: '2026-07-15', until: '2026-07-31' })
+    expect(inRange.map(row => row.sessionId)).toEqual(['sess-bb'])
   })
 
-  it('returns the full session detail and null for a missing session', async () => {
-    const store = makeLedger()
-    portViews(store, VIEWS_SPECS)
-    const detail = await sessionDetail(store, 'sess-aa')
+  it('returns the full session detail and null for a missing session', () => {
+    const { runtime } = openLedgerFixture()
+    portViews(runtime, VIEWS_SPECS)
+    const detail = sessionDetail(runtime, 'sess-aa')
     expect(detail).not.toBeNull()
     expect(detail!.provider).toBe('claude')
     expect(detail!.title).toBe('Refactor auth')
     expect(detail!.totalCostUSD).toBe(10)
     expect(detail!.prLinks).toEqual(['https://github.com/acme/api/pull/7'])
     expect(detail!.turns).toHaveLength(1)
-    expect(detail!.turns[0].assistantCalls[0].usage.inputTokens).toBe(100)
-    expect(await sessionDetail(store, 'does-not-exist')).toBeNull()
-    store.close()
+    expect(detail!.turns[0]!.assistantCalls[0]!.usage.inputTokens).toBe(100)
+    expect(sessionDetail(runtime, 'does-not-exist')).toBeNull()
   })
 
   it('aggregates subagents across sessions in the analytical views', () => {
-    const store = makeLedger()
-    portViews(store, VIEWS_SPECS)
-    const views = buildAnalyticalViewsFromLedger(store)
+    const { runtime } = openLedgerFixture()
+    portViews(runtime, VIEWS_SPECS)
+    const views = analyticalViews(runtime)
     expect(views.providers).toEqual([
       { name: 'claude', cost: 18, calls: 2, sessions: 2 },
       { name: 'opencode', cost: 5, calls: 1, sessions: 1 },
     ])
     expect(views.subagents).toEqual([{ name: 'explore', calls: 1, cost: 10, savingsUSD: 0 }])
-    store.close()
   })
 
-  it('finds sessions across user messages and bash commands', async () => {
-    const store = makeLedger()
-    portViews(store, VIEWS_SPECS)
-    const byMessage = await sessionSearch(store, 'refactor the auth')
+  it('finds sessions across user messages and bash commands', () => {
+    const { runtime } = openLedgerFixture()
+    portViews(runtime, VIEWS_SPECS)
+    const byMessage = sessionSearch(runtime, 'refactor the auth')
     expect(byMessage).toHaveLength(1)
     expect(byMessage[0]).toMatchObject({ sessionId: 'sess-aa', kind: 'message', project: 'api' })
-    const byBash = await sessionSearch(store, 'npm run deploy')
+    const byBash = sessionSearch(runtime, 'npm run deploy')
     expect(byBash).toHaveLength(1)
     expect(byBash[0]).toMatchObject({ sessionId: 'sess-bb', kind: 'bash' })
-    expect(await sessionSearch(store, '')).toEqual([])
-    expect(await sessionSearch(store, 'zzz-nothing')).toEqual([])
-    store.close()
+    expect(sessionSearch(runtime, '')).toEqual([])
+    expect(sessionSearch(runtime, 'zzz-nothing')).toEqual([])
   })
 })

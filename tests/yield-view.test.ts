@@ -1,16 +1,20 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import type { SessionSummary } from '../src/main/pipeline/types.js'
+import { queryYieldView } from '../src/main/application/yield-query.js'
 import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { buildYieldPayload, buildYieldViewFromLedger } from '../src/main/yield-view.js'
-import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
+import type { SessionSummary } from '../src/main/pipeline/types.js'
+import { LedgerIngest } from '../src/main/store/ledger-ports.js'
+import { buildYieldPayload } from '../src/main/yield-view.js'
+import type { YieldPayload } from '../src/shared/schemas/yield.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 function git(cwd: string, args: string[], env: Record<string, string> = {}): string {
   return execFileSync('git', args, {
@@ -355,12 +359,14 @@ describe('buildYieldPayload (ADR 0008)', () => {
   })
 })
 
-// ── Ledger-backed Yield view (map 07) ─────────────────────────────────────
+// ── Application Yield query ───────────────────────────────────────────────
 
 const LEDGER_NOW = new Date('2026-07-15T12:00:00Z')
 
-function yieldMakeLedger(): LedgerStore {
-  return new LedgerStore(join(mkdtempSync(join(tmpdir(), 'tr-yld-')), 'data.db'))
+type YieldRuntime = ReturnType<typeof openLedgerFixture>['runtime']
+
+function yieldView(runtime: YieldRuntime, scope: Parameters<typeof viewInputs>[0]): Promise<YieldPayload> {
+  return runtime.runPromise(atTime(queryYieldView(viewInputs(scope)), LEDGER_NOW))
 }
 
 function yieldCachedFile(
@@ -395,25 +401,28 @@ function yieldCachedFile(
   return file
 }
 
-function yieldPort(store: LedgerStore, files: CachedFile[]): void {
+function yieldPort(runtime: YieldRuntime, files: CachedFile[]): void {
   files.forEach((file, i) => {
-    store.portIn({
-      provider: 'claude',
-      envFingerprint: 'env-demo',
-      filePath: `/cache/claude/${file.turns[0]?.sessionId ?? `sess-${i}`}.jsonl`,
-      verdict: 'new',
-      cachedFile: file,
-    })
+    runtime.runSync(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          provider: 'claude',
+          envFingerprint: 'env-demo',
+          filePath: `/cache/claude/${file.turns[0]?.sessionId ?? `sess-${i}`}.jsonl`,
+          verdict: 'new',
+          cachedFile: file,
+        }),
+      ),
+    )
   })
 }
 
-describe('buildYieldViewFromLedger (aggregation seam scope)', () => {
+describe('queryYieldView', () => {
   it('returns a zeroed summary for an empty ledger', async () => {
-    const store = yieldMakeLedger()
-    const payload = await buildYieldViewFromLedger(store, { period: 'lifetime' }, { now: LEDGER_NOW })
+    const { runtime } = openLedgerFixture()
+    const payload = await yieldView(runtime, { period: 'lifetime' })
     expect(payload.summary.total).toEqual({ costUSD: 0, sessions: 0 })
     expect(payload.details).toEqual([])
-    store.close()
   })
 
   it('classifies a ledger session as productive via its workingDirectory work tree', async () => {
@@ -427,17 +436,15 @@ describe('buildYieldViewFromLedger (aggregation seam scope)', () => {
         workingDirectory: repoDir,
         iso: '2026-07-13T10:15:00.000Z',
       })
-      const store = yieldMakeLedger()
-      yieldPort(store, [file])
-      const payload = await buildYieldViewFromLedger(
-        store,
-        { period: 'lifetime', range: { since: '2026-07-12', until: '2026-07-14' } },
-        { now: LEDGER_NOW },
-      )
+      const { runtime } = openLedgerFixture()
+      yieldPort(runtime, [file])
+      const payload = await yieldView(runtime, {
+        period: 'lifetime',
+        range: { since: '2026-07-12', until: '2026-07-14' },
+      })
       expect(payload.summary.productive).toMatchObject({ costUSD: 1, sessions: 1 })
       expect(payload.summary.abandoned.sessions).toBe(0)
       expect(payload.details[0]).toMatchObject({ sessionId: 'sess-yprod', category: 'productive', commitCount: 1 })
-      store.close()
     } finally {
       await rm(repoDir, { recursive: true, force: true })
     }
@@ -448,8 +455,8 @@ describe('buildYieldViewFromLedger (aggregation seam scope)', () => {
     try {
       initRepo(repoDir)
       commitAt(repoDir, 'file.txt', 'in\n', 'feat: in range', '2026-01-01T10:30:00Z')
-      const store = yieldMakeLedger()
-      yieldPort(store, [
+      const { runtime } = openLedgerFixture()
+      yieldPort(runtime, [
         yieldCachedFile(0, {
           sessionId: 'sess-in',
           workingDirectory: repoDir,
@@ -463,12 +470,11 @@ describe('buildYieldViewFromLedger (aggregation seam scope)', () => {
           cost: 7,
         }),
       ])
-      const payload = await buildYieldViewFromLedger(store, { period: 'lifetime', range: RANGE }, { now: LEDGER_NOW })
+      const payload = await yieldView(runtime, { period: 'lifetime', range: RANGE })
 
       expect(payload.details).toHaveLength(1)
       expect(payload.details[0]!.sessionId).toBe('sess-in')
       expect(payload.summary.total).toMatchObject({ costUSD: 5, sessions: 1 })
-      store.close()
     } finally {
       await rm(repoDir, { recursive: true, force: true })
     }
