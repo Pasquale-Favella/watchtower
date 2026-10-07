@@ -529,6 +529,7 @@ function loadEffectModules() {
     overview: load('src/main/application/overview-query.ts'),
     views: load('src/main/application/view-queries.ts'),
     viewReads: load('src/main/store/ledger-view-reads.ts'),
+    viewCalculation: load('src/main/view-aggregate-calculation.ts'),
     exportQuery: load('src/main/application/export-query.ts'),
     exportFiles: load('src/main/application/export-files.ts'),
     pricingDiagnostics: load('src/main/application/pricing-diagnostics.ts'),
@@ -910,7 +911,7 @@ function watchNativeStatements() {
   let nextConnectionId = 1
   const executions = []
   const restorers = []
-  let capturedSelectRows = null
+  let activeCapture = null
 
   const connectionId = connection => {
     let id = connectionIds.get(connection)
@@ -920,11 +921,11 @@ function watchNativeStatements() {
     }
     return id
   }
-  const record = (sql, connection, method, result) => {
+  const record = (sql, connection, method, result, nativeSqlMs = 0) => {
     const select = /^\s*(?:\/\*[\s\S]*?\*\/\s*)*SELECT\b/i.test(sql)
     const materializedRows = select
       ? method === 'all'
-        ? result.length
+        ? (result?.length ?? 0)
         : method === 'get'
           ? result === undefined
             ? 0
@@ -938,7 +939,10 @@ function watchNativeStatements() {
       select,
       materializedRows,
     })
-    if (capturedSelectRows && select && method === 'all') capturedSelectRows.push(result)
+    if (activeCapture) {
+      activeCapture.nativeSqlMs += nativeSqlMs
+      if (select && method === 'all') activeCapture.rows.push(result)
+    }
   }
   const replace = (prototype, name, wrap) => {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, name)
@@ -963,8 +967,14 @@ function watchNativeStatements() {
     'exec',
     original =>
       function (sql) {
-        const result = Reflect.apply(original, this, [sql])
-        record(sql, this, 'exec', result)
+        const started = activeCapture ? performance.now() : null
+        let result
+        try {
+          result = Reflect.apply(original, this, [sql])
+        } finally {
+          if (started !== null) record(sql, this, 'exec', result, performance.now() - started)
+        }
+        if (started === null) record(sql, this, 'exec', result)
         return result
       },
   )
@@ -974,10 +984,22 @@ function watchNativeStatements() {
       method,
       original =>
         function (...parameters) {
-          const result = Reflect.apply(original, this, parameters)
+          const started = activeCapture && method !== 'iterate' ? performance.now() : null
+          let result
+          try {
+            result = Reflect.apply(original, this, parameters)
+          } finally {
+            if (started !== null) {
+              const sql = sqlByStatement.get(this)
+              const connection = connectionByStatement.get(this)
+              if (sql !== undefined && connection !== undefined) {
+                record(sql, connection, method, result, performance.now() - started)
+              }
+            }
+          }
           const sql = sqlByStatement.get(this)
           const connection = connectionByStatement.get(this)
-          if (sql !== undefined && connection !== undefined) record(sql, connection, method, result)
+          if (started === null && sql !== undefined && connection !== undefined) record(sql, connection, method, result)
           return result
         },
     )
@@ -988,15 +1010,15 @@ function watchNativeStatements() {
       executions.length = 0
     },
     beginSelectRowCapture() {
-      if (capturedSelectRows) throw new Error('native SELECT row capture is already active')
+      if (activeCapture) throw new Error('native SELECT row capture is already active')
       executions.length = 0
-      capturedSelectRows = []
+      activeCapture = { rows: [], nativeSqlMs: 0 }
     },
     endSelectRowCapture() {
-      if (!capturedSelectRows) throw new Error('native SELECT row capture is not active')
-      const rows = capturedSelectRows
-      capturedSelectRows = null
-      return { nativeStatements: this.snapshot(), rows }
+      if (!activeCapture) throw new Error('native SELECT row capture is not active')
+      const capture = activeCapture
+      activeCapture = null
+      return { nativeStatements: this.snapshot(), rows: capture.rows, nativeSqlMs: capture.nativeSqlMs }
     },
     snapshot() {
       const selects = executions.filter(execution => execution.select)
@@ -1087,34 +1109,102 @@ async function measureAsync(
 
 const MEASUREMENT_VERSION = 2
 const MEASUREMENT_METHOD = {
+  viewInputProbeVersion: 2,
   resultRetention:
     'Both engines reduce each operation result to scalar rows/clone metadata after its memory snapshot; samples retain timing, memory deltas and native metadata only.',
   cloneMetadata: 'Computed from the last warm result after the operation timer and memory snapshot.',
   childMaxRssBytes:
     'Process high-water mark through the timed samples, including module/runtime startup; the views/analytics value is captured before and excludes the untimed input probe.',
   viewInputProbe:
-    'For store:views and store:analytics, calls LedgerViewReads.getViewData after timed samples on the same runtime/client. Raw selected rows are retained only for this untimed probe, then compared with the decoded DTO using node:v8 serialization.',
+    'After timed samples, the same runtime/client probe times LedgerViewReads.getViewData wall time and native .all/.get/.run/.exec calls. Native timing is active only during this untimed capture; prepare/cache work is excluded. The residual read time includes Schema decoding, Effect/client/transaction overhead and other non-native work; it is not decoder-only. The same decoded DTO is passed directly to the actual dashboard/analytics calculator with the catalogue and proxy inputs captured for the timed query. Calculation excludes diagnostics and wire-schema validation. Heap/RSS values are process deltas around each phase, after explicit GC; the read phase includes temporary raw row capture, and calculation starts with the decoded DTO retained after captured raw arrays are released.',
 }
 
-async function measureViewInputProbe(runtime, modules, instrumentation) {
+function memorySnapshot() {
+  const { rss, heapUsed } = process.memoryUsage()
+  return { rss, heapUsed }
+}
+
+function memoryDelta(before, after) {
+  return { rssBytes: after.rss - before.rss, heapBytes: after.heapUsed - before.heapUsed }
+}
+
+function releaseForProbePhase() {
+  if (typeof global.gc === 'function') global.gc()
+}
+
+async function measureViewInputProbe(runtime, modules, instrumentation, id, calculationInputs) {
+  releaseForProbePhase()
+  const readBefore = memorySnapshot()
+  const readStarted = performance.now()
   instrumentation.beginSelectRowCapture()
   let viewData
   let captured
+  let readMs
+  let readAfter
   try {
     viewData = await runtime.runPromise(
       modules.Effect.flatMap(modules.viewReads.LedgerViewReads, reads => reads.getViewData()),
     )
   } finally {
+    readMs = performance.now() - readStarted
     captured = instrumentation.endSelectRowCapture()
+    readAfter = memorySnapshot()
   }
+  const rawSelectedSerializedBytes = v8.serialize(captured.rows).byteLength
+  const decodedDtoSerializedBytes = v8.serialize(viewData).byteLength
+  const selectedRows = captured.rows.reduce((sum, rows) => sum + rows.length, 0)
+  captured.rows = null
+
+  releaseForProbePhase()
+  const calculationBefore = memorySnapshot()
+  const calculationStarted = performance.now()
+  const calculator =
+    id === 'store:views'
+      ? modules.viewCalculation.calculateDashboardViews
+      : modules.viewCalculation.calculateAnalyticalViews
+  let calculationResult = calculator(viewData, calculationInputs)
+  const calculationMs = performance.now() - calculationStarted
+  const calculationAfter = memorySnapshot()
+  const calculationOutput = {
+    resultKeys: Object.keys(calculationResult).sort(),
+    valueKeys: Object.keys(calculationResult.value).sort(),
+    unpricedModels: calculationResult.unpricedModels.length,
+  }
+  calculationResult = null
   return {
     outsideTimedSamples: true,
-    method:
-      'same runtime/client; direct LedgerViewReads.getViewData; native SELECT rows captured without serialization in interception; node:v8.serialize byte lengths after the read',
+    method: 'same runtime/client read, then direct calculation on the exact decoded DTO returned by that read',
+    phases: {
+      read: {
+        label: 'getViewData wall time (transaction + Schema decode + Effect/client overhead)',
+        wallMs: Number(readMs.toFixed(2)),
+        nativeSqlMs: Number(captured.nativeSqlMs.toFixed(2)),
+        nonSqlReadMs: Number(Math.max(0, readMs - captured.nativeSqlMs).toFixed(2)),
+        nativeSqlTiming:
+          'actual .all/.get/.run/.exec calls while untimed capture is active; excludes prepare/cache work',
+        memory: memoryDelta(readBefore, readAfter),
+        gcBefore:
+          typeof global.gc === 'function'
+            ? 'global.gc() called; no post-phase GC'
+            : 'GC unavailable; no forced collection',
+      },
+      calculation: {
+        label: id === 'store:views' ? 'calculateDashboardViews' : 'calculateAnalyticalViews',
+        wallMs: Number(calculationMs.toFixed(2)),
+        memory: memoryDelta(calculationBefore, calculationAfter),
+        inputs: 'DTO returned by the probe; catalogue and proxy paths captured for the timed query',
+        excludes: ['pricing diagnostics', 'wire-schema validation'],
+        output: calculationOutput,
+        gcBefore:
+          typeof global.gc === 'function'
+            ? 'global.gc() called with decoded DTO retained; no post-phase GC'
+            : 'GC unavailable; decoded DTO retained',
+      },
+    },
     nativeStatements: captured.nativeStatements,
-    selectedRows: captured.rows.reduce((sum, rows) => sum + rows.length, 0),
-    rawSelectedSerializedBytes: v8.serialize(captured.rows).byteLength,
-    decodedDtoSerializedBytes: v8.serialize(viewData).byteLength,
+    selectedRows,
+    rawSelectedSerializedBytes,
+    decodedDtoSerializedBytes,
     serializationProxy: 'node:v8.serialize; not physical SQLite bytes',
   }
 }
@@ -1246,6 +1336,7 @@ const MEASUREMENT_LIMITS = [
   'RSS and heap deltas are process observations. childMaxRssBytes includes module/runtime startup and timed samples; for views and analytics it excludes the later untimed input probe.',
   'Method version 2 reduces operation results to scalar metadata before the next sample. Archived e65ad24 artifacts used a different result-retention pattern, so compare their heap/RSS and clone metrics only with that limitation in view; cold/warm timing definitions and sample counts are unchanged.',
   'Dashboard and Analytics input probes run after timed samples on the same worker runtime and SQL client. Raw selected rows and decoded DTOs use node:v8 serialization as a size proxy, not SQLite page or physical bytes.',
+  'The untimed view probe reports getViewData wall time, native .all/.get/.run/.exec call time, and the non-native residual. The residual includes Schema decoding and Effect/client/transaction overhead; it is not decoder-only. Direct calculation excludes diagnostics and wire-schema validation. Probe heap/RSS deltas are process deltas, with explicit GC calls before phases when --expose-gc is available; they are not production peak-memory figures.',
 ]
 
 function effectOperation(context, id, options, callTarget) {
@@ -1350,11 +1441,13 @@ function effectOperation(context, id, options, callTarget) {
     case 'store:analytics':
       return {
         makeEffect: () => modules.views.queryAnalyticalViews({ catalogue, proxyPaths }),
+        calculationInputs: { catalogue, proxyPaths },
         crossesWorkerBoundary: true,
       }
     case 'store:views':
       return {
         makeEffect: () => modules.views.queryDashboardViews({ catalogue, proxyPaths }),
+        calculationInputs: { catalogue, proxyPaths },
         crossesWorkerBoundary: true,
       }
     case 'export:read':
@@ -1454,7 +1547,13 @@ async function runAsChild(options) {
       )
       const maxRssBytes = process.resourceUsage().maxRSS * 1024
       if (id === 'store:views' || id === 'store:analytics') {
-        measured.viewInputProbe = await measureViewInputProbe(runtime, modules, instrumentation)
+        measured.viewInputProbe = await measureViewInputProbe(
+          runtime,
+          modules,
+          instrumentation,
+          id,
+          operation.calculationInputs,
+        )
         const timedConnectionIds = new Set([
           ...measured.coldNative.connectionIds,
           ...measured.warmNative.flatMap(sample => sample.connectionIds),
@@ -1748,6 +1847,12 @@ function renderReport(result) {
         lines.push(
           `      untimed view input probe: ${probe.nativeStatements.selectCount} SELECTs, ${probe.selectedRows.toLocaleString('en-US')} rows, ${formatBytes(probe.rawSelectedSerializedBytes)} raw / ${formatBytes(probe.decodedDtoSerializedBytes)} decoded, connection match=${probe.connectionIdsMatchTimedSamples}`,
         )
+        lines.push(
+          `      read phase: ${probe.phases.read.wallMs.toFixed(2)} ms wall = ${probe.phases.read.nativeSqlMs.toFixed(2)} ms native + ${probe.phases.read.nonSqlReadMs.toFixed(2)} ms residual; heap Δ ${formatBytes(probe.phases.read.memory.heapBytes)}, RSS Δ ${formatBytes(probe.phases.read.memory.rssBytes)}`,
+        )
+        lines.push(
+          `      calculation phase (${probe.phases.calculation.label}): ${probe.phases.calculation.wallMs.toFixed(2)} ms; heap Δ ${formatBytes(probe.phases.calculation.memory.heapBytes)}, RSS Δ ${formatBytes(probe.phases.calculation.memory.rssBytes)}; excludes diagnostics and wire validation`,
+        )
       }
     }
     lines.push('')
@@ -1884,6 +1989,9 @@ const MEASURED_SOURCES = [
   'src/main/store/session-read-projections.ts',
   'src/main/store/ledger-view-reads.ts',
   'src/main/store/view-read-projections.ts',
+  'src/main/store/export-read-projections.ts',
+  'src/main/store/ledger-export-reads.ts',
+  'src/main/export-rows-calculation.ts',
   'src/main/store/aggregate.ts',
   'src/main/store/aggregate-calculation.ts',
   'src/main/store/query-snapshot.ts',
@@ -1995,5 +2103,5 @@ if (require.main === module) {
     },
   )
 } else {
-  module.exports = { measure, measureAsync }
+  module.exports = { measure, measureAsync, measureViewInputProbe, watchNativeStatements }
 }
