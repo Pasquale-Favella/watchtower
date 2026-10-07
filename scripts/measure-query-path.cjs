@@ -1338,13 +1338,13 @@ function runReadsBundle(context, facts, options) {
         }),
       )
     }
-    // aggregate.ts:520 reads sources a second time inside buildSessionSummaries.
+    // The compatibility builder loads one request snapshot of facts and pricing.
     const aggregation = measure(
       'agg:buildSessionSummaries',
       legacyOperation(context, 'aggregate:buildSessionSummaries'),
       {
         ...shape,
-        note: 'Legacy aggregate path; includes all four reads and its extra source read',
+        note: 'Legacy aggregate builder; loads one snapshot of facts and pricing',
       },
     )
     results.push(aggregation)
@@ -1447,12 +1447,22 @@ function childArgs(options, opId, dbPath) {
 function runChild(options, opId, dbPath, log) {
   return new Promise(resolve => {
     const started = performance.now()
-    const child = spawn(process.execPath, childArgs(options, opId, dbPath), {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    let child
+    try {
+      child = spawn(process.execPath, childArgs(options, opId, dbPath), {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      resolve({ op: opId, engine: options.engine, error: `child spawn failed: ${error.message}` })
+      return
+    }
+
     let stdout = ''
     let stderr = ''
     let settled = false
+    let timedOut = false
+    let spawnError
+    let killError
     const settle = value => {
       if (settled) return
       settled = true
@@ -1460,14 +1470,12 @@ function runChild(options, opId, dbPath, log) {
       resolve(value)
     }
     const timer = setTimeout(() => {
-      child.kill('SIGKILL')
-      settle({
-        op: opId,
-        engine: options.engine,
-        timeout: true,
-        childProcessMs: Math.round(performance.now() - started),
-        stderr: stderr.slice(-800),
-      })
+      timedOut = true
+      try {
+        if (!child.kill('SIGKILL')) killError = 'kill returned false'
+      } catch (error) {
+        killError = String(error.message ?? error).slice(0, 200)
+      }
     }, options.childTimeoutMs)
     child.stdout.on('data', chunk => {
       stdout += chunk
@@ -1475,8 +1483,31 @@ function runChild(options, opId, dbPath, log) {
     child.stderr.on('data', chunk => {
       stderr += chunk
     })
-    child.on('error', error => settle({ op: opId, engine: options.engine, error: error.message }))
+    child.on('error', error => {
+      if (timedOut) killError ??= String(error.message ?? error).slice(0, 200)
+      else spawnError = error
+    })
     child.on('close', code => {
+      if (spawnError) {
+        settle({
+          op: opId,
+          engine: options.engine,
+          error: `child spawn failed: ${String(spawnError.message ?? spawnError).slice(0, 800)}`,
+          stderr: stderr.slice(-800),
+        })
+        return
+      }
+      if (timedOut) {
+        settle({
+          op: opId,
+          engine: options.engine,
+          timeout: true,
+          childProcessMs: Math.round(performance.now() - started),
+          ...(killError ? { killError } : {}),
+          stderr: stderr.slice(-800),
+        })
+        return
+      }
       if (code !== 0) {
         settle({ op: opId, engine: options.engine, error: `child exited ${code}`, stderr: stderr.slice(-800) })
         return
@@ -1487,8 +1518,38 @@ function runChild(options, opId, dbPath, log) {
         settle({ op: opId, engine: options.engine, error: `no result (exit ${code})`, stderr: stderr.slice(-800) })
         return
       }
+      const parsed = (() => {
+        try {
+          const payload = JSON.parse(line.slice(RESULT_PREFIX.length))
+          const invalidPayload =
+            payload === null ||
+            typeof payload !== 'object' ||
+            Array.isArray(payload) ||
+            payload.op !== opId ||
+            !Array.isArray(payload.results) ||
+            payload.results.length === 0 ||
+            payload.results.some(
+              result =>
+                result === null ||
+                typeof result !== 'object' ||
+                Array.isArray(result) ||
+                typeof result.op !== 'string' ||
+                !Number.isFinite(result.medianMs) ||
+                !Number.isFinite(result.minMs) ||
+                !Number.isFinite(result.maxMs) ||
+                (result.coldMs !== undefined && result.coldMs !== null && !Number.isFinite(result.coldMs)),
+            )
+          return invalidPayload ? { error: `invalid result payload for ${opId}` } : { payload }
+        } catch (error) {
+          return { error: `invalid result JSON: ${error.message}` }
+        }
+      })()
+      if (parsed.error) {
+        settle({ op: opId, engine: options.engine, error: parsed.error, stderr: stderr.slice(-800) })
+        return
+      }
       settle({
-        ...JSON.parse(line.slice(RESULT_PREFIX.length)),
+        ...parsed.payload,
         childProcessMs: Math.round(performance.now() - started),
       })
     })
