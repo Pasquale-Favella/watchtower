@@ -22,6 +22,7 @@ const roots = [
   'src/main/yield-calculation.ts',
   'src/main/optimize-calculation.ts',
   'src/main/export-calculation.ts',
+  'src/main/export-rows-calculation.ts',
   'src/main/fx-calculation.ts',
   'src/main/pipeline/pr-attribution.ts',
   'src/main/overview-scope.ts',

@@ -3,7 +3,7 @@ import { convertCost, roundForActiveCurrency } from './fx-calculation.js'
 import type { ProjectSummary, TaskCategory } from './pipeline/types.js'
 import { CATEGORY_LABELS } from './pipeline/types.js'
 
-type Row = Record<string, string | number | undefined>
+export type ExportRow = Record<string, string | number | undefined>
 export type ExportFileContent = { readonly name: string; readonly contents: string }
 
 function escCsv(value: string): string {
@@ -13,7 +13,7 @@ function escCsv(value: string): string {
     : sanitized
 }
 
-function rowsToCsv(rows: Row[]): string {
+function rowsToCsv(rows: ExportRow[]): string {
   if (rows.length === 0) return ''
   const firstRow = rows[0]
   if (!firstRow) return ''
@@ -38,7 +38,7 @@ type DailyAgg = {
   sessions: Set<string>
 }
 
-function buildDailyRows(projects: ProjectSummary[], currency: ActiveCurrency): Row[] {
+function buildDailyRows(projects: ProjectSummary[], currency: ActiveCurrency): ExportRow[] {
   const daily: Record<string, DailyAgg> = {}
   for (const project of projects) {
     for (const session of project.sessions) {
@@ -84,8 +84,8 @@ function buildDailyRows(projects: ProjectSummary[], currency: ActiveCurrency): R
     }))
 }
 
-function buildRecordRows(projects: ProjectSummary[], currency: ActiveCurrency): Row[] {
-  const rows: Row[] = []
+function buildRecordRows(projects: ProjectSummary[], currency: ActiveCurrency): ExportRow[] {
+  const rows: ExportRow[] = []
   for (const project of projects) {
     for (const session of project.sessions) {
       for (const turn of session.turns) {
@@ -113,7 +113,7 @@ function buildRecordRows(projects: ProjectSummary[], currency: ActiveCurrency): 
   return rows
 }
 
-function buildActivityRows(projects: ProjectSummary[], currency: ActiveCurrency): Row[] {
+function buildActivityRows(projects: ProjectSummary[], currency: ActiveCurrency): ExportRow[] {
   const totals: Record<string, { turns: number; cost: number }> = {}
   for (const project of projects) {
     for (const session of project.sessions) {
@@ -137,7 +137,7 @@ function buildActivityRows(projects: ProjectSummary[], currency: ActiveCurrency)
     }))
 }
 
-function buildModelRows(projects: ProjectSummary[], currency: ActiveCurrency): Row[] {
+function buildModelRows(projects: ProjectSummary[], currency: ActiveCurrency): ExportRow[] {
   const totals: Record<
     string,
     {
@@ -191,7 +191,7 @@ function buildModelRows(projects: ProjectSummary[], currency: ActiveCurrency): R
     }))
 }
 
-function buildToolRows(projects: ProjectSummary[]): Row[] {
+function buildToolRows(projects: ProjectSummary[]): ExportRow[] {
   const totals: Record<string, number> = {}
   for (const project of projects)
     for (const session of project.sessions)
@@ -203,7 +203,7 @@ function buildToolRows(projects: ProjectSummary[]): Row[] {
     .map(([tool, calls]) => ({ Tool: tool, Calls: calls, 'Share (%)': pct(calls, total) }))
 }
 
-function buildMcpRows(projects: ProjectSummary[]): Row[] {
+function buildMcpRows(projects: ProjectSummary[]): ExportRow[] {
   const totals: Record<string, number> = {}
   for (const project of projects)
     for (const session of project.sessions)
@@ -215,7 +215,7 @@ function buildMcpRows(projects: ProjectSummary[]): Row[] {
     .map(([server, calls]) => ({ Server: server, Calls: calls, 'Share (%)': pct(calls, total) }))
 }
 
-function buildBashRows(projects: ProjectSummary[]): Row[] {
+function buildBashRows(projects: ProjectSummary[]): ExportRow[] {
   const totals: Record<string, number> = {}
   for (const project of projects)
     for (const session of project.sessions)
@@ -227,7 +227,7 @@ function buildBashRows(projects: ProjectSummary[]): Row[] {
     .map(([command, calls]) => ({ Command: command, Calls: calls, 'Share (%)': pct(calls, total) }))
 }
 
-function buildProjectRows(projects: ProjectSummary[], currency: ActiveCurrency): Row[] {
+function buildProjectRows(projects: ProjectSummary[], currency: ActiveCurrency): ExportRow[] {
   const { code } = currency
   const total = projects.reduce((sum, project) => sum + project.totalCostUSD, 0)
   return projects
@@ -248,9 +248,9 @@ function buildProjectRows(projects: ProjectSummary[], currency: ActiveCurrency):
     }))
 }
 
-function buildSessionRows(projects: ProjectSummary[], currency: ActiveCurrency): Row[] {
+function buildSessionRows(projects: ProjectSummary[], currency: ActiveCurrency): ExportRow[] {
   const { code } = currency
-  const rows: Row[] = []
+  const rows: ExportRow[] = []
   for (const project of projects) {
     for (const session of project.sessions) {
       const models = new Set(session.turns.flatMap(turn => turn.assistantCalls.map(call => call.model).filter(Boolean)))
@@ -306,16 +306,16 @@ function buildReadme(currency: ActiveCurrency, generated: string): string {
   ].join('\n')
 }
 
-type ExportRows = {
-  daily: Row[]
-  activity: Row[]
-  models: Row[]
-  projects: Row[]
-  sessions: Row[]
-  records: Row[]
-  tools: Row[]
-  mcp: Row[]
-  shellCommands: Row[]
+export type ExportRows = {
+  daily: ExportRow[]
+  activity: ExportRow[]
+  models: ExportRow[]
+  projects: ExportRow[]
+  sessions: ExportRow[]
+  records: ExportRow[]
+  tools: ExportRow[]
+  mcp: ExportRow[]
+  shellCommands: ExportRow[]
 }
 
 function buildExportRows(projects: ProjectSummary[], currency: ActiveCurrency): ExportRows {
@@ -338,7 +338,15 @@ export function buildCsvExportFiles(
   generated: string,
 ): ExportFileContent[] {
   const rows = buildExportRows(projects, currency)
-  const tables: Array<[string, Row[]]> = [
+  return buildCsvExportFilesFromRows(rows, currency, generated)
+}
+
+export function buildCsvExportFilesFromRows(
+  rows: ExportRows,
+  currency: ActiveCurrency,
+  generated: string,
+): ExportFileContent[] {
+  const tables: Array<[string, ExportRow[]]> = [
     ['daily.csv', rows.daily],
     ['activity.csv', rows.activity],
     ['models.csv', rows.models],
@@ -357,6 +365,10 @@ export function buildCsvExportFiles(
 
 export function buildJsonExport(projects: ProjectSummary[], currency: ActiveCurrency, generated: string): string {
   const rows = buildExportRows(projects, currency)
+  return buildJsonExportFromRows(rows, currency, generated)
+}
+
+export function buildJsonExportFromRows(rows: ExportRows, currency: ActiveCurrency, generated: string): string {
   return JSON.stringify(
     {
       schema: 'watchtower.export.v1',

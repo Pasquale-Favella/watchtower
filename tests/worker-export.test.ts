@@ -13,6 +13,7 @@ import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { ExportFileContent } from '../src/main/export-calculation.js'
 import { FxRates } from '../src/main/fx.js'
+import { LedgerExportReads } from '../src/main/store/ledger-export-reads.js'
 import { LedgerConfig, LedgerQueries } from '../src/main/store/ledger-ports.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import { openWorkerOwner } from './fixtures/worker-owner.js'
@@ -109,11 +110,12 @@ describe('worker export routes', () => {
   for (const kind of ['csv', 'json'] as const) {
     const operation = `export:${kind}` as const
 
-    it(`${operation} uses one canonical snapshot and one fresh currency capture`, async () => {
+    it(`${operation} uses one sufficient export read and one fresh currency capture`, async () => {
       await withWorker(async (context, owner, writes) => {
         seedLedger(owner)
         const config = owner.runtime.runSync(LedgerConfig)
         const queries = owner.runtime.runSync(LedgerQueries)
+        const reads = owner.runtime.runSync(LedgerExportReads)
         await owner.runtime.runPromise(
           config.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: '2026-07-01T00:00:00.000Z' }),
         )
@@ -123,6 +125,7 @@ describe('worker export routes', () => {
         await owner.runtime.runPromise(config.setDisplayCurrency('EUR'))
         forbidFacadeReads(owner)
         const snapshots = vi.spyOn(queries, 'getRequestSnapshotData')
+        const exportReads = vi.spyOn(reads, 'getExportData')
         const currencies = vi.spyOn(config, 'getDisplayCurrency')
         const rates = vi.spyOn(config, 'getCurrencyRate')
 
@@ -136,7 +139,8 @@ describe('worker export routes', () => {
           path: '/export/next',
         })
 
-        expect(snapshots).toHaveBeenCalledTimes(2)
+        expect(exportReads).toHaveBeenCalledTimes(2)
+        expect(snapshots).not.toHaveBeenCalled()
         expect(currencies).toHaveBeenCalledTimes(2)
         expect(rates.mock.calls).toEqual([['EUR'], ['JPY']])
         expect(writes).toHaveLength(2)
@@ -173,21 +177,20 @@ describe('worker export routes', () => {
 
     it(`${operation} keeps database and schema failures in the failure channel`, async () => {
       await withWorker(async (context, owner, writes) => {
-        const queries = owner.runtime.runSync(LedgerQueries)
-        const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
+        const reads = owner.runtime.runSync(LedgerExportReads)
+        const exportDataRead = vi.spyOn(reads, 'getExportData')
         const sqlError = new SqlError.SqlError({
           reason: new SqlError.SqlSyntaxError({
             cause: new Error('private database cause'),
             message: 'controlled failure',
           }),
         })
-        snapshot.mockImplementationOnce(() => Effect.fail(sqlError))
+        exportDataRead.mockImplementationOnce(() => Effect.fail(sqlError))
         await expect(context.dispatch(operation, ['/export/report'])).rejects.toMatchObject({ _tag: 'SqlError' })
 
-        snapshot.mockImplementationOnce(() =>
+        exportDataRead.mockImplementationOnce(() =>
           Schema.decodeUnknownEffect(Schema.String)(42).pipe(
             Effect.map(() => ({
-              sources: [],
               sessions: [],
               turns: [],
               calls: [],
