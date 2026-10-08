@@ -4,20 +4,36 @@ This extends [the September 30 assessment](../research/effect-adoption-assessmen
 
 Full Effect adoption is complete when contracts have one Schema authority, application workflows compose ports, each isolate owns its resources, and product operations avoid redundant work. A library substitution alone does not establish those properties.
 
-## Current priority, 2026-10-07
+## Current priority, 2026-10-08
 
 The user stopped profiling work and requested deletion of all profiling JSON files from docs. This instruction supersedes profiling and measurement follow-ups in the historical execution records below. Continue the overall Effect migration.
 
 Owned Zod removal is complete across the 23-module baseline. Twenty-two modules use native Effect Schema; one UI-only module uses plain TypeScript types. The production worker owns one initialized Effect/SQL graph and no longer constructs LedgerStore. The inventoried section queries, exports and MCP data operations enter through Effect application workflows. Dashboard, Analytics and exports use focused transactional reads and pure calculations.
 
+The latest integrated source is `ce41f2c`. Cache IO, refresh/hydration lock ownership and scan orchestration compose native Effects. Provider discovery now composes in that same workflow, with native Promise leaves that request stop and drain before resource release. Query dispatch has moved out of worker supervision. The remaining synchronous section adapters and LedgerStore export wrapper have been deleted after migrating their callers. Overview derives lifetime metadata directly from facts and only reconstructs scoped session summaries.
+
 The programme is still incomplete. Runtime-import coverage is not a completion percentage, and pure calculations and React stores should stay simple TypeScript. The remaining work is:
 
 1. Complete provider IO and scan cancellation with explicit resource ownership, typed failures and underlying work that stops and drains before shutdown. The remaining Promise adapters must have a clear boundary and removal condition.
-2. Finish application/calculation separation where broad legacy summary reconstruction remains, starting with Overview. Migrate remaining compatibility callers and remove obsolete builders, serializers and LedgerStore test/script dependencies.
+2. Give Overview sufficient transactional reads instead of its broad snapshot and scoped summary graph. Migrate remaining compatibility callers and remove obsolete builders, serializers and LedgerStore test dependencies.
 3. Split worker transport, scan orchestration and application workflows along the existing ports. Keep one runtime/client owner and avoid services for pure helpers.
 4. Finish migration acceptance checks, including installer and macOS/Linux packaged execution. Profiling is no longer an active workstream.
 
 The Git content of data-store.ts and scan-store.ts still matches ce81593. Preserve their original scope guard and direct applyChange flow, without added request IDs, promise ownership or coalescing.
+
+### Integrated migration slices
+
+- `189a613` makes cache IO and refresh/hydration lock lifetimes Effect-owned. Same-process waiters reload the completed cache; interruption cannot steal an owner's lock.
+- `c83e5d9` composes parser/scan orchestration in the existing runtime. Remaining native Promise leaves stop and drain before cleanup.
+- `92ad9ab` removes six synchronous section/aggregate adapters and migrates their callers. Independent parity fixtures retain the old calculation expectations.
+- `f23c7c6` extracts 17 query/export routes from worker supervision without constructing another runtime or client.
+- `2380cd6` retires the LedgerStore export wrapper and migrates its tests to the native application query.
+- `70d11de` removes Overview's lifetime SessionSummary graph. Whole-turn admission, timestamp ordering, fallback and local-date metadata retain parity.
+- `ce41f2c` composes provider discovery as native Effects. Provider implementations still expose Promise IO; interrupting discovery requests stop and waits for that work to settle. Cleanup drains even when the stop callback throws.
+
+The first four slices passed node/web/test typechecks, formatting, build and lint with zero errors. Full units passed 189 files with 2,481 tests and two skips. All four local Electron checks, fresh Windows directory packaging and actual packaged IPC/MCP checks passed at `f23c7c6`.
+
+At `ce41f2c`, node/web/test typechecks, build, formatting and lint pass, with zero lint errors and 1,110 advisory warnings. The first full suite exposed a stale test inventory referencing the deleted export.ts. `d4aef45` removes that obsolete entry while retaining the consumer scanner and its independent behavioral assertions. The complete rerun passes 189 files with 2,488 tests and two skips in 339.95 seconds. All four local Electron checks pass in 6.9 minutes. Fresh Windows x64 directory packaging and the actual packaged IPC/MCP gate pass, including real scan/navigation, reads, configuration/pricing, CSV/JSON protection and currency, SDK stdio/HTTP tools/resources/prompts, and clear with configuration retention. No renderer errors occur; app/SDK children close and the isolated profile is removed. These checks do not complete provider IO or cross-platform installer acceptance. No profiling was run.
 
 ## Dependency direction
 
