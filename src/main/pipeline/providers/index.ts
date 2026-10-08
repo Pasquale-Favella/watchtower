@@ -1,32 +1,34 @@
+import * as Effect from 'effect/Effect'
+
+import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
+import { isScanAbortedError, type ScanAbortedError, scanAbortError } from '../scan-control.js'
 import { claude } from './claude.js'
 import { cline } from './cline.js'
-import { codewhale } from './codewhale.js'
 import { codebuff } from './codebuff.js'
+import { codewhale } from './codewhale.js'
 import { codex } from './codex.js'
 import { copilot } from './copilot.js'
-import { droid } from './droid.js'
 import { devin } from './devin.js'
+import { droid } from './droid.js'
 import { gemini } from './gemini.js'
+import { grok } from './grok.js'
 import { hermes } from './hermes.js'
 import { ibmBob } from './ibm-bob.js'
 import { kiloCode } from './kilo-code.js'
-import { kiro } from './kiro.js'
 import { kimi } from './kimi.js'
 import { kimicode } from './kimicode.js'
+import { kiro } from './kiro.js'
 import { lingtaiTui } from './lingtai-tui.js'
 import { mistralVibe } from './mistral-vibe.js'
 import { mux } from './mux.js'
-import { openclaw } from './openclaw.js'
 import { openDesign } from './open-design.js'
-import { pi, omp } from './pi.js'
-import { qwen } from './qwen.js'
+import { openclaw } from './openclaw.js'
+import { omp, pi } from './pi.js'
 import { quickdesk } from './quickdesk.js'
+import { qwen } from './qwen.js'
 import { rooCode } from './roo-code.js'
-import { zerostack } from './zerostack.js'
-import { grok } from './grok.js'
 import type { Provider, ProviderScanContext, SessionSource } from './types.js'
-import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
-import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
+import { zerostack } from './zerostack.js'
 
 let antigravityProvider: Provider | null = null
 let antigravityLoadAttempted = false
@@ -278,51 +280,113 @@ export async function getAllProviders(): Promise<Provider[]> {
 
 export const providers = coreProviders
 
-// Isolate one provider's discovery. A provider that throws (a crafted/corrupt
-// file reaching a string op, an unexpected on-disk shape) must never take down
-// the whole scan and blank every other provider's usage. Warn once per
-// provider per run, then skip it. Mirrors the parse-failure isolation already
-// used per-file in parser.ts.
-const warnedDiscoveryFailures = new Set<string>()
-export async function safeDiscoverSessions(
-  provider: Provider,
-  context: ProviderScanContext = {},
-): Promise<SessionSource[]> {
-  throwIfScanAborted(context.signal)
-  try {
-    const sessions = await provider.discoverSessions(context)
-    throwIfScanAborted(context.signal)
-    return sessions
-  } catch (err) {
-    throwIfScanAborted(context.signal)
-    if (isScanAbortedError(err)) throw err
-    if (!warnedDiscoveryFailures.has(provider.name)) {
-      warnedDiscoveryFailures.add(provider.name)
-      reportProviderIssue(provider.name, fileErrorCode(err, 'discovery-failed'))
-    }
-    return []
-  }
+type DiscoveryContext = ProviderScanContext & { readonly stop?: () => void }
+
+type OwnedPromise<A> = {
+  readonly promise: Promise<A>
+  readonly drain: Promise<void>
+  readonly settled: () => boolean
 }
 
-export async function discoverAllSessions(
+/** Own one legacy discovery Promise until it settles, asking the scan owner to
+ * stop it first when the surrounding Effect is interrupted. */
+function runOwnedDiscoveryPromise<A>(start: () => Promise<A>, context: DiscoveryContext): Effect.Effect<A, unknown> {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      let settled = false
+      const promise = Promise.resolve().then(() => {
+        if (context.signal?.aborted) return Promise.reject(scanAbortError(context.signal))
+        return start()
+      })
+      const drain = promise.then(
+        () => {
+          settled = true
+        },
+        () => {
+          settled = true
+        },
+      )
+      const owned: OwnedPromise<A> = { promise, drain, settled: () => settled }
+      return owned
+    }),
+    owned => Effect.tryPromise({ try: () => owned.promise, catch: cause => cause }),
+    owned =>
+      Effect.sync(() => {
+        if (!owned.settled()) context.stop?.()
+      }).pipe(Effect.ensuring(Effect.promise(() => owned.drain))),
+  )
+}
+
+function checkDiscoveryAbort(context: DiscoveryContext): Effect.Effect<void, ScanAbortedError> {
+  return Effect.suspend(() => (context.signal?.aborted ? Effect.fail(scanAbortError(context.signal)) : Effect.void))
+}
+
+/** Owned Promise boundary for the lazily loaded optional provider registry. */
+export function getAllProvidersEffect(context: DiscoveryContext = {}): Effect.Effect<Provider[], Error> {
+  return runOwnedDiscoveryPromise(getAllProviders, context).pipe(
+    Effect.mapError(cause => (cause instanceof Error ? cause : new Error(String(cause)))),
+  )
+}
+
+// Isolate one provider's discovery. A provider that rejects (a crafted/corrupt
+// file reaching a string op, an unexpected on-disk shape) must never take down
+// the whole scan and blank every other provider's usage. Warn once per
+// provider, then skip it. Mirrors the parse-failure isolation already used
+// per-file in parser.ts.
+const warnedDiscoveryFailures = new Set<string>()
+export const safeDiscoverSessionsEffect = Effect.fnUntraced(function* (
+  provider: Provider,
+  context: DiscoveryContext = {},
+): Effect.fn.Return<SessionSource[], ScanAbortedError> {
+  yield* checkDiscoveryAbort(context)
+  const discovered = yield* Effect.result(runOwnedDiscoveryPromise(() => provider.discoverSessions(context), context))
+  yield* checkDiscoveryAbort(context)
+  if (discovered._tag === 'Success') return discovered.success
+  if (isScanAbortedError(discovered.failure)) return yield* Effect.fail(discovered.failure)
+  if (!warnedDiscoveryFailures.has(provider.name)) {
+    warnedDiscoveryFailures.add(provider.name)
+    yield* Effect.sync(() => reportProviderIssue(provider.name, fileErrorCode(discovered.failure, 'discovery-failed')))
+  }
+  return []
+})
+
+/** Promise edge for provider callers that have not moved to Effect yet. */
+export function safeDiscoverSessions(provider: Provider, context: DiscoveryContext = {}): Promise<SessionSource[]> {
+  // Compatibility edge for discovery callers that still expose Promise APIs.
+  // eslint-disable-next-line no-restricted-syntax
+  return Effect.runPromise(safeDiscoverSessionsEffect(provider, context))
+}
+
+export const discoverAllSessionsEffect = Effect.fnUntraced(function* (
   providerFilter?: string,
   // Injectable for tests so the isolation loop itself is exercised, not just
   // the helper. Defaults to the real registry.
   providerList?: Provider[],
-  context: ProviderScanContext = {},
-): Promise<SessionSource[]> {
-  throwIfScanAborted(context.signal)
-  const allProviders = providerList ?? (await getAllProviders())
-  throwIfScanAborted(context.signal)
+  context: DiscoveryContext = {},
+): Effect.fn.Return<SessionSource[], Error> {
+  yield* checkDiscoveryAbort(context)
+  const allProviders = providerList ?? (yield* getAllProvidersEffect(context))
+  yield* checkDiscoveryAbort(context)
   const filtered =
     providerFilter && providerFilter !== 'all' ? allProviders.filter(p => p.name === providerFilter) : allProviders
   const all: SessionSource[] = []
   for (const provider of filtered) {
-    throwIfScanAborted(context.signal)
-    const sessions = await safeDiscoverSessions(provider, context)
+    yield* checkDiscoveryAbort(context)
+    const sessions = yield* safeDiscoverSessionsEffect(provider, context)
     all.push(...sessions)
   }
   return all
+})
+
+/** Promise edge for callers that have not moved to Effect yet. */
+export function discoverAllSessions(
+  providerFilter?: string,
+  providerList?: Provider[],
+  context: DiscoveryContext = {},
+): Promise<SessionSource[]> {
+  // Compatibility edge for discovery callers that still expose Promise APIs.
+  // eslint-disable-next-line no-restricted-syntax
+  return Effect.runPromise(discoverAllSessionsEffect(providerFilter, providerList, context))
 }
 
 export async function getProvider(name: string): Promise<Provider | undefined> {

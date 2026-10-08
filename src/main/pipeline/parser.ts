@@ -39,7 +39,7 @@ import {
   shouldReparseAntigravitySource,
 } from './providers/antigravity.js'
 import { getDesktopSessionsDirs } from './providers/claude.js'
-import { discoverAllSessions, getProvider } from './providers/index.js'
+import { discoverAllSessionsEffect, getProvider } from './providers/index.js'
 import type { ParsedProviderCall, ProviderScanContext, ProviderScanServices, SessionSource } from './providers/types.js'
 import { isScanAbortedError, type ScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
 import type { ScanPricing } from './scan-pricing.js'
@@ -114,10 +114,9 @@ function runOwnedParserPromise<A>(
     }),
     owned => Effect.tryPromise({ try: () => owned.promise, catch: cause => cause as Error }),
     owned =>
-      Effect.promise(() => {
+      Effect.sync(() => {
         if (!owned.isSettled()) stop?.()
-        return owned.drain
-      }),
+      }).pipe(Effect.ensuring(Effect.promise(() => owned.drain))),
   )
 }
 
@@ -4436,9 +4435,7 @@ const runParseEffect = Effect.fnUntraced(function* (
   const { isCold = false, readOnly = false, refreshLock } = options
   const seenMsgIds = new Set<string>()
   const seenKeys = new Set<string>()
-  const allSources = yield* runOwnedParserPromise(signal, context.stop, () =>
-    discoverAllSessions(providerFilter, undefined, context),
-  )
+  const allSources = yield* discoverAllSessionsEffect(providerFilter, undefined, context)
   yield* checkScanAbort(signal)
 
   const claudeSources = allSources.filter(s => s.provider === 'claude')

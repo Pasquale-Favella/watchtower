@@ -15,6 +15,11 @@ vi.mock('fs/promises', () => ({
 
 vi.mock('../src/main/pipeline/providers/index.js', () => ({
   discoverAllSessions: (...args: unknown[]) => hooks.discovered(...args),
+  discoverAllSessionsEffect: (...args: unknown[]) =>
+    Effect.tryPromise({
+      try: () => hooks.discovered(...args) as Promise<unknown>,
+      catch: cause => cause as Error,
+    }),
   getProvider: vi.fn(),
 }))
 

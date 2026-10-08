@@ -1,3 +1,4 @@
+import * as Effect from 'effect/Effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -24,6 +25,11 @@ vi.mock('../src/main/pipeline/fs-utils.js', () => ({
 
 vi.mock('../src/main/pipeline/providers/index.js', () => ({
   discoverAllSessions: (...args: unknown[]) => hooks.discovered(...args),
+  discoverAllSessionsEffect: (...args: unknown[]) =>
+    Effect.tryPromise({
+      try: () => hooks.discovered(...args) as Promise<unknown>,
+      catch: cause => cause as Error,
+    }),
   getProvider: (...args: unknown[]) => hooks.getProvider(...args),
 }))
 
