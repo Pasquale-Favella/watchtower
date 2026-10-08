@@ -4,6 +4,16 @@ The baseline is the [penultimate comment on #148](https://github.com/Pasquale-Fa
 
 The assessment began at `a917305`. Local commit `ce81593` subsequently landed the ledger row Schema conversion and typed repository decode failures. PR #147 still pointed to `a917305` when the assessment was published. This is a source and architecture assessment; its census and conclusions were [published on issue #148](https://github.com/Pasquale-Favella/watchtower/issues/148#issuecomment-5913654224). No tests, build or benchmarks were run for the assessment. Implementation and its verification are recorded separately in the target architecture's execution record.
 
+## Current migration status, 2026-10-08
+
+Profiling is stopped, and all five profiling JSON files were deleted. The recursive docs inventory contains zero JSON files. Historical measurements and import censuses below retain their original source; they do not describe completion at the current source.
+
+At `46277b5`, Watchtower-owned Zod removal is 23/23 modules, 100%. Native Effect Schema is 22/23, 95.7%, with one UI-only plain type. Application ownership remains sections 11/11, scoped queries 9/9, former worker reads 4/4, exports 2/2 and MCP tools/data resources 6/6 and 2/2. These counts do not establish a complete native Effect dependency chain or an overall completion percentage.
+
+The worker owns one initialized Effect/SQL graph. Cache, locks, scan orchestration, provider discovery and provider report assembly compose Effects. Codex exposes a scoped Stream consumed in the scan fiber. FX facade adapters are deleted and network rates use Schema. The old snapshot oracle is confined to tests. Both renderer stores still match `ce81593`. The current test tree has 27 TypeScript files mentioning LedgerStore and 23 constructing it, including fixtures.
+
+The next priority is Claude parsing/file IO, then other provider implementations, Codex cache IO and delta/progress composition. Overview sufficient reads, compatibility/serializer retirement, worker separation and installer/cross-platform packaged acceptance remain. The [current execution record](../plans/effect-target-architecture.md#current-priority-2026-10-08) records the integrated slices and verification. No further profiling is scheduled.
+
 ## Scope and completion criteria
 
 Full adoption means Effect composes the backend's owned IO, dependencies, failures, and lifetimes. Each long-lived isolate owns its runtime and resources. Framework callbacks enter that runtime at explicit boundaries.
@@ -15,7 +25,7 @@ Completion requires observable properties:
 - Each runtime owns its layer graph, child scopes, and shutdown. The worker has one writable connection; the MCP isolate owns its own read-only connection.
 - Migrated workflows compose service Effects without calling a second runtime to obtain values. Remaining Promise adapters have owners, cancellation contracts, and removal conditions.
 - Expected SQL, decode, fetch, and process failures stay typed until the protocol boundary maps them to existing responses.
-- Cancellation stops underlying work and releases resources under a bounded drain policy, including when an iterator or Promise never settles.
+- Cancellation requests stop and drains underlying work before releasing resources. An uncooperative iterator or Promise that never settles remains a limitation; a bounded stop guarantee requires cooperation from that API.
 - Records from each emitting isolate reach the main-owned operational log through the validated forwarding path.
 - Schema changes preserve accepted inputs and decoded outputs. Deliberate behavior changes are documented. Each contract has one authoritative schema.
 
