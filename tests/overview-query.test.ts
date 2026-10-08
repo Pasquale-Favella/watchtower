@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { queryOverview } from '../src/main/application/overview-query.js'
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import { calculateOverviewPayload } from '../src/main/overview-calculation.js'
+import { calculateOverviewFromSnapshot, calculateOverviewPayload } from '../src/main/overview-calculation.js'
 import { captureLocalModelSavings, setLocalModelSavings } from '../src/main/pipeline/models.js'
 import {
   capturePricingCatalogue,
@@ -26,6 +26,7 @@ import {
   type LedgerQueriesPort,
   type LedgerRequestSnapshotData,
 } from '../src/main/store/ledger-ports.js'
+import { makeLedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
@@ -302,6 +303,146 @@ describe('Overview application query', () => {
       expect(result.dataStart).toBe('2026-07-01')
       expect(result.kpis.sessions).toBe(0)
       expect(reports).toEqual([['diagnostic-unpriced-target']])
+    } finally {
+      store.close()
+    }
+  })
+
+  it('keeps lifetime data start and diagnostics across finite dates and composite sessions', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'watchtower-overview-lifetime-'))
+    tempDirs.push(directory)
+    const store = new LedgerStore(join(directory, 'ledger.db'))
+    try {
+      store.portIn({
+        provider: 'opencode',
+        envFingerprint: 'overview-lifetime',
+        filePath: FIXTURE_SOURCE_PATH,
+        verdict: 'new',
+        cachedFile: buildFixtureCachedFile(),
+      })
+      const data = await Effect.runPromise(
+        Effect.flatMap(LedgerQueries, queries => queries.getRequestSnapshotData()).pipe(
+          Effect.provide(store.portsLayer),
+        ),
+      )
+      const source = data.sources[0]
+      const session = data.sessions[0]
+      const turn = data.turns[0]
+      const call = data.calls[0]
+      if (!source || !session || !turn || !call) throw new Error('fixture port did not produce overview rows')
+      const withSession = (sessionId: string, sourceId = source.id) => ({ ...session, sourceId, sessionId })
+      const withTurn = (sessionId: string, turnIndex: number, timestamp: string, sourceId = source.id) => ({
+        ...turn,
+        sourceId,
+        sessionId,
+        turnIndex,
+        timestamp,
+      })
+      const withCall = (
+        sessionId: string,
+        turnIndex: number,
+        callIndex: number,
+        timestamp: string,
+        model: string,
+        provider = 'opencode',
+        sourceId = source.id,
+      ) => ({ ...call, sourceId, sessionId, turnIndex, callIndex, timestamp, model, provider, baseCostUSD: 0 })
+
+      const epochTime = new Date(1970, 0, 1, 12).toISOString()
+      const beforeEpoch = new Date(1969, 11, 31, 23).toISOString()
+      const futureTime = new Date(2026, 6, 11, 12).toISOString()
+      const secondSource = { ...source, id: source.id + 1, provider: 'claude' }
+      const variantData = {
+        ...data,
+        aliases: [...data.aliases, { model: 'duplicate-id-model', aliasOf: 'diagnostic-claude-target' }],
+        sources: [...data.sources, secondSource],
+        sessions: [
+          ...data.sessions,
+          withSession('epoch-session'),
+          withSession('before-epoch-first-call'),
+          withSession('same-index-first-by-row'),
+          withSession('malformed-first-call'),
+          withSession('future-session'),
+          withSession(session.sessionId, secondSource.id),
+        ],
+        turns: [
+          ...data.turns,
+          withTurn('epoch-session', 0, epochTime),
+          withTurn('before-epoch-first-call', 0, beforeEpoch),
+          withTurn('same-index-first-by-row', 0, beforeEpoch),
+          withTurn('malformed-first-call', 0, 'invalid timestamp'),
+          withTurn('future-session', 0, futureTime),
+          withTurn(session.sessionId, 0, epochTime, secondSource.id),
+        ],
+        calls: [
+          ...data.calls,
+          withCall('epoch-session', 0, 0, epochTime, 'epoch-model'),
+          withCall('before-epoch-first-call', 0, 0, beforeEpoch, 'before-epoch-model'),
+          withCall('before-epoch-first-call', 0, 1, epochTime, 'later-call-model'),
+          withCall('same-index-first-by-row', 0, 0, beforeEpoch, 'first-row-model'),
+          withCall('same-index-first-by-row', 0, 0, epochTime, 'second-row-model'),
+          withCall('malformed-first-call', 0, 0, 'invalid timestamp', 'malformed-model'),
+          withCall('malformed-first-call', 0, 1, epochTime, 'later-malformed-call-model'),
+          withCall('future-session', 0, 0, futureTime, 'future-model'),
+          withCall(session.sessionId, 0, 0, epochTime, 'duplicate-id-model', 'claude', secondSource.id),
+        ],
+      }
+      const snapshot = makeLedgerQuerySnapshot({
+        ...variantData,
+        catalogue: catalogue(),
+        proxyPaths: { paths: [], caseSensitive: true },
+      })
+      const result = calculateOverviewFromSnapshot(
+        snapshot,
+        { period: 'lifetime', provider: 'opencode' },
+        new Date(2026, 6, 10, 12),
+        {},
+      )
+      expect(result.value.dataStart).toBe('1970-01-01')
+      expect(result.value.kpis.sessions).toBe(2)
+      expect(result.unpricedModels).toEqual(['diagnostic-claude-target'])
+
+      const reversedCalls = makeLedgerQuerySnapshot({
+        ...variantData,
+        calls: [...variantData.calls, withCall('epoch-session', 0, 1, beforeEpoch, 'earlier-later-call')],
+        catalogue: catalogue(),
+        proxyPaths: { paths: [], caseSensitive: true },
+      })
+      // The first call admits the turn; every call then participates in the
+      // session's timestamp. The previous summary path reports this literal day.
+      expect(
+        calculateOverviewFromSnapshot(reversedCalls, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value
+          .dataStart,
+      ).toBe('1969-12-31')
+
+      const emptyLastTimestamp = makeLedgerQuerySnapshot({
+        ...data,
+        turns: [{ ...turn, timestamp: new Date(2001, 1, 3, 12).toISOString() }],
+        calls: [...data.calls, { ...call, callIndex: 1, timestamp: '' }],
+        catalogue: catalogue(),
+        proxyPaths: { paths: [], caseSensitive: true },
+      })
+      expect(
+        calculateOverviewFromSnapshot(emptyLastTimestamp, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value
+          .dataStart,
+      ).toBe('2001-02-03')
+
+      const orphanSourceId = source.id + 1000
+      const orphanRows = makeLedgerQuerySnapshot({
+        ...data,
+        sessions: [...data.sessions, withSession('orphan-source-session', orphanSourceId)],
+        turns: [...data.turns, withTurn('orphan-source-session', 0, epochTime, orphanSourceId)],
+        calls: [
+          ...data.calls,
+          withCall('orphan-source-session', 0, 0, epochTime, 'orphan-model', 'opencode', orphanSourceId),
+        ],
+        catalogue: catalogue(),
+        proxyPaths: { paths: [], caseSensitive: true },
+      })
+      expect(
+        calculateOverviewFromSnapshot(orphanRows, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value
+          .dataStart,
+      ).toBe('1970-01-01')
     } finally {
       store.close()
     }

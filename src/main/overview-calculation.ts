@@ -16,14 +16,7 @@ import {
   type OverviewToolRow,
   type OverviewUnpricedModel,
 } from '../shared/schemas/overview.js'
-import {
-  dataStartForSessions,
-  inScope,
-  localDateKey,
-  overviewDateRange,
-  periodWindowStart,
-  sessionFirstDateKey,
-} from './overview-scope.js'
+import { inScope, localDateKey, overviewDateRange, periodWindowStart, sessionFirstDateKey } from './overview-scope.js'
 import { EDIT_TOOLS } from './pipeline/classifier.js'
 import { getShortModelName } from './pipeline/model-names.js'
 import {
@@ -34,7 +27,7 @@ import {
   resolveModelNameAlias,
 } from './pipeline/pricing-calculation.js'
 import { CATEGORY_LABELS, type SessionSummary, type TaskCategory } from './pipeline/types.js'
-import { buildSessionSummariesFromSnapshotResult } from './store/aggregate-calculation.js'
+import { buildSessionSummariesFromSnapshotResult, queryScopeFromSnapshotResult } from './store/aggregate-calculation.js'
 import type { LedgerQuerySnapshot } from './store/ledger-query-snapshot.js'
 
 // User-side correction mirror.
@@ -258,6 +251,63 @@ export type OverviewCalculationInput = {
   dataStart: string | null
   catalogue: PricingCatalogue
   localSavings: LocalModelSavings
+}
+
+function dataStartFromSnapshot(snapshot: LedgerQuerySnapshot, now: Date): string | null {
+  const lifetimeRange = overviewDateRange({ period: 'lifetime' }, now)
+  const sessionKeys = new Set(snapshot.sessions.map(session => `${session.sourceId}\0${session.sessionId}`))
+  const callsByTurn = new Map<string, LedgerQuerySnapshot['calls'][number][]>()
+
+  for (const call of snapshot.calls) {
+    const key = `${call.sourceId}\0${call.sessionId}\0${call.turnIndex}`
+    const calls = callsByTurn.get(key)
+    if (calls) calls.push(call)
+    else callsByTurn.set(key, [call])
+  }
+
+  type AdmittedTurn = {
+    readonly timestamp: string
+    readonly firstCallMillis: number
+    readonly calls: LedgerQuerySnapshot['calls'][number][]
+  }
+  const turnsBySession = new Map<string, AdmittedTurn[]>()
+  for (const turn of snapshot.turns) {
+    const sessionKey = `${turn.sourceId}\0${turn.sessionId}`
+    if (!sessionKeys.has(sessionKey)) continue
+    const calls = callsByTurn.get(`${sessionKey}\0${turn.turnIndex}`) ?? []
+    calls.sort((a, b) => a.callIndex - b.callIndex)
+    const firstCall = calls[0]
+    if (!firstCall) continue
+    const firstCallMillis = Date.parse(firstCall.timestamp)
+    if (
+      Number.isNaN(firstCallMillis) ||
+      firstCallMillis < lifetimeRange.start.getTime() ||
+      firstCallMillis > lifetimeRange.end.getTime()
+    )
+      continue
+    const admitted = { timestamp: turn.timestamp, firstCallMillis, calls }
+    const turns = turnsBySession.get(sessionKey)
+    if (turns) turns.push(admitted)
+    else turnsBySession.set(sessionKey, [admitted])
+  }
+
+  let earliest: string | null = null
+  for (const turns of turnsBySession.values()) {
+    turns.sort((a, b) => a.firstCallMillis - b.firstCallMillis || a.timestamp.localeCompare(b.timestamp))
+    // Whole-turn admission and session timestamp selection are separate rules.
+    // Preserve assembleSession's lexical comparison and empty-value fallback.
+    let firstTimestamp = ''
+    for (const turn of turns) {
+      for (const call of turn.calls) {
+        if (!firstTimestamp || call.timestamp < firstTimestamp) firstTimestamp = call.timestamp
+      }
+    }
+    const millis = Date.parse(firstTimestamp || turns[0]?.timestamp || '')
+    if (Number.isNaN(millis)) continue
+    const key = localDateKey(new Date(millis))
+    if (earliest === null || key < earliest) earliest = key
+  }
+  return earliest
 }
 
 /** Pure Overview calculation over explicit summaries and captured pricing. */
@@ -617,33 +667,32 @@ export function calculateOverviewPayload(input: OverviewCalculationInput): Overv
   }
 }
 
-/** Aggregate lifetime and scoped summaries from one already-loaded snapshot,
- * retaining lifetime dataStart and the union of both aggregation diagnostics. */
+/** Calculate the scoped payload and lifetime facts from one already-loaded snapshot. */
 export function calculateOverviewFromSnapshot(
   snapshot: LedgerQuerySnapshot,
   scope: OverviewScope,
   now: Date,
   localSavings: LocalModelSavings,
 ): OverviewSnapshotCalculationResult {
-  const lifetime = buildSessionSummariesFromSnapshotResult(snapshot, {
-    range: overviewDateRange({ period: 'lifetime' }, now),
+  const lifetimeRange = overviewDateRange({ period: 'lifetime' }, now)
+  const scoped = buildSessionSummariesFromSnapshotResult(snapshot, {
+    range: overviewDateRange(scope, now),
+    provider: scope.provider,
   })
-  const sameAsLifetime = scope.period === 'lifetime' && !scope.range && !scope.provider
-  const scoped = sameAsLifetime
-    ? lifetime
-    : buildSessionSummariesFromSnapshotResult(snapshot, {
-        range: overviewDateRange(scope, now),
-        provider: scope.provider,
-      })
+  // queryScope prices raw facts before summary assembly and intentionally does
+  // not apply the date range. Reuse the scoped names when every source is in
+  // scope; otherwise scan the all-source facts without assembling sessions.
+  const unpricedModels = scope.provider
+    ? queryScopeFromSnapshotResult(snapshot, { range: lifetimeRange }).unpricedModels
+    : scoped.unpricedModels
   const value = calculateOverviewPayload({
     sessions: scoped.summaries,
     scope,
     now,
-    dataStart: dataStartForSessions(lifetime.summaries),
+    dataStart: dataStartFromSnapshot(snapshot, now),
     catalogue: snapshot.catalogue,
     localSavings,
   })
-  const unpricedModels = [...new Set([...lifetime.unpricedModels, ...scoped.unpricedModels])]
   return { value, unpricedModels }
 }
 
