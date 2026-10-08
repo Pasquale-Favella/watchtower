@@ -1,3 +1,4 @@
+import { Effect, Stream } from 'effect'
 import { createReadStream } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { basename, join } from 'path'
@@ -12,9 +13,9 @@ import {
   writeCachedCodexResults,
 } from '../codex-cache.js'
 import { normalizeContentBlocks } from '../content-utils.js'
-import { readSessionLines } from '../fs-utils.js'
+import { readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
-import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
+import { isScanAbortedError, scanAbortError, throwIfScanAborted } from '../scan-control.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 import type { DateRange, ToolCall } from '../types.js'
 import type {
@@ -429,209 +430,431 @@ function resolveModel(info: CodexEntry['payload'], sessionModel?: string): strin
   return info?.model ?? info?.info?.model ?? info?.info?.model_name ?? sessionModel ?? 'gpt-5'
 }
 
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause))
+}
+
+/**
+ * Owns cache/stat Promise IO across interruption. Interruption aborts the
+ * local signal and the scope finalizer waits for the underlying Promise to
+ * settle before parser state or cache ownership can be released.
+ */
+function runOwnedParserPromise<A>(
+  operation: (signal: AbortSignal) => Promise<A>,
+  parentSignal?: AbortSignal,
+): Effect.Effect<A, Error, import('effect/Scope').Scope> {
+  return Effect.gen(function* () {
+    const owned = yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const controller = new AbortController()
+        let settled = false
+        let resolveSettled!: () => void
+        const drained = new Promise<void>(resolve => {
+          resolveSettled = resolve
+        })
+        const abortFromParent = (): void => controller.abort(parentSignal?.reason)
+        if (parentSignal?.aborted) abortFromParent()
+        else parentSignal?.addEventListener('abort', abortFromParent, { once: true })
+
+        const promise = Promise.resolve()
+          .then(() => operation(controller.signal))
+          .finally(() => {
+            settled = true
+            parentSignal?.removeEventListener('abort', abortFromParent)
+            resolveSettled()
+          })
+        return { controller, promise, drained, isSettled: () => settled }
+      }),
+      resource =>
+        Effect.promise(async () => {
+          if (!resource.isSettled()) {
+            if (!resource.controller.signal.aborted) resource.controller.abort()
+            await resource.drained
+          }
+        }),
+    )
+
+    return yield* Effect.tryPromise({
+      try: () => owned.promise,
+      catch: cause => (parentSignal?.aborted ? scanAbortError(parentSignal) : toError(cause)),
+    })
+  })
+}
+
 function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
   const pricing = context?.pricing ?? captureScanPricing()
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const { signal } = context ?? {}
-      throwIfScanAborted(signal)
-      const cached = await readCachedCodexResults(source.path, signal)
-      throwIfScanAborted(signal)
-      if (cached) {
-        for (const call of cached) {
-          throwIfScanAborted(signal)
-          if (seenKeys.has(call.deduplicationKey)) continue
-          seenKeys.add(call.deduplicationKey)
-          yield call
-        }
-        return
-      }
-
-      const fp = await fingerprintFile(source.path, signal)
-      throwIfScanAborted(signal)
-      if (!fp) return
-
-      let sessionModel: string | undefined
-      let sessionId = ''
-      let sessionCwd: string | undefined
-      let forkedFromId = ''
-      let forkCutoff = ''
-      // Null sentinel rather than `0` so the FIRST event is never confused
-      // with a duplicate. A session that only emits last_token_usage (no
-      // total_token_usage) reports cumulativeTotal=0 on every event; with a
-      // 0-initialized prev, the first event would have matched and been
-      // dropped. Once we've observed any event, we record its cumulative
-      // total and dedup on equality regardless of whether it is zero.
-      let prevCumulativeTotal: number | null = null
-      let prevInput = 0
-      let prevCached = 0
-      let prevOutput = 0
-      let prevReasoning = 0
-      let pendingTools: string[] = []
-      let pendingToolSequence: ToolCall[][] = []
-      let pendingUserMessage = ''
-      // Bounded assistant output text for the central PR scan (the agent
-      // printing the URL of the PR it just created). Transient evidence only.
-      let pendingAssistantText = ''
-      let pendingOutputChars = 0
-      // Rich-session-capture: edit LOC deltas and failed-patch count accumulated
-      // across a turn's patch_apply_end events, flushed onto the turn's call.
-      let pendingLocAdded = 0
-      let pendingLocRemoved = 0
-      let pendingEditFailed = 0
-      let estCounter = 0
-      let turnCounter = 0
-      let currentTurnId = `${sessionId}:t0`
-      let sawAnyLine = false
-      const results: ParsedProviderCall[] = []
-
-      // Stream the session file line by line. Heavy Codex sessions can exceed
-      // 250 MB on disk; reading the entire file into a string would either hit
-      // the readSessionFile cap or push V8 toward its 512 MB string limit
-      // after split('\n'). readSessionLines streams raw buffers and hands
-      // huge lines to the compact parser without full string conversion.
-      for await (const rawLine of readSessionLines(source.path, undefined, {
-        largeLineAsBuffer: true,
-        ...(signal ? { signal } : {}),
-      })) {
-        throwIfScanAborted(signal)
-        sawAnyLine = true
-        const entry = parseCodexLine(rawLine)
-        if (!entry) continue
-
-        if (entry.type === 'session_meta') {
-          sessionId = entry.payload?.session_id ?? basename(source.path, '.jsonl')
-          sessionCwd = entry.payload?.cwd ?? sessionCwd
-          forkedFromId = entry.payload?.forked_from_id ?? ''
-          if (forkedFromId && entry.timestamp) {
-            forkCutoff = new Date(new Date(entry.timestamp).getTime() + 5000).toISOString()
+  const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.scoped(
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const { signal } = context ?? {}
+          const checkAbort = Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+          yield* checkAbort
+          const cached = yield* runOwnedParserPromise(
+            ownedSignal => readCachedCodexResults(source.path, ownedSignal),
+            signal,
+          )
+          yield* checkAbort
+          if (cached) {
+            return Stream.fromIterable(cached).pipe(
+              Stream.rechunk(1),
+              Stream.filterEffect(call =>
+                Effect.try({
+                  try: () => {
+                    throwIfScanAborted(signal)
+                    if (seenKeys.has(call.deduplicationKey)) return false
+                    seenKeys.add(call.deduplicationKey)
+                    return true
+                  },
+                  catch: toError,
+                }),
+              ),
+            )
           }
-          sessionModel = entry.payload?.model ?? sessionModel
-          continue
-        }
 
-        if (entry.type === 'turn_context' && entry.payload?.model) {
-          sessionModel = entry.payload.model
-          continue
-        }
+          const fp = yield* runOwnedParserPromise(ownedSignal => fingerprintFile(source.path, ownedSignal), signal)
+          yield* checkAbort
+          if (!fp) return Stream.empty
 
-        if (entry.type === 'response_item' && entry.payload?.type === 'function_call') {
-          const rawName = entry.payload.name ?? ''
-          const mapped = toolNameMap[rawName] ?? rawName
-          pendingTools.push(mapped)
-          const call: ToolCall = { tool: mapped }
-          const rawArgs = (entry.payload as Record<string, unknown>)['arguments']
-          const args =
-            typeof rawArgs === 'string'
-              ? (() => {
-                  try {
-                    return JSON.parse(rawArgs) as Record<string, unknown>
-                  } catch {
-                    return null
-                  }
-                })()
-              : typeof rawArgs === 'object' && rawArgs
-                ? (rawArgs as Record<string, unknown>)
-                : null
-          if (args) {
-            const fp = args['file_path'] ?? args['path']
-            if (typeof fp === 'string') call.file = fp
-            const cmd = args['command'] ?? args['cmd']
-            if (typeof cmd === 'string') call.command = cmd
-            // Attribute a CLI-wrapped MCP call (e.g. `mcp-cli call server tool`)
-            // to the MCP breakdown too; the exec still counts as Bash above.
-            const mcpTool = mcpToolFromShellCommand(cmd)
-            if (mcpTool) {
-              pendingTools.push(mcpTool)
-              pendingToolSequence.push([{ tool: mcpTool }])
+          let sessionModel: string | undefined
+          let sessionId = ''
+          let sessionCwd: string | undefined
+          let forkedFromId = ''
+          let forkCutoff = ''
+          // Null sentinel rather than `0` so the FIRST event is never confused
+          // with a duplicate. A session that only emits last_token_usage (no
+          // total_token_usage) reports cumulativeTotal=0 on every event; with a
+          // 0-initialized prev, the first event would have matched and been
+          // dropped. Once we've observed any event, we record its cumulative
+          // total and dedup on equality regardless of whether it is zero.
+          let prevCumulativeTotal: number | null = null
+          let prevInput = 0
+          let prevCached = 0
+          let prevOutput = 0
+          let prevReasoning = 0
+          let pendingTools: string[] = []
+          let pendingToolSequence: ToolCall[][] = []
+          let pendingUserMessage = ''
+          // Bounded assistant output text for the central PR scan (the agent
+          // printing the URL of the PR it just created). Transient evidence only.
+          let pendingAssistantText = ''
+          let pendingOutputChars = 0
+          // Rich-session-capture: edit LOC deltas and failed-patch count accumulated
+          // across a turn's patch_apply_end events, flushed onto the turn's call.
+          let pendingLocAdded = 0
+          let pendingLocRemoved = 0
+          let pendingEditFailed = 0
+          let estCounter = 0
+          let turnCounter = 0
+          let currentTurnId = `${sessionId}:t0`
+          let sawAnyLine = false
+          const results: ParsedProviderCall[] = []
+
+          // Per-line state changes remain synchronous; file IO and stream
+          // lifecycle belong to the native Effect workflow below.
+          const processLine = (rawLine: string | Buffer): void => {
+            throwIfScanAborted(signal)
+            const entry = parseCodexLine(rawLine)
+            if (!entry) return
+
+            if (entry.type === 'session_meta') {
+              sessionId = entry.payload?.session_id ?? basename(source.path, '.jsonl')
+              sessionCwd = entry.payload?.cwd ?? sessionCwd
+              forkedFromId = entry.payload?.forked_from_id ?? ''
+              if (forkedFromId && entry.timestamp) {
+                forkCutoff = new Date(new Date(entry.timestamp).getTime() + 5000).toISOString()
+              }
+              sessionModel = entry.payload?.model ?? sessionModel
+              return
             }
-          }
-          pendingToolSequence.push([call])
-          continue
-        }
 
-        if (entry.type === 'event_msg' && entry.payload?.type === 'patch_apply_end') {
-          pendingTools.push('Edit')
-          const p = entry.payload as Record<string, unknown>
-          const changes = p['changes']
-          const changesObj = typeof changes === 'object' && changes ? (changes as Record<string, unknown>) : {}
-          const filePaths = Object.keys(changesObj)
-          if (filePaths.length > 0) {
-            for (const fp of filePaths) {
-              pendingToolSequence.push([{ tool: 'Edit', file: fp }])
-              const diff = (changesObj[fp] as Record<string, unknown> | undefined)?.['unified_diff']
-              const loc = countUnifiedDiffLoc(diff)
-              pendingLocAdded += loc.added
-              pendingLocRemoved += loc.removed
+            if (entry.type === 'turn_context' && entry.payload?.model) {
+              sessionModel = entry.payload.model
+              return
             }
-          } else {
-            pendingToolSequence.push([{ tool: 'Edit' }])
-          }
-          // Only an explicit failure counts; a missing `success` is treated as ok.
-          if (p['success'] === false) pendingEditFailed++
-          continue
-        }
 
-        // Recent Codex emits MCP calls as `event_msg`/`mcp_tool_call_end`
-        // instead of a `function_call` response_item, so the call was never
-        // attributed. Rebuild the canonical `mcp__<server>__<tool>` name the
-        // classifier recognizes.
-        if (entry.type === 'event_msg' && entry.payload?.type === 'mcp_tool_call_end') {
-          const inv = (entry.payload as Record<string, unknown>)['invocation'] as Record<string, unknown> | undefined
-          const server = typeof inv?.['server'] === 'string' ? (inv['server'] as string) : ''
-          const tool = typeof inv?.['tool'] === 'string' ? (inv['tool'] as string) : ''
-          if (server && tool) {
-            const name = `mcp__${server}__${tool}`
-            pendingTools.push(name)
-            pendingToolSequence.push([{ tool: name }])
-          }
-          continue
-        }
+            if (entry.type === 'response_item' && entry.payload?.type === 'function_call') {
+              const rawName = entry.payload.name ?? ''
+              const mapped = toolNameMap[rawName] ?? rawName
+              pendingTools.push(mapped)
+              const call: ToolCall = { tool: mapped }
+              const rawArgs = (entry.payload as Record<string, unknown>)['arguments']
+              const args =
+                typeof rawArgs === 'string'
+                  ? (() => {
+                      try {
+                        return JSON.parse(rawArgs) as Record<string, unknown>
+                      } catch {
+                        return null
+                      }
+                    })()
+                  : typeof rawArgs === 'object' && rawArgs
+                    ? (rawArgs as Record<string, unknown>)
+                    : null
+              if (args) {
+                const fp = args['file_path'] ?? args['path']
+                if (typeof fp === 'string') call.file = fp
+                const cmd = args['command'] ?? args['cmd']
+                if (typeof cmd === 'string') call.command = cmd
+                // Attribute a CLI-wrapped MCP call (e.g. `mcp-cli call server tool`)
+                // to the MCP breakdown too; the exec still counts as Bash above.
+                const mcpTool = mcpToolFromShellCommand(cmd)
+                if (mcpTool) {
+                  pendingTools.push(mcpTool)
+                  pendingToolSequence.push([{ tool: mcpTool }])
+                }
+              }
+              pendingToolSequence.push([call])
+              return
+            }
 
-        if (entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload?.role === 'user') {
-          const texts = normalizeContentBlocks(entry.payload.content)
-            .filter(c => c.type === 'input_text')
-            .map(c => c.text ?? '')
-            .filter(Boolean)
-          if (texts.length > 0) {
-            pendingUserMessage = texts.join(' ').slice(0, 500)
-            currentTurnId = `${sessionId}:t${++turnCounter}`
-          }
-          continue
-        }
+            if (entry.type === 'event_msg' && entry.payload?.type === 'patch_apply_end') {
+              pendingTools.push('Edit')
+              const p = entry.payload as Record<string, unknown>
+              const changes = p['changes']
+              const changesObj = typeof changes === 'object' && changes ? (changes as Record<string, unknown>) : {}
+              const filePaths = Object.keys(changesObj)
+              if (filePaths.length > 0) {
+                for (const fp of filePaths) {
+                  pendingToolSequence.push([{ tool: 'Edit', file: fp }])
+                  const diff = (changesObj[fp] as Record<string, unknown> | undefined)?.['unified_diff']
+                  const loc = countUnifiedDiffLoc(diff)
+                  pendingLocAdded += loc.added
+                  pendingLocRemoved += loc.removed
+                }
+              } else {
+                pendingToolSequence.push([{ tool: 'Edit' }])
+              }
+              // Only an explicit failure counts; a missing `success` is treated as ok.
+              if (p['success'] === false) pendingEditFailed++
+              return
+            }
 
-        if (
-          entry.type === 'response_item' &&
-          entry.payload?.type === 'message' &&
-          entry.payload?.role === 'assistant'
-        ) {
-          const texts = normalizeContentBlocks(entry.payload.content)
-            .filter(c => c.type === 'output_text' || c.type === 'text')
-            .map(c => c.text ?? '')
-          pendingOutputChars += texts.join('').length
-          if (pendingAssistantText.length < 2000) {
-            pendingAssistantText = (pendingAssistantText + texts.join(' ')).slice(0, 2000)
-          }
-          continue
-        }
+            // Recent Codex emits MCP calls as `event_msg`/`mcp_tool_call_end`
+            // instead of a `function_call` response_item, so the call was never
+            // attributed. Rebuild the canonical `mcp__<server>__<tool>` name the
+            // classifier recognizes.
+            if (entry.type === 'event_msg' && entry.payload?.type === 'mcp_tool_call_end') {
+              const inv = (entry.payload as Record<string, unknown>)['invocation'] as
+                Record<string, unknown> | undefined
+              const server = typeof inv?.['server'] === 'string' ? (inv['server'] as string) : ''
+              const tool = typeof inv?.['tool'] === 'string' ? (inv['tool'] as string) : ''
+              if (server && tool) {
+                const name = `mcp__${server}__${tool}`
+                pendingTools.push(name)
+                pendingToolSequence.push([{ tool: name }])
+              }
+              return
+            }
 
-        if (entry.type === 'event_msg' && entry.payload?.type === 'token_count') {
-          // Forked sessions replay the parent's entire event history with
-          // timestamps clustered at the fork creation time. Skip replayed
-          // events (within 5s of fork) to avoid double-counting.
-          if (forkCutoff && entry.timestamp && entry.timestamp < forkCutoff) continue
-          const info = entry.payload.info
-          if (!info) {
-            if (pendingOutputChars === 0 && pendingUserMessage.length === 0) continue
-            const estInput = estimateTokensFromChars(pendingUserMessage.length)
-            const estOutput = estimateTokensFromChars(pendingOutputChars)
-            if (estInput === 0 && estOutput === 0) continue
+            if (entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload?.role === 'user') {
+              const texts = normalizeContentBlocks(entry.payload.content)
+                .filter(c => c.type === 'input_text')
+                .map(c => c.text ?? '')
+                .filter(Boolean)
+              if (texts.length > 0) {
+                pendingUserMessage = texts.join(' ').slice(0, 500)
+                currentTurnId = `${sessionId}:t${++turnCounter}`
+              }
+              return
+            }
 
-            const model = sessionModel ?? 'gpt-5'
-            const timestamp = entry.timestamp ?? ''
-            const dedupKey = `codex:${sessionId}:${timestamp}:est${estCounter++}`
+            if (
+              entry.type === 'response_item' &&
+              entry.payload?.type === 'message' &&
+              entry.payload?.role === 'assistant'
+            ) {
+              const texts = normalizeContentBlocks(entry.payload.content)
+                .filter(c => c.type === 'output_text' || c.type === 'text')
+                .map(c => c.text ?? '')
+              pendingOutputChars += texts.join('').length
+              if (pendingAssistantText.length < 2000) {
+                pendingAssistantText = (pendingAssistantText + texts.join(' ')).slice(0, 2000)
+              }
+              return
+            }
 
-            if (seenKeys.has(dedupKey)) {
+            if (entry.type === 'event_msg' && entry.payload?.type === 'token_count') {
+              // Forked sessions replay the parent's entire event history with
+              // timestamps clustered at the fork creation time. Skip replayed
+              // events (within 5s of fork) to avoid double-counting.
+              if (forkCutoff && entry.timestamp && entry.timestamp < forkCutoff) return
+              const info = entry.payload.info
+              if (!info) {
+                if (pendingOutputChars === 0 && pendingUserMessage.length === 0) return
+                const estInput = estimateTokensFromChars(pendingUserMessage.length)
+                const estOutput = estimateTokensFromChars(pendingOutputChars)
+                if (estInput === 0 && estOutput === 0) return
+
+                const model = sessionModel ?? 'gpt-5'
+                const timestamp = entry.timestamp ?? ''
+                const dedupKey = `codex:${sessionId}:${timestamp}:est${estCounter++}`
+
+                if (seenKeys.has(dedupKey)) {
+                  pendingTools = []
+                  pendingToolSequence = []
+                  pendingUserMessage = ''
+                  pendingAssistantText = ''
+                  pendingOutputChars = 0
+                  pendingLocAdded = 0
+                  pendingLocRemoved = 0
+                  pendingEditFailed = 0
+                  return
+                }
+                seenKeys.add(dedupKey)
+
+                const costUSD = pricing.calculateCost(model, estInput, estOutput, 0, 0, 0)
+
+                results.push({
+                  provider: 'codex',
+                  model,
+                  inputTokens: estInput,
+                  outputTokens: estOutput,
+                  cacheCreationInputTokens: 0,
+                  cacheReadInputTokens: 0,
+                  cachedInputTokens: 0,
+                  reasoningTokens: 0,
+                  webSearchRequests: 0,
+                  costUSD,
+                  costIsEstimated: true,
+                  tools: pendingTools,
+                  bashCommands: [],
+                  timestamp,
+                  speed: 'standard',
+                  deduplicationKey: dedupKey,
+                  turnId: currentTurnId,
+                  toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
+                  userMessage: pendingUserMessage,
+                  ...(pendingAssistantText ? { assistantText: pendingAssistantText } : {}),
+                  sessionId,
+                  ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
+                  ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
+                  ...(pendingLocRemoved ? { locRemoved: pendingLocRemoved } : {}),
+                  ...(pendingEditFailed ? { editFailed: pendingEditFailed } : {}),
+                })
+
+                pendingTools = []
+                pendingToolSequence = []
+                pendingUserMessage = ''
+                pendingAssistantText = ''
+                pendingOutputChars = 0
+                pendingLocAdded = 0
+                pendingLocRemoved = 0
+                pendingEditFailed = 0
+                return
+              }
+
+              const cumulativeTotal = info.total_token_usage?.total_tokens ?? 0
+              // Dedup guard. Two consecutive events with cumulativeTotal=0 but
+              // non-empty last_token_usage would have been double-counted with
+              // the previous `> 0` clause. The null sentinel ensures the FIRST
+              // event always passes (so a session that never reports cumulative
+              // doesn't lose its opening turn).
+              if (prevCumulativeTotal !== null && cumulativeTotal === prevCumulativeTotal) return
+              prevCumulativeTotal = cumulativeTotal
+
+              const last = info.last_token_usage
+              let inputTokens = 0
+              let cachedInputTokens = 0
+              let outputTokens = 0
+              let reasoningTokens = 0
+
+              if (last) {
+                inputTokens = last.input_tokens ?? 0
+                cachedInputTokens = last.cached_input_tokens ?? 0
+                outputTokens = last.output_tokens ?? 0
+                reasoningTokens = last.reasoning_output_tokens ?? 0
+              } else if (cumulativeTotal > 0) {
+                const total = info.total_token_usage
+                if (!total) return
+                inputTokens = (total.input_tokens ?? 0) - prevInput
+                cachedInputTokens = (total.cached_input_tokens ?? 0) - prevCached
+                outputTokens = (total.output_tokens ?? 0) - prevOutput
+                reasoningTokens = (total.reasoning_output_tokens ?? 0) - prevReasoning
+              }
+
+              // Always advance the prev counters to track the cumulative state.
+              // Previously prev was only updated on the fallback branch, so a
+              // session with mixed last_token_usage / no-last events would
+              // compute the next fallback delta against a stale prev=0 baseline,
+              // double-counting the entire cumulative window. The prev value
+              // must mirror what cumulative reports regardless of whether this
+              // event used `last` or fell back to deltas.
+              const total = info.total_token_usage
+              if (total) {
+                prevInput = total.input_tokens ?? 0
+                prevCached = total.cached_input_tokens ?? 0
+                prevOutput = total.output_tokens ?? 0
+                prevReasoning = total.reasoning_output_tokens ?? 0
+              }
+
+              const totalTokens = inputTokens + cachedInputTokens + outputTokens + reasoningTokens
+              if (totalTokens === 0) return
+
+              // OpenAI includes cached tokens inside input_tokens; Anthropic does not.
+              // Normalize to Anthropic semantics: inputTokens = non-cached only.
+              const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens)
+
+              const model = resolveModel(entry.payload, sessionModel)
+              const timestamp = entry.timestamp ?? ''
+              // Forked sessions copy the parent's entire token_count history
+              // (re-timestamped), so replays must collide with the parent's events
+              // and drop to avoid double-counting -- hence the parent namespace
+              // (forkedFromId) and the deliberate omission of the per-session id.
+              // But cumulativeTotal alone is too coarse a discriminator: a genuine
+              // post-divergence fork event whose running total coincidentally equals
+              // some parent total would also collide and be lost (undercount). So we
+              // also key on the cumulative token breakdown, which a fork replays
+              // verbatim from the parent -- a true replay collides exactly, while
+              // genuinely different work at the same total stays distinct. We use the
+              // CUMULATIVE figures (not the per-event deltas) on purpose: the deltas
+              // are computed against a running `prev` that the fork advances
+              // differently once the 5s cutoff skips some replays, so a delta-based
+              // key would spuriously diverge on a replay and double-count it.
+              const dedupKey = `codex:${forkedFromId || sessionId}:${cumulativeTotal}:${total?.input_tokens ?? 0}:${total?.cached_input_tokens ?? 0}:${total?.output_tokens ?? 0}:${total?.reasoning_output_tokens ?? 0}`
+
+              if (seenKeys.has(dedupKey)) return
+              seenKeys.add(dedupKey)
+
+              const costUSD = pricing.calculateCost(
+                model,
+                uncachedInputTokens,
+                // OpenAI's `reasoning_output_tokens` is a breakdown of
+                // `output_tokens`, not a sibling of it — the helper keeps the fold
+                // from billing the same tokens twice.
+                billableOutputTokens('codex', outputTokens, reasoningTokens),
+                0,
+                cachedInputTokens,
+                0,
+              )
+
+              results.push({
+                provider: 'codex',
+                model,
+                inputTokens: uncachedInputTokens,
+                outputTokens,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: cachedInputTokens,
+                cachedInputTokens,
+                reasoningTokens,
+                webSearchRequests: 0,
+                costUSD,
+                tools: pendingTools,
+                bashCommands: [],
+                timestamp,
+                speed: 'standard',
+                deduplicationKey: dedupKey,
+                turnId: currentTurnId,
+                toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
+                userMessage: pendingUserMessage,
+                ...(pendingAssistantText ? { assistantText: pendingAssistantText } : {}),
+                sessionId,
+                ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
+                ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
+                ...(pendingLocRemoved ? { locRemoved: pendingLocRemoved } : {}),
+                ...(pendingEditFailed ? { editFailed: pendingEditFailed } : {}),
+              })
+
               pendingTools = []
               pendingToolSequence = []
               pendingUserMessage = ''
@@ -640,186 +863,45 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
               pendingLocAdded = 0
               pendingLocRemoved = 0
               pendingEditFailed = 0
-              continue
             }
-            seenKeys.add(dedupKey)
-
-            const costUSD = pricing.calculateCost(model, estInput, estOutput, 0, 0, 0)
-
-            results.push({
-              provider: 'codex',
-              model,
-              inputTokens: estInput,
-              outputTokens: estOutput,
-              cacheCreationInputTokens: 0,
-              cacheReadInputTokens: 0,
-              cachedInputTokens: 0,
-              reasoningTokens: 0,
-              webSearchRequests: 0,
-              costUSD,
-              costIsEstimated: true,
-              tools: pendingTools,
-              bashCommands: [],
-              timestamp,
-              speed: 'standard',
-              deduplicationKey: dedupKey,
-              turnId: currentTurnId,
-              toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
-              userMessage: pendingUserMessage,
-              ...(pendingAssistantText ? { assistantText: pendingAssistantText } : {}),
-              sessionId,
-              ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
-              ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
-              ...(pendingLocRemoved ? { locRemoved: pendingLocRemoved } : {}),
-              ...(pendingEditFailed ? { editFailed: pendingEditFailed } : {}),
-            })
-
-            pendingTools = []
-            pendingToolSequence = []
-            pendingUserMessage = ''
-            pendingAssistantText = ''
-            pendingOutputChars = 0
-            pendingLocAdded = 0
-            pendingLocRemoved = 0
-            pendingEditFailed = 0
-            continue
           }
 
-          const cumulativeTotal = info.total_token_usage?.total_tokens ?? 0
-          // Dedup guard. Two consecutive events with cumulativeTotal=0 but
-          // non-empty last_token_usage would have been double-counted with
-          // the previous `> 0` clause. The null sentinel ensures the FIRST
-          // event always passes (so a session that never reports cumulative
-          // doesn't lose its opening turn).
-          if (prevCumulativeTotal !== null && cumulativeTotal === prevCumulativeTotal) continue
-          prevCumulativeTotal = cumulativeTotal
-
-          const last = info.last_token_usage
-          let inputTokens = 0
-          let cachedInputTokens = 0
-          let outputTokens = 0
-          let reasoningTokens = 0
-
-          if (last) {
-            inputTokens = last.input_tokens ?? 0
-            cachedInputTokens = last.cached_input_tokens ?? 0
-            outputTokens = last.output_tokens ?? 0
-            reasoningTokens = last.reasoning_output_tokens ?? 0
-          } else if (cumulativeTotal > 0) {
-            const total = info.total_token_usage
-            if (!total) continue
-            inputTokens = (total.input_tokens ?? 0) - prevInput
-            cachedInputTokens = (total.cached_input_tokens ?? 0) - prevCached
-            outputTokens = (total.output_tokens ?? 0) - prevOutput
-            reasoningTokens = (total.reasoning_output_tokens ?? 0) - prevReasoning
-          }
-
-          // Always advance the prev counters to track the cumulative state.
-          // Previously prev was only updated on the fallback branch, so a
-          // session with mixed last_token_usage / no-last events would
-          // compute the next fallback delta against a stale prev=0 baseline,
-          // double-counting the entire cumulative window. The prev value
-          // must mirror what cumulative reports regardless of whether this
-          // event used `last` or fell back to deltas.
-          const total = info.total_token_usage
-          if (total) {
-            prevInput = total.input_tokens ?? 0
-            prevCached = total.cached_input_tokens ?? 0
-            prevOutput = total.output_tokens ?? 0
-            prevReasoning = total.reasoning_output_tokens ?? 0
-          }
-
-          const totalTokens = inputTokens + cachedInputTokens + outputTokens + reasoningTokens
-          if (totalTokens === 0) continue
-
-          // OpenAI includes cached tokens inside input_tokens; Anthropic does not.
-          // Normalize to Anthropic semantics: inputTokens = non-cached only.
-          const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens)
-
-          const model = resolveModel(entry.payload, sessionModel)
-          const timestamp = entry.timestamp ?? ''
-          // Forked sessions copy the parent's entire token_count history
-          // (re-timestamped), so replays must collide with the parent's events
-          // and drop to avoid double-counting -- hence the parent namespace
-          // (forkedFromId) and the deliberate omission of the per-session id.
-          // But cumulativeTotal alone is too coarse a discriminator: a genuine
-          // post-divergence fork event whose running total coincidentally equals
-          // some parent total would also collide and be lost (undercount). So we
-          // also key on the cumulative token breakdown, which a fork replays
-          // verbatim from the parent -- a true replay collides exactly, while
-          // genuinely different work at the same total stays distinct. We use the
-          // CUMULATIVE figures (not the per-event deltas) on purpose: the deltas
-          // are computed against a running `prev` that the fork advances
-          // differently once the 5s cutoff skips some replays, so a delta-based
-          // key would spuriously diverge on a replay and double-count it.
-          const dedupKey = `codex:${forkedFromId || sessionId}:${cumulativeTotal}:${total?.input_tokens ?? 0}:${total?.cached_input_tokens ?? 0}:${total?.output_tokens ?? 0}:${total?.reasoning_output_tokens ?? 0}`
-
-          if (seenKeys.has(dedupKey)) continue
-          seenKeys.add(dedupKey)
-
-          const costUSD = pricing.calculateCost(
-            model,
-            uncachedInputTokens,
-            // OpenAI's `reasoning_output_tokens` is a breakdown of
-            // `output_tokens`, not a sibling of it — the helper keeps the fold
-            // from billing the same tokens twice.
-            billableOutputTokens('codex', outputTokens, reasoningTokens),
-            0,
-            cachedInputTokens,
-            0,
+          yield* Stream.runForEach(
+            readSessionLinesStream(source.path, undefined, {
+              largeLineAsBuffer: true,
+              ...(signal ? { signal } : {}),
+            }),
+            rawLine =>
+              Effect.try({
+                try: () => {
+                  sawAnyLine = true
+                  processLine(rawLine)
+                },
+                catch: toError,
+              }),
           )
 
-          results.push({
-            provider: 'codex',
-            model,
-            inputTokens: uncachedInputTokens,
-            outputTokens,
-            cacheCreationInputTokens: 0,
-            cacheReadInputTokens: cachedInputTokens,
-            cachedInputTokens,
-            reasoningTokens,
-            webSearchRequests: 0,
-            costUSD,
-            tools: pendingTools,
-            bashCommands: [],
-            timestamp,
-            speed: 'standard',
-            deduplicationKey: dedupKey,
-            turnId: currentTurnId,
-            toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
-            userMessage: pendingUserMessage,
-            ...(pendingAssistantText ? { assistantText: pendingAssistantText } : {}),
-            sessionId,
-            ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
-            ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
-            ...(pendingLocRemoved ? { locRemoved: pendingLocRemoved } : {}),
-            ...(pendingEditFailed ? { editFailed: pendingEditFailed } : {}),
-          })
+          // If the stream yielded nothing the file was unreadable, oversized, or
+          // empty. Skip cache write so a transient failure can't pin an empty
+          // result set against a fingerprint that would otherwise be re-parsed.
+          yield* checkAbort
+          if (!sawAnyLine) return Stream.empty
 
-          pendingTools = []
-          pendingToolSequence = []
-          pendingUserMessage = ''
-          pendingAssistantText = ''
-          pendingOutputChars = 0
-          pendingLocAdded = 0
-          pendingLocRemoved = 0
-          pendingEditFailed = 0
-        }
-      }
+          yield* runOwnedParserPromise(
+            ownedSignal => writeCachedCodexResults(source.path, source.project, results, fp, ownedSignal),
+            signal,
+          )
+          yield* checkAbort
 
-      // If the stream yielded nothing the file was unreadable, oversized, or
-      // empty. Skip cache write so a transient failure can't pin an empty
-      // result set against a fingerprint that would otherwise be re-parsed.
-      throwIfScanAborted(signal)
-      if (!sawAnyLine) return
+          return Stream.fromIterable(results)
+        }),
+      ),
+    )
 
-      await writeCachedCodexResults(source.path, source.project, results, fp, signal)
-      throwIfScanAborted(signal)
-
-      for (const call of results) {
-        throwIfScanAborted(signal)
-        yield call
-      }
+  return {
+    parseStream,
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      yield* Stream.toAsyncIterable(parseStream())
     },
   }
 }

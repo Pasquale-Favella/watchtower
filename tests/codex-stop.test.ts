@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { Effect, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -180,6 +181,27 @@ function parse(path: string, seenKeys = new Set<string>(), context?: ProviderSca
 }
 
 describe('Codex scan cancellation', () => {
+  it('preserves the typed scan abort when a native cache read is cancelled without an explicit reason', async () => {
+    const path = join(root, 'native-cache-abort.jsonl')
+    await writeFile(path, '')
+    hooks.blockCacheRead = true
+    const started = new Promise<void>(resolve => {
+      hooks.onCacheReadStarted = resolve
+    })
+    const controller = new AbortController()
+    const parser = createCodexProvider('/unused').createSessionParser(source(path), new Set(), undefined, {
+      signal: controller.signal,
+    })
+    if (!parser.parseStream) throw new Error('Codex must provide a native parser stream')
+    const result = Effect.runPromise(Stream.runCollect(parser.parseStream()))
+    const rejected = expect(result).rejects.toMatchObject({ _tag: 'ScanAbortedError', message: 'scan aborted' })
+    await started
+    controller.abort()
+    await rejected
+    expect(hooks.readSignal?.aborted).toBe(true)
+    expect(hooks.streamOpens).toBe(0)
+  })
+
   it('passes cancellation to cache loading and does not memoize a cancelled empty cache', async () => {
     const path = join(root, 'cache-read-source.jsonl')
     await writeFile(path, '')

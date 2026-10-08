@@ -1,5 +1,6 @@
 import { basename } from 'node:path'
 
+import { Effect, Result, Stream } from 'effect'
 import { createReadStream, readFileSync, statSync } from 'fs'
 import { readFile, stat } from 'fs/promises'
 
@@ -157,6 +158,102 @@ export async function* readSessionLines(
     ...(options.signal ? { signal: options.signal } : {}),
   })
   const closed = new Promise<void>(resolve => stream.once('close', () => resolve()))
+  try {
+    yield* splitNativeSessionLines(stream, filePath, shouldSkipHead, options)
+  } catch (err) {
+    throwIfScanAborted(options.signal)
+    warn(`stream read failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
+  } finally {
+    stream.destroy()
+    await closed
+  }
+}
+
+/**
+ * Effect-native counterpart for workflows that already run in a Stream.
+ * The ReadStream is acquired only when pulled and remains owned by the stream
+ * scope until its async iterator has stopped and the native `close` event has
+ * drained. Unlike `readSessionLines`, this does not build on that legacy
+ * AsyncGenerator boundary.
+ */
+export function readSessionLinesStream(
+  filePath: string,
+  shouldSkipHead?: (head: string) => boolean,
+  options: ReadSessionLinesOptions = {},
+): Stream.Stream<SessionLine, Error> {
+  const scoped = Stream.unwrap(
+    Effect.gen(function* () {
+      yield* Effect.try({ try: () => throwIfScanAborted(options.signal), catch: toError })
+      const statResult = yield* Effect.uninterruptible(
+        Effect.result(Effect.tryPromise({ try: () => stat(filePath), catch: toError })),
+      )
+      if (Result.isFailure(statResult)) {
+        if (options.signal?.aborted) {
+          yield* Effect.try({ try: () => throwIfScanAborted(options.signal), catch: toError })
+        }
+        warn(`stat failed for ${shortPath(filePath)}: ${errorCode(statResult.failure)}`)
+        return Stream.empty
+      }
+      const size = statResult.success.size
+      yield* Effect.try({ try: () => throwIfScanAborted(options.signal), catch: toError })
+
+      const maxBytes = options.maxBytes ?? MAX_STREAM_SESSION_FILE_BYTES
+      if (size > maxBytes) {
+        notice(filePath, 'oversize')
+        return Stream.empty
+      }
+
+      const owned = yield* Effect.acquireRelease(
+        Effect.try({
+          try: () =>
+            (() => {
+              const stream = createReadStream(filePath, {
+                ...(options.startByteOffset !== undefined ? { start: options.startByteOffset } : {}),
+                ...(options.signal ? { signal: options.signal } : {}),
+              })
+              const iterator = splitNativeSessionLines(stream, filePath, shouldSkipHead, options)[
+                Symbol.asyncIterator
+              ]()
+              return { stream, iterator }
+            })(),
+          catch: toError,
+        }),
+        resource =>
+          Effect.promise(async () => {
+            if (!resource.stream.closed) {
+              const closed = new Promise<void>(resolve => resource.stream.once('close', resolve))
+              resource.stream.destroy()
+              await closed
+            }
+            await resource.iterator.return?.(undefined)
+          }),
+      )
+      return Stream.unfold(owned.iterator, iterator =>
+        Effect.tryPromise({ try: () => iterator.next(), catch: toError }).pipe(
+          Effect.map(next => (next.done ? undefined : ([next.value, iterator] as const))),
+        ),
+      )
+    }),
+  )
+  return Stream.scoped(scoped)
+}
+
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause))
+}
+
+function errorCode(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : 'unknown'
+}
+
+async function* splitNativeSessionLines(
+  stream: ReturnType<typeof createReadStream>,
+  filePath: string,
+  shouldSkipHead: ((head: string) => boolean) | undefined,
+  options: ReadSessionLinesOptions,
+): AsyncGenerator<SessionLine> {
   const SKIP_HEAD = 2048
   const largeLineThreshold = options.largeLineThresholdBytes ?? LARGE_STREAM_LINE_BYTES
   const formatLine = (buf: Buffer, lineLen: number, head?: string): SessionLine => {
@@ -175,22 +272,18 @@ export async function* readSessionLines(
       throwIfScanAborted(options.signal)
       const chunk = raw as Buffer
       let pos = 0
-
       while (pos < chunk.length) {
         throwIfScanAborted(options.signal)
         const nl = chunk.indexOf(0x0a, pos)
-
         if (skipping) {
-          if (nl === -1) {
-            pos = chunk.length
-          } else {
+          if (nl === -1) pos = chunk.length
+          else {
             if (tracker) tracker.lastCompleteLineOffset = chunkBase + nl + 1
             skipping = false
             pos = nl + 1
           }
           continue
         }
-
         if (nl !== -1) {
           if (pos < nl) {
             parts.push(chunk.subarray(pos, nl))
@@ -198,34 +291,26 @@ export async function* readSessionLines(
           }
           pos = nl + 1
           if (tracker) tracker.lastCompleteLineOffset = chunkBase + pos
-
           if (len === 0) {
             parts = []
             headChecked = false
             continue
           }
-
           const buf = parts.length === 1 ? parts[0]! : Buffer.concat(parts, len)
           const lineLen = len
           parts = []
           len = 0
           headChecked = false
-
           if (shouldSkipHead) {
             const head = lineLen > SKIP_HEAD ? buf.subarray(0, SKIP_HEAD).toString('utf-8') : buf.toString('utf-8')
             if (shouldSkipHead(head)) continue
             yield formatLine(buf, lineLen, head)
-          } else {
-            yield formatLine(buf, lineLen)
-          }
+          } else yield formatLine(buf, lineLen)
         } else {
           const slice = chunk.subarray(pos)
           parts.push(slice)
           len += slice.length
           pos = chunk.length
-
-          // Mid-line skip: once we have enough bytes to check the head,
-          // enter scanning mode — just look for \n without accumulating.
           if (shouldSkipHead && !headChecked && len >= SKIP_HEAD) {
             headChecked = true
             const headBuf =
@@ -241,24 +326,16 @@ export async function* readSessionLines(
       chunkBase += chunk.length
     }
     throwIfScanAborted(options.signal)
-
     if (!skipping && len > 0) {
       const buf = parts.length === 1 ? parts[0]! : Buffer.concat(parts, len)
       const lineLen = len
       if (shouldSkipHead) {
         const head = lineLen > SKIP_HEAD ? buf.subarray(0, SKIP_HEAD).toString('utf-8') : buf.toString('utf-8')
-        if (!shouldSkipHead(head)) {
-          yield formatLine(buf, lineLen, head)
-        }
-      } else {
-        yield formatLine(buf, lineLen)
-      }
+        if (!shouldSkipHead(head)) yield formatLine(buf, lineLen, head)
+      } else yield formatLine(buf, lineLen)
     }
-  } catch (err) {
+  } catch (error) {
     throwIfScanAborted(options.signal)
-    warn(`stream read failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
-  } finally {
-    stream.destroy()
-    await closed
+    warn(`stream read failed for ${shortPath(filePath)}: ${errorCode(error)}`)
   }
 }

@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { Effect, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -14,20 +15,24 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
   return {
     ...actual,
-    readSessionLines: async function* (...args: Parameters<typeof actual.readSessionLines>) {
-      if (hooks.pauseNextRead) {
-        hooks.pauseNextRead = false
-        await new Promise<void>(resolve => {
-          hooks.releaseRead = resolve
-          hooks.onReadStarted?.()
-        })
-      }
-      yield* actual.readSessionLines(...args)
+    readSessionLinesStream: (...args: Parameters<typeof actual.readSessionLinesStream>) => {
+      const nativeStream = actual.readSessionLinesStream(...args)
+      if (!hooks.pauseNextRead) return nativeStream
+      hooks.pauseNextRead = false
+      return Stream.fromEffect(
+        Effect.promise(
+          () =>
+            new Promise<void>(resolve => {
+              hooks.releaseRead = resolve
+              hooks.onReadStarted?.()
+            }),
+        ),
+      ).pipe(Stream.flatMap(() => nativeStream))
     },
   }
 })
 
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 
 import { appPaths, initAppPaths } from '../src/main/env.js'
 import { flushCodexCache } from '../src/main/pipeline/codex-cache.js'
@@ -111,6 +116,14 @@ async function collect(parser: AsyncGenerator<ParsedProviderCall>): Promise<Pars
   return calls
 }
 
+async function collectNative(parser: {
+  parseStream?: () => Stream.Stream<ParsedProviderCall, Error>
+}): Promise<ParsedProviderCall[]> {
+  if (!parser.parseStream) throw new Error('Codex parser did not expose its native stream')
+  const calls = await Effect.runPromise(Stream.runCollect(parser.parseStream()))
+  return [...calls]
+}
+
 describe('Codex captured scan pricing', () => {
   it('uses the scan pricing supplied before live prices changed', async () => {
     const path = join(root, 'rollout-scan-context.jsonl')
@@ -165,5 +178,57 @@ describe('Codex captured scan pricing', () => {
     await flushCodexCache()
     const warmCalls = await collect(provider.createSessionParser(source(firstPath, 'codex-first'), new Set()).parse())
     expect(warmCalls).toEqual(firstCalls)
+  })
+
+  it('returns identical calls from native cold and warm cache streams', async () => {
+    const path = join(root, 'rollout-native.jsonl')
+    await writeSession(path, 'codex-native')
+    const provider = createCodexProvider('/unused')
+
+    const cold = await collectNative(provider.createSessionParser(source(path, 'codex-native'), new Set()))
+    const warm = await collectNative(provider.createSessionParser(source(path, 'codex-native'), new Set()))
+
+    expect(cold).toHaveLength(1)
+    expect(warm).toEqual(cold)
+  })
+
+  it('only records dedup keys as warm cached calls are pulled', async () => {
+    const path = join(root, 'rollout-native-partial-cache.jsonl')
+    await writeSession(path, 'codex-native-partial')
+    const lines = await readFile(path, 'utf-8')
+    const second = JSON.parse(lines.split('\n')[1]!) as {
+      timestamp: string
+      payload: {
+        info: {
+          last_token_usage: Record<string, number>
+          total_token_usage: Record<string, number>
+        }
+      }
+    }
+    second.timestamp = '2026-10-01T00:00:02.000Z'
+    second.payload.info.last_token_usage = {
+      input_tokens: 20,
+      cached_input_tokens: 4,
+      output_tokens: 10,
+      reasoning_output_tokens: 2,
+    }
+    second.payload.info.total_token_usage = {
+      input_tokens: 30,
+      cached_input_tokens: 6,
+      output_tokens: 15,
+      reasoning_output_tokens: 3,
+      total_tokens: 54,
+    }
+    await writeFile(path, `${lines}\n${JSON.stringify(second)}`)
+
+    const provider = createCodexProvider('/unused')
+    const full = await collect(provider.createSessionParser(source(path, 'codex-native-partial'), new Set()).parse())
+    expect(full).toHaveLength(2)
+
+    const seen = new Set<string>()
+    const parser = provider.createSessionParser(source(path, 'codex-native-partial'), seen)
+    if (!parser.parseStream) throw new Error('Codex parser did not expose its native stream')
+    await Effect.runPromise(Stream.runCollect(parser.parseStream().pipe(Stream.take(1))))
+    expect(seen.size).toBe(1)
   })
 })

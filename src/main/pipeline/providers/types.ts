@@ -1,3 +1,5 @@
+import type { Stream } from 'effect'
+
 import type { ScanPricing } from '../scan-pricing.js'
 import type { DateRange, ToolCall } from '../types.js'
 import type { GatewayReportRow } from './gateway-report.js'
@@ -35,6 +37,8 @@ export type SessionSource = {
 
 export type SessionParser = {
   parse(): AsyncGenerator<ParsedProviderCall>
+  /** Effect-native parser path used by the scan workflow when available. */
+  parseStream?: () => Stream.Stream<ParsedProviderCall, Error>
 }
 
 export type ParsedProviderCall = {
