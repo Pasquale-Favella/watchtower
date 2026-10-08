@@ -7,7 +7,7 @@ import { extractBashCommands } from '../bash-utils.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { MAX_SESSION_FILE_BYTES, readSessionFileEffect, readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
-import { scanAbortError } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { DateRange } from '../types.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
@@ -71,6 +71,18 @@ const geminiUserContentSchema = Schema.Union([
   Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) })),
 ])
 const geminiSetLineSchema = Schema.Struct({ $set: Schema.Unknown })
+const geminiJsonSchema = Schema.fromJsonString(Schema.Unknown)
+const decodeGeminiJson = Schema.decodeUnknownResult(geminiJsonSchema)
+const decodeGeminiSessionJson = Schema.decodeUnknownResult(Schema.fromJsonString(geminiSessionSchema))
+const decodeGeminiDateInput = Schema.decodeUnknownResult(geminiDateInputSchema)
+const decodeGeminiMessage = Schema.decodeUnknownResult(geminiMessageSchema)
+const decodeGeminiHeader = Schema.decodeUnknownResult(geminiSessionHeaderSchema)
+const decodeGeminiSetLine = Schema.decodeUnknownResult(geminiSetLineSchema)
+const decodeGeminiUserContent = Schema.decodeUnknownResult(geminiUserContentSchema)
+const decodeGeminiUnknownArray = Schema.decodeUnknownResult(Schema.Array(Schema.Unknown))
+const decodeGeminiToolCall = Schema.decodeUnknownResult(geminiToolCallSchema)
+const decodeGeminiToolArguments = Schema.decodeUnknownResult(Schema.Record(Schema.String, Schema.Unknown))
+const decodeGeminiCommand = Schema.decodeUnknownResult(Schema.optional(Schema.NullOr(Schema.String)))
 type GeminiMessage = typeof geminiMessageSchema.Type
 type GeminiSession = {
   sessionId: typeof geminiSessionSchema.Type.sessionId
@@ -78,28 +90,15 @@ type GeminiSession = {
   messages: GeminiMessage[]
 }
 
-function toError(cause: unknown): Error {
-  return cause instanceof Error ? cause : new Error(String(cause), { cause })
-}
-
-function checkAbort(signal?: AbortSignal): Effect.Effect<void, Error> {
-  return Effect.suspend(() => (signal?.aborted ? Effect.fail(scanAbortError(signal)) : Effect.void))
-}
-
-/** Directory and file-system calls must settle before an interrupted scan releases ownership. */
-function fileIo<A>(operation: () => Promise<A>): Effect.Effect<A, Error> {
-  return Effect.uninterruptible(Effect.tryPromise({ try: operation, catch: toError }))
-}
-
 function decodeWholeSession(raw: string): GeminiSession | null {
-  const wholeSession = Schema.decodeUnknownResult(Schema.fromJsonString(geminiSessionSchema))(raw)
+  const wholeSession = decodeGeminiSessionJson(raw)
   if (Result.isFailure(wholeSession)) return null
-  const fallback = Schema.decodeUnknownResult(geminiDateInputSchema)(wholeSession.success.startTime)
+  const fallback = decodeGeminiDateInput(wholeSession.success.startTime)
   return {
     sessionId: wholeSession.success.sessionId,
     startTime: Result.isSuccess(fallback) ? fallback.success : '',
     messages: wholeSession.success.messages.flatMap(message => {
-      const parsed = Schema.decodeUnknownResult(geminiMessageSchema)(message)
+      const parsed = decodeGeminiMessage(message)
       return Result.isSuccess(parsed) ? [parsed.success] : []
     }),
   }
@@ -113,18 +112,18 @@ function decodeSession(raw: string): GeminiSession | null {
   const messages: GeminiMessage[] = []
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue
-    const decodedLine = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))(line)
+    const decodedLine = decodeGeminiJson(line)
     if (Result.isFailure(decodedLine)) continue
     const value = decodedLine.success
-    if (Result.isSuccess(Schema.decodeUnknownResult(geminiSetLineSchema)(value))) continue
+    if (Result.isSuccess(decodeGeminiSetLine(value))) continue
 
-    const candidateHeader = Schema.decodeUnknownResult(geminiSessionHeaderSchema)(value)
+    const candidateHeader = decodeGeminiHeader(value)
     if (Result.isSuccess(candidateHeader) && !header) {
       header = candidateHeader.success
       continue
     }
 
-    const message = Schema.decodeUnknownResult(geminiMessageSchema)(value)
+    const message = decodeGeminiMessage(value)
     if (Result.isSuccess(message)) messages.push(message.success)
   }
   return header ? { ...header, messages } : null
@@ -143,7 +142,7 @@ function createMessageReducer(
 
   return (msg): ParsedProviderCall | undefined => {
     if (msg.type === 'user') {
-      const content = Schema.decodeUnknownResult(geminiUserContentSchema)(msg.content)
+      const content = decodeGeminiUserContent(msg.content)
       if (Result.isSuccess(content)) {
         if (typeof content.success === 'string') {
           lastUserMessage = content.success.slice(0, 500)
@@ -174,17 +173,17 @@ function createMessageReducer(
 
     const tools: string[] = []
     const bashCommands: string[] = []
-    const toolCalls = Schema.decodeUnknownResult(Schema.Array(Schema.Unknown))(msg.toolCalls)
+    const toolCalls = decodeGeminiUnknownArray(msg.toolCalls)
     for (const candidate of Result.isSuccess(toolCalls) ? toolCalls.success : []) {
-      const toolCallResult = Schema.decodeUnknownResult(geminiToolCallSchema)(candidate)
+      const toolCallResult = decodeGeminiToolCall(candidate)
       if (Result.isFailure(toolCallResult)) continue
       const toolCall = toolCallResult.success
       const mapped =
         toolNameMap[toolCall.displayName ?? ''] ?? toolNameMap[toolCall.name] ?? toolCall.displayName ?? toolCall.name
       tools.push(mapped)
-      const args = Schema.decodeUnknownResult(Schema.Record(Schema.String, Schema.Unknown))(toolCall.args)
+      const args = decodeGeminiToolArguments(toolCall.args)
       const command = Result.isSuccess(args) ? args.success['command'] : undefined
-      const decodedCommand = Schema.decodeUnknownResult(Schema.optional(Schema.NullOr(Schema.String)))(command)
+      const decodedCommand = decodeGeminiCommand(command)
       if (mapped === 'Bash' && Result.isSuccess(decodedCommand) && decodedCommand.success) {
         bashCommands.push(...extractBashCommands(decodedCommand.success))
       }
@@ -246,27 +245,27 @@ const discoverSessionsEffect = Effect.fnUntraced(function* (
   root: string,
   context?: ProviderScanContext,
 ): Effect.fn.Return<SessionSource[], Error> {
-  yield* checkAbort(context?.signal)
-  const projects = yield* Effect.result(fileIo(() => readdir(root, { withFileTypes: true })))
-  yield* checkAbort(context?.signal)
+  yield* checkScanAbort(context?.signal)
+  const projects = yield* Effect.result(scanIo(() => readdir(root, { withFileTypes: true }), context?.signal))
+  yield* checkScanAbort(context?.signal)
   if (Result.isFailure(projects)) return []
 
   const sources: SessionSource[] = []
   for (const projectEntry of projects.success) {
-    yield* checkAbort(context?.signal)
+    yield* checkScanAbort(context?.signal)
     if (!projectEntry.isDirectory()) continue
     const project = projectEntry.name
     const chatsDir = join(root, project, 'chats')
-    const entries = yield* Effect.result(fileIo(() => readdir(chatsDir)))
-    yield* checkAbort(context?.signal)
+    const entries = yield* Effect.result(scanIo(() => readdir(chatsDir), context?.signal))
+    yield* checkScanAbort(context?.signal)
     if (Result.isFailure(entries)) continue
 
     for (const file of entries.success) {
-      yield* checkAbort(context?.signal)
+      yield* checkScanAbort(context?.signal)
       if (!file.startsWith('session-') || (!file.endsWith('.json') && !file.endsWith('.jsonl'))) continue
       const filePath = join(chatsDir, file)
-      const fileStat = yield* Effect.result(fileIo(() => stat(filePath)))
-      yield* checkAbort(context?.signal)
+      const fileStat = yield* Effect.result(scanIo(() => stat(filePath), context?.signal))
+      yield* checkScanAbort(context?.signal)
       if (Result.isSuccess(fileStat) && fileStat.success.isFile()) {
         sources.push({ path: filePath, project, provider: 'gemini' })
       }
@@ -290,7 +289,7 @@ function parseJsonlStream(
     Stream.rechunk(1),
     Stream.mapEffect(line =>
       Effect.gen(function* () {
-        yield* checkAbort(signal)
+        yield* checkScanAbort(signal)
         const raw = typeof line === 'string' ? line : line.toString('utf8')
         if (!reduceMessage) {
           fallbackLines.push(raw)
@@ -298,12 +297,12 @@ function parseJsonlStream(
           if (legacyWholeSession) return []
         }
 
-        const decodedLine = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))(raw)
+        const decodedLine = decodeGeminiJson(raw)
         if (Result.isFailure(decodedLine)) return []
         const value = decodedLine.success
-        if (Result.isSuccess(Schema.decodeUnknownResult(geminiSetLineSchema)(value))) return []
+        if (Result.isSuccess(decodeGeminiSetLine(value))) return []
 
-        const header = Schema.decodeUnknownResult(geminiSessionHeaderSchema)(value)
+        const header = decodeGeminiHeader(value)
         if (Result.isSuccess(header) && !reduceMessage) {
           reduceMessage = createMessageReducer(header.success.sessionId, header.success.startTime, seenKeys, pricing)
           fallbackLines.length = 0
@@ -315,7 +314,7 @@ function parseJsonlStream(
           return calls
         }
 
-        const parsed = Schema.decodeUnknownResult(geminiMessageSchema)(value)
+        const parsed = decodeGeminiMessage(value)
         if (Result.isFailure(parsed)) return []
         if (!reduceMessage) {
           pendingMessages.push(parsed.success)
@@ -334,7 +333,7 @@ function parseJsonlStream(
       }),
     ),
     Stream.rechunk(1),
-    Stream.mapEffect(call => checkAbort(signal).pipe(Effect.as(call))),
+    Stream.mapEffect(call => checkScanAbort(signal).pipe(Effect.as(call))),
   )
 }
 
@@ -346,15 +345,15 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
     }
     return Stream.unwrap(
       Effect.gen(function* () {
-        yield* checkAbort(context?.signal)
+        yield* checkScanAbort(context?.signal)
         const raw = yield* readSessionFileEffect(source.path, 'utf-8', { signal: context?.signal })
-        yield* checkAbort(context?.signal)
+        yield* checkScanAbort(context?.signal)
         if (raw === null) return Stream.empty
         const session = decodeSession(raw)
         if (!session) return Stream.empty
         return Stream.fromIterable(parseSession(session, seenKeys, pricing)).pipe(
           Stream.rechunk(1),
-          Stream.mapEffect(call => checkAbort(context?.signal).pipe(Effect.as(call))),
+          Stream.mapEffect(call => checkScanAbort(context?.signal).pipe(Effect.as(call))),
         )
       }),
     )

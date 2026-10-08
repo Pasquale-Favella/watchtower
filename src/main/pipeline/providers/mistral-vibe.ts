@@ -6,7 +6,7 @@ import { basename, join } from 'path'
 import { extractBashCommands } from '../bash-utils.js'
 import { readSessionFileEffect, readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
-import { throwIfScanAborted } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
 import type { DateRange } from '../types.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
@@ -83,6 +83,10 @@ const toolArgumentsInputSchema = Schema.Union([Schema.fromJsonString(toolArgumen
 const textPartInputSchema = Schema.Struct({ text: Schema.optional(Schema.Unknown) })
 const positiveNumberSchema = Schema.Finite.check(Schema.isGreaterThan(0))
 const nullableStringSchema = Schema.Union([Schema.String, Schema.Null])
+const unknownArraySchema = Schema.Array(Schema.Unknown)
+const decodeString = Schema.decodeUnknownResult(Schema.String)
+const decodeUnknownArray = Schema.decodeUnknownResult(unknownArraySchema)
+const decodeMessageJson = Schema.decodeUnknownResult(Schema.fromJsonString(messageInputSchema))
 const vibeStatsSchema = Schema.Struct({
   sessionPromptTokens: Schema.Finite,
   sessionCompletionTokens: Schema.Finite,
@@ -140,16 +144,18 @@ function expandHome(path: string): string {
   return path
 }
 
-function toError(cause: unknown): Error {
-  return cause instanceof Error ? cause : new Error(String(cause), { cause })
-}
-
-function checkAbort(signal?: AbortSignal): Effect.Effect<void, Error> {
-  return Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
-}
-
 function decode<A, I>(schema: Schema.Codec<A, I>, value: unknown): A | undefined {
   const result = Schema.decodeUnknownResult(schema)(value)
+  return Result.isSuccess(result) ? result.success : undefined
+}
+
+function decodeStringValue(value: unknown): string | undefined {
+  const result = decodeString(value)
+  return Result.isSuccess(result) ? result.success : undefined
+}
+
+function decodeUnknownArrayValue(value: unknown): readonly unknown[] | undefined {
+  const result = decodeUnknownArray(value)
   return Result.isSuccess(result) ? result.success : undefined
 }
 
@@ -158,9 +164,9 @@ const readJsonEffect = Effect.fnUntraced(function* <A, I>(
   schema: Schema.Codec<A, I>,
   signal?: AbortSignal,
 ): Effect.fn.Return<A | null, Error> {
-  yield* checkAbort(signal)
+  yield* checkScanAbort(signal)
   const raw = yield* readSessionFileEffect(path, 'utf-8', signal ? { signal } : {})
-  yield* checkAbort(signal)
+  yield* checkScanAbort(signal)
   if (raw === null) return null
   return decode(Schema.fromJsonString(schema), raw) ?? null
 })
@@ -170,8 +176,8 @@ function positiveNumber(value: unknown): number {
 }
 
 function normalizeModelConfig(input: ModelConfigInput): VibeModelConfig {
-  const name = decode(Schema.String, input.name)
-  const alias = decode(Schema.String, input.alias)
+  const name = decodeStringValue(input.name)
+  const alias = decodeStringValue(input.alias)
   return {
     ...(name !== undefined ? { name } : {}),
     ...(alias !== undefined ? { alias } : {}),
@@ -184,17 +190,17 @@ function normalizeMetadata(input: MetadataInput): VibeMetadata | undefined {
   const stats = decode(statsInputSchema, input.stats)
   const config = decode(configInputSchema, input.config)
   const environment = decode(environmentInputSchema, input.environment)
-  const models = decode(Schema.Array(Schema.Unknown), config?.models) ?? []
+  const models = decodeUnknownArrayValue(config?.models) ?? []
   const normalizedModels = models.flatMap(model => {
     const decoded = decode(modelConfigInputSchema, model)
     return decoded ? [normalizeModelConfig(decoded)] : []
   })
-  const sessionId = decode(Schema.String, input.session_id)
-  const startTime = decode(Schema.String, input.start_time)
+  const sessionId = decodeStringValue(input.session_id)
+  const startTime = decodeStringValue(input.start_time)
   const endTime = decode(nullableStringSchema, input.end_time)
   const title = decode(nullableStringSchema, input.title)
   const workingDirectory = decode(nullableStringSchema, environment?.working_directory)
-  const active = decode(Schema.String, config?.active_model)
+  const active = decodeStringValue(config?.active_model)
   return decode(vibeMetadataSchema, {
     ...(sessionId !== undefined ? { sessionId } : {}),
     ...(startTime !== undefined ? { startTime } : {}),
@@ -220,15 +226,15 @@ function normalizeMetadata(input: MetadataInput): VibeMetadata | undefined {
 }
 
 function normalizeContent(value: unknown): string | undefined {
-  const text = decode(Schema.String, value)
+  const text = decodeStringValue(value)
   if (text !== undefined) return text
-  const parts = decode(Schema.Array(Schema.Unknown), value)
+  const parts = decodeUnknownArrayValue(value)
   if (!parts) return undefined
   return parts
     .map(part => {
-      const directText = decode(Schema.String, part)
+      const directText = decodeStringValue(part)
       if (directText !== undefined) return directText
-      return decode(Schema.String, decode(textPartInputSchema, part)?.text) ?? ''
+      return decodeStringValue(decode(textPartInputSchema, part)?.text) ?? ''
     })
     .filter(Boolean)
     .join(' ')
@@ -237,9 +243,9 @@ function normalizeContent(value: unknown): string | undefined {
 function normalizeToolCall(input: Schema.Schema.Type<typeof toolCallInputSchema>): VibeToolCall | undefined {
   const fn = decode(toolFunctionInputSchema, input?.function)
   if (!fn) return undefined
-  const name = decode(Schema.String, fn.name)
+  const name = decodeStringValue(fn.name)
   const decodedArguments = decode(toolArgumentsInputSchema, fn.arguments)
-  const command = decode(Schema.String, decodedArguments?.['command'])
+  const command = decodeStringValue(decodedArguments?.['command'])
   return decode(vibeToolCallSchema, {
     ...(name !== undefined ? { name } : {}),
     ...(command !== undefined ? { command } : {}),
@@ -247,15 +253,15 @@ function normalizeToolCall(input: Schema.Schema.Type<typeof toolCallInputSchema>
 }
 
 function normalizeMessage(input: MessageInput): VibeMessage | undefined {
-  const toolCallsInput = decode(Schema.Array(Schema.Unknown), input.tool_calls) ?? []
+  const toolCallsInput = decodeUnknownArrayValue(input.tool_calls) ?? []
   const toolCalls = toolCallsInput.flatMap(toolCall => {
     const decoded = decode(toolCallInputSchema, toolCall)
     return decoded ? [normalizeToolCall(decoded)] : []
   })
-  const role = decode(Schema.String, input.role)
+  const role = decodeStringValue(input.role)
   const content = normalizeContent(input.content)
-  const messageId = decode(Schema.String, input.message_id)
-  const timestamp = decode(Schema.String, input.timestamp)
+  const messageId = decodeStringValue(input.message_id)
+  const timestamp = decodeStringValue(input.timestamp)
   return decode(vibeMessageSchema, {
     ...(role !== undefined ? { role } : {}),
     ...(content !== undefined ? { content } : {}),
@@ -270,11 +276,9 @@ const statMatches = Effect.fnUntraced(function* (
   predicate: (value: Awaited<ReturnType<typeof stat>>) => boolean,
   signal?: AbortSignal,
 ): Effect.fn.Return<boolean, Error> {
-  yield* checkAbort(signal)
-  const result = yield* Effect.uninterruptible(
-    Effect.result(Effect.tryPromise({ try: () => stat(path), catch: toError })),
-  )
-  yield* checkAbort(signal)
+  yield* checkScanAbort(signal)
+  const result = yield* Effect.result(scanIo(() => stat(path), signal))
+  yield* checkScanAbort(signal)
   return Result.isSuccess(result) && predicate(result.success)
 })
 
@@ -290,11 +294,9 @@ const readdirEffect = Effect.fnUntraced(function* (
   path: string,
   signal?: AbortSignal,
 ): Effect.fn.Return<string[], Error> {
-  yield* checkAbort(signal)
-  const result = yield* Effect.uninterruptible(
-    Effect.result(Effect.tryPromise({ try: () => readdir(path), catch: toError })),
-  )
-  yield* checkAbort(signal)
+  yield* checkScanAbort(signal)
+  const result = yield* Effect.result(scanIo(() => readdir(path), signal))
+  yield* checkScanAbort(signal)
   return Result.isSuccess(result) ? result.success.sort() : []
 })
 
@@ -409,7 +411,8 @@ function readMessagesEffect(path: string, signal?: AbortSignal): Effect.Effect<V
   return readSessionLinesStream(path, undefined, signal ? { signal } : {}).pipe(
     Stream.mapEffect(line =>
       Effect.sync<Result.Result<VibeMessage, undefined>>(() => {
-        const input = decode(Schema.fromJsonString(messageInputSchema), line.toString('utf-8'))
+        const decodedInput = decodeMessageJson(line.toString('utf-8'))
+        const input = Result.isSuccess(decodedInput) ? decodedInput.success : undefined
         const message = input && normalizeMessage(input)
         return message ? Result.succeed(message) : Result.fail(undefined)
       }),
@@ -542,16 +545,16 @@ function createParser(
     Stream.Stream<ParsedProviderCall>,
     Error
   > {
-    yield* checkAbort(signal)
+    yield* checkScanAbort(signal)
     const metadataInput = yield* readJsonEffect(join(source.path, METADATA_FILENAME), metadataInputSchema, signal)
-    yield* checkAbort(signal)
+    yield* checkScanAbort(signal)
     const metadata = metadataInput && normalizeMetadata(metadataInput)
     if (!metadata) return Stream.empty
     const inputTokens = metadata.stats.sessionPromptTokens
     const outputTokens = metadata.stats.sessionCompletionTokens
     if (inputTokens === 0 && outputTokens === 0) return Stream.empty
     const messages = yield* readMessagesEffect(join(source.path, MESSAGES_FILENAME), signal)
-    yield* checkAbort(signal)
+    yield* checkScanAbort(signal)
     return parseMessageLines(source, seenKeys, metadata, messages, pricing)
   })
   const parseStream = (): Stream.Stream<ParsedProviderCall, Error> => Stream.unwrap(parseEffect())
@@ -569,17 +572,17 @@ export function createMistralVibeProvider(sessionsDir?: string): Provider {
   const discoverEffect = Effect.fn('discoverMistralVibeSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
-    yield* checkAbort(context?.signal)
+    yield* checkScanAbort(context?.signal)
     const dirs = yield* discoverSessionDirsEffect(dir, context?.signal)
     const sources: SessionSource[] = []
     for (const sessionDir of dirs) {
-      yield* checkAbort(context?.signal)
+      yield* checkScanAbort(context?.signal)
       const metadataInput = yield* readJsonEffect(
         join(sessionDir, METADATA_FILENAME),
         metadataInputSchema,
         context?.signal,
       )
-      yield* checkAbort(context?.signal)
+      yield* checkScanAbort(context?.signal)
       const metadata = metadataInput && normalizeMetadata(metadataInput)
       if (!metadata) continue
       const cwd = metadata.environment?.workingDirectory

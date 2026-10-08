@@ -1,5 +1,5 @@
 import { Effect, Result, Schema, Stream } from 'effect'
-import { readdir, stat } from 'fs/promises'
+import { stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 
@@ -7,6 +7,7 @@ import { extractBashCommands } from '../bash-utils.js'
 import { MAX_SESSION_FILE_BYTES, readSessionFileEffect, readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
 import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
+import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '../scan-io.js'
 import type { DateRange } from '../types.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
@@ -40,14 +41,18 @@ const piEntrySchema = Schema.Struct({
 })
 type PiEntry = Schema.Schema.Type<typeof piEntrySchema>
 type PiContentBlock = Schema.Schema.Type<typeof contentBlockSchema>
+const decodePiString = Schema.decodeUnknownResult(Schema.String)
+const decodePiContentArray = Schema.decodeUnknownResult(Schema.Array(Schema.Unknown))
+const decodePiContentBlock = Schema.decodeUnknownResult(contentBlockSchema)
+const decodePiEntryJson = Schema.decodeUnknownResult(Schema.fromJsonString(piEntrySchema))
 
 function normalizePiContentBlocks(content: unknown): PiContentBlock[] {
-  const text = Schema.decodeUnknownResult(Schema.String)(content)
+  const text = decodePiString(content)
   if (Result.isSuccess(text)) return [{ type: 'text', text: text.success }]
-  const blocks = Schema.decodeUnknownResult(Schema.Array(Schema.Unknown))(content)
+  const blocks = decodePiContentArray(content)
   if (Result.isFailure(blocks)) return []
   return blocks.success.flatMap(block => {
-    const decoded = Schema.decodeUnknownResult(contentBlockSchema)(block)
+    const decoded = decodePiContentBlock(block)
     return Result.isSuccess(decoded) ? [decoded.success] : []
   })
 }
@@ -110,44 +115,23 @@ function toError(cause: unknown): Error {
   return cause instanceof Error ? cause : new Error(String(cause), { cause })
 }
 
-function checkAbort(signal?: AbortSignal): Effect.Effect<void, Error> {
-  return Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
-}
-
-const nativeIo = Effect.fnUntraced(function* <A>(
-  operation: () => Promise<A>,
-  signal?: AbortSignal,
-): Effect.fn.Return<A, Error> {
-  yield* checkAbort(signal)
-  const result = yield* Effect.uninterruptible(Effect.result(Effect.tryPromise({ try: operation, catch: toError })))
-  yield* checkAbort(signal)
-  if (Result.isFailure(result)) return yield* Effect.fail(result.failure)
-  return result.success
-})
-
-function readdirOrEmpty(path: string, signal?: AbortSignal): Effect.Effect<string[], Error> {
-  return nativeIo(() => readdir(path), signal).pipe(
-    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed([]))),
-  )
-}
-
-function isDirectory(path: string, signal?: AbortSignal): Effect.Effect<boolean, Error> {
-  return nativeIo(() => stat(path), signal).pipe(
+const isDirectory = Effect.fnUntraced(function* (path: string, signal?: AbortSignal): Effect.fn.Return<boolean, Error> {
+  return yield* scanIo(() => stat(path), signal).pipe(
     Effect.map(info => info.isDirectory()),
     Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(false))),
   )
-}
+})
 
-function isFile(path: string, signal?: AbortSignal): Effect.Effect<boolean, Error> {
-  return nativeIo(() => stat(path), signal).pipe(
+const isFile = Effect.fnUntraced(function* (path: string, signal?: AbortSignal): Effect.fn.Return<boolean, Error> {
+  return yield* scanIo(() => stat(path), signal).pipe(
     Effect.map(info => info.isFile()),
     Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(false))),
   )
-}
+})
 
 function decodeLine(raw: string): PiEntry | null {
   if (!raw.trim()) return null
-  const decoded = Schema.decodeUnknownResult(Schema.fromJsonString(piEntrySchema))(raw)
+  const decoded = decodePiEntryJson(raw)
   return Result.isSuccess(decoded) ? decoded.success : null
 }
 
@@ -156,7 +140,7 @@ const readFirstEntry = Effect.fn('readPiSessionHeader')(function* (
   signal?: AbortSignal,
 ): Effect.fn.Return<PiEntry | null, Error> {
   const contents = yield* readSessionFileEffect(filePath, 'utf-8', signal ? { signal } : {})
-  yield* checkAbort(signal)
+  yield* checkScanAbort(signal)
   const line = contents?.split('\n')[0]
   return line === undefined ? null : decodeLine(line)
 })
@@ -167,13 +151,13 @@ const discoverSessionsInDir = Effect.fn('discoverPiSessionsInDir')(function* (
   signal?: AbortSignal,
 ): Effect.fn.Return<SessionSource[], Error> {
   const sources: SessionSource[] = []
-  const projectDirs = yield* readdirOrEmpty(sessionsDir, signal)
+  const projectDirs = yield* readDirectoryOrEmpty(sessionsDir, signal)
 
   for (const dirName of projectDirs) {
     const dirPath = join(sessionsDir, dirName)
     if (!(yield* isDirectory(dirPath, signal))) continue
 
-    const files = yield* readdirOrEmpty(dirPath, signal)
+    const files = yield* readDirectoryOrEmpty(dirPath, signal)
     for (const file of files) {
       if (!file.endsWith('.jsonl')) continue
       const filePath = join(dirPath, file)
@@ -324,7 +308,7 @@ function makeProvider(
   const discoverEffect = Effect.fn(`discover${displayName}Sessions`)(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
-    yield* checkAbort(context?.signal)
+    yield* checkScanAbort(context?.signal)
     return yield* discoverSessionsInDir(sessionsDirPath, providerName, context?.signal)
   })
 
