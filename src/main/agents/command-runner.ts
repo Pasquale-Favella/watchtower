@@ -404,8 +404,7 @@ function capturePipe(
 }
 
 /** One chunk of a child's pipe, or the end sentinel, as an interruptible
- *  Effect. Registering a `data` listener is also what puts the pipe in
- *  flowing mode, so the child is drained from the moment the child starts.
+ *  Effect. Pull through `readable` so bytes stay buffered between fiber turns.
  *  `Effect.callback` is what makes the deadline safe: the register returns
  *  immediately, so the fiber is suspended in Effect (not parked on a raw JS
  *  promise) and an interruption runs the returned cleanup. */
@@ -416,13 +415,21 @@ function nextChunk(
 ): Effect.Effect<Uint8Array | typeof END_OF_STREAM, PlatformError.PlatformError> {
   return Effect.callback(resume => {
     const cleanup = (): void => {
-      readable.off('data', onData)
+      readable.off('readable', onReadable)
       readable.off('end', onEnd)
       readable.off('error', onError)
+      readable.off('close', onReadable)
     }
-    function onData(chunk: Buffer): void {
-      cleanup()
-      resume(Effect.succeed(new Uint8Array(chunk)))
+    function onReadable(): void {
+      const chunk: Buffer | null = readable.read()
+      if (chunk !== null) {
+        cleanup()
+        resume(Effect.succeed(new Uint8Array(chunk)))
+      } else if (readable.errored) {
+        onError(readable.errored)
+      } else if (readable.readableEnded || readable.destroyed) {
+        onEnd()
+      }
     }
     function onEnd(): void {
       cleanup()
@@ -432,9 +439,11 @@ function nextChunk(
       cleanup()
       resume(Effect.fail(streamFailure(command, label, cause)))
     }
-    readable.on('data', onData)
+    readable.on('readable', onReadable)
     readable.once('end', onEnd)
     readable.once('error', onError)
+    readable.once('close', onReadable)
+    onReadable()
     return Effect.sync(cleanup)
   })
 }
