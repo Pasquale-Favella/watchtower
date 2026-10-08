@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import { Effect, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -17,6 +18,15 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
       await hooks.pause?.()
       return actual.readSessionFile(...args)
     },
+    readSessionFileEffect: (...args: Parameters<typeof actual.readSessionFileEffect>) =>
+      Effect.promise(async () => hooks.pause?.()).pipe(Effect.andThen(actual.readSessionFileEffect(...args))),
+    readSessionLinesStream: (...args: Parameters<typeof actual.readSessionLinesStream>) =>
+      Stream.unwrap(
+        Effect.promise(async () => {
+          await hooks.pause?.()
+          return actual.readSessionLinesStream(...args)
+        }),
+      ),
   }
 })
 
