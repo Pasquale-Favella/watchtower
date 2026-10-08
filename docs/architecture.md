@@ -11,7 +11,7 @@ tool stores on disk (SQLite / JSONL / JSON)
         │  discovery: probe known paths per provider
         ▼
    extraction  : provider parsers read foreign blobs into parsed call records
-        │       sealed by a shared zod schema: unknown keys stripped, a
+        │       sealed by a shared Effect Schema: unknown keys stripped, a
         │       declared field failing its type is skipped and counted as
         │       "unparsed". A provider schema drift degrades that provider,
         │       never the whole scan.
@@ -48,7 +48,7 @@ Because scans port _deltas_ instead of rewriting snapshots:
 
 ## The extraction seam
 
-Every provider's parsed call record flows through one shared zod schema
+Every provider's parsed call record flows through one shared Effect Schema
 (`src/shared/schemas/providers.ts`) before it can become a cached call or a
 ledger row. The same schema library is the single source of truth for ledger
 rows, IPC payloads, and view shapes, compiled into both the node and web
