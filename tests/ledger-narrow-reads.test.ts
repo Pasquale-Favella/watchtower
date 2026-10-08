@@ -145,7 +145,6 @@ const CONSUMER_FILES = [
   'src/main/skills-calculation.ts',
   'src/main/sessions-calculation.ts',
   'src/main/pull-requests-calculation.ts',
-  'src/main/export.ts',
   'src/main/export-calculation.ts',
   'src/main/pipeline/sessions-report.ts',
   'src/main/pipeline/pr-attribution.ts',
