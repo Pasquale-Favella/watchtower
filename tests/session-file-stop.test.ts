@@ -1,9 +1,10 @@
+import { Effect, Exit, Fiber } from 'effect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const io = vi.hoisted(() => ({ stat: vi.fn(), readFile: vi.fn() }))
 vi.mock('fs/promises', () => ({ stat: io.stat, readFile: io.readFile }))
 
-import { MAX_SESSION_FILE_BYTES, readSessionFile } from '../src/main/pipeline/fs-utils.js'
+import { MAX_SESSION_FILE_BYTES, readSessionFile, readSessionFileEffect } from '../src/main/pipeline/fs-utils.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import { deferred } from './helpers/deferred.js'
 
@@ -13,6 +14,29 @@ beforeEach(() => {
 })
 
 describe('session file stop', () => {
+  it.each(['stat', 'readFile'] as const)('drains native %s before fiber interruption settles', async operation => {
+    const started = deferred<undefined>()
+    const released = deferred<undefined>()
+    const nativeSettled = vi.fn()
+    io[operation].mockImplementation(async () => {
+      started.resolve(undefined)
+      await released.promise
+      nativeSettled()
+      return operation === 'stat' ? { size: 10 } : 'session'
+    })
+    const fiber = Effect.runFork(readSessionFileEffect('/session'))
+    await started.promise
+    const interruption = Effect.runFork(Fiber.interrupt(fiber))
+    await Effect.runPromise(Effect.yieldNow)
+    expect(nativeSettled).not.toHaveBeenCalled()
+    expect(fiber.pollUnsafe()).toBeUndefined()
+    released.resolve(undefined)
+    await Effect.runPromise(Fiber.join(interruption))
+    expect(nativeSettled).toHaveBeenCalledOnce()
+    expect(Exit.isFailure(await Effect.runPromise(Fiber.await(fiber)))).toBe(true)
+    expect(io.readFile).toHaveBeenCalledTimes(operation === 'stat' ? 0 : 1)
+  })
+
   it('does not touch the filesystem after a pre-abort', async () => {
     const controller = new AbortController()
     const abort = new ScanAbortedError({ message: 'scan aborted' })

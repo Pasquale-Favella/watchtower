@@ -55,36 +55,47 @@ function notice(filePath: string, code: string): void {
   })
 }
 
-export async function readSessionFile(
+export const readSessionFileEffect = Effect.fn('readSessionFile')(function* (
   filePath: string,
   encoding: BufferEncoding = 'utf-8',
   options: { readonly signal?: AbortSignal } = {},
-): Promise<string | null> {
-  throwIfScanAborted(options.signal)
-  let size: number
-  try {
-    size = (await stat(filePath)).size
-  } catch (err) {
-    throwIfScanAborted(options.signal)
-    warn(`stat failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
+): Effect.fn.Return<string | null, Error> {
+  const checkAbort = Effect.try({ try: () => throwIfScanAborted(options.signal), catch: toError })
+  yield* checkAbort
+  const statResult = yield* Effect.uninterruptible(
+    Effect.result(Effect.tryPromise({ try: () => stat(filePath), catch: toError })),
+  )
+  yield* checkAbort
+  if (Result.isFailure(statResult)) {
+    warn(`stat failed for ${shortPath(filePath)}: ${errorCode(statResult.failure)}`)
     return null
   }
-  throwIfScanAborted(options.signal)
-
+  const size = statResult.success.size
   if (size > MAX_SESSION_FILE_BYTES) {
     warn(`skipped oversize file ${shortPath(filePath)} (${size} bytes > cap ${MAX_SESSION_FILE_BYTES})`)
     return null
   }
 
-  try {
-    const contents = await readFile(filePath, { encoding, signal: options.signal })
-    throwIfScanAborted(options.signal)
-    return contents
-  } catch (err) {
-    throwIfScanAborted(options.signal)
-    warn(`read failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
+  const readResult = yield* Effect.uninterruptible(
+    Effect.result(
+      Effect.tryPromise({ try: () => readFile(filePath, { encoding, signal: options.signal }), catch: toError }),
+    ),
+  )
+  yield* checkAbort
+  if (Result.isFailure(readResult)) {
+    warn(`read failed for ${shortPath(filePath)}: ${errorCode(readResult.failure)}`)
     return null
   }
+  return readResult.success
+})
+
+/** Remove this Promise edge when the remaining provider/helper callers use native Effects. */
+export function readSessionFile(
+  filePath: string,
+  encoding: BufferEncoding = 'utf-8',
+  options: { readonly signal?: AbortSignal } = {},
+): Promise<string | null> {
+  return Effect.runPromise(readSessionFileEffect(filePath, encoding, options))
 }
 
 export function readSessionFileSync(filePath: string): string | null {
