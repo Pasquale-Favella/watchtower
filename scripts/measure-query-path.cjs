@@ -1755,7 +1755,6 @@ const MEASURED_SOURCES = [
   'src/main/store/ledger-export-reads.ts',
   'src/main/export-rows-calculation.ts',
   'src/main/store/aggregate-calculation.ts',
-  'src/main/store/query-snapshot.ts',
   'src/main/store/ledger-query-snapshot.ts',
   'src/main/store/port.ts',
   'src/main/store/node-sqlite-client.ts',

@@ -1,21 +1,12 @@
+/** Frozen snapshot adapter used only by the independent legacy view oracle. */
 import * as Effect from 'effect/Effect'
 
-import { captureModelPricingCatalogue, captureProxyPaths } from '../pipeline/models.js'
-import type { LedgerStore } from './ledger.js'
-import {
-  type LedgerQuerySnapshot,
-  type LedgerQuerySnapshotInputs,
-  makeLedgerQuerySnapshot,
-} from './ledger-query-snapshot.js'
+import { captureModelPricingCatalogue, captureProxyPaths } from '../../src/main/pipeline/models.js'
+import type { LedgerStore } from '../../src/main/store/ledger.js'
+import { type LedgerQuerySnapshot, makeLedgerQuerySnapshot } from '../../src/main/store/ledger-query-snapshot.js'
 
-export { makeLedgerQuerySnapshot }
-export type { LedgerQuerySnapshot, LedgerQuerySnapshotInputs }
+export type { LedgerQuerySnapshot }
 
-/**
- * Temporary LedgerStore compatibility adapter for legacy view callers.
- * Removal condition: delete after every caller loads through the application
- * Effect runtime with request-captured catalogue and proxy paths.
- */
 export function loadLedgerQuerySnapshot(store: LedgerStore): LedgerQuerySnapshot {
   const inputs = {
     catalogue: captureModelPricingCatalogue(),

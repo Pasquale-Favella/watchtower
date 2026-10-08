@@ -16,7 +16,6 @@ import {
   sessionProjectKey,
 } from '../../src/main/store/aggregate-calculation.js'
 import type { LedgerStore } from '../../src/main/store/ledger.js'
-import { type LedgerQuerySnapshot, loadLedgerQuerySnapshot } from '../../src/main/store/query-snapshot.js'
 import {
   type ProjectRow,
   projectRowSchema,
@@ -27,6 +26,7 @@ import {
   type SessionRow,
   sessionRowSchema,
 } from '../../src/shared/schemas/views.js'
+import { type LedgerQuerySnapshot, loadLedgerQuerySnapshot } from './pre-wave17-query-snapshot.js'
 
 /** All-time window used by the baseline builders. */
 const ALL_TIME_RANGE = { start: new Date(-8640000000000000), end: new Date(8640000000000000) } as const
