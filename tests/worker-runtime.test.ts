@@ -460,7 +460,8 @@ describe('F10/P2: no Effect.provide survives in context.ts', () => {
     // `liveFetchLayer`/`liveFxLayer` seams when recording WHY they went, so
     // the guard reads CODE ONLY — comments and string bodies blanked.
     const code = stripCommentsAndStrings(source)
-    expect(code).not.toContain('Effect.provide')
+    // Providing an already captured service does not construct a layer.
+    expect(code).not.toMatch(/\bEffect\.provide\b/)
     // The two former seams are gone as functions, not just as call sites.
     expect(code).not.toContain('liveFetchLayer')
     expect(code).not.toContain('liveFxLayer')
