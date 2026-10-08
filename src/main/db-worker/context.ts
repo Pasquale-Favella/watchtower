@@ -3,22 +3,13 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Schedule from 'effect/Schedule'
 import type { SchemaError } from 'effect/Schema'
-import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import type { SqlError } from 'effect/unstable/sql/SqlError'
 import { readdirSync, statSync } from 'fs'
 import { join } from 'path'
 
-import type { ComparePair } from '../../shared/schemas/compare.js'
-import {
-  DEFAULT_SKILLS_THRESHOLDS,
-  type SkillsThresholds,
-  skillsThresholdsSchema,
-} from '../../shared/schemas/skills.js'
 import { clearLedger } from '../application/clear-ledger.js'
-import { queryCompareView } from '../application/compare-query.js'
 import { queryActiveCurrency, selectDisplayCurrency } from '../application/currency-commands.js'
-import { queryExport } from '../application/export-query.js'
 import { GatewayReports } from '../application/gateway-reports.js'
 import {
   addModelAlias,
@@ -29,32 +20,14 @@ import {
   setModelPrice,
   setRefreshCadence,
 } from '../application/ledger-config-commands.js'
-import { queryModelsView } from '../application/models-query.js'
-import { queryOptimizeView } from '../application/optimize-query.js'
-import { queryOverview } from '../application/overview-query.js'
-import { queryPullRequestsView } from '../application/pull-requests-query.js'
-import { querySessionDetail } from '../application/session-detail-query.js'
-import { querySessionSearch } from '../application/session-search-query.js'
-import { querySessionsView } from '../application/sessions-query.js'
-import { querySkillsView } from '../application/skills-query.js'
-import { querySpendView } from '../application/spend-query.js'
-import { queryProjectRows, querySessionRows } from '../application/store-row-queries.js'
-import { queryAnalyticalViews, queryDashboardViews } from '../application/view-queries.js'
-import { queryYieldView } from '../application/yield-query.js'
 import { resolveCadenceMs } from '../cadence.js'
 import type { Env } from '../env.js'
 import { type CurrencyOption, FxRates, isValidCurrencyCode, listCurrencies, refreshFxRateWithRates } from '../fx.js'
 import type { OperationalLog } from '../operational-log.js'
-import type { OverviewScope } from '../overview.js'
 import type { HttpFetch } from '../pipeline/fetch-utils.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
 import { getRepoUrl } from '../pipeline/git-remote.js'
-import {
-  captureLocalModelSavings,
-  captureModelPricingCatalogue,
-  captureProxyPaths,
-  refreshPricingNowEffect,
-} from '../pipeline/models.js'
+import { refreshPricingNowEffect } from '../pipeline/models.js'
 import type { DeltaHandler } from '../pipeline/parser.js'
 import { getClaudeConfigDirs } from '../pipeline/providers/claude.js'
 import {
@@ -68,6 +41,7 @@ import type { DateRange } from '../pipeline/types.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../store/ledger-ports.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
+import { ledgerQueryRequest } from './query-dispatch.js'
 
 export type DbWorkerEmit = (event: DbWorkerEvent) => void
 
@@ -458,6 +432,8 @@ export class DbWorkerContext {
 
   async dispatch(op: string, args: unknown[]): Promise<unknown> {
     if (this.closed && op !== 'shutdown') throw new Error('db-worker is shutting down')
+    const query = ledgerQueryRequest(op, args)
+    if (query) return this.runtime.runPromise(query)
     switch (op) {
       case 'scan:start': {
         const options = args[0] as { provider?: string } | undefined
@@ -544,108 +520,12 @@ export class DbWorkerContext {
         )
       }
 
-      case 'store:views':
-        return this.runtime.runPromise(
-          queryDashboardViews({ catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
-        )
-
-      case 'store:projects':
-        return this.runtime.runPromise(queryProjectRows({ catalogue: captureModelPricingCatalogue() }))
-
-      case 'store:sessions': {
-        const filter = (args[0] ?? {}) as { project?: string; since?: string; until?: string }
-        return this.runtime.runPromise(querySessionRows({ catalogue: captureModelPricingCatalogue(), filter }))
-      }
-
-      case 'sessions:view': {
-        const scope = args[0] as OverviewScope
-        return this.runtime.runPromise(
-          querySessionsView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
-        )
-      }
-
-      case 'pullRequests:view': {
-        const scope = args[0] as OverviewScope
-        return this.runtime.runPromise(
-          queryPullRequestsView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
-        )
-      }
-
-      case 'spend:view': {
-        const scope = args[0] as OverviewScope
-        return this.runtime.runPromise(
-          querySpendView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
-        )
-      }
-
-      /** The Models section's scoped payload (ADR 0008): by-model / by-task /
-       * audit lenses. Built at read time from the ledger plus the CURRENT
-       * alias/price-override config tables, so a quick-add write updates the
-       * affected rows on the next query without a rescan. */
-      case 'models:view': {
-        const scope = args[0] as OverviewScope
-        return this.runtime.runPromise(
-          queryModelsView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
-        )
-      }
-
-      /** The Compare section's scoped payload (ADR 0008): a model-pair picker
-       * over every detected model, plus a query-time side-by-side metrics card,
-       * per-category one-shot bars, and a working-style card. */
-      case 'compare:view': {
-        const scope = args[0] as OverviewScope
-        const pair = args[1] as ComparePair | undefined
-        return this.runtime.runPromise(
-          queryCompareView({ scope, pair, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
-        )
-      }
-
-      /** Optimize combines captured ledger data and assistant setup facts in
-       * pure detectors, then validates the section payload (ADR 0008). */
-      case 'optimize:view': {
-        const scope = args[0] as OverviewScope
-        return this.runtime.runPromise(
-          queryOptimizeView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
-        )
-      }
-
-      /** The Skills section's detection payload (ticket 24): pure local mining
-       * of skill/bash/tool seams plus the on-disk inventory — no consent, no
-       * network. Thresholds (frequency × spread) are renderer settings passed
-       * per request; defaults (5 × 2) apply when absent. */
-      case 'skills:view': {
-        const scope = args[0] as OverviewScope
-        const thresholds = args[1] as SkillsThresholds | undefined
-        // Schema decoding requires positive integer thresholds and applies
-        // defaults. Invalid IPC values use the default pair (ADR 0005).
-        const parsed = Schema.decodeUnknownResult(skillsThresholdsSchema)(thresholds)
-        // Dismissals ride every fetch (ticket 25): the not-a-skill store filters
-        // rejected patterns out of drafts AND opportunities before the gate.
-        return this.runtime.runPromise(
-          querySkillsView({
-            scope,
-            thresholds: parsed._tag === 'Success' ? parsed.success : DEFAULT_SKILLS_THRESHOLDS,
-            catalogue: captureModelPricingCatalogue(),
-            proxyPaths: captureProxyPaths(),
-          }),
-        )
-      }
-
       /** Not-a-skill dismissal write (ticket 25): a ledger config-table upsert,
        * so dismissals survive `clear()`. */
       case 'skills:dismiss': {
         const req = args[0] as { source: 'skill' | 'bash' | 'tool'; name: string; reason: string }
         await this.runtime.runPromise(dismissSkill(req))
         return { ok: true }
-      }
-
-      /** Yield inspects repositories at query time (ADR 0008). Expected git
-       * failures use partial or empty facts; defects remain query failures. */
-      case 'optimize:yield': {
-        const scope = args[0] as OverviewScope
-        return this.runtime.runPromise(
-          queryYieldView({ scope, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
-        )
       }
 
       /** Quick-add alias (ADR 0010): map an unpriced model to a priced one,
@@ -689,35 +569,6 @@ export class DbWorkerContext {
         await this.runtime.runPromise(setModelPrice(args[0], args[1], args[2]))
         this.emit({ event: 'config:changed' })
         return { ok: true }
-      }
-
-      case 'store:session': {
-        const sessionId = args[0] as string
-        return this.runtime.runPromise(
-          querySessionDetail({ sessionId, catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
-        )
-      }
-
-      case 'store:analytics':
-        return this.runtime.runPromise(
-          queryAnalyticalViews({ catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() }),
-        )
-
-      case 'overview:query': {
-        const scope = args[0] as OverviewScope
-        return this.runtime.runPromise(
-          queryOverview({
-            scope,
-            catalogue: captureModelPricingCatalogue(),
-            proxyPaths: captureProxyPaths(),
-            localSavings: captureLocalModelSavings(),
-          }),
-        )
-      }
-
-      case 'store:search': {
-        const query = args[0] as string
-        return this.runtime.runPromise(querySessionSearch({ query, catalogue: captureModelPricingCatalogue() }))
       }
 
       case 'settings:info':
@@ -777,28 +628,6 @@ export class DbWorkerContext {
       /** The full ISO 4217 currency list (162 codes) for the Settings selector. */
       case 'currency:list':
         return listCurrencies() satisfies CurrencyOption[]
-
-      case 'export:csv': {
-        return this.runtime.runPromise(
-          queryExport({
-            kind: 'csv',
-            outputPath: args[0] as string,
-            catalogue: captureModelPricingCatalogue(),
-            proxyPaths: captureProxyPaths(),
-          }),
-        )
-      }
-
-      case 'export:json': {
-        return this.runtime.runPromise(
-          queryExport({
-            kind: 'json',
-            outputPath: args[0] as string,
-            catalogue: captureModelPricingCatalogue(),
-            proxyPaths: captureProxyPaths(),
-          }),
-        )
-      }
 
       default:
         throw new Error(`unknown db-worker op: ${op}`)
