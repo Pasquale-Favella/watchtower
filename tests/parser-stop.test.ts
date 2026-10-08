@@ -27,22 +27,39 @@ vi.mock('../src/main/pipeline/providers/index.js', () => ({
   getProvider: (...args: unknown[]) => hooks.getProvider(...args),
 }))
 
-vi.mock('../src/main/pipeline/session-cache.js', () => ({
-  beginColdHydration: vi.fn(),
-  cleanupOrphanedTempFiles: vi.fn(async () => undefined),
-  computeEnvFingerprint: vi.fn(() => 'test-env'),
-  DURABLE_PROVIDER_NAMES: new Set(),
-  fingerprintFile: (...args: unknown[]) => hooks.fingerprint(...args),
-  isCacheComplete: (cache: { complete?: boolean }) => cache.complete === true,
-  loadCache: vi.fn(() => hooks.cache),
-  reconcileFile: vi.fn(() => ({ action: 'modified' })),
-  saveCache: (...args: unknown[]) => hooks.saveCache(...args),
-  sectionNeedsPrEvidenceReparse: vi.fn(() => false),
-}))
+vi.mock('../src/main/pipeline/session-cache.js', async () => {
+  const Effect = await import('effect/Effect')
+  return {
+    beginColdHydration: vi.fn(),
+    beginColdHydrationEffect: vi.fn(() => Effect.succeed({ waited: false, release: Effect.void })),
+    cleanupOrphanedTempFiles: vi.fn(async () => undefined),
+    cleanupOrphanedTempFilesEffect: vi.fn(() => Effect.void),
+    computeEnvFingerprint: vi.fn(() => 'test-env'),
+    DURABLE_PROVIDER_NAMES: new Set(),
+    fingerprintFile: (...args: unknown[]) => hooks.fingerprint(...args),
+    isCacheComplete: (cache: { complete?: boolean }) => cache.complete === true,
+    loadCache: vi.fn(() => hooks.cache),
+    loadCacheEffect: vi.fn(() => Effect.sync(() => hooks.cache as SessionCache)),
+    reconcileFile: vi.fn(() => ({ action: 'modified' })),
+    saveCache: (...args: unknown[]) => hooks.saveCache(...args),
+    saveCacheEffect: (...args: unknown[]) =>
+      Effect.tryPromise({ try: () => hooks.saveCache(...args), catch: cause => cause as Error }),
+    sectionNeedsPrEvidenceReparse: vi.fn(() => false),
+  }
+})
 
-vi.mock('../src/main/pipeline/cache-refresh-lock.js', () => ({
-  acquireCacheRefreshLock: vi.fn(async () => ({ outcome: 'acquired', handle: { release: async () => undefined } })),
-}))
+vi.mock('../src/main/pipeline/cache-refresh-lock.js', async () => {
+  const Effect = await import('effect/Effect')
+  const handle = {
+    release: async () => undefined,
+    releaseEffect: Effect.void,
+    verifyStillOwnerEffect: Effect.succeed(true),
+  }
+  return {
+    acquireCacheRefreshLock: vi.fn(async () => ({ outcome: 'acquired', handle: { release: async () => undefined } })),
+    acquireCacheRefreshLockEffect: vi.fn(() => Effect.succeed({ outcome: 'acquired', handle })),
+  }
+})
 
 import { captureScanPricing } from '../src/main/pipeline/models.js'
 import { clearSessionCache, parseAllSessions } from '../src/main/pipeline/parser.js'

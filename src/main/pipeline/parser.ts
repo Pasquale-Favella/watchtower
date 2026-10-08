@@ -1,3 +1,4 @@
+import * as Effect from 'effect/Effect'
 import { existsSync } from 'fs'
 import { lstat, readdir, readFile, stat } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
@@ -25,7 +26,7 @@ export {
 import { parseOrSkip, type UnparsedTally } from '../../shared/schemas/extract.js'
 import { parsedProviderCallSchema } from '../../shared/schemas/providers.js'
 import { extractBashCommands } from './bash-utils.js'
-import { acquireCacheRefreshLock, type RefreshLockHandle } from './cache-refresh-lock.js'
+import { acquireCacheRefreshLockEffect, type RefreshLockHandle } from './cache-refresh-lock.js'
 import { BASH_TOOLS, classifyTurn, EDIT_TOOLS } from './classifier.js'
 import { flushCodexCache } from './codex-cache.js'
 import { normalizeContentBlocks } from './content-utils.js'
@@ -40,22 +41,23 @@ import {
 import { getDesktopSessionsDirs } from './providers/claude.js'
 import { discoverAllSessions, getProvider } from './providers/index.js'
 import type { ParsedProviderCall, ProviderScanContext, ProviderScanServices, SessionSource } from './providers/types.js'
-import { isScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
+import { isScanAbortedError, type ScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
 import type { ScanPricing } from './scan-pricing.js'
 import {
-  beginColdHydration,
+  beginColdHydrationEffect,
   type CachedCall,
   type CachedFile,
   type CachedTurn,
-  cleanupOrphanedTempFiles,
+  cleanupOrphanedTempFilesEffect,
   computeEnvFingerprint,
   DURABLE_PROVIDER_NAMES,
   fingerprintFile,
   isCacheComplete,
-  loadCache,
+  loadCacheEffect,
   type ProviderSection,
   reconcileFile,
   saveCache,
+  saveCacheEffect,
   sectionNeedsPrEvidenceReparse,
   type SessionCache,
 } from './session-cache.js'
@@ -84,6 +86,44 @@ export type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 import type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 
 export type DeltaHandler = (delta: ScanDelta, pricing?: ScanPricing) => void | Promise<void>
+
+/** Owns one native Promise parser operation. The Promise APIs cannot be
+ * interrupted themselves, so cancellation first aborts the scan signal and
+ * then waits for cooperative parser checks and callbacks to settle. */
+function runOwnedParserPromise<A>(
+  signal: AbortSignal | undefined,
+  stop: (() => void) | undefined,
+  start: () => Promise<A>,
+): Effect.Effect<A, Error> {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      let settled = false
+      const promise = Promise.resolve().then(() => {
+        if (signal?.aborted) throw scanAbortError(signal)
+        return start()
+      })
+      const drain = promise.then(
+        () => {
+          settled = true
+        },
+        () => {
+          settled = true
+        },
+      )
+      return { promise, drain, isSettled: () => settled }
+    }),
+    owned => Effect.tryPromise({ try: () => owned.promise, catch: cause => cause as Error }),
+    owned =>
+      Effect.promise(() => {
+        if (!owned.isSettled()) stop?.()
+        return owned.drain
+      }),
+  )
+}
+
+function checkScanAbort(signal?: AbortSignal): Effect.Effect<void, ScanAbortedError> {
+  return Effect.suspend(() => (signal?.aborted ? Effect.fail(scanAbortError(signal)) : Effect.void))
+}
 
 /** A single file's port-in must never abort the whole scan: a throw from the
  * delta consumer (e.g. a ledger write failing on one file) is warned and
@@ -4223,26 +4263,27 @@ export function isSessionHydrationComplete(): boolean {
   return sessionHydrationComplete
 }
 
-export async function parseAllSessions(
+export const parseAllSessionsEffect = Effect.fnUntraced(function* (
   dateRange?: DateRange,
   providerFilter?: string,
   onDelta?: DeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
   signal?: AbortSignal,
   services: ProviderScanServices = {},
-): Promise<ProjectSummary[]> {
-  throwIfScanAborted(signal)
+  stop?: () => void,
+): Effect.fn.Return<ProjectSummary[], Error> {
+  yield* checkScanAbort(signal)
   const pricing = services.pricing ?? captureScanPricing()
-  const context: ProviderScanContext = { ...services, signal, pricing }
+  const context: ProviderScanContext & { stop?: () => void } = { ...services, signal, pricing, stop }
   const pricedDelta: DeltaHandler | undefined = onDelta ? delta => onDelta(delta, pricing) : undefined
   const key = cacheKey(dateRange, providerFilter)
   const cached = sessionCache.get(key)
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data
 
-  let diskCache = await loadCache()
-  throwIfScanAborted(signal)
-  await cleanupOrphanedTempFiles()
-  throwIfScanAborted(signal)
+  let diskCache = yield* loadCacheEffect()
+  yield* checkScanAbort(signal)
+  yield* cleanupOrphanedTempFilesEffect()
+  yield* checkScanAbort(signal)
 
   // Cold-hydration coordination (advisory, cross-process). Engages whenever the
   // on-disk cache is not COMPLETE — an empty cache OR a partial one an interrupted
@@ -4253,92 +4294,122 @@ export async function parseAllSessions(
   // now-warm cache instead of double-parsing. Never a correctness gate: on any
   // doubt it proceeds unlocked.
   if (!isCacheComplete(diskCache)) {
-    const hydration = await beginColdHydration(true)
-    try {
-      throwIfScanAborted(signal)
-      if (hydration.waited) diskCache = await loadCache()
-      throwIfScanAborted(signal)
-      const isCold = !isCacheComplete(diskCache)
-      const result = await runParse(
-        key,
-        diskCache,
-        dateRange,
-        providerFilter,
-        { isCold },
-        pricedDelta,
-        onUnparsed,
-        context,
-      )
-      throwIfScanAborted(signal)
-      return result
-    } finally {
-      await hydration.release()
-    }
+    return yield* Effect.uninterruptibleMask(restore =>
+      restore(beginColdHydrationEffect(true)).pipe(
+        Effect.flatMap(hydration =>
+          restore(
+            Effect.gen(function* () {
+              yield* checkScanAbort(signal)
+              if (hydration.waited) diskCache = yield* loadCacheEffect()
+              yield* checkScanAbort(signal)
+              return yield* runParseEffect(
+                key,
+                diskCache,
+                dateRange,
+                providerFilter,
+                { isCold: !isCacheComplete(diskCache) },
+                pricedDelta,
+                onUnparsed,
+                context,
+              )
+            }),
+          ).pipe(Effect.onExit(() => hydration.release)),
+        ),
+      ),
+    )
   }
 
   // A complete cache refresh is a strict read/reconcile/parse/save transaction.
   // Keep the snapshot loaded before acquisition: timeout/unavailable paths serve
   // exactly this complete snapshot and never mutate or invalidate the holder.
   const priorSnapshot = diskCache
-  const refresh = await acquireCacheRefreshLock()
-  if (refresh.outcome === 'timed-out' || refresh.outcome === 'unavailable') {
-    throwIfScanAborted(signal)
-    const result = await runParse(
-      key,
-      priorSnapshot,
-      dateRange,
-      providerFilter,
-      { readOnly: true },
-      pricedDelta,
-      onUnparsed,
-      context,
-    )
-    throwIfScanAborted(signal)
-    return result
-  }
-  if (refresh.outcome === 'completed-by-other') {
-    throwIfScanAborted(signal)
-    diskCache = await loadCache()
-    throwIfScanAborted(signal)
-    const result = await runParse(
-      key,
-      diskCache,
-      dateRange,
-      providerFilter,
-      { readOnly: true },
-      pricedDelta,
-      onUnparsed,
-      context,
-    )
-    throwIfScanAborted(signal)
-    return result
-  }
+  return yield* Effect.uninterruptibleMask(restore =>
+    restore(acquireCacheRefreshLockEffect()).pipe(
+      Effect.flatMap(owned =>
+        restore(
+          Effect.gen(function* () {
+            yield* checkScanAbort(signal)
+            if (owned.outcome === 'timed-out' || owned.outcome === 'unavailable') {
+              return yield* runParseEffect(
+                key,
+                priorSnapshot,
+                dateRange,
+                providerFilter,
+                { readOnly: true },
+                pricedDelta,
+                onUnparsed,
+                context,
+              )
+            }
+            if (owned.outcome === 'completed-by-other') {
+              diskCache = yield* loadCacheEffect()
+              yield* checkScanAbort(signal)
+              return yield* runParseEffect(
+                key,
+                diskCache,
+                dateRange,
+                providerFilter,
+                { readOnly: true },
+                pricedDelta,
+                onUnparsed,
+                context,
+              )
+            }
+            // Reload only after ownership is canonical. This closes the lost-update
+            // window between the pre-gate read and the holder's completed publication.
+            diskCache = yield* loadCacheEffect()
+            yield* checkScanAbort(signal)
+            return yield* runParseEffect(
+              key,
+              diskCache,
+              dateRange,
+              providerFilter,
+              { refreshLock: owned.handle },
+              pricedDelta,
+              onUnparsed,
+              context,
+            ).pipe(
+              Effect.catch(error => {
+                if (
+                  !(error instanceof RefreshFenceLostError) &&
+                  !(error instanceof RefreshPublicationUnavailableError)
+                ) {
+                  return Effect.fail(error)
+                }
+                return Effect.gen(function* () {
+                  yield* checkScanAbort(signal)
+                  const latest = yield* loadCacheEffect()
+                  yield* checkScanAbort(signal)
+                  return yield* runParseEffect(
+                    key,
+                    latest,
+                    dateRange,
+                    providerFilter,
+                    { readOnly: true },
+                    pricedDelta,
+                    onUnparsed,
+                    context,
+                  )
+                })
+              }),
+            )
+          }),
+        ).pipe(Effect.onExit(() => (owned.outcome === 'acquired' ? owned.handle.releaseEffect : Effect.void))),
+      ),
+    ),
+  )
+})
 
-  try {
-    throwIfScanAborted(signal)
-    // Reload only after ownership is canonical; this closes the lost-update
-    // window between the pre-gate read and the holder's completed publication.
-    diskCache = await loadCache()
-    throwIfScanAborted(signal)
-    return await runParse(
-      key,
-      diskCache,
-      dateRange,
-      providerFilter,
-      { refreshLock: refresh.handle },
-      pricedDelta,
-      onUnparsed,
-      context,
-    )
-  } catch (err) {
-    if (!(err instanceof RefreshFenceLostError) && !(err instanceof RefreshPublicationUnavailableError)) throw err
-    throwIfScanAborted(signal)
-    diskCache = await loadCache()
-    throwIfScanAborted(signal)
-    return runParse(key, diskCache, dateRange, providerFilter, { readOnly: true }, pricedDelta, onUnparsed, context)
-  } finally {
-    await refresh.handle.release()
-  }
+/** Compatibility edge for direct tests and callers not migrated yet. */
+export function parseAllSessions(
+  dateRange?: DateRange,
+  providerFilter?: string,
+  onDelta?: DeltaHandler,
+  onUnparsed?: (provider: string, count: number) => void,
+  signal?: AbortSignal,
+  services: ProviderScanServices = {},
+): Promise<ProjectSummary[]> {
+  return Effect.runPromise(parseAllSessionsEffect(dateRange, providerFilter, onDelta, onUnparsed, signal, services))
 }
 
 class RefreshFenceLostError extends Error {}
@@ -4350,7 +4421,7 @@ type RunParseOptions = {
   refreshLock?: RefreshLockHandle
 }
 
-async function runParse(
+const runParseEffect = Effect.fnUntraced(function* (
   key: string,
   diskCache: SessionCache,
   dateRange?: DateRange,
@@ -4358,22 +4429,24 @@ async function runParse(
   options: RunParseOptions = {},
   onDelta?: DeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
-  context: ProviderScanContext = {},
-): Promise<ProjectSummary[]> {
+  context: ProviderScanContext & { stop?: () => void } = {},
+): Effect.fn.Return<ProjectSummary[], Error> {
   const { signal } = context
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   const { isCold = false, readOnly = false, refreshLock } = options
   const seenMsgIds = new Set<string>()
   const seenKeys = new Set<string>()
-  const allSources = await discoverAllSessions(providerFilter, undefined, context)
-  throwIfScanAborted(signal)
+  const allSources = yield* runOwnedParserPromise(signal, context.stop, () =>
+    discoverAllSessions(providerFilter, undefined, context),
+  )
+  yield* checkScanAbort(signal)
 
   const claudeSources = allSources.filter(s => s.provider === 'claude')
   const nonClaudeSources = allSources.filter(s => s.provider !== 'claude')
 
   const providerGroups = new Map<string, SessionSource[]>()
   for (const source of nonClaudeSources) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     const existing = providerGroups.get(source.provider) ?? []
     existing.push(source)
     providerGroups.set(source.provider, existing)
@@ -4399,7 +4472,7 @@ async function runParse(
     throwIfScanAborted(signal)
   }
 
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   emitScanProgress({
     kind: 'providers',
     cold: isCold,
@@ -4416,24 +4489,30 @@ async function runParse(
   }))
   if (claudeSources.length > 0) emitScanProgress({ kind: 'provider', provider: 'claude', state: 'start' })
   let claudeProjects: ProjectSummary[] = []
-  try {
-    claudeProjects = await scanProjectDirs(
-      claudeDirs,
-      seenMsgIds,
-      diskCache,
-      dateRange,
-      saveProgress,
-      readOnly,
-      onDelta,
-      signal,
-      context.pricing,
-    )
-    throwIfScanAborted(signal)
+  const claudeResult = yield* Effect.result(
+    runOwnedParserPromise(signal, context.stop, () =>
+      scanProjectDirs(
+        claudeDirs,
+        seenMsgIds,
+        diskCache,
+        dateRange,
+        saveProgress,
+        readOnly,
+        onDelta,
+        signal,
+        context.pricing,
+      ),
+    ),
+  )
+  if (claudeResult._tag === 'Success') {
+    claudeProjects = claudeResult.success
+    yield* checkScanAbort(signal)
     if (claudeSources.length > 0)
       emitScanProgress({ kind: 'provider', provider: 'claude', state: 'done', files: claudeSources.length })
-  } catch (err) {
-    throwIfScanAborted(signal)
-    if (!isPermissionError(err)) throw err
+  } else {
+    const err = claudeResult.failure
+    yield* checkScanAbort(signal)
+    if (!isPermissionError(err)) return yield* Effect.fail(err)
     queueLogRecord({
       logEvent: 'scan.file-error',
       level: 'warn',
@@ -4444,28 +4523,34 @@ async function runParse(
 
   const otherProjects: ProjectSummary[] = []
   for (const [providerName, sources] of providerGroups) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     emitScanProgress({ kind: 'provider', provider: providerName, state: 'start' })
-    try {
-      const projects = await parseProviderSources(
-        providerName,
-        sources,
-        seenKeys,
-        diskCache,
-        dateRange,
-        readOnly,
-        onDelta,
-        onUnparsed,
-        context,
-      )
-      throwIfScanAborted(signal)
+    const providerResult = yield* Effect.result(
+      runOwnedParserPromise(signal, context.stop, () =>
+        parseProviderSources(
+          providerName,
+          sources,
+          seenKeys,
+          diskCache,
+          dateRange,
+          readOnly,
+          onDelta,
+          onUnparsed,
+          context,
+        ),
+      ),
+    )
+    if (providerResult._tag === 'Success') {
+      const projects = providerResult.success
+      yield* checkScanAbort(signal)
       emitScanProgress({ kind: 'provider', provider: providerName, state: 'done', files: sources.length })
       otherProjects.push(...projects)
-    } catch (err) {
-      throwIfScanAborted(signal)
+    } else {
+      const err = providerResult.failure
+      yield* checkScanAbort(signal)
       // A permission-locked provider skips-and-continues; any other error is a
       // real bug and still aborts (per-file/DB-lock cases are handled deeper).
-      if (!isPermissionError(err)) throw err
+      if (!isPermissionError(err)) return yield* Effect.fail(err)
       queueLogRecord({
         logEvent: 'scan.file-error',
         level: 'warn',
@@ -4473,7 +4558,7 @@ async function runParse(
       })
       emitScanProgress({ kind: 'provider', provider: providerName, state: 'skipped' })
     }
-    await saveProgress()
+    yield* runOwnedParserPromise(signal, context.stop, saveProgress)
   }
 
   // Durable providers with cached data but NO discovered sources (all files pruned
@@ -4482,7 +4567,7 @@ async function runParse(
   // any such provider found in the disk cache.
   const processedProviders = new Set(providerGroups.keys())
   for (const providerName of Object.keys(diskCache.providers)) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     if (processedProviders.has(providerName)) continue
     // Skip if filtered to a different provider
     if (providerFilter && providerFilter !== 'all' && providerFilter !== providerName) continue
@@ -4493,18 +4578,10 @@ async function runParse(
     // constant — both checks are O(1) and avoid a getProvider() dynamic-import
     // round-trip for every unprocessed provider in the disk cache.
     if (!section.durable && !DURABLE_PROVIDER_NAMES.has(providerName)) continue
-    const projects = await parseProviderSources(
-      providerName,
-      [],
-      seenKeys,
-      diskCache,
-      dateRange,
-      readOnly,
-      onDelta,
-      onUnparsed,
-      context,
+    const projects = yield* runOwnedParserPromise(signal, context.stop, () =>
+      parseProviderSources(providerName, [], seenKeys, diskCache, dateRange, readOnly, onDelta, onUnparsed, context),
     )
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     otherProjects.push(...projects)
   }
 
@@ -4515,21 +4592,24 @@ async function runParse(
   // on is durable. A run killed before here never reaches this, so its throttled
   // partial saves keep `complete: false` and the next launch resumes cold.
   const wasComplete = isCacheComplete(diskCache)
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   if (!readOnly && !wasComplete) diskCache.complete = true
   if (!readOnly && ((diskCache as { _dirty?: boolean })._dirty || !wasComplete)) {
-    try {
-      throwIfScanAborted(signal)
-      const published = await saveCache(diskCache, refreshLock?.verifyStillOwner)
-      throwIfScanAborted(signal)
-      if (!published) throw new RefreshFenceLostError()
-    } catch (err) {
-      if (signal?.aborted || isScanAbortedError(err)) throw signal?.aborted ? scanAbortError(signal) : err
-      if (err instanceof RefreshFenceLostError) throw err
-      if (refreshLock) throw new RefreshPublicationUnavailableError()
+    yield* checkScanAbort(signal)
+    const publication = yield* Effect.result(
+      saveCacheEffect(diskCache, refreshLock ? () => refreshLock.verifyStillOwnerEffect : undefined),
+    )
+    if (publication._tag === 'Failure') {
+      const err = publication.failure
+      if (signal?.aborted) return yield* scanAbortError(signal)
+      if (isScanAbortedError(err)) return yield* err
+      if (refreshLock) return yield* Effect.fail(new RefreshPublicationUnavailableError())
+      return yield* Effect.fail(err)
     }
+    yield* checkScanAbort(signal)
+    if (!publication.success) return yield* Effect.fail(new RefreshFenceLostError())
   }
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
 
   // Merge across providers by normalised project path so the same repository
   // is not double-counted when it was worked on with more than one tool
@@ -4544,8 +4624,8 @@ async function runParse(
   //    function only operates on call.projectPath, which Codex doesn't set.
   //    Resolve at the ProjectSummary level here: prepend '/' if needed to get
   //    an absolute path, then run the same worktree-detection logic.
-  const resolvedOtherProjects = await Promise.all(
-    otherProjects.map(async p => {
+  const resolvedOtherProjects = yield* Effect.forEach(otherProjects, p =>
+    runOwnedParserPromise(signal, context.stop, async () => {
       const absPath =
         p.projectPath.startsWith('/') || p.projectPath.startsWith('\\') ? p.projectPath : '/' + p.projectPath
       const canonical = await resolveCanonicalProjectPath(absPath)
@@ -4554,7 +4634,7 @@ async function runParse(
       return { ...p, project: projectNameFromPath(canonical.path, p.project), projectPath: canonical.path }
     }),
   )
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
 
   const mergedMap = mergeProjectsByCrossProviderKey([...claudeProjects, ...resolvedOtherProjects])
 
@@ -4570,10 +4650,10 @@ async function runParse(
   }
 
   const result = Array.from(mergedMap.values()).sort((a, b) => b.totalCostUSD - a.totalCostUSD)
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   correlateCrossProviderPrSessions(result)
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   cachePut(key, result)
   sessionHydrationComplete = true
   return result
-}
+})

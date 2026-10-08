@@ -9,7 +9,7 @@ import { OperationalLog, SCAN_DURATION_COUNTER } from '../operational-log.js'
 import { HttpFetch } from './fetch-utils.js'
 import { captureScanPricing, loadPricingEffect } from './models.js'
 import type { DeltaHandler } from './parser.js'
-import { parseAllSessions } from './parser.js'
+import { parseAllSessionsEffect } from './parser.js'
 import type { ProviderScanServices } from './providers/types.js'
 import { abortedScanError, ScanAbortedError } from './scan-control.js'
 
@@ -181,13 +181,29 @@ export const runScan = Effect.fnUntraced(function* (
       ensureProvider(provider).unparsed += count
     }
 
-    // Parser work observes this per-run signal, but the Promise remains owned
-    // until every parser and callback has actually settled after interruption.
-    yield* runOwnedScanPromise(signal =>
-      parseAllSessions(options.range, options.provider, countingDelta, onUnparsed, signal, {
-        ...providerServices,
-        pricing,
-      }),
+    // The parser workflow composes in Effect. This one process-boundary adapter
+    // supplies the AbortSignal expected by existing native provider APIs and
+    // keeps ownership until those cooperative APIs and callbacks have settled.
+    let parserCompleted = false
+    yield* Effect.acquireUseRelease(
+      Effect.sync(() => new AbortController()),
+      controller =>
+        Effect.gen(function* () {
+          yield* parseAllSessionsEffect(
+            options.range,
+            options.provider,
+            countingDelta,
+            onUnparsed,
+            controller.signal,
+            { ...providerServices, pricing },
+            () => controller.abort(abortedScanError()),
+          )
+          parserCompleted = true
+        }),
+      controller =>
+        Effect.sync(() => {
+          if (!parserCompleted && !controller.signal.aborted) controller.abort(abortedScanError())
+        }),
     )
 
     if (onDelta && abort?.isAborted()) {

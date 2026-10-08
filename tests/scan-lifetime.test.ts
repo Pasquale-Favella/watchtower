@@ -15,6 +15,31 @@ const hooks = vi.hoisted(() => ({
 vi.mock('../src/main/pipeline/parser.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../src/main/pipeline/parser.js')>()),
   parseAllSessions: (...args: unknown[]) => hooks.parse(...args),
+  parseAllSessionsEffect: (...args: unknown[]) => {
+    const signal = args[4] as AbortSignal | undefined
+    const stop = args[6] as (() => void) | undefined
+    return Effect.acquireUseRelease(
+      Effect.sync(() => {
+        let settled = false
+        const promise = Promise.resolve().then(() => hooks.parse(...args.slice(0, 6)))
+        const drain = promise.then(
+          () => {
+            settled = true
+          },
+          () => {
+            settled = true
+          },
+        )
+        return { promise, drain, isSettled: () => settled }
+      }),
+      owned => Effect.tryPromise({ try: () => owned.promise, catch: cause => cause as Error }),
+      owned =>
+        Effect.promise(() => {
+          if (!owned.isSettled()) stop?.()
+          return owned.drain
+        }),
+    )
+  },
 }))
 
 vi.mock('../src/main/pipeline/git-remote.js', () => ({
