@@ -1,7 +1,6 @@
 import type { IpcRendererEvent } from 'electron'
 import { contextBridge, ipcRenderer } from 'electron'
 
-import type { ExportResult } from '../main/export.js'
 import type { ActiveCurrency, CurrencyOption } from '../main/fx.js'
 import type { UpdateStatus } from '../main/updates.js'
 import type {
@@ -15,6 +14,7 @@ import type {
   CoachRunResult,
 } from '../shared/schemas/agents.js'
 import type { ComparePair, ComparePayload } from '../shared/schemas/compare.js'
+import type { ExportResult } from '../shared/schemas/export.js'
 import type {
   LedgerMcpConnection,
   LedgerMcpStatus,

@@ -8,6 +8,7 @@ import { dirname, join } from 'path'
 
 import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
 import type { ComparePair } from '../shared/schemas/compare.js'
+import type { ExportResult } from '../shared/schemas/export.js'
 import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
 import {
   type LedgerMcpConnection,
@@ -24,7 +25,6 @@ import { createSidecarPool } from './agents/ledger-mcp/pool.js'
 import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths } from './env.js'
-import type { ExportResult } from './export.js'
 import { makeMainRuntime } from './main-runtime.js'
 import {
   closeOperationalLog,

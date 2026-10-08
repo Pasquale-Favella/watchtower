@@ -6,46 +6,79 @@ import * as Effect from 'effect/Effect'
 import { describe, expect, it, vi } from 'vitest'
 
 import { queryExport } from '../src/main/application/export-query.js'
-import { exportCsv, exportJson } from '../src/main/export.js'
 import { buildCsvExportFiles, buildJsonExport } from '../src/main/export-calculation.js'
-import { FxRates } from '../src/main/fx.js'
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { LedgerIngest } from '../src/main/store/ledger-ports.js'
+import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
+import { buildFixtureReport } from './fixtures/report.js'
 
 const GENERATED = '2026-07-14T12:34:56.000Z'
 const USD = { code: 'USD', symbol: '$', rate: 1 } as const
-import { buildFixtureReport } from './fixtures/report.js'
-
-function makeStore(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-export-'))
-  return new LedgerStore(join(dir, 'data.db'))
-}
 
 function tempPath(): string {
   return join(mkdtempSync(join(tmpdir(), 'tr-export-out-')), 'out')
 }
 
-/** Display-currency pin through the `FxRates` port (ADR 0032, Wave-6 pin):
- * same persisted value as the old direct store write — the repository-direct
- * layer sanitizes the code in `fx.ts`, so the stored result is unchanged. */
-function pinDisplayCurrency(store: LedgerStore, code: string): void {
-  Effect.runSync(
-    Effect.flatMap(FxRates, rates => rates.setDisplayCurrency(code)).pipe(
-      Effect.provide(FxRates.layerWithRepository(store)),
-    ),
+const queryInput = (kind: 'csv' | 'json', outputPath: string) => ({
+  kind,
+  outputPath,
+  catalogue: capturePricingCatalogue({
+    prices: new Map(),
+    overrides: new Map(),
+    builtinAliases: {},
+    userAliases: {},
+    tiers: [],
+    routedSegments: new Set(),
+  }),
+  proxyPaths: { paths: [], caseSensitive: false },
+})
+
+function seedExportLedger(runtime: ReturnType<typeof openLedgerFixture>['runtime'], repoUrl?: string): void {
+  runtime.runSync(
+    Effect.gen(function* () {
+      const ingest = yield* LedgerIngest
+      yield* ingest.portIn({
+        provider: 'opencode',
+        envFingerprint: 'export-test',
+        filePath: FIXTURE_SOURCE_PATH,
+        verdict: 'new',
+        cachedFile: buildFixtureCachedFile(),
+        ...(repoUrl === undefined ? {} : { repoUrl }),
+      })
+    }),
   )
 }
 
-describe('exportJson (ADR 0009: carries the selected display currency at export time)', () => {
-  it('converts every cost column and records the active currency in the payload', async () => {
-    const store = makeStore()
-    pinDisplayCurrency(store, 'EUR')
-    store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: new Date().toISOString() })
+function setCurrency(runtime: ReturnType<typeof openLedgerFixture>['runtime'], code: string): void {
+  runtime.runSync(
+    Effect.gen(function* () {
+      const config = yield* LedgerConfig
+      yield* config.setDisplayCurrency(code)
+      if (code === 'EUR') yield* config.setCurrencyRate({ code, symbol: '€', rate: 0.9, updatedAt: GENERATED })
+      if (code === 'JPY') yield* config.setCurrencyRate({ code, symbol: '¥', rate: 150, updatedAt: GENERATED })
+    }),
+  )
+}
 
-    const target = await exportJson(buildFixtureReport(), tempPath(), store)
+async function exportPath(
+  runtime: ReturnType<typeof openLedgerFixture>['runtime'],
+  kind: 'csv' | 'json',
+  outputPath: string,
+): Promise<string> {
+  const result = await runtime.runPromise(queryExport(queryInput(kind, outputPath)))
+  if (!result.ok) throw new Error(result.error)
+  if (!result.path) throw new Error(`${kind.toUpperCase()} export did not return a path`)
+  return result.path
+}
+
+describe('queryExport (ADR 0009: carries the selected display currency at export time)', () => {
+  it('converts every cost column and records the active currency in the payload', async () => {
+    const { runtime } = openLedgerFixture()
+    seedExportLedger(runtime)
+    setCurrency(runtime, 'EUR')
+
+    const target = await exportPath(runtime, 'json', tempPath())
     const data = JSON.parse(readFileSync(target, 'utf-8')) as {
       schema: string
       currency: { code: string; symbol: string; rate: number }
@@ -60,30 +93,28 @@ describe('exportJson (ADR 0009: carries the selected display currency at export 
     expect(data.records[0]!.cost).toBe(0.38)
     expect(data.daily[0]!['Cost (EUR)']).toBe(0.38)
     expect(data.projects[0]!['Cost (EUR)']).toBe(0.38)
-    store.close()
   })
 
   it('exports raw USD figures with the USD currency block by default', async () => {
-    const store = makeStore()
-    const target = await exportJson(buildFixtureReport(), tempPath(), store)
+    const { runtime } = openLedgerFixture()
+    seedExportLedger(runtime)
+    const target = await exportPath(runtime, 'json', tempPath())
     const data = JSON.parse(readFileSync(target, 'utf-8')) as {
       currency: { code: string; symbol: string; rate: number }
       records: Array<{ cost: number }>
     }
     expect(data.currency).toEqual({ code: 'USD', symbol: '$', rate: 1 })
     expect(data.records[0]!.cost).toBe(0.42)
-    store.close()
   })
 
-  it('rounds to zero fraction digits for JPY (¥412 not ¥412.37)', async () => {
-    const store = makeStore()
-    pinDisplayCurrency(store, 'JPY')
-    store.setCurrencyRate({ code: 'JPY', symbol: '¥', rate: 150, updatedAt: new Date().toISOString() })
+  it('rounds to zero fraction digits for JPY', async () => {
+    const { runtime } = openLedgerFixture()
+    seedExportLedger(runtime)
+    setCurrency(runtime, 'JPY')
 
-    const target = await exportJson(buildFixtureReport(), tempPath(), store)
+    const target = await exportPath(runtime, 'json', tempPath())
     const data = JSON.parse(readFileSync(target, 'utf-8')) as { records: Array<{ cost: number }> }
     expect(data.records[0]!.cost).toBe(63) // 0.42 × 150 = 63
-    store.close()
   })
 })
 
@@ -242,13 +273,13 @@ describe('pure export serialization', () => {
   })
 })
 
-describe('exportCsv (ADR 0009: folder of CSVs in the selected display currency)', () => {
+describe('queryExport CSV (ADR 0009: folder of CSVs in the selected display currency)', () => {
   it('writes one-table-per-file with currency-labeled headers and converted values', async () => {
-    const store = makeStore()
-    pinDisplayCurrency(store, 'EUR')
-    store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: new Date().toISOString() })
+    const { runtime } = openLedgerFixture()
+    seedExportLedger(runtime)
+    setCurrency(runtime, 'EUR')
 
-    const folder = await exportCsv(buildFixtureReport(), tempPath(), store)
+    const folder = await exportPath(runtime, 'csv', tempPath())
 
     const files = readdirSync(folder)
     expect(files).toContain('README.txt')
@@ -265,41 +296,53 @@ describe('exportCsv (ADR 0009: folder of CSVs in the selected display currency)'
 
     const readme = readFileSync(join(folder, 'README.txt'), 'utf-8')
     expect(readme).toContain('Currency:  EUR')
-    store.close()
   })
 
   it('labels CSV headers USD and keeps USD figures by default', async () => {
-    const store = makeStore()
-    const folder = await exportCsv(buildFixtureReport(), tempPath(), store)
+    const { runtime } = openLedgerFixture()
+    seedExportLedger(runtime)
+    const folder = await exportPath(runtime, 'csv', tempPath())
     const daily = readFileSync(join(folder, 'daily.csv'), 'utf-8')
     expect(daily).toContain('Cost (USD)')
     expect(daily).toContain('0.42')
-    store.close()
   })
 
   it('refuses to overwrite a directory that is not a previous export', async () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
+    seedExportLedger(runtime)
     const dir = mkdtempSync(join(tmpdir(), 'tr-export-guard-'))
     mkdirSync(join(dir, 'occupied'), { recursive: true })
-    await expect(exportCsv(buildFixtureReport(), join(dir, 'occupied'), store)).rejects.toMatchObject({
-      reason: 'csv-unmarked-directory',
+    const result = await runtime.runPromise(queryExport(queryInput('csv', join(dir, 'occupied'))))
+    expect(result).toEqual({
+      ok: false,
+      error: 'That folder is not a Watchtower export. Choose a new folder path or a previous Watchtower export.',
     })
-    store.close()
   })
 
-  it('captures the currency once before compatibility export file work', async () => {
-    const store = makeStore()
-    pinDisplayCurrency(store, 'EUR')
-    store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: new Date().toISOString() })
-    const displayRead = vi.spyOn(store, 'getDisplayCurrency')
-    const rateRead = vi.spyOn(store, 'getCurrencyRate')
+  it('captures the currency once for each export request', async () => {
+    const { runtime } = openLedgerFixture()
+    seedExportLedger(runtime)
+    setCurrency(runtime, 'EUR')
+    const displayRead = vi.fn()
+    const rateRead = vi.fn()
 
-    await exportJson(buildFixtureReport(), tempPath(), store)
+    const result = await runtime.runPromise(
+      Effect.gen(function* () {
+        const actualConfig = yield* LedgerConfig
+        const config = LedgerConfig.of({
+          ...actualConfig,
+          getDisplayCurrency: () =>
+            Effect.sync(() => displayRead()).pipe(Effect.andThen(actualConfig.getDisplayCurrency())),
+          getCurrencyRate: code =>
+            Effect.sync(() => rateRead(code)).pipe(Effect.andThen(actualConfig.getCurrencyRate(code))),
+        })
+        return yield* queryExport(queryInput('json', tempPath())).pipe(Effect.provideService(LedgerConfig, config))
+      }),
+    )
 
+    expect(result.ok).toBe(true)
     expect(displayRead).toHaveBeenCalledTimes(1)
-    expect(rateRead).toHaveBeenCalledTimes(1)
-    expect(rateRead).toHaveBeenCalledWith('EUR')
-    store.close()
+    expect(rateRead.mock.calls).toEqual([['EUR']])
   })
 })
 
@@ -307,12 +350,10 @@ describe('export git info (repoUrl in projects/sessions/records)', () => {
   const REPO = 'git@github.com:acme/demo.git'
 
   it('carries the raw repoUrl through projects/sessions/records in JSON', async () => {
-    const store = makeStore()
-    const report = buildFixtureReport()
-    report[0]!.repoUrl = REPO
-    report[0]!.sessions[0]!.repoUrl = REPO
+    const { runtime } = openLedgerFixture()
+    seedExportLedger(runtime, REPO)
 
-    const target = await exportJson(report, tempPath(), store)
+    const target = await exportPath(runtime, 'json', tempPath())
     const data = JSON.parse(readFileSync(target, 'utf-8')) as {
       projects: Array<{ repoUrl?: string }>
       sessions: Array<{ repoUrl?: string }>
@@ -322,12 +363,12 @@ describe('export git info (repoUrl in projects/sessions/records)', () => {
     expect(data.projects[0]!.repoUrl).toBe(REPO)
     expect(data.sessions[0]!.repoUrl).toBe(REPO)
     expect(data.records[0]!.repoUrl).toBe(REPO)
-    store.close()
   })
 
   it('omits repoUrl in JSON and leaves the CSV cell empty when the project is not a git checkout', async () => {
-    const store = makeStore()
-    const target = await exportJson(buildFixtureReport(), tempPath(), store)
+    const { runtime } = openLedgerFixture()
+    seedExportLedger(runtime)
+    const target = await exportPath(runtime, 'json', tempPath())
     const data = JSON.parse(readFileSync(target, 'utf-8')) as {
       projects: Array<Record<string, unknown>>
       sessions: Array<Record<string, unknown>>
@@ -337,46 +378,17 @@ describe('export git info (repoUrl in projects/sessions/records)', () => {
     expect('repoUrl' in data.sessions[0]!).toBe(false)
     expect('repoUrl' in data.records[0]!).toBe(false)
 
-    const folder = await exportCsv(buildFixtureReport(), tempPath(), store)
+    const folder = await exportPath(runtime, 'csv', tempPath())
     const projectsCsv = readFileSync(join(folder, 'projects.csv'), 'utf-8')
     const header = projectsCsv.split('\n')[0]!
     expect(header).toContain('repoUrl')
     expect(projectsCsv).not.toContain('github.com')
-    store.close()
   })
 
   it('populates repoUrl from ledger_source on the real export path', async () => {
     const { runtime } = openLedgerFixture()
-    runtime.runSync(
-      Effect.flatMap(LedgerIngest, ingest =>
-        ingest.portIn({
-          provider: 'opencode',
-          envFingerprint: 'env-demo',
-          filePath: FIXTURE_SOURCE_PATH,
-          verdict: 'new',
-          cachedFile: buildFixtureCachedFile(),
-          repoUrl: 'https://github.com/acme/demo-project',
-        }),
-      ),
-    )
-
-    const queryInput = {
-      outputPath: tempPath(),
-      catalogue: capturePricingCatalogue({
-        prices: new Map(),
-        overrides: new Map(),
-        builtinAliases: {},
-        userAliases: {},
-        tiers: [],
-        routedSegments: new Set(),
-      }),
-      proxyPaths: { paths: [], caseSensitive: false },
-    }
-    const jsonResult = await runtime.runPromise(queryExport({ ...queryInput, kind: 'json' }))
-    expect(jsonResult.ok).toBe(true)
-    if (!jsonResult.ok) throw new Error(jsonResult.error)
-    if (!jsonResult.path) throw new Error('JSON export did not return a path')
-    const target = jsonResult.path
+    seedExportLedger(runtime, 'https://github.com/acme/demo-project')
+    const target = await exportPath(runtime, 'json', tempPath())
     const data = JSON.parse(readFileSync(target, 'utf-8')) as {
       projects: Array<{ repoUrl?: string }>
       records: Array<{ repoUrl?: string }>
@@ -384,11 +396,7 @@ describe('export git info (repoUrl in projects/sessions/records)', () => {
     expect(data.projects[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
     expect(data.records[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
 
-    const csvResult = await runtime.runPromise(queryExport({ ...queryInput, kind: 'csv' }))
-    expect(csvResult.ok).toBe(true)
-    if (!csvResult.ok) throw new Error(csvResult.error)
-    if (!csvResult.path) throw new Error('CSV export did not return a path')
-    const folder = csvResult.path
+    const folder = await exportPath(runtime, 'csv', tempPath())
     expect(readFileSync(join(folder, 'projects.csv'), 'utf-8')).toContain('https://github.com/acme/demo-project')
     expect(readFileSync(join(folder, 'sessions.csv'), 'utf-8')).toContain('https://github.com/acme/demo-project')
     expect(readFileSync(join(folder, 'records.csv'), 'utf-8')).toContain('https://github.com/acme/demo-project')
