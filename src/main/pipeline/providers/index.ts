@@ -389,6 +389,16 @@ export function discoverAllSessions(
   return Effect.runPromise(discoverAllSessionsEffect(providerFilter, providerList, context))
 }
 
+export function getProviderEffect(
+  name: string,
+  context: DiscoveryContext = {},
+): Effect.Effect<Provider | undefined, Error> {
+  return runOwnedDiscoveryPromise(() => getProvider(name), context).pipe(
+    Effect.mapError(cause => (cause instanceof Error ? cause : new Error(String(cause)))),
+  )
+}
+
+/** Promise edge for provider callers not migrated to Effect yet. */
 export async function getProvider(name: string): Promise<Provider | undefined> {
   if (name === 'antigravity') {
     const ag = await loadAntigravity()

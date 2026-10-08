@@ -1,4 +1,7 @@
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import * as Stream from 'effect/Stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -31,6 +34,11 @@ vi.mock('../src/main/pipeline/providers/index.js', () => ({
       catch: cause => cause as Error,
     }),
   getProvider: (...args: unknown[]) => hooks.getProvider(...args),
+  getProviderEffect: (...args: unknown[]) =>
+    Effect.tryPromise({
+      try: () => hooks.getProvider(...args) as Promise<unknown>,
+      catch: cause => cause as Error,
+    }),
 }))
 
 vi.mock('../src/main/pipeline/session-cache.js', async () => {
@@ -43,6 +51,11 @@ vi.mock('../src/main/pipeline/session-cache.js', async () => {
     computeEnvFingerprint: vi.fn(() => 'test-env'),
     DURABLE_PROVIDER_NAMES: new Set(),
     fingerprintFile: (...args: unknown[]) => hooks.fingerprint(...args),
+    fingerprintFileEffect: (...args: unknown[]) =>
+      Effect.tryPromise({
+        try: () => hooks.fingerprint(...args) as Promise<unknown>,
+        catch: cause => cause as Error,
+      }),
     isCacheComplete: (cache: { complete?: boolean }) => cache.complete === true,
     loadCache: vi.fn(() => hooks.cache),
     loadCacheEffect: vi.fn(() => Effect.sync(() => hooks.cache as SessionCache)),
@@ -68,7 +81,7 @@ vi.mock('../src/main/pipeline/cache-refresh-lock.js', async () => {
 })
 
 import { captureScanPricing } from '../src/main/pipeline/models.js'
-import { clearSessionCache, parseAllSessions } from '../src/main/pipeline/parser.js'
+import { clearSessionCache, parseAllSessions, parseAllSessionsEffect } from '../src/main/pipeline/parser.js'
 import type { Provider } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { CachedFile, SessionCache } from '../src/shared/schemas/session-cache.js'
@@ -250,5 +263,227 @@ describe('parser cooperative stop', () => {
     expect(context.pricing).toBe(pricing)
     expect(onDelta).toHaveBeenCalledOnce()
     expect(onDelta.mock.calls[0][1]).toBe(pricing)
+  })
+
+  it('uses the native stream at parseAllSessionsEffect and preserves schema skip tallies', async () => {
+    const path = '/test/native-stream.session'
+    const cache = makeCache('test-provider', [path])
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('test-provider', path)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    const parseStream = vi.fn(() => Stream.fromIterable([{}, parsedCall()] as never[]))
+    const parse = vi.fn(async function* () {
+      yield* []
+      throw new Error('legacy parser should not be selected')
+    })
+    hooks.getProvider.mockResolvedValue({
+      network: false,
+      durableSources: false,
+      createSessionParser: () => ({ parse, parseStream }),
+    })
+    const onUnparsed = vi.fn()
+
+    await Effect.runPromise(parseAllSessionsEffect(undefined, undefined, undefined, onUnparsed))
+
+    expect(parseStream).toHaveBeenCalledOnce()
+    expect(parse).not.toHaveBeenCalled()
+    expect(onUnparsed).toHaveBeenCalledWith('test-provider', 1)
+    expect(cache.providers['test-provider']?.files[path]?.failed).toBeUndefined()
+    expect(cache.providers['test-provider']?.files[path]?.turns).toHaveLength(1)
+  })
+
+  it('records a native stream failure as a fingerprinted per-file failure marker', async () => {
+    const path = '/test/native-stream-failure.session'
+    const cache = makeCache('test-provider', [path])
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('test-provider', path)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    hooks.getProvider.mockResolvedValue({
+      network: false,
+      durableSources: false,
+      createSessionParser: () => ({
+        parse: async function* () {},
+        parseStream: () => Stream.fail(new Error('bad source')),
+      }),
+    })
+
+    await Effect.runPromise(parseAllSessionsEffect())
+
+    expect(cache.providers['test-provider']?.files[path]).toMatchObject({
+      fingerprint: { dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 },
+      turns: [],
+      failed: true,
+    })
+  })
+
+  it('keeps durable cache merges and re-emits durable orphans through the native provider path', async () => {
+    const path = '/test/durable.session'
+    const orphanPath = '/test/pruned.session'
+    const cache = makeCache('test-provider', [path, orphanPath])
+    const timestamp = new Date().toISOString()
+    const durableTurn = (deduplicationKey: string) => ({
+      timestamp,
+      sessionId: 'session-1',
+      userMessage: 'cached',
+      calls: [
+        {
+          provider: 'test-provider',
+          model: 'test-model',
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            cachedInputTokens: 0,
+            reasoningTokens: 0,
+            webSearchRequests: 0,
+            cacheCreationOneHourTokens: 0,
+          },
+          speed: 'standard' as const,
+          timestamp,
+          tools: [],
+          bashCommands: [],
+          skills: [],
+          deduplicationKey,
+          project: 'test-project',
+        },
+      ],
+    })
+    cache.providers['test-provider']!.durable = true
+    cache.providers['test-provider']!.files[path]!.turns = [durableTurn('cached-call')]
+    cache.providers['test-provider']!.files[orphanPath]!.turns = [durableTurn('orphan-call')]
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('test-provider', path)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    hooks.getProvider.mockResolvedValue({
+      network: false,
+      durableSources: true,
+      createSessionParser: () => ({
+        parse: async function* () {
+          yield parsedCall()
+        },
+      }),
+    })
+    const onDelta = vi.fn()
+
+    await Effect.runPromise(parseAllSessionsEffect(undefined, undefined, onDelta))
+
+    expect(cache.providers['test-provider']?.files[path]?.turns.map(turn => turn.calls[0]?.deduplicationKey)).toEqual([
+      'cached-call',
+      'test-provider:call-1',
+    ])
+    expect(onDelta).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'test-provider', filePath: orphanPath, verdict: 'appended', durable: true }),
+      expect.anything(),
+    )
+  })
+
+  it('restores the original durable cache entry when cancelled during delta publication', async () => {
+    const path = '/test/durable-delta-cancel.session'
+    const cache = makeCache('test-provider', [path])
+    const section = cache.providers['test-provider']!
+    section.durable = true
+    const originalEntry = section.files[path]!
+    const originalValue = structuredClone(originalEntry)
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('test-provider', path)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    hooks.getProvider.mockResolvedValue({
+      network: false,
+      durableSources: true,
+      createSessionParser: () => ({
+        parse: async function* () {
+          yield parsedCall()
+        },
+        parseStream: () => Stream.make(parsedCall()),
+      }),
+    })
+    let finishDelta!: () => void
+    const pendingDelta = new Promise<void>(resolve => {
+      finishDelta = resolve
+    })
+    let startDelta!: () => void
+    const deltaStarted = new Promise<void>(resolve => {
+      startDelta = resolve
+    })
+    const controller = new AbortController()
+    const onDelta = vi.fn(async () => {
+      startDelta()
+      await pendingDelta
+    })
+    const stop = vi.fn(() => {
+      controller.abort(new ScanAbortedError({ message: 'scan aborted' }))
+      finishDelta()
+    })
+    const fiber = Effect.runFork(
+      parseAllSessionsEffect(undefined, undefined, onDelta, undefined, controller.signal, {}, stop),
+    )
+    await deltaStarted
+    expect(section.files[path]?.turns).toHaveLength(1)
+    expect(section.files[path]?.fingerprint.mtimeMs).toBe(2)
+    expect(originalEntry).toEqual(originalValue)
+
+    await Effect.runPromise(Fiber.interrupt(fiber))
+
+    expect(stop).toHaveBeenCalledOnce()
+    expect(section.files[path]).toBe(originalEntry)
+    expect(section.files[path]).toEqual(originalValue)
+    expect(hooks.saveCache).not.toHaveBeenCalled()
+  })
+
+  it('drains a pending legacy next before iterator return when interrupted', async () => {
+    const path = '/test/pending-legacy.session'
+    const cache = makeCache('test-provider', [path])
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('test-provider', path)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    const events: string[] = []
+    let finishNext!: () => void
+    let signalStarted!: () => void
+    const started = new Promise<void>(resolve => (signalStarted = resolve))
+    const parser = {
+      parse: async function* () {
+        try {
+          events.push('next-start')
+          signalStarted()
+          await new Promise<void>(resolve => (finishNext = resolve))
+          events.push('next-settled')
+          yield parsedCall()
+        } finally {
+          events.push('iterator-return')
+        }
+      },
+    }
+    hooks.getProvider.mockResolvedValue({
+      network: false,
+      durableSources: false,
+      createSessionParser: () => parser,
+    })
+    const controller = new AbortController()
+    const stopError = new Error('stop callback failed')
+    const stop = vi.fn(() => {
+      events.push('stop')
+      finishNext()
+      throw stopError
+    })
+    let interruptedExit!: import('effect/Exit').Exit<unknown, unknown>
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          parseAllSessionsEffect(undefined, undefined, undefined, undefined, controller.signal, {}, stop),
+        )
+        yield* Effect.promise(() => started)
+        yield* Fiber.interrupt(fiber)
+        interruptedExit = yield* Fiber.await(fiber)
+      }),
+    )
+
+    expect(events).toEqual(['next-start', 'stop', 'next-settled', 'iterator-return'])
+    expect(cache.providers['test-provider']?.files[path]).toEqual(priorFile)
+    expect(interruptedExit._tag).toBe('Failure')
+    expect(interruptedExit._tag === 'Failure' ? Cause.findDefect(interruptedExit.cause) : undefined).toMatchObject({
+      _tag: 'Success',
+      success: stopError,
+    })
   })
 })

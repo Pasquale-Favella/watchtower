@@ -1,4 +1,6 @@
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
+import * as Stream from 'effect/Stream'
 import { existsSync } from 'fs'
 import { lstat, readdir, readFile, stat } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
@@ -39,7 +41,7 @@ import {
   shouldReparseAntigravitySource,
 } from './providers/antigravity.js'
 import { getDesktopSessionsDirs } from './providers/claude.js'
-import { discoverAllSessionsEffect, getProvider } from './providers/index.js'
+import { discoverAllSessionsEffect, getProviderEffect } from './providers/index.js'
 import type { ParsedProviderCall, ProviderScanContext, ProviderScanServices, SessionSource } from './providers/types.js'
 import { isScanAbortedError, type ScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
 import type { ScanPricing } from './scan-pricing.js'
@@ -52,6 +54,7 @@ import {
   computeEnvFingerprint,
   DURABLE_PROVIDER_NAMES,
   fingerprintFile,
+  fingerprintFileEffect,
   isCacheComplete,
   loadCacheEffect,
   type ProviderSection,
@@ -87,9 +90,10 @@ import type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 
 export type DeltaHandler = (delta: ScanDelta, pricing?: ScanPricing) => void | Promise<void>
 
-/** Owns one native Promise parser operation. The Promise APIs cannot be
- * interrupted themselves, so cancellation first aborts the scan signal and
- * then waits for cooperative parser checks and callbacks to settle. */
+/** Owns a legacy parser Promise until it settles. Non-Claude provider parsing
+ * does not use this adapter; its parseStream runs in the current fiber. Remaining
+ * uses are the Claude parser compatibility boundary and provider leaf callbacks.
+ * Remove each use when that API returns an Effect. */
 function runOwnedParserPromise<A>(
   signal: AbortSignal | undefined,
   stop: (() => void) | undefined,
@@ -118,6 +122,65 @@ function runOwnedParserPromise<A>(
         if (!owned.isSettled()) stop?.()
       }).pipe(Effect.ensuring(Effect.promise(() => owned.drain))),
   )
+}
+
+/** Legacy parser bridge. The iterator's next() Promise cannot be interrupted;
+ * on interruption ask the scan owner to stop, drain the in-flight next(), then
+ * return the iterator so provider resources are released in order. Remove once
+ * every provider implements parseStream. */
+function consumeLegacyParser(
+  createParser: () => AsyncGenerator<ParsedProviderCall>,
+  onCall: (call: ParsedProviderCall) => void,
+  stop?: () => void,
+): Effect.Effect<void, Error> {
+  return Effect.suspend(() => {
+    let pending: Promise<IteratorResult<ParsedProviderCall>> | undefined
+    return Effect.acquireUseRelease(
+      Effect.sync(createParser),
+      iterator =>
+        Effect.gen(function* () {
+          while (true) {
+            const next = yield* Effect.tryPromise({
+              try: () => {
+                pending = iterator.next()
+                return pending
+              },
+              catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+            })
+            pending = undefined
+            if (next.done) return
+            yield* Effect.sync(() => onCall(next.value))
+          }
+        }),
+      iterator =>
+        Effect.gen(function* () {
+          if (pending) {
+            const drain = Effect.promise(() =>
+              pending!.then(
+                () => undefined,
+                () => undefined,
+              ),
+            ).pipe(
+              Effect.andThen(
+                iterator.return
+                  ? Effect.tryPromise({
+                      try: () => iterator.return!(undefined),
+                      catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+                    }).pipe(Effect.catch(() => Effect.void))
+                  : Effect.void,
+              ),
+            )
+            yield* Effect.sync(() => stop?.()).pipe(Effect.ensuring(drain))
+            pending = undefined
+          } else if (iterator.return) {
+            yield* Effect.tryPromise({
+              try: () => iterator.return!(undefined),
+              catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+            }).pipe(Effect.catch(() => Effect.void))
+          }
+        }),
+    )
+  })
 }
 
 function checkScanAbort(signal?: AbortSignal): Effect.Effect<void, ScanAbortedError> {
@@ -3348,7 +3411,7 @@ export function createScanProgress(label: string, total: number) {
   }
 }
 
-async function parseProviderSources(
+const parseProviderSourcesEffect = Effect.fnUntraced(function* (
   providerName: string,
   sources: SessionSource[],
   seenKeys: Set<string>,
@@ -3357,13 +3420,13 @@ async function parseProviderSources(
   readOnly = false,
   onDelta?: DeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
-  context: ProviderScanContext = {},
-): Promise<ProjectSummary[]> {
+  context: ProviderScanContext & { stop?: () => void } = {},
+): Effect.fn.Return<ProjectSummary[], Error> {
   const { signal } = context
   const pricing = context.pricing ?? captureScanPricing()
-  throwIfScanAborted(signal)
-  const provider = await getProvider(providerName)
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
+  const provider = yield* getProviderEffect(providerName, context)
+  yield* checkScanAbort(signal)
   if (!provider) return []
 
   const section = getOrCreateProviderSection(diskCache, providerName)
@@ -3407,7 +3470,7 @@ async function parseProviderSources(
   }
 
   for (const source of sources) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     allDiscoveredFiles.add(source.path)
 
     // Network providers (e.g. Vercel AI Gateway) have no on-disk file — their data
@@ -3419,8 +3482,8 @@ async function parseProviderSources(
       continue
     }
 
-    const fp = await fingerprintFile(source.path)
-    throwIfScanAborted(signal)
+    const fp = yield* fingerprintFileEffect(source.path)
+    yield* checkScanAbort(signal)
     if (!fp) continue
 
     const cached = section.files[source.path]
@@ -3449,7 +3512,7 @@ async function parseProviderSources(
 
   if (readOnly) {
     for (const [path, cached] of Object.entries(section.files)) {
-      throwIfScanAborted(signal)
+      yield* checkScanAbort(signal)
       if (allDiscoveredFiles.has(path)) continue
       servedSources.push({
         provider: providerName,
@@ -3465,7 +3528,7 @@ async function parseProviderSources(
   // Separate from seenKeys so parsing doesn't suppress query-time output.
   const parserDedup = new Set(seenKeys)
   for (const { cached } of unchangedSources) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     for (const turn of cached.turns) {
       for (const call of turn.calls) {
         parserDedup.add(call.deduplicationKey)
@@ -3475,9 +3538,11 @@ async function parseProviderSources(
 
   // Warm files emit an unchanged delta (a ledger no-op; the stream stays whole).
   for (const { source, cached } of unchangedSources) {
-    throwIfScanAborted(signal)
-    await emitProviderDelta(source.path, 'unchanged', cached, source)
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
+    yield* runOwnedParserPromise(signal, context.stop, () =>
+      emitProviderDelta(source.path, 'unchanged', cached, source),
+    )
+    yield* checkScanAbort(signal)
   }
 
   // Parse changed files, update cache
@@ -3487,104 +3552,157 @@ async function parseProviderSources(
   // agent-traces.db) can accumulate via the merge logic below rather than
   // being wiped on every iteration.
   const clearedPaths = new Set<string>()
-  try {
-    for (const { source, fp, verdict } of changedSources) {
-      throwIfScanAborted(signal)
-      const priorEntry = section.files[source.path]
-      if (dateRange) {
-        if (fp.mtimeMs < dateRange.start.getTime()) continue
-      }
-
-      // Clear stale entry before parse — but only once per path so that
-      // multiple sources mapping to the same file path can merge their turns.
-      // Durable providers (e.g. copilot OTel) never clear existing entries so
-      // that pruned-away data is preserved for monotonic monthly totals.
-      if (!provider.durableSources && !clearedPaths.has(source.path)) {
-        delete section.files[source.path]
-        clearedPaths.add(source.path)
-      }
-
-      const parser = provider.createSessionParser(source, parserDedup, dateRange, context)
-
-      try {
-        // Extraction seam (ADR 0003): every provider's emitted call runs through
-        // the loose shared schema. Unknown keys are stripped; a declared field
-        // failing its type is skipped and counted (unparsed), never fatal — a
-        // provider version bump degrades that provider, not the whole scan.
-        const providerCalls: ParsedProviderCall[] = []
-        const tally: UnparsedTally = { count: 0 }
-        for await (const call of parser.parse()) {
-          throwIfScanAborted(signal)
-          const parsed = parseOrSkip(parsedProviderCallSchema, call, tally, `${providerName} session ${source.path}`)
-          if (parsed) providerCalls.push(parsed)
-        }
-        throwIfScanAborted(signal)
-        if (tally.count > 0) onUnparsed?.(providerName, tally.count)
-        const canonicalCalls = await Promise.all(providerCalls.map(canonicalizeProviderCallProject))
-        throwIfScanAborted(signal)
-        const turns = providerCallsToCachedTurns(canonicalCalls)
-
-        // Store/merge parsed turns into the cache.
-        // Durable providers use a union-by-deduplicationKey merge: existing turns
-        // are NEVER deleted (preserves data for spans pruned from the DB), and
-        // only turns whose dedup keys are not already cached are appended.
-        // Non-durable providers keep the original overwrite-or-append behaviour.
-        if (provider.durableSources) {
-          const existingEntry = section.files[source.path]
-          if (existingEntry) {
-            const existingKeys = new Set(existingEntry.turns.flatMap(t => t.calls.map(c => c.deduplicationKey)))
-            const newTurns = turns.filter(t => t.calls.every(c => !existingKeys.has(c.deduplicationKey)))
-            existingEntry.turns = [...existingEntry.turns, ...newTurns]
-            existingEntry.fingerprint = fp
-          } else {
-            section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns }
+  let activeParse: { readonly path: string; readonly priorEntry: CachedFile | undefined } | undefined
+  yield* Effect.onExit(
+    Effect.onExit(
+      Effect.gen(function* () {
+        for (const { source, fp, verdict } of changedSources) {
+          yield* checkScanAbort(signal)
+          const priorEntry = section.files[source.path]
+          activeParse = { path: source.path, priorEntry }
+          if (dateRange) {
+            if (fp.mtimeMs < dateRange.start.getTime()) continue
           }
-        } else {
-          // Non-durable: overwrite (clearedPaths already deleted stale entry above)
-          // or append when multiple sources map to the same path. NOTE: the append
-          // path assumes discoverSessions yields a unique path per source, which all
-          // current providers do; it only fires for same-path multi-source providers.
-          const existingCacheEntry = section.files[source.path]
-          if (existingCacheEntry) {
-            existingCacheEntry.turns = [...existingCacheEntry.turns, ...turns]
-          } else {
-            section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns }
+
+          // Clear stale entry before parse — but only once per path so that
+          // multiple sources mapping to the same file path can merge their turns.
+          // Durable providers (e.g. copilot OTel) never clear existing entries so
+          // that pruned-away data is preserved for monotonic monthly totals.
+          if (!provider.durableSources && !clearedPaths.has(source.path)) {
+            delete section.files[source.path]
+            clearedPaths.add(source.path)
+          }
+
+          const parser = provider.createSessionParser(source, parserDedup, dateRange, context)
+
+          try {
+            // Extraction seam (ADR 0003): every provider's emitted call runs through
+            // the loose shared schema. Unknown keys are stripped; a declared field
+            // failing its type is skipped and counted (unparsed), never fatal — a
+            // provider version bump degrades that provider, not the whole scan.
+            const providerCalls: ParsedProviderCall[] = []
+            const tally: UnparsedTally = { count: 0 }
+            const collectCall = (call: ParsedProviderCall): void => {
+              const parsed = parseOrSkip(
+                parsedProviderCallSchema,
+                call,
+                tally,
+                `${providerName} session ${source.path}`,
+              )
+              if (parsed) providerCalls.push(parsed)
+            }
+            const streamResult = yield* Effect.result(
+              parser.parseStream
+                ? Stream.runForEach(parser.parseStream(), call =>
+                    Effect.gen(function* () {
+                      yield* checkScanAbort(signal)
+                      yield* Effect.sync(() => collectCall(call))
+                    }),
+                  )
+                : consumeLegacyParser(() => parser.parse(), collectCall, context.stop),
+            )
+            if (streamResult._tag === 'Failure') throw streamResult.failure
+            yield* checkScanAbort(signal)
+            if (tally.count > 0) onUnparsed?.(providerName, tally.count)
+            const canonicalization = yield* Effect.result(
+              Effect.forEach(
+                providerCalls,
+                call => runOwnedParserPromise(signal, context.stop, () => canonicalizeProviderCallProject(call)),
+                { concurrency: 'unbounded' },
+              ),
+            )
+            if (canonicalization._tag === 'Failure') throw canonicalization.failure
+            const canonicalCalls = canonicalization.success
+            yield* checkScanAbort(signal)
+            const turns = providerCallsToCachedTurns(canonicalCalls)
+
+            // Store/merge parsed turns into the cache.
+            // Durable providers use a union-by-deduplicationKey merge: existing turns
+            // are NEVER deleted (preserves data for spans pruned from the DB), and
+            // only turns whose dedup keys are not already cached are appended.
+            // Non-durable providers keep the original overwrite-or-append behaviour.
+            if (provider.durableSources) {
+              const existingEntry = section.files[source.path]
+              if (existingEntry) {
+                const existingKeys = new Set(existingEntry.turns.flatMap(t => t.calls.map(c => c.deduplicationKey)))
+                const newTurns = turns.filter(t => t.calls.every(c => !existingKeys.has(c.deduplicationKey)))
+                section.files[source.path] = {
+                  ...existingEntry,
+                  turns: [...existingEntry.turns, ...newTurns],
+                  fingerprint: fp,
+                }
+              } else {
+                section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns }
+              }
+            } else {
+              // Non-durable: overwrite (clearedPaths already deleted stale entry above)
+              // or append when multiple sources map to the same path. NOTE: the append
+              // path assumes discoverSessions yields a unique path per source, which all
+              // current providers do; it only fires for same-path multi-source providers.
+              const existingCacheEntry = section.files[source.path]
+              if (existingCacheEntry) {
+                section.files[source.path] = {
+                  ...existingCacheEntry,
+                  turns: [...existingCacheEntry.turns, ...turns],
+                }
+              } else {
+                section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns }
+              }
+            }
+            yield* checkScanAbort(signal)
+            didParse = true
+            ;(diskCache as { _dirty?: boolean })._dirty = true
+            const deltaResult = yield* Effect.result(
+              runOwnedParserPromise(signal, context.stop, () =>
+                emitProviderDelta(source.path, verdict, section.files[source.path]!, source),
+              ),
+            )
+            if (deltaResult._tag === 'Failure') throw deltaResult.failure
+            activeParse = undefined
+          } catch (err) {
+            if (signal?.aborted || isScanAbortedError(err)) {
+              if (priorEntry) section.files[source.path] = priorEntry
+              else delete section.files[source.path]
+              if (signal?.aborted) return yield* Effect.fail(scanAbortError(signal))
+              return yield* Effect.fail(err as Error)
+            }
+            if (isSqliteBusyError(err)) {
+              warnProviderReadFailureOnce(providerName, err)
+              activeParse = undefined
+              continue
+            }
+            // A single malformed session file must not abort the entire run — that
+            // would silently empty the daily-cache backfill and wipe the trend /
+            // history (issue #441). Record a negative-result marker keyed by the
+            // current fingerprint so we don't re-read + re-throw this unchanged file
+            // on every refresh; it re-parses only if it changes. Empty turns => no
+            // usage contributed.
+            section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns: [], failed: true }
+            ;(diskCache as { _dirty?: boolean })._dirty = true
+            warnProviderParseFailure(providerName, source.path, err)
+            activeParse = undefined
+            continue
           }
         }
-        throwIfScanAborted(signal)
-        didParse = true
-        ;(diskCache as { _dirty?: boolean })._dirty = true
-        await emitProviderDelta(source.path, verdict, section.files[source.path]!, source)
-      } catch (err) {
-        if (signal?.aborted || isScanAbortedError(err)) {
-          if (priorEntry) section.files[source.path] = priorEntry
-          else delete section.files[source.path]
-          if (signal?.aborted) throw scanAbortError(signal)
-          throw err
+      }),
+      exit =>
+        Effect.sync(() => {
+          if (exit._tag !== 'Failure' || !activeParse) return
+          if (activeParse.priorEntry) section.files[activeParse.path] = activeParse.priorEntry
+          else delete section.files[activeParse.path]
+          activeParse = undefined
+        }),
+    ),
+    exit =>
+      Effect.gen(function* () {
+        if ((exit._tag === 'Failure' && Cause.hasInterrupts(exit.cause)) || signal?.aborted || !didParse) return
+        if (providerName === 'codex') yield* runOwnedParserPromise(signal, context.stop, () => flushCodexCache(signal))
+        if (providerName === 'antigravity') {
+          const liveIds = new Set(sources.map(s => antigravityCascadeIdFromPath(s.path)))
+          yield* runOwnedParserPromise(signal, context.stop, () => flushAntigravityCache(liveIds))
         }
-        if (isSqliteBusyError(err)) {
-          warnProviderReadFailureOnce(providerName, err)
-          continue
-        }
-        // A single malformed session file must not abort the entire run — that
-        // would silently empty the daily-cache backfill and wipe the trend /
-        // history (issue #441). Record a negative-result marker keyed by the
-        // current fingerprint so we don't re-read + re-throw this unchanged file
-        // on every refresh; it re-parses only if it changes. Empty turns => no
-        // usage contributed.
-        section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns: [], failed: true }
-        ;(diskCache as { _dirty?: boolean })._dirty = true
-        warnProviderParseFailure(providerName, source.path, err)
-        continue
-      }
-    }
-  } finally {
-    if (!signal?.aborted && didParse && providerName === 'codex') await flushCodexCache(signal)
-    if (!signal?.aborted && didParse && providerName === 'antigravity') {
-      const liveIds = new Set(sources.map(s => antigravityCascadeIdFromPath(s.path)))
-      await flushAntigravityCache(liveIds)
-    }
-  }
+      }),
+  )
 
   // Stamp the durable flag into the cache section so the orphan-bootstrap in
   // parseAllSessions can fast-check without a getProvider() round-trip.
@@ -3625,7 +3743,7 @@ async function parseProviderSources(
   if (!readOnly && provider.durableSources && onDelta) {
     for (const [path, cachedFile] of Object.entries(section.files)) {
       if (allDiscoveredFiles.has(path)) continue
-      await emitProviderDelta(path, 'appended', cachedFile)
+      yield* runOwnedParserPromise(signal, context.stop, () => emitProviderDelta(path, 'appended', cachedFile))
     }
   }
 
@@ -3805,7 +3923,7 @@ async function parseProviderSources(
   }
 
   return projects
-}
+})
 
 const CACHE_TTL_MS = 180_000
 const MAX_CACHE_ENTRIES = 10
@@ -4523,18 +4641,16 @@ const runParseEffect = Effect.fnUntraced(function* (
     yield* checkScanAbort(signal)
     emitScanProgress({ kind: 'provider', provider: providerName, state: 'start' })
     const providerResult = yield* Effect.result(
-      runOwnedParserPromise(signal, context.stop, () =>
-        parseProviderSources(
-          providerName,
-          sources,
-          seenKeys,
-          diskCache,
-          dateRange,
-          readOnly,
-          onDelta,
-          onUnparsed,
-          context,
-        ),
+      parseProviderSourcesEffect(
+        providerName,
+        sources,
+        seenKeys,
+        diskCache,
+        dateRange,
+        readOnly,
+        onDelta,
+        onUnparsed,
+        context,
       ),
     )
     if (providerResult._tag === 'Success') {
@@ -4575,8 +4691,16 @@ const runParseEffect = Effect.fnUntraced(function* (
     // constant — both checks are O(1) and avoid a getProvider() dynamic-import
     // round-trip for every unprocessed provider in the disk cache.
     if (!section.durable && !DURABLE_PROVIDER_NAMES.has(providerName)) continue
-    const projects = yield* runOwnedParserPromise(signal, context.stop, () =>
-      parseProviderSources(providerName, [], seenKeys, diskCache, dateRange, readOnly, onDelta, onUnparsed, context),
+    const projects = yield* parseProviderSourcesEffect(
+      providerName,
+      [],
+      seenKeys,
+      diskCache,
+      dateRange,
+      readOnly,
+      onDelta,
+      onUnparsed,
+      context,
     )
     yield* checkScanAbort(signal)
     otherProjects.push(...projects)
