@@ -1,11 +1,12 @@
 import { randomBytes } from 'crypto'
-import { existsSync } from 'fs'
+import { Effect } from 'effect'
+import * as Schema from 'effect/Schema'
 import { mkdir, open, readFile, rename, stat, unlink } from 'fs/promises'
 import { join } from 'path'
 
+import { type ParsedProviderCall, parsedProviderCallSchema } from '../../shared/schemas/providers.js'
 import { resolveCacheDir } from '../env.js'
-import type { ParsedProviderCall } from './providers/types.js'
-import { isScanAbortedError, throwIfScanAborted } from './scan-control.js'
+import { isScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
 
 // v4: attribute MCP calls emitted as event_msg/mcp_tool_call_end (issue #478).
 // Recent Codex sessions cached under v3 dropped these, so force a re-parse.
@@ -20,19 +21,22 @@ import { isScanAbortedError, throwIfScanAborted } from './scan-control.js'
 const CODEX_CACHE_VERSION = 8
 const CACHE_FILE = 'codex-results.json'
 
-type FileFingerprint = { mtimeMs: number; sizeBytes: number }
+export type FileFingerprint = { mtimeMs: number; sizeBytes: number }
 
-type FileEntry = {
-  mtimeMs: number
-  sizeBytes: number
-  project: string
-  calls: ParsedProviderCall[]
-}
-
-type ResultCache = {
-  version: number
-  files: Record<string, FileEntry>
-}
+const finiteNumber = Schema.Number.pipe(Schema.check(Schema.isFinite()))
+const fileEntrySchema = Schema.Struct({
+  mtimeMs: finiteNumber,
+  sizeBytes: finiteNumber,
+  project: Schema.String,
+  calls: Schema.mutable(Schema.Array(parsedProviderCallSchema)),
+})
+const resultCacheSchema = Schema.Struct({
+  version: Schema.Literal(CODEX_CACHE_VERSION),
+  files: Schema.mutableKey(Schema.Record(Schema.String, Schema.mutableKey(fileEntrySchema))),
+})
+const resultCacheJsonSchema = Schema.fromJsonString(resultCacheSchema)
+type FileEntry = typeof fileEntrySchema.Type
+type ResultCache = typeof resultCacheSchema.Type
 
 function getCacheDir(): string {
   return resolveCacheDir()
@@ -44,158 +48,231 @@ function getCachePath(): string {
 
 let memCache: ResultCache | null = null
 
-async function loadCache(signal?: AbortSignal): Promise<ResultCache> {
-  throwIfScanAborted(signal)
-  if (memCache) return memCache
-  try {
-    const raw = await readFile(getCachePath(), { encoding: 'utf-8', ...(signal ? { signal } : {}) })
-    throwIfScanAborted(signal)
-    const cache = JSON.parse(raw) as ResultCache
-    if (cache.version === CODEX_CACHE_VERSION && cache.files && typeof cache.files === 'object') {
-      throwIfScanAborted(signal)
-      memCache = cache
-      return cache
-    }
-  } catch (error) {
-    throwIfScanAborted(signal)
-    if (isScanAbortedError(error)) throw error
-  }
-  throwIfScanAborted(signal)
-  memCache = { version: CODEX_CACHE_VERSION, files: {} }
-  return memCache
+function abortCheck(signal?: AbortSignal): Effect.Effect<void, Error> {
+  return Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
 }
+
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause))
+}
+
+/**
+ * Owns Promise based Node leaves that cannot be interrupted by Effect itself.
+ * The local signal reaches APIs that support cancellation; on fiber interruption
+ * the scope aborts the leaf and waits for settlement before releasing ownership.
+ */
+function ownedPromise<A>(
+  operation: (signal: AbortSignal) => Promise<A>,
+  parentSignal?: AbortSignal,
+): Effect.Effect<A, Error> {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const owned = yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const controller = new AbortController()
+          let settled = false
+          const abortFromParent = (): void => controller.abort(parentSignal?.reason)
+          if (parentSignal?.aborted) abortFromParent()
+          else parentSignal?.addEventListener('abort', abortFromParent, { once: true })
+          const promise = Promise.resolve()
+            .then(() => {
+              throwIfScanAborted(controller.signal)
+              return operation(controller.signal)
+            })
+            .finally(() => {
+              settled = true
+              parentSignal?.removeEventListener('abort', abortFromParent)
+            })
+          const drained = promise.then(
+            () => undefined,
+            () => undefined,
+          )
+          return { controller, promise, drained, isSettled: () => settled }
+        }),
+        resource =>
+          Effect.promise(async () => {
+            if (!resource.isSettled()) {
+              if (!resource.controller.signal.aborted) resource.controller.abort()
+              await resource.drained
+            }
+          }),
+      )
+      return yield* Effect.tryPromise({
+        try: () => owned.promise,
+        catch: cause => (parentSignal?.aborted ? scanAbortError(parentSignal) : toError(cause)),
+      })
+    }),
+  )
+}
+
+const loadCacheEffect = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<ResultCache, Error> {
+  yield* abortCheck(signal)
+  if (memCache) return memCache
+  const raw = yield* ownedPromise(
+    localSignal => readFile(getCachePath(), { encoding: 'utf-8', signal: localSignal }),
+    signal,
+  ).pipe(Effect.catch(() => Effect.succeed(null as string | null)))
+  yield* abortCheck(signal)
+  const decoded =
+    raw === null
+      ? null
+      : yield* Schema.decodeUnknownEffect(resultCacheJsonSchema)(raw).pipe(Effect.catch(() => Effect.succeed(null)))
+  // Cache corruption is recoverable: reject the entire snapshot and reparse
+  // sources instead of treating malformed calls as an empty successful cache.
+  yield* abortCheck(signal)
+  memCache = decoded ?? { version: CODEX_CACHE_VERSION, files: {} }
+  return memCache
+})
 
 function getEntry(cache: ResultCache, filePath: string, fp: FileFingerprint): FileEntry | null {
   if (!Object.hasOwn(cache.files, filePath)) return null
   const entry = cache.files[filePath]
-  if (entry && entry.mtimeMs === fp.mtimeMs && entry.sizeBytes === fp.sizeBytes) {
-    return entry
-  }
+  if (entry && entry.mtimeMs === fp.mtimeMs && entry.sizeBytes === fp.sizeBytes) return entry
   return null
 }
 
-export async function readCachedCodexResults(
+export type CodexCacheLookup = { calls: ParsedProviderCall[] | null; fingerprint: FileFingerprint | null }
+
+/** Native lookup returns the stat fingerprint so a cold parser reuses it. */
+export const lookupCachedCodexResultsEffect = Effect.fn('lookupCachedCodexResultsEffect')(function* (
   filePath: string,
   signal?: AbortSignal,
-): Promise<ParsedProviderCall[] | null> {
-  throwIfScanAborted(signal)
-  try {
-    const s = await stat(filePath)
-    throwIfScanAborted(signal)
-    const cache = await loadCache(signal)
-    throwIfScanAborted(signal)
-    const entry = getEntry(cache, filePath, { mtimeMs: s.mtimeMs, sizeBytes: s.size })
-    return entry?.calls ?? null
-  } catch (error) {
-    throwIfScanAborted(signal)
-    if (isScanAbortedError(error)) throw error
-  }
-  throwIfScanAborted(signal)
-  return null
+): Effect.fn.Return<CodexCacheLookup, Error> {
+  yield* abortCheck(signal)
+  const fingerprint = yield* ownedPromise(
+    () =>
+      stat(filePath).then(s => ({
+        mtimeMs: s.mtimeMs,
+        sizeBytes: s.size,
+      })),
+    signal,
+  ).pipe(Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))))
+  yield* abortCheck(signal)
+  if (!fingerprint) return { calls: null, fingerprint: null }
+  const cache = yield* loadCacheEffect(signal)
+  yield* abortCheck(signal)
+  const entry = getEntry(cache, filePath, fingerprint)
+  return { calls: entry?.calls ?? null, fingerprint }
+})
+
+export const getCachedCodexProjectEffect = Effect.fn('getCachedCodexProjectEffect')(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<string | null, Error> {
+  yield* abortCheck(signal)
+  const fingerprint = yield* ownedPromise(
+    () =>
+      stat(filePath).then(s => ({
+        mtimeMs: s.mtimeMs,
+        sizeBytes: s.size,
+      })),
+    signal,
+  ).pipe(Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))))
+  yield* abortCheck(signal)
+  if (!fingerprint) return null
+  const cache = yield* loadCacheEffect(signal)
+  yield* abortCheck(signal)
+  return getEntry(cache, filePath, fingerprint)?.project ?? null
+})
+
+/** Remove after Codex discovery migrates from its Promise workflow to Effect. */
+export function getCachedCodexProject(filePath: string, signal?: AbortSignal): Promise<string | null> {
+  return Effect.runPromise(Effect.scoped(getCachedCodexProjectEffect(filePath, signal)))
 }
 
-export async function getCachedCodexProject(filePath: string, signal?: AbortSignal): Promise<string | null> {
-  throwIfScanAborted(signal)
-  try {
-    const s = await stat(filePath)
-    throwIfScanAborted(signal)
-    const cache = await loadCache(signal)
-    throwIfScanAborted(signal)
-    const entry = getEntry(cache, filePath, { mtimeMs: s.mtimeMs, sizeBytes: s.size })
-    return entry?.project ?? null
-  } catch (error) {
-    throwIfScanAborted(signal)
-    if (isScanAbortedError(error)) throw error
-  }
-  throwIfScanAborted(signal)
-  return null
-}
-
-export async function fingerprintFile(filePath: string, signal?: AbortSignal): Promise<FileFingerprint | null> {
-  throwIfScanAborted(signal)
-  try {
-    const s = await stat(filePath)
-    throwIfScanAborted(signal)
-    return { mtimeMs: s.mtimeMs, sizeBytes: s.size }
-  } catch (error) {
-    throwIfScanAborted(signal)
-    if (isScanAbortedError(error)) throw error
-    return null
-  }
-}
-
-export async function writeCachedCodexResults(
+export const writeCachedCodexResultsEffect = Effect.fn('writeCachedCodexResultsEffect')(function* (
   filePath: string,
   project: string,
   calls: ParsedProviderCall[],
   fingerprint: FileFingerprint,
   signal?: AbortSignal,
-): Promise<void> {
-  throwIfScanAborted(signal)
-  try {
-    const cache = await loadCache(signal)
-    throwIfScanAborted(signal)
-    cache.files[filePath] = {
-      mtimeMs: fingerprint.mtimeMs,
-      sizeBytes: fingerprint.sizeBytes,
-      project,
-      calls,
-    }
-  } catch (error) {
-    throwIfScanAborted(signal)
-    if (isScanAbortedError(error)) throw error
+): Effect.fn.Return<void, Error> {
+  yield* abortCheck(signal)
+  const cache = yield* loadCacheEffect(signal)
+  yield* abortCheck(signal)
+  cache.files[filePath] = {
+    mtimeMs: fingerprint.mtimeMs,
+    sizeBytes: fingerprint.sizeBytes,
+    project,
+    calls,
   }
-}
+})
 
-export async function flushCodexCache(signal?: AbortSignal): Promise<void> {
-  throwIfScanAborted(signal)
-  if (!memCache) return
-  const original = memCache
-  const originalFiles = { ...original.files }
-  const cache = { ...original, files: { ...originalFiles } }
-  const missing = new Set<string>()
-  let tempPath: string | undefined
-  let handle: Awaited<ReturnType<typeof open>> | undefined
-  try {
-    // Evict entries for files that no longer exist on disk
-    const paths = Object.keys(cache.files)
-    for (const p of paths) {
-      throwIfScanAborted(signal)
-      try {
-        await stat(p)
-        throwIfScanAborted(signal)
-      } catch (error) {
-        throwIfScanAborted(signal)
-        if (isScanAbortedError(error)) throw error
-        missing.add(p)
+export const flushCodexCacheEffect = Effect.fn('flushCodexCacheEffect')(
+  function* (signal: AbortSignal | undefined): Effect.fn.Return<void, Error, import('effect/Scope').Scope> {
+    yield* abortCheck(signal)
+    if (!memCache) return
+    const original = memCache
+    const originalFiles = { ...original.files }
+    const cache = { ...original, files: { ...originalFiles } }
+    const missing = new Set<string>()
+    let tempPath: string | undefined
+    const cleanup = Effect.promise(async () => {
+      if (tempPath) {
+        const current = tempPath
+        tempPath = undefined
+        await unlink(current).catch(() => {})
       }
+    })
+    yield* Effect.addFinalizer(() => cleanup)
+    for (const path of Object.keys(cache.files)) {
+      yield* abortCheck(signal)
+      const exists = yield* ownedPromise(() => stat(path), signal).pipe(
+        Effect.map(() => true),
+        Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(false))),
+      )
+      if (!exists) missing.add(path)
     }
     if (missing.size > 0) {
       cache.files = Object.fromEntries(Object.entries(cache.files).filter(([path]) => !missing.has(path)))
     }
-
-    throwIfScanAborted(signal)
+    yield* abortCheck(signal)
     const dir = getCacheDir()
-    if (!existsSync(dir)) {
-      await mkdir(dir, { recursive: true })
-      throwIfScanAborted(signal)
-    }
+    yield* ownedPromise(() => mkdir(dir, { recursive: true }), signal)
+    yield* abortCheck(signal)
     const finalPath = getCachePath()
-    tempPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
-    const payload = JSON.stringify(cache)
-    throwIfScanAborted(signal)
-    handle = await open(tempPath, 'w', 0o600)
-    throwIfScanAborted(signal)
-    await handle.writeFile(payload, { encoding: 'utf-8' })
-    throwIfScanAborted(signal)
-    await handle.sync()
-    throwIfScanAborted(signal)
-    await handle.close()
-    handle = undefined
-    throwIfScanAborted(signal)
-    await rename(tempPath, finalPath)
+    const temporaryPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
+    tempPath = temporaryPath
+    const encoded = yield* Schema.encodeUnknownEffect(resultCacheSchema)(cache)
+    const payload = JSON.stringify(encoded)
+    yield* abortCheck(signal)
+    yield* Effect.acquireUseRelease(
+      Effect.tryPromise({ try: () => open(temporaryPath, 'w', 0o600), catch: toError }).pipe(
+        Effect.map(handle => ({ handle, closed: false })),
+      ),
+      owned =>
+        Effect.gen(function* () {
+          yield* abortCheck(signal)
+          // FileHandle operations have no AbortSignal. Keep each operation
+          // uninterruptible so close cannot race with pending write or sync.
+          yield* Effect.uninterruptible(
+            Effect.tryPromise({ try: () => owned.handle.writeFile(payload, { encoding: 'utf-8' }), catch: toError }),
+          )
+          yield* abortCheck(signal)
+          yield* Effect.uninterruptible(Effect.tryPromise({ try: () => owned.handle.sync(), catch: toError }))
+          yield* abortCheck(signal)
+          yield* Effect.uninterruptible(
+            Effect.tryPromise({ try: () => owned.handle.close(), catch: toError }).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  owned.closed = true
+                }),
+              ),
+            ),
+          )
+        }),
+      owned =>
+        owned.closed
+          ? Effect.void
+          : Effect.tryPromise({ try: () => owned.handle.close(), catch: toError }).pipe(
+              Effect.catch(() => Effect.void),
+            ),
+    )
+    yield* abortCheck(signal)
+    const temporary = tempPath
+    yield* Effect.uninterruptible(Effect.tryPromise({ try: () => rename(temporary, finalPath), catch: toError }))
     tempPath = undefined
-    throwIfScanAborted(signal)
+    yield* abortCheck(signal)
     if (memCache === original) {
       const concurrentWrites = Object.fromEntries(
         Object.entries(original.files).filter(([path, entry]) => originalFiles[path] !== entry),
@@ -214,11 +291,11 @@ export async function flushCodexCache(signal?: AbortSignal): Promise<void> {
         }
       }
     }
-  } catch (error) {
-    throwIfScanAborted(signal)
-    if (isScanAbortedError(error)) throw error
-  } finally {
-    if (handle) await handle.close().catch(() => {})
-    if (tempPath) await unlink(tempPath).catch(() => {})
-  }
+  },
+  Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.void)),
+)
+
+/** Compatibility edge until the scan consumes the native flush directly. */
+export function flushCodexCache(signal?: AbortSignal): Promise<void> {
+  return Effect.runPromise(Effect.scoped(flushCodexCacheEffect(signal)))
 }

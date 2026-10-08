@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Stream } from 'effect'
+import { Effect, Fiber, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -17,8 +17,12 @@ const hooks = vi.hoisted(() => ({
   onStreamClosed: undefined as (() => void) | undefined,
   onCacheReadStarted: undefined as (() => void) | undefined,
   blockFlushWrite: false,
+  blockFlushOpen: false,
+  failNextFlushClose: false,
   flushTempPath: undefined as string | undefined,
   flushHandleCloses: 0,
+  onFlushOpenStarted: undefined as (() => void) | undefined,
+  releaseFlushOpen: undefined as (() => void) | undefined,
   onFlushWriteStarted: undefined as (() => void) | undefined,
   releaseFlushWrite: undefined as (() => void) | undefined,
 }))
@@ -72,12 +76,23 @@ vi.mock('fs/promises', async importOriginal => {
       return actual.readFile(...args)
     },
     open: async (...args: Parameters<typeof actual.open>) => {
+      if (hooks.blockFlushOpen && String(args[0]).endsWith('.tmp')) {
+        hooks.blockFlushOpen = false
+        await new Promise<void>(resolve => {
+          hooks.releaseFlushOpen = resolve
+          hooks.onFlushOpenStarted?.()
+        })
+      }
       const handle = await actual.open(...args)
-      if (!hooks.blockFlushWrite || !String(args[0]).endsWith('.tmp')) return handle
+      if (
+        (!hooks.blockFlushWrite && !hooks.releaseFlushOpen && !hooks.failNextFlushClose) ||
+        !String(args[0]).endsWith('.tmp')
+      )
+        return handle
       hooks.flushTempPath = String(args[0])
       return new Proxy(handle, {
         get(target, property, receiver) {
-          if (property === 'writeFile') {
+          if (property === 'writeFile' && hooks.blockFlushWrite) {
             return async (...writeArgs: Parameters<typeof handle.writeFile>) => {
               await new Promise<void>(resolve => {
                 hooks.releaseFlushWrite = resolve
@@ -89,6 +104,10 @@ vi.mock('fs/promises', async importOriginal => {
           if (property === 'close') {
             return async () => {
               hooks.flushHandleCloses++
+              if (hooks.failNextFlushClose) {
+                hooks.failNextFlushClose = false
+                throw new Error('cache close failed')
+              }
               return handle.close()
             }
           }
@@ -102,7 +121,7 @@ vi.mock('fs/promises', async importOriginal => {
 import { writeFile } from 'node:fs/promises'
 
 import { appPaths, initAppPaths } from '../src/main/env.js'
-import { flushCodexCache, readCachedCodexResults } from '../src/main/pipeline/codex-cache.js'
+import { flushCodexCacheEffect, lookupCachedCodexResultsEffect } from '../src/main/pipeline/codex-cache.js'
 import { createCodexProvider } from '../src/main/pipeline/providers/codex.js'
 import type { ProviderScanContext } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
@@ -125,8 +144,12 @@ beforeEach(() => {
   hooks.onStreamClosed = undefined
   hooks.onCacheReadStarted = undefined
   hooks.blockFlushWrite = false
+  hooks.blockFlushOpen = false
+  hooks.failNextFlushClose = false
   hooks.flushTempPath = undefined
   hooks.flushHandleCloses = 0
+  hooks.onFlushOpenStarted = undefined
+  hooks.releaseFlushOpen = undefined
   hooks.onFlushWriteStarted = undefined
   hooks.releaseFlushWrite = undefined
 })
@@ -180,6 +203,10 @@ function parse(path: string, seenKeys = new Set<string>(), context?: ProviderSca
   return createCodexProvider('/unused').createSessionParser(source(path), seenKeys, undefined, context).parse()
 }
 
+function flush(signal?: AbortSignal): Promise<void> {
+  return Effect.runPromise(Effect.scoped(flushCodexCacheEffect(signal)))
+}
+
 describe('Codex scan cancellation', () => {
   it('preserves the typed scan abort when a native cache read is cancelled without an explicit reason', async () => {
     const path = join(root, 'native-cache-abort.jsonl')
@@ -213,16 +240,19 @@ describe('Codex scan cancellation', () => {
     hooks.onCacheReadStarted = start
     const controller = new AbortController()
 
-    const pending = import('../src/main/pipeline/codex-cache.js').then(cache =>
-      cache.readCachedCodexResults(path, controller.signal),
+    const pending = Effect.runPromise(
+      Effect.scoped(lookupCachedCodexResultsEffect(path, controller.signal).pipe(Effect.map(value => value.calls))),
     )
     await started
-    expect(hooks.readSignal).toBe(controller.signal)
+    expect(hooks.readSignal).not.toBe(controller.signal)
     controller.abort(new ScanAbortedError({ message: 'scan aborted' }))
     await expect(pending).rejects.toMatchObject({ _tag: 'ScanAbortedError' })
+    expect(hooks.readSignal?.aborted).toBe(true)
 
     hooks.blockCacheRead = false
-    await expect((await import('../src/main/pipeline/codex-cache.js')).readCachedCodexResults(path)).resolves.toBeNull()
+    await expect(
+      Effect.runPromise(Effect.scoped(lookupCachedCodexResultsEffect(path, undefined).pipe(Effect.map(x => x.calls)))),
+    ).resolves.toBeNull()
     expect(hooks.readCalls).toBe(2)
   })
 
@@ -290,7 +320,7 @@ describe('Codex scan cancellation', () => {
     expect(seenKeys).toEqual(new Set())
     await expect(parser.next()).resolves.toMatchObject({ done: true })
 
-    await flushCodexCache()
+    await flush()
     const { readFile: readCache } = await import('node:fs/promises')
     const cache = JSON.parse(await readCache(join(root, 'cache', 'codex-results.json'), 'utf-8')) as {
       files: Record<string, unknown>
@@ -318,7 +348,7 @@ describe('Codex scan cancellation', () => {
     const first = parse(path)
     const calls = []
     for await (const call of first) calls.push(call)
-    await flushCodexCache()
+    await flush()
     const streamOpens = hooks.streamOpens
 
     const seenKeys = new Set<string>()
@@ -331,6 +361,20 @@ describe('Codex scan cancellation', () => {
     expect(seenKeys).toEqual(new Set(calls.map(call => call.deduplicationKey)))
   })
 
+  it('removes the second cache fingerprint stat from a cold parser request', async () => {
+    const path = join(root, 'single-stat-lookup.jsonl')
+    await writeSession(path)
+    hooks.statCalls = 0
+
+    const calls = []
+    for await (const call of parse(path)) calls.push(call)
+
+    expect(calls).toHaveLength(1)
+    // One stat is owned by the session-line reader; the cache lookup supplies
+    // the parser fingerprint without its former second stat.
+    expect(hooks.statCalls).toBe(2)
+  })
+
   it('cancels a staged cache flush without replacing disk or evicting memory entries', async () => {
     const cachedPath = join(root, 'rollout-flush-cached.jsonl')
     const pendingPath = join(root, 'rollout-flush-pending.jsonl')
@@ -340,7 +384,7 @@ describe('Codex scan cancellation', () => {
     const initial = parse(cachedPath)
     const initialCalls = []
     for await (const call of initial) initialCalls.push(call)
-    await flushCodexCache()
+    await flush()
 
     const cachePath = join(root, 'cache', 'codex-results.json')
     const oldContents = await (await import('node:fs/promises')).readFile(cachePath)
@@ -355,7 +399,7 @@ describe('Codex scan cancellation', () => {
     })
     hooks.onFlushWriteStarted = start
     const controller = new AbortController()
-    const flushing = flushCodexCache(controller.signal)
+    const flushing = flush(controller.signal)
     let tempPath: string | undefined
     try {
       await started
@@ -371,7 +415,84 @@ describe('Codex scan cancellation', () => {
     expect(tempPath).toBeDefined()
     expect(existsSync(tempPath ?? '')).toBe(false)
     await expect((await import('node:fs/promises')).readFile(cachePath)).resolves.toEqual(oldContents)
-    await expect(readCachedCodexResults(cachedPath)).resolves.toEqual(initialCalls)
-    await expect(readCachedCodexResults(pendingPath)).resolves.toEqual(pendingCalls)
+    await expect(
+      Effect.runPromise(
+        Effect.scoped(lookupCachedCodexResultsEffect(cachedPath, undefined).pipe(Effect.map(x => x.calls))),
+      ),
+    ).resolves.toEqual(initialCalls)
+    await expect(
+      Effect.runPromise(
+        Effect.scoped(lookupCachedCodexResultsEffect(pendingPath, undefined).pipe(Effect.map(x => x.calls))),
+      ),
+    ).resolves.toEqual(pendingCalls)
+  })
+
+  it('closes an opened cache handle when interrupted during open acquisition', async () => {
+    const cachedPath = join(root, 'rollout-open-cached.jsonl')
+    const pendingPath = join(root, 'rollout-open-pending.jsonl')
+    await writeSession(cachedPath)
+    await writeSession(pendingPath)
+
+    const initialCalls = []
+    for await (const call of parse(cachedPath)) initialCalls.push(call)
+    await flush()
+    const cachePath = join(root, 'cache', 'codex-results.json')
+    const oldContents = await (await import('node:fs/promises')).readFile(cachePath)
+    const pendingCalls = []
+    for await (const call of parse(pendingPath)) pendingCalls.push(call)
+
+    hooks.blockFlushOpen = true
+    let start!: () => void
+    const started = new Promise<void>(resolve => {
+      start = resolve
+    })
+    hooks.onFlushOpenStarted = start
+    const fiber = Effect.runFork(Effect.scoped(flushCodexCacheEffect(undefined)))
+    await started
+
+    const interrupted = Effect.runPromise(Fiber.interrupt(fiber))
+    hooks.releaseFlushOpen?.()
+    await interrupted
+
+    expect(hooks.flushHandleCloses).toBe(1)
+    expect(hooks.flushTempPath).toBeDefined()
+    expect(existsSync(hooks.flushTempPath ?? '')).toBe(false)
+    await expect((await import('node:fs/promises')).readFile(cachePath)).resolves.toEqual(oldContents)
+    await expect(
+      Effect.runPromise(
+        Effect.scoped(lookupCachedCodexResultsEffect(cachedPath, undefined).pipe(Effect.map(x => x.calls))),
+      ),
+    ).resolves.toEqual(initialCalls)
+    await expect(
+      Effect.runPromise(
+        Effect.scoped(lookupCachedCodexResultsEffect(pendingPath, undefined).pipe(Effect.map(x => x.calls))),
+      ),
+    ).resolves.toEqual(pendingCalls)
+  })
+
+  it('does not replace the published cache when closing the staged handle fails', async () => {
+    const cachedPath = join(root, 'rollout-close-cached.jsonl')
+    const pendingPath = join(root, 'rollout-close-pending.jsonl')
+    await writeSession(cachedPath)
+    await writeSession(pendingPath)
+    for await (const _call of parse(cachedPath)) {
+      /* Populate the existing disk cache. */
+    }
+    await flush()
+    const cachePath = join(root, 'cache', 'codex-results.json')
+    const oldContents = await (await import('node:fs/promises')).readFile(cachePath)
+    const pendingCalls = []
+    for await (const call of parse(pendingPath)) pendingCalls.push(call)
+
+    hooks.failNextFlushClose = true
+    await flush()
+
+    expect(hooks.flushHandleCloses).toBe(2)
+    expect(hooks.flushTempPath).toBeDefined()
+    expect(existsSync(hooks.flushTempPath ?? '')).toBe(false)
+    await expect((await import('node:fs/promises')).readFile(cachePath)).resolves.toEqual(oldContents)
+    await expect(
+      Effect.runPromise(lookupCachedCodexResultsEffect(pendingPath).pipe(Effect.map(x => x.calls))),
+    ).resolves.toEqual(pendingCalls)
   })
 })

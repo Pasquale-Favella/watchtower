@@ -6,16 +6,11 @@ import { createInterface } from 'readline'
 
 import { type AppPaths, appPaths, resolveCodexHome } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
-import {
-  fingerprintFile,
-  getCachedCodexProject,
-  readCachedCodexResults,
-  writeCachedCodexResults,
-} from '../codex-cache.js'
+import { getCachedCodexProject, lookupCachedCodexResultsEffect, writeCachedCodexResultsEffect } from '../codex-cache.js'
 import { normalizeContentBlocks } from '../content-utils.js'
 import { readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
-import { isScanAbortedError, scanAbortError, throwIfScanAborted } from '../scan-control.js'
+import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 import type { DateRange, ToolCall } from '../types.js'
 import type {
@@ -434,53 +429,6 @@ function toError(cause: unknown): Error {
   return cause instanceof Error ? cause : new Error(String(cause))
 }
 
-/**
- * Owns cache/stat Promise IO across interruption. Interruption aborts the
- * local signal and the scope finalizer waits for the underlying Promise to
- * settle before parser state or cache ownership can be released.
- */
-function runOwnedParserPromise<A>(
-  operation: (signal: AbortSignal) => Promise<A>,
-  parentSignal?: AbortSignal,
-): Effect.Effect<A, Error, import('effect/Scope').Scope> {
-  return Effect.gen(function* () {
-    const owned = yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        const controller = new AbortController()
-        let settled = false
-        let resolveSettled!: () => void
-        const drained = new Promise<void>(resolve => {
-          resolveSettled = resolve
-        })
-        const abortFromParent = (): void => controller.abort(parentSignal?.reason)
-        if (parentSignal?.aborted) abortFromParent()
-        else parentSignal?.addEventListener('abort', abortFromParent, { once: true })
-
-        const promise = Promise.resolve()
-          .then(() => operation(controller.signal))
-          .finally(() => {
-            settled = true
-            parentSignal?.removeEventListener('abort', abortFromParent)
-            resolveSettled()
-          })
-        return { controller, promise, drained, isSettled: () => settled }
-      }),
-      resource =>
-        Effect.promise(async () => {
-          if (!resource.isSettled()) {
-            if (!resource.controller.signal.aborted) resource.controller.abort()
-            await resource.drained
-          }
-        }),
-    )
-
-    return yield* Effect.tryPromise({
-      try: () => owned.promise,
-      catch: cause => (parentSignal?.aborted ? scanAbortError(parentSignal) : toError(cause)),
-    })
-  })
-}
-
 function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
   const pricing = context?.pricing ?? captureScanPricing()
   const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
@@ -490,11 +438,9 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
           const { signal } = context ?? {}
           const checkAbort = Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
           yield* checkAbort
-          const cached = yield* runOwnedParserPromise(
-            ownedSignal => readCachedCodexResults(source.path, ownedSignal),
-            signal,
-          )
+          const lookup = yield* lookupCachedCodexResultsEffect(source.path, signal)
           yield* checkAbort
+          const cached = lookup.calls
           if (cached) {
             return Stream.fromIterable(cached).pipe(
               Stream.rechunk(1),
@@ -512,7 +458,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
             )
           }
 
-          const fp = yield* runOwnedParserPromise(ownedSignal => fingerprintFile(source.path, ownedSignal), signal)
+          const fp = lookup.fingerprint
           yield* checkAbort
           if (!fp) return Stream.empty
 
@@ -887,10 +833,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
           yield* checkAbort
           if (!sawAnyLine) return Stream.empty
 
-          yield* runOwnedParserPromise(
-            ownedSignal => writeCachedCodexResults(source.path, source.project, results, fp, ownedSignal),
-            signal,
-          )
+          yield* writeCachedCodexResultsEffect(source.path, source.project, results, fp, signal)
           yield* checkAbort
 
           return Stream.fromIterable(results)

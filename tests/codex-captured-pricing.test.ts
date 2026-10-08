@@ -35,7 +35,7 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
 import { readFile, writeFile } from 'node:fs/promises'
 
 import { appPaths, initAppPaths } from '../src/main/env.js'
-import { flushCodexCache } from '../src/main/pipeline/codex-cache.js'
+import { flushCodexCacheEffect } from '../src/main/pipeline/codex-cache.js'
 import {
   captureScanPricing,
   setLocalModelSavings,
@@ -175,7 +175,7 @@ describe('Codex captured scan pricing', () => {
     expect(nextCalls[0]?.costUSD).toBe(nextExpected)
     expect(nextCalls[0]?.costUSD).not.toBe(firstExpected)
 
-    await flushCodexCache()
+    await Effect.runPromise(Effect.scoped(flushCodexCacheEffect(undefined)))
     const warmCalls = await collect(provider.createSessionParser(source(firstPath, 'codex-first'), new Set()).parse())
     expect(warmCalls).toEqual(firstCalls)
   })
