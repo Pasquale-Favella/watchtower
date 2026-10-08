@@ -1,4 +1,4 @@
-// Measures current Effect application queries and named legacy builders on
+// Measures current Effect application queries on
 // the same deterministic synthetic ledger. The current engine uses one
 // persistent worker runtime and native SQLite client per child process.
 //
@@ -13,8 +13,6 @@
 //     pipeline's own mapper emits. Only the *content* is synthetic.
 //   - the current read path: named Effect application queries over the shared
 //     worker runtime, canonical ports and Effect Schema payload codecs.
-//   - the legacy engine: older LedgerStore builders remain selectable for
-//     comparisons while any callers still depend on them.
 //
 // The real TypeScript is loaded by installing a CommonJS transpile hook
 // (typescript.transpileModule, with a `.js` -> `.ts` resolver). This repo has
@@ -31,7 +29,7 @@
 // non-determinism is wall-clock. Results separate the first request after
 // runtime open from warmed requests. The OS file cache is not flushed.
 // Ledger files live in a mkdtemp directory that is removed on exit; the
-// script never opens a path outside that directory (asserted in openLedger).
+// script never opens a path outside that directory (asserted in openEffectRuntime).
 //
 // Usage: node scripts/measure-query-path.cjs --help
 
@@ -43,17 +41,9 @@ const os = require('node:os')
 const path = require('node:path')
 const v8 = require('node:v8')
 const { performance } = require('node:perf_hooks')
-const { extractReadSql: extractReadSqlFromSource } = require('./query-sql-source.cjs')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
 const SCRIPT_PATH = __filename
-
-// ── Provenance ────────────────────────────────────────────────────────────
-// Every path below names the source file it was taken from, so a reviewer can
-// re-derive the measurement inputs from the tree.
-
-const REPOSITORY_SOURCE = path.join(REPO_ROOT, 'src', 'main', 'store', 'ledger-repository.ts')
-const BULK_READS = ['getSources', 'getSessions', 'getTurns', 'getCalls']
 
 // Transcribed from the shared initializer for the drift guard only — never
 // executed. Avoid source line references because the schema is evolving.
@@ -295,8 +285,6 @@ SIZING
                          reported figure is the MEDIAN. Minimum 5. Default 5.
   --warmup=1             Unmeasured calls before warmed samples. Default 1.
   --engine=effect        Current application queries (default).
-  --engine=legacy        Compatibility builders (explicit comparison path).
-  --engine=both          Run both engines against the same generated ledger.
 
 SYNTHETIC-LEDGER SHAPE (every value is reported back in the output)
   --seed=20260929        PRNG seed. Fixed -> identical ledgers across runs.
@@ -317,9 +305,6 @@ OUTPUT
                          store:session:missing,
                          store:search, store:search:blank, overview:query,
                          store:analytics, store:views, export:read.
-                         Legacy operations: reads, export:read, store:views,
-                         store:analytics, overview:query,
-                         aggregate:buildSessionSummaries.
 
 EXECUTION
   --keep                 Do not delete the temporary directory (prints its path).
@@ -359,8 +344,8 @@ function parseArgs(argv) {
     switch (flag) {
       case '--engine':
         options.engine = need('engine')
-        if (!['effect', 'legacy', 'both'].includes(options.engine))
-          throw new Error('--engine must be effect, legacy, or both')
+        if (options.engine !== 'effect')
+          throw new Error('--engine must be effect; the compatibility engine has been retired')
         break
       case '--sizes':
         options.sizes = need('sizes')
@@ -403,7 +388,7 @@ function parseArgs(argv) {
         break
       case '--db':
         // Child mode only (see runAsChild). Never set by hand: a real user
-        // ledger is refused by openLedger, which requires the path to sit
+        // ledger is refused by openEffectRuntime, which requires the path to sit
         // inside the measurement temp directory.
         options.db = path.resolve(need('db'))
         break
@@ -491,24 +476,7 @@ function rewriteImportMeta(source) {
     .replace(/import\.meta\.dirname/g, '__dirname')
     .replace(/import\.meta\.filename/g, '__filename')
 }
-
-let cachedRealModules = null
 let cachedEffectModules = null
-
-function loadRealModules() {
-  if (cachedRealModules) return cachedRealModules
-  installTypeScriptHook()
-  const load = relative => require(path.join(REPO_ROOT, relative))
-  cachedRealModules = {
-    ledger: load('src/main/store/ledger.ts'),
-    repository: load('src/main/store/ledger-repository.ts'),
-    sqlite: load('src/main/store/node-sqlite-client.ts'),
-    aggregate: load('src/main/store/aggregate.ts'),
-    views: load('src/main/views.ts'),
-    overview: load('src/main/overview.ts'),
-  }
-  return cachedRealModules
-}
 
 function loadEffectModules() {
   if (cachedEffectModules) return cachedEffectModules
@@ -535,44 +503,6 @@ function loadEffectModules() {
     pricingDiagnostics: load('src/main/application/pricing-diagnostics.ts'),
   }
   return cachedEffectModules
-}
-
-// ── Static facts read out of the repository source ────────────────────────
-
-/** Pulls the SQL template literal out of a repository read verbatim, so the
- * "no WHERE / no LIMIT / N columns" facts are measured from the tree rather
- * than transcribed, and the SQL-only attribution runs use the real text.
- *
- * The syntax tree locates the method's Effect.fn body, then resolves its SQL
- * argument. It accepts the historical inline template and shared constants.
- * Missing, dynamic or ambiguous reads stop measurement, rather than choosing
- * a template from a later method. The ledger port prefix may change. */
-function extractReadSql(name) {
-  const source = readFileSync(REPOSITORY_SOURCE, 'utf8')
-  return extractReadSqlFromSource(source, name)
-}
-
-function countSelectedColumns(sql) {
-  const list = sql.slice(sql.indexOf('SELECT') + 'SELECT'.length, sql.lastIndexOf('FROM'))
-  return list
-    .split(',')
-    .map(part => part.trim())
-    .filter(Boolean).length
-}
-
-function readBulkReadFacts() {
-  const facts = {}
-  for (const name of BULK_READS) {
-    const sql = extractReadSql(name)
-    facts[name] = {
-      sql,
-      hasWhere: /\bwhere\b/i.test(sql),
-      hasLimit: /\blimit\b/i.test(sql),
-      selectedColumns: countSelectedColumns(sql),
-      jsonColumns: (sql.match(/\w+_json\b/gi) || []).length,
-    }
-  }
-  return facts
 }
 
 // ── Schema drift guard ────────────────────────────────────────────────────
@@ -630,23 +560,17 @@ function resolveMeasurementPath(context, dbPath) {
   return resolved
 }
 
-function openLedger(context, dbPath) {
-  const resolved = resolveMeasurementPath(context, dbPath)
-  const { ledger } = loadRealModules()
-  const store = new ledger.LedgerStore(resolved)
-  try {
-    assertSchemaMatchesSource(resolved)
-  } catch (error) {
-    store.close()
-    throw error
-  }
-  return store
-}
-
 function openEffectRuntime(context, dbPath, overrides) {
   const resolved = resolveMeasurementPath(context, dbPath)
   const modules = loadEffectModules()
-  return modules.worker.openWorkerRuntime(resolved, undefined, overrides)
+  const runtime = modules.worker.openWorkerRuntime(resolved, undefined, overrides)
+  try {
+    assertSchemaMatchesSource(resolved)
+    return runtime
+  } catch (error) {
+    modules.Effect.runSync(runtime.disposeEffect)
+    throw error
+  }
 }
 
 function effectOverrides(modules) {
@@ -886,21 +810,6 @@ function cloneBytes(value) {
     }
   }
   return { bytes: v8.serialize(value).byteLength, method: 'exact: v8.serialize' }
-}
-
-/** Per-column mean serialized size over a prefix, so the write-up can attribute
- * a row's bytes to its columns instead of guessing. Derived, not measured. */
-function columnByteBreakdown(rows) {
-  if (!Array.isArray(rows) || rows.length === 0) return null
-  const sample = rows.slice(0, CLONE_SAMPLE_ROWS)
-  const keys = Object.keys(sample[0])
-  const perColumn = {}
-  for (const key of keys) {
-    let total = 0
-    for (const row of sample) total += v8.serialize([row[key]]).byteLength
-    perColumn[key] = Number((total / sample.length).toFixed(1))
-  }
-  return { sampledRows: sample.length, bytesPerColumnMean: perColumn }
 }
 
 function watchNativeStatements() {
@@ -1257,63 +1166,6 @@ function measure(label, fn, { runs, warmup, crossesWorkerBoundary, note }) {
   }
 }
 
-// ── Operations ────────────────────────────────────────────────────────────
-
-// Legacy-only comparison input.
-const ALL_TIME_RANGE = { start: new Date(-8640000000000000), end: new Date(8640000000000000) }
-
-// Compatibility builders are named explicitly as the legacy engine.
-const LEGACY_OPERATIONS = [
-  {
-    id: 'reads',
-    kind: 'bundle',
-    description: 'the four bulk reads + their SQL-only counterparts + the aggregation seam',
-  },
-  {
-    id: 'export:read',
-    kind: 'single',
-    description: 'legacy buildProjectsFromLedger read half of export',
-  },
-  {
-    id: 'store:views',
-    kind: 'single',
-    description: 'legacy buildDashboardViewsFromLedger',
-  },
-  {
-    id: 'store:analytics',
-    kind: 'single',
-    description: 'legacy buildAnalyticalViewsFromLedger',
-  },
-  {
-    id: 'overview:query',
-    kind: 'single',
-    description: 'legacy buildOverviewFromLedger',
-  },
-  {
-    id: 'aggregate:buildSessionSummaries',
-    kind: 'single',
-    description: 'store/aggregate.ts:493 buildSessionSummaries in isolation',
-  },
-]
-
-function legacyOperation(context, id) {
-  const { views, overview, aggregate } = loadRealModules()
-  switch (id) {
-    case 'export:read':
-      return () => views.buildProjectsFromLedger(context.store)
-    case 'store:views':
-      return () => views.buildDashboardViewsFromLedger(context.store)
-    case 'store:analytics':
-      return () => views.buildAnalyticalViewsFromLedger(context.store)
-    case 'overview:query':
-      return () => overview.buildOverviewFromLedger(context.store, { period: 'lifetime' })
-    case 'aggregate:buildSessionSummaries':
-      return () => aggregate.buildSessionSummaries(context.store, { range: ALL_TIME_RANGE })
-    default:
-      throw new Error(`unknown operation: ${id}`)
-  }
-}
-
 const EFFECT_OPERATIONS = [
   { id: 'ingest:portIn', description: 'LedgerIngest.portIn over the worker runtime and its writer connection' },
   { id: 'fx:refresh-rate', description: 'refreshFxRateWithRates with a controlled local HTTP response' },
@@ -1466,52 +1318,6 @@ function effectOperation(context, id, options, callTarget) {
   }
 }
 
-function runReadsBundle(context, facts, options) {
-  const { sqlite } = loadRealModules()
-  const store = context.store
-  const raw = new sqlite.NodeSqliteDatabase(context.dbPath)
-  const results = []
-  let maxRssBytes
-  // Everything in this bundle is in-process on the worker thread, so the
-  // `crossesWorkerBoundary` answer is the same for all three shapes and is
-  // stated once here rather than three times below.
-  const shape = { runs: options.runs, warmup: options.warmup, crossesWorkerBoundary: false }
-  try {
-    for (const name of BULK_READS) {
-      results.push(
-        measure(`read:${name}`, () => store[name](), {
-          ...shape,
-          note: 'Legacy LedgerStore read with its current runtime schema validation',
-        }),
-      )
-      results.push(
-        measure(`sql:${name}`, () => raw.prepare(facts[name].sql).all(), {
-          ...shape,
-          note: 'Legacy attribution only: same SELECT text without repository schema validation',
-        }),
-      )
-    }
-    // The compatibility builder loads one request snapshot of facts and pricing.
-    const aggregation = measure(
-      'agg:buildSessionSummaries',
-      legacyOperation(context, 'aggregate:buildSessionSummaries'),
-      {
-        ...shape,
-        note: 'Legacy aggregate builder; loads one snapshot of facts and pricing',
-      },
-    )
-    results.push(aggregation)
-    // Captured before the two extra reads below, so the process high-water mark
-    // reported for this child belongs to the measured operations only.
-    maxRssBytes = process.resourceUsage().maxRSS * 1024
-    aggregation.turnColumnBytes = columnByteBreakdown(store.getTurns())
-    aggregation.callColumnBytes = columnByteBreakdown(store.getCalls())
-  } finally {
-    raw.close()
-  }
-  return { results, maxRssBytes }
-}
-
 // ── Child mode (one operation per process) ────────────────────────────────
 
 const RESULT_PREFIX = '@@measure-query-path@@'
@@ -1519,78 +1325,54 @@ const RESULT_PREFIX = '@@measure-query-path@@'
 async function runAsChild(options) {
   const id = options.ops[0]
   let payload
-  if (options.engine === 'effect') {
-    const instrumentation = watchNativeStatements()
-    const modules = loadEffectModules()
-    const runtime = openEffectRuntime(options.tmp, options.db, effectOverrides(modules))
-    try {
-      const context = { modules, runtime }
-      const operation = effectOperation(
-        context,
-        id,
-        options,
-        Number(path.basename(options.db).match(/(\d+)/)?.[1] ?? 1000),
-      )
-      instrumentation.reset()
-      const measured = await measureAsync(
-        id,
-        () => runtime.runPromise(operation.makeEffect()),
-        {
-          runs: options.runs,
-          warmup: options.warmup,
-          crossesWorkerBoundary: operation.crossesWorkerBoundary,
-          note: operation.description ?? EFFECT_OPERATIONS.find(candidate => candidate.id === id)?.description,
-        },
-        'effect',
+  const instrumentation = watchNativeStatements()
+  const modules = loadEffectModules()
+  const runtime = openEffectRuntime(options.tmp, options.db, effectOverrides(modules))
+  try {
+    const context = { modules, runtime }
+    const operation = effectOperation(
+      context,
+      id,
+      options,
+      Number(path.basename(options.db).match(/(\d+)/)?.[1] ?? 1000),
+    )
+    instrumentation.reset()
+    const measured = await measureAsync(
+      id,
+      () => runtime.runPromise(operation.makeEffect()),
+      {
+        runs: options.runs,
+        warmup: options.warmup,
+        crossesWorkerBoundary: operation.crossesWorkerBoundary,
+        note: operation.description ?? EFFECT_OPERATIONS.find(candidate => candidate.id === id)?.description,
+      },
+      'effect',
+      instrumentation,
+      operation.prepare,
+    )
+    const maxRssBytes = process.resourceUsage().maxRSS * 1024
+    if (id === 'store:views' || id === 'store:analytics') {
+      measured.viewInputProbe = await measureViewInputProbe(
+        runtime,
+        modules,
         instrumentation,
-        operation.prepare,
+        id,
+        operation.calculationInputs,
       )
-      const maxRssBytes = process.resourceUsage().maxRSS * 1024
-      if (id === 'store:views' || id === 'store:analytics') {
-        measured.viewInputProbe = await measureViewInputProbe(
-          runtime,
-          modules,
-          instrumentation,
-          id,
-          operation.calculationInputs,
+      const timedConnectionIds = new Set([
+        ...measured.coldNative.connectionIds,
+        ...measured.warmNative.flatMap(sample => sample.connectionIds),
+      ])
+      measured.viewInputProbe.connectionIdsMatchTimedSamples =
+        measured.viewInputProbe.nativeStatements.connectionIds.length > 0 &&
+        measured.viewInputProbe.nativeStatements.connectionIds.every(connectionId =>
+          timedConnectionIds.has(connectionId),
         )
-        const timedConnectionIds = new Set([
-          ...measured.coldNative.connectionIds,
-          ...measured.warmNative.flatMap(sample => sample.connectionIds),
-        ])
-        measured.viewInputProbe.connectionIdsMatchTimedSamples =
-          measured.viewInputProbe.nativeStatements.connectionIds.length > 0 &&
-          measured.viewInputProbe.nativeStatements.connectionIds.every(connectionId =>
-            timedConnectionIds.has(connectionId),
-          )
-      }
-      payload = { results: [measured], maxRssBytes }
-    } finally {
-      modules.Effect.runSync(runtime.disposeEffect)
-      instrumentation.restore()
     }
-  } else {
-    const facts = readBulkReadFacts()
-    const context = { store: openLedger(options.tmp, options.db), dbPath: options.db }
-    const operation = LEGACY_OPERATIONS.find(candidate => candidate.id === id) || { kind: 'single' }
-    try {
-      if (operation.kind === 'bundle') {
-        payload = runReadsBundle(context, facts, options)
-      } else {
-        const measured = measure(id, legacyOperation(context, id), {
-          runs: options.runs,
-          warmup: options.warmup,
-          crossesWorkerBoundary: false,
-          note: operation.description,
-        })
-        payload = {
-          results: [{ ...measured, engine: 'legacy', coldMs: null, nativeStatements: null }],
-          maxRssBytes: process.resourceUsage().maxRSS * 1024,
-        }
-      }
-    } finally {
-      context.store.close()
-    }
+    payload = { results: [measured], maxRssBytes }
+  } finally {
+    modules.Effect.runSync(runtime.disposeEffect)
+    instrumentation.restore()
   }
   // `childMaxRssBytes` is the whole process high-water mark, so for a bundle it
   // covers every operation in the bundle, not one of them.
@@ -1768,21 +1550,6 @@ function formatMs(ms) {
   return `${ms.toFixed(1)} ms`
 }
 
-function staticFactNotes(facts) {
-  const notes = []
-  for (const [name, fact] of Object.entries(facts)) {
-    if (fact.hasWhere) notes.push(`${name} now has a WHERE clause — the "zero WHERE" claim no longer holds`)
-    if (fact.hasLimit) notes.push(`${name} now has a LIMIT — the "zero LIMIT" claim no longer holds`)
-  }
-  if (facts.getCalls.selectedColumns !== 37) {
-    notes.push(`getCalls selects ${facts.getCalls.selectedColumns} columns, not the 37 this study recorded`)
-  }
-  if (facts.getTurns.jsonColumns !== 2) {
-    notes.push(`getTurns carries ${facts.getTurns.jsonColumns} *_json columns, not the 2 this study recorded`)
-  }
-  return notes
-}
-
 function renderReport(result) {
   const lines = []
   lines.push('measure-query-path — ledger query path, measured on the real code')
@@ -1881,7 +1648,6 @@ function renderReport(result) {
 }
 
 async function runAsParent(options, log) {
-  const legacyFacts = options.engine === 'legacy' || options.engine === 'both' ? readBulkReadFacts() : null
   const machine = machineInfo()
   const git = readGitState()
   const tempRoot = path.resolve(options.tmp || os.tmpdir())
@@ -1904,14 +1670,12 @@ async function runAsParent(options, log) {
       msgBytes: options.msgBytes,
       toolsPerCall: options.toolsPerCall,
     },
-    engines: options.engine === 'both' ? ['effect', 'legacy'] : [options.engine],
-    staticFacts: legacyFacts
-      ? Object.fromEntries(Object.entries(legacyFacts).map(([name, fact]) => [name, { ...fact, sql: undefined }]))
-      : null,
+    engines: ['effect'],
+    staticFacts: null,
     sizes: [],
   }
-  result.staticFactNotes = legacyFacts ? staticFactNotes(legacyFacts) : []
-  const operationsByEngine = { effect: EFFECT_OPERATIONS, legacy: LEGACY_OPERATIONS }
+  result.staticFactNotes = []
+  const operationsByEngine = { effect: EFFECT_OPERATIONS }
   const engines = result.engines
   const selectedByEngine = Object.fromEntries(
     engines.map(engine => [
@@ -1980,8 +1744,6 @@ async function runAsParent(options, log) {
 // measures something else and the previous table is stale.
 const MEASURED_SOURCES = [
   'scripts/measure-query-path.cjs',
-  'scripts/query-sql-source.cjs',
-  'src/main/store/ledger.ts',
   'src/main/store/ledger-initialization.ts',
   'src/main/store/ledger-ports.ts',
   'src/main/store/ledger-repository.ts',
@@ -1992,7 +1754,6 @@ const MEASURED_SOURCES = [
   'src/main/store/export-read-projections.ts',
   'src/main/store/ledger-export-reads.ts',
   'src/main/export-rows-calculation.ts',
-  'src/main/store/aggregate.ts',
   'src/main/store/aggregate-calculation.ts',
   'src/main/store/query-snapshot.ts',
   'src/main/store/ledger-query-snapshot.ts',
@@ -2009,7 +1770,6 @@ const MEASURED_SOURCES = [
   'src/main/application/session-detail-query.ts',
   'src/main/application/session-search-query.ts',
   'src/main/application/overview-query.ts',
-  'src/main/views.ts',
   'src/main/views-calculation.ts',
   'src/main/view-aggregate-calculation.ts',
   'src/main/application/view-queries.ts',
@@ -2019,7 +1779,6 @@ const MEASURED_SOURCES = [
   'src/main/fx.ts',
   'src/main/pipeline/fetch-utils.ts',
   'src/main/export-files-live.ts',
-  'src/main/overview.ts',
   'src/main/db-worker/context.ts',
   'src/main/pipeline/models.ts',
   'src/main/pipeline/types.ts',
@@ -2071,7 +1830,7 @@ async function main() {
     return 0
   }
   // Child mode is reached only with an explicit --db, which the parent sets and
-  // openLedger then confines to the measurement temp directory.
+  // openEffectRuntime then confines to the measurement temp directory.
   if (options.db) return runAsChild(options)
 
   const log = line => {

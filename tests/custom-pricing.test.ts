@@ -11,12 +11,12 @@ import { queryOverview } from '../src/main/application/overview-query.js'
 import { querySessionsView } from '../src/main/application/sessions-query.js'
 import { querySkillsView } from '../src/main/application/skills-query.js'
 import { querySpendView } from '../src/main/application/spend-query.js'
-import { findLowWorthCandidates } from '../src/main/optimize-view.js'
+import { findLowWorthCandidates } from '../src/main/optimize-calculation.js'
 import { overviewDateRange } from '../src/main/overview-scope.js'
 import { captureLocalModelSavings } from '../src/main/pipeline/models.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { collectSkillCandidates } from '../src/main/skills-view.js'
-import { defaultRange } from '../src/main/store/aggregate.js'
+import { collectSkillCandidates } from '../src/main/skills-calculation.js'
+import { defaultRange } from '../src/main/store/aggregate-calculation.js'
 import {
   type AggregateScope,
   buildSessionSummariesFromSnapshot,

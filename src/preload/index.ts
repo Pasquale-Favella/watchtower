@@ -1,21 +1,35 @@
-import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
-import type { ScanMetadata } from '../shared/schemas/scan.js'
+import { contextBridge, ipcRenderer } from 'electron'
+
+import type { ExportResult } from '../main/export.js'
+import type { ActiveCurrency, CurrencyOption } from '../main/fx.js'
+import type { UpdateStatus } from '../main/updates.js'
 import type {
-  DashboardViews,
-  SessionDetail,
-  SessionRow,
-  ProjectRow,
-  AnalyticalViews,
-  SearchHit,
-} from '../main/views.js'
-import type { OverviewPayload, OverviewScope } from '../main/overview.js'
-import type { PullRequestsPayload } from '../shared/schemas/pull-requests.js'
-import type { SpendPayload } from '../shared/schemas/spend.js'
-import type { ModelsPayload } from '../shared/schemas/models.js'
+  CoachEventEnvelope,
+  CoachHarnessesResult,
+  CoachHarnessRow,
+  CoachInspectRequest,
+  CoachInspectResult,
+  CoachLoginTerminalResult,
+  CoachRunRequest,
+  CoachRunResult,
+} from '../shared/schemas/agents.js'
 import type { ComparePair, ComparePayload } from '../shared/schemas/compare.js'
-import type { OptimizePayload } from '../main/optimize-view.js'
-import type { YieldPayload } from '../main/yield-view.js'
+import type {
+  LedgerMcpConnection,
+  LedgerMcpStatus,
+  PricingRefreshResult,
+  ScanProgressMessage,
+  ScanResult,
+  ScanStatus,
+  SettingsInfo,
+  StoreChangedMessage,
+} from '../shared/schemas/ipc.js'
+import type { ModelsPayload } from '../shared/schemas/models.js'
+import type { OptimizePayload } from '../shared/schemas/optimize.js'
+import type { OverviewPayload, OverviewScope } from '../shared/schemas/overview.js'
+import type { PullRequestsPayload } from '../shared/schemas/pull-requests.js'
+import type { ScanMetadata } from '../shared/schemas/scan.js'
 import type {
   SkillsDismissalRequest,
   SkillsDismissalResult,
@@ -24,49 +38,36 @@ import type {
   SkillsSaveResult,
   SkillsThresholds,
 } from '../shared/schemas/skills.js'
-import type { UpdateStatus } from '../main/updates.js'
-import type { ActiveCurrency, CurrencyOption } from '../main/fx.js'
-import type { ExportResult } from '../main/export.js'
+import type { SpendPayload } from '../shared/schemas/spend.js'
 import type {
-  PricingRefreshResult,
-  ScanProgressMessage,
-  ScanResult,
-  ScanStatus,
-  SettingsInfo,
-  StoreChangedMessage,
-  LedgerMcpConnection,
-  LedgerMcpStatus,
-} from '../shared/schemas/ipc.js'
-import type {
-  CoachEventEnvelope,
-  CoachHarnessRow,
-  CoachHarnessesResult,
-  CoachLoginTerminalResult,
-  CoachInspectRequest,
-  CoachInspectResult,
-  CoachRunRequest,
-  CoachRunResult,
-} from '../shared/schemas/agents.js'
+  AnalyticalViews,
+  DashboardViews,
+  ProjectRow,
+  SearchHit,
+  SessionDetail,
+  SessionRow,
+} from '../shared/schemas/views.js'
+import type { YieldPayload } from '../shared/schemas/yield.js'
 
 export type {
+  CoachEventEnvelope,
+  CoachHarnessesResult,
+  CoachHarnessRow,
+  CoachInspectResult,
+  CoachLoginTerminalResult,
+  CoachRunRequest,
+  CoachRunResult,
+} from '../shared/schemas/agents.js'
+export type {
+  LedgerMcpConnection,
+  LedgerMcpStatus,
   PricingRefreshResult,
   ScanProgressMessage,
   ScanResult,
   ScanStatus,
   SettingsInfo,
   StoreChangedMessage,
-  LedgerMcpConnection,
-  LedgerMcpStatus,
 } from '../shared/schemas/ipc.js'
-export type {
-  CoachEventEnvelope,
-  CoachHarnessRow,
-  CoachHarnessesResult,
-  CoachLoginTerminalResult,
-  CoachInspectResult,
-  CoachRunRequest,
-  CoachRunResult,
-} from '../shared/schemas/agents.js'
 
 const api = {
   versions: {

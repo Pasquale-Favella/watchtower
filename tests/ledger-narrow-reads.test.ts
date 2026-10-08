@@ -37,13 +37,20 @@ import { fileURLToPath } from 'node:url'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { buildOverviewFromLedger } from '../src/main/overview.js'
-import { buildSessionSummaries, queryScope } from '../src/main/store/aggregate.js'
+import { queryOverview } from '../src/main/application/overview-query.js'
+import { queryDashboardViews } from '../src/main/application/view-queries.js'
+import { captureLocalModelSavings } from '../src/main/pipeline/models.js'
+import {
+  buildSessionSummariesFromSnapshotResult,
+  queryScopeFromSnapshotResult,
+} from '../src/main/store/aggregate-calculation.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
+import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
 import { LedgerQueries } from '../src/main/store/ledger-repository.js'
 import type { LedgerCallFactsRow } from '../src/main/store/read-projections.js'
-import { buildDashboardViewsFromLedger } from '../src/main/views.js'
+import { openWorkerRuntime, type WorkerServices } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import { viewInputs } from './fixtures/ledger-runtime.js'
 import { legacyGetSessionDetailFromLedger } from './fixtures/pre-wave17-store-views.js'
 import { sessionDetail } from './fixtures/store-view-queries.js'
 
@@ -121,26 +128,20 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
  *  them read would make the narrow read wrong, so the whole consumer set is
  *  scanned rather than the handful this slice edited. */
 const CONSUMER_FILES = [
-  'src/main/store/aggregate.ts',
   'src/main/store/aggregate-calculation.ts',
-  'src/main/views.ts',
   'src/main/views-calculation.ts',
   'src/main/canonical-session-project.ts',
   'src/main/session-detail-calculation.ts',
   'src/main/session-search-calculation.ts',
   'src/main/store-rows-calculation.ts',
   'src/main/ledger-mcp-calculation.ts',
-  'src/main/overview.ts',
   'src/main/overview-calculation.ts',
   'src/main/overview-scope.ts',
   'src/main/models-calculation.ts',
   'src/main/spend-calculation.ts',
   'src/main/compare-calculation.ts',
-  'src/main/yield-view.ts',
   'src/main/yield-calculation.ts',
-  'src/main/optimize-view.ts',
   'src/main/optimize-calculation.ts',
-  'src/main/skills-view.ts',
   'src/main/skills-calculation.ts',
   'src/main/sessions-calculation.ts',
   'src/main/pull-requests-calculation.ts',
@@ -200,6 +201,21 @@ function readCallFacts(store: LedgerStore): Promise<LedgerCallFactsRow[]> {
   return Effect.runPromise(
     Effect.flatMap(LedgerQueries, queries => queries.getCallFacts()).pipe(Effect.provide(store.portsLayer)),
   )
+}
+
+function snapshotFor(store: LedgerStore) {
+  return Effect.runSync(
+    loadLedgerQuerySnapshotEffect(viewInputs({ period: 'lifetime' })).pipe(Effect.provide(store.portsLayer)),
+  )
+}
+
+async function runWorkerQuery<A, E, R>(store: LedgerStore, effect: Effect.Effect<A, E, R>): Promise<A> {
+  const runtime = openWorkerRuntime(store.dbPath)
+  try {
+    return await runtime.runPromise(effect as Effect.Effect<A, E, WorkerServices>)
+  } finally {
+    await runtime.dispose()
+  }
 }
 
 describe("the purpose-shaped call read selects exactly the aggregation seam's columns", () => {
@@ -290,7 +306,6 @@ describe('no consumer of the seam reads a dropped column', () => {
         'src/main/optimize-calculation.ts:b',
         'src/main/optimize-calculation.ts:p',
         'src/main/optimize-calculation.ts:project',
-        'src/main/optimize-view.ts:project',
         'src/main/store-rows-calculation.ts:canonical',
         'src/main/store-rows-calculation.ts:item',
         'src/main/store-rows-calculation.ts:session',
@@ -329,8 +344,8 @@ describe('no consumer of the seam reads a dropped column', () => {
     // ...while nothing the consumers see carries the one value that could only
     // have come from a dropped column. If any of them read one, this trips.
     const downstream = JSON.stringify([
-      buildSessionSummaries(store, { range: RANGE }),
-      buildDashboardViewsFromLedger(store),
+      buildSessionSummariesFromSnapshotResult(snapshotFor(store), { range: RANGE }).summaries,
+      await runWorkerQuery(store, queryDashboardViews(viewInputs({ period: 'lifetime' }))),
       await sessionDetail(store, 'sess-0'),
     ])
     expect(downstream).not.toContain('/call/level/path')
@@ -346,30 +361,36 @@ describe('the wire is unchanged: payloads deep-equal their pre-slice shape', () 
     expect(actual).toStrictEqual(legacyGetSessionDetailFromLedger(store, 'sess-0'))
   })
 
-  it('buildDashboardViewsFromLedger — the store:views wire payload', () => {
+  it('queryDashboardViews — the store:views wire payload', async () => {
     const store = makeStore()
     portRich(store)
-    expect(buildDashboardViewsFromLedger(store)).toEqual(DASHBOARD_VIEWS)
+    await expect(runWorkerQuery(store, queryDashboardViews(viewInputs({ period: 'lifetime' })))).resolves.toEqual(
+      DASHBOARD_VIEWS,
+    )
   })
 
-  it('buildOverviewFromLedger, on a custom range so no local-date dependency', () => {
+  it('queryOverview, on a custom range so no local-date dependency', async () => {
     const store = makeStore()
     portRich(store)
     const scope = { period: 'all' as const, range: { since: '2026-07-01', until: '2026-07-02' } }
-    expect(buildOverviewFromLedger(store, scope)).toEqual(OVERVIEW_PAYLOAD)
+    const inputs = {
+      ...viewInputs(scope),
+      localSavings: captureLocalModelSavings(),
+    }
+    await expect(runWorkerQuery(store, queryOverview(inputs))).resolves.toEqual(OVERVIEW_PAYLOAD)
   })
 
-  it('buildSessionSummaries — every Section payload is a projection of this', () => {
+  it('buildSessionSummariesFromSnapshotResult — every Section payload is a projection of this', () => {
     const store = makeStore()
     portRich(store)
-    expect(buildSessionSummaries(store, { range: RANGE })).toEqual(SUMMARIES)
+    expect(buildSessionSummariesFromSnapshotResult(snapshotFor(store), { range: RANGE }).summaries).toEqual(SUMMARIES)
   })
 
   it('queryScope: sessions and turns unchanged, calls narrowed by exactly the nine', () => {
     const store = makeStore()
     portRich(store)
 
-    const scope = queryScope(store, { range: RANGE })
+    const scope = queryScopeFromSnapshotResult(snapshotFor(store), { range: RANGE }).scope
     expect(scope.sessions).toEqual(SCOPE_SESSIONS)
     expect(scope.turns).toEqual(SCOPE_TURNS)
 

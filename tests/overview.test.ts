@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import {
-  buildOverviewPayload,
-  dataStartForSessions,
-  periodWindowStart,
-  type OverviewPayload,
-  type OverviewScope,
-} from '../src/main/overview.js'
+
+import { calculateOverviewPayload } from '../src/main/overview-calculation.js'
+import { dataStartForSessions, periodWindowStart } from '../src/main/overview-scope.js'
+import { captureLocalModelSavings, captureModelPricingCatalogue } from '../src/main/pipeline/models.js'
 import type { ProjectSummary, SessionSummary, TaskCategory, TokenUsage } from '../src/main/pipeline/types.js'
+import { type OverviewPayload, type OverviewScope } from '../src/shared/schemas/overview.js'
 
 const CATEGORIES: TaskCategory[] = [
   'coding',
@@ -276,14 +274,19 @@ function buildOverviewFixture(): ProjectSummary[] {
   ]
 }
 
-/** The payload core fed the fixture's sessions (map 05): the report path is
- * gone, so the Overview logic is exercised through the same
- * `buildOverviewPayload` the ledger-backed handler uses. `dataStart` spans the
- * same session set — matching the old unscoped `dataStartFor(report)` for the
- * LIFETIME scope these fixtures always use. */
+/** The pure payload calculation receives the same captured pricing inputs as
+ * the application query. `dataStart` spans this session set, matching the old
+ * unscoped data start for the lifetime scope these fixtures use. */
 function payloadFor(projects: ProjectSummary[], scope: OverviewScope, now: Date = NOW): OverviewPayload {
   const sessions = projects.flatMap(project => project.sessions)
-  return buildOverviewPayload(sessions, scope, now, dataStartForSessions(sessions))
+  return calculateOverviewPayload({
+    sessions,
+    scope,
+    now,
+    dataStart: dataStartForSessions(sessions),
+    catalogue: captureModelPricingCatalogue(),
+    localSavings: captureLocalModelSavings(),
+  })
 }
 
 const NOW = new Date(2026, 6, 5, 12, 0, 0)

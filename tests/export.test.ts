@@ -5,12 +5,15 @@ import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import { describe, expect, it, vi } from 'vitest'
 
+import { queryExport } from '../src/main/application/export-query.js'
 import { exportCsv, exportJson } from '../src/main/export.js'
 import { buildCsvExportFiles, buildJsonExport } from '../src/main/export-calculation.js'
 import { FxRates } from '../src/main/fx.js'
+import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
-import { buildProjectsFromLedger } from '../src/main/views.js'
+import { LedgerIngest } from '../src/main/store/ledger-ports.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 const GENERATED = '2026-07-14T12:34:56.000Z'
 const USD = { code: 'USD', symbol: '$', rate: 1 } as const
@@ -343,21 +346,37 @@ describe('export git info (repoUrl in projects/sessions/records)', () => {
   })
 
   it('populates repoUrl from ledger_source on the real export path', async () => {
-    const store = makeStore()
-    store.portIn({
-      provider: 'opencode',
-      envFingerprint: 'env-demo',
-      filePath: FIXTURE_SOURCE_PATH,
-      verdict: 'new',
-      cachedFile: buildFixtureCachedFile(),
-      repoUrl: 'https://github.com/acme/demo-project',
-    })
+    const { runtime } = openLedgerFixture()
+    runtime.runSync(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          provider: 'opencode',
+          envFingerprint: 'env-demo',
+          filePath: FIXTURE_SOURCE_PATH,
+          verdict: 'new',
+          cachedFile: buildFixtureCachedFile(),
+          repoUrl: 'https://github.com/acme/demo-project',
+        }),
+      ),
+    )
 
-    const projects = buildProjectsFromLedger(store)
-    expect(projects[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
-    expect(projects[0]!.sessions[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
-
-    const target = await exportJson(projects, tempPath(), store)
+    const queryInput = {
+      outputPath: tempPath(),
+      catalogue: capturePricingCatalogue({
+        prices: new Map(),
+        overrides: new Map(),
+        builtinAliases: {},
+        userAliases: {},
+        tiers: [],
+        routedSegments: new Set(),
+      }),
+      proxyPaths: { paths: [], caseSensitive: false },
+    }
+    const jsonResult = await runtime.runPromise(queryExport({ ...queryInput, kind: 'json' }))
+    expect(jsonResult.ok).toBe(true)
+    if (!jsonResult.ok) throw new Error(jsonResult.error)
+    if (!jsonResult.path) throw new Error('JSON export did not return a path')
+    const target = jsonResult.path
     const data = JSON.parse(readFileSync(target, 'utf-8')) as {
       projects: Array<{ repoUrl?: string }>
       records: Array<{ repoUrl?: string }>
@@ -365,10 +384,13 @@ describe('export git info (repoUrl in projects/sessions/records)', () => {
     expect(data.projects[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
     expect(data.records[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
 
-    const folder = await exportCsv(projects, tempPath(), store)
+    const csvResult = await runtime.runPromise(queryExport({ ...queryInput, kind: 'csv' }))
+    expect(csvResult.ok).toBe(true)
+    if (!csvResult.ok) throw new Error(csvResult.error)
+    if (!csvResult.path) throw new Error('CSV export did not return a path')
+    const folder = csvResult.path
     expect(readFileSync(join(folder, 'projects.csv'), 'utf-8')).toContain('https://github.com/acme/demo-project')
     expect(readFileSync(join(folder, 'sessions.csv'), 'utf-8')).toContain('https://github.com/acme/demo-project')
     expect(readFileSync(join(folder, 'records.csv'), 'utf-8')).toContain('https://github.com/acme/demo-project')
-    store.close()
   })
 })

@@ -11,11 +11,10 @@ import { sessionRowFromSummary } from '../../src/main/pipeline/sessions-report.j
 import type { SessionSummary } from '../../src/main/pipeline/types.js'
 import { CATEGORY_LABELS } from '../../src/main/pipeline/types.js'
 import {
-  buildSessionRows,
-  buildSessionSummaries,
+  buildSessionRowsFromSnapshot,
   buildSessionSummariesFromSnapshot,
   sessionProjectKey,
-} from '../../src/main/store/aggregate.js'
+} from '../../src/main/store/aggregate-calculation.js'
 import type { LedgerStore } from '../../src/main/store/ledger.js'
 import { type LedgerQuerySnapshot, loadLedgerQuerySnapshot } from '../../src/main/store/query-snapshot.js'
 import {
@@ -41,7 +40,7 @@ export function legacySearchSessionsFromLedger(store: LedgerStore, query: string
 function legacySearchSessionsCore(store: LedgerStore, term: string): SearchHit[] {
   const hits: SearchHit[] = []
   const seen = new Set<string>()
-  const summaries = buildSessionSummaries(store, { range: ALL_TIME_RANGE })
+  const summaries = buildSessionSummariesFromSnapshot(loadLedgerQuerySnapshot(store), { range: ALL_TIME_RANGE })
 
   for (const session of summaries) {
     const provider = sessionRowFromSummary(session, session.project).provider
@@ -105,7 +104,7 @@ export function legacyQuerySessionRowsFromLedger(
 ): SessionRow[] {
   const sinceMs = filter.since ? new Date(filter.since).getTime() : Number.NEGATIVE_INFINITY
   const untilMs = filter.until ? new Date(filter.until).getTime() : Number.POSITIVE_INFINITY
-  const rows = buildSessionRows(store, { range: ALL_TIME_RANGE })
+  const rows = buildSessionRowsFromSnapshot(loadLedgerQuerySnapshot(store), { range: ALL_TIME_RANGE })
     .filter(row => {
       if (filter.project && row.project !== filter.project) return false
       const start = new Date(row.startedAt).getTime()
@@ -173,7 +172,7 @@ function legacySessionDetailFromSummary(session: SessionSummary): SessionDetail 
 }
 
 export function legacyGetSessionDetailFromLedger(store: LedgerStore, sessionId: string): SessionDetail | null {
-  const summaries = buildSessionSummaries(store, { range: ALL_TIME_RANGE })
+  const summaries = buildSessionSummariesFromSnapshot(loadLedgerQuerySnapshot(store), { range: ALL_TIME_RANGE })
   const session = summaries.find(s => s.sessionId === sessionId)
   return session ? Schema.decodeUnknownSync(sessionDetailSchema)(legacySessionDetailFromSummary(session)) : null
 }

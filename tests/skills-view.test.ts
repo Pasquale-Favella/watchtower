@@ -16,7 +16,7 @@ import {
   findGhostSkills,
   normalizeBashCommand,
   partitionSkillCandidates,
-} from '../src/main/skills-view.js'
+} from '../src/main/skills-calculation.js'
 import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { DEFAULT_SKILLS_THRESHOLDS, type SkillsPayload, skillsThresholdsSchema } from '../src/shared/schemas/skills.js'

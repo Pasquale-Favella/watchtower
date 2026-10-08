@@ -7,6 +7,7 @@ import { existsSync, mkdirSync } from 'fs'
 import { dirname, join } from 'path'
 
 import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
+import type { ComparePair } from '../shared/schemas/compare.js'
 import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
 import {
   type LedgerMcpConnection,
@@ -14,13 +15,13 @@ import {
   ledgerMcpStartupModeSchema,
   type LedgerMcpStatus,
 } from '../shared/schemas/ledger-mcp.js'
+import type { OverviewScope } from '../shared/schemas/overview.js'
 import { skillsSaveRequestSchema, type SkillsSaveResult, type SkillsThresholds } from '../shared/schemas/skills.js'
 import type { AcpMcpServer } from './agents/harnesses/types.js'
 import { type LedgerMcpAttachment, registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { createSidecarPool } from './agents/ledger-mcp/pool.js'
 import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
-import type { ComparePair } from '../shared/schemas/compare.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths } from './env.js'
 import type { ExportResult } from './export.js'
@@ -32,7 +33,6 @@ import {
   logIpcError,
   safeLogOperationalEvent,
 } from './operational-log.js'
-import type { OverviewScope } from './overview.js'
 import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
 
 /**

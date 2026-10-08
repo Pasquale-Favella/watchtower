@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -33,7 +33,7 @@ import {
   findLowWorthCandidates,
   formatTokens,
   type WasteAction,
-} from '../src/main/optimize-view.js'
+} from '../src/main/optimize-calculation.js'
 import { buildSessionSummary, cachedTurnToClassified } from '../src/main/pipeline/parser.js'
 import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
 import type {
@@ -44,6 +44,7 @@ import type {
   TokenUsage,
   ToolCall,
 } from '../src/main/pipeline/types.js'
+import type { OptimizeSetup } from '../src/main/setup-facts.js'
 import { LedgerIngest } from '../src/main/store/ledger-ports.js'
 import type { OptimizePayload } from '../src/shared/schemas/optimize.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
@@ -186,6 +187,40 @@ const NOW = new Date(2026, 6, 15)
 
 function tempHome(): string {
   return mkdtempSync(join(tmpdir(), 'opt-'))
+}
+
+function optimizeSetup(
+  options: { configured?: string[]; alwaysLoad?: string[]; deferSetting?: string } = {},
+): OptimizeSetup {
+  const home = '/home/test'
+  const configured = options.configured ?? []
+  return {
+    home,
+    mcpConfigs: new Map(
+      configured.map(name => [
+        name,
+        {
+          normalized: name,
+          original: name,
+          mtime: 0,
+          alwaysLoadPaths: (options.alwaysLoad ?? []).includes(name) ? [`${home}/.claude/settings.json`] : [],
+        },
+      ]),
+    ),
+    envSettings: new Map(
+      options.deferSetting
+        ? [
+            [
+              'ENABLE_TOOL_SEARCH',
+              { value: options.deferSetting, scope: 'user', path: `${home}/.claude/settings.local.json` },
+            ],
+          ]
+        : [],
+    ),
+    agents: [],
+    skills: [],
+    commands: [],
+  }
 }
 
 function readSteps(
@@ -760,55 +795,37 @@ describe('detectSessionOutliers', () => {
 })
 
 describe('ghost detectors (agents / skills / commands)', () => {
-  it('detectGhostAgents flags agent files never invoked', async () => {
-    const home = tempHome()
-    mkdirSync(join(home, '.claude', 'agents'), { recursive: true })
-    writeFileSync(join(home, '.claude', 'agents', 'architect.md'), '')
-    writeFileSync(join(home, '.claude', 'agents', 'reviewer.md'), '')
-    const finding = await detectGhostAgents(['reviewer'], home)
+  it('detectGhostAgents flags defined agents that were never invoked', () => {
+    const finding = detectGhostAgents(['reviewer'], ['architect', 'reviewer'])
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('unused-agents')
     expect(finding!.explanation).toContain('architect')
     expect(finding!.fix.type).toBe('command')
   })
 
-  it('detectGhostSkills flags skill dirs never invoked', async () => {
-    const home = tempHome()
-    mkdirSync(join(home, '.claude', 'skills', 'debugger'), { recursive: true })
-    mkdirSync(join(home, '.claude', 'skills', 'reviewer'), { recursive: true })
-    writeFileSync(join(home, '.claude', 'skills', 'debugger', 'SKILL.md'), '')
-    writeFileSync(join(home, '.claude', 'skills', 'reviewer', 'SKILL.md'), '')
-    const finding = await detectGhostSkills(['reviewer'], home)
+  it('detectGhostSkills flags defined skills that were never invoked', () => {
+    const finding = detectGhostSkills(['reviewer'], ['debugger', 'reviewer'])
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('unused-skills')
     expect(finding!.explanation).toContain('debugger')
   })
 
-  it('detectGhostCommands flags slash commands never referenced', async () => {
-    const home = tempHome()
-    mkdirSync(join(home, '.claude', 'commands'), { recursive: true })
-    writeFileSync(join(home, '.claude', 'commands', 'fix.md'), '')
-    writeFileSync(join(home, '.claude', 'commands', 'summarize.md'), '')
-    const finding = await detectGhostCommands(['please run /summarize now'], home)
+  it('detectGhostCommands flags defined commands never referenced', () => {
+    const finding = detectGhostCommands(['please run /summarize now'], ['fix', 'summarize'])
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('unused-commands')
     expect(finding!.explanation).toContain('fix')
   })
 
-  it('returns null when the home dir has no definitions', async () => {
-    const home = tempHome()
-    expect(await detectGhostAgents(['x'], home)).toBeNull()
-    expect(await detectGhostSkills(['x'], home)).toBeNull()
-    expect(await detectGhostCommands(['/x'], home)).toBeNull()
+  it('returns null when there are no definitions', () => {
+    expect(detectGhostAgents(['x'], [])).toBeNull()
+    expect(detectGhostSkills(['x'], [])).toBeNull()
+    expect(detectGhostCommands(['/x'], [])).toBeNull()
   })
 })
 
 describe('deferral-gap detectors', () => {
   it('detectMcpDeferralOff reports inactive tool deferral for configured servers', () => {
-    const home = tempHome()
-    mkdirSync(join(home, '.claude'), { recursive: true })
-    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ mcpServers: { filesystem: {} } }))
-
     const session = makeSession(0, {
       turns: [makeTurn(0, { calls: [makeCall(0, {})] })],
       cost: 1,
@@ -821,17 +838,12 @@ describe('deferral-gap detectors', () => {
     })
     const projects = groupByProject([session, session2])
     const steps = readSteps(projects)
-    const cwds = new Set(projects.map(p => p.projectPath))
-    const finding = detectMcpDeferralOff(steps, projects, cwds, home)
+    const finding = detectMcpDeferralOff(steps, projects, optimizeSetup({ configured: ['filesystem'] }))
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('mcp-deferral-off')
   })
 
   it('detectMcpDeferralOff is silent when ToolSearch is observed', () => {
-    const home = tempHome()
-    mkdirSync(join(home, '.claude'), { recursive: true })
-    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ mcpServers: { filesystem: {} } }))
-
     const session = makeSession(0, {
       turns: [makeTurn(0, { calls: [makeCall(0, { toolSequence: [[{ tool: 'ToolSearch' }]] })] })],
       apiCalls: 1,
@@ -842,43 +854,31 @@ describe('deferral-gap detectors', () => {
     })
     const projects = groupByProject([session, session2])
     const steps = readSteps(projects)
-    const cwds = new Set(projects.map(p => p.projectPath))
-    expect(detectMcpDeferralOff(steps, projects, cwds, home)).toBeNull()
+    expect(detectMcpDeferralOff(steps, projects, optimizeSetup({ configured: ['filesystem'] }))).toBeNull()
   })
 
   it('detectMcpAlwaysLoadHygiene flags rarely-invoked alwaysLoad servers', () => {
-    const home = tempHome()
-    mkdirSync(join(home, '.claude'), { recursive: true })
-    writeFileSync(
-      join(home, '.claude', 'settings.json'),
-      JSON.stringify({ mcpServers: { filesystem: { alwaysLoad: true } } }),
-    )
     const session = makeSession(0, { turns: [makeTurn(0, { calls: [makeCall(0, {})] })], apiCalls: 1 })
     const projects = groupByProject([session])
-    const cwds = new Set(projects.map(p => p.projectPath))
-    const finding = detectMcpAlwaysLoadHygiene(projects, cwds, undefined, home)
+    const finding = detectMcpAlwaysLoadHygiene(
+      projects,
+      optimizeSetup({ configured: ['filesystem'], alwaysLoad: ['filesystem'] }),
+    )
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('mcp-alwaysload-hygiene')
   })
 
   it('detectMcpDeferThreshold suggests tightening an over-generous auto threshold', () => {
-    const home = tempHome()
-    mkdirSync(join(home, '.claude'), { recursive: true })
-    writeFileSync(
-      join(home, '.claude', 'settings.local.json'),
-      JSON.stringify({
-        env: { ENABLE_TOOL_SEARCH: 'auto:90' },
-        mcpServers: { filesystem: {}, github: {}, memory: {} },
-      }),
-    )
     const session = makeSession(0, {
       turns: [makeTurn(0, { calls: [makeCall(0, {})] })],
       apiCalls: 1,
       mcpBreakdown: { filesystem: { calls: 1 }, github: { calls: 1 }, memory: { calls: 1 } },
     })
     const projects = groupByProject([session])
-    const cwds = new Set(projects.map(p => p.projectPath))
-    const finding = detectMcpDeferThreshold(projects, cwds, home)
+    const finding = detectMcpDeferThreshold(
+      projects,
+      optimizeSetup({ configured: ['filesystem', 'github', 'memory'], deferSetting: 'auto:90' }),
+    )
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('mcp-defer-threshold')
   })
