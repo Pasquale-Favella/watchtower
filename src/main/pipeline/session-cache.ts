@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'crypto'
+import { Effect, Semaphore } from 'effect'
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
-import { existsSync, readFileSync, unlinkSync } from 'fs'
+import { readFileSync, unlinkSync } from 'fs'
 import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises'
 import { join } from 'path'
 
@@ -9,8 +10,8 @@ import type { CachedCall, CachedFile, FileFingerprint } from '../../shared/schem
 import {
   cachedFileSchema,
   providerSectionSchema,
-  sessionCacheSchema,
   type SessionCache,
+  sessionCacheSchema,
 } from '../../shared/schemas/session-cache.js'
 import { type AppPaths, resolveCacheDir, resolveSnapshotEnvVar, type SnapshotEnvVar } from '../env.js'
 
@@ -278,16 +279,49 @@ function isCacheEnvelope(
   )
 }
 
-// One-time migration on a version bump: carry forward exactly the prior-version
-// entries whose source no longer exists AND that carry prLinks (they can never
-// re-parse, but they hold attributable PR spend); present sources are dropped so
-// they re-parse fresh under the new version and gain the new fields. Each file is
-// validated individually, so a single corrupt entry is skipped rather than
-// discarding the whole cache. Each carried section takes the CURRENT
-// envFingerprint so the scan reuses it and appends the freshly-parsed present
-// sources. The daily cache (durable cost history) is not touched.
-async function adoptPriorCache(version: number): Promise<SessionCache | null> {
-  try {
+const fromPromise = <A>(operation: () => Promise<A>): Effect.Effect<A, Error> =>
+  Effect.tryPromise({ try: operation, catch: error => (error instanceof Error ? error : new Error(String(error))) })
+
+export const loadCacheEffect = Effect.fn('loadCacheEffect')(function* (): Effect.fn.Return<SessionCache, Error> {
+  const current = yield* fromPromise(async () => {
+    const raw = await readFile(getCachePath(), 'utf-8')
+    return decodeCache(JSON.parse(raw))
+  }).pipe(Effect.catch(() => Effect.succeed(null)))
+  return current ?? (yield* afterMissingVersionedCacheEffect())
+})
+
+/** Promise boundary retained for callers that have not moved to Effect yet. */
+export function loadCache(): Promise<SessionCache> {
+  return Effect.runPromise(loadCacheEffect())
+}
+
+// The current versioned file is absent/unreadable. Prefer adopting the newest
+// prior versioned file's expired-source PR orphans (v6 before v5); failing that,
+// fall back to the legacy unversioned file. Either way the versioned file is
+// minted on the next save.
+const afterMissingVersionedCacheEffect = Effect.fn('afterMissingVersionedCacheEffect')(function* (): Effect.fn.Return<
+  SessionCache,
+  Error
+> {
+  const prior = yield* adoptNewestPriorCacheEffect()
+  if (prior) return prior
+  // validateCache requires version === CACHE_VERSION, so a different-version
+  // legacy file is ignored (left intact). We copy it into the versioned file once
+  // via saveCache; the legacy file is never modified.
+  return yield* adoptLegacyCacheEffect()
+})
+
+const adoptLegacyCacheEffect = Effect.fn('adoptLegacyCacheEffect')(function* (): Effect.fn.Return<SessionCache, Error> {
+  const decoded = yield* fromPromise(async () =>
+    decodeCache(JSON.parse(await readFile(getLegacyCachePath(), 'utf-8'))),
+  ).pipe(Effect.catch(() => Effect.succeed(null)))
+  if (!decoded) return emptyCache()
+  yield* saveCacheEffect(decoded).pipe(Effect.catch(() => Effect.succeed(false)))
+  return decoded
+})
+
+const adoptPriorCacheEffect = (version: number): Effect.Effect<SessionCache | null, Error> =>
+  fromPromise(async () => {
     const raw = await readFile(join(getCacheDir(), priorCacheFile(version)), 'utf-8')
     const parsed = JSON.parse(raw)
     if (!isCacheEnvelope(parsed, version)) return null
@@ -299,8 +333,14 @@ async function adoptPriorCache(version: number): Promise<SessionCache | null> {
       if (rawFiles && typeof rawFiles === 'object' && !Array.isArray(rawFiles)) {
         for (const [path, file] of Object.entries(rawFiles as Record<string, unknown>)) {
           const decodedFile = decodeCachedFile(file)
-          if (!decodedFile) continue
-          if (!existsSync(path) && decodedFile.prLinks?.length) files[path] = decodedFile
+          if (
+            decodedFile?.prLinks?.length &&
+            !(await stat(path).then(
+              () => true,
+              () => false,
+            ))
+          )
+            files[path] = decodedFile
         }
       }
       migrated.providers[provider] = {
@@ -310,22 +350,15 @@ async function adoptPriorCache(version: number): Promise<SessionCache | null> {
       }
     }
     return migrated
-  } catch {
-    return null
-  }
-}
+  }).pipe(Effect.catch(() => Effect.succeed(null)))
 
-// Adopt EVERY prior versioned cache present on disk, migrating OLDEST first and
-// merging per source path so a newer version wins per entry. Returning the newest
-// alone would be wrong: a sparse or partial newer file (e.g. v6 holding only some
-// orphans) would mask older-only orphans that still hold attributable spend. Newer
-// entries overwrite older ones for the same path; entries unique to an older
-// version survive.
-async function adoptNewestPriorCache(): Promise<SessionCache | null> {
-  const oldestFirst = [...PRIOR_CACHE_VERSIONS].sort((a, b) => a - b)
+const adoptNewestPriorCacheEffect = Effect.fn('adoptNewestPriorCacheEffect')(function* (): Effect.fn.Return<
+  SessionCache | null,
+  Error
+> {
   let merged: SessionCache | null = null
-  for (const version of oldestFirst) {
-    const adopted = await adoptPriorCache(version)
+  for (const version of [...PRIOR_CACHE_VERSIONS].sort((a, b) => a - b)) {
+    const adopted = yield* adoptPriorCacheEffect(version)
     if (!adopted) continue
     if (!merged) {
       merged = adopted
@@ -333,118 +366,60 @@ async function adoptNewestPriorCache(): Promise<SessionCache | null> {
     }
     for (const [provider, section] of Object.entries(adopted.providers)) {
       const existing = merged.providers[provider]
-      if (!existing) {
-        merged.providers[provider] = section
-        continue
+      if (!existing) merged.providers[provider] = section
+      else {
+        Object.assign(existing.files, section.files)
+        if (section.durable) existing.durable = true
       }
-      // Newer version's entries overwrite older ones for the same source path.
-      Object.assign(existing.files, section.files)
-      if (section.durable) existing.durable = true
     }
   }
   return merged
-}
+})
 
-export async function loadCache(): Promise<SessionCache> {
-  try {
-    const raw = await readFile(getCachePath(), 'utf-8')
-    const parsed = JSON.parse(raw)
-    const decoded = decodeCache(parsed)
-    if (!decoded) return afterMissingVersionedCache()
-    return decoded
-  } catch {
-    return afterMissingVersionedCache()
-  }
-}
-
-// The current versioned file is absent/unreadable. Prefer adopting the newest
-// prior versioned file's expired-source PR orphans (v6 before v5); failing that,
-// fall back to the legacy unversioned file. Either way the versioned file is
-// minted on the next save.
-async function afterMissingVersionedCache(): Promise<SessionCache> {
-  const prior = await adoptNewestPriorCache()
-  if (prior) return prior
-  // validateCache requires version === CACHE_VERSION, so a different-version
-  // legacy file is ignored (left intact). We copy it into the versioned file once
-  // via saveCache; the legacy file is never modified.
-  return adoptLegacyCache()
-}
-
-async function adoptLegacyCache(): Promise<SessionCache> {
-  try {
-    const raw = await readFile(getLegacyCachePath(), 'utf-8')
-    const parsed = JSON.parse(raw)
-    const decoded = decodeCache(parsed)
-    if (!decoded) return emptyCache()
-    await saveCache(decoded).catch(() => {})
-    return decoded
-  } catch {
-    return emptyCache()
-  }
-}
-
-export async function saveCache(cache: SessionCache, verifyStillOwner?: () => Promise<boolean>): Promise<boolean> {
+export const saveCacheEffect = Effect.fn('saveCacheEffect')(function* (
+  cache: SessionCache,
+  verifyStillOwner?: () => Effect.Effect<boolean, Error>,
+): Effect.fn.Return<boolean, Error> {
   const dir = getCacheDir()
-  if (!existsSync(dir)) await mkdir(dir, { recursive: true })
-
+  yield* fromPromise(() => mkdir(dir, { recursive: true }))
   const finalPath = getCachePath()
   const tempPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
   delete (cache as { _dirty?: boolean })._dirty
   const payload = JSON.stringify(cache)
-
-  const handle = await open(tempPath, 'w', 0o600)
-  try {
-    await handle.writeFile(payload, { encoding: 'utf-8' })
-    await handle.sync()
-  } finally {
-    await handle.close()
-  }
-
-  try {
-    // The warm refresh transaction passes an ownership fence. It must be the
-    // final operation before publication so a displaced writer cannot replace
-    // the canonical cache with its stale snapshot.
-    if (verifyStillOwner && !(await verifyStillOwner())) {
-      await retryCacheFileMutation(() => unlink(tempPath))
-      return false
-    }
+  const published = yield* Effect.gen(function* () {
+    yield* Effect.acquireUseRelease(
+      fromPromise(() => open(tempPath, 'w', 0o600)),
+      handle =>
+        fromPromise(async () => {
+          await handle.writeFile(payload, { encoding: 'utf-8' })
+          await handle.sync()
+        }).pipe(Effect.uninterruptible),
+      handle => fromPromise(() => handle.close()),
+    )
+    if (verifyStillOwner && !(yield* verifyStillOwner())) return false
     let renamed = false
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        await rename(tempPath, finalPath)
-        renamed = true
-        break
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code
-        if ((code !== 'EPERM' && code !== 'EBUSY') || attempt === 2) throw err
-        await new Promise(resolve => {
-          setTimeout(resolve, 10 * (attempt + 1))
-        })
+    for (let attempt = 0; attempt < 3 && !renamed; attempt++) {
+      const result = yield* Effect.uninterruptible(fromPromise(() => rename(tempPath, finalPath))).pipe(
+        Effect.map(() => true),
+        Effect.catch(error => {
+          const code = (error as NodeJS.ErrnoException).code
+          return code === 'EPERM' || code === 'EBUSY' ? Effect.succeed(false) : Effect.fail(error as Error)
+        }),
+      )
+      renamed = result
+      if (!renamed) {
+        if (attempt === 2) return yield* Effect.fail(new Error('session cache rename failed'))
+        yield* Effect.sleep(`${10 * (attempt + 1)} millis`)
       }
     }
-    if (!renamed) throw new Error('session cache rename failed')
     return true
-  } catch (err) {
-    await retryCacheFileMutation(() => unlink(tempPath))
-    throw err
-  }
-}
+  }).pipe(Effect.ensuring(fromPromise(() => unlink(tempPath)).pipe(Effect.catch(() => Effect.void))))
+  return published
+})
 
-async function retryCacheFileMutation(operation: () => Promise<void>): Promise<boolean> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      await operation()
-      return true
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') return true
-      if ((code !== 'EPERM' && code !== 'EBUSY') || attempt === 2) return false
-      await new Promise(resolve => {
-        setTimeout(resolve, 10 * (attempt + 1))
-      })
-    }
-  }
-  return false
+/** Promise edge for unmigrated consumers. */
+export function saveCache(cache: SessionCache, verifyStillOwner?: () => Promise<boolean>): Promise<boolean> {
+  return Effect.runPromise(saveCacheEffect(cache, verifyStillOwner ? () => fromPromise(verifyStillOwner) : undefined))
 }
 
 // ── File Fingerprinting ────────────────────────────────────────────────
@@ -458,38 +433,26 @@ async function retryCacheFileMutation(operation: () => Promise<void>): Promise<b
 // append-only transcripts keep changing. Fixing this properly means
 // multi-file fingerprints per source.
 
-export async function fingerprintFile(filePath: string): Promise<FileFingerprint | null> {
-  try {
-    const s = await stat(filePath)
-    return { dev: s.dev, ino: s.ino, mtimeMs: s.mtimeMs, sizeBytes: s.size }
-  } catch {
-    // Providers encode extra context into source paths using virtual suffixes:
-    // - Cursor: `<dbPath>#cursor-ws=<workspace>` (workspace-aware routing)
-    // - OpenCode: `<dbPath>:<sessionId>` (session scoping)
-    // These compound paths don't exist on disk; strip the suffix to stat the
-    // underlying file. Try `#` first (rare in real paths), then `:` (must use
-    // lastIndexOf to tolerate Windows drive letters like C:\...).
+export function fingerprintFile(filePath: string): Promise<FileFingerprint | null> {
+  return Effect.runPromise(fingerprintFileEffect(filePath))
+}
+
+export const fingerprintFileEffect = (filePath: string): Effect.Effect<FileFingerprint | null, Error> =>
+  Effect.gen(function* () {
+    const paths = [filePath]
     const hashIdx = filePath.indexOf('#')
-    if (hashIdx > 0) {
-      try {
-        const s = await stat(filePath.slice(0, hashIdx))
-        return { dev: s.dev, ino: s.ino, mtimeMs: s.mtimeMs, sizeBytes: s.size }
-      } catch {
-        // fall through to colon check
-      }
-    }
+    if (hashIdx > 0) paths.push(filePath.slice(0, hashIdx))
     const colonIdx = filePath.lastIndexOf(':')
-    if (colonIdx > 0) {
-      try {
-        const s = await stat(filePath.slice(0, colonIdx))
-        return { dev: s.dev, ino: s.ino, mtimeMs: s.mtimeMs, sizeBytes: s.size }
-      } catch {
-        return null
-      }
+    if (colonIdx > 0) paths.push(filePath.slice(0, colonIdx))
+    for (const path of [...new Set(paths)]) {
+      const result = yield* fromPromise(() => stat(path)).pipe(
+        Effect.map(s => ({ dev: s.dev, ino: s.ino, mtimeMs: s.mtimeMs, sizeBytes: s.size })),
+        Effect.catch(() => Effect.succeed(null)),
+      )
+      if (result) return result
     }
     return null
-  }
-}
+  })
 
 // ── Reconciliation ─────────────────────────────────────────────────────
 
@@ -540,28 +503,25 @@ export function mergeCallByDedupKey(existing: CachedCall, incoming: CachedCall):
 
 // ── Temp Cleanup ───────────────────────────────────────────────────────
 
-export async function cleanupOrphanedTempFiles(): Promise<void> {
-  const dir = getCacheDir()
-  if (!existsSync(dir)) return
-
-  try {
-    const entries = await readdir(dir)
-    const now = Date.now()
-
-    // Only our own (versioned) temp files. Legacy `session-cache.json.*.tmp`
-    // temps belong to old binaries mid-write and must not be touched.
+export const cleanupOrphanedTempFilesEffect = Effect.fn('cleanupOrphanedTempFilesEffect')(
+  function* (): Effect.fn.Return<void, Error> {
+    const dir = getCacheDir()
+    const entries = yield* fromPromise(() => readdir(dir)).pipe(Effect.catch(() => Effect.succeed([] as string[])))
+    const now = yield* Effect.clockWith(clock => clock.currentTimeMillis)
     const prefix = `${CACHE_FILE}.`
     for (const entry of entries) {
       if (!entry.startsWith(prefix) || !entry.endsWith('.tmp')) continue
-      try {
-        const fullPath = join(dir, entry)
-        const s = await stat(fullPath)
-        if (now - s.mtimeMs > TEMP_FILE_MAX_AGE_MS) {
-          await unlink(fullPath)
-        }
-      } catch {}
+      const fullPath = join(dir, entry)
+      const s = yield* fromPromise(() => stat(fullPath)).pipe(Effect.catch(() => Effect.succeed(null)))
+      if (s && now - s.mtimeMs > TEMP_FILE_MAX_AGE_MS) {
+        yield* fromPromise(() => unlink(fullPath)).pipe(Effect.catch(() => Effect.void))
+      }
     }
-  } catch {}
+  },
+)
+
+export function cleanupOrphanedTempFiles(): Promise<void> {
+  return Effect.runPromise(cleanupOrphanedTempFilesEffect())
 }
 
 // ── Hydration Lock ─────────────────────────────────────────────────────
@@ -578,11 +538,11 @@ const HYDRATION_LOCK_FILE = 'hydrating.lock'
 const LOCK_FRESH_MS = 15 * 60_000
 const LOCK_WAIT_MAX_MS = 10 * 60_000
 const LOCK_POLL_MS = 250
+const coldHydrationPermit = Semaphore.makeUnsafe(1)
 
 type LockRecord = { pid: number; at: number }
 export type HydrationHandle = { waited: boolean; release: () => Promise<void> }
-
-const NOOP_HANDLE: HydrationHandle = { waited: false, release: async () => {} }
+export type HydrationHandleEffect = { waited: boolean; release: Effect.Effect<void, Error> }
 
 function lockPath(): string {
   return join(getCacheDir(), HYDRATION_LOCK_FILE)
@@ -602,40 +562,36 @@ function pidLooksAlive(pid: number): boolean {
   }
 }
 
-async function readLockRecord(): Promise<LockRecord | null> {
-  try {
+const readLockRecordEffect = (): Effect.Effect<LockRecord | null, Error> =>
+  fromPromise(async () => {
     const parsed = JSON.parse(await readFile(lockPath(), 'utf-8')) as Partial<LockRecord>
-    if (typeof parsed?.pid === 'number' && typeof parsed?.at === 'number') return { pid: parsed.pid, at: parsed.at }
-    return null
-  } catch {
-    return null
-  }
-}
+    return typeof parsed?.pid === 'number' && typeof parsed?.at === 'number' ? { pid: parsed.pid, at: parsed.at } : null
+  }).pipe(Effect.catch(() => Effect.succeed(null)))
 
-async function writeOurLock(): Promise<boolean> {
-  try {
-    const dir = getCacheDir()
-    if (!existsSync(dir)) await mkdir(dir, { recursive: true })
-    const handle = await open(lockPath(), 'wx', 0o600)
-    try {
-      await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }), { encoding: 'utf-8' })
-    } finally {
-      await handle.close()
-    }
-    return true
-  } catch {
-    return false
-  }
-}
+const writeOurLockEffect = (): Effect.Effect<boolean, Error> =>
+  Effect.uninterruptible(
+    fromPromise(async () => {
+      await mkdir(getCacheDir(), { recursive: true })
+      const handle = await open(lockPath(), 'wx', 0o600)
+      try {
+        await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }), { encoding: 'utf-8' })
+      } finally {
+        await handle.close()
+      }
+      return true
+    }).pipe(Effect.catch(() => Effect.succeed(false))),
+  )
 
-async function removeOurLock(): Promise<void> {
-  try {
-    const cur = await readLockRecord()
-    if (cur && cur.pid === process.pid) await unlink(lockPath())
-  } catch {
-    /* best-effort; a leaked lock is reclaimed as stale next cold start */
-  }
-}
+const removeOurLockEffect = (): Effect.Effect<void, never> =>
+  Effect.uninterruptible(
+    readLockRecordEffect().pipe(
+      Effect.flatMap(current =>
+        current?.pid === process.pid
+          ? fromPromise(() => unlink(lockPath())).pipe(Effect.catch(() => Effect.void))
+          : Effect.void,
+      ),
+    ),
+  ).pipe(Effect.catch(() => Effect.void))
 
 // Synchronous variant for the signal path: a handler can't await, so read + unlink
 // synchronously. Only unlinks a lock we actually own.
@@ -664,79 +620,123 @@ function armSignalCleanup(): void {
   }
 }
 
-const releaseHandle: HydrationHandle = { waited: false, release: removeOurLock }
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => {
-    setTimeout(resolve, ms)
-  })
-}
+const noopHydrationEffect: HydrationHandleEffect = { waited: false, release: Effect.void }
 
 /**
  * Coordinate a cold hydration. Pass `isCold = true` only when the on-disk cache
  * is empty (a genuine full parse is imminent). Returns a handle:
  *  - `waited: true`  → another live process was hydrating; we waited for it to
  *    finish (or timed out). The caller should RELOAD the cache and let its normal
- *    reconcile serve the now-warm entries instead of re-parsing. `release` is a
- *    no-op (we never held the lock).
+ *    reconcile serve the now-warm entries instead of re-parsing. The handle's
+ *    release skips the file lock and frees this process's serialization permit.
  *  - `waited: false` with a real `release` → we hold the lock; hydrate, then call
  *    `release()` in a finally.
  *  - `waited: false` with a no-op `release` → proceed with the parse unlocked
  *    (not cold, or the lock state was uncertain).
  */
-export async function beginColdHydration(isCold: boolean): Promise<HydrationHandle> {
-  if (!isCold) return NOOP_HANDLE
-  try {
-    if (await writeOurLock()) {
-      armSignalCleanup()
-      return releaseHandle
-    }
-    const existing = await readLockRecord()
-    const fresh = existing !== null && Date.now() - existing.at < LOCK_FRESH_MS
-    if (existing && fresh && pidLooksAlive(existing.pid)) {
-      // Another live process owns a fresh lock: wait for it to release, go stale,
-      // or die. A CLEAN release means the cache is warm — reload it. Going stale or
-      // dying (e.g. a SIGKILLed cold scan) means the holder left partial data AND a
-      // leftover lock file: take over — clean the stale lock and re-acquire — so we
-      // re-parse under our own lock and remove the leftover on release, instead of
-      // leaving it for the next cold start to reclaim.
-      const deadline = Date.now() + LOCK_WAIT_MAX_MS
+export const beginColdHydrationEffect = Effect.fn('beginColdHydrationEffect')(function* (
+  isCold: boolean,
+): Effect.fn.Return<HydrationHandleEffect, Error> {
+  if (!isCold) return noopHydrationEffect
+  let ownsPermit = false
+  let ownsLock = false
+  let handedOff = false
+  let waitedForLocalOwner = false
+  const releasePermit = Effect.suspend(() => {
+    if (!ownsPermit) return Effect.void
+    ownsPermit = false
+    return coldHydrationPermit.release(1).pipe(Effect.asVoid)
+  })
+
+  const claimLock = (): Effect.Effect<boolean, Error> =>
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        if (!(yield* writeOurLockEffect())) return false
+        ownsLock = true
+        armSignalCleanup()
+        return true
+      }),
+    )
+
+  const acquire = Effect.gen(function* () {
+    if (waitedForLocalOwner) return { waited: true }
+    if (yield* claimLock()) return { waited: false }
+    const existing = yield* readLockRecordEffect()
+    const now = yield* Effect.clockWith(clock => clock.currentTimeMillis)
+    if (existing && now - existing.at < LOCK_FRESH_MS && pidLooksAlive(existing.pid)) {
+      const deadline = now + LOCK_WAIT_MAX_MS
       let takeover = false
-      while (Date.now() < deadline) {
-        await sleep(LOCK_POLL_MS)
-        const cur = await readLockRecord()
-        if (!cur) break
-        if (Date.now() - cur.at >= LOCK_FRESH_MS) {
-          takeover = true
-          break
-        }
-        if (!pidLooksAlive(cur.pid)) {
+      while ((yield* Effect.clockWith(clock => clock.currentTimeMillis)) < deadline) {
+        yield* Effect.sleep(`${LOCK_POLL_MS} millis`)
+        const current = yield* readLockRecordEffect()
+        if (!current) break
+        const time = yield* Effect.clockWith(clock => clock.currentTimeMillis)
+        if (time - current.at >= LOCK_FRESH_MS || !pidLooksAlive(current.pid)) {
           takeover = true
           break
         }
       }
       if (takeover) {
-        try {
-          await unlink(lockPath())
-        } catch {
-          /* another process may have; fine */
-        }
-        if (await writeOurLock()) {
-          armSignalCleanup()
-          return releaseHandle
-        }
+        yield* fromPromise(() => unlink(lockPath())).pipe(Effect.catch(() => Effect.void))
+        if (yield* claimLock()) return { waited: false }
       }
-      return { waited: true, release: async () => {} }
+      return { waited: true }
     }
-    // Stale, dead-pid, or unreadable lock: replace it and take over.
-    try {
-      await unlink(lockPath())
-    } catch {
-      /* another process may have; fine */
-    }
-    if (await writeOurLock()) return releaseHandle
-    return NOOP_HANDLE
-  } catch {
-    return NOOP_HANDLE
-  }
+    yield* fromPromise(() => unlink(lockPath())).pipe(Effect.catch(() => Effect.void))
+    yield* claimLock()
+    return { waited: false }
+  })
+
+  return yield* Effect.uninterruptibleMask(restore => {
+    const finishAcquisition = (): Effect.Effect<HydrationHandleEffect, Error> =>
+      restore(acquire).pipe(
+        Effect.catch(() => Effect.succeed({ waited: false })),
+        Effect.map(({ waited }) => {
+          let released = false
+          handedOff = true
+          return {
+            waited,
+            release: Effect.suspend(() => {
+              if (released) return Effect.void
+              released = true
+              return (ownsLock ? removeOurLockEffect() : Effect.void).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    ownsLock = false
+                  }).pipe(Effect.flatMap(() => releasePermit)),
+                ),
+              )
+            }),
+          }
+        }),
+        Effect.ensuring(
+          Effect.suspend(() =>
+            handedOff
+              ? Effect.void
+              : (ownsLock ? removeOurLockEffect() : Effect.void).pipe(Effect.ensuring(releasePermit)),
+          ),
+        ),
+      )
+    return restore(coldHydrationPermit.takeIfAvailable(1)).pipe(
+      Effect.flatMap(acquired => {
+        if (acquired) ownsPermit = true
+        else {
+          waitedForLocalOwner = true
+          return restore(coldHydrationPermit.take(1)).pipe(
+            Effect.flatMap(() => {
+              ownsPermit = true
+              return finishAcquisition()
+            }),
+          )
+        }
+        return finishAcquisition()
+      }),
+    )
+  })
+})
+
+/** Promise edge for callers that have not migrated. */
+export async function beginColdHydration(isCold: boolean): Promise<HydrationHandle> {
+  const handle = await Effect.runPromise(beginColdHydrationEffect(isCold))
+  return { waited: handle.waited, release: () => Effect.runPromise(handle.release) }
 }
