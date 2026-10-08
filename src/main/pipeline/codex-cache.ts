@@ -294,8 +294,3 @@ export const flushCodexCacheEffect = Effect.fn('flushCodexCacheEffect')(
   },
   Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.void)),
 )
-
-/** Compatibility edge until the scan consumes the native flush directly. */
-export function flushCodexCache(signal?: AbortSignal): Promise<void> {
-  return Effect.runPromise(Effect.scoped(flushCodexCacheEffect(signal)))
-}

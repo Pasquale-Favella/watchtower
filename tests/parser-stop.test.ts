@@ -2,6 +2,7 @@ import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Stream from 'effect/Stream'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -24,6 +25,10 @@ vi.mock('fs/promises', () => ({
 
 vi.mock('../src/main/pipeline/fs-utils.js', () => ({
   readSessionLines: (...args: unknown[]) => hooks.readLines(...args),
+  readSessionLinesStream: (...args: unknown[]) =>
+    Stream.fromAsyncIterable(hooks.readLines(...args) as AsyncIterable<string>, cause =>
+      cause instanceof Error ? cause : new Error(String(cause)),
+    ),
 }))
 
 vi.mock('../src/main/pipeline/providers/index.js', () => ({
@@ -217,6 +222,123 @@ describe('parser cooperative stop', () => {
     expect(files?.[firstPath]).toEqual(priorFile)
     expect(files?.[secondPath]).toEqual(priorFile)
     expect(files && Object.values(files).some(file => file.failed)).toBe(false)
+    expect(hooks.saveCache).not.toHaveBeenCalled()
+  })
+
+  it('restores the prior Claude cache entry when scan stop arrives during delta publication', async () => {
+    const projectDir = '/test/claude-project'
+    const filePath = join(projectDir, 'one.jsonl')
+    const cache = makeCache('claude', [filePath])
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('claude', projectDir)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    hooks.readdir.mockImplementation(async (path: string) => (path === projectDir ? ['one.jsonl'] : []))
+    hooks.readLines.mockImplementation(async function* () {
+      yield JSON.stringify({ type: 'user', uuid: 'new-entry' })
+    })
+    const prior = structuredClone(cache.providers.claude?.files[filePath])
+    const controller = new AbortController()
+    const abort = new ScanAbortedError({ message: 'scan aborted during publication' })
+    const onDelta = vi.fn(async () => {
+      controller.abort(abort)
+      throw abort
+    })
+
+    await expect(parseAllSessions(undefined, undefined, onDelta, undefined, controller.signal)).rejects.toBe(abort)
+
+    expect(onDelta).toHaveBeenCalledOnce()
+    expect(cache.providers.claude?.files[filePath]).toEqual(prior)
+    expect(cache.providers.claude?.files[filePath]?.failed).toBeUndefined()
+    expect(hooks.saveCache).not.toHaveBeenCalled()
+  })
+
+  it('drains a pending Claude delta callback before restoring a replaced cache entry', async () => {
+    const projectDir = '/test/claude-project'
+    const filePath = join(projectDir, 'one.jsonl')
+    const cache = makeCache('claude', [filePath])
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('claude', projectDir)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    hooks.readdir.mockImplementation(async (path: string) => (path === projectDir ? ['one.jsonl'] : []))
+    hooks.readLines.mockImplementation(async function* () {
+      yield JSON.stringify({ type: 'user', sessionId: 'new-entry' })
+    })
+    const prior = structuredClone(cache.providers.claude?.files[filePath])
+    const controller = new AbortController()
+    const abort = new ScanAbortedError({ message: 'scan aborted during pending publication' })
+    let entered!: () => void
+    let release!: () => void
+    const callbackStarted = new Promise<void>(resolve => (entered = resolve))
+    const callbackGate = new Promise<void>(resolve => (release = resolve))
+    const onDelta = vi.fn(async () => {
+      cache.providers.claude!.files[filePath] = { ...priorFile, failed: true }
+      entered()
+      await callbackGate
+    })
+
+    const scan = parseAllSessions(undefined, undefined, onDelta, undefined, controller.signal)
+    await callbackStarted
+    controller.abort(abort)
+    let settled = false
+    void scan.then(
+      () => (settled = true),
+      () => (settled = true),
+    )
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    release()
+
+    await expect(scan).rejects.toBe(abort)
+    expect(cache.providers.claude?.files[filePath]).toEqual(prior)
+    expect(hooks.saveCache).not.toHaveBeenCalled()
+  })
+
+  it('restores the original Claude entry after fiber interruption drains delta publication', async () => {
+    const projectDir = '/test/claude-project'
+    const filePath = join(projectDir, 'one.jsonl')
+    const cache = makeCache('claude', [filePath])
+    const originalEntry = cache.providers.claude!.files[filePath]!
+    const originalValue = structuredClone(originalEntry)
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('claude', projectDir)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    hooks.readdir.mockImplementation(async (path: string) => (path === projectDir ? ['one.jsonl'] : []))
+    hooks.readLines.mockImplementation(async function* () {
+      yield JSON.stringify({ type: 'user', sessionId: 'new-entry' })
+    })
+    const events: string[] = []
+    let enter!: () => void
+    let release!: () => void
+    const started = new Promise<void>(resolve => (enter = resolve))
+    const gate = new Promise<void>(resolve => (release = resolve))
+    const onDelta = vi.fn(async () => {
+      events.push('delta-start')
+      enter()
+      await gate
+      events.push('delta-settled')
+    })
+    const stopError = new Error('Claude stop callback failed')
+    const stop = vi.fn(() => {
+      events.push('stop')
+      release()
+      throw stopError
+    })
+    const fiber = Effect.runFork(parseAllSessionsEffect(undefined, undefined, onDelta, undefined, undefined, {}, stop))
+    await started
+    expect(cache.providers.claude!.files[filePath]).not.toBe(originalEntry)
+    expect(originalEntry).toEqual(originalValue)
+
+    await Effect.runPromise(Fiber.interrupt(fiber))
+    const exit = await Effect.runPromise(Fiber.await(fiber))
+
+    expect(events).toEqual(['delta-start', 'stop', 'delta-settled'])
+    expect(stop).toHaveBeenCalledOnce()
+    expect(cache.providers.claude!.files[filePath]).toBe(originalEntry)
+    expect(originalEntry).toEqual(originalValue)
+    expect(exit._tag === 'Failure' ? Cause.findDefect(exit.cause) : undefined).toMatchObject({
+      _tag: 'Success',
+      success: stopError,
+    })
     expect(hooks.saveCache).not.toHaveBeenCalled()
   })
 

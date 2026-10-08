@@ -1,5 +1,6 @@
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import { existsSync } from 'fs'
 import { lstat, readdir, readFile, stat } from 'fs/promises'
@@ -30,10 +31,10 @@ import { parsedProviderCallSchema } from '../../shared/schemas/providers.js'
 import { extractBashCommands } from './bash-utils.js'
 import { acquireCacheRefreshLockEffect, type RefreshLockHandle } from './cache-refresh-lock.js'
 import { BASH_TOOLS, classifyTurn, EDIT_TOOLS } from './classifier.js'
-import { flushCodexCache } from './codex-cache.js'
+import { flushCodexCacheEffect } from './codex-cache.js'
 import { normalizeContentBlocks } from './content-utils.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
-import { readSessionLines } from './fs-utils.js'
+import { readSessionLinesStream } from './fs-utils.js'
 import { captureScanPricing, getProxyPathsConfigHash, getShortModelName, isProxiedPath } from './models.js'
 import {
   antigravityCascadeIdFromPath,
@@ -59,7 +60,6 @@ import {
   loadCacheEffect,
   type ProviderSection,
   reconcileFile,
-  saveCache,
   saveCacheEffect,
   sectionNeedsPrEvidenceReparse,
   type SessionCache,
@@ -90,9 +90,8 @@ import type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 
 export type DeltaHandler = (delta: ScanDelta, pricing?: ScanPricing) => void | Promise<void>
 
-/** Owns a legacy parser Promise until it settles. Non-Claude provider parsing
- * does not use this adapter; its parseStream runs in the current fiber. Remaining
- * uses are the Claude parser compatibility boundary and provider leaf callbacks.
+/** Owns a native Promise leaf until it settles. Parsing composes in the current
+ * fiber. Remaining uses are provider IO and progress/delta callback boundaries.
  * Remove each use when that API returns an Effect. */
 function runOwnedParserPromise<A>(
   signal: AbortSignal | undefined,
@@ -116,7 +115,7 @@ function runOwnedParserPromise<A>(
       )
       return { promise, drain, isSettled: () => settled }
     }),
-    owned => Effect.tryPromise({ try: () => owned.promise, catch: cause => cause as Error }),
+    owned => Effect.tryPromise({ try: () => owned.promise, catch: parserError }),
     owned =>
       Effect.sync(() => {
         if (!owned.isSettled()) stop?.()
@@ -185,6 +184,16 @@ function consumeLegacyParser(
 
 function checkScanAbort(signal?: AbortSignal): Effect.Effect<void, ScanAbortedError> {
   return Effect.suspend(() => (signal?.aborted ? Effect.fail(scanAbortError(signal)) : Effect.void))
+}
+
+function parserError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause), { cause })
+}
+
+/** Node filesystem leaves without a cancellable API must settle before the
+ * scan releases its resources. Keep the uninterruptible region to one call. */
+function parserFileIo<A>(operation: () => Promise<A>): Effect.Effect<A, Error> {
+  return Effect.uninterruptible(Effect.tryPromise({ try: operation, catch: parserError }))
 }
 
 /** A single file's port-in must never abort the whole scan: a throw from the
@@ -262,7 +271,11 @@ function isCoworkSession(cwd: string, filePath: string): boolean {
   })
 }
 
-async function resolveCanonicalProjectPath(cwd: string): Promise<{ path: string; isWorktree: boolean }> {
+const resolveCanonicalProjectPathEffect = Effect.fnUntraced(function* (
+  cwd: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<{ path: string; isWorktree: boolean }, Error> {
+  yield* checkScanAbort(signal)
   const trimmed = cwd.trim()
   if (!trimmed) return { path: cwd, isWorktree: false }
 
@@ -280,12 +293,16 @@ async function resolveCanonicalProjectPath(cwd: string): Promise<{ path: string;
   let dir = trimmed
   while (true) {
     const gitEntry = join(dir, '.git')
-    const entryStat = await lstat(gitEntry).catch(() => null)
+    const entryStat = yield* parserFileIo(() => lstat(gitEntry)).pipe(Effect.catch(() => Effect.succeed(null)))
+    yield* checkScanAbort(signal)
     if (entryStat?.isDirectory()) {
       return { path: dir === trimmed ? dir : cwd, isWorktree: false }
     }
     if (entryStat?.isFile()) {
-      const gitFile = await readFile(gitEntry, 'utf-8').catch(() => null)
+      const gitFile = yield* parserFileIo(() => readFile(gitEntry, 'utf-8')).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+      )
+      yield* checkScanAbort(signal)
       if (gitFile === null) return { path: dir === trimmed ? dir : cwd, isWorktree: false }
       const match = gitFile.match(/^gitdir:\s*(.+?)\s*$/m)
       if (!match?.[1]) return { path: dir === trimmed ? dir : cwd, isWorktree: false }
@@ -300,7 +317,7 @@ async function resolveCanonicalProjectPath(cwd: string): Promise<{ path: string;
     if (parent === dir) return { path: cwd, isWorktree: false }
     dir = parent
   }
-}
+})
 
 const LARGE_JSONL_LINE_BYTES = 32 * 1024
 
@@ -2191,128 +2208,83 @@ export function buildSessionSummary(
   }
 }
 
-async function parseSessionFile(
-  filePath: string,
-  project: string,
-  seenMsgIds: Set<string>,
-  dateRange?: DateRange,
-  pricing: ScanPricing = captureScanPricing(),
-): Promise<{ session: SessionSummary; canonicalCwd?: string } | null> {
-  // Skip files whose mtime is older than the range start. A session file
-  // can only contain entries up to its last-modified time; if that predates
-  // the requested range, nothing in this file can match.
-  if (dateRange) {
-    try {
-      const s = await stat(filePath)
-      if (s.mtimeMs < dateRange.start.getTime()) return null
-    } catch {
-      /* fall through to normal read; missing stat shouldn't break parsing */
-    }
-  }
-  const entries: JournalEntry[] = []
-  let hasLines = false
-
-  // When a dateRange is given, skip user/assistant lines whose timestamp
-  // is older than range.start - 24h without calling JSON.parse. Huge lines
-  // that cannot be skipped are yielded as Buffers and compact-parsed without
-  // converting the whole line into a V8 string.
-  const earlySkipThreshold = dateRange ? new Date(dateRange.start.getTime() - 86_400_000).toISOString() : null
-  const skipFn = earlySkipThreshold ? (head: string) => shouldSkipLine(head, earlySkipThreshold) : undefined
-
-  for await (const line of readSessionLines(filePath, skipFn, { largeLineAsBuffer: true })) {
-    hasLines = true
-    const entry = parseJsonlLine(line)
-    if (entry) entries.push(compactEntry(entry))
-  }
-
-  if (!hasLines) return null
-
-  if (entries.length === 0) return null
-
-  const sessionId = basename(filePath, '.jsonl')
-  const dedupedEntries = dedupeStreamingMessageIds(entries)
-  let turns = groupIntoTurns(dedupedEntries, seenMsgIds, undefined, pricing)
-  if (dateRange) {
-    // Bucket a turn by the timestamp of its first assistant call (when the cost was
-    // actually incurred). Filtering entries directly produced orphan assistant calls
-    // when a user message sat in one day and the response landed in another -- those
-    // got pushed as turns with empty timestamps, which some code paths counted and
-    // others dropped, producing inconsistent Today totals.
-    turns = turns.filter(turn => {
-      if (turn.assistantCalls.length === 0) return false
-      const firstCallTs = turn.assistantCalls[0]!.timestamp
-      if (!firstCallTs) return false
-      const ts = new Date(firstCallTs)
-      return ts >= dateRange.start && ts <= dateRange.end
-    })
-    if (turns.length === 0) return null
-  }
-  const classified = turns.map(classifyTurn)
-
-  // Inventory is extracted from the full entry stream, not just the
-  // turns we kept after date filtering: tool availability is set up
-  // once at the start of a session (with possible mid-session reloads),
-  // and we want to reflect what was loaded even if the user only ran
-  // turns inside a narrow date window.
-  const mcpInventory = extractMcpInventory(entries)
-  const canonicalCwd = extractCanonicalCwd(entries)
-
-  return {
-    session: buildSessionSummary(sessionId, project, classified, mcpInventory),
-    ...(canonicalCwd ? { canonicalCwd } : {}),
-  }
-}
-
 // Recursively collect every `.jsonl` under `dir`. Subagent transcripts live in
 // `subagents/`, and workflow/ultracode runs nest a further level deep
 // (`subagents/workflows/<wf>/agent-*.jsonl`); a flat scan misses those, so their
 // usage went uncounted whenever the workflow feature was on. (#470)
-async function collectJsonlInto(dir: string, out: Set<string>, signal?: AbortSignal): Promise<void> {
-  throwIfScanAborted(signal)
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
-  throwIfScanAborted(signal)
+const collectJsonlIntoEffect = Effect.fnUntraced(function* (
+  dir: string,
+  out: Set<string>,
+  signal?: AbortSignal,
+): Effect.fn.Return<void, Error> {
+  yield* checkScanAbort(signal)
+  const entries = yield* parserFileIo(() => readdir(dir, { withFileTypes: true })).pipe(
+    Effect.catch(() => Effect.succeed([])),
+  )
+  yield* checkScanAbort(signal)
   for (const e of entries) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     const p = join(dir, e.name)
-    if (e.isDirectory()) await collectJsonlInto(p, out, signal)
+    if (e.isDirectory()) yield* collectJsonlIntoEffect(p, out, signal)
     else if (e.name.endsWith('.jsonl')) out.add(p)
   }
-}
+})
 
-export async function collectJsonlFiles(dirPath: string, signal?: AbortSignal): Promise<string[]> {
-  throwIfScanAborted(signal)
-  const files = await readdir(dirPath).catch(() => [])
-  throwIfScanAborted(signal)
+const collectJsonlFilesEffect = Effect.fnUntraced(function* (
+  dirPath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<string[], Error> {
+  yield* checkScanAbort(signal)
+  const files = yield* parserFileIo(() => readdir(dirPath)).pipe(Effect.catch(() => Effect.succeed([])))
+  yield* checkScanAbort(signal)
   const jsonlFiles = new Set(files.filter(f => f.endsWith('.jsonl')).map(f => join(dirPath, f)))
 
-  await collectJsonlInto(join(dirPath, 'subagents'), jsonlFiles, signal)
+  yield* collectJsonlIntoEffect(join(dirPath, 'subagents'), jsonlFiles, signal)
   for (const entry of files) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     if (entry.endsWith('.jsonl')) continue
-    await collectJsonlInto(join(dirPath, entry, 'subagents'), jsonlFiles, signal)
+    yield* collectJsonlIntoEffect(join(dirPath, entry, 'subagents'), jsonlFiles, signal)
   }
 
   return [...jsonlFiles]
+})
+
+/** Promise edge for discovery callers that still expose Promise APIs. */
+export function collectJsonlFiles(dirPath: string, signal?: AbortSignal): Promise<string[]> {
+  return Effect.runPromise(collectJsonlFilesEffect(dirPath, signal))
 }
 
 // Claude Code subagent transcripts (`subagents/.../agent-*.jsonl`) have a sibling
 // `.meta.json` carrying the `agentType` (e.g. `workflow-subagent`, `Explore`).
 // Returns undefined for ordinary session files, which carry no agent type.
-export async function readAgentType(filePath: string): Promise<string | undefined> {
-  if (!/[\\/]subagents[\\/]/.test(filePath)) return undefined
-  const metaPath = filePath.replace(/\.jsonl$/, '.meta.json')
-  try {
-    const t = (JSON.parse(await readFile(metaPath, 'utf8')) as { agentType?: unknown }).agentType
-    if (typeof t === 'string' && t.trim()) return t.trim().slice(0, 100)
-  } catch {
-    /* missing or unreadable meta */
-  }
-  // Workflow agents always live under `subagents/workflows/`, so fall back to that
-  // even when the meta sidecar is absent.
-  return /[\\/]subagents[\\/]workflows[\\/]/.test(filePath) ? 'workflow-subagent' : undefined
+export function readAgentType(filePath: string): Promise<string | undefined> {
+  return Effect.runPromise(readAgentTypeEffect(filePath))
 }
 
-async function scanProjectDirs(
+const claudeAgentMetadataSchema = Schema.fromJsonString(Schema.Struct({ agentType: Schema.optional(Schema.String) }))
+
+export const readAgentTypeEffect = Effect.fnUntraced(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<string | undefined, Error> {
+  yield* checkScanAbort(signal)
+  if (!/[\\/]subagents[\\/]/.test(filePath)) return undefined
+  const metaPath = filePath.replace(/\.jsonl$/, '.meta.json')
+  const readResult = yield* Effect.result(
+    parserFileIo(() => readFile(metaPath, { encoding: 'utf8', ...(signal ? { signal } : {}) })),
+  )
+  yield* checkScanAbort(signal)
+  if (readResult._tag === 'Success') {
+    const decoded = yield* Effect.result(Schema.decodeUnknownEffect(claudeAgentMetadataSchema)(readResult.success))
+    if (decoded._tag === 'Success' && decoded.success.agentType?.trim()) {
+      return decoded.success.agentType.trim().slice(0, 100)
+    }
+  }
+  yield* checkScanAbort(signal)
+  return /[\\/]subagents[\\/]workflows[\\/]/.test(filePath) ? 'workflow-subagent' : undefined
+})
+
+const scanProjectDirsEffect = Effect.fnUntraced(function* (
   dirs: Array<{ path: string; name: string; source?: SessionSourceMetadata }>,
   seenMsgIds: Set<string>,
   diskCache: SessionCache,
@@ -2320,13 +2292,14 @@ async function scanProjectDirs(
   // Cold-run robustness: called after every parsed Claude file so a throttled
   // caller (parseAllSessions) can persist partial progress. A run killed
   // mid-scan then resumes from a warm cache instead of re-parsing from zero.
-  onFileParsed?: () => Promise<void>,
+  onFileParsed?: () => Effect.Effect<void, Error>,
   readOnly = false,
   onDelta?: DeltaHandler,
   signal?: AbortSignal,
   pricing: ScanPricing = captureScanPricing(),
-): Promise<ProjectSummary[]> {
-  throwIfScanAborted(signal)
+  stop?: () => void,
+): Effect.fn.Return<ProjectSummary[], Error> {
+  yield* checkScanAbort(signal)
   const section = getOrCreateProviderSection(diskCache, 'claude')
   const allDiscoveredFiles = new Set<string>()
 
@@ -2352,30 +2325,36 @@ async function scanProjectDirs(
   // `section.files`. Skipped in read-only mode (nothing may be mutated). Failed
   // files are forwarded so scan metadata can count them — consumers that port
   // into the ledger (runScan) gate failed deltas out.
-  const emitDelta = async (filePath: string, verdict: ScanDeltaVerdict, cachedFile: CachedFile): Promise<void> => {
-    throwIfScanAborted(signal)
+  const emitDelta = Effect.fnUntraced(function* (
+    filePath: string,
+    verdict: ScanDeltaVerdict,
+    cachedFile: CachedFile,
+  ): Effect.fn.Return<void, Error> {
+    yield* checkScanAbort(signal)
     if (readOnly || !onDelta) return
-    await safeEmitDelta(onDelta, {
-      provider: 'claude',
-      envFingerprint: section.envFingerprint,
-      filePath,
-      verdict,
-      cachedFile,
-    })
-    throwIfScanAborted(signal)
-  }
+    yield* runOwnedParserPromise(signal, stop, () =>
+      safeEmitDelta(onDelta, {
+        provider: 'claude',
+        envFingerprint: section.envFingerprint,
+        filePath,
+        verdict,
+        cachedFile,
+      }),
+    )
+    yield* checkScanAbort(signal)
+  })
 
   const discoverProgress = createScanProgress('scanning claude project dirs', dirs.length)
   let dirsDone = 0
   for (const { path: dirPath, name: dirName, source } of dirs) {
-    throwIfScanAborted(signal)
-    const jsonlFiles = await collectJsonlFiles(dirPath, signal)
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
+    const jsonlFiles = yield* collectJsonlFilesEffect(dirPath, signal)
+    yield* checkScanAbort(signal)
     for (const filePath of jsonlFiles) {
-      throwIfScanAborted(signal)
+      yield* checkScanAbort(signal)
       allDiscoveredFiles.add(filePath)
-      const fp = await fingerprintFile(filePath)
-      throwIfScanAborted(signal)
+      const fp = yield* Effect.uninterruptible(fingerprintFileEffect(filePath))
+      yield* checkScanAbort(signal)
       if (!fp) continue
 
       const cached = section.files[filePath]
@@ -2408,10 +2387,10 @@ async function scanProjectDirs(
       }
     }
     dirsDone++
-    await discoverProgress.tick(dirsDone)
-    throwIfScanAborted(signal)
+    yield* runOwnedParserPromise(signal, stop, () => discoverProgress.tick(dirsDone))
+    yield* checkScanAbort(signal)
   }
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   discoverProgress.finish()
 
   // Orphans: cached sessions whose source file is no longer discovered. In
@@ -2421,7 +2400,7 @@ async function scanProjectDirs(
   // report must keep (as a legacy even-split); the eviction below preserves the
   // same set so `section.files` still holds them when summaries are built.
   for (const [filePath, cached] of Object.entries(section.files)) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     if (allDiscoveredFiles.has(filePath)) continue
     if (!readOnly && !cached.prLinks?.length) continue
     const dirName = cached.canonicalProjectName ?? cached.turns[0]?.calls[0]?.project ?? basename(dirname(filePath))
@@ -2430,7 +2409,7 @@ async function scanProjectDirs(
 
   // Pre-seed dedup set from cached (unchanged) files
   for (const { cached } of unchangedFiles) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     for (const turn of cached.turns) {
       for (const call of turn.calls) {
         seenMsgIds.add(call.deduplicationKey)
@@ -2441,22 +2420,21 @@ async function scanProjectDirs(
   // Warm files emit an unchanged delta (a no-op for the ledger — nothing is
   // written — but the delta stream stays complete for metadata/counting).
   for (const { filePath, cached } of unchangedFiles) {
-    throwIfScanAborted(signal)
-    await emitDelta(filePath, 'unchanged', cached)
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
+    yield* emitDelta(filePath, 'unchanged', cached)
+    yield* checkScanAbort(signal)
   }
 
   const parseProgress = createScanProgress('parsing changed claude sessions', changedFiles.length)
   const progressTotal = changedFiles.length
   let filesDone = 0
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   emitScanProgress({ kind: 'tick', provider: 'claude', done: 0, total: progressTotal })
   for (const { filePath, info, append, verdict } of changedFiles) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     const priorEntry = section.files[filePath]
     delete section.files[filePath]
-
-    try {
+    const parseFile = Effect.gen(function* () {
       if (append) {
         // Append-only growth: parse ONLY the bytes past the cached resume offset
         // and merge with the cached turns, rather than re-reading the file from 0.
@@ -2466,7 +2444,7 @@ async function scanProjectDirs(
         const tracker = { lastCompleteLineOffset: append.readFromOffset }
         const toolResultMeta = new Map<string, ToolResultMeta>()
         const sessionMeta = emptySessionMeta()
-        const newEntries = await parseClaudeEntries(
+        const newEntries = yield* parseClaudeEntriesEffect(
           filePath,
           tracker,
           append.readFromOffset,
@@ -2476,7 +2454,7 @@ async function scanProjectDirs(
           },
           signal,
         )
-        throwIfScanAborted(signal)
+        yield* checkScanAbort(signal)
         const cached = append.cached
 
         // Straddle guard: a streamed assistant message id that first appeared in
@@ -2539,8 +2517,8 @@ async function scanProjectDirs(
             const cwd = extractCanonicalCwd(newEntries)
             workingDirectory = workingDirectory ?? cwd
             const canonical =
-              cwd && !isCoworkSession(cwd, filePath) ? await resolveCanonicalProjectPath(cwd) : undefined
-            throwIfScanAborted(signal)
+              cwd && !isCoworkSession(cwd, filePath) ? yield* resolveCanonicalProjectPathEffect(cwd, signal) : undefined
+            yield* checkScanAbort(signal)
             canonicalCwd = canonical?.path
             canonicalProjectName = canonical?.isWorktree ? projectNameFromPath(canonical.path, info.dirName) : undefined
           }
@@ -2580,14 +2558,7 @@ async function scanProjectDirs(
             ...(mergedAmbiguousIds.length > 0 ? { ambiguousSpawnAgentIds: mergedAmbiguousIds } : {}),
           }
           ;(diskCache as { _dirty?: boolean })._dirty = true
-          filesDone++
-          await parseProgress.tick(filesDone)
-          if (filesDone % 50 === 0 || filesDone === progressTotal) {
-            emitScanProgress({ kind: 'tick', provider: 'claude', done: filesDone, total: progressTotal })
-          }
-          await emitDelta(filePath, 'appended', section.files[filePath]!)
-          if (onFileParsed) await onFileParsed()
-          continue
+          return 'appended' as const
         }
         // Straddled: fall through to the full re-parse below.
       }
@@ -2595,20 +2566,23 @@ async function scanProjectDirs(
       const tracker = { lastCompleteLineOffset: 0 }
       const toolResultMeta = new Map<string, ToolResultMeta>()
       const sessionMeta = emptySessionMeta()
-      const entries = await parseClaudeEntries(filePath, tracker, undefined, { toolResultMeta, sessionMeta }, signal)
-      throwIfScanAborted(signal)
-      if (!entries) {
-        filesDone++
-        await parseProgress.tick(filesDone)
-        continue
-      }
+      const entries = yield* parseClaudeEntriesEffect(
+        filePath,
+        tracker,
+        undefined,
+        { toolResultMeta, sessionMeta },
+        signal,
+      )
+      yield* checkScanAbort(signal)
+      if (!entries) return undefined
 
       const turns = groupIntoTurns(dedupeStreamingMessageIds(entries), seenMsgIds, toolResultMeta, pricing)
       const cwd = extractCanonicalCwd(entries)
-      const canonical = cwd && !isCoworkSession(cwd, filePath) ? await resolveCanonicalProjectPath(cwd) : undefined
-      throwIfScanAborted(signal)
-      const agentType = await readAgentType(filePath)
-      throwIfScanAborted(signal)
+      const canonical =
+        cwd && !isCoworkSession(cwd, filePath) ? yield* resolveCanonicalProjectPathEffect(cwd, signal) : undefined
+      yield* checkScanAbort(signal)
+      const agentType = yield* readAgentTypeEffect(filePath, signal)
+      yield* checkScanAbort(signal)
       section.files[filePath] = {
         fingerprint: info.fp,
         lastCompleteLineOffset: tracker.lastCompleteLineOffset,
@@ -2630,38 +2604,42 @@ async function scanProjectDirs(
           : {}),
       }
       ;(diskCache as { _dirty?: boolean })._dirty = true
-    } catch (err) {
-      if (signal?.aborted || isScanAbortedError(err)) {
-        if (priorEntry) section.files[filePath] = priorEntry
-        else delete section.files[filePath]
-        if (signal?.aborted) throw scanAbortError(signal)
-        throw err
+
+      return verdict
+    }).pipe(
+      Effect.catch(error => {
+        if (signal?.aborted) return Effect.fail(scanAbortError(signal))
+        if (isScanAbortedError(error)) return Effect.fail(error)
+        section.files[filePath] = { fingerprint: info.fp, mcpInventory: [], turns: [], failed: true }
+        ;(diskCache as { _dirty?: boolean })._dirty = true
+        warnProviderParseFailure('claude', filePath, error)
+        return Effect.succeed(verdict)
+      }),
+    )
+    yield* Effect.gen(function* () {
+      const settledVerdict = yield* parseFile
+      filesDone++
+      yield* runOwnedParserPromise(signal, stop, () => parseProgress.tick(filesDone))
+      yield* checkScanAbort(signal)
+      if (settledVerdict === undefined) return
+      if (filesDone % 50 === 0 || filesDone === progressTotal) {
+        emitScanProgress({ kind: 'tick', provider: 'claude', done: filesDone, total: progressTotal })
       }
-      // A single malformed Claude session file must not abort the whole run — that
-      // would empty the daily-cache backfill and wipe the trend/history (issue #441,
-      // same isolation the provider path already has). Record a failure marker keyed
-      // by the current fingerprint so it isn't re-read and re-thrown every run; it
-      // re-parses only if the file changes.
-      section.files[filePath] = { fingerprint: info.fp, mcpInventory: [], turns: [], failed: true }
-      ;(diskCache as { _dirty?: boolean })._dirty = true
-      warnProviderParseFailure('claude', filePath, err)
-    }
-    filesDone++
-    await parseProgress.tick(filesDone)
-    throwIfScanAborted(signal)
-    // Machine-readable tick for the app splash (throttled to ~every 50 files so
-    // a large cold run doesn't flood stderr), plus a partial-progress save.
-    if (filesDone % 50 === 0 || filesDone === progressTotal) {
-      emitScanProgress({ kind: 'tick', provider: 'claude', done: filesDone, total: progressTotal })
-    }
-    // Delta for a settled changed file (new/modified; the failure marker above
-    // makes emitDelta a no-op).
-    await emitDelta(filePath, verdict, section.files[filePath]!)
-    throwIfScanAborted(signal)
-    if (onFileParsed) await onFileParsed()
-    throwIfScanAborted(signal)
+      yield* emitDelta(filePath, settledVerdict, section.files[filePath]!)
+      yield* checkScanAbort(signal)
+      if (onFileParsed) yield* onFileParsed()
+      yield* checkScanAbort(signal)
+    }).pipe(
+      Effect.onExit(exit =>
+        Effect.sync(() => {
+          if (exit._tag !== 'Failure') return
+          if (priorEntry) section.files[filePath] = priorEntry
+          else delete section.files[filePath]
+        }),
+      ),
+    )
   }
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   parseProgress.finish()
 
   if (!readOnly && dirs.length > 0) {
@@ -2690,10 +2668,10 @@ async function scanProjectDirs(
     return buildClaudeProjectSummaries(unchangedFiles, changedFiles, section, dateRange, pricing)
   }
   return []
-}
+})
 
 /** The report-era query-time assembly for Claude (see the gate above). */
-async function buildClaudeProjectSummaries(
+function buildClaudeProjectSummaries(
   unchangedFiles: Array<{ filePath: string; dirName: string; source?: SessionSourceMetadata; cached: CachedFile }>,
   changedFiles: Array<{
     filePath: string
@@ -2703,7 +2681,7 @@ async function buildClaudeProjectSummaries(
   section: ProviderSection,
   dateRange: DateRange | undefined,
   pricing: ScanPricing,
-): Promise<ProjectSummary[]> {
+): ProjectSummary[] {
   const projectMap = new Map<
     string,
     {
@@ -2987,10 +2965,13 @@ function providerCallToCachedCall(call: ParsedProviderCall): CachedCall {
   }
 }
 
-async function canonicalizeProviderCallProject(call: ParsedProviderCall): Promise<ParsedProviderCall> {
+const canonicalizeProviderCallProjectEffect = Effect.fnUntraced(function* (
+  call: ParsedProviderCall,
+  signal?: AbortSignal,
+): Effect.fn.Return<ParsedProviderCall, Error> {
   if (!call.projectPath) return call
 
-  const canonical = await resolveCanonicalProjectPath(call.projectPath)
+  const canonical = yield* resolveCanonicalProjectPathEffect(call.projectPath, signal)
   if (!canonical.isWorktree) return { ...call, workingDirectory: call.workingDirectory ?? call.projectPath }
 
   return {
@@ -2999,7 +2980,7 @@ async function canonicalizeProviderCallProject(call: ParsedProviderCall): Promis
     project: projectNameFromPath(canonical.path, call.project ?? canonical.path),
     projectPath: canonical.path,
   }
-}
+})
 
 function apiCallToCachedCall(call: ParsedApiCall): CachedCall {
   return {
@@ -3214,35 +3195,37 @@ function mergeBoundaryCalls(cachedCalls: CachedCall[], newCalls: CachedCall[]): 
   return result
 }
 
-async function parseClaudeEntries(
+/** Native Claude journal reader used by the scan Effect. The stream owns the
+ * ReadStream and drains its close event when this Effect is interrupted. */
+export const parseClaudeEntriesEffect = Effect.fnUntraced(function* (
   filePath: string,
   tracker: { lastCompleteLineOffset: number },
   startByteOffset?: number,
-  // Rich-capture collectors, populated from the RAW entry before compaction
-  // strips toolUseResult / ai-title / pr-link / isSidechain.
   collectors?: { toolResultMeta?: Map<string, ToolResultMeta>; sessionMeta?: SessionMeta },
   signal?: AbortSignal,
-): Promise<JournalEntry[] | null> {
+): Effect.fn.Return<JournalEntry[] | null, Error> {
+  yield* checkScanAbort(signal)
   const entries: JournalEntry[] = []
-  let hasLines = false
-  for await (const line of readSessionLines(filePath, undefined, {
-    largeLineAsBuffer: true,
-    byteOffsetTracker: tracker,
-    signal,
-    ...(startByteOffset !== undefined ? { startByteOffset } : {}),
-  })) {
-    throwIfScanAborted(signal)
-    hasLines = true
-    const entry = parseJsonlLine(line)
-    if (!entry) continue
-    if (collectors?.toolResultMeta) collectToolResultMeta(entry, collectors.toolResultMeta)
-    if (collectors?.sessionMeta) collectSessionMeta(entry, collectors.sessionMeta)
-    entries.push(compactEntry(entry))
-  }
-  throwIfScanAborted(signal)
-  if (!hasLines || entries.length === 0) return null
-  return entries
-}
+  yield* Stream.runForEach(
+    readSessionLinesStream(filePath, undefined, {
+      largeLineAsBuffer: true,
+      byteOffsetTracker: tracker,
+      signal,
+      ...(startByteOffset !== undefined ? { startByteOffset } : {}),
+    }),
+    line =>
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
+        const entry = parseJsonlLine(line)
+        if (!entry) return
+        if (collectors?.toolResultMeta) collectToolResultMeta(entry, collectors.toolResultMeta)
+        if (collectors?.sessionMeta) collectSessionMeta(entry, collectors.sessionMeta)
+        entries.push(compactEntry(entry))
+      }),
+  )
+  yield* checkScanAbort(signal)
+  return entries.length === 0 ? null : entries
+})
 
 function getOrCreateProviderSection(cache: SessionCache, provider: string): ProviderSection {
   const envFp = computeEnvFingerprint(provider)
@@ -3605,11 +3588,9 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
             yield* checkScanAbort(signal)
             if (tally.count > 0) onUnparsed?.(providerName, tally.count)
             const canonicalization = yield* Effect.result(
-              Effect.forEach(
-                providerCalls,
-                call => runOwnedParserPromise(signal, context.stop, () => canonicalizeProviderCallProject(call)),
-                { concurrency: 'unbounded' },
-              ),
+              Effect.forEach(providerCalls, call => canonicalizeProviderCallProjectEffect(call, signal), {
+                concurrency: 'unbounded',
+              }),
             )
             if (canonicalization._tag === 'Failure') throw canonicalization.failure
             const canonicalCalls = canonicalization.success
@@ -3696,7 +3677,7 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
     exit =>
       Effect.gen(function* () {
         if ((exit._tag === 'Failure' && Cause.hasInterrupts(exit.cause)) || signal?.aborted || !didParse) return
-        if (providerName === 'codex') yield* runOwnedParserPromise(signal, context.stop, () => flushCodexCache(signal))
+        if (providerName === 'codex') yield* Effect.scoped(flushCodexCacheEffect(signal))
         if (providerName === 'antigravity') {
           const liveIds = new Set(sources.map(s => antigravityCascadeIdFromPath(s.path)))
           yield* runOwnedParserPromise(signal, context.stop, () => flushAntigravityCache(liveIds))
@@ -4569,23 +4550,18 @@ const runParseEffect = Effect.fnUntraced(function* (
 
   // Cold-run robustness: persist partial progress during a long parse (throttled)
   // so a run interrupted before the single end-of-parse save still leaves a warm
-  // cache behind. saveCache is atomic (temp + rename) and clears `_dirty`, so this
+  // cache behind. saveCacheEffect is atomic (temp + rename) and clears `_dirty`, so this
   // never races the final save below.
   let lastSaveAt = Date.now()
-  const saveProgress = async (): Promise<void> => {
-    throwIfScanAborted(signal)
+  const saveProgress = Effect.fnUntraced(function* (): Effect.fn.Return<void, Error> {
+    yield* checkScanAbort(signal)
     if (!isCold || readOnly) return
     if (!(diskCache as { _dirty?: boolean })._dirty) return
     if (Date.now() - lastSaveAt < PROGRESS_SAVE_THROTTLE_MS) return
     lastSaveAt = Date.now()
-    try {
-      await saveCache(diskCache)
-    } catch {
-      throwIfScanAborted(signal)
-      /* best-effort partial save */
-    }
-    throwIfScanAborted(signal)
-  }
+    yield* saveCacheEffect(diskCache).pipe(Effect.catch(() => checkScanAbort(signal)))
+    yield* checkScanAbort(signal)
+  })
 
   yield* checkScanAbort(signal)
   emitScanProgress({
@@ -4605,18 +4581,17 @@ const runParseEffect = Effect.fnUntraced(function* (
   if (claudeSources.length > 0) emitScanProgress({ kind: 'provider', provider: 'claude', state: 'start' })
   let claudeProjects: ProjectSummary[] = []
   const claudeResult = yield* Effect.result(
-    runOwnedParserPromise(signal, context.stop, () =>
-      scanProjectDirs(
-        claudeDirs,
-        seenMsgIds,
-        diskCache,
-        dateRange,
-        saveProgress,
-        readOnly,
-        onDelta,
-        signal,
-        context.pricing,
-      ),
+    scanProjectDirsEffect(
+      claudeDirs,
+      seenMsgIds,
+      diskCache,
+      dateRange,
+      saveProgress,
+      readOnly,
+      onDelta,
+      signal,
+      context.pricing,
+      context.stop,
     ),
   )
   if (claudeResult._tag === 'Success') {
@@ -4671,7 +4646,7 @@ const runParseEffect = Effect.fnUntraced(function* (
       })
       emitScanProgress({ kind: 'provider', provider: providerName, state: 'skipped' })
     }
-    yield* runOwnedParserPromise(signal, context.stop, saveProgress)
+    yield* saveProgress()
   }
 
   // Durable providers with cached data but NO discovered sources (all files pruned
@@ -4746,10 +4721,10 @@ const runParseEffect = Effect.fnUntraced(function* (
   //    Resolve at the ProjectSummary level here: prepend '/' if needed to get
   //    an absolute path, then run the same worktree-detection logic.
   const resolvedOtherProjects = yield* Effect.forEach(otherProjects, p =>
-    runOwnedParserPromise(signal, context.stop, async () => {
+    Effect.gen(function* () {
       const absPath =
         p.projectPath.startsWith('/') || p.projectPath.startsWith('\\') ? p.projectPath : '/' + p.projectPath
-      const canonical = await resolveCanonicalProjectPath(absPath)
+      const canonical = yield* resolveCanonicalProjectPathEffect(absPath, signal)
       // Skip if path is unchanged: same location, not a worktree, not a subdir
       if (!canonical.isWorktree && canonical.path === absPath.replace(/[/\\]+$/, '')) return p
       return { ...p, project: projectNameFromPath(canonical.path, p.project), projectPath: canonical.path }
