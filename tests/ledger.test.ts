@@ -7,8 +7,8 @@ import * as Effect from 'effect/Effect'
 import * as SchemaAST from 'effect/SchemaAST'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { FxRates } from '../src/main/fx.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
 import {
   currencyRateRowSchema,
   ledgerCallRowSchema,
@@ -24,6 +24,7 @@ import {
   buildFixtureCachedTurn,
   FIXTURE_SOURCE_PATH,
 } from './fixtures/cached-file.js'
+import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 const tempDirs: string[] = []
 
@@ -603,55 +604,71 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.close()
   })
 
-  it('config writes are pure upserts and survive clear()', () => {
-    const store = makeStore()
-    store.setModelAlias('proxy-model', 'claude-sonnet-4.5')
-    store.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
-    store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
-    Effect.runSync(
-      Effect.flatMap(FxRates, rates => rates.setDisplayCurrency('EUR')).pipe(
-        Effect.provide(FxRates.layerWithRepository(store)),
+  it('config writes are pure upserts and survive clear()', async () => {
+    const fixture = openLedgerFixture()
+    const configProgram = Effect.gen(function* () {
+      const config = yield* LedgerConfig
+      yield* config.setModelAlias('proxy-model', 'claude-sonnet-4.5')
+      yield* config.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+      yield* config.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
+      yield* config.setDisplayCurrency('EUR')
+      yield* config.setRefreshCadence('5m')
+      yield* config.dismissSkill('bash', 'git commit', 'not-a-skill', '2026-07-01T00:00:00.000Z')
+      return {
+        aliases: yield* config.getModelAliases(),
+        overrides: yield* config.getPriceOverrides(),
+        rate: yield* config.getCurrencyRate('EUR'),
+        currency: yield* config.getDisplayCurrency(),
+        cadence: yield* config.getRefreshCadence(),
+        dismissals: yield* config.getSkillDismissals(),
+      }
+    })
+    const initial = await fixture.runtime.runPromise(configProgram)
+    expect(initial.aliases).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
+    expect(initial.overrides).toEqual([{ model: 'demo-model', inputPricePerMillion: 3, outputPricePerMillion: 15 }])
+    expect(initial.rate).toEqual({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
+    expect(initial.currency).toBe('EUR')
+    expect(initial.cadence).toBe('5m')
+    expect(initial.dismissals).toHaveLength(1)
+
+    await fixture.runtime.runPromise(
+      Effect.flatMap(LedgerConfig, config =>
+        config.setPriceOverride('demo-model', { inputPricePerMillion: 4, outputPricePerMillion: 16 }),
       ),
     )
-    store.setRefreshCadence('5m')
-    store.dismissSkill('bash', 'git commit', 'not-a-skill')
+    expect(
+      await fixture.runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getPriceOverrides())),
+    ).toEqual([{ model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 }])
 
-    expect(store.getModelAliases()).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
-    expect(store.getPriceOverrides()).toEqual([
-      { model: 'demo-model', inputPricePerMillion: 3, outputPricePerMillion: 15 },
+    await fixture.runtime.runPromise(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
+    await fixture.runtime.runPromise(Effect.flatMap(LedgerIngest, ingest => ingest.clear()))
+
+    expect(await fixture.runtime.runPromise(Effect.flatMap(LedgerQueries, queries => queries.getSources()))).toEqual([])
+    const afterClear = await fixture.runtime.runPromise(
+      Effect.gen(function* () {
+        const config = yield* LedgerConfig
+        return {
+          aliases: yield* config.getModelAliases(),
+          overrides: yield* config.getPriceOverrides(),
+          rate: yield* config.getCurrencyRate('EUR'),
+          currency: yield* config.getDisplayCurrency(),
+          cadence: yield* config.getRefreshCadence(),
+          dismissals: yield* config.getSkillDismissals(),
+        }
+      }),
+    )
+    expect(afterClear.aliases).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
+    expect(afterClear.overrides).toEqual([{ model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 }])
+    expect(afterClear.rate).not.toBeNull()
+    expect(afterClear.currency).toBe('EUR')
+    expect(afterClear.cadence).toBe('5m')
+    expect(afterClear.dismissals).toEqual([
+      { source: 'bash', name: 'git commit', reason: 'not-a-skill', created: '2026-07-01T00:00:00.000Z' },
     ])
-    expect(store.getCurrencyRate('EUR')).toEqual({
-      code: 'EUR',
-      symbol: '€',
-      rate: 0.92,
-      updatedAt: '2026-07-01T00:00:00.000Z',
-    })
-    expect(store.getDisplayCurrency()).toBe('EUR')
-    expect(store.getRefreshCadence()).toBe('5m')
-    expect(store.getSkillDismissals()).toHaveLength(1)
-
-    // a second upsert overwrites, never appends
-    store.setPriceOverride('demo-model', { inputPricePerMillion: 4, outputPricePerMillion: 16 })
-    expect(store.getPriceOverrides()).toEqual([
-      { model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 },
-    ])
-
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    store.clear()
-
-    expect(store.getSources()).toEqual([])
-    expect(store.getModelAliases()).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
-    expect(store.getPriceOverrides()).toEqual([
-      { model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 },
-    ])
-    expect(store.getCurrencyRate('EUR')).not.toBeNull()
-    expect(store.getDisplayCurrency()).toBe('EUR')
-    expect(store.getRefreshCadence()).toBe('5m')
-    expect(store.getSkillDismissals()).toEqual([
-      { source: 'bash', name: 'git commit', reason: 'not-a-skill', created: expect.any(String) },
-    ])
-
-    store.close()
   })
 
   it('skill dismissals upsert per pattern and are a pure upsert', () => {
