@@ -24,6 +24,7 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
   }
 })
 
+import { Env } from '../src/main/env.js'
 import { createOmpProvider, createPiProvider } from '../src/main/pipeline/providers/pi.js'
 import type { ProviderScanContext, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
@@ -61,7 +62,7 @@ async function collect(source: SessionSource, provider = createPiProvider(root))
 function discover(provider: ReturnType<typeof createPiProvider>, context?: ProviderScanContext) {
   const discoverEffect = provider.discoverSessionsEffect
   if (!discoverEffect) throw new Error('Pi provider is missing native discovery')
-  return Effect.runPromise(discoverEffect(context))
+  return Effect.runPromise(discoverEffect(context).pipe(Effect.provide(Env.layer)))
 }
 
 describe('Pi and OMP Effect workflows', () => {

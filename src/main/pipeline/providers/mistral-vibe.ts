@@ -180,7 +180,7 @@ function normalizeModelConfig(input: ModelConfigInput): VibeModelConfig {
   }
 }
 
-function normalizeMetadata(input: MetadataInput): VibeMetadata {
+function normalizeMetadata(input: MetadataInput): VibeMetadata | undefined {
   const stats = decode(statsInputSchema, input.stats)
   const config = decode(configInputSchema, input.config)
   const environment = decode(environmentInputSchema, input.environment)
@@ -246,7 +246,7 @@ function normalizeToolCall(input: Schema.Schema.Type<typeof toolCallInputSchema>
   })
 }
 
-function normalizeMessage(input: MessageInput): VibeMessage {
+function normalizeMessage(input: MessageInput): VibeMessage | undefined {
   const toolCallsInput = decode(Schema.Array(Schema.Unknown), input.tool_calls) ?? []
   const toolCalls = toolCallsInput.flatMap(toolCall => {
     const decoded = decode(toolCallInputSchema, toolCall)

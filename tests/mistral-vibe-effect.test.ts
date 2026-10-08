@@ -23,6 +23,7 @@ vi.mock('fs', async importOriginal => {
 
 import { mkdir, writeFile } from 'node:fs/promises'
 
+import { Env } from '../src/main/env.js'
 import { createMistralVibeProvider } from '../src/main/pipeline/providers/mistral-vibe.js'
 import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
@@ -46,7 +47,7 @@ async function writeSession(path: string, metadata: unknown, messages: string[])
 
 function nativeDiscovery(provider: Provider, signal?: AbortSignal) {
   if (!provider.discoverSessionsEffect) throw new Error('Mistral Vibe Effect discovery is unavailable')
-  return provider.discoverSessionsEffect(signal ? { signal } : undefined)
+  return provider.discoverSessionsEffect(signal ? { signal } : undefined).pipe(Effect.provide(Env.layer))
 }
 
 function parser(path: string, seen = new Set<string>(), signal?: AbortSignal): SessionParser {
