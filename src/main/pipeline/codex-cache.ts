@@ -175,11 +175,6 @@ export const getCachedCodexProjectEffect = Effect.fn('getCachedCodexProjectEffec
   return getEntry(cache, filePath, fingerprint)?.project ?? null
 })
 
-/** Remove after Codex discovery migrates from its Promise workflow to Effect. */
-export function getCachedCodexProject(filePath: string, signal?: AbortSignal): Promise<string | null> {
-  return Effect.runPromise(Effect.scoped(getCachedCodexProjectEffect(filePath, signal)))
-}
-
 export const writeCachedCodexResultsEffect = Effect.fn('writeCachedCodexResultsEffect')(function* (
   filePath: string,
   project: string,

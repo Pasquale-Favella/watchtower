@@ -1,12 +1,13 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 
 import { Env } from '../../env.js'
 import { HttpFetch, HttpFetchError, retryTransientFetch } from '../fetch-utils.js'
 import { fileErrorCode, queueLogRecord } from '../file-errors.js'
-import { scanAbortError, ScanAbortedError, throwIfScanAborted } from '../scan-control.js'
+import { ScanAbortedError, scanAbortError } from '../scan-control.js'
 import type { DateRange } from '../types.js'
-import { gatewayReportSchema, type GatewayReportRow } from './gateway-report.js'
+import { type GatewayReportRow, gatewayReportSchema } from './gateway-report.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const REPORT_URL = 'https://ai-gateway.vercel.sh/v1/report'
@@ -120,73 +121,95 @@ export const fetchVercelGatewayReportEffect = Effect.fn('fetchVercelGatewayRepor
   )
 })
 
+function gatewayCall(row: ReportRow, source: SessionSource, seenKeys: Set<string>): ParsedProviderCall | undefined {
+  const day = row.day ?? ''
+  const model = row.model ?? 'unknown'
+  const costUSD = row.total_cost ?? 0
+  const inputTokens = row.input_tokens ?? 0
+  const outputTokens = row.output_tokens ?? 0
+  if (costUSD === 0 && inputTokens === 0 && outputTokens === 0) return undefined
+  const deduplicationKey = `vercel-gateway:${day}:${model}`
+  if (seenKeys.has(deduplicationKey)) return undefined
+  seenKeys.add(deduplicationKey)
+  return {
+    provider: 'vercel-gateway',
+    model,
+    inputTokens,
+    outputTokens,
+    cacheCreationInputTokens: row.cache_creation_input_tokens ?? 0,
+    cacheReadInputTokens: row.cached_input_tokens ?? 0,
+    cachedInputTokens: 0,
+    reasoningTokens: row.reasoning_tokens ?? 0,
+    webSearchRequests: 0,
+    costUSD,
+    tools: [],
+    bashCommands: [],
+    timestamp: day ? `${day}T12:00:00.000Z` : '',
+    speed: 'standard',
+    deduplicationKey,
+    userMessage: '',
+    sessionId: `${day}:${model}`,
+    project: source.project,
+  }
+}
+
 function createParser(
   source: SessionSource,
   seenKeys: Set<string>,
   dateRange?: DateRange,
   context: ProviderScanContext = {},
 ): SessionParser {
+  const parseWith = (
+    fetchReport: ProviderScanContext['fetchGatewayReport'],
+  ): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        yield* checkGatewayAbort(context.signal)
+        if (!dateRange) return Stream.empty
+        if (!fetchReport) return yield* Effect.fail(new Error('Gateway report capability missing'))
+        const rows = yield* fetchReport(dateRange, context.signal)
+        yield* checkGatewayAbort(context.signal)
+        return Stream.fromIterable(rows).pipe(
+          Stream.rechunk(1),
+          Stream.mapEffect(row =>
+            Effect.gen(function* () {
+              yield* checkGatewayAbort(context.signal)
+              return gatewayCall(row, source, seenKeys)
+            }),
+          ),
+          Stream.filter((call): call is ParsedProviderCall => call !== undefined),
+        )
+      }),
+    )
   return {
+    parseStream: () => parseWith(context.fetchGatewayReport),
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      throwIfScanAborted(context.signal)
-      if (!dateRange) return
-
-      // Compatibility for direct parser callers only. The worker injects its
-      // one runtime through this Promise boundary. Delete the fallback after
-      // all standalone test callers supply the GatewayReports capability.
-      const pending = context.fetchGatewayReport
-        ? context.fetchGatewayReport(dateRange, context.signal)
-        : Effect.runPromise(
-            fetchVercelGatewayReportEffect(dateRange, context.signal).pipe(
-              Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
-              Effect.provide(Env.layer),
-            ),
-            { signal: context.signal },
-          )
-      const rows = await pending.catch(error => {
-        throwIfScanAborted(context.signal)
-        // Promise parser boundary; unexpected failures retain their identity.
-        // eslint-disable-next-line no-restricted-syntax
-        throw error
-      })
-      throwIfScanAborted(context.signal)
-      for (const row of rows) {
-        throwIfScanAborted(context.signal)
-        const day = row.day ?? ''
-        const model = row.model ?? 'unknown'
-        const costUSD = row.total_cost ?? 0
-        const inputTokens = row.input_tokens ?? 0
-        const outputTokens = row.output_tokens ?? 0
-        if (costUSD === 0 && inputTokens === 0 && outputTokens === 0) continue
-
-        const deduplicationKey = `vercel-gateway:${day}:${model}`
-        if (seenKeys.has(deduplicationKey)) continue
-        seenKeys.add(deduplicationKey)
-
-        yield {
-          provider: 'vercel-gateway',
-          model,
-          inputTokens,
-          outputTokens,
-          cacheCreationInputTokens: row.cache_creation_input_tokens ?? 0,
-          cacheReadInputTokens: row.cached_input_tokens ?? 0,
-          cachedInputTokens: 0,
-          reasoningTokens: row.reasoning_tokens ?? 0,
-          webSearchRequests: 0,
-          costUSD,
-          tools: [],
-          bashCommands: [],
-          timestamp: day ? `${day}T12:00:00.000Z` : '',
-          speed: 'standard',
-          deduplicationKey,
-          userMessage: '',
-          sessionId: `${day}:${model}`,
-          project: source.project,
-        }
-      }
+      // External compatibility edge for standalone parser callers. The scan
+      // supplies its captured GatewayReports capability to parseStream directly.
+      // Remove this fallback when standalone callers supply that capability.
+      const fetchReport =
+        context.fetchGatewayReport ??
+        ((range, signal) =>
+          fetchVercelGatewayReportEffect(range, signal).pipe(
+            Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
+            Effect.provide(Env.layer),
+          ))
+      yield* Stream.toAsyncIterable(parseWith(fetchReport))
     },
   }
 }
+
+function checkGatewayAbort(signal?: AbortSignal): Effect.Effect<void, ScanAbortedError> {
+  return Effect.suspend(() => (signal?.aborted ? Effect.fail(scanAbortError(signal)) : Effect.void))
+}
+
+const discoverGatewayEffect = Effect.fnUntraced(function* (
+  context: ProviderScanContext = {},
+): Effect.fn.Return<SessionSource[], Error, Env> {
+  yield* checkGatewayAbort(context.signal)
+  const enabled = context.gatewayEnabled ?? (yield* Env).vercelGatewayApiKey !== null
+  return enabled ? [{ path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' }] : []
+})
 
 export const discoverVercelGatewaySessionsEffect = Effect.fnUntraced(function* (): Effect.fn.Return<
   SessionSource[],
@@ -218,14 +241,9 @@ export const vercelGateway: Provider = {
     return rawTool
   },
 
-  async discoverSessions(context: ProviderScanContext = {}): Promise<SessionSource[]> {
-    throwIfScanAborted(context.signal)
-    if (context.gatewayEnabled !== undefined) {
-      return context.gatewayEnabled
-        ? [{ path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' }]
-        : []
-    }
-    return Effect.runPromise(discoverVercelGatewaySessionsEffect().pipe(Effect.provide(Env.layer)))
+  discoverSessionsEffect: discoverGatewayEffect,
+  discoverSessions(context: ProviderScanContext = {}): Promise<SessionSource[]> {
+    return Effect.runPromise(discoverGatewayEffect(context).pipe(Effect.provide(Env.layer)))
   },
 
   createSessionParser(

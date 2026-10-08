@@ -3,10 +3,10 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import { existsSync } from 'fs'
-import { lstat, readdir, readFile, stat } from 'fs/promises'
+import { lstat, readdir, readFile } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
 
-import { type AppPaths, overrideFor } from '../env.js'
+import { type AppPaths, Env, overrideFor } from '../env.js'
 import { billableOutputTokens } from './billable-output.js'
 import {
   buildSpawnPrSets,
@@ -33,6 +33,7 @@ import { acquireCacheRefreshLockEffect, type RefreshLockHandle } from './cache-r
 import { BASH_TOOLS, classifyTurn, EDIT_TOOLS } from './classifier.js'
 import { flushCodexCacheEffect } from './codex-cache.js'
 import { normalizeContentBlocks } from './content-utils.js'
+import { HttpFetch } from './fetch-utils.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
 import { readSessionLinesStream } from './fs-utils.js'
 import { captureScanPricing, getProxyPathsConfigHash, getShortModelName, isProxiedPath } from './models.js'
@@ -44,7 +45,8 @@ import {
 import { getDesktopSessionsDirs } from './providers/claude.js'
 import { discoverAllSessionsEffect, getProviderEffect } from './providers/index.js'
 import type { ParsedProviderCall, ProviderScanContext, ProviderScanServices, SessionSource } from './providers/types.js'
-import { isScanAbortedError, type ScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
+import { fetchVercelGatewayReportEffect } from './providers/vercel-gateway.js'
+import { isScanAbortedError, type ScanAbortedError, scanAbortError } from './scan-control.js'
 import type { ScanPricing } from './scan-pricing.js'
 import {
   beginColdHydrationEffect,
@@ -88,10 +90,12 @@ import type {
 export type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 import type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 
-export type DeltaHandler = (delta: ScanDelta, pricing?: ScanPricing) => void | Promise<void>
+export type DeltaHandler = (delta: ScanDelta, pricing?: ScanPricing) => Effect.Effect<void, Error>
+/** Promise callback edge for standalone callers of parseAllSessions. */
+export type PromiseDeltaHandler = (delta: ScanDelta, pricing?: ScanPricing) => void | Promise<void>
 
 /** Owns a native Promise leaf until it settles. Parsing composes in the current
- * fiber. Remaining uses are provider IO and progress/delta callback boundaries.
+ * fiber. Remaining uses are provider IO and external Promise callbacks.
  * Remove each use when that API returns an Effect. */
 function runOwnedParserPromise<A>(
   signal: AbortSignal | undefined,
@@ -202,13 +206,14 @@ function parserFileIo<A>(operation: () => Promise<A>): Effect.Effect<A, Error> {
  * on a later scan — the ledger is its own resume marker. The scan's own abort
  * sentinel (`ScanAbortedError`) is re-thrown by name: cancelling
  * must never be swallowed. */
-async function safeEmitDelta(onDelta: DeltaHandler, delta: ScanDelta): Promise<void> {
-  try {
-    await onDelta(delta)
-  } catch (err) {
-    if ((err as Error | undefined)?.name === 'ScanAbortedError') throw err
-    warnProviderPortFailure(delta.provider, delta.filePath)
-  }
+function safeEmitDeltaEffect(onDelta: DeltaHandler, delta: ScanDelta): Effect.Effect<void, Error> {
+  return Effect.suspend(() => onDelta(delta)).pipe(
+    Effect.catch(error =>
+      isScanAbortedError(error)
+        ? Effect.fail(error)
+        : Effect.sync(() => warnProviderPortFailure(delta.provider, delta.filePath)),
+    ),
+  )
 }
 
 const portFailureWarned = new Set<string>()
@@ -2297,7 +2302,6 @@ const scanProjectDirsEffect = Effect.fnUntraced(function* (
   onDelta?: DeltaHandler,
   signal?: AbortSignal,
   pricing: ScanPricing = captureScanPricing(),
-  stop?: () => void,
 ): Effect.fn.Return<ProjectSummary[], Error> {
   yield* checkScanAbort(signal)
   const section = getOrCreateProviderSection(diskCache, 'claude')
@@ -2332,15 +2336,13 @@ const scanProjectDirsEffect = Effect.fnUntraced(function* (
   ): Effect.fn.Return<void, Error> {
     yield* checkScanAbort(signal)
     if (readOnly || !onDelta) return
-    yield* runOwnedParserPromise(signal, stop, () =>
-      safeEmitDelta(onDelta, {
-        provider: 'claude',
-        envFingerprint: section.envFingerprint,
-        filePath,
-        verdict,
-        cachedFile,
-      }),
-    )
+    yield* safeEmitDeltaEffect(onDelta, {
+      provider: 'claude',
+      envFingerprint: section.envFingerprint,
+      filePath,
+      verdict,
+      cachedFile,
+    })
     yield* checkScanAbort(signal)
   })
 
@@ -2387,11 +2389,11 @@ const scanProjectDirsEffect = Effect.fnUntraced(function* (
       }
     }
     dirsDone++
-    yield* runOwnedParserPromise(signal, stop, () => discoverProgress.tick(dirsDone))
+    yield* discoverProgress.tick(dirsDone)
     yield* checkScanAbort(signal)
   }
   yield* checkScanAbort(signal)
-  discoverProgress.finish()
+  yield* discoverProgress.finish()
 
   // Orphans: cached sessions whose source file is no longer discovered. In
   // read-only mode surface them all (the snapshot is authoritative, nothing is
@@ -2619,7 +2621,7 @@ const scanProjectDirsEffect = Effect.fnUntraced(function* (
     yield* Effect.gen(function* () {
       const settledVerdict = yield* parseFile
       filesDone++
-      yield* runOwnedParserPromise(signal, stop, () => parseProgress.tick(filesDone))
+      yield* parseProgress.tick(filesDone)
       yield* checkScanAbort(signal)
       if (settledVerdict === undefined) return
       if (filesDone % 50 === 0 || filesDone === progressTotal) {
@@ -2640,7 +2642,7 @@ const scanProjectDirsEffect = Effect.fnUntraced(function* (
     )
   }
   yield* checkScanAbort(signal)
-  parseProgress.finish()
+  yield* parseProgress.finish()
 
   if (!readOnly && dirs.length > 0) {
     for (const cachedPath of Object.keys(section.files)) {
@@ -3323,9 +3325,10 @@ function isPermissionError(err: unknown): boolean {
 // progress during the scan.
 const YIELD_EVERY = 25
 
-function yieldToEventLoop(): Promise<void> {
-  return new Promise(resolve => setImmediate(resolve))
-}
+const yieldToEventLoopEffect = Effect.callback<undefined>(resume => {
+  const pending = setImmediate(() => resume(Effect.succeed(undefined)))
+  return Effect.sync(() => clearImmediate(pending))
+})
 
 // Suppress the scan-progress line while an interactive Ink UI is live. The
 // dashboard and compare render to stdout on the same terminal, and their scans
@@ -3375,21 +3378,28 @@ export function emitScanProgress(event: ScanProgressEvent, paths?: AppPaths): vo
 // full-cache writes never dominate a fast warm run.
 const PROGRESS_SAVE_THROTTLE_MS = 5000
 
-export function createScanProgress(label: string, total: number) {
+export function createScanProgress(
+  label: string,
+  total: number,
+): {
+  tick(done: number): Effect.Effect<void>
+  finish(): Effect.Effect<void>
+} {
   const show = !interactiveScanUI && total > 20 && process.stderr.isTTY === true
   let lastWrite = 0
   return {
-    async tick(done: number): Promise<void> {
-      if (done % YIELD_EVERY === 0) await yieldToEventLoop()
+    tick: Effect.fnUntraced(function* (done: number) {
+      if (done % YIELD_EVERY === 0) yield* yieldToEventLoopEffect
       if (!show) return
       const now = Date.now()
       if (done !== total && now - lastWrite < 100) return
       lastWrite = now
       process.stderr.write(`\rwatchtower: ${label} ${done}/${total}…`)
-    },
-    finish(): void {
-      if (!show) return
-      process.stderr.write('\r\x1b[K')
+    }),
+    finish(): Effect.Effect<void> {
+      return Effect.sync(() => {
+        if (show) process.stderr.write('\r\x1b[K')
+      })
     },
   }
 }
@@ -3428,15 +3438,15 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
   // in `section.files`. Skipped in read-only mode; failed files are forwarded so
   // scan metadata can count them (ledger consumers gate them out). Durable
   // providers mark the delta so the store never deletes already-ported rows.
-  const emitProviderDelta = async (
+  const emitProviderDelta = Effect.fnUntraced(function* (
     path: string,
     verdict: ScanDeltaVerdict,
     cachedFile: CachedFile,
     source?: SessionSource,
-  ): Promise<void> => {
-    throwIfScanAborted(signal)
+  ): Effect.fn.Return<void, Error> {
+    yield* checkScanAbort(signal)
     if (readOnly || !onDelta) return
-    await safeEmitDelta(onDelta, {
+    yield* safeEmitDeltaEffect(onDelta, {
       provider: providerName,
       envFingerprint: section.envFingerprint,
       filePath: path,
@@ -3449,8 +3459,8 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
       ...(source?.project ? { project: source.project } : {}),
       ...(source?.workingDirectory ? { workingDirectory: source.workingDirectory } : {}),
     })
-    throwIfScanAborted(signal)
-  }
+    yield* checkScanAbort(signal)
+  })
 
   for (const source of sources) {
     yield* checkScanAbort(signal)
@@ -3522,9 +3532,7 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
   // Warm files emit an unchanged delta (a ledger no-op; the stream stays whole).
   for (const { source, cached } of unchangedSources) {
     yield* checkScanAbort(signal)
-    yield* runOwnedParserPromise(signal, context.stop, () =>
-      emitProviderDelta(source.path, 'unchanged', cached, source),
-    )
+    yield* emitProviderDelta(source.path, 'unchanged', cached, source)
     yield* checkScanAbort(signal)
   }
 
@@ -3634,9 +3642,7 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
             didParse = true
             ;(diskCache as { _dirty?: boolean })._dirty = true
             const deltaResult = yield* Effect.result(
-              runOwnedParserPromise(signal, context.stop, () =>
-                emitProviderDelta(source.path, verdict, section.files[source.path]!, source),
-              ),
+              emitProviderDelta(source.path, verdict, section.files[source.path]!, source),
             )
             if (deltaResult._tag === 'Failure') throw deltaResult.failure
             activeParse = undefined
@@ -3724,7 +3730,7 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
   if (!readOnly && provider.durableSources && onDelta) {
     for (const [path, cachedFile] of Object.entries(section.files)) {
       if (allDiscoveredFiles.has(path)) continue
-      yield* runOwnedParserPromise(signal, context.stop, () => emitProviderDelta(path, 'appended', cachedFile))
+      yield* emitProviderDelta(path, 'appended', cachedFile)
     }
   }
 
@@ -4369,10 +4375,29 @@ export const parseAllSessionsEffect = Effect.fnUntraced(function* (
   signal?: AbortSignal,
   services: ProviderScanServices = {},
   stop?: () => void,
-): Effect.fn.Return<ProjectSummary[], Error> {
+): Effect.fn.Return<ProjectSummary[], Error, Env | HttpFetch> {
   yield* checkScanAbort(signal)
   const pricing = services.pricing ?? captureScanPricing()
-  const context: ProviderScanContext & { stop?: () => void } = { ...services, signal, pricing, stop }
+  const gatewayEnabled = services.gatewayEnabled ?? (yield* Env).vercelGatewayApiKey !== null
+  const fetchGatewayReport =
+    services.fetchGatewayReport ??
+    (yield* Effect.gen(function* () {
+      const env = yield* Env
+      const http = yield* HttpFetch
+      return (range: DateRange, requestSignal?: AbortSignal) =>
+        fetchVercelGatewayReportEffect(range, requestSignal).pipe(
+          Effect.provideService(Env, env),
+          Effect.provideService(HttpFetch, http),
+        )
+    }))
+  const context: ProviderScanContext & { stop?: () => void } = {
+    ...services,
+    gatewayEnabled,
+    fetchGatewayReport,
+    signal,
+    pricing,
+    stop,
+  }
   const pricedDelta: DeltaHandler | undefined = onDelta ? delta => onDelta(delta, pricing) : undefined
   const key = cacheKey(dateRange, providerFilter)
   const cached = sessionCache.get(key)
@@ -4502,12 +4527,23 @@ export const parseAllSessionsEffect = Effect.fnUntraced(function* (
 export function parseAllSessions(
   dateRange?: DateRange,
   providerFilter?: string,
-  onDelta?: DeltaHandler,
+  onDelta?: PromiseDeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
   signal?: AbortSignal,
   services: ProviderScanServices = {},
 ): Promise<ProjectSummary[]> {
-  return Effect.runPromise(parseAllSessionsEffect(dateRange, providerFilter, onDelta, onUnparsed, signal, services))
+  const nativeDelta: DeltaHandler | undefined = onDelta
+    ? (delta, pricing) =>
+        runOwnedParserPromise(signal, undefined, async () => {
+          await onDelta(delta, pricing)
+        })
+    : undefined
+  return Effect.runPromise(
+    parseAllSessionsEffect(dateRange, providerFilter, nativeDelta, onUnparsed, signal, services).pipe(
+      Effect.provide(Env.layer),
+      Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
+    ),
+  )
 }
 
 class RefreshFenceLostError extends Error {}
@@ -4528,7 +4564,7 @@ const runParseEffect = Effect.fnUntraced(function* (
   onDelta?: DeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
   context: ProviderScanContext & { stop?: () => void } = {},
-): Effect.fn.Return<ProjectSummary[], Error> {
+): Effect.fn.Return<ProjectSummary[], Error, Env> {
   const { signal } = context
   yield* checkScanAbort(signal)
   const { isCold = false, readOnly = false, refreshLock } = options
@@ -4591,7 +4627,6 @@ const runParseEffect = Effect.fnUntraced(function* (
       onDelta,
       signal,
       context.pricing,
-      context.stop,
     ),
   )
   if (claudeResult._tag === 'Success') {

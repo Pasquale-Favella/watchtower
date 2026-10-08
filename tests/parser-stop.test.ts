@@ -89,6 +89,8 @@ import { captureScanPricing } from '../src/main/pipeline/models.js'
 import { clearSessionCache, parseAllSessions, parseAllSessionsEffect } from '../src/main/pipeline/parser.js'
 import type { Provider } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { Env } from '../src/main/env.js'
+import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import type { CachedFile, SessionCache } from '../src/shared/schemas/session-cache.js'
 
 const source = (provider: string, path: string) => ({ provider, path, project: 'test-project' })
@@ -132,6 +134,44 @@ function parsedCall() {
     userMessage: 'test',
     sessionId: 'session-1',
   }
+}
+
+function withParserServices<A, E>(program: Effect.Effect<A, E, Env | HttpFetch>): Effect.Effect<A, E, never> {
+  return program.pipe(Effect.provide(Env.layer), Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)))
+}
+
+function ownedPendingDelta(
+  pending: Promise<void>,
+  start: () => void,
+  stop: () => void,
+  settled: () => void,
+): Effect.Effect<void, Error> {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      let isSettled = false
+      const drain = pending.then(
+        () => {
+          isSettled = true
+          settled()
+        },
+        () => {
+          isSettled = true
+          settled()
+        },
+      )
+      start()
+      return { pending, drain, isSettled: () => isSettled }
+    }),
+    resource =>
+      Effect.tryPromise({
+        try: () => resource.pending,
+        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      }),
+    resource =>
+      Effect.sync(() => {
+        if (!resource.isSettled()) stop()
+      }).pipe(Effect.ensuring(Effect.promise(() => resource.drain))),
+  )
 }
 
 describe('parser cooperative stop', () => {
@@ -311,19 +351,23 @@ describe('parser cooperative stop', () => {
     let release!: () => void
     const started = new Promise<void>(resolve => (enter = resolve))
     const gate = new Promise<void>(resolve => (release = resolve))
-    const onDelta = vi.fn(async () => {
-      events.push('delta-start')
-      enter()
-      await gate
-      events.push('delta-settled')
-    })
+    const onDelta = vi.fn(() =>
+      ownedPendingDelta(
+        gate,
+        () => {
+          events.push('delta-start')
+          enter()
+        },
+        () => {
+          events.push('stop')
+          release()
+          throw stopError
+        },
+        () => events.push('delta-settled'),
+      ),
+    )
     const stopError = new Error('Claude stop callback failed')
-    const stop = vi.fn(() => {
-      events.push('stop')
-      release()
-      throw stopError
-    })
-    const fiber = Effect.runFork(parseAllSessionsEffect(undefined, undefined, onDelta, undefined, undefined, {}, stop))
+    const fiber = Effect.runFork(withParserServices(parseAllSessionsEffect(undefined, undefined, onDelta)))
     await started
     expect(cache.providers.claude!.files[filePath]).not.toBe(originalEntry)
     expect(originalEntry).toEqual(originalValue)
@@ -332,7 +376,7 @@ describe('parser cooperative stop', () => {
     const exit = await Effect.runPromise(Fiber.await(fiber))
 
     expect(events).toEqual(['delta-start', 'stop', 'delta-settled'])
-    expect(stop).toHaveBeenCalledOnce()
+    expect(onDelta).toHaveBeenCalledOnce()
     expect(cache.providers.claude!.files[filePath]).toBe(originalEntry)
     expect(originalEntry).toEqual(originalValue)
     expect(exit._tag === 'Failure' ? Cause.findDefect(exit.cause) : undefined).toMatchObject({
@@ -372,7 +416,7 @@ describe('parser cooperative stop', () => {
     hooks.getProvider.mockResolvedValue({ network: false, durableSources: false, createSessionParser: factory })
     const controller = new AbortController()
     const pricing = captureScanPricing()
-    const services = { gatewayEnabled: true, fetchGatewayReport: vi.fn(async () => []), pricing }
+    const services = { gatewayEnabled: true, fetchGatewayReport: vi.fn(() => Effect.succeed([])), pricing }
     const onDelta = vi.fn()
 
     await parseAllSessions(undefined, undefined, onDelta, undefined, controller.signal, services)
@@ -405,7 +449,7 @@ describe('parser cooperative stop', () => {
     })
     const onUnparsed = vi.fn()
 
-    await Effect.runPromise(parseAllSessionsEffect(undefined, undefined, undefined, onUnparsed))
+    await Effect.runPromise(withParserServices(parseAllSessionsEffect(undefined, undefined, undefined, onUnparsed)))
 
     expect(parseStream).toHaveBeenCalledOnce()
     expect(parse).not.toHaveBeenCalled()
@@ -429,7 +473,7 @@ describe('parser cooperative stop', () => {
       }),
     })
 
-    await Effect.runPromise(parseAllSessionsEffect())
+    await Effect.runPromise(withParserServices(parseAllSessionsEffect()))
 
     expect(cache.providers['test-provider']?.files[path]).toMatchObject({
       fingerprint: { dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 },
@@ -486,9 +530,9 @@ describe('parser cooperative stop', () => {
         },
       }),
     })
-    const onDelta = vi.fn()
+    const onDelta = vi.fn(() => Effect.void)
 
-    await Effect.runPromise(parseAllSessionsEffect(undefined, undefined, onDelta))
+    await Effect.runPromise(withParserServices(parseAllSessionsEffect(undefined, undefined, onDelta)))
 
     expect(cache.providers['test-provider']?.files[path]?.turns.map(turn => turn.calls[0]?.deduplicationKey)).toEqual([
       'cached-call',
@@ -500,7 +544,7 @@ describe('parser cooperative stop', () => {
     )
   })
 
-  it('restores the original durable cache entry when cancelled during delta publication', async () => {
+  it('restores the original durable cache entry when interrupted during delta publication', async () => {
     const path = '/test/durable-delta-cancel.session'
     const cache = makeCache('test-provider', [path])
     const section = cache.providers['test-provider']!
@@ -528,18 +572,9 @@ describe('parser cooperative stop', () => {
     const deltaStarted = new Promise<void>(resolve => {
       startDelta = resolve
     })
-    const controller = new AbortController()
-    const onDelta = vi.fn(async () => {
-      startDelta()
-      await pendingDelta
-    })
-    const stop = vi.fn(() => {
-      controller.abort(new ScanAbortedError({ message: 'scan aborted' }))
-      finishDelta()
-    })
-    const fiber = Effect.runFork(
-      parseAllSessionsEffect(undefined, undefined, onDelta, undefined, controller.signal, {}, stop),
-    )
+    const stop = vi.fn(() => finishDelta())
+    const onDelta = vi.fn(() => ownedPendingDelta(pendingDelta, startDelta, stop, () => undefined))
+    const fiber = Effect.runFork(withParserServices(parseAllSessionsEffect(undefined, undefined, onDelta)))
     await deltaStarted
     expect(section.files[path]?.turns).toHaveLength(1)
     expect(section.files[path]?.fingerprint.mtimeMs).toBe(2)
@@ -592,7 +627,9 @@ describe('parser cooperative stop', () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(
-          parseAllSessionsEffect(undefined, undefined, undefined, undefined, controller.signal, {}, stop),
+          withParserServices(
+            parseAllSessionsEffect(undefined, undefined, undefined, undefined, controller.signal, {}, stop),
+          ),
         )
         yield* Effect.promise(() => started)
         yield* Fiber.interrupt(fiber)

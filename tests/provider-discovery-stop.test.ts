@@ -4,6 +4,7 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { Env } from '../src/main/env.js'
 import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
 import {
   discoverAllSessions,
@@ -15,13 +16,18 @@ import type { Provider, ProviderScanContext, SessionSource } from '../src/main/p
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import { deferred } from './helpers/deferred.js'
 
-function provider(name: string, discoverSessions: Provider['discoverSessions']): Provider {
+function provider(
+  name: string,
+  discoverSessions: Provider['discoverSessions'],
+  discoverSessionsEffect?: Provider['discoverSessionsEffect'],
+): Provider {
   return {
     name,
     displayName: name,
     modelDisplayName: model => model,
     toolDisplayName: tool => tool,
     discoverSessions,
+    ...(discoverSessionsEffect ? { discoverSessionsEffect } : {}),
     createSessionParser: () => ({ parse: async function* () {} }),
   }
 }
@@ -29,6 +35,8 @@ function provider(name: string, discoverSessions: Provider['discoverSessions']):
 afterEach(() => {
   takeQueuedLogRecords()
 })
+
+const discoveryEnv = Env.layerWithGatewayKey(null)
 
 describe('provider discovery stop', () => {
   it('does not start discovery when the scan is already stopped', async () => {
@@ -52,7 +60,7 @@ describe('provider discovery stop', () => {
     const context: ProviderScanContext = {
       signal: controller.signal,
       gatewayEnabled: true,
-      fetchGatewayReport: vi.fn(async () => []),
+      fetchGatewayReport: vi.fn(() => Effect.succeed([])),
     }
     const first = vi.fn(async (received?: ProviderScanContext) => {
       expect(received).toBe(context)
@@ -136,7 +144,7 @@ describe('provider discovery stop', () => {
         undefined,
         [provider('native-first', first), provider('native-second', second)],
         context,
-      ),
+      ).pipe(Effect.provide(discoveryEnv)),
     )
 
     await started.promise
@@ -145,6 +153,90 @@ describe('provider discovery stop', () => {
 
     await expect(result).rejects.toBe(abort)
     expect(second).not.toHaveBeenCalled()
+    expect(takeQueuedLogRecords()).toEqual([])
+  })
+
+  it('native registry hook bypasses the Promise discovery method', async () => {
+    const source = { path: '/native-hook', provider: 'native-hook', project: 'native' }
+    const legacy = vi.fn(async () => {
+      throw new Error('Promise discovery should not run')
+    })
+    const native = vi.fn(() => Effect.succeed([source]))
+
+    await expect(
+      Effect.runPromise(
+        safeDiscoverSessionsEffect(provider('native-hook', legacy, native)).pipe(Effect.provide(discoveryEnv)),
+      ),
+    ).resolves.toEqual([source])
+    expect(native).toHaveBeenCalledOnce()
+    expect(legacy).not.toHaveBeenCalled()
+    expect(takeQueuedLogRecords()).toEqual([])
+  })
+
+  it('isolates typed failures from native discovery and preserves cancellation identity', async () => {
+    const source = { path: '/after-native-failure', provider: 'after-native-failure', project: 'healthy' }
+    const failing = provider(
+      'native-expected-failure',
+      async () => [],
+      () => Effect.fail(new Error('unavailable')),
+    )
+    const healthy = provider('healthy-after-native-failure', async () => [source])
+    await expect(
+      Effect.runPromise(discoverAllSessionsEffect(undefined, [failing, healthy]).pipe(Effect.provide(discoveryEnv))),
+    ).resolves.toEqual([source])
+    expect(takeQueuedLogRecords().map(record => record.fields)).toEqual([
+      { op: 'scan', provider: 'native-expected-failure', code: 'discovery-failed' },
+    ])
+
+    const abort = new ScanAbortedError({ message: 'native stop' })
+    const cancelled = provider(
+      'native-abort',
+      async () => [],
+      () => Effect.fail(abort),
+    )
+    await expect(
+      Effect.runPromise(safeDiscoverSessionsEffect(cancelled).pipe(Effect.provide(discoveryEnv))),
+    ).rejects.toBe(abort)
+    expect(takeQueuedLogRecords()).toEqual([])
+
+    const defect = new Error('native discovery defect')
+    const defective = provider(
+      'native-defect',
+      async () => [],
+      () => Effect.die(defect),
+    )
+    const exit = await Effect.runPromise(
+      Effect.exit(safeDiscoverSessionsEffect(defective).pipe(Effect.provide(discoveryEnv))),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      expect(exit.cause.reasons.filter(Cause.isDieReason).map(reason => reason.defect)).toContain(defect)
+    }
+    expect(takeQueuedLogRecords()).toEqual([])
+  })
+
+  it('interrupts a native discovery Effect through its owned finalizer', async () => {
+    const started = deferred<undefined>()
+    let finalized = false
+    const native = provider(
+      'native-interrupt',
+      async () => [],
+      () =>
+        Effect.acquireUseRelease(
+          Effect.sync(() => started.resolve(undefined)),
+          () => Effect.never,
+          () =>
+            Effect.sync(() => {
+              finalized = true
+            }),
+        ),
+    )
+    const fiber = Effect.runFork(safeDiscoverSessionsEffect(native).pipe(Effect.provide(discoveryEnv)))
+
+    await started.promise
+    await Effect.runPromise(Fiber.interrupt(fiber))
+
+    expect(finalized).toBe(true)
     expect(takeQueuedLogRecords()).toEqual([])
   })
 
@@ -167,7 +259,7 @@ describe('provider discovery stop', () => {
     const fiber = Effect.runFork(
       discoverAllSessionsEffect(undefined, [provider('native-first', first), provider('native-second', second)], {
         stop,
-      }),
+      }).pipe(Effect.provide(discoveryEnv)),
     )
 
     await started.promise
@@ -189,9 +281,9 @@ describe('provider discovery stop', () => {
       })
       const healthy = provider(source.provider, async () => [source])
 
-      await expect(Effect.runPromise(discoverAllSessionsEffect(undefined, [failing, healthy]))).resolves.toEqual([
-        source,
-      ])
+      await expect(
+        Effect.runPromise(discoverAllSessionsEffect(undefined, [failing, healthy]).pipe(Effect.provide(discoveryEnv))),
+      ).resolves.toEqual([source])
       expect(takeQueuedLogRecords().map(record => record.fields)).toEqual([
         { op: 'scan', provider: name, code: 'EACCES' },
       ])
@@ -213,7 +305,7 @@ describe('provider discovery stop', () => {
           stopped.resolve(undefined)
           throw stopFailure
         },
-      }),
+      }).pipe(Effect.provide(discoveryEnv)),
     )
     let interrupted = false
     await started.promise
@@ -241,6 +333,8 @@ describe('provider discovery stop', () => {
 
     await expect(safeDiscoverSessions(expectedProvider)).resolves.toEqual([source])
     await expect(discoverAllSessions(undefined, [expectedProvider])).resolves.toEqual([source])
-    await expect(Effect.runPromise(safeDiscoverSessionsEffect(expectedProvider))).resolves.toEqual([source])
+    await expect(
+      Effect.runPromise(safeDiscoverSessionsEffect(expectedProvider).pipe(Effect.provide(discoveryEnv))),
+    ).resolves.toEqual([source])
   })
 })

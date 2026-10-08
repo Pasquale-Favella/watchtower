@@ -1,18 +1,22 @@
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import * as Stream from 'effect/Stream'
 import * as TestClock from 'effect/testing/TestClock'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { Env, resolveGatewayKey } from '../src/main/env.js'
 import { HttpFetch, worstCaseRetryWindowMs } from '../src/main/pipeline/fetch-utils.js'
 import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
+import type { SessionParser } from '../src/main/pipeline/providers/types.js'
 import {
   discoverVercelGatewaySessionsEffect,
   fetchVercelGatewayReportEffect,
   type ReportRow,
   vercelGateway,
 } from '../src/main/pipeline/providers/vercel-gateway.js'
+import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { DateRange } from '../src/main/pipeline/types.js'
+import { deferred } from './helpers/deferred.js'
 import { runEffectTest, runWithTestClockWindow } from './helpers/run-effect-test.js'
 
 const RANGE: DateRange = {
@@ -20,8 +24,13 @@ const RANGE: DateRange = {
   end: new Date('2026-01-31T00:00:00.000Z'),
 }
 
+// The default ConfigProvider captures the environment at its first read.
+beforeAll(() => vi.stubEnv('AI_GATEWAY_API_KEY', 'standalone-key'))
+afterAll(() => vi.unstubAllEnvs())
+
 afterEach(() => {
   takeQueuedLogRecords()
+  vi.unstubAllGlobals()
 })
 
 function runEffect(dateRange: DateRange, fetchImpl: typeof fetch, gatewayKey: string | null): Promise<ReportRow[]> {
@@ -63,6 +72,11 @@ function fakeCountingFetch(body: unknown): { fetch: typeof fetch; getCalls: () =
     return inner(...args)
   }) as typeof fetch
   return { fetch: countingFetch, getCalls: () => calls }
+}
+
+function gatewayStream(parser: SessionParser): ReturnType<NonNullable<SessionParser['parseStream']>> {
+  if (!parser.parseStream) throw new Error('Expected the native Gateway parser stream')
+  return parser.parseStream()
 }
 
 describe('fetchVercelGatewayReportEffect (Effect-native gateway boundary)', () => {
@@ -215,5 +229,113 @@ describe('discoverVercelGatewaySessionsEffect (discovery through Env layer)', ()
     for (const source of sources) {
       expect(source.provider).toBe('vercel-gateway')
     }
+  })
+})
+
+describe('Vercel Gateway native parser stream', () => {
+  it('keeps the standalone Promise parser fallback on its environment and fetch boundary', async () => {
+    const rows = [{ day: '2026-01-05', model: 'openai/gpt-4o', total_cost: 1.5 }]
+    const { fetch: fetcher, getCalls } = fakeCountingFetch({ results: rows })
+    vi.stubGlobal('fetch', fetcher)
+    await expect(Effect.runPromise(Env.pipe(Effect.provide(Env.layer)))).resolves.toMatchObject({
+      vercelGatewayApiKey: 'standalone-key',
+    })
+    const parser = vercelGateway.createSessionParser(
+      { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
+      new Set(),
+      RANGE,
+    )
+    const parsed = []
+    for await (const call of parser.parse()) parsed.push(call)
+
+    expect(getCalls()).toBe(1)
+    expect(loggedCodes()).toEqual([])
+    expect(parsed).toHaveLength(1)
+    expect(parsed[0]).toMatchObject({ model: 'openai/gpt-4o', costUSD: 1.5, timestamp: '2026-01-05T12:00:00.000Z' })
+    await expect(vercelGateway.discoverSessions()).resolves.toEqual([
+      { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
+    ])
+  })
+
+  it('preserves abort identity at the standalone Promise parser boundary', async () => {
+    const abort = new ScanAbortedError({ message: 'standalone scan stopped' })
+    const parser = vercelGateway.createSessionParser(
+      { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
+      new Set(),
+      RANGE,
+      { fetchGatewayReport: () => Effect.fail(abort) },
+    )
+
+    await expect(parser.parse().next()).rejects.toBe(abort)
+  })
+
+  it('consumes the captured report Effect and deduplicates repeated model-day rows', async () => {
+    const seenKeys = new Set<string>()
+    const rows: ReportRow[] = [
+      { day: '2026-01-05', model: 'openai/gpt-4o', total_cost: 1.5, input_tokens: 10, output_tokens: 20 },
+      { day: '2026-01-05', model: 'openai/gpt-4o', total_cost: 2, input_tokens: 12, output_tokens: 22 },
+      { day: '2026-01-06', model: 'openai/gpt-4o', total_cost: 0.5, input_tokens: 5, output_tokens: 5 },
+    ]
+    let calls = 0
+    const parser = vercelGateway.createSessionParser(
+      { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
+      seenKeys,
+      RANGE,
+      {
+        gatewayEnabled: true,
+        fetchGatewayReport: () => {
+          calls += 1
+          return Effect.succeed(rows)
+        },
+      },
+    )
+
+    const parsed = await Effect.runPromise(Stream.runCollect(gatewayStream(parser)))
+
+    expect(calls).toBe(1)
+    expect(Array.from(parsed)).toHaveLength(2)
+    expect(seenKeys).toEqual(
+      new Set(['vercel-gateway:2026-01-05:openai/gpt-4o', 'vercel-gateway:2026-01-06:openai/gpt-4o']),
+    )
+  })
+
+  it('preserves the scan abort error from the native report capability', async () => {
+    const abort = new ScanAbortedError({ message: 'gateway scan stopped' })
+    const parser = vercelGateway.createSessionParser(
+      { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
+      new Set(),
+      RANGE,
+      { gatewayEnabled: true, fetchGatewayReport: () => Effect.fail(abort) },
+    )
+
+    await expect(Effect.runPromise(Stream.runCollect(gatewayStream(parser)))).rejects.toBe(abort)
+  })
+
+  it('runs the report capability finalizer when native stream consumption is interrupted', async () => {
+    const started = deferred<undefined>()
+    let finalized = false
+    const parser = vercelGateway.createSessionParser(
+      { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
+      new Set(),
+      RANGE,
+      {
+        gatewayEnabled: true,
+        fetchGatewayReport: () =>
+          Effect.acquireUseRelease(
+            Effect.sync(() => started.resolve(undefined)),
+            () => Effect.never,
+            () =>
+              Effect.sync(() => {
+                finalized = true
+              }),
+          ),
+      },
+    )
+    const fiber = Effect.runFork(Stream.runCollect(gatewayStream(parser)))
+
+    await started.promise
+    await Effect.runPromise(Fiber.interrupt(fiber))
+
+    expect(finalized).toBe(true)
   })
 })

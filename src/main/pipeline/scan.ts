@@ -151,15 +151,12 @@ export const runScan = Effect.fnUntraced(function* (
 
     let aborted = false
 
-    // Promise-boundary seam (NOT Effect-native): `DeltaHandler` is
-    // `(delta) => void | Promise<void>`, so this stays `async`/`throw`.
-    // Throws the TAGGED error with the preserved `'scan aborted'` message —
-    // `instanceof` + `err.name` both keep working for the parser re-throw.
+    // Delta counting and ledger ingestion stay in the parser's fiber.
     const countingDelta: DeltaHandler | undefined = onDelta
-      ? async delta => {
+      ? Effect.fnUntraced(function* (delta): Effect.fn.Return<void, Error> {
           if (abort?.isAborted()) {
             aborted = true
-            throw abortedScanError()
+            return yield* abortedScanError()
           }
           const row = ensureProvider(delta.provider)
           if (delta.cachedFile.failed) {
@@ -170,8 +167,8 @@ export const runScan = Effect.fnUntraced(function* (
           }
           if (delta.verdict === 'unchanged') row.unchanged++
           else row.ported++
-          await onDelta(delta, pricing)
-        }
+          yield* onDelta(delta, pricing)
+        })
       : undefined
 
     // Extraction seam tally (ADR 0003): rows/blobs skipped because a declared

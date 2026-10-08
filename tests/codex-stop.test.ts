@@ -120,7 +120,7 @@ vi.mock('fs/promises', async importOriginal => {
 
 import { writeFile } from 'node:fs/promises'
 
-import { appPaths, initAppPaths } from '../src/main/env.js'
+import { appPaths, Env, initAppPaths } from '../src/main/env.js'
 import { flushCodexCacheEffect, lookupCachedCodexResultsEffect } from '../src/main/pipeline/codex-cache.js'
 import { createCodexProvider } from '../src/main/pipeline/providers/codex.js'
 import type { ProviderScanContext } from '../src/main/pipeline/providers/types.js'
@@ -284,6 +284,40 @@ describe('Codex scan cancellation', () => {
     controller.abort(new ScanAbortedError({ message: 'scan aborted' }))
 
     await expect(pending).rejects.toMatchObject({ _tag: 'ScanAbortedError' })
+    expect(hooks.streamCloses).toBe(1)
+    await closed
+    expect(hooks.streamCloses).toBe(1)
+  })
+
+  it('drains the bounded discovery header reader when its native Effect fiber is interrupted', async () => {
+    const codexHome = join(root, 'codex-home-effect-interrupt')
+    const sessionDir = join(codexHome, 'sessions', '2026', '10', '05')
+    const path = join(sessionDir, 'rollout-header.jsonl')
+    await (await import('node:fs/promises')).mkdir(sessionDir, { recursive: true })
+    await writeFile(
+      path,
+      `${JSON.stringify({ type: 'session_meta', payload: { originator: 'Codex', cwd: '/project' } })}${'x'.repeat(2 * 1024 * 1024)}`,
+    )
+    hooks.pauseNextStream = true
+
+    let start!: () => void
+    const started = new Promise<void>(resolve => {
+      start = resolve
+    })
+    let close!: () => void
+    const closed = new Promise<void>(resolve => {
+      close = resolve
+    })
+    hooks.onStreamStarted = start
+    hooks.onStreamClosed = close
+
+    const discover = createCodexProvider(codexHome).discoverSessionsEffect
+    if (!discover) throw new Error('Codex Effect discovery is unavailable')
+    const fiber = Effect.runFork(discover().pipe(Effect.provide(Env.layer)))
+    await started
+    await Effect.runPromise(Fiber.interrupt(fiber))
+
+    expect(hooks.streamOpens).toBe(1)
     expect(hooks.streamCloses).toBe(1)
     await closed
     expect(hooks.streamCloses).toBe(1)

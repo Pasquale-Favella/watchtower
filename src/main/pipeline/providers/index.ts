@@ -1,5 +1,6 @@
 import * as Effect from 'effect/Effect'
 
+import { Env } from '../../env.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import { isScanAbortedError, type ScanAbortedError, scanAbortError } from '../scan-control.js'
 import { claude } from './claude.js'
@@ -177,9 +178,13 @@ const warnedDiscoveryFailures = new Set<string>()
 export const safeDiscoverSessionsEffect = Effect.fnUntraced(function* (
   provider: Provider,
   context: DiscoveryContext = {},
-): Effect.fn.Return<SessionSource[], ScanAbortedError> {
+): Effect.fn.Return<SessionSource[], ScanAbortedError, Env> {
   yield* checkDiscoveryAbort(context)
-  const discovered = yield* Effect.result(runOwnedDiscoveryPromise(() => provider.discoverSessions(context), context))
+  const discovered = yield* Effect.result(
+    provider.discoverSessionsEffect
+      ? provider.discoverSessionsEffect(context)
+      : runOwnedDiscoveryPromise(() => provider.discoverSessions(context), context),
+  )
   yield* checkDiscoveryAbort(context)
   if (discovered._tag === 'Success') return discovered.success
   if (isScanAbortedError(discovered.failure)) return yield* Effect.fail(discovered.failure)
@@ -194,7 +199,7 @@ export const safeDiscoverSessionsEffect = Effect.fnUntraced(function* (
 export function safeDiscoverSessions(provider: Provider, context: DiscoveryContext = {}): Promise<SessionSource[]> {
   // Compatibility edge for discovery callers that still expose Promise APIs.
   // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(safeDiscoverSessionsEffect(provider, context))
+  return Effect.runPromise(safeDiscoverSessionsEffect(provider, context).pipe(Effect.provide(Env.layer)))
 }
 
 export const discoverAllSessionsEffect = Effect.fnUntraced(function* (
@@ -203,7 +208,7 @@ export const discoverAllSessionsEffect = Effect.fnUntraced(function* (
   // the helper. Defaults to the real registry.
   providerList?: Provider[],
   context: DiscoveryContext = {},
-): Effect.fn.Return<SessionSource[], Error> {
+): Effect.fn.Return<SessionSource[], Error, Env> {
   yield* checkDiscoveryAbort(context)
   const allProviders = providerList ?? (yield* getAllProvidersEffect(context))
   yield* checkDiscoveryAbort(context)
@@ -226,7 +231,9 @@ export function discoverAllSessions(
 ): Promise<SessionSource[]> {
   // Compatibility edge for discovery callers that still expose Promise APIs.
   // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(discoverAllSessionsEffect(providerFilter, providerList, context))
+  return Effect.runPromise(
+    discoverAllSessionsEffect(providerFilter, providerList, context).pipe(Effect.provide(Env.layer)),
+  )
 }
 
 export const getProviderEffect = Effect.fnUntraced(function* (

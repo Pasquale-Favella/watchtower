@@ -5,45 +5,18 @@ import { DatabaseSync } from 'node:sqlite'
 
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import * as Layer from 'effect/Layer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { CommandRunner, makeRecordingCommandRunner } from '../src/main/agents/command-runner.js'
+
 const hooks = vi.hoisted(() => ({
-  parse: vi.fn(),
-  repoUrl: vi.fn(),
+  parseEffect: vi.fn(),
 }))
 
 vi.mock('../src/main/pipeline/parser.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../src/main/pipeline/parser.js')>()),
-  parseAllSessions: (...args: unknown[]) => hooks.parse(...args),
-  parseAllSessionsEffect: (...args: unknown[]) => {
-    const signal = args[4] as AbortSignal | undefined
-    const stop = args[6] as (() => void) | undefined
-    return Effect.acquireUseRelease(
-      Effect.sync(() => {
-        let settled = false
-        const promise = Promise.resolve().then(() => hooks.parse(...args.slice(0, 6)))
-        const drain = promise.then(
-          () => {
-            settled = true
-          },
-          () => {
-            settled = true
-          },
-        )
-        return { promise, drain, isSettled: () => settled }
-      }),
-      owned => Effect.tryPromise({ try: () => owned.promise, catch: cause => cause as Error }),
-      owned =>
-        Effect.promise(() => {
-          if (!owned.isSettled()) stop?.()
-          return owned.drain
-        }),
-    )
-  },
-}))
-
-vi.mock('../src/main/pipeline/git-remote.js', () => ({
-  getRepoUrl: (...args: unknown[]) => hooks.repoUrl(...args),
+  parseAllSessionsEffect: (...args: unknown[]) => hooks.parseEffect(...args),
 }))
 
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
@@ -81,15 +54,19 @@ function delta(): ScanDelta {
   }
 }
 
+function defaultCommandLayer(): Layer.Layer<CommandRunner> {
+  return makeRecordingCommandRunner(() => Effect.succeed({ stdout: 'https://example.test/project', exitCode: 0 })).layer
+}
+
 describe('scan lifetime ownership', () => {
   let dir = ''
   let context: DbWorkerContext | null = null
   const events: DbWorkerEvent[] = []
 
-  function open() {
+  function open(commandLayer: Layer.Layer<CommandRunner> = defaultCommandLayer()) {
     dir = mkdtempSync(join(tmpdir(), 'watchtower-scan-lifetime-'))
     const dbPath = join(dir, 'ledger.db')
-    const owner = openWorkerOwner(dbPath)
+    const owner = openWorkerOwner(dbPath, undefined, commandLayer)
     context = new DbWorkerContext(
       { dbPath, dataDir: dir, cacheDir: join(dir, 'cache') },
       event => events.push(event),
@@ -100,8 +77,7 @@ describe('scan lifetime ownership', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks()
-    hooks.parse.mockReset()
-    hooks.repoUrl.mockReset()
+    hooks.parseEffect.mockReset()
     setPriceOverrides({})
     setModelAliases({})
     setLocalModelSavings({})
@@ -112,11 +88,37 @@ describe('scan lifetime ownership', () => {
     dir = ''
   })
 
-  it('persists scan-owned costs and savings after pricing changes during repository lookup', async () => {
-    const { context: c, ledger, runtime } = open()
+  it.each(['https://example.test/project', ''])('memoizes repository answers per scan, including %j', async url => {
+    const { layer, calls } = makeRecordingCommandRunner(() => Effect.succeed({ stdout: url, exitCode: url ? 0 : 1 }))
+    const { context: c, runtime } = open(layer)
     const portIn = vi.spyOn(runtime.runSync(LedgerIngest), 'portIn')
+    hooks.parseEffect.mockImplementation((...args: unknown[]) =>
+      Effect.gen(function* () {
+        const onDelta = args[2] as DeltaHandler
+        for (const filePath of ['one.jsonl', 'two.jsonl']) yield* onDelta({ ...delta(), filePath })
+      }),
+    )
+
+    await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: true })
+    expect(calls).toHaveLength(1)
+    expect(portIn.mock.calls.map(([delta]) => delta.repoUrl)).toEqual([url || undefined, url || undefined])
+    await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: true })
+    expect(calls).toHaveLength(2)
+  })
+
+  it('persists scan-owned costs and savings after pricing changes during repository lookup', async () => {
     const repoEntered = deferred<undefined>()
     const releaseRepo = deferred<string | undefined>()
+    const { layer: commandLayer } = makeRecordingCommandRunner(() =>
+      Effect.andThen(
+        Effect.sync(() => repoEntered.resolve(undefined)),
+        Effect.uninterruptible(
+          Effect.promise(() => releaseRepo.promise.then(url => ({ stdout: url ?? '', exitCode: url ? 0 : 1 }))),
+        ),
+      ),
+    )
+    const { context: c, ledger, runtime } = open(commandLayer)
+    const portIn = vi.spyOn(runtime.runSync(LedgerIngest), 'portIn')
     const model = 'scan-owned-model'
     const baseline = 'scan-owned-baseline'
     setPriceOverrides({ [baseline]: { input: 1, output: 2, cacheRead: 3 } })
@@ -135,24 +137,13 @@ describe('scan lifetime ownership', () => {
         ],
       }),
     }
-    hooks.repoUrl
-      .mockImplementationOnce(() => {
-        repoEntered.resolve(undefined)
-        return releaseRepo.promise
-      })
-      .mockResolvedValue('https://example.test/project')
-    hooks.parse.mockImplementation(
-      async (
-        _range: unknown,
-        _provider: unknown,
-        onDelta: DeltaHandler,
-        _onUnparsed: unknown,
-        _signal: unknown,
-        services: ProviderScanServices,
-      ) => {
+    hooks.parseEffect.mockImplementation((...args: unknown[]) =>
+      Effect.gen(function* () {
+        const onDelta = args[2] as DeltaHandler
+        const services = args[5] as ProviderScanServices
         expect(services.pricing).toBeDefined()
-        await onDelta(firstDelta)
-      },
+        yield* onDelta(firstDelta)
+      }),
     )
 
     const firstScan = c.dispatch('scan:start', [])
@@ -165,7 +156,7 @@ describe('scan lifetime ownership', () => {
       releaseRepo.resolve('https://example.test/project')
     }
     await expect(firstScan).resolves.toEqual({ ok: true })
-    const firstPricing = hooks.parse.mock.calls[0][5].pricing
+    const firstPricing = hooks.parseEffect.mock.calls[0][5].pricing
     expect(portIn.mock.calls[0][1]).toBe(firstPricing)
     expect(ledger.getCalls()).toEqual(
       expect.arrayContaining([
@@ -180,11 +171,14 @@ describe('scan lifetime ownership', () => {
     )
 
     setModelAliases({ [model]: baseline })
-    hooks.parse.mockImplementation(async (_range: unknown, _provider: unknown, onDelta: DeltaHandler) => {
-      await onDelta({ ...firstDelta, filePath: 'next-session.jsonl' })
-    })
+    hooks.parseEffect.mockImplementation((...args: unknown[]) =>
+      Effect.gen(function* () {
+        const onDelta = args[2] as DeltaHandler
+        yield* onDelta({ ...firstDelta, filePath: 'next-session.jsonl' })
+      }),
+    )
     await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: true })
-    const nextPricing = hooks.parse.mock.calls[1][5].pricing
+    const nextPricing = hooks.parseEffect.mock.calls[1][5].pricing
     expect(nextPricing).not.toBe(firstPricing)
     expect(portIn.mock.calls[1][1]).toBe(nextPricing)
     expect(
@@ -203,18 +197,21 @@ describe('scan lifetime ownership', () => {
     ).toEqual([0, firstExpected])
   })
 
-  it('does not complete interruption until the real parser Promise and callback drain', async () => {
-    const { context: c, runtime } = open()
-    const parserEntered = deferred<undefined>()
+  it('does not complete interruption until the parser callback Effect drains', async () => {
     const releaseRepoLookup = deferred<string | undefined>()
+    const { layer: commandLayer } = makeRecordingCommandRunner(() =>
+      Effect.uninterruptible(
+        Effect.promise(() => releaseRepoLookup.promise.then(url => ({ stdout: url ?? '', exitCode: url ? 0 : 1 }))),
+      ),
+    )
+    const { context: c, runtime } = open(commandLayer)
+    const parserEntered = deferred<undefined>()
     const portIn = vi.spyOn(runtime.runSync(LedgerIngest), 'portIn')
-    hooks.repoUrl.mockReturnValue(releaseRepoLookup.promise)
-    hooks.parse.mockResolvedValue(undefined)
-    hooks.parse.mockImplementationOnce(
-      async (_range: unknown, _provider: unknown, onDelta: (value: ScanDelta) => Promise<void>) => {
+    hooks.parseEffect.mockImplementationOnce((...args: unknown[]) =>
+      Effect.gen(function* () {
         parserEntered.resolve(undefined)
-        await onDelta(delta())
-      },
+        yield* (args[2] as DeltaHandler)(delta())
+      }),
     )
 
     const request = c.dispatch('scan:start', [])
@@ -237,23 +234,28 @@ describe('scan lifetime ownership', () => {
     expect(events.filter(event => event.event === 'store:changed')).toHaveLength(0)
     expect(events.filter(event => event.event === 'scan:progress')).toHaveLength(3)
 
+    hooks.parseEffect.mockImplementation(() => Effect.void)
     await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: true })
-    expect(hooks.parse).toHaveBeenCalledTimes(2)
+    expect(hooks.parseEffect).toHaveBeenCalledTimes(2)
     expect(events.filter(event => event.event === 'store:changed')).toHaveLength(1)
   })
 
-  it('holds ledger close until an interrupted parser callback drains', async () => {
-    const { context: c, runtime } = open()
-    const parserEntered = deferred<undefined>()
+  it('holds ledger close until an interrupted parser callback Effect drains', async () => {
     const releaseRepoLookup = deferred<string | undefined>()
+    const { layer: commandLayer } = makeRecordingCommandRunner(() =>
+      Effect.uninterruptible(
+        Effect.promise(() => releaseRepoLookup.promise.then(url => ({ stdout: url ?? '', exitCode: url ? 0 : 1 }))),
+      ),
+    )
+    const { context: c, runtime } = open(commandLayer)
+    const parserEntered = deferred<undefined>()
     const portIn = vi.spyOn(runtime.runSync(LedgerIngest), 'portIn')
     const closeLedger = vi.spyOn(DatabaseSync.prototype, 'close')
-    hooks.repoUrl.mockReturnValue(releaseRepoLookup.promise)
-    hooks.parse.mockImplementation(
-      async (_range: unknown, _provider: unknown, onDelta: (value: ScanDelta) => Promise<void>) => {
+    hooks.parseEffect.mockImplementation((...args: unknown[]) =>
+      Effect.gen(function* () {
         parserEntered.resolve(undefined)
-        await onDelta(delta())
-      },
+        yield* (args[2] as DeltaHandler)(delta())
+      }),
     )
 
     const request = c.dispatch('scan:start', [])

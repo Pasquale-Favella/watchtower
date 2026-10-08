@@ -1,12 +1,15 @@
-import { Effect, Stream } from 'effect'
+import { Effect, Scope, Stream } from 'effect'
 import { createReadStream } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { basename, join } from 'path'
-import { createInterface } from 'readline'
 
 import { type AppPaths, appPaths, resolveCodexHome } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
-import { getCachedCodexProject, lookupCachedCodexResultsEffect, writeCachedCodexResultsEffect } from '../codex-cache.js'
+import {
+  getCachedCodexProjectEffect,
+  lookupCachedCodexResultsEffect,
+  writeCachedCodexResultsEffect,
+} from '../codex-cache.js'
 import { normalizeContentBlocks } from '../content-utils.js'
 import { readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
@@ -150,65 +153,79 @@ function sanitizeProject(cwd: string): string {
 // keeping memory bounded if a corrupt file has no newline at all.
 const FIRST_LINE_READ_CAP = 1024 * 1024
 
-async function readFirstLine(filePath: string, signal?: AbortSignal): Promise<CodexEntry | null> {
-  throwIfScanAborted(signal)
-  // Codex CLI 0.128+ writes a session_meta line that can exceed 20 KB because
-  // it embeds the full base_instructions / system prompt. A fixed-size buffer
-  // would miss the trailing newline and reject the session as invalid.
-  // Stream the file via readline so we can read the first line up to
-  // FIRST_LINE_READ_CAP, which keeps memory bounded if the file has no newline.
-  const stream = createReadStream(filePath, {
-    encoding: 'utf-8',
-    start: 0,
-    end: FIRST_LINE_READ_CAP - 1,
-    ...(signal ? { signal } : {}),
-  })
-  // Silence stream errors so a late read-ahead error after we've already
-  // returned the first line cannot escape as an unhandled 'error' event.
-  // readline's async iterator re-throws underlying stream errors (ENOENT,
-  // EACCES, etc.) on Node 16+, which the catch below handles for the cases
-  // that matter for validation.
-  stream.on('error', () => {})
-  const closed = new Promise<void>(resolve => stream.once('close', resolve))
-  const rl = createInterface({ input: stream, crlfDelay: Infinity })
-  let firstLine: string | undefined
-  try {
-    for await (const line of rl) {
-      firstLine = line
-      break
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause))
+}
+
+const readFirstLine = Effect.fn('readCodexFirstLine')(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<CodexEntry | null, Error, Scope.Scope> {
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  const resource = yield* Effect.acquireRelease(
+    Effect.try({
+      try: () => {
+        const stream = createReadStream(filePath, {
+          start: 0,
+          end: FIRST_LINE_READ_CAP - 1,
+          ...(signal ? { signal } : {}),
+        })
+        // A late stream error after finding the newline must not become an
+        // unhandled event while the scope drains the native reader.
+        stream.on('error', () => {})
+        return { stream, iterator: stream[Symbol.asyncIterator]() }
+      },
+      catch: toError,
+    }),
+    resource =>
+      Effect.promise(async () => {
+        if (!resource.stream.closed) {
+          const closed = new Promise<void>(resolve => resource.stream.once('close', resolve))
+          resource.stream.destroy()
+          await closed
+        }
+        await resource.iterator.return?.()
+      }),
+  )
+
+  const firstLine = yield* Effect.gen(function* () {
+    let bytes = Buffer.alloc(0)
+    while (bytes.length < FIRST_LINE_READ_CAP) {
+      const next = yield* Effect.tryPromise({ try: () => resource.iterator.next(), catch: toError })
+      if (next.done) break
+      const chunk = next.value as Buffer
+      const newline = chunk.indexOf(0x0a)
+      const part = newline === -1 ? chunk : chunk.subarray(0, newline)
+      const remaining = FIRST_LINE_READ_CAP - bytes.length
+      bytes = Buffer.concat([bytes, part.subarray(0, remaining)])
+      if (newline !== -1 || part.length > remaining) break
     }
-  } catch (error) {
-    throwIfScanAborted(signal)
-    if (isScanAbortedError(error)) throw error
-    return null
-  } finally {
-    rl.close()
-    stream.destroy()
-    await closed
-  }
-  throwIfScanAborted(signal)
-  if (!firstLine || !firstLine.trim()) return null
+    return bytes.toString('utf-8').replace(/\r$/, '')
+  })
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  if (!firstLine.trim()) return null
   try {
     return JSON.parse(firstLine) as CodexEntry
   } catch {
     return null
   }
-}
+})
 
-async function isValidCodexSession(
+const isValidCodexSession = Effect.fn('isValidCodexSession')(function* (
   filePath: string,
   signal?: AbortSignal,
-): Promise<{ valid: boolean; meta?: CodexEntry }> {
-  throwIfScanAborted(signal)
-  const entry = await readFirstLine(filePath, signal)
-  throwIfScanAborted(signal)
+): Effect.fn.Return<{ valid: boolean; meta?: CodexEntry }, Error, Scope.Scope> {
+  const entry = yield* readFirstLine(filePath, signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
   if (!entry) return { valid: false }
   const valid =
     entry.type === 'session_meta' &&
     typeof entry.payload?.originator === 'string' &&
     entry.payload.originator.toLowerCase().startsWith('codex')
   return { valid, meta: valid ? entry : undefined }
-}
+})
 
 function getRawJsonStringField(head: string, field: string): string | undefined {
   const re = new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`)
@@ -323,30 +340,33 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
   return entry
 }
 
-async function discoverSessionFile(filePath: string, signal?: AbortSignal): Promise<SessionSource | null> {
-  throwIfScanAborted(signal)
-  const s = await stat(filePath).catch(() => {
-    throwIfScanAborted(signal)
-    return null
-  })
-  throwIfScanAborted(signal)
-  if (!s?.isFile()) return null
+const statForDiscovery = Effect.fn('codexDiscoveryStat')(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<boolean, Error> {
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  const result = yield* Effect.uninterruptible(
+    Effect.result(Effect.tryPromise({ try: () => stat(filePath), catch: toError })),
+  )
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  return result._tag === 'Success' && result.success.isFile()
+})
 
-  const cachedProject = await getCachedCodexProject(filePath, signal)
-  throwIfScanAborted(signal)
-  if (cachedProject) {
-    return { path: filePath, project: cachedProject, provider: 'codex' }
-  }
+const discoverSessionFile = Effect.fn('discoverCodexSessionFile')(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<SessionSource | null, Error> {
+  if (!(yield* statForDiscovery(filePath, signal))) return null
 
-  const { valid, meta } = await isValidCodexSession(filePath, signal)
-  throwIfScanAborted(signal)
+  const cachedProject = yield* getCachedCodexProjectEffect(filePath, signal)
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  if (cachedProject) return { path: filePath, project: cachedProject, provider: 'codex' }
+
+  const { valid, meta } = yield* Effect.scoped(isValidCodexSession(filePath, signal))
   if (!valid || !meta) return null
 
   const cwd = meta.payload?.cwd ?? 'unknown'
-  // Forward the absolute checkout so the port-in seam can attribute the
-  // session even when the file-level cache carries no directory (the
-  // call-level fallback in port.ts covers already-cached files; this covers
-  // fresh discoveries and keeps `source.workingDirectory` truthful).
+  // The absolute checkout lets the port-in seam attribute fresh discoveries.
   const workingDirectory = cwd !== 'unknown' && cwd.trim() ? cwd : undefined
   return {
     path: filePath,
@@ -354,79 +374,60 @@ async function discoverSessionFile(filePath: string, signal?: AbortSignal): Prom
     provider: 'codex',
     ...(workingDirectory ? { workingDirectory } : {}),
   }
-}
+})
 
-async function readdirOrEmpty(path: string, signal?: AbortSignal): Promise<string[]> {
-  throwIfScanAborted(signal)
-  try {
-    const entries = await readdir(path)
-    throwIfScanAborted(signal)
-    return entries
-  } catch (error) {
-    throwIfScanAborted(signal)
-    if (isScanAbortedError(error)) throw error
-    return []
-  }
-}
+const readdirOrEmpty = Effect.fn('codexDiscoveryReaddir')(function* (
+  path: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<string[], Error> {
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  const result = yield* Effect.uninterruptible(
+    Effect.result(Effect.tryPromise({ try: () => readdir(path), catch: toError })),
+  )
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  return result._tag === 'Success' ? result.success : []
+})
 
-async function discoverSessionsInDir(codexDir: string, signal?: AbortSignal): Promise<SessionSource[]> {
-  throwIfScanAborted(signal)
+const discoverSessionsInDir = Effect.fn('discoverCodexSessionsInDir')(function* (
+  codexDir: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<SessionSource[], Error> {
   const sources: SessionSource[] = []
-  const sessionsDir = join(codexDir, 'sessions')
-
-  const years = await readdirOrEmpty(sessionsDir, signal)
+  const years = yield* readdirOrEmpty(join(codexDir, 'sessions'), signal)
 
   for (const year of years) {
-    throwIfScanAborted(signal)
     if (!/^\d{4}$/.test(year)) continue
-    const yearDir = join(sessionsDir, year)
-    const months = await readdirOrEmpty(yearDir, signal)
-
+    const months = yield* readdirOrEmpty(join(codexDir, 'sessions', year), signal)
     for (const month of months) {
-      throwIfScanAborted(signal)
       if (!/^\d{2}$/.test(month)) continue
-      const monthDir = join(yearDir, month)
-      const days = await readdirOrEmpty(monthDir, signal)
-
+      const days = yield* readdirOrEmpty(join(codexDir, 'sessions', year, month), signal)
       for (const day of days) {
-        throwIfScanAborted(signal)
         if (!/^\d{2}$/.test(day)) continue
-        const dayDir = join(monthDir, day)
-        const files = await readdirOrEmpty(dayDir, signal)
-
+        const dayDir = join(codexDir, 'sessions', year, month, day)
+        const files = yield* readdirOrEmpty(dayDir, signal)
         for (const file of files) {
-          throwIfScanAborted(signal)
           if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue
-          const filePath = join(dayDir, file)
-          const source = await discoverSessionFile(filePath, signal)
-          throwIfScanAborted(signal)
+          const source = yield* discoverSessionFile(join(dayDir, file), signal)
           if (source) sources.push(source)
         }
       }
     }
   }
 
-  // Codex moves archived sessions into a flat directory. Keep them in usage
-  // reports so archiving a conversation does not erase its historical usage.
+  // Archived sessions live in a flat directory and remain part of usage reports.
   const archivedDir = join(codexDir, 'archived_sessions')
-  const archivedFiles = await readdirOrEmpty(archivedDir, signal)
+  const archivedFiles = yield* readdirOrEmpty(archivedDir, signal)
   for (const file of archivedFiles) {
-    throwIfScanAborted(signal)
     if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue
-    const source = await discoverSessionFile(join(archivedDir, file), signal)
-    throwIfScanAborted(signal)
+    const source = yield* discoverSessionFile(join(archivedDir, file), signal)
     if (source) sources.push(source)
   }
 
   return sources
-}
+})
 
 function resolveModel(info: CodexEntry['payload'], sessionModel?: string): string {
   return info?.model ?? info?.info?.model ?? info?.info?.model_name ?? sessionModel ?? 'gpt-5'
-}
-
-function toError(cause: unknown): Error {
-  return cause instanceof Error ? cause : new Error(String(cause))
 }
 
 function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
@@ -862,6 +863,13 @@ export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provid
   // captured here would freeze the pre-`initAppPaths` snapshot). Every other
   // seam already resolves `appPaths()` inside its call; this one now does too.
   const dir = (): string => resolveCodexHome((paths ?? appPaths()).codexHome, codexDir)
+  const discoverEffect = (context?: ProviderScanContext): Effect.Effect<SessionSource[], Error> =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Effect.try({ try: () => throwIfScanAborted(context?.signal), catch: toError })
+        return yield* discoverSessionsInDir(dir(), context?.signal)
+      }),
+    )
 
   return {
     name: 'codex',
@@ -889,9 +897,10 @@ export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provid
       ]
     },
 
-    async discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      throwIfScanAborted(context?.signal)
-      return discoverSessionsInDir(dir(), context?.signal)
+    discoverSessionsEffect: discoverEffect,
+
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(

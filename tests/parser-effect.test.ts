@@ -1,6 +1,8 @@
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { Env } from '../src/main/env.js'
+import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 const hooks = vi.hoisted(() => ({
   events: [] as string[],
   discovered: vi.fn(),
@@ -73,7 +75,12 @@ describe('parser Effect workflow', () => {
       return []
     })
 
-    const result = await Effect.runPromise(parseAllSessionsEffect())
+    const result = await Effect.runPromise(
+      parseAllSessionsEffect().pipe(
+        Effect.provide(Env.layer),
+        Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
+      ),
+    )
 
     expect(result).toEqual([])
     expect(hooks.events).toEqual(['load', 'cleanup', 'refresh-lock', 'load', 'discover'])

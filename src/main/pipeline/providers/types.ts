@@ -1,17 +1,21 @@
-import type { Stream } from 'effect'
+import type { Effect, Stream } from 'effect'
 
+import type { ParsedProviderCall, ProbeRoot, SessionSource } from '../../../shared/schemas/providers.js'
+export type { ParsedProviderCall, ProbeRoot, SessionSource } from '../../../shared/schemas/providers.js'
+
+import type { Env } from '../../env.js'
 import type { ScanPricing } from '../scan-pricing.js'
-import type { DateRange, ToolCall } from '../types.js'
+import type { DateRange } from '../types.js'
 import type { GatewayReportRow } from './gateway-report.js'
 
-/** Promise boundary services supplied by the scan's composition root. */
+/** Effect capabilities captured once by the scan's composition root. */
 export interface ProviderScanServices {
   /** Production scans supply this after loading pricing. Factories capture a
    * fallback only for direct legacy callers; remove those fallbacks when all
    * direct factory/helper and ingest callers supply scan-owned pricing. */
   readonly pricing?: ScanPricing
   readonly gatewayEnabled?: boolean
-  readonly fetchGatewayReport?: (range: DateRange, signal?: AbortSignal) => Promise<GatewayReportRow[]>
+  readonly fetchGatewayReport?: (range: DateRange, signal?: AbortSignal) => Effect.Effect<GatewayReportRow[], Error>
 }
 
 /** Each scan supplies its own stop signal to provider discovery and parsing. */
@@ -19,76 +23,10 @@ export interface ProviderScanContext extends ProviderScanServices {
   readonly signal?: AbortSignal
 }
 
-export type SessionSource = {
-  path: string
-  project: string
-  provider: string
-  sourceId?: string
-  sourceLabel?: string
-  sourcePath?: string
-  sourceKind?: 'claude-config' | 'claude-desktop'
-  /// watchtower: cwd reale del progetto (assoluto), quando il provider è
-  /// in grado di leggerlo (es. Copilot legge il campo `cwd:` di workspace.yaml).
-  /// Usato dal parser Copilot per emettere `projectPath` + `workingDirectory`
-  /// coerenti sulle call, e successivamente da `git-remote` per il fetch del
-  /// remote git. Opzionale: la maggior parte dei provider non lo popola.
-  workingDirectory?: string
-}
-
 export type SessionParser = {
   parse(): AsyncGenerator<ParsedProviderCall>
   /** Effect-native parser path used by the scan workflow when available. */
   parseStream?: () => Stream.Stream<ParsedProviderCall, Error>
-}
-
-export type ParsedProviderCall = {
-  provider: string
-  model: string
-  inputTokens: number
-  outputTokens: number
-  cacheCreationInputTokens: number
-  cacheReadInputTokens: number
-  cachedInputTokens: number
-  reasoningTokens: number
-  webSearchRequests: number
-  costUSD: number
-  costIsEstimated?: boolean
-  tools: string[]
-  bashCommands: string[]
-  // Subagent types spawned in this call (e.g. 'general-purpose'). Feeds the
-  // Skills & Agents breakdown; optional since most providers don't expose it.
-  subagentTypes?: string[]
-  // Skill names invoked in this call (e.g. 'commit'). Feeds the Skills & Agents
-  // breakdown; optional since most providers don't expose it.
-  skills?: string[]
-  timestamp: string
-  speed: 'standard' | 'fast'
-  deduplicationKey: string
-  // Lines added/removed by this call's edits, counted from the provider's diff
-  // records (Codex: `patch_apply_end.changes[*].unified_diff`). Numbers only;
-  // omitted when zero. `editFailed` counts patches with `success === false`.
-  // Rich-session-capture (capture-only; no report yet).
-  locAdded?: number
-  locRemoved?: number
-  editFailed?: number
-  turnId?: string
-  toolSequence?: ToolCall[][]
-  userMessage: string
-  sessionId: string
-  project?: string
-  projectPath?: string
-  // Exact provider-recorded cwd, kept separately because projectPath may later
-  // canonicalize a linked worktree to its main repository.
-  workingDirectory?: string
-}
-
-// A directory or database file that a provider's discoverSessions() scans.
-// Reported by the diagnostic probe so an empty or wrong result is self-diagnosable:
-// the path is resolved exactly as discovery resolves it (honoring env overrides
-// and configured dirs), and the doctor checks existence separately.
-export type ProbeRoot = {
-  path: string
-  label: string
 }
 
 export type Provider = {
@@ -105,6 +43,9 @@ export type Provider = {
   modelDisplayName(model: string): string
   toolDisplayName(rawTool: string): string
   discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]>
+  /** Native discovery consumed by the scan. Remove the Promise fallback once
+   * every provider and its external callers use this path. */
+  discoverSessionsEffect?: (context?: ProviderScanContext) => Effect.Effect<SessionSource[], Error, Env>
   createSessionParser(
     source: SessionSource,
     seenKeys: Set<string>,

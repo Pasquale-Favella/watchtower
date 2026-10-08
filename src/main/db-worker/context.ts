@@ -8,6 +8,7 @@ import type { SqlError } from 'effect/unstable/sql/SqlError'
 import { readdirSync, statSync } from 'fs'
 import { join } from 'path'
 
+import { CommandRunner } from '../agents/command-runner.js'
 import { clearLedger } from '../application/clear-ledger.js'
 import { queryActiveCurrency, selectDisplayCurrency } from '../application/currency-commands.js'
 import { GatewayReports } from '../application/gateway-reports.js'
@@ -26,7 +27,7 @@ import { type CurrencyOption, FxRates, isValidCurrencyCode, listCurrencies, refr
 import type { OperationalLog } from '../operational-log.js'
 import type { HttpFetch } from '../pipeline/fetch-utils.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
-import { getRepoUrl } from '../pipeline/git-remote.js'
+import { getRepoUrlEffect } from '../pipeline/git-remote.js'
 import { refreshPricingNowEffect } from '../pipeline/models.js'
 import type { DeltaHandler } from '../pipeline/parser.js'
 import { getClaudeConfigDirs } from '../pipeline/providers/claude.js'
@@ -140,13 +141,20 @@ export class DbWorkerContext {
     options: { provider?: string } | undefined,
     emit: (progress: ScanProgress) => void,
     owner: ActiveScan,
-  ): Effect.Effect<ScanMetadata, unknown, HttpFetch | Env | OperationalLog | LedgerIngest> {
-    return Effect.flatMap(LedgerIngest, ingest => {
+  ): Effect.Effect<
+    ScanMetadata,
+    unknown,
+    HttpFetch | Env | OperationalLog | LedgerIngest | CommandRunner | GatewayReports
+  > {
+    return Effect.gen(function* () {
+      const ingest = yield* LedgerIngest
+      const runner = yield* CommandRunner
+      const gateway = yield* GatewayReports
       const range = lifetimeRange()
-      const repoUrlCache = new Map<string, Promise<string | undefined>>()
-      const portIn: DeltaHandler = async (delta, pricing) => {
+      const repoUrlCache = new Map<string, string | undefined>()
+      const portIn: DeltaHandler = Effect.fnUntraced(function* (delta, pricing) {
         if (delta.cachedFile.failed) return
-        if (owner.aborted) throw abortedScanError()
+        if (owner.aborted) return yield* abortedScanError()
         // Repository badge (#106): resolve from the canonical project path for
         // every provider — the worktree-folded cwd when the parser derived one,
         // else the provider's exact working directory. Same memoized-per-scan,
@@ -154,23 +162,16 @@ export class DbWorkerContext {
         const cwd = delta.cachedFile.canonicalCwd ?? delta.workingDirectory ?? delta.cachedFile.workingDirectory
         let repoUrl: string | undefined
         if (cwd) {
-          let lookup = repoUrlCache.get(cwd)
-          if (!lookup) {
-            lookup = getRepoUrl(cwd)
-            repoUrlCache.set(cwd, lookup)
+          if (!repoUrlCache.has(cwd)) {
+            const resolved = yield* getRepoUrlEffect(cwd).pipe(Effect.provideService(CommandRunner, runner))
+            repoUrlCache.set(cwd, resolved)
           }
-          repoUrl = await lookup
+          repoUrl = repoUrlCache.get(cwd)
         }
-        // The git lookup is an external Promise and may outlive interruption.
-        // Check on both sides so an old scan can never write after cancellation.
-        await this.runtime.runPromise(
-          Effect.gen(function* () {
-            if (owner.aborted) return yield* Effect.fail(abortedScanError())
-            return yield* ingest.portIn({ ...delta, repoUrl }, pricing)
-          }),
-        )
-      }
-      return runScan(
+        if (owner.aborted) return yield* abortedScanError()
+        yield* ingest.portIn({ ...delta, repoUrl }, pricing)
+      })
+      return yield* runScan(
         { range, provider: options?.provider },
         emit,
         { isAborted: () => owner.aborted },
@@ -179,12 +180,8 @@ export class DbWorkerContext {
         // gates out failed parses; `unchanged` is a no-op inside portIn.
         portIn,
         {
-          gatewayEnabled: this.runtime.runSync(Effect.map(GatewayReports, reports => reports.enabled)),
-          fetchGatewayReport: (range, signal) =>
-            this.runtime.runPromise(
-              Effect.flatMap(GatewayReports, reports => reports.getReport(range, signal)),
-              { signal },
-            ),
+          gatewayEnabled: gateway.enabled,
+          fetchGatewayReport: gateway.getReport,
         },
         // Effect-native typed-abort proof (Wave 5 §2): `catchTag` on the `_tag`
         // (NOT `instanceof`, NOT `either`). No `either` here, so no span-inside

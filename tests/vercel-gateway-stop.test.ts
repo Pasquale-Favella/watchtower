@@ -1,8 +1,10 @@
 import { createServer, type Server } from 'node:http'
 
-import * as Effect from 'effect/Effect'
+import * as Cause from 'effect/Cause'
+import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
+import * as Stream from 'effect/Stream'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { GatewayReports } from '../src/main/application/gateway-reports.js'
@@ -10,7 +12,6 @@ import { Env } from '../src/main/env.js'
 import { GatewayReportsLive } from '../src/main/gateway-reports-live.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
-import type { ParsedProviderCall } from '../src/main/pipeline/providers/types.js'
 import { vercelGateway } from '../src/main/pipeline/providers/vercel-gateway.js'
 import { abortedScanError, ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { DateRange } from '../src/main/pipeline/types.js'
@@ -73,26 +74,32 @@ function gatewayRuntime(fetchImpl: typeof fetch): ManagedRuntime.ManagedRuntime<
   return ManagedRuntime.make(GatewayReportsLive.pipe(Layer.provideMerge(dependencies)))
 }
 
+function expectFailure(exit: Exit.Exit<unknown, unknown>, expected: unknown): void {
+  expect(Exit.isFailure(exit)).toBe(true)
+  if (Exit.isFailure(exit)) {
+    expect(exit.cause.reasons.filter(Cause.isFailReason).map(reason => reason.error)).toContain(expected)
+  }
+}
+
 function parserNext(
   runtime: ManagedRuntime.ManagedRuntime<GatewayReports, never>,
   signal: AbortSignal,
   seenKeys: Set<string>,
-): Promise<IteratorResult<ParsedProviderCall>> {
-  const parser = vercelGateway.createSessionParser(
-    { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
-    seenKeys,
-    RANGE,
-    {
-      signal,
-      gatewayEnabled: true,
-      fetchGatewayReport: (range, requestSignal) =>
-        runtime.runPromise(
-          Effect.flatMap(GatewayReports, reports => reports.getReport(range, requestSignal)),
-          { signal: requestSignal },
-        ),
-    },
-  )
-  return parser.parse().next()
+): Promise<Exit.Exit<unknown, unknown>> {
+  return runtime.runPromise(GatewayReports, { signal }).then(reports => {
+    const parser = vercelGateway.createSessionParser(
+      { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
+      seenKeys,
+      RANGE,
+      {
+        signal,
+        gatewayEnabled: true,
+        fetchGatewayReport: (range, requestSignal) => reports.getReport(range, requestSignal),
+      },
+    )
+    if (!parser.parseStream) throw new Error('Expected the native Gateway parser stream')
+    return runtime.runPromiseExit(Stream.runCollect(parser.parseStream()))
+  })
 }
 
 describe('Vercel Gateway stop ownership', () => {
@@ -118,12 +125,8 @@ describe('Vercel Gateway stop ownership', () => {
       const pending = parserNext(runtime, controller.signal, seenKeys)
       await requestStarted.promise
       controller.abort(abort)
-      await expect(
-        pending.catch(error => {
-          expect(error).toBe(abort)
-          expect(fetcher.requestSettled()).toBe(true)
-        }),
-      ).resolves.toBeUndefined()
+      expectFailure(await pending, abort)
+      expect(fetcher.requestSettled()).toBe(true)
       await socketFinished.promise
       expect(socketClosed).toBe(true)
       expect(fetcher.calls()).toBe(1)
@@ -169,12 +172,8 @@ describe('Vercel Gateway stop ownership', () => {
       await headersSent.promise
       await fetcher.bodyStarted
       controller.abort(abort)
-      await expect(
-        pending.catch(error => {
-          expect(error).toBe(abort)
-          expect(fetcher.bodySettled()).toBe(true)
-        }),
-      ).resolves.toBeUndefined()
+      expectFailure(await pending, abort)
+      expect(fetcher.bodySettled()).toBe(true)
       await responseEnded.promise
       expect(socketClosed).toBe(true)
       expect(fetcher.calls()).toBe(1)
@@ -200,6 +199,7 @@ describe('Vercel Gateway stop ownership', () => {
       return new Response(JSON.stringify({ results }), { status: 200 })
     }) as typeof fetch
     const runtime = gatewayRuntime(injectedFetch)
+    const reports = await runtime.runPromise(GatewayReports)
     const seenKeys = new Set<string>()
 
     try {
@@ -209,27 +209,20 @@ describe('Vercel Gateway stop ownership', () => {
       process.env['AI_GATEWAY_API_KEY'] = 'changed-after-runtime-start'
       process.env['VERCEL_OIDC_TOKEN'] = 'changed-after-runtime-start'
 
-      const rows: unknown[] = []
-      for await (const row of vercelGateway
-        .createSessionParser(
-          { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
-          seenKeys,
-          RANGE,
-          {
-            gatewayEnabled: true,
-            fetchGatewayReport: (range, signal) =>
-              runtime.runPromise(
-                Effect.flatMap(GatewayReports, reports => reports.getReport(range, signal)),
-                { signal },
-              ),
-          },
-        )
-        .parse()) {
-        rows.push(row)
-      }
+      const parser = vercelGateway.createSessionParser(
+        { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
+        seenKeys,
+        RANGE,
+        {
+          gatewayEnabled: true,
+          fetchGatewayReport: (range, signal) => reports.getReport(range, signal),
+        },
+      )
+      if (!parser.parseStream) throw new Error('Expected the native Gateway parser stream')
+      const rows = await runtime.runPromise(Stream.runCollect(parser.parseStream()))
 
       expect(injectedCalls).toBe(1)
-      expect(rows).toHaveLength(1)
+      expect(Array.from(rows)).toHaveLength(1)
       expect(seenKeys.has('vercel-gateway:2026-01-05:openai/gpt-4o')).toBe(true)
       expect(process.env).not.toEqual(envBefore)
       expect(takeQueuedLogRecords()).toEqual([])
@@ -265,13 +258,12 @@ describe('Vercel Gateway stop ownership', () => {
           settled.value = true
         },
       )
-      const rejected = expect(pending).rejects.toBe(abort)
       await started.promise
       controller.abort(abort)
       await Promise.resolve(undefined)
       expect(settled.value).toBe(false)
       drained.reject(new Error('reader closed'))
-      await rejected
+      expectFailure(await pending, abort)
       expect(seenKeys.size).toBe(0)
     } finally {
       controller.abort()

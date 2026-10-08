@@ -476,7 +476,7 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
   it('files aborted with outcome label via fake sink (abort flag + onDelta seam)', async () => {
     const { sink, records } = makeFakeSink()
     const program = provideScanLayers(
-      runScan(lifetimeOptions(), undefined, { isAborted: () => true }, async () => {}),
+      runScan(lifetimeOptions(), undefined, { isAborted: () => true }, () => Effect.void),
       sink,
     )
     const error = await Effect.runPromise(program.pipe(Effect.flip))
@@ -511,7 +511,7 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
     await expect(Effect.runPromise(okProgram)).resolves.toMatchObject({ aborted: false })
 
     const abortProgram = provideScanLayers(
-      runScan(lifetimeOptions(), undefined, { isAborted: () => true }, async () => {}),
+      runScan(lifetimeOptions(), undefined, { isAborted: () => true }, () => Effect.void),
       throwing,
     )
     const error = await Effect.runPromise(abortProgram.pipe(Effect.flip))
