@@ -1,12 +1,86 @@
+import { Effect, Result, Schema, Stream } from 'effect'
 import { readdir, readFile } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 
 import { extractBashCommands } from '../bash-utils.js'
-import { readSessionFile } from '../fs-utils.js'
+import { MAX_SESSION_FILE_BYTES, readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
+import { isScanAbortedError } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { DateRange } from '../types.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+
+const writable = Schema.mutableKey
+const recordSchema = Schema.Record(Schema.String, Schema.Unknown)
+const indexSchema = Schema.Record(Schema.String, Schema.Unknown)
+const optionalString = writable(Schema.optional(Schema.NullOr(Schema.String)))
+const envelopeSchema = Schema.Struct({
+  type: Schema.String,
+  id: writable(Schema.optional(Schema.Unknown)),
+  timestamp: writable(Schema.optional(Schema.Unknown)),
+  modelId: writable(Schema.optional(Schema.Unknown)),
+  customType: writable(Schema.optional(Schema.Unknown)),
+  data: writable(Schema.optional(Schema.Unknown)),
+  message: writable(Schema.optional(Schema.Unknown)),
+})
+const sessionEntrySchema = Schema.Struct({
+  id: writable(Schema.optional(Schema.Unknown)),
+  timestamp: writable(Schema.optional(Schema.Unknown)),
+})
+const modelChangeSchema = Schema.Struct({ modelId: writable(Schema.optional(Schema.Unknown)) })
+const modelSnapshotDataSchema = Schema.Struct({ modelId: optionalString })
+const messageSchema = Schema.Struct({
+  role: writable(Schema.optional(Schema.Unknown)),
+  model: writable(Schema.optional(Schema.Unknown)),
+  content: writable(Schema.optional(Schema.Unknown)),
+  usage: writable(Schema.optional(Schema.Unknown)),
+})
+const usageSchema = Schema.Struct({
+  input: Schema.Finite,
+  output: Schema.Finite,
+  cacheRead: Schema.Finite,
+  cacheWrite: Schema.Finite,
+  cost: writable(Schema.optional(Schema.NullOr(Schema.Unknown))),
+})
+const costSchema = Schema.Struct({ total: writable(Schema.optional(Schema.NullOr(Schema.Finite))) })
+const textBlockSchema = Schema.Struct({
+  type: Schema.Literal('text'),
+  text: writable(Schema.optional(Schema.NullOr(Schema.String))),
+})
+const toolBlockSchema = Schema.Struct({
+  type: Schema.Union([Schema.Literal('tool_use'), Schema.Literal('toolCall')]),
+  name: optionalString,
+  arguments: writable(Schema.optional(Schema.Unknown)),
+})
+const contentCandidateSchema = Schema.Struct({ type: writable(Schema.optional(Schema.Unknown)) })
+const decodeJsonLine = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))
+const decodeEnvelope = Schema.decodeUnknownResult(envelopeSchema)
+const decodeSessionEntry = Schema.decodeUnknownResult(sessionEntrySchema)
+const decodeModelChange = Schema.decodeUnknownResult(modelChangeSchema)
+const decodeModelSnapshotData = Schema.decodeUnknownResult(modelSnapshotDataSchema)
+const decodeMessage = Schema.decodeUnknownResult(messageSchema)
+const decodeUsage = Schema.decodeUnknownResult(usageSchema)
+const decodeCost = Schema.decodeUnknownResult(costSchema)
+const decodeContent = Schema.decodeUnknownResult(Schema.Array(Schema.Unknown))
+const decodeTextBlock = Schema.decodeUnknownResult(textBlockSchema)
+const decodeToolBlock = Schema.decodeUnknownResult(toolBlockSchema)
+const decodeContentCandidate = Schema.decodeUnknownResult(contentCandidateSchema)
+const decodeString = Schema.decodeUnknownResult(Schema.String)
+const decodeIndex = Schema.decodeUnknownResult(Schema.fromJsonString(indexSchema))
+const decodeRecord = Schema.decodeUnknownResult(recordSchema)
+
+type OpenClawUsage = Schema.Schema.Type<typeof usageSchema>
+type OpenClawCall = {
+  readonly callIndex: number
+  readonly model: string
+  readonly usage: OpenClawUsage
+  readonly tools: string[]
+  readonly bashCommands: string[]
+  readonly timestamp: string
+  readonly userMessage: string
+  readonly dedupId: string
+}
 
 const toolNameMap: Record<string, string> = {
   bash: 'Bash',
@@ -24,45 +98,6 @@ const toolNameMap: Record<string, string> = {
   patch: 'Patch',
 }
 
-type OpenClawUsage = {
-  input: number
-  output: number
-  cacheRead: number
-  cacheWrite: number
-  totalTokens?: number
-  cost?: {
-    total?: number
-  }
-}
-
-type OpenClawEntry = {
-  type: string
-  customType?: string
-  id?: string
-  timestamp?: string
-  provider?: string
-  modelId?: string
-  data?: {
-    provider?: string
-    modelId?: string
-  }
-  message?: {
-    role?: string
-    content?: Array<{ type?: string; text?: string; name?: string; arguments?: Record<string, unknown> }>
-    model?: string
-    provider?: string
-    usage?: OpenClawUsage
-  }
-}
-
-type SessionIndex = Record<
-  string,
-  {
-    sessionId: string
-    sessionFile?: string
-  }
->
-
 function getOpenClawDirs(): string[] {
   const home = homedir()
   return [
@@ -73,196 +108,261 @@ function getOpenClawDirs(): string[] {
   ]
 }
 
-function extractTools(
-  content: Array<{ type?: string; name?: string; arguments?: Record<string, unknown> }> | undefined,
-): { tools: string[]; bashCommands: string[] } {
+function decodeStringField(value: unknown): string | undefined {
+  const decoded = decodeString(value)
+  return Result.isSuccess(decoded) ? decoded.success : undefined
+}
+
+function extractTools(content: unknown): { tools: string[]; bashCommands: string[] } {
   const tools: string[] = []
   const bashCommands: string[] = []
-  if (!content) return { tools, bashCommands }
+  const decodedContent = decodeContent(content)
+  if (Result.isFailure(decodedContent)) return { tools, bashCommands }
 
-  for (const block of content) {
-    if ((block.type === 'tool_use' || block.type === 'toolCall') && block.name) {
-      const mapped = toolNameMap[block.name] ?? block.name
-      tools.push(mapped)
-      if (mapped === 'Bash' && block.arguments && typeof block.arguments.command === 'string') {
-        bashCommands.push(...extractBashCommands(block.arguments.command))
-      }
-    }
+  for (const candidate of decodedContent.success) {
+    const decodedCandidate = decodeContentCandidate(candidate)
+    if (Result.isFailure(decodedCandidate)) continue
+    const type = decodeStringField(decodedCandidate.success.type)
+    if (type !== 'tool_use' && type !== 'toolCall') continue
+    const decodedBlock = decodeToolBlock(candidate)
+    if (Result.isFailure(decodedBlock)) continue
+    const block = decodedBlock.success
+    if (!block.name) continue
+    const mapped = toolNameMap[block.name] ?? block.name
+    tools.push(mapped)
+    const args = block.arguments === null || block.arguments === undefined ? null : decodeRecord(block.arguments)
+    const command = args && Result.isSuccess(args) ? decodeStringField(args.success['command']) : undefined
+    if (mapped === 'Bash' && command !== undefined) bashCommands.push(...extractBashCommands(command))
   }
   return { tools, bashCommands }
 }
 
+function decodeLine(line: string): Schema.Schema.Type<typeof envelopeSchema> | null {
+  if (!line.trim()) return null
+  const json = decodeJsonLine(line)
+  if (Result.isFailure(json)) return null
+  const decoded = decodeEnvelope(json.success)
+  return Result.isSuccess(decoded) ? decoded.success : null
+}
+
 function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
   const pricing = context?.pricing ?? captureScanPricing()
+  const signal = context?.signal
+
+  const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        let sessionId = ''
+        let sessionTimestamp = ''
+        let currentModel = ''
+        let pendingUserMessage = ''
+        let candidateCallIndex = 0
+        const calls: OpenClawCall[] = []
+
+        yield* readSessionLinesStream(source.path, undefined, {
+          maxBytes: MAX_SESSION_FILE_BYTES,
+          ...(signal ? { signal } : {}),
+        }).pipe(
+          Stream.mapEffect(line =>
+            Effect.try({
+              try: () => {
+                const entry = decodeLine(line.toString())
+                if (!entry) return
+
+                if (entry.type === 'session') {
+                  const session = decodeSessionEntry(entry)
+                  if (Result.isSuccess(session)) {
+                    sessionId = decodeStringField(session.success.id) ?? basename(source.path, '.jsonl')
+                    sessionTimestamp = decodeStringField(session.success.timestamp) ?? ''
+                  }
+                  return
+                }
+
+                if (entry.type === 'model_change') {
+                  const modelChange = decodeModelChange(entry)
+                  if (Result.isSuccess(modelChange)) {
+                    currentModel = decodeStringField(modelChange.success.modelId) ?? currentModel
+                  }
+                  return
+                }
+
+                if (entry.type === 'custom' && decodeStringField(entry.customType) === 'model-snapshot') {
+                  const data =
+                    entry.data === null || entry.data === undefined ? null : decodeModelSnapshotData(entry.data)
+                  if (data && Result.isSuccess(data)) currentModel = data.success.modelId ?? currentModel
+                  return
+                }
+
+                if (entry.type !== 'message' || entry.message === null || entry.message === undefined) return
+                const message = decodeMessage(entry.message)
+                if (Result.isFailure(message)) return
+                const msg = message.success
+                const role = decodeStringField(msg.role)
+
+                if (role === 'user') {
+                  const content = decodeContent(msg.content)
+                  if (!pendingUserMessage && Result.isSuccess(content)) {
+                    for (const candidate of content.success) {
+                      const block = decodeTextBlock(candidate)
+                      if (Result.isSuccess(block) && block.success.text) {
+                        pendingUserMessage = block.success.text.slice(0, 500)
+                        break
+                      }
+                    }
+                  }
+                  return
+                }
+
+                if (role !== 'assistant' || !msg.usage) return
+                const callIndex = candidateCallIndex++
+                const userMessage = pendingUserMessage
+                pendingUserMessage = ''
+                const usage = decodeUsage(msg.usage)
+                if (Result.isFailure(usage)) return
+                const { tools, bashCommands } = extractTools(msg.content)
+                calls.push({
+                  callIndex,
+                  model: decodeStringField(msg.model) ?? currentModel,
+                  usage: usage.success,
+                  tools,
+                  bashCommands,
+                  timestamp: decodeStringField(entry.timestamp) ?? sessionTimestamp,
+                  userMessage,
+                  dedupId: decodeStringField(entry.id) ?? '',
+                })
+              },
+              catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+            }).pipe(Effect.asVoid),
+          ),
+          Stream.runDrain,
+        )
+
+        if (!sessionId) sessionId = basename(source.path, '.jsonl')
+
+        return Stream.fromIterable(calls).pipe(
+          Stream.rechunk(1),
+          Stream.mapEffect(call =>
+            checkScanAbort(signal).pipe(
+              Effect.map(() => {
+                const dedupKey = `openclaw:${sessionId}:${call.dedupId || call.callIndex}`
+                if (seenKeys.has(dedupKey)) return Result.fail(undefined)
+                seenKeys.add(dedupKey)
+
+                const usage = call.usage
+                const providerCost =
+                  usage.cost === null || usage.cost === undefined ? undefined : decodeCost(usage.cost)
+                const recordedCost =
+                  providerCost && Result.isSuccess(providerCost) ? providerCost.success.total : undefined
+                const costUSD =
+                  recordedCost != null && recordedCost > 0
+                    ? recordedCost
+                    : pricing.calculateCost(call.model, usage.input, usage.output, usage.cacheWrite, usage.cacheRead, 0)
+                const timestamp = new Date(call.timestamp)
+                if (Number.isNaN(timestamp.getTime()) || timestamp.getTime() < 1_000_000_000_000) {
+                  return Result.fail(undefined)
+                }
+
+                return Result.succeed({
+                  provider: 'openclaw' as const,
+                  model: call.model || 'openclaw-auto',
+                  inputTokens: usage.input,
+                  outputTokens: usage.output,
+                  cacheCreationInputTokens: usage.cacheWrite,
+                  cacheReadInputTokens: usage.cacheRead,
+                  cachedInputTokens: usage.cacheRead,
+                  reasoningTokens: 0,
+                  webSearchRequests: 0,
+                  costUSD,
+                  tools: [...new Set(call.tools)],
+                  bashCommands: [...new Set(call.bashCommands)],
+                  timestamp: timestamp.toISOString(),
+                  speed: 'standard' as const,
+                  deduplicationKey: dedupKey,
+                  userMessage: call.userMessage,
+                  sessionId,
+                })
+              }),
+            ),
+          ),
+          Stream.filterMap(result => result),
+        )
+      }),
+    )
+
   return {
+    parseStream,
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const raw = await readSessionFile(source.path)
-      if (raw === null) return
-
-      const lines = raw.split('\n').filter(l => l.trim())
-      let sessionId = ''
-      let sessionTimestamp = ''
-      let currentModel = ''
-
-      const calls: {
-        model: string
-        usage: OpenClawUsage
-        tools: string[]
-        bashCommands: string[]
-        timestamp: string
-        userMessage: string
-        dedupId: string
-      }[] = []
-
-      let pendingUserMessage = ''
-
-      for (const line of lines) {
-        let entry: OpenClawEntry
-        try {
-          entry = JSON.parse(line)
-        } catch {
-          continue
-        }
-
-        if (entry.type === 'session') {
-          sessionId = entry.id ?? basename(source.path, '.jsonl')
-          sessionTimestamp = entry.timestamp ?? ''
-          continue
-        }
-
-        if (entry.type === 'model_change') {
-          currentModel = entry.modelId ?? currentModel
-          continue
-        }
-
-        if (entry.type === 'custom' && entry.customType === 'model-snapshot') {
-          currentModel = entry.data?.modelId ?? currentModel
-          continue
-        }
-
-        if (entry.type !== 'message' || !entry.message) continue
-
-        const msg = entry.message
-        if (msg.role === 'user') {
-          if (!pendingUserMessage && Array.isArray(msg.content)) {
-            const textBlock = msg.content.find(c => c.type === 'text' && c.text)
-            pendingUserMessage = (textBlock?.text ?? '').slice(0, 500)
-          }
-          continue
-        }
-
-        if (msg.role !== 'assistant') continue
-
-        const model = msg.model ?? currentModel
-        if (msg.usage) {
-          const { tools, bashCommands } = extractTools(msg.content)
-          calls.push({
-            model,
-            usage: msg.usage,
-            tools,
-            bashCommands,
-            timestamp: entry.timestamp ?? sessionTimestamp,
-            userMessage: pendingUserMessage,
-            dedupId: entry.id ?? '',
-          })
-          pendingUserMessage = ''
-        }
-      }
-
-      if (!sessionId) sessionId = basename(source.path, '.jsonl')
-
-      for (let i = 0; i < calls.length; i++) {
-        const call = calls[i]
-        const dedupKey = `openclaw:${sessionId}:${call.dedupId || i}`
-        if (seenKeys.has(dedupKey)) continue
-        seenKeys.add(dedupKey)
-
-        const u = call.usage
-        const costFromProvider = u.cost?.total ?? 0
-        const costUSD =
-          costFromProvider > 0
-            ? costFromProvider
-            : pricing.calculateCost(call.model, u.input, u.output, u.cacheWrite, u.cacheRead, 0)
-
-        const ts = new Date(call.timestamp)
-        if (isNaN(ts.getTime()) || ts.getTime() < 1_000_000_000_000) continue
-
-        yield {
-          provider: 'openclaw',
-          model: call.model || 'openclaw-auto',
-          inputTokens: u.input,
-          outputTokens: u.output,
-          cacheCreationInputTokens: u.cacheWrite,
-          cacheReadInputTokens: u.cacheRead,
-          cachedInputTokens: u.cacheRead,
-          reasoningTokens: 0,
-          webSearchRequests: 0,
-          costUSD,
-          tools: [...new Set(call.tools)],
-          bashCommands: [...new Set(call.bashCommands)],
-          timestamp: ts.toISOString(),
-          speed: 'standard',
-          deduplicationKey: dedupKey,
-          userMessage: call.userMessage,
-          sessionId,
-        }
-      }
+      // Remove this Promise edge once direct compatibility callers consume parseStream.
+      yield* Stream.toAsyncIterable(parseStream())
     },
   }
 }
 
-async function discoverInDir(agentsDir: string): Promise<SessionSource[]> {
+const discoverInDir = Effect.fn('discoverOpenClawSessionsInDir')(function* (
+  agentsDir: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<SessionSource[], Error> {
   const sources: SessionSource[] = []
+  const entries = yield* scanIo(() => readdir(agentsDir, { withFileTypes: true }), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed([]))),
+  )
 
-  let agentDirs: string[]
-  try {
-    const entries = await readdir(agentsDir, { withFileTypes: true })
-    agentDirs = entries.filter(e => e.isDirectory()).map(e => e.name)
-  } catch {
-    return sources
-  }
-
-  for (const agent of agentDirs) {
-    const sessionsDir = join(agentsDir, agent, 'sessions')
-
-    let indexData: SessionIndex = {}
-    try {
-      const indexRaw = await readFile(join(sessionsDir, 'sessions.json'), 'utf-8')
-      indexData = JSON.parse(indexRaw)
-    } catch {
-      /* no index, fall back to directory scan */
+  for (const entry of entries) {
+    yield* checkScanAbort(signal)
+    if (!entry.isDirectory()) continue
+    const sessionsDir = join(agentsDir, entry.name, 'sessions')
+    let indexData: Record<string, unknown> = {}
+    const indexRaw = yield* scanIo(() => readFile(join(sessionsDir, 'sessions.json'), 'utf-8'), signal).pipe(
+      Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+    )
+    if (indexRaw !== null) {
+      const decodedIndex = decodeIndex(indexRaw)
+      if (Result.isSuccess(decodedIndex)) indexData = decodedIndex.success
     }
 
     const seenFiles = new Set<string>()
-
-    for (const entry of Object.values(indexData)) {
-      if (entry.sessionFile) {
-        seenFiles.add(entry.sessionFile)
-        sources.push({ path: entry.sessionFile, project: agent, provider: 'openclaw' })
-      } else if (entry.sessionId) {
-        const filePath = join(sessionsDir, `${entry.sessionId}.jsonl`)
+    for (const value of Object.values(indexData)) {
+      const decodedEntry = decodeRecord(value)
+      if (Result.isFailure(decodedEntry)) continue
+      const indexEntry = decodedEntry.success
+      const sessionFile = decodeStringField(indexEntry['sessionFile'])
+      const sessionId = decodeStringField(indexEntry['sessionId'])
+      if (sessionFile) {
+        seenFiles.add(sessionFile)
+        sources.push({ path: sessionFile, project: entry.name, provider: 'openclaw' })
+      } else if (sessionId) {
+        const filePath = join(sessionsDir, `${sessionId}.jsonl`)
         seenFiles.add(filePath)
-        sources.push({ path: filePath, project: agent, provider: 'openclaw' })
+        sources.push({ path: filePath, project: entry.name, provider: 'openclaw' })
       }
     }
 
-    try {
-      const files = await readdir(sessionsDir)
-      for (const f of files) {
-        if (!f.endsWith('.jsonl')) continue
-        const filePath = join(sessionsDir, f)
-        if (seenFiles.has(filePath)) continue
-        sources.push({ path: filePath, project: agent, provider: 'openclaw' })
-      }
-    } catch {
-      /* directory may not exist */
+    const files = yield* scanIo(() => readdir(sessionsDir), signal).pipe(
+      Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed([]))),
+    )
+    for (const file of files) {
+      yield* checkScanAbort(signal)
+      if (!file.endsWith('.jsonl')) continue
+      const filePath = join(sessionsDir, file)
+      if (seenFiles.has(filePath)) continue
+      sources.push({ path: filePath, project: entry.name, provider: 'openclaw' })
     }
   }
 
   return sources
-}
+})
 
 export function createOpenClawProvider(overrideDir?: string): Provider {
+  const discoverEffect = Effect.fn('discoverOpenClawSessions')(function* (
+    context?: ProviderScanContext,
+  ): Effect.fn.Return<SessionSource[], Error> {
+    yield* checkScanAbort(context?.signal)
+    if (overrideDir) return yield* discoverInDir(overrideDir, context?.signal)
+    const all: SessionSource[] = []
+    for (const dir of getOpenClawDirs()) all.push(...(yield* discoverInDir(dir, context?.signal)))
+    return all
+  })
+
   return {
     name: 'openclaw',
     displayName: 'OpenClaw',
@@ -275,14 +375,11 @@ export function createOpenClawProvider(overrideDir?: string): Provider {
       return toolNameMap[rawTool] ?? rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      if (overrideDir) return discoverInDir(overrideDir)
-      const all: SessionSource[] = []
-      for (const dir of getOpenClawDirs()) {
-        const sessions = await discoverInDir(dir)
-        all.push(...sessions)
-      }
-      return all
+    discoverSessionsEffect: discoverEffect,
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // Remove this Promise edge once direct compatibility callers use the native scan hook.
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(
