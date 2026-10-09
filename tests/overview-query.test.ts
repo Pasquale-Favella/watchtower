@@ -12,11 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { queryOverview } from '../src/main/application/overview-query.js'
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import {
-  calculateOverviewFromData,
-  calculateOverviewFromSnapshot,
-  calculateOverviewPayload,
-} from '../src/main/overview-calculation.js'
+import { calculateOverviewFromData } from '../src/main/overview-calculation.js'
 import { captureLocalModelSavings, setLocalModelSavings } from '../src/main/pipeline/models.js'
 import {
   capturePricingCatalogue,
@@ -32,6 +28,7 @@ import type { OverviewReadData } from '../src/main/store/overview-read-projectio
 import type { LedgerViewData } from '../src/main/store/view-read-projections.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import { calculateOverviewFromSnapshot, calculateOverviewPayload } from './fixtures/pre-native-overview-calculation.js'
 
 const tempDirs: string[] = []
 const emptyOverviewData: OverviewReadData = { sessions: [], turns: [], calls: [], aliases: [], overrides: [] }

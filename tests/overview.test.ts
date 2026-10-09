@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { calculateOverviewPayload } from '../src/main/overview-calculation.js'
 import { dataStartForSessions, periodWindowStart } from '../src/main/overview-scope.js'
 import { captureLocalModelSavings, captureModelPricingCatalogue } from '../src/main/pipeline/models.js'
 import type { ProjectSummary, SessionSummary, TaskCategory, TokenUsage } from '../src/main/pipeline/types.js'
 import { type OverviewPayload, type OverviewScope } from '../src/shared/schemas/overview.js'
+import { calculateOverviewPayload } from './fixtures/pre-native-overview-calculation.js'
 
 const CATEGORIES: TaskCategory[] = [
   'coding',

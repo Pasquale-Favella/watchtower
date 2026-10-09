@@ -19,7 +19,6 @@ import { calculateComparePayload } from '../src/main/compare-calculation.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { calculateModelsPayload } from '../src/main/models-calculation.js'
 import { calculateOptimizePayload } from '../src/main/optimize-calculation.js'
-import { calculateOverviewFromSnapshot } from '../src/main/overview-calculation.js'
 import { overviewDateRange, scopeDateRange } from '../src/main/overview-scope.js'
 import { captureLocalModelSavings } from '../src/main/pipeline/models.js'
 import { calculatePullRequestsPayload } from '../src/main/pull-requests-calculation.js'
@@ -44,6 +43,7 @@ import {
   FIXTURE_SOURCE_PATH,
 } from './fixtures/cached-file.js'
 import { viewInputs } from './fixtures/ledger-runtime.js'
+import { calculateOverviewFromSnapshot } from './fixtures/pre-native-overview-calculation.js'
 import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 async function withWorker(
