@@ -1,3 +1,4 @@
+import { Effect } from 'effect'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -5,12 +6,12 @@ import { captureScanPricing } from '../models.js'
 import type { DateRange } from '../types.js'
 import {
   createSqliteSessionParser,
-  discoverSqliteSessions,
+  discoverSqliteSessionsEffect,
   OPENCODE_FAMILY_1X,
   type SqliteProviderConfig,
 } from './opencode-family-sqlite.js'
 import type { Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
-import { createClineParser, discoverClineTasks } from './vscode-cline-parser.js'
+import { createClineParser, discoverClineTaskCandidatesEffect } from './vscode-cline-parser.js'
 
 const EXTENSION_ID = 'kilocode.kilo-code'
 const PROVIDER_NAME = 'kilo-code'
@@ -36,6 +37,17 @@ export function getSqliteConfig(): SqliteProviderConfig {
 
 export function createKiloCodeProvider(overrideDir?: string | string[]): Provider {
   const sqliteConfig = getSqliteConfig()
+  const discoverEffect = (context?: ProviderScanContext) =>
+    Effect.gen(function* () {
+      const [candidates, dbSessions] = yield* Effect.all(
+        [
+          discoverClineTaskCandidatesEffect(EXTENSION_ID, PROVIDER_NAME, 'KiloCode', overrideDir, context?.signal),
+          discoverSqliteSessionsEffect(sqliteConfig, context),
+        ],
+        { concurrency: 'unbounded' },
+      )
+      return [...candidates.map(candidate => candidate.source), ...dbSessions]
+    })
 
   return {
     name: PROVIDER_NAME,
@@ -49,12 +61,13 @@ export function createKiloCodeProvider(overrideDir?: string | string[]): Provide
       return rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      const [oldSessions, dbSessions] = await Promise.all([
-        discoverClineTasks(EXTENSION_ID, PROVIDER_NAME, 'KiloCode', overrideDir),
-        discoverSqliteSessions(sqliteConfig),
-      ])
-      return [...oldSessions, ...dbSessions]
+    discoverSessionsEffect(context?: ProviderScanContext) {
+      return discoverEffect(context)
+    },
+
+    // Remove when direct discovery callers consume the native Effect path.
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(
@@ -65,7 +78,7 @@ export function createKiloCodeProvider(overrideDir?: string | string[]): Provide
     ): SessionParser {
       const pricing = context?.pricing ?? captureScanPricing()
       if (source.path.includes('.db:')) {
-        return createSqliteSessionParser(source, seenKeys, sqliteConfig, undefined, pricing)
+        return createSqliteSessionParser(source, seenKeys, sqliteConfig, undefined, pricing, context)
       }
       return createClineParser(source, seenKeys, PROVIDER_NAME, 'cline-auto', pricing, context)
     },

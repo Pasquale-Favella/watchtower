@@ -1,13 +1,16 @@
+import { Effect, Result, Schema, Stream } from 'effect'
 import { readdir } from 'fs/promises'
 import { join } from 'path'
 
 import { type AppPaths, overrideFor } from '../../env.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import { captureScanPricing } from '../models.js'
+import { isScanAbortedError } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
 import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { buildAssistantCall, type MessageData, parseTimestamp, type PartData, sanitize } from './session-message.js'
-import type { ParsedProviderCall, SessionParser, SessionSource } from './types.js'
+import type { ParsedProviderCall, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THIS IS NOT A GENERIC SQLITE READER.
@@ -48,11 +51,6 @@ type MessageRow = {
   data: Uint8Array | string
 }
 
-type PartRow = {
-  message_id: string
-  data: Uint8Array | string
-}
-
 /// One OpenCode 2.x row of `session_message`. v2 has no `part` table: the
 /// message content is inline in the `data` JSON blob, so `type` + `seq` are the
 /// only structural columns the legacy shape has no equivalent for.
@@ -70,8 +68,8 @@ export type V2MessageRow = {
 /// instead of letting the driver decode invalid UTF-8 in a V8 CHECK abort.
 export type SessionRow = {
   id: string
-  directory: Uint8Array | string
-  title: Uint8Array | string
+  directory: Uint8Array | string | null
+  title: Uint8Array | string | null
   time_created: number
 }
 
@@ -84,6 +82,36 @@ type SessionTokenRow = {
   tokens_cache_write?: number
   model_id?: string
 }
+
+const sqliteTextSchema = Schema.Union([Schema.String, Schema.Uint8Array])
+const nullableSqliteTextSchema = Schema.NullOr(sqliteTextSchema)
+const sessionRowSchema = Schema.Struct({
+  id: Schema.String,
+  directory: nullableSqliteTextSchema,
+  title: nullableSqliteTextSchema,
+  time_created: Schema.Finite,
+})
+const legacyMessageRowSchema = Schema.Struct({
+  session_id: Schema.String,
+  id: Schema.String,
+  time_created: Schema.Finite,
+  data: sqliteTextSchema,
+})
+const partRowSchema = Schema.Struct({ message_id: Schema.String, data: sqliteTextSchema })
+const v2MessageRowSchema = Schema.Struct({
+  session_id: Schema.String,
+  id: Schema.String,
+  type: Schema.String,
+  seq: Schema.Finite,
+  time_created: Schema.Finite,
+  data: sqliteTextSchema,
+})
+const objectSchema = Schema.Record(Schema.String, Schema.Unknown)
+const decodeSessionRow = Schema.decodeUnknownResult(sessionRowSchema)
+const decodeLegacyMessageRow = Schema.decodeUnknownResult(legacyMessageRowSchema)
+const decodePartRow = Schema.decodeUnknownResult(partRowSchema)
+const decodeV2MessageRow = Schema.decodeUnknownResult(v2MessageRowSchema)
+const decodeObject = Schema.decodeUnknownResult(objectSchema)
 
 /// The vendor's own per-session rollup — what the session row itself claims it
 /// spent, used only as a fallback for a session whose messages yielded nothing.
@@ -233,6 +261,55 @@ export type SqliteProviderConfig = {
   generations: readonly SqliteGeneration[]
 }
 
+class SqliteFamilyError extends Schema.TaggedError<SqliteFamilyError>()('SqliteFamilyError', {
+  operation: Schema.Literals(['open', 'read', 'close']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+  code: Schema.optional(Schema.String),
+  errcode: Schema.optional(Schema.Number),
+}) {}
+
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause), { cause })
+}
+
+function databaseError(operation: SqliteFamilyError['operation'], cause: unknown): SqliteFamilyError {
+  const error = toError(cause) as Error & { code?: unknown; errcode?: unknown }
+  return new SqliteFamilyError({
+    operation,
+    cause: error,
+    message: error.message,
+    ...(typeof error.code === 'string' ? { code: error.code } : {}),
+    ...(typeof error.errcode === 'number' ? { errcode: error.errcode } : {}),
+  })
+}
+
+const sourceRows = Effect.fnUntraced(function* <A>(
+  path: string,
+  read: (db: SqliteDatabase) => A,
+): Effect.fn.Return<A, SqliteFamilyError> {
+  const readResult = yield* Effect.acquireUseRelease(
+    Effect.try({
+      try: () => openDatabase(path),
+      catch: cause => databaseError('open', cause),
+    }),
+    db => Effect.result(Effect.try({ try: () => read(db), catch: cause => databaseError('read', cause) })),
+    db => Effect.try({ try: () => db.close(), catch: cause => databaseError('close', cause) }),
+  )
+  if (Result.isFailure(readResult)) return yield* Effect.fail(readResult.failure)
+  return readResult.success
+})
+
+type SourceDatabase = { db: SqliteDatabase; closed: boolean }
+
+function closeSourceDatabase(source: SourceDatabase): Effect.Effect<void, SqliteFamilyError> {
+  return Effect.suspend(() => {
+    if (source.closed) return Effect.void
+    source.closed = true
+    return Effect.try({ try: () => source.db.close(), catch: cause => databaseError('close', cause) })
+  })
+}
+
 const LEGACY_MESSAGES_SQL = `WITH RECURSIVE session_tree(id) AS (
             SELECT id FROM session WHERE id = ?
             UNION
@@ -327,8 +404,9 @@ function tableIsReadable(db: SqliteDatabase, statement: string): boolean {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+function decodeRecord(value: unknown): Record<string, unknown> | null {
+  const decoded = decodeObject(value)
+  return Result.isSuccess(decoded) ? decoded.success : null
 }
 
 /// Normalize OpenCode 2.x `session_message` rows into the 1.x `MessageRow` /
@@ -352,8 +430,9 @@ export function v2RowsToLegacyShape(rows: readonly V2MessageRow[]): {
     let payload: Record<string, unknown>
     try {
       const parsed: unknown = JSON.parse(blobToText(row.data))
-      if (!isRecord(parsed)) continue
-      payload = parsed
+      const decoded = decodeRecord(parsed)
+      if (decoded === null) continue
+      payload = decoded
     } catch {
       // skip corrupt message data
       continue
@@ -379,9 +458,10 @@ export function v2RowsToLegacyShape(rows: readonly V2MessageRow[]): {
     // keys off `modelID`, and the pricing resolver tries a provider-prefixed
     // id before the bare one, so the ref is rebuilt as `providerID/id`.
     const model = payload['model']
-    if (isRecord(model)) {
-      const providerID = model['providerID']
-      const modelID = model['id']
+    const modelRef = decodeRecord(model)
+    if (modelRef) {
+      const providerID = modelRef['providerID']
+      const modelID = modelRef['id']
       if (typeof providerID === 'string' && providerID.length > 0) data.providerID = providerID
       if (
         typeof providerID === 'string' &&
@@ -396,7 +476,8 @@ export function v2RowsToLegacyShape(rows: readonly V2MessageRow[]): {
     const cost = payload['cost']
     if (typeof cost === 'number') data.cost = cost
     const tokens = payload['tokens']
-    if (isRecord(tokens)) data.tokens = tokens as MessageData['tokens']
+    const tokenRecord = decodeRecord(tokens)
+    if (tokenRecord) data.tokens = tokenRecord as MessageData['tokens']
 
     messages.push({ ...base, data: JSON.stringify(data) })
 
@@ -404,24 +485,25 @@ export function v2RowsToLegacyShape(rows: readonly V2MessageRow[]): {
     const content = payload['content']
     if (Array.isArray(content)) {
       for (const element of content) {
-        if (!isRecord(element)) continue
-        const type = element['type']
+        const contentRecord = decodeRecord(element)
+        if (!contentRecord) continue
+        const type = contentRecord['type']
         if (type === 'text' || type === 'reasoning') {
-          const text = element['text']
+          const text = contentRecord['text']
           if (typeof text === 'string' && text.length > 0) parts.push({ type, text })
           continue
         }
         if (type === 'tool') {
-          const state = element['state']
-          const input = isRecord(state) ? state['input'] : undefined
-          const name = element['name']
+          const state = decodeRecord(contentRecord['state'])
+          const input = state?.['input']
+          const name = contentRecord['name']
           parts.push({
             type: 'tool',
             tool: typeof name === 'string' ? name : '',
             // The shared builder reads `state.input.command` for Bash and
             // `state.input.name` / `.subagent_type` for skills and subagents,
             // so a missing or non-object input must still be an object.
-            state: { input: isRecord(input) ? input : {} },
+            state: { input: decodeRecord(input) ?? {} },
           })
         }
       }
@@ -446,12 +528,26 @@ export const OPENCODE_FAMILY_1X: SqliteGeneration = {
   messageTable: 'message',
   partTable: 'part',
   normalizeMessages(db, sessionId) {
-    const messages = db.query<MessageRow>(LEGACY_MESSAGES_SQL, [sessionId])
-    const parts = db.query<PartRow>(LEGACY_PARTS_SQL, [sessionId])
+    const messages = db.query(LEGACY_MESSAGES_SQL, [sessionId]).flatMap(raw => {
+      const decoded = decodeLegacyMessageRow(raw)
+      return Result.isSuccess(decoded) ? [decoded.success] : []
+    })
+    const rawParts = db.query(LEGACY_PARTS_SQL, [sessionId])
     const partsByMsg = new Map<string, PartData[]>()
-    for (const part of parts) {
+    for (const raw of rawParts) {
+      const decodedPart = decodePartRow(raw)
+      if (Result.isFailure(decodedPart)) continue
+      const part = decodedPart.success
       try {
-        const parsed = JSON.parse(blobToText(part.data)) as PartData
+        const decodedData = decodeRecord(JSON.parse(blobToText(part.data)))
+        if (!decodedData || typeof decodedData['type'] !== 'string') continue
+        const input = decodeRecord(decodeRecord(decodedData['state'])?.['input'])
+        const parsed: PartData = {
+          type: decodedData['type'],
+          ...(typeof decodedData['text'] === 'string' ? { text: decodedData['text'] } : {}),
+          ...(typeof decodedData['tool'] === 'string' ? { tool: decodedData['tool'] } : {}),
+          ...(input ? { state: { input } } : {}),
+        }
         const list = partsByMsg.get(part.message_id) ?? []
         list.push(parsed)
         partsByMsg.set(part.message_id, list)
@@ -459,7 +555,7 @@ export const OPENCODE_FAMILY_1X: SqliteGeneration = {
         // skip corrupt part data
       }
     }
-    return { messages, partsByMsg, partRowCount: parts.length }
+    return { messages, partsByMsg, partRowCount: rawParts.length }
   },
   /// The session row's own vendor rollup. Tolerant by design: a schema without
   /// these columns (or a row that will not read) yields `null`, which costs the
@@ -530,7 +626,11 @@ export const OPENCODE_FAMILY_2X: SqliteGeneration = {
   messageTable: 'session_message',
   partTable: null,
   normalizeMessages(db, sessionId) {
-    const shape = v2RowsToLegacyShape(db.query<V2MessageRow>(V2_MESSAGES_SQL, [sessionId]))
+    const rows = db.query(V2_MESSAGES_SQL, [sessionId]).flatMap(raw => {
+      const decoded = decodeV2MessageRow(raw)
+      return Result.isSuccess(decoded) ? [decoded.success] : []
+    })
+    const shape = v2RowsToLegacyShape(rows)
     return { ...shape, partRowCount: 0 }
   },
   /// 2.x writes the same rollup columns on `session_v2`, so the fallback reads
@@ -602,163 +702,211 @@ export function createSqliteSessionParser(
   config: SqliteProviderConfig,
   paths?: AppPaths,
   pricing?: ScanPricing,
+  context?: ProviderScanContext,
 ): SessionParser {
-  const activePricing = pricing ?? captureScanPricing(paths)
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      if (!isSqliteAvailable()) {
-        reportProviderIssue(config.displayName, 'sqlite-unavailable')
-        return
-      }
+  const signal = context?.signal
+  const activePricing = context?.pricing ?? pricing ?? captureScanPricing(paths)
+  const segments = source.path.split(':')
+  const sessionId = segments[segments.length - 1]!
+  const dbPath = segments.slice(0, -1).join(':')
 
-      const segments = source.path.split(':')
-      const sessionId = segments[segments.length - 1]!
-      const dbPath = segments.slice(0, -1).join(':')
-
-      let db: SqliteDatabase
-      try {
-        db = openDatabase(dbPath)
-      } catch (err) {
-        reportProviderIssue(config.displayName, fileErrorCode(err, 'db-open-failed'))
-        return
-      }
-
-      try {
-        // The generation is resolved ONCE per parse — probing sqlite_master per
-        // message would tax the hot path. Availability re-throws busy, so a
-        // live-but-contended DB aborts this file instead of being recorded as
-        // an empty (fully scanned) period.
-        const available = availableGenerations(db, config.generations)
-        if (available.length === 0) {
-          warnUnrecognizedSchemaOnce(config.displayName, missingTables(db, config.generations))
-          return
-        }
-
-        // A migrated DB holds several generations at once, and the older rows
-        // are frozen rather than dead: a session id that never migrated is
-        // still fully readable where it lives, while reading it from the newer
-        // message table would find nothing and drop its whole history. So the
-        // per-session id decides, not the DB. This is the ONE place the
-        // generation is decided, and the generation is what every read below
-        // goes through.
-        const generation = generationForSession(db, sessionId, available)
-
-        // Exact session directory for the canonical project identity. The
-        // discovery label is a lossy slug; this is the real checkout path.
-        const sessionDir = generation.readSessionDirectory(db, sessionId)
-
-        const { messages, partsByMsg, partRowCount } = generation.normalizeMessages(db, sessionId)
-
-        const currentUserMessageBySession = new Map<string, string>()
-        let yieldCount = 0
-        let parseFailCount = 0
-        let roleSkipCount = 0
-
-        for (const msg of messages) {
-          let data: MessageData
-          try {
-            data = JSON.parse(blobToText(msg.data)) as MessageData
-          } catch {
-            parseFailCount++
-            continue
+  const parseStream: NonNullable<SessionParser['parseStream']> = () =>
+    Stream.scoped(
+      Stream.unwrap(
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          if (!isSqliteAvailable()) {
+            reportProviderIssue(config.displayName, 'sqlite-unavailable')
+            return Stream.empty
           }
 
-          if (data.role === 'user') {
-            const textParts = (partsByMsg.get(msg.id) ?? [])
-              .filter(p => p.type === 'text')
-              .map(p => p.text ?? '')
-              .filter(Boolean)
-            if (textParts.length > 0) {
-              currentUserMessageBySession.set(msg.session_id, textParts.join(' '))
-            }
-            continue
-          }
+          const acquired = yield* Effect.acquireRelease(
+            Effect.try({ try: () => openDatabase(dbPath), catch: cause => databaseError('open', cause) }).pipe(
+              Effect.catchTag('SqliteFamilyError', error => {
+                if (error.operation === 'open') {
+                  reportProviderIssue(config.displayName, fileErrorCode(error.cause, 'db-open-failed'))
+                  return Effect.succeed(null)
+                }
+                return Effect.fail(error)
+              }),
+              Effect.map(db => (db ? { db, closed: false } : null)),
+            ),
+            source => (source ? closeSourceDatabase(source).pipe(Effect.orDie) : Effect.void),
+          )
+          if (!acquired) return Stream.empty
+          const db = acquired.db
 
-          if (data.role !== 'assistant' && data.role !== 'model') {
-            if (data.role !== 'user') roleSkipCount++
-            continue
-          }
+          const initialized = yield* checkScanAbort(signal).pipe(
+            Effect.andThen(
+              Effect.try({
+                try: () => {
+                  const available = availableGenerations(db, config.generations)
+                  if (available.length === 0) {
+                    warnUnrecognizedSchemaOnce(config.displayName, missingTables(db, config.generations))
+                    return null
+                  }
+                  const generation = generationForSession(db, sessionId, available)
+                  const sessionDir = generation.readSessionDirectory(db, sessionId)
+                  const normalized = generation.normalizeMessages(db, sessionId)
+                  return { generation, sessionDir, ...normalized }
+                },
+                catch: cause => databaseError('read', cause),
+              }),
+            ),
+            Effect.catch(error => closeSourceDatabase(acquired).pipe(Effect.andThen(Effect.fail(error)))),
+          )
+          if (!initialized) return Stream.fromEffectDrain(closeSourceDatabase(acquired))
 
-          const dedupKey = `${config.providerName}:${msg.session_id}:${msg.id}`
-          if (seenKeys.has(dedupKey)) continue
+          const currentUserMessageBySession = new Map<string, string>()
+          let yieldCount = 0
+          let parseFailCount = 0
+          let roleSkipCount = 0
+          const messageStream = Stream.fromIterable(initialized.messages).pipe(
+            Stream.mapEffect(
+              msg =>
+                Effect.gen(function* () {
+                  yield* checkScanAbort(signal)
+                  let data: MessageData
+                  try {
+                    data = JSON.parse(blobToText(msg.data)) as MessageData
+                  } catch {
+                    parseFailCount++
+                    return null
+                  }
 
-          const call = buildAssistantCall({
-            providerName: config.providerName,
-            dedupKey,
-            sessionId,
-            data,
-            parts: partsByMsg.get(msg.id) ?? [],
-            timeCreatedMs: msg.time_created,
-            userMessage: currentUserMessageBySession.get(msg.session_id) ?? '',
-            ...(sessionDir ? { directory: sessionDir } : {}),
-            pricing: activePricing,
-          })
-          if (!call) continue
+                  if (data.role === 'user') {
+                    const textParts = (initialized.partsByMsg.get(msg.id) ?? [])
+                      .filter(part => part.type === 'text')
+                      .map(part => part.text ?? '')
+                      .filter(Boolean)
+                    if (textParts.length > 0) currentUserMessageBySession.set(msg.session_id, textParts.join(' '))
+                    return null
+                  }
+                  if (data.role !== 'assistant' && data.role !== 'model') {
+                    if (data.role !== 'user') roleSkipCount++
+                    return null
+                  }
 
-          seenKeys.add(dedupKey)
-          yieldCount++
-          yield call
-        }
+                  const dedupKey = `${config.providerName}:${msg.session_id}:${msg.id}`
+                  if (seenKeys.has(dedupKey)) return null
+                  const call = yield* Effect.try({
+                    try: () =>
+                      buildAssistantCall({
+                        providerName: config.providerName,
+                        dedupKey,
+                        sessionId,
+                        data,
+                        parts: initialized.partsByMsg.get(msg.id) ?? [],
+                        timeCreatedMs: msg.time_created,
+                        userMessage: currentUserMessageBySession.get(msg.session_id) ?? '',
+                        ...(initialized.sessionDir ? { directory: initialized.sessionDir } : {}),
+                        pricing: activePricing,
+                      }),
+                    catch: toError,
+                  })
+                  yield* checkScanAbort(signal)
+                  if (!call) return null
+                  seenKeys.add(dedupKey)
+                  yieldCount++
+                  return call
+                }),
+              { concurrency: 1 },
+            ),
+            Stream.filter((call): call is ParsedProviderCall => call !== null),
+            Stream.rechunk(1),
+          )
 
-        if (yieldCount === 0 && messages.length > 0) {
-          const sessionTokens = generation.readSessionTotals(db, sessionId)
-          if (sessionTokens && (sessionTokens.cost > 0 || sessionTokens.input > 0 || sessionTokens.output > 0)) {
-            const dedupKey = `${config.providerName}:${sessionId}:session-level`
-            if (!seenKeys.has(dedupKey)) {
-              seenKeys.add(dedupKey)
-              const model = sessionTokens.model ?? 'unknown'
-              let costUSD = activePricing.calculateCost(
-                model,
-                sessionTokens.input,
-                sessionTokens.output,
-                sessionTokens.cacheWrite,
-                sessionTokens.cacheRead,
-                0,
-              )
-              if (costUSD === 0 && sessionTokens.cost > 0) costUSD = sessionTokens.cost
-              yield {
-                provider: config.providerName,
-                model,
-                inputTokens: sessionTokens.input,
-                outputTokens: sessionTokens.output,
-                cacheCreationInputTokens: sessionTokens.cacheWrite,
-                cacheReadInputTokens: sessionTokens.cacheRead,
-                cachedInputTokens: sessionTokens.cacheRead,
-                reasoningTokens: sessionTokens.reasoning,
-                webSearchRequests: 0,
-                costUSD,
-                tools: [],
-                bashCommands: [],
-                timestamp: parseTimestamp(messages[0]!.time_created),
-                speed: 'standard',
-                deduplicationKey: dedupKey,
-                userMessage: '',
-                sessionId,
-                ...(sessionDir ? { projectPath: sessionDir, workingDirectory: sessionDir } : {}),
+          const fallbackStream = Stream.unwrap(
+            Effect.gen(function* () {
+              yield* checkScanAbort(signal)
+              if (yieldCount === 0 && initialized.messages.length > 0) {
+                const sessionTokens = yield* Effect.try({
+                  try: () => initialized.generation.readSessionTotals(db, sessionId),
+                  catch: cause => databaseError('read', cause),
+                })
+                yield* checkScanAbort(signal)
+                if (sessionTokens && (sessionTokens.cost > 0 || sessionTokens.input > 0 || sessionTokens.output > 0)) {
+                  const dedupKey = `${config.providerName}:${sessionId}:session-level`
+                  if (!seenKeys.has(dedupKey)) {
+                    seenKeys.add(dedupKey)
+                    const model = sessionTokens.model ?? 'unknown'
+                    const costUSD = yield* Effect.try({
+                      try: () => {
+                        const calculated = activePricing.calculateCost(
+                          model,
+                          sessionTokens.input,
+                          sessionTokens.output,
+                          sessionTokens.cacheWrite,
+                          sessionTokens.cacheRead,
+                          0,
+                        )
+                        return calculated === 0 && sessionTokens.cost > 0 ? sessionTokens.cost : calculated
+                      },
+                      catch: toError,
+                    })
+                    const timestamp = yield* Effect.try({
+                      try: () => parseTimestamp(initialized.messages[0]!.time_created),
+                      catch: toError,
+                    })
+                    yield* checkScanAbort(signal)
+                    const call: ParsedProviderCall = {
+                      provider: config.providerName,
+                      model,
+                      inputTokens: sessionTokens.input,
+                      outputTokens: sessionTokens.output,
+                      cacheCreationInputTokens: sessionTokens.cacheWrite,
+                      cacheReadInputTokens: sessionTokens.cacheRead,
+                      cachedInputTokens: sessionTokens.cacheRead,
+                      reasoningTokens: sessionTokens.reasoning,
+                      webSearchRequests: 0,
+                      costUSD,
+                      tools: [],
+                      bashCommands: [],
+                      timestamp,
+                      speed: 'standard',
+                      deduplicationKey: dedupKey,
+                      userMessage: '',
+                      sessionId,
+                      ...(initialized.sessionDir
+                        ? { projectPath: initialized.sessionDir, workingDirectory: initialized.sessionDir }
+                        : {}),
+                    }
+                    return Stream.make(call)
+                  }
+                }
               }
-              yieldCount++
-            }
-          }
+              if (yieldCount === 0 && overrideFor(paths, 'WATCHTOWER_VERBOSE') === '1') {
+                process.stderr.write(
+                  `watchtower: ${config.displayName} session has ${initialized.messages.length} messages ` +
+                    `(${parseFailCount} unparseable, ${roleSkipCount} non-user/assistant roles) ` +
+                    `but yielded 0 calls. Parts: ${initialized.partRowCount}.\n`,
+                )
+              }
+              return Stream.empty
+            }),
+          )
+          // EOF and expected read failures close through the typed channel. The
+          // scope finalizer is the fallback for early stop or interruption.
+          return Stream.concat(
+            Stream.concat(messageStream, fallbackStream),
+            Stream.fromEffectDrain(closeSourceDatabase(acquired)),
+          ).pipe(
+            Stream.catch(error =>
+              Stream.fromEffect(closeSourceDatabase(acquired).pipe(Effect.andThen(Effect.fail(error)))),
+            ),
+          )
+        }),
+      ),
+    )
 
-          // `overrideFor` is the seam; `=== '1'` is the reader's own strict
-          // comparison and is unchanged — 'true', '' and any other value stay
-          // silent, exactly as the bare `process.env` read did. Unthreaded
-          // callers resolve the same ambient value through `appPaths()`.
-          //
-          // This line was the tree's LAST direct `process.env` read, the one
-          // `REMAINING_DIRECT_ENV_READS` (env.ts) still listed; both the read and
-          // the registry entry are gone, so the list now names only the
-          // unthreaded readers the seam rollout still has to migrate.
-          if (yieldCount === 0 && overrideFor(paths, 'WATCHTOWER_VERBOSE') === '1') {
-            process.stderr.write(
-              `watchtower: ${config.displayName} session has ${messages.length} messages ` +
-                `(${parseFailCount} unparseable, ${roleSkipCount} non-user/assistant roles) ` +
-                `but yielded 0 calls. Parts: ${partRowCount}.\n`,
-            )
-          }
-        }
-      } finally {
-        db.close()
+  return {
+    parseStream,
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      try {
+        yield* Stream.toAsyncIterable(parseStream())
+      } catch (error) {
+        if (error instanceof SqliteFamilyError) throw error.cause
+        throw error
       }
     },
   }
@@ -777,7 +925,10 @@ function projectAvailableGenerations(db: SqliteDatabase, available: readonly Sql
   const rows: SessionRow[] = []
   const claimed = new Set<string>()
   for (const generation of available) {
-    for (const row of generation.projectSessions(db)) {
+    for (const raw of generation.projectSessions(db)) {
+      const decoded = decodeSessionRow(raw)
+      if (Result.isFailure(decoded)) continue
+      const row = decoded.success
       if (claimed.has(row.id)) continue
       claimed.add(row.id)
       rows.push(row)
@@ -786,53 +937,48 @@ function projectAvailableGenerations(db: SqliteDatabase, available: readonly Sql
   return rows
 }
 
-export async function discoverSqliteSessions(config: SqliteProviderConfig): Promise<SessionSource[]> {
+export const discoverSqliteSessionsEffect = Effect.fnUntraced(function* (
+  config: SqliteProviderConfig,
+  context?: ProviderScanContext,
+): Effect.fn.Return<SessionSource[], Error> {
   if (!isSqliteAvailable()) return []
-
-  let dbPaths: string[]
-  try {
-    const entries = await readdir(config.dbDir)
-    dbPaths = entries
-      .filter(f => f.startsWith(config.dbFilePrefix) && f.endsWith('.db'))
-      .map(f => join(config.dbDir, f))
-  } catch {
-    return []
-  }
-
-  if (dbPaths.length === 0) return []
-
+  const entries = yield* scanIo(() => readdir(config.dbDir), context?.signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed([]))),
+  )
+  const dbPaths = entries
+    .filter(file => file.startsWith(config.dbFilePrefix) && file.endsWith('.db'))
+    .map(file => join(config.dbDir, file))
   const sessions: SessionSource[] = []
+
   for (const dbPath of dbPaths) {
-    let db: SqliteDatabase
-    try {
-      db = openDatabase(dbPath)
-    } catch {
-      continue
-    }
-
-    try {
-      // Every generation the provider declared whose tables are all present.
-      // The availability probe re-throws busy so a contended DB skips this file
-      // instead of being reported as empty.
+    yield* checkScanAbort(context?.signal)
+    const rows = yield* sourceRows(dbPath, db => {
       const available = availableGenerations(db, config.generations)
-      if (available.length === 0) continue
-
-      for (const row of projectAvailableGenerations(db, available)) {
-        const dir = blobToText(row.directory)
-        const title = blobToText(row.title)
-        sessions.push({
-          path: `${dbPath}:${row.id}`,
-          project: dir ? sanitize(dir) : sanitize(title),
-          provider: config.providerName,
-          ...(dir ? { workingDirectory: dir } : {}),
-        })
-      }
-    } catch {
-      // skip this DB
-    } finally {
-      db.close()
+      return available.length === 0 ? [] : projectAvailableGenerations(db, available)
+    }).pipe(
+      Effect.catchTag('SqliteFamilyError', error =>
+        error.operation === 'close' ? Effect.fail(toError(error.cause)) : Effect.succeed([]),
+      ),
+    )
+    yield* checkScanAbort(context?.signal)
+    for (const row of rows) {
+      const dir = blobToText(row.directory)
+      const title = blobToText(row.title)
+      sessions.push({
+        path: `${dbPath}:${row.id}`,
+        project: dir ? sanitize(dir) : sanitize(title),
+        provider: config.providerName,
+        ...(dir ? { workingDirectory: dir } : {}),
+      })
     }
   }
-
   return sessions
+})
+
+/// Remove after every consumer composes discovery through discoverSqliteSessionsEffect.
+export function discoverSqliteSessions(
+  config: SqliteProviderConfig,
+  context?: ProviderScanContext,
+): Promise<SessionSource[]> {
+  return Effect.runPromise(discoverSqliteSessionsEffect(config, context))
 }
