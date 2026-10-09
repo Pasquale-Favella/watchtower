@@ -12,7 +12,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { queryOverview } from '../src/main/application/overview-query.js'
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import { calculateOverviewFromSnapshot, calculateOverviewPayload } from '../src/main/overview-calculation.js'
+import {
+  calculateOverviewFromData,
+  calculateOverviewFromSnapshot,
+  calculateOverviewPayload,
+} from '../src/main/overview-calculation.js'
 import { captureLocalModelSavings, setLocalModelSavings } from '../src/main/pipeline/models.js'
 import {
   capturePricingCatalogue,
@@ -21,24 +25,17 @@ import {
 } from '../src/main/pipeline/pricing-calculation.js'
 import type { SessionSummary, TaskCategory } from '../src/main/pipeline/types.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
-import {
-  LedgerQueries,
-  type LedgerQueriesPort,
-  type LedgerRequestSnapshotData,
-} from '../src/main/store/ledger-ports.js'
+import { LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
 import { makeLedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
+import { LedgerViewReads, type LedgerViewReadsPort } from '../src/main/store/ledger-view-reads.js'
+import type { OverviewReadData } from '../src/main/store/overview-read-projections.js'
+import type { LedgerViewData } from '../src/main/store/view-read-projections.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
-const emptyData: LedgerRequestSnapshotData = {
-  sources: [],
-  sessions: [],
-  turns: [],
-  calls: [],
-  aliases: [],
-  overrides: [],
-}
 const tempDirs: string[] = []
+const emptyOverviewData: OverviewReadData = { sessions: [], turns: [], calls: [], aliases: [], overrides: [] }
+const emptyViewData: LedgerViewData = { sessions: [], turns: [], calls: [], aliases: [], overrides: [] }
 
 const zeroRates: ModelCosts = {
   inputCostPerToken: 0,
@@ -90,17 +87,61 @@ function queryInput(scope: OverviewScope = { period: 'lifetime' }) {
   }
 }
 
-function queryPort(
-  read: () => Effect.Effect<LedgerRequestSnapshotData, SqlError.SqlError | Schema.SchemaError>,
-): LedgerQueriesPort {
+function viewReadsPort(
+  read: () => Effect.Effect<OverviewReadData, SqlError.SqlError | Schema.SchemaError>,
+): LedgerViewReadsPort {
+  return { getViewData: () => Effect.succeed(emptyViewData), getOverviewData: read }
+}
+
+function overviewFactsFromSnapshot(data: LedgerRequestSnapshotData): OverviewReadData {
+  const sourceProvider = new Map(data.sources.map(source => [source.id, source.provider]))
   return {
-    hasSources: () => Effect.succeed(false),
-    getSources: () => Effect.succeed([]),
-    getSessions: () => Effect.succeed([]),
-    getTurns: () => Effect.succeed([]),
-    getCalls: () => Effect.succeed([]),
-    getCallFacts: () => Effect.succeed([]),
-    getRequestSnapshotData: read,
+    sessions: data.sessions.map(session => ({
+      sourceId: session.sourceId,
+      sessionId: session.sessionId,
+      sourceProvider: sourceProvider.get(session.sourceId) ?? null,
+    })),
+    turns: data.turns.map(turn => ({
+      sourceId: turn.sourceId,
+      sessionId: turn.sessionId,
+      turnIndex: turn.turnIndex,
+      timestamp: turn.timestamp,
+      userMessage: turn.userMessage,
+      category: turn.category,
+      subCategory: turn.subCategory,
+      retries: turn.retries,
+      hasEdits: turn.hasEdits,
+    })),
+    calls: data.calls.map(call => ({
+      sourceId: call.sourceId,
+      sessionId: call.sessionId,
+      turnIndex: call.turnIndex,
+      callIndex: call.callIndex,
+      provider: call.provider,
+      model: call.model,
+      timestamp: call.timestamp,
+      speed: call.speed,
+      baseCostUSD: call.baseCostUSD,
+      isEstimated: call.isEstimated,
+      savingsUSD: call.savingsUSD,
+      savingsBaselineModel: call.savingsBaselineModel,
+      inputTokens: call.inputTokens,
+      outputTokens: call.outputTokens,
+      cacheCreationInputTokens: call.cacheCreationInputTokens,
+      cacheReadInputTokens: call.cacheReadInputTokens,
+      cachedInputTokens: call.cachedInputTokens,
+      webSearchRequests: call.webSearchRequests,
+      tools: call.tools,
+      mcpTools: call.mcpTools,
+      subagentTypes: call.subagentTypes,
+      toolSequence: call.toolSequence,
+    })),
+    aliases: data.aliases.map(({ model, aliasOf }) => ({ model, aliasOf })),
+    overrides: data.overrides.map(({ model, inputPricePerMillion, outputPricePerMillion }) => ({
+      model,
+      inputPricePerMillion,
+      outputPricePerMillion,
+    })),
   }
 }
 
@@ -286,14 +327,13 @@ describe('Overview application query', () => {
       const reports: string[][] = []
       const result = await Effect.runPromise(
         Effect.gen(function* () {
-          const actual = yield* LedgerQueries
-          const port = LedgerQueries.of({
+          const actual = yield* LedgerViewReads
+          const port = LedgerViewReads.of({
             ...actual,
-            getRequestSnapshotData: () =>
-              Effect.sync(() => reads++).pipe(Effect.andThen(actual.getRequestSnapshotData())),
+            getOverviewData: () => Effect.sync(() => reads++).pipe(Effect.andThen(actual.getOverviewData())),
           })
           return yield* queryOverview(queryInput({ period: 'lifetime', provider: 'claude' })).pipe(
-            Effect.provideService(LedgerQueries, port),
+            Effect.provideService(LedgerViewReads, port),
             Effect.provideService(PricingDiagnostics, diagnostics(reports)),
           )
         }).pipe(Effect.provide(store.portsLayer)),
@@ -331,13 +371,13 @@ describe('Overview application query', () => {
       const call = data.calls[0]
       if (!source || !session || !turn || !call) throw new Error('fixture port did not produce overview rows')
       const withSession = (sessionId: string, sourceId = source.id) => ({ ...session, sourceId, sessionId })
-      const withTurn = (sessionId: string, turnIndex: number, timestamp: string, sourceId = source.id) => ({
-        ...turn,
-        sourceId,
-        sessionId,
-        turnIndex,
-        timestamp,
-      })
+      const withTurn = (
+        sessionId: string,
+        turnIndex: number,
+        timestamp: string,
+        sourceId = source.id,
+        overrides: Partial<typeof turn> = {},
+      ) => ({ ...turn, sourceId, sessionId, turnIndex, timestamp, ...overrides })
       const withCall = (
         sessionId: string,
         turnIndex: number,
@@ -346,7 +386,19 @@ describe('Overview application query', () => {
         model: string,
         provider = 'opencode',
         sourceId = source.id,
-      ) => ({ ...call, sourceId, sessionId, turnIndex, callIndex, timestamp, model, provider, baseCostUSD: 0 })
+        overrides: Partial<typeof call> = {},
+      ) => ({
+        ...call,
+        sourceId,
+        sessionId,
+        turnIndex,
+        callIndex,
+        timestamp,
+        model,
+        provider,
+        baseCostUSD: 0,
+        ...overrides,
+      })
 
       const epochTime = new Date(1970, 0, 1, 12).toISOString()
       const beforeEpoch = new Date(1969, 11, 31, 23).toISOString()
@@ -354,7 +406,17 @@ describe('Overview application query', () => {
       const secondSource = { ...source, id: source.id + 1, provider: 'claude' }
       const variantData = {
         ...data,
-        aliases: [...data.aliases, { model: 'duplicate-id-model', aliasOf: 'diagnostic-claude-target' }],
+        aliases: [
+          ...data.aliases,
+          { model: 'duplicate-id-model', aliasOf: 'diagnostic-claude-target' },
+          { model: 'demo-model', aliasOf: 'zero-override-target' },
+          { model: 'catalogue-raw', aliasOf: 'catalogue-target' },
+          { model: 'local-raw', aliasOf: 'local-target' },
+        ],
+        overrides: [
+          ...data.overrides,
+          { model: 'zero-override-target', inputPricePerMillion: 0, outputPricePerMillion: 0 },
+        ],
         sources: [...data.sources, secondSource],
         sessions: [
           ...data.sessions,
@@ -363,6 +425,10 @@ describe('Overview application query', () => {
           withSession('same-index-first-by-row'),
           withSession('malformed-first-call'),
           withSession('future-session'),
+          withSession('call-provider-mismatch'),
+          withSession('pricing-parity-session'),
+          withSession('fractional-a'),
+          withSession('fractional-b'),
           withSession(session.sessionId, secondSource.id),
         ],
         turns: [
@@ -372,6 +438,36 @@ describe('Overview application query', () => {
           withTurn('same-index-first-by-row', 0, beforeEpoch),
           withTurn('malformed-first-call', 0, 'invalid timestamp'),
           withTurn('future-session', 0, futureTime),
+          withTurn('call-provider-mismatch', 0, epochTime),
+          withTurn('pricing-parity-session', 0, epochTime),
+          withTurn('fractional-a', 0, epochTime, source.id, {
+            category: 'debugging',
+            subCategory: 'skill-a',
+            userMessage: 'Please update this file.',
+            hasEdits: 1,
+            retries: 1,
+          }),
+          withTurn('fractional-a', 1, epochTime, source.id, {
+            category: 'debugging',
+            subCategory: 'skill-a',
+            userMessage: "That's wrong; fix this.",
+            hasEdits: 1,
+            retries: 0,
+          }),
+          withTurn('fractional-b', 0, epochTime, source.id, {
+            category: 'coding',
+            subCategory: 'skill-b',
+            userMessage: 'Implement the requested change.',
+            hasEdits: 1,
+            retries: 0,
+          }),
+          withTurn('fractional-b', 1, epochTime, source.id, {
+            category: 'coding',
+            subCategory: 'skill-b',
+            userMessage: 'Add the final test.',
+            hasEdits: 1,
+            retries: 0,
+          }),
           withTurn(session.sessionId, 0, epochTime, secondSource.id),
         ],
         calls: [
@@ -384,30 +480,95 @@ describe('Overview application query', () => {
           withCall('malformed-first-call', 0, 0, 'invalid timestamp', 'malformed-model'),
           withCall('malformed-first-call', 0, 1, epochTime, 'later-malformed-call-model'),
           withCall('future-session', 0, 0, futureTime, 'future-model'),
-          withCall(session.sessionId, 0, 0, epochTime, 'duplicate-id-model', 'claude', secondSource.id),
-        ],
+          withCall('call-provider-mismatch', 0, 0, epochTime, 'call-provider-model', 'claude'),
+          withCall('pricing-parity-session', 0, 0, epochTime, 'demo-model'),
+          withCall('pricing-parity-session', 0, 1, epochTime, 'catalogue-raw'),
+          withCall('pricing-parity-session', 0, 2, epochTime, 'local-raw'),
+          withCall('fractional-a', 0, 0, epochTime, 'duplicate-id-model', 'opencode', source.id, {
+            baseCostUSD: 0.1,
+            savingsUSD: 0.01,
+            tools: ['Edit'],
+            toolSequence: [[{ tool: 'Edit', file: '/workspace/shared.ts' }]],
+            subagentTypes: ['agent-a'],
+          }),
+          withCall('fractional-a', 1, 0, epochTime, 'duplicate-id-model', 'opencode', source.id, {
+            baseCostUSD: 0.2,
+            savingsUSD: 0.02,
+            tools: ['Edit'],
+            toolSequence: [[{ tool: 'Edit', file: '/workspace/shared.ts' }]],
+            subagentTypes: ['agent-a'],
+          }),
+          withCall('fractional-b', 0, 0, epochTime, 'duplicate-id-model', 'opencode', source.id, {
+            baseCostUSD: 0.1,
+            savingsUSD: 0.01,
+            tools: ['Edit'],
+            toolSequence: [[{ tool: 'Edit', file: '/workspace/shared.ts' }]],
+            subagentTypes: ['agent-b'],
+          }),
+          withCall('fractional-b', 1, 0, epochTime, 'duplicate-id-model', 'opencode', source.id, {
+            baseCostUSD: 0.2,
+            savingsUSD: 0.02,
+            tools: ['Edit'],
+            toolSequence: [[{ tool: 'Edit', file: '/workspace/shared.ts' }]],
+            subagentTypes: ['agent-b'],
+          }),
+          withCall(session.sessionId, 0, 0, epochTime, 'duplicate-id-model', 'opencode', secondSource.id),
+        ].sort(
+          (a, b) => a.sessionId.localeCompare(b.sessionId) || a.turnIndex - b.turnIndex || a.callIndex - b.callIndex,
+        ),
       }
+      const overviewCatalogue = catalogue({
+        prices: new Map([['catalogue-target', { ...zeroRates, inputCostPerToken: 1e-6 }]]),
+      })
+      const localSavings = { 'local-target': 'catalogue-target' }
       const snapshot = makeLedgerQuerySnapshot({
         ...variantData,
-        catalogue: catalogue(),
+        catalogue: overviewCatalogue,
         proxyPaths: { paths: [], caseSensitive: true },
       })
       const result = calculateOverviewFromSnapshot(
         snapshot,
         { period: 'lifetime', provider: 'opencode' },
         new Date(2026, 6, 10, 12),
-        {},
+        localSavings,
       )
+      expect(
+        calculateOverviewFromData(
+          overviewFactsFromSnapshot(variantData),
+          { period: 'lifetime', provider: 'opencode' },
+          new Date(2026, 6, 10, 12),
+          overviewCatalogue,
+          localSavings,
+        ),
+      ).toEqual(result)
       expect(result.value.dataStart).toBe('1970-01-01')
-      expect(result.value.kpis.sessions).toBe(2)
-      expect(result.unpricedModels).toEqual(['diagnostic-claude-target'])
+      expect(result.value.kpis.sessions).toBe(5)
+      expect(result.unpricedModels).toEqual(['diagnostic-claude-target', 'local-target'])
 
-      const reversedCalls = makeLedgerQuerySnapshot({
+      const reversedData = {
         ...variantData,
         calls: [...variantData.calls, withCall('epoch-session', 0, 1, beforeEpoch, 'earlier-later-call')],
+      }
+      const reversedCalls = makeLedgerQuerySnapshot({
+        ...reversedData,
         catalogue: catalogue(),
         proxyPaths: { paths: [], caseSensitive: true },
       })
+      const reversedExpected = calculateOverviewFromSnapshot(
+        reversedCalls,
+        { period: 'lifetime' },
+        new Date(2026, 6, 10, 12),
+        {},
+      )
+      expect(
+        calculateOverviewFromData(
+          overviewFactsFromSnapshot(reversedData),
+          { period: 'lifetime' },
+          new Date(2026, 6, 10, 12),
+          catalogue(),
+          {},
+        ),
+      ).toEqual(reversedExpected)
       // The first call admits the turn; every call then participates in the
       // session's timestamp. The previous summary path reports this literal day.
       expect(
@@ -415,20 +576,38 @@ describe('Overview application query', () => {
           .dataStart,
       ).toBe('1969-12-31')
 
-      const emptyLastTimestamp = makeLedgerQuerySnapshot({
+      const emptyLastData = {
         ...data,
         turns: [{ ...turn, timestamp: new Date(2001, 1, 3, 12).toISOString() }],
         calls: [...data.calls, { ...call, callIndex: 1, timestamp: '' }],
+      }
+      const emptyLastTimestamp = makeLedgerQuerySnapshot({
+        ...emptyLastData,
         catalogue: catalogue(),
         proxyPaths: { paths: [], caseSensitive: true },
       })
+      const emptyLastExpected = calculateOverviewFromSnapshot(
+        emptyLastTimestamp,
+        { period: 'lifetime' },
+        new Date(2026, 6, 10, 12),
+        {},
+      )
+      expect(
+        calculateOverviewFromData(
+          overviewFactsFromSnapshot(emptyLastData),
+          { period: 'lifetime' },
+          new Date(2026, 6, 10, 12),
+          catalogue(),
+          {},
+        ),
+      ).toEqual(emptyLastExpected)
       expect(
         calculateOverviewFromSnapshot(emptyLastTimestamp, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value
           .dataStart,
       ).toBe('2001-02-03')
 
       const orphanSourceId = source.id + 1000
-      const orphanRows = makeLedgerQuerySnapshot({
+      const orphanData = {
         ...data,
         sessions: [...data.sessions, withSession('orphan-source-session', orphanSourceId)],
         turns: [...data.turns, withTurn('orphan-source-session', 0, epochTime, orphanSourceId)],
@@ -436,9 +615,27 @@ describe('Overview application query', () => {
           ...data.calls,
           withCall('orphan-source-session', 0, 0, epochTime, 'orphan-model', 'opencode', orphanSourceId),
         ],
+      }
+      const orphanRows = makeLedgerQuerySnapshot({
+        ...orphanData,
         catalogue: catalogue(),
         proxyPaths: { paths: [], caseSensitive: true },
       })
+      const orphanExpected = calculateOverviewFromSnapshot(
+        orphanRows,
+        { period: 'lifetime' },
+        new Date(2026, 6, 10, 12),
+        {},
+      )
+      expect(
+        calculateOverviewFromData(
+          overviewFactsFromSnapshot(orphanData),
+          { period: 'lifetime' },
+          new Date(2026, 6, 10, 12),
+          catalogue(),
+          {},
+        ),
+      ).toEqual(orphanExpected)
       expect(
         calculateOverviewFromSnapshot(orphanRows, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value
           .dataStart,
@@ -458,11 +655,11 @@ describe('Overview application query', () => {
           Effect.gen(function* () {
             yield* Deferred.succeed(entered, undefined)
             yield* Deferred.await(release)
-            return emptyData
+            return emptyOverviewData
           })
-        const port = LedgerQueries.of(queryPort(read))
+        const port = LedgerViewReads.of(viewReadsPort(read))
         const task = queryOverview(queryInput()).pipe(
-          Effect.provideService(LedgerQueries, port),
+          Effect.provideService(LedgerViewReads, port),
           Effect.provideService(PricingDiagnostics, diagnostics(reports)),
         )
         yield* TestClock.setTime(new Date(2026, 5, 15, 12).getTime())
@@ -481,13 +678,13 @@ describe('Overview application query', () => {
     const failure = new SqlError.SqlError({
       reason: new SqlError.SqlSyntaxError({ cause: new Error('controlled failure'), message: 'controlled failure' }),
     })
-    const badSchema = Schema.decodeUnknownEffect(Schema.Number)('invalid').pipe(Effect.as(emptyData))
+    const badSchema = Schema.decodeUnknownEffect(Schema.Number)('invalid').pipe(Effect.as(emptyOverviewData))
     const sqlProgram = queryOverview(queryInput()).pipe(
-      Effect.provideService(LedgerQueries, LedgerQueries.of(queryPort(() => Effect.fail(failure)))),
+      Effect.provideService(LedgerViewReads, LedgerViewReads.of(viewReadsPort(() => Effect.fail(failure)))),
       Effect.provideService(PricingDiagnostics, diagnostics([])),
     )
     const schemaProgram = queryOverview(queryInput()).pipe(
-      Effect.provideService(LedgerQueries, LedgerQueries.of(queryPort(() => badSchema))),
+      Effect.provideService(LedgerViewReads, LedgerViewReads.of(viewReadsPort(() => badSchema))),
       Effect.provideService(PricingDiagnostics, diagnostics([])),
     )
 

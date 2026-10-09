@@ -33,6 +33,7 @@ import {
 } from './ledger-ports.js'
 import { LedgerSessionReads, type LedgerSessionReadsPort } from './ledger-session-reads.js'
 import { LedgerViewReads, type LedgerViewReadsPort } from './ledger-view-reads.js'
+import { type OverviewReadData, overviewReadDataSchema } from './overview-read-projections.js'
 import { mapFileToLedgerRows, type PortInput } from './port.js'
 import { ledgerCallFactsRowSchema } from './read-projections.js'
 import {
@@ -194,6 +195,33 @@ const SELECT_VIEW_OVERRIDES = `
   SELECT model, input_price_per_million AS inputPricePerMillion,
          output_price_per_million AS outputPricePerMillion
   FROM price_override
+`
+
+const SELECT_OVERVIEW_SESSIONS = `
+  SELECT s.source_id AS sourceId, s.session_id AS sessionId,
+         source.provider AS sourceProvider
+  FROM ledger_session AS s LEFT JOIN ledger_source AS source ON source.id = s.source_id
+  ORDER BY s.session_id ASC, s.rowid ASC
+`
+const SELECT_OVERVIEW_TURNS = `
+  SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex,
+         timestamp, COALESCE(user_message, '') AS userMessage, category,
+         sub_category AS subCategory, retries, has_edits AS hasEdits
+  FROM ledger_turn ORDER BY session_id ASC, turn_index ASC, rowid ASC
+`
+const SELECT_OVERVIEW_CALLS = `
+  SELECT source_id AS sourceId, session_id AS sessionId, turn_index AS turnIndex,
+         call_index AS callIndex, provider, model, timestamp, speed,
+         base_cost_usd AS baseCostUSD, is_estimated AS isEstimated,
+         savings_usd AS savingsUSD, savings_baseline_model AS savingsBaselineModel,
+         input_tokens AS inputTokens, output_tokens AS outputTokens,
+         cache_creation_input_tokens AS cacheCreationInputTokens,
+         cache_read_input_tokens AS cacheReadInputTokens, cached_input_tokens AS cachedInputTokens,
+         web_search_requests AS webSearchRequests,
+         tools_json AS tools, mcp_tools_json AS mcpTools,
+         subagent_types_json AS subagentTypes,
+         tool_sequence_json AS toolSequence
+  FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC
 `
 
 const SELECT_EXPORT_SESSIONS = `
@@ -458,6 +486,24 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
         )
 
         return yield* Schema.decodeUnknownEffect(ledgerViewDataSchema)(rawRows)
+      })
+
+      const getOverviewData = Effect.fn('LedgerViewReads.getOverviewData')(function* (): Effect.fn.Return<
+        OverviewReadData,
+        SqlError | Schema.SchemaError
+      > {
+        const rawRows = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const sessions = yield* sql.unsafe(SELECT_OVERVIEW_SESSIONS)
+            const turns = yield* sql.unsafe(SELECT_OVERVIEW_TURNS)
+            const calls = yield* sql.unsafe(SELECT_OVERVIEW_CALLS)
+            const aliases = yield* sql.unsafe(SELECT_VIEW_ALIASES)
+            const overrides = yield* sql.unsafe(SELECT_VIEW_OVERRIDES)
+            return { sessions, turns, calls, aliases, overrides }
+          }),
+        )
+
+        return yield* Schema.decodeUnknownEffect(overviewReadDataSchema)(rawRows)
       })
 
       const getExportData = Effect.fn('LedgerExportReads.getExportData')(function* (): Effect.fn.Return<
@@ -846,6 +892,7 @@ export class LedgerImplementation extends Context.Service<LedgerImplementation, 
         getSessionDetailData,
         getSessionSearchData,
         getViewData,
+        getOverviewData,
         getExportData,
         getCurrencyRate,
         getDisplayCurrency,
@@ -925,7 +972,12 @@ const ledgerSessionReadsLayer = Layer.effect(
 
 const ledgerViewReadsLayer = Layer.effect(
   LedgerViewReads,
-  Effect.map(LedgerImplementation, implementation => LedgerViewReads.of({ getViewData: implementation.getViewData })),
+  Effect.map(LedgerImplementation, implementation =>
+    LedgerViewReads.of({
+      getViewData: implementation.getViewData,
+      getOverviewData: implementation.getOverviewData,
+    }),
+  ),
 )
 
 const ledgerExportReadsLayer = Layer.effect(

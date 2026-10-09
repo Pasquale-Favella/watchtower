@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createPricingConfigLookup } from '../src/main/pipeline/pricing-calculation.js'
 import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
 import { LedgerViewReads } from '../src/main/store/ledger-view-reads.js'
+import type { OverviewReadData } from '../src/main/store/overview-read-projections.js'
 import type { LedgerViewData } from '../src/main/store/view-read-projections.js'
 import {
   buildFixtureCachedCall,
@@ -23,6 +24,28 @@ type TestRuntime = ReturnType<typeof openLedgerFixture>['runtime']
 
 function readViewData(runtime: TestRuntime): Promise<LedgerViewData> {
   return runtime.runPromise(Effect.flatMap(LedgerViewReads, reads => reads.getViewData()))
+}
+
+function readOverviewData(runtime: TestRuntime): Promise<OverviewReadData> {
+  return runtime.runPromise(Effect.flatMap(LedgerViewReads, reads => reads.getOverviewData()))
+}
+
+function expectSchemaFailure<A, E>(exit: Exit.Exit<A, E>): void {
+  expect(Exit.isFailure(exit)).toBe(true)
+  if (Exit.isFailure(exit)) {
+    const failure = exit.cause.reasons.find(Cause.isFailReason)
+    expect(failure).toBeDefined()
+    if (failure) expect(Schema.isSchemaError(failure.error)).toBe(true)
+  }
+}
+
+function expectSqlFailure<A, E>(exit: Exit.Exit<A, E>): void {
+  expect(Exit.isFailure(exit)).toBe(true)
+  if (Exit.isFailure(exit)) {
+    const failure = exit.cause.reasons.find(Cause.isFailReason)
+    expect(failure).toBeDefined()
+    if (failure) expect(SqlError.isSqlError(failure.error)).toBe(true)
+  }
 }
 
 function port(
@@ -64,6 +87,102 @@ function setPriceOverride(
 afterEach(() => vi.restoreAllMocks())
 
 describe('purpose-shaped dashboard and analytics reads', () => {
+  it('loads five minimal Overview reads on the existing connection with current pricing', async () => {
+    const { runtime } = openLedgerFixture()
+    const sqlByStatement = new WeakMap<StatementSync, string>()
+    const connectionByStatement = new WeakMap<StatementSync, DatabaseSync>()
+    const executions: Array<{ sql: string; connection: DatabaseSync }> = []
+    const transactionEvents: string[] = []
+    const nativePrepare = DatabaseSync.prototype.prepare
+    const nativeAll = StatementSync.prototype.all
+    const nativeRun = StatementSync.prototype.run
+    vi.spyOn(StatementSync.prototype, 'run').mockImplementation(function (
+      this: StatementSync,
+      ...parameters: unknown[]
+    ) {
+      const normalized = (sqlByStatement.get(this) ?? '').trim().toUpperCase()
+      if (/^(BEGIN|COMMIT|ROLLBACK)/.test(normalized)) transactionEvents.push(normalized)
+      return Reflect.apply(nativeRun, this, parameters)
+    })
+    vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function (this: DatabaseSync, sql: string) {
+      const statement = Reflect.apply(nativePrepare, this, [sql])
+      sqlByStatement.set(statement, sql)
+      connectionByStatement.set(statement, this)
+      return statement
+    })
+    vi.spyOn(StatementSync.prototype, 'all').mockImplementation(function (
+      this: StatementSync,
+      ...parameters: unknown[]
+    ) {
+      const rows = Reflect.apply(nativeAll, this, parameters)
+      const connection = connectionByStatement.get(this)
+      if (connection) {
+        executions.push({ sql: sqlByStatement.get(this) ?? '', connection })
+        transactionEvents.push('SELECT')
+      }
+      return rows
+    })
+
+    port(runtime, 'overview-read')
+    setModelAlias(runtime, 'demo-model', 'overview-target')
+    setPriceOverride(runtime, 'overview-target', 0, 24)
+    const start = executions.length
+    transactionEvents.length = 0
+    const data = await readOverviewData(runtime)
+    const reads = executions.slice(start)
+
+    expect(reads).toHaveLength(5)
+    expect(reads.every(({ sql }) => /^\s*SELECT/i.test(sql))).toBe(true)
+    expect(new Set(reads.map(({ connection }) => connection)).size).toBe(1)
+    expect(transactionEvents).toEqual(['BEGIN IMMEDIATE', 'SELECT', 'SELECT', 'SELECT', 'SELECT', 'SELECT', 'COMMIT'])
+    expect(Object.keys(data.sessions[0] ?? {}).sort()).toEqual(['sessionId', 'sourceId', 'sourceProvider'].sort())
+    expect(Object.keys(data.turns[0] ?? {}).sort()).toEqual(
+      [
+        'category',
+        'hasEdits',
+        'retries',
+        'sessionId',
+        'sourceId',
+        'subCategory',
+        'timestamp',
+        'turnIndex',
+        'userMessage',
+      ].sort(),
+    )
+    expect(Object.keys(data.calls[0] ?? {}).sort()).toEqual(
+      [
+        'sourceId',
+        'sessionId',
+        'turnIndex',
+        'callIndex',
+        'provider',
+        'model',
+        'timestamp',
+        'speed',
+        'baseCostUSD',
+        'isEstimated',
+        'savingsUSD',
+        'savingsBaselineModel',
+        'inputTokens',
+        'outputTokens',
+        'cacheCreationInputTokens',
+        'cacheReadInputTokens',
+        'cachedInputTokens',
+        'webSearchRequests',
+        'tools',
+        'mcpTools',
+        'subagentTypes',
+        'toolSequence',
+      ].sort(),
+    )
+    expect(data.calls[0]?.toolSequence).toEqual([])
+    expect(data.aliases).toEqual([{ model: 'demo-model', aliasOf: 'overview-target' }])
+    expect(data.overrides).toEqual([{ model: 'overview-target', inputPricePerMillion: 0, outputPricePerMillion: 24 }])
+    expect(reads.map(({ sql }) => sql).join('\n')).not.toMatch(
+      /reasoning_tokens|git_branch|pr_refs_json|spawn_tool_use_ids_json|mcp_inventory_json|agent_spawn_links_json|ambiguous_spawn_agent_ids_json|loc_added|interrupted|call_key/i,
+    )
+  })
+
   it('selects five narrow reads on one connection and sees current pricing config', async () => {
     const { runtime } = openLedgerFixture()
     const sqlByStatement = new WeakMap<StatementSync, string>()
@@ -220,6 +339,7 @@ describe('purpose-shaped dashboard and analytics reads', () => {
         return [
           yield* Effect.exit(Effect.asVoid(config.getPriceOverrides())),
           yield* Effect.exit(Effect.asVoid(reads.getViewData())),
+          yield* Effect.exit(Effect.asVoid(reads.getOverviewData())),
         ]
       }),
     )
@@ -301,6 +421,28 @@ describe('purpose-shaped dashboard and analytics reads', () => {
       writer.close()
     }
     expect((await readViewData(runtime)).calls).toHaveLength(1)
+    const schemaTransactionEvents: string[] = []
+    const schemaSqlByStatement = new WeakMap<StatementSync, string>()
+    const nativePrepare = DatabaseSync.prototype.prepare
+    const nativeRun = StatementSync.prototype.run
+    vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function (this: DatabaseSync, sql: string) {
+      const statement = Reflect.apply(nativePrepare, this, [sql])
+      schemaSqlByStatement.set(statement, sql)
+      return statement
+    })
+    vi.spyOn(StatementSync.prototype, 'run').mockImplementation(function (
+      this: StatementSync,
+      ...parameters: unknown[]
+    ) {
+      const normalized = (schemaSqlByStatement.get(this) ?? '').trim().toUpperCase()
+      if (/^(BEGIN|COMMIT|ROLLBACK)/.test(normalized)) schemaTransactionEvents.push(normalized)
+      return Reflect.apply(nativeRun, this, parameters)
+    })
+    const malformedOverviewJson = await runtime.runPromise(
+      Effect.exit(Effect.flatMap(LedgerViewReads, reads => reads.getOverviewData())),
+    )
+    expectSchemaFailure(malformedOverviewJson)
+    expect(schemaTransactionEvents).toEqual(['BEGIN IMMEDIATE', 'COMMIT'])
 
     const badJsonWriter = new DatabaseSync(dbPath)
     try {
@@ -308,15 +450,14 @@ describe('purpose-shaped dashboard and analytics reads', () => {
     } finally {
       badJsonWriter.close()
     }
-    const schemaExit = await runtime.runPromise(
-      Effect.exit(Effect.flatMap(LedgerViewReads, reads => reads.getViewData())),
+    const schemaExits = await runtime.runPromise(
+      Effect.gen(function* () {
+        const reads = yield* LedgerViewReads
+        return { view: yield* Effect.exit(reads.getViewData()), overview: yield* Effect.exit(reads.getOverviewData()) }
+      }),
     )
-    expect(Exit.isFailure(schemaExit)).toBe(true)
-    if (Exit.isFailure(schemaExit)) {
-      const failure = schemaExit.cause.reasons.find(Cause.isFailReason)
-      expect(failure).toBeDefined()
-      if (failure) expect(Schema.isSchemaError(failure.error)).toBe(true)
-    }
+    expectSchemaFailure(schemaExits.view)
+    expectSchemaFailure(schemaExits.overview)
 
     const dropWriter = new DatabaseSync(dbPath)
     try {
@@ -324,12 +465,13 @@ describe('purpose-shaped dashboard and analytics reads', () => {
     } finally {
       dropWriter.close()
     }
-    const sqlExit = await runtime.runPromise(Effect.exit(Effect.flatMap(LedgerViewReads, reads => reads.getViewData())))
-    expect(Exit.isFailure(sqlExit)).toBe(true)
-    if (Exit.isFailure(sqlExit)) {
-      const failure = sqlExit.cause.reasons.find(Cause.isFailReason)
-      expect(failure).toBeDefined()
-      if (failure) expect(SqlError.isSqlError(failure.error)).toBe(true)
-    }
+    const sqlExits = await runtime.runPromise(
+      Effect.gen(function* () {
+        const reads = yield* LedgerViewReads
+        return { view: yield* Effect.exit(reads.getViewData()), overview: yield* Effect.exit(reads.getOverviewData()) }
+      }),
+    )
+    expectSqlFailure(sqlExits.view)
+    expectSqlFailure(sqlExits.overview)
   })
 })

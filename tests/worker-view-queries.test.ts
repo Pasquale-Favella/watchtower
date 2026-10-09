@@ -104,6 +104,7 @@ const operations = [
 ] as const
 type ViewOperation = (typeof operations)[number]
 const projectedOperations = new Set<ViewOperation>(['store:views', 'store:analytics'])
+const overviewOperations = new Set<ViewOperation>(['overview:query'])
 const scope = { period: 'lifetime', range: { since: '2026-07-01', until: '2026-07-02' } } as const
 
 function expectedQueryInputs(owner: ReturnType<typeof openWorkerOwner>): { snapshot: LedgerQuerySnapshot; now: Date } {
@@ -289,7 +290,9 @@ describe('worker view queries', () => {
       const expected = await expectedPayload(operation, owner)
       const queries = owner.runtime.runSync(LedgerQueries)
       const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
-      const projection = vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getViewData')
+      const reads = owner.runtime.runSync(LedgerViewReads)
+      const projection = vi.spyOn(reads, 'getViewData')
+      const overviewProjection = vi.spyOn(reads, 'getOverviewData')
       const facade = vi.spyOn(owner.ledger, 'runQueriesSync').mockImplementation(() => {
         throw new Error('legacy query facade must not run')
       })
@@ -309,8 +312,11 @@ describe('worker view queries', () => {
       const dismissalRead = vi.spyOn(config, 'getSkillDismissals')
 
       await expect(context.dispatch(operation, [scope])).resolves.toEqual(expected)
-      expect(snapshot).toHaveBeenCalledTimes(projectedOperations.has(operation) ? 0 : 1)
+      expect(snapshot).toHaveBeenCalledTimes(
+        projectedOperations.has(operation) || overviewOperations.has(operation) ? 0 : 1,
+      )
       expect(projection).toHaveBeenCalledTimes(projectedOperations.has(operation) ? 1 : 0)
+      expect(overviewProjection).toHaveBeenCalledTimes(overviewOperations.has(operation) ? 1 : 0)
       expect(facade).not.toHaveBeenCalled()
       expect(repository).not.toHaveBeenCalled()
       expect(aliases).not.toHaveBeenCalled()
@@ -343,7 +349,9 @@ describe('worker view queries', () => {
       const failure = new SqlError.SqlError({
         reason: new SqlError.SqlSyntaxError({ cause: new Error('controlled failure'), message: 'controlled failure' }),
       })
-      if (projectedOperations.has(operation)) {
+      if (overviewOperations.has(operation)) {
+        vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getOverviewData').mockReturnValue(Effect.fail(failure))
+      } else if (projectedOperations.has(operation)) {
         vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getViewData').mockReturnValue(Effect.fail(failure))
       } else {
         vi.spyOn(queries, 'getRequestSnapshotData').mockReturnValue(Effect.fail(failure))
@@ -365,7 +373,11 @@ describe('worker view queries', () => {
         overrides: [],
       }
       const failure = Schema.decodeUnknownEffect(Schema.Number)('invalid')
-      if (projectedOperations.has(operation)) {
+      if (overviewOperations.has(operation)) {
+        vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getOverviewData').mockReturnValue(
+          failure.pipe(Effect.as({ sessions: [], turns: [], calls: [], aliases: [], overrides: [] })),
+        )
+      } else if (projectedOperations.has(operation)) {
         vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getViewData').mockReturnValue(
           failure.pipe(Effect.as({ sessions: [], turns: [], calls: [], aliases: [], overrides: [] })),
         )

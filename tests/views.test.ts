@@ -193,17 +193,6 @@ function expectNativeReads(executions: NativeSelect[], start: number, tables: st
   expect(new Set(reads.map(({ connection }) => connection)).size).toBe(1)
 }
 
-function expectRequestSnapshotReads(executions: NativeSelect[], start: number): void {
-  expectNativeReads(executions, start, [
-    'ledger_source',
-    'ledger_session',
-    'ledger_turn',
-    'ledger_call',
-    'model_alias',
-    'price_override',
-  ])
-}
-
 describe('request snapshots', () => {
   it('loads analytics projection and pricing once without a broad snapshot', () => {
     const { runtime } = openLedgerFixture()
@@ -231,19 +220,27 @@ describe('request snapshots', () => {
     }
   })
 
-  it('reuses one snapshot for lifetime data start and the scoped overview', () => {
+  it('uses a focused transactional Overview read without loading a request snapshot', () => {
     const { runtime } = openLedgerFixture()
     portViews(runtime, VIEWS_SPECS)
     const queries = runtime.runSync(LedgerQueries)
     const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
+    const overviewRead = vi.spyOn(runtime.runSync(LedgerViewReads), 'getOverviewData')
     const executions = watchNativeSelects()
     const readStart = executions.length
 
     try {
       overviewView(runtime, { period: 'all', range: { since: '2026-07-01', until: '2026-08-01' } }, NOW)
 
-      expect(snapshot).toHaveBeenCalledTimes(1)
-      expectRequestSnapshotReads(executions, readStart)
+      expect(snapshot).not.toHaveBeenCalled()
+      expect(overviewRead).toHaveBeenCalledTimes(1)
+      expectNativeReads(executions, readStart, [
+        'ledger_session',
+        'ledger_turn',
+        'ledger_call',
+        'model_alias',
+        'price_override',
+      ])
     } finally {
       vi.restoreAllMocks()
     }
