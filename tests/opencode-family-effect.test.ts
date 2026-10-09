@@ -100,7 +100,7 @@ function fixture(generation: '1x' | '2x'): { config: SqliteProviderConfig; sourc
   }
 }
 
-function pricing(calculateCost = vi.fn(() => 0)): ScanPricing {
+function pricing(calculateCost: ScanPricing['calculateCost'] = vi.fn(() => 0)): ScanPricing {
   return { calculateCost, calculateLocalModelSavings: () => null }
 }
 
@@ -149,6 +149,16 @@ describe('OpenCode family native SQLite Effects', () => {
 
   it('captures pricing once and evaluates it per pull, closing after early stream termination', async () => {
     const { config, source } = fixture('1x')
+    const fixtureDb = new DatabaseSync(join(config.dbDir, 'opencode.db'))
+    fixtureDb
+      .prepare('INSERT INTO message VALUES (?, ?, ?, ?)')
+      .run(
+        'session-1',
+        'assistant-later',
+        1_750_000_002,
+        JSON.stringify({ role: 'assistant', modelID: 'later-model', tokens: { input: 9, output: 6 } }),
+      )
+    fixtureDb.close()
     const originalOpen = sqlite.openDatabase
     const close = vi.fn()
     vi.spyOn(sqlite, 'openDatabase').mockImplementation(path => {
@@ -161,11 +171,15 @@ describe('OpenCode family native SQLite Effects', () => {
         },
       }
     })
-    const calculateCost = vi.fn(() => 0.25)
+    const calculateCost = vi.fn((model: string) => {
+      if (model === 'later-model') throw new Error('later pricing must not run')
+      return 0.25
+    })
     const captured = pricing(calculateCost)
+    const seen = new Set<string>()
     const parser = createSqliteSessionParser(
       { path: source, project: 'fixture', provider: 'opencode' },
-      new Set(),
+      seen,
       config,
       undefined,
       undefined,
@@ -176,6 +190,7 @@ describe('OpenCode family native SQLite Effects', () => {
     const first = await Effect.runPromise(Stream.runHead(stream))
     expect(first._tag).toBe('Some')
     expect(calculateCost).toHaveBeenCalledTimes(1)
+    expect(seen).toEqual(new Set(['opencode:session-1:assistant-1']))
     expect(close).toHaveBeenCalledTimes(1)
   })
 
