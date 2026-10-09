@@ -1,34 +1,21 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/unstable/sql/SqlError'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
 import { querySessionsView } from '../src/main/application/sessions-query.js'
 import type { ScopedViewQueryInputs } from '../src/main/application/view-queries.js'
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
 import type { LedgerQueriesPort } from '../src/main/store/ledger-ports.js'
-import { LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
+import { LedgerIngest, LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
-
-const temporaryDirectories: string[] = []
-
-function makeStore(): LedgerStore {
-  const directory = mkdtempSync(join(tmpdir(), 'watchtower-sessions-query-'))
-  temporaryDirectories.push(directory)
-  return new LedgerStore(join(directory, 'ledger.db'))
-}
-
-afterEach(() => {
-  for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true })
-})
+import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 type SessionSpec = {
   sessionId: string
@@ -88,23 +75,22 @@ function fixtureFor(spec: SessionSpec, index: number) {
 }
 
 async function getSnapshotData(specs: SessionSpec[] = SESSIONS): Promise<LedgerRequestSnapshotData> {
-  const store = makeStore()
-  try {
-    specs.forEach((spec, index) => {
-      store.portIn({
-        provider: spec.provider,
-        envFingerprint: 'sessions-query-test',
-        filePath: `/sessions-query/${spec.sessionId}.jsonl`,
-        verdict: 'new',
-        cachedFile: fixtureFor(spec, index),
-      })
-    })
-    return await Effect.runPromise(
-      Effect.flatMap(LedgerQueries, queries => queries.getRequestSnapshotData()).pipe(Effect.provide(store.portsLayer)),
-    )
-  } finally {
-    store.close()
-  }
+  const { runtime } = openLedgerFixture()
+  runtime.runSync(
+    Effect.gen(function* () {
+      const ingest = yield* LedgerIngest
+      for (const [index, spec] of specs.entries()) {
+        yield* ingest.portIn({
+          provider: spec.provider,
+          envFingerprint: 'sessions-query-test',
+          filePath: `/sessions-query/${spec.sessionId}.jsonl`,
+          verdict: 'new',
+          cachedFile: fixtureFor(spec, index),
+        })
+      }
+    }),
+  )
+  return runtime.runPromise(Effect.flatMap(LedgerQueries, queries => queries.getRequestSnapshotData()))
 }
 
 function emptySnapshotData(): LedgerRequestSnapshotData {
