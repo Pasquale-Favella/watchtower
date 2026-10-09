@@ -458,6 +458,36 @@ describe('parser cooperative stop', () => {
     expect(cache.providers['test-provider']?.files[path]?.turns).toHaveLength(1)
   })
 
+  it('combines native decoder rejections with canonical schema rejections once per source', async () => {
+    const path = '/test/native-rejections.session'
+    const cache = makeCache('test-provider', [path])
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('test-provider', path)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    const parse = vi.fn(async function* () {
+      yield parsedCall()
+    })
+    const parseStream = vi.fn((onUnparsedCall: Effect.Effect<void> = Effect.void) =>
+      Stream.fromEffect(Effect.andThen(onUnparsedCall, onUnparsedCall)).pipe(
+        Stream.flatMap(() => Stream.fromIterable([{ ...parsedCall(), costUSD: NaN }, parsedCall()])),
+      ),
+    )
+    hooks.getProvider.mockResolvedValue({
+      network: false,
+      durableSources: false,
+      createSessionParser: () => ({ parse, parseStream }),
+    })
+    const onUnparsed = vi.fn()
+
+    await Effect.runPromise(withParserServices(parseAllSessionsEffect(undefined, undefined, undefined, onUnparsed)))
+
+    expect(parseStream).toHaveBeenCalledOnce()
+    expect(parse).not.toHaveBeenCalled()
+    expect(onUnparsed).toHaveBeenCalledExactlyOnceWith('test-provider', 3)
+    expect(cache.providers['test-provider']?.files[path]?.failed).toBeUndefined()
+    expect(cache.providers['test-provider']?.files[path]?.turns).toHaveLength(1)
+  })
+
   it('records a native stream failure as a fingerprinted per-file failure marker', async () => {
     const path = '/test/native-stream-failure.session'
     const cache = makeCache('test-provider', [path])

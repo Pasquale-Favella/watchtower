@@ -3584,11 +3584,17 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
             }
             const streamResult = yield* Effect.result(
               parser.parseStream
-                ? Stream.runForEach(parser.parseStream(), call =>
-                    Effect.gen(function* () {
-                      yield* checkScanAbort(signal)
-                      yield* Effect.sync(() => collectCall(call))
-                    }),
+                ? Stream.runForEach(
+                    parser.parseStream(
+                      Effect.sync(() => {
+                        tally.count++
+                      }),
+                    ),
+                    call =>
+                      Effect.gen(function* () {
+                        yield* checkScanAbort(signal)
+                        yield* Effect.sync(() => collectCall(call))
+                      }),
                   )
                 : consumeLegacyParser(() => parser.parse(), collectCall, context.stop),
             )

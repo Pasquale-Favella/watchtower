@@ -25,8 +25,9 @@ export interface ProviderScanContext extends ProviderScanServices {
 
 export type SessionParser = {
   parse(): AsyncGenerator<ParsedProviderCall>
-  /** Effect-native parser path used by the scan workflow when available. */
-  parseStream?: () => Stream.Stream<ParsedProviderCall, Error>
+  /** Effect-native parser path. The per-file collector supplies an Effect to
+   * count rejected calls before canonical emission, without exposing raw data. */
+  parseStream?: (onUnparsedCall?: Effect.Effect<void>) => Stream.Stream<ParsedProviderCall, Error>
 }
 
 export type Provider = {

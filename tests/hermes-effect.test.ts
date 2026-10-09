@@ -96,8 +96,8 @@ function insertSession(
     cacheRead: number | null
     cacheWrite: number | null
     reasoning: number | null
-    estimated: number | null
-    actual: number | null
+    estimated: SQLInputValue
+    actual: SQLInputValue
     apiCalls: number | null
     toolCalls: number | null
     started: number | null
@@ -346,15 +346,67 @@ describe('Hermes Effect provider', () => {
     },
   )
 
+  it.each([
+    { actual: 'not-a-cost', estimated: 2.5, expected: 2.5, estimatedFlag: false },
+    { actual: Buffer.from('not-a-cost'), estimated: 2.5, expected: 2.5, estimatedFlag: false },
+    { actual: 4.5, estimated: 'not-a-cost', expected: 4.5, estimatedFlag: false },
+    { actual: 'not-a-cost', estimated: 'also-not-a-cost', expected: 99, estimatedFlag: true },
+  ])(
+    'ignores malformed unselected recorded costs while retaining legacy cost precedence',
+    async ({ actual, estimated, expected, estimatedFlag }) => {
+      const path = join(root, 'state.db')
+      openSourceDb(path, db => insertSession(db, { actual, estimated }))
+      const calculateCost = vi.fn(() => 99)
+      const seen = new Set<string>()
+      const calls = await collect(
+        parser({ path: `${path}#hermes-session=session-1`, project: 'default', provider: 'hermes' }, seen, undefined, {
+          calculateCost,
+          calculateLocalModelSavings: () => null,
+        }),
+      )
+
+      expect(calls).toHaveLength(1)
+      expect(calls[0]).toMatchObject({ costUSD: expected, costIsEstimated: estimatedFlag })
+      expect(calculateCost).toHaveBeenCalledTimes(1)
+      expect(seen).toEqual(new Set(['hermes:default:session-1']))
+    },
+  )
+
+  it('counts an invalid selected SQLite scalar after closing, pricing and marking the key', async () => {
+    const path = join(root, 'state.db')
+    openSourceDb(path, db => insertSession(db, { actual: new Uint8Array([4]), estimated: 2.5 }))
+    const seen = new Set<string>()
+    const calculateCost = vi.fn(() => {
+      expect(hooks.closed).toBe(1)
+      expect(seen).toEqual(new Set(['hermes:default:session-1']))
+      return 99
+    })
+    const value = parser(
+      { path: `${path}#hermes-session=session-1`, project: 'default', provider: 'hermes' },
+      seen,
+      undefined,
+      { calculateCost, calculateLocalModelSavings: () => null },
+    )
+    if (!value.parseStream) throw new Error('Hermes native parser is unavailable')
+    const rejected = vi.fn()
+
+    const calls = await Effect.runPromise(Stream.runCollect(value.parseStream(Effect.sync(rejected))))
+
+    expect([...calls]).toEqual([])
+    expect(calculateCost).toHaveBeenCalledOnce()
+    expect(rejected).toHaveBeenCalledOnce()
+    expect(hooks.closed).toBe(1)
+  })
+
   it('evaluates computed pricing before recorded-cost selection and marks the key before callback failure', async () => {
     const path = join(root, 'state.db')
-    openSourceDb(path, db => insertSession(db, { actual: 7 }))
+    openSourceDb(path, db => insertSession(db, { actual: 'not-a-cost', estimated: 'also-not-a-cost' }))
     const seen = new Set<string>()
     const pricingError = new Error('pricing callback failed')
     const pricing = {
-      calculateCost: () => {
+      calculateCost: vi.fn(() => {
         throw pricingError
-      },
+      }),
       calculateLocalModelSavings: () => null,
     } satisfies ScanPricing
 
@@ -377,6 +429,7 @@ describe('Hermes Effect provider', () => {
       ),
     ).rejects.toBe(pricingError)
     expect(seen).toEqual(new Set(['hermes:default:session-1']))
+    expect(pricing.calculateCost).toHaveBeenCalledTimes(1)
   })
 
   it('uses optional-column defaults for older schemas', async () => {

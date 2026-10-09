@@ -51,8 +51,14 @@ type TableColumn = keyof HermesSessionRow | keyof HermesMessageRow
 
 const nullableString = Schema.NullOr(Schema.String)
 const nullableFinite = Schema.NullOr(Schema.Finite)
+const sqliteCostValueSchema = Schema.Union([Schema.Number, Schema.String, Schema.Uint8Array])
+const nullableSqliteCostValue = Schema.NullOr(sqliteCostValueSchema)
 const tableInfoSchema = Schema.Struct({ name: Schema.String })
 const discoveryRowSchema = Schema.Struct({ id: Schema.String })
+const recordedCostsSchema = Schema.Struct({
+  estimated_cost_usd: nullableSqliteCostValue,
+  actual_cost_usd: nullableSqliteCostValue,
+})
 const parserSessionRowSchema = Schema.Struct({
   id: Schema.String,
   model: nullableString,
@@ -62,8 +68,6 @@ const parserSessionRowSchema = Schema.Struct({
   cache_read_tokens: Schema.Finite,
   cache_write_tokens: Schema.Finite,
   reasoning_tokens: Schema.Finite,
-  estimated_cost_usd: nullableFinite,
-  actual_cost_usd: nullableFinite,
   started_at: nullableFinite,
 })
 const messageRoleSchema = Schema.Struct({ role: Schema.String })
@@ -82,6 +86,7 @@ const jsonArraySchema = Schema.Array(Schema.Unknown)
 const argumentRecordSchema = Schema.Record(Schema.String, Schema.Unknown)
 
 type ParserSessionRow = Schema.Schema.Type<typeof parserSessionRowSchema>
+type RecordedCosts = Schema.Schema.Type<typeof recordedCostsSchema>
 type MessageRow = {
   role: string
   content?: string | null
@@ -93,7 +98,9 @@ type DiscoveryRow = Schema.Schema.Type<typeof discoveryRowSchema>
 
 const decodeTableInfo = Schema.decodeUnknownResult(tableInfoSchema)
 const decodeDiscoveryRow = Schema.decodeUnknownResult(discoveryRowSchema)
+const decodeRecordedCosts = Schema.decodeUnknownResult(recordedCostsSchema)
 const decodeParserSessionRow = Schema.decodeUnknownResult(parserSessionRowSchema)
+const decodeSelectedRecordedCost = Schema.decodeUnknownResult(Schema.Finite)
 const decodeMessageRole = Schema.decodeUnknownResult(messageRoleSchema)
 const decodeUserMessageFields = Schema.decodeUnknownResult(userMessageFieldsSchema)
 const decodeAssistantMessageFields = Schema.decodeUnknownResult(assistantMessageFieldsSchema)
@@ -102,6 +109,12 @@ const decodeToolCall = Schema.decodeUnknownResult(toolCallSchema)
 const decodeJsonArray = Schema.decodeUnknownResult(jsonArraySchema)
 const decodeArgumentRecord = Schema.decodeUnknownResult(argumentRecordSchema)
 const decodeString = Schema.decodeUnknownResult(Schema.String)
+
+function selectRecordedCost(costs: RecordedCosts): Result.Result<number | null, Schema.SchemaError> {
+  if (Number(costs.actual_cost_usd ?? 0) > 0) return decodeSelectedRecordedCost(costs.actual_cost_usd)
+  if (Number(costs.estimated_cost_usd ?? 0) > 0) return decodeSelectedRecordedCost(costs.estimated_cost_usd)
+  return Result.succeed(null)
+}
 
 class HermesDatabaseError extends Schema.TaggedError<HermesDatabaseError>()('HermesDatabaseError', {
   operation: Schema.Literals(['open', 'read', 'close']),
@@ -447,10 +460,9 @@ function createParser(
 ): SessionParser {
   const pricing = context?.pricing ?? captureScanPricing()
   const signal = context?.signal
-  const parseEffect = Effect.fnUntraced(function* (): Effect.fn.Return<
-    Stream.Stream<ParsedProviderCall, Error>,
-    Error
-  > {
+  const parseEffect = Effect.fnUntraced(function* (
+    onUnparsedCall: Effect.Effect<void>,
+  ): Effect.fn.Return<Stream.Stream<ParsedProviderCall, Error>, Error> {
     yield* checkScanAbort(signal)
     if (!isSqliteAvailable()) {
       reportProviderIssue('hermes', 'sqlite-unavailable')
@@ -523,6 +535,9 @@ function createParser(
     const decodedSession = decodeParserSessionRow(sessionRaw)
     if (Result.isFailure(decodedSession)) return Stream.empty
     const row: ParserSessionRow = decodedSession.success
+    const decodedCosts = decodeRecordedCosts(sessionRaw)
+    if (Result.isFailure(decodedCosts)) return Stream.empty
+    const recordedCosts: RecordedCosts = decodedCosts.success
     const messages: MessageRow[] = materialized.messages.flatMap(raw => {
       const decodedMessage = decodeMessageRow(raw)
       return decodedMessage === null ? [] : [decodedMessage]
@@ -591,12 +606,12 @@ function createParser(
               ),
             catch: toError,
           })
-          const recordedCost =
-            (row.actual_cost_usd ?? 0) > 0
-              ? row.actual_cost_usd
-              : (row.estimated_cost_usd ?? 0) > 0
-                ? row.estimated_cost_usd
-                : null
+          const decodedRecordedCost = selectRecordedCost(recordedCosts)
+          if (Result.isFailure(decodedRecordedCost)) {
+            yield* onUnparsedCall
+            return Result.fail(undefined)
+          }
+          const recordedCost = decodedRecordedCost.success
           const costUSD = recordedCost ?? calculatedCost
           const costIsEstimated = recordedCost === null
           yield* checkScanAbort(signal)
@@ -607,7 +622,8 @@ function createParser(
     )
   })
 
-  const parseStream = (): Stream.Stream<ParsedProviderCall, Error> => Stream.unwrap(parseEffect())
+  const parseStream = (onUnparsedCall: Effect.Effect<void> = Effect.void): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.unwrap(parseEffect(onUnparsedCall))
   return {
     parseStream,
     // Remove this async-generator edge when all direct parser callers consume parseStream.
