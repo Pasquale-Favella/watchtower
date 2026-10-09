@@ -1,8 +1,11 @@
-import { homedir } from 'os'
-import { join } from 'path'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
+import { Effect, Result, Schema, Stream } from 'effect'
 
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import { captureScanPricing } from '../models.js'
+import { checkScanAbort } from '../scan-io.js'
 import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import type { DateRange } from '../types.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
@@ -14,28 +17,31 @@ import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, 
 /// Tokens are exact; cost is computed from the pricing table. Schema verified
 /// against db v0.14.8 on 2026-06-20.
 
-type SessionRow = {
-  id: string
-  directory: string
-}
+const nullableFinite = Schema.NullOr(Schema.Finite)
+const nullableString = Schema.NullOr(Schema.String)
+const sessionRowSchema = Schema.Struct({ id: Schema.String, directory: Schema.String })
+const toolRowSchema = Schema.Struct({ turn_id: nullableString, tool_name: Schema.String })
+const usageRowSchema = Schema.Struct({
+  id: Schema.String,
+  turn_id: Schema.optional(nullableString),
+  model_id: Schema.String,
+  input_tokens: Schema.optional(nullableFinite),
+  output_tokens: Schema.optional(nullableFinite),
+  reasoning_tokens: Schema.optional(nullableFinite),
+  cache_creation_input_tokens: Schema.optional(nullableFinite),
+  cache_read_input_tokens: Schema.optional(nullableFinite),
+})
+const timestampRowSchema = Schema.Struct({ started_at: Schema.Unknown, completed_at: Schema.Unknown })
+const decodeTimestampNumber = Schema.decodeUnknownResult(Schema.Finite)
+type SessionRow = Schema.Schema.Type<typeof sessionRowSchema>
+type ToolRow = Schema.Schema.Type<typeof toolRowSchema>
+type UsageRow = Schema.Schema.Type<typeof usageRowSchema>
+type TimestampRow = Schema.Schema.Type<typeof timestampRowSchema>
 
-type UsageRow = {
-  id: string
-  turn_id: string | null
-  model_id: string
-  input_tokens: number
-  output_tokens: number
-  reasoning_tokens: number
-  cache_creation_input_tokens: number
-  cache_read_input_tokens: number
-  started_at: number
-  completed_at: number | null
-}
-
-type ToolRow = {
-  turn_id: string | null
-  tool_name: string
-}
+const decodeSessionRow = Schema.decodeUnknownResult(sessionRowSchema)
+const decodeToolRow = Schema.decodeUnknownResult(toolRowSchema)
+const decodeUsageRow = Schema.decodeUnknownResult(usageRowSchema)
+const decodeTimestampRow = Schema.decodeUnknownResult(timestampRowSchema)
 
 function getDbPath(override?: string): string {
   return override ?? join(homedir(), '.zcode', 'cli', 'db', 'db.sqlite')
@@ -45,134 +51,186 @@ function sanitizeProject(path: string): string {
   return path.replace(/^\//, '').replace(/\//g, '-')
 }
 
-function epochMsToIso(ms: number | null): string {
-  if (ms === null || !Number.isFinite(ms) || ms <= 0) return new Date(0).toISOString()
+function epochMsToIso(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms) || ms <= 0) return new Date(0).toISOString()
   return new Date(ms).toISOString()
 }
 
 function validateSchema(db: SqliteDatabase): boolean {
   try {
-    db.query<{ cnt: number }>('SELECT COUNT(*) as cnt FROM model_usage LIMIT 1')
-    db.query<{ cnt: number }>('SELECT COUNT(*) as cnt FROM session LIMIT 1')
+    db.query('SELECT COUNT(*) as cnt FROM model_usage LIMIT 1')
+    db.query('SELECT COUNT(*) as cnt FROM session LIMIT 1')
     return true
   } catch {
     return false
   }
 }
 
-function discover(dbPath: string): SessionSource[] {
-  let db: SqliteDatabase
-  try {
-    db = openDatabase(dbPath)
-  } catch {
-    return []
-  }
-  try {
+const sourceRows = Effect.fnUntraced(function* <A>(
+  path: string,
+  read: (db: SqliteDatabase) => A,
+): Effect.fn.Return<A, ZcodeDatabaseError> {
+  const readResult = yield* Effect.acquireUseRelease(
+    Effect.try({
+      try: () => openDatabase(path),
+      catch: cause => databaseError('open', cause),
+    }),
+    db => Effect.result(Effect.try({ try: () => read(db), catch: cause => databaseError('read', cause) })),
+    db => Effect.try({ try: () => db.close(), catch: cause => databaseError('close', cause) }),
+  )
+  if (Result.isFailure(readResult)) return yield* Effect.fail(readResult.failure)
+  return readResult.success
+})
+
+class ZcodeDatabaseError extends Schema.TaggedError<ZcodeDatabaseError>()('ZcodeDatabaseError', {
+  operation: Schema.Literals(['open', 'read', 'close']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+function databaseError(operation: ZcodeDatabaseError['operation'], cause: unknown): ZcodeDatabaseError {
+  const error = toError(cause)
+  return new ZcodeDatabaseError({ operation, cause: error, message: error.message })
+}
+
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause))
+}
+
+const discoverSessionsEffect = Effect.fn('discoverZcodeSessions')(function* (
+  dbPath: string,
+  context?: ProviderScanContext,
+): Effect.fn.Return<SessionSource[], Error> {
+  yield* checkScanAbort(context?.signal)
+  if (!isSqliteAvailable()) return []
+
+  const rows = yield* sourceRows(dbPath, db => {
     if (!validateSchema(db)) return []
-    const rows = db.query<SessionRow>(
-      `SELECT DISTINCT s.id as id, s.directory as directory
-       FROM session s
-       JOIN model_usage m ON m.session_id = s.id
-       WHERE m.input_tokens > 0 OR m.output_tokens > 0 OR m.reasoning_tokens > 0
-          OR m.cache_read_input_tokens > 0 OR m.cache_creation_input_tokens > 0`,
+    return db.query(
+      'SELECT DISTINCT s.id as id, s.directory as directory\n' +
+        '       FROM session s\n' +
+        '       JOIN model_usage m ON m.session_id = s.id\n' +
+        '       WHERE m.input_tokens > 0 OR m.output_tokens > 0 OR m.reasoning_tokens > 0\n' +
+        '          OR m.cache_read_input_tokens > 0 OR m.cache_creation_input_tokens > 0',
     )
-    return rows.map(row => ({
-      path: `${dbPath}:${row.id}`,
-      project: sanitizeProject(row.directory),
-      provider: 'zcode',
-    }))
-  } catch {
-    return []
-  } finally {
-    db.close()
-  }
+  }).pipe(
+    Effect.catchTag('ZcodeDatabaseError', error =>
+      error.operation === 'close' ? Effect.fail(toError(error.cause)) : Effect.succeed([]),
+    ),
+  )
+  yield* checkScanAbort(context?.signal)
+  return rows.flatMap(raw => {
+    const decoded = decodeSessionRow(raw)
+    if (Result.isFailure(decoded)) return []
+    const row: SessionRow = decoded.success
+    return [{ path: `${dbPath}:${row.id}`, project: sanitizeProject(row.directory), provider: 'zcode' }]
+  })
+})
+
+function splitSourcePath(path: string): { dbPath: string; sessionId: string } {
+  const segments = path.split(':')
+  const sessionId = segments.pop() ?? ''
+  return { dbPath: segments.join(':'), sessionId }
 }
 
 function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
   const pricing = context?.pricing ?? captureScanPricing()
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      if (!isSqliteAvailable()) {
-        reportProviderIssue('zcode', 'sqlite-unavailable')
-        return
-      }
+  const signal = context?.signal
+  const { dbPath, sessionId } = splitSourcePath(source.path)
 
-      // Source paths are `<dbPath>:<sessionId>`. Split from the right so a colon
-      // in the path (Windows drive letter) doesn't corrupt the session id.
-      const segments = source.path.split(':')
-      const sessionId = segments[segments.length - 1]!
-      const dbPath = segments.slice(0, -1).join(':')
+  const parseEffect = Effect.fnUntraced(function* (): Effect.fn.Return<
+    Stream.Stream<ParsedProviderCall, Error>,
+    Error
+  > {
+    yield* checkScanAbort(signal)
+    if (!isSqliteAvailable()) {
+      reportProviderIssue('zcode', 'sqlite-unavailable')
+      return Stream.empty
+    }
 
-      let db: SqliteDatabase
-      try {
-        db = openDatabase(dbPath)
-      } catch (err) {
-        reportProviderIssue('zcode', fileErrorCode(err, 'db-open-failed'))
-        return
-      }
-
-      try {
-        if (!validateSchema(db)) return
-
-        // model_usage rows don't link to individual tool calls, only to a turn,
-        // so collect each turn's tools and attach them to one request per turn
-        // (below) to avoid double-counting across a turn's multiple requests.
-        const toolRows = db.query<ToolRow>(
-          `SELECT turn_id, tool_name FROM tool_usage
-           WHERE session_id = ? AND turn_id IS NOT NULL
-           ORDER BY started_at ASC`,
-          [sessionId],
-        )
-        const toolsByTurn = new Map<string, string[]>()
-        for (const tool of toolRows) {
-          if (!tool.turn_id) continue
-          const list = toolsByTurn.get(tool.turn_id) ?? []
-          list.push(tool.tool_name)
-          toolsByTurn.set(tool.turn_id, list)
+    const materialized = yield* sourceRows(dbPath, db => {
+      if (!validateSchema(db)) return null
+      // Materialize the minimal projections and close the native connection
+      // before any calls are priced or emitted from the downstream stream.
+      const toolRows = db.query(
+        'SELECT turn_id, tool_name FROM tool_usage\n' +
+          '           WHERE session_id = ? AND turn_id IS NOT NULL\n' +
+          '           ORDER BY started_at ASC',
+        [sessionId],
+      )
+      const usageRows = db.query(
+        'SELECT id, turn_id, model_id, input_tokens, output_tokens, reasoning_tokens,\n' +
+          '                  cache_creation_input_tokens, cache_read_input_tokens, started_at, completed_at\n' +
+          '           FROM model_usage WHERE session_id = ?\n' +
+          '           ORDER BY started_at ASC',
+        [sessionId],
+      )
+      return { toolRows, usageRows }
+    }).pipe(
+      Effect.catchTag('ZcodeDatabaseError', error => {
+        if (error.operation === 'open') {
+          reportProviderIssue('zcode', fileErrorCode(error.cause, 'db-open-failed'))
+          return Effect.succeed(null)
         }
+        return Effect.fail(toError(error.cause))
+      }),
+    )
+    if (materialized === null) return Stream.empty
+    yield* checkScanAbort(signal)
 
-        const rows = db.query<UsageRow>(
-          `SELECT id, turn_id, model_id, input_tokens, output_tokens, reasoning_tokens,
-                  cache_creation_input_tokens, cache_read_input_tokens, started_at, completed_at
-           FROM model_usage WHERE session_id = ?
-           ORDER BY started_at ASC`,
-          [sessionId],
-        )
+    const toolsByTurn = new Map<string, string[]>()
+    for (const raw of materialized.toolRows) {
+      const decoded = decodeToolRow(raw)
+      if (Result.isFailure(decoded) || !decoded.success.turn_id) continue
+      const row: ToolRow = decoded.success
+      const turnId = row.turn_id
+      if (turnId === null) continue
+      const list = toolsByTurn.get(turnId) ?? []
+      list.push(row.tool_name)
+      toolsByTurn.set(turnId, list)
+    }
 
-        const turnsWithToolsEmitted = new Set<string>()
-
-        for (const row of rows) {
+    const turnsWithToolsEmitted = new Set<string>()
+    return Stream.fromIterable(materialized.usageRows).pipe(
+      Stream.rechunk(1),
+      Stream.mapEffect(raw =>
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          const decoded = decodeUsageRow(raw)
+          if (Result.isFailure(decoded)) return Result.fail(undefined)
+          const row: UsageRow = decoded.success
+          const decodedTimestamp = decodeTimestampRow(raw)
+          if (Result.isFailure(decodedTimestamp)) return Result.fail(undefined)
+          const timestampRow: TimestampRow = decodedTimestamp.success
           const cacheRead = row.cache_read_input_tokens ?? 0
           const cacheCreation = row.cache_creation_input_tokens ?? 0
           const output = row.output_tokens ?? 0
           const reasoning = row.reasoning_tokens ?? 0
           // ZCode folds cached tokens into input_tokens (OpenAI-style). Split
           // them back out so fresh input bills at the input rate and cached at
-          // the cache-read rate, matching the pricing table's Anthropic-style
-          // semantics.
+          // the cache-read rate, matching the pricing table's Anthropic-style semantics.
           const freshInput = Math.max(0, (row.input_tokens ?? 0) - cacheRead - cacheCreation)
-
           if (freshInput === 0 && output === 0 && reasoning === 0 && cacheRead === 0 && cacheCreation === 0) {
-            continue
+            return Result.fail(undefined)
           }
 
-          const dedupKey = `zcode:${row.id}`
-          if (seenKeys.has(dedupKey)) continue
-          seenKeys.add(dedupKey)
-
+          const deduplicationKey = `zcode:${row.id}`
+          if (seenKeys.has(deduplicationKey)) return Result.fail(undefined)
+          seenKeys.add(deduplicationKey)
+          const turnId = row.turn_id ?? undefined
           let tools: string[] = []
-          if (row.turn_id && !turnsWithToolsEmitted.has(row.turn_id)) {
-            const turnTools = toolsByTurn.get(row.turn_id)
+          if (turnId && !turnsWithToolsEmitted.has(turnId)) {
+            const turnTools = toolsByTurn.get(turnId)
             if (turnTools && turnTools.length > 0) {
               tools = turnTools
-              turnsWithToolsEmitted.add(row.turn_id)
+              turnsWithToolsEmitted.add(turnId)
             }
           }
-
           const model = row.model_id
           const costUSD = pricing.calculateCost(model, freshInput, output, cacheCreation, cacheRead, 0)
-
-          yield {
+          const selectedTimestamp = timestampRow.completed_at ?? timestampRow.started_at
+          const decodedTime = decodeTimestampNumber(selectedTimestamp)
+          return Result.succeed({
             provider: 'zcode',
             model,
             inputTokens: freshInput,
@@ -185,17 +243,25 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
             costUSD,
             tools,
             bashCommands: [],
-            timestamp: epochMsToIso(row.completed_at ?? row.started_at),
+            timestamp: epochMsToIso(Result.isSuccess(decodedTime) ? decodedTime.success : null),
             speed: 'standard',
-            deduplicationKey: dedupKey,
-            turnId: row.turn_id ?? undefined,
+            deduplicationKey,
+            turnId,
             userMessage: '',
             sessionId,
-          }
-        }
-      } finally {
-        db.close()
-      }
+          } satisfies ParsedProviderCall)
+        }),
+      ),
+      Stream.filterMap(call => call),
+    )
+  })
+
+  const parseStream = (): Stream.Stream<ParsedProviderCall, Error> => Stream.unwrap(parseEffect())
+  return {
+    parseStream,
+    // Remove when scan/parser and external iterator callers have migrated to parseStream.
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      yield* Stream.toAsyncIterable(parseStream())
     },
   }
 }
@@ -214,9 +280,13 @@ export function createZcodeProvider(dbPathOverride?: string): Provider {
       return rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      if (!isSqliteAvailable()) return []
-      return discover(dbPath)
+    discoverSessionsEffect(context?: ProviderScanContext) {
+      return discoverSessionsEffect(dbPath, context)
+    },
+    // Remove when every discovery caller uses the native Effect entry point.
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discoverSessionsEffect(dbPath, context))
     },
 
     createSessionParser(
