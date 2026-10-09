@@ -238,6 +238,7 @@ export const PROVIDER_ENV_KEYS = [
   'WATCHTOWER_COPILOT_SESSION_STORE_DB',
   'WATCHTOWER_COPILOT_WS_STORAGE_DIR',
   'WATCHTOWER_DESKTOP_SESSIONS_DIR',
+  'WATCHTOWER_OPEN_DESIGN_DIR',
   'WATCHTOWER_PROGRESS',
   'WATCHTOWER_VERBOSE',
 ] as const
@@ -419,6 +420,7 @@ export const ENV_VAR_SOURCES = {
   WATCHTOWER_COPILOT_SESSION_STORE_DB: { kind: 'override' },
   WATCHTOWER_COPILOT_WS_STORAGE_DIR: { kind: 'override' },
   WATCHTOWER_DESKTOP_SESSIONS_DIR: { kind: 'override' },
+  WATCHTOWER_OPEN_DESIGN_DIR: { kind: 'override' },
   WATCHTOWER_PROGRESS: { kind: 'override' },
   WATCHTOWER_VERBOSE: { kind: 'override' },
   XDG_CONFIG_HOME: { kind: 'platform', field: 'xdgConfigHome' },

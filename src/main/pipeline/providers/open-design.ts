@@ -1,10 +1,14 @@
-import { readdir, stat } from 'fs/promises'
-import { homedir, platform } from 'os'
+import { Effect, Result, Schema, Stream } from 'effect'
+import { stat } from 'fs/promises'
+import { homedir } from 'os'
 import { basename, dirname, join } from 'path'
 
+import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
-import { readSessionLines } from '../fs-utils.js'
+import { readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
+import { isScanAbortedError } from '../scan-control.js'
+import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
 import type { DateRange } from '../types.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
@@ -18,12 +22,15 @@ const modelDisplayNames = new Map<string, string>([
   ['GLM-5.2', 'GLM-5.2'],
 ])
 
-type OpenDesignEntry = {
-  id?: unknown
-  event?: unknown
-  data?: unknown
-  timestamp?: unknown
-}
+const recordSchema = Schema.Record(Schema.String, Schema.Unknown)
+const stringSchema = Schema.String
+const finiteSchema = Schema.Finite
+const decodeRecord = Schema.decodeUnknownResult(recordSchema)
+const decodeEventJson = Schema.decodeUnknownResult(Schema.fromJsonString(recordSchema))
+const decodeString = Schema.decodeUnknownResult(stringSchema)
+const decodeFinite = Schema.decodeUnknownResult(finiteSchema)
+
+type OpenDesignEntry = Record<string, unknown>
 
 type TokenUsage = {
   inputTokens: number
@@ -32,43 +39,40 @@ type TokenUsage = {
   reasoningTokens: number
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined
+  const decoded = decodeString(value)
+  return Result.isSuccess(decoded) && decoded.success.length > 0 ? decoded.success : undefined
 }
 
 function tokenValue(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+  const decoded = decodeFinite(value)
+  return Result.isSuccess(decoded) && decoded.success > 0 ? decoded.success : 0
 }
 
 function timestampValue(value: unknown): string {
   const text = stringValue(value)
   if (text) return text
-  if (typeof value !== 'number' || !Number.isFinite(value)) return ''
+  const decoded = decodeFinite(value)
+  if (Result.isFailure(decoded)) return ''
 
-  const date = new Date(value)
+  const date = new Date(decoded.success)
   return Number.isNaN(date.getTime()) ? '' : date.toISOString()
 }
 
 function parseEvent(line: string | Buffer): OpenDesignEntry | null {
-  const text = (typeof line === 'string' ? line : line.toString('utf-8')).trim()
-  if (!text) return null
-
-  try {
-    const parsed = JSON.parse(text) as unknown
-    return isRecord(parsed) ? parsed : null
-  } catch {
-    return null
-  }
+  const decoded = decodeEventJson(typeof line === 'string' ? line.trim() : line.toString('utf-8').trim())
+  return Result.isSuccess(decoded) ? decoded.success : null
 }
 
-function parseUsage(data: unknown): TokenUsage | null {
-  if (!isRecord(data) || data['type'] !== 'usage') return null
-  const usage = data['usage']
-  if (!isRecord(usage)) return null
+function recordValue(value: unknown): OpenDesignEntry | null {
+  const decoded = decodeRecord(value)
+  return Result.isSuccess(decoded) ? decoded.success : null
+}
+
+function parseUsage(data: OpenDesignEntry): TokenUsage | null {
+  if (data['type'] !== 'usage') return null
+  const usage = recordValue(data['usage'])
+  if (!usage) return null
 
   return {
     inputTokens: tokenValue(usage['input_tokens']),
@@ -78,17 +82,16 @@ function parseUsage(data: unknown): TokenUsage | null {
   }
 }
 
-function getOpenDesignDir(): string {
-  const override = process.env[ENV_DIR]
+export function getOpenDesignDir(paths?: AppPaths): string {
+  const override = overrideFor(paths, ENV_DIR)
+  // The environment override historically used a truthiness check. An empty
+  // factory override is distinct because createOpenDesignProvider uses ??.
   if (override) return override
 
   const home = homedir()
-  const os = platform()
-  if (os === 'darwin') {
-    return join(home, 'Library', 'Application Support', 'Open Design')
-  }
-  if (os === 'win32') {
-    return join(process.env['APPDATA'] ?? join(home, 'AppData', 'Roaming'), 'Open Design')
+  if (process.platform === 'darwin') return join(home, 'Library', 'Application Support', 'Open Design')
+  if (process.platform === 'win32') {
+    return join(platformFor(paths).appData ?? join(home, 'AppData', 'Roaming'), 'Open Design')
   }
   return join(home, '.config', 'Open Design')
 }
@@ -102,41 +105,45 @@ function namespaceFromRunsDir(runsDir: string): string {
   return namespaceFromDataDir(dirname(runsDir))
 }
 
-async function discoverRunsDir(runsDir: string, project: string): Promise<SessionSource[]> {
+function statFile(path: string, signal?: AbortSignal): Effect.Effect<boolean, Error> {
+  return scanIo(() => stat(path), signal).pipe(
+    Effect.map(info => info.isFile()),
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(false))),
+  )
+}
+
+const discoverRunsDir = Effect.fnUntraced(function* (
+  runsDir: string,
+  project: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<SessionSource[], Error> {
   const sources: SessionSource[] = []
-  let runDirs: string[]
-  try {
-    runDirs = await readdir(runsDir)
-  } catch {
-    return sources
-  }
+  const runDirs = yield* readDirectoryOrEmpty(runsDir, signal)
 
   for (const runDir of runDirs) {
+    yield* checkScanAbort(signal)
     const eventsPath = join(runsDir, runDir, 'events.jsonl')
-    const s = await stat(eventsPath).catch(() => null)
-    if (!s?.isFile()) continue
+    if (!(yield* statFile(eventsPath, signal))) continue
     sources.push({ path: eventsPath, project, provider: PROVIDER_NAME })
   }
 
   return sources
-}
+})
 
-async function discoverNamespacesDir(namespacesDir: string): Promise<SessionSource[]> {
+const discoverNamespacesDir = Effect.fnUntraced(function* (
+  namespacesDir: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<SessionSource[], Error> {
   const sources: SessionSource[] = []
-  let namespaces: string[]
-  try {
-    namespaces = await readdir(namespacesDir)
-  } catch {
-    return sources
-  }
+  const namespaces = yield* readDirectoryOrEmpty(namespacesDir, signal)
 
   for (const ns of namespaces) {
-    const runsDir = join(namespacesDir, ns, 'data', 'runs')
-    sources.push(...(await discoverRunsDir(runsDir, ns)))
+    yield* checkScanAbort(signal)
+    sources.push(...(yield* discoverRunsDir(join(namespacesDir, ns, 'data', 'runs'), ns, signal)))
   }
 
   return sources
-}
+})
 
 function dedupeSources(sources: SessionSource[]): SessionSource[] {
   const seen = new Set<string>()
@@ -149,94 +156,133 @@ function dedupeSources(sources: SessionSource[]): SessionSource[] {
   return out
 }
 
-async function discoverOpenDesignSessions(baseDir: string): Promise<SessionSource[]> {
+const discoverOpenDesignSessionsEffect = Effect.fn('discoverOpenDesignSessions')(function* (
+  baseDir: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<SessionSource[], Error> {
+  yield* checkScanAbort(signal)
   const baseName = basename(baseDir)
-  if (baseName === 'runs') {
-    return discoverRunsDir(baseDir, namespaceFromRunsDir(baseDir))
-  }
+  if (baseName === 'runs') return yield* discoverRunsDir(baseDir, namespaceFromRunsDir(baseDir), signal)
   if (baseName === 'data') {
-    return discoverRunsDir(join(baseDir, 'runs'), namespaceFromDataDir(baseDir))
+    return yield* discoverRunsDir(join(baseDir, 'runs'), namespaceFromDataDir(baseDir), signal)
   }
 
-  const sources: SessionSource[] = []
-  sources.push(...(await discoverRunsDir(join(baseDir, 'data', 'runs'), basename(baseDir) || PROVIDER_NAME)))
-  sources.push(...(await discoverRunsDir(join(baseDir, 'runs'), basename(baseDir) || PROVIDER_NAME)))
-  sources.push(...(await discoverNamespacesDir(baseName === 'namespaces' ? baseDir : join(baseDir, 'namespaces'))))
+  const project = baseName || PROVIDER_NAME
+  const sources = [
+    ...(yield* discoverRunsDir(join(baseDir, 'data', 'runs'), project, signal)),
+    ...(yield* discoverRunsDir(join(baseDir, 'runs'), project, signal)),
+    ...(yield* discoverNamespacesDir(baseName === 'namespaces' ? baseDir : join(baseDir, 'namespaces'), signal)),
+  ]
+  yield* checkScanAbort(signal)
   return dedupeSources(sources)
-}
+})
 
-function createParser(source: SessionSource, seenKeys: Set<string>, pricing: ScanPricing): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const sessionId = basename(dirname(source.path))
-      let currentModel = ''
-      let fallbackEventCounter = 0
+function createParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  pricing: ScanPricing,
+  context?: ProviderScanContext,
+): SessionParser {
+  const signal = context?.signal
+  const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
+        const sessionId = basename(dirname(source.path))
+        let currentModel = ''
+        let fallbackEventCounter = 0
 
-      for await (const line of readSessionLines(source.path)) {
-        const entry = parseEvent(line)
-        if (!entry) continue
+        return readSessionLinesStream(source.path, undefined, signal ? { signal } : {}).pipe(
+          Stream.mapEffect(line =>
+            Effect.gen(function* () {
+              yield* checkScanAbort(signal)
+              const entry = parseEvent(line)
+              if (!entry) return Result.fail(undefined)
 
-        const eventName = stringValue(entry.event)
-        const data = entry.data
+              const eventName = stringValue(entry['event'])
+              const data = recordValue(entry['data'])
+              if (!data) return Result.fail(undefined)
 
-        if (eventName === 'start' && isRecord(data)) {
-          const model = stringValue(data['model'])
-          if (model) currentModel = model
-          continue
-        }
+              if (eventName === 'start') {
+                const model = stringValue(data['model'])
+                if (model) currentModel = model
+                return Result.fail(undefined)
+              }
+              if (eventName !== 'agent') return Result.fail(undefined)
 
-        if (eventName !== 'agent' || !isRecord(data)) continue
+              if (data['type'] === 'status') {
+                const model = stringValue(data['model'])
+                if (model) currentModel = model
+                return Result.fail(undefined)
+              }
 
-        if (data['type'] === 'status') {
-          const model = stringValue(data['model'])
-          if (model) currentModel = model
-          continue
-        }
+              const usage = parseUsage(data)
+              if (!usage || !currentModel) return Result.fail(undefined)
 
-        const usage = parseUsage(data)
-        if (!usage || !currentModel) continue
+              const eventId = stringValue(entry['id']) ?? `line-${fallbackEventCounter++}`
+              const dedupKey = `${PROVIDER_NAME}:${sessionId}:${eventId}`
+              if (seenKeys.has(dedupKey)) return Result.fail(undefined)
+              yield* checkScanAbort(signal)
+              seenKeys.add(dedupKey)
 
-        const eventId = stringValue(entry.id) ?? `line-${fallbackEventCounter++}`
-        const dedupKey = `${PROVIDER_NAME}:${sessionId}:${eventId}`
-        if (seenKeys.has(dedupKey)) continue
-        seenKeys.add(dedupKey)
+              const uncachedInputTokens = Math.max(0, usage.inputTokens - usage.cacheReadTokens)
+              const costUSD = yield* Effect.try({
+                try: () =>
+                  pricing.calculateCost(
+                    currentModel,
+                    uncachedInputTokens,
+                    billableOutputTokens(PROVIDER_NAME, usage.outputTokens, usage.reasoningTokens),
+                    0,
+                    usage.cacheReadTokens,
+                    0,
+                  ),
+                catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+              })
 
-        const uncachedInputTokens = Math.max(0, usage.inputTokens - usage.cacheReadTokens)
-        const costUSD = pricing.calculateCost(
-          currentModel,
-          uncachedInputTokens,
-          billableOutputTokens(PROVIDER_NAME, usage.outputTokens, usage.reasoningTokens),
-          0,
-          usage.cacheReadTokens,
-          0,
+              return Result.succeed({
+                provider: PROVIDER_NAME,
+                sessionId,
+                project: source.project,
+                model: currentModel,
+                inputTokens: uncachedInputTokens,
+                outputTokens: usage.outputTokens,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: usage.cacheReadTokens,
+                cachedInputTokens: usage.cacheReadTokens,
+                reasoningTokens: usage.reasoningTokens,
+                webSearchRequests: 0,
+                costUSD,
+                tools: [],
+                bashCommands: [],
+                timestamp: timestampValue(entry['timestamp']),
+                speed: 'standard',
+                deduplicationKey: dedupKey,
+                userMessage: '',
+              } satisfies ParsedProviderCall)
+            }),
+          ),
+          Stream.filterMap(call => call),
         )
+      }),
+    )
 
-        yield {
-          provider: PROVIDER_NAME,
-          sessionId,
-          project: source.project,
-          model: currentModel,
-          inputTokens: uncachedInputTokens,
-          outputTokens: usage.outputTokens,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: usage.cacheReadTokens,
-          cachedInputTokens: usage.cacheReadTokens,
-          reasoningTokens: usage.reasoningTokens,
-          webSearchRequests: 0,
-          costUSD,
-          tools: [],
-          bashCommands: [],
-          timestamp: timestampValue(entry.timestamp),
-          speed: 'standard',
-          deduplicationKey: dedupKey,
-          userMessage: '',
-        }
-      }
+  return {
+    parseStream,
+    // Remove this compatibility adapter when direct callers use parseStream.
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      yield* Stream.toAsyncIterable(parseStream())
     },
   }
 }
 
-export function createOpenDesignProvider(overrideDir?: string): Provider {
+export function createOpenDesignProvider(overrideDir?: string, paths?: AppPaths): Provider {
+  const discoverEffect = Effect.fn('discoverOpenDesignSessions')(function* (
+    context?: ProviderScanContext,
+  ): Effect.fn.Return<SessionSource[], Error> {
+    const baseDir = overrideDir ?? getOpenDesignDir(paths)
+    return yield* discoverOpenDesignSessionsEffect(baseDir, context?.signal)
+  })
+
   return {
     name: PROVIDER_NAME,
     displayName: 'Open Design',
@@ -249,8 +295,11 @@ export function createOpenDesignProvider(overrideDir?: string): Provider {
       return rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      return discoverOpenDesignSessions(overrideDir ?? getOpenDesignDir())
+    discoverSessionsEffect: discoverEffect,
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // Remove this Promise edge after external callers consume native discovery.
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(
@@ -260,7 +309,7 @@ export function createOpenDesignProvider(overrideDir?: string): Provider {
       context?: ProviderScanContext,
     ): SessionParser {
       const pricing = context?.pricing ?? captureScanPricing()
-      return createParser(source, seenKeys, pricing)
+      return createParser(source, seenKeys, pricing, context)
     },
   }
 }
