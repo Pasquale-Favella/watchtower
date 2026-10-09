@@ -1,22 +1,12 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import {
-  buildCsvExportFiles,
-  buildCsvExportFilesFromRows,
-  buildJsonExport,
-  buildJsonExportFromRows,
-} from '../src/main/export-calculation.js'
+import { buildCsvExportFilesFromRows, buildJsonExportFromRows } from '../src/main/export-calculation.js'
 import { buildExportRows, calculateExportData } from '../src/main/export-rows-calculation.js'
 import { capturePricingCatalogue, type PricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import {
-  buildSessionSummariesFromSnapshotResult,
-  groupSummariesIntoProjects,
-} from '../src/main/store/aggregate-calculation.js'
 import type { LedgerExportData } from '../src/main/store/export-read-projections.js'
 import { LedgerExportReads } from '../src/main/store/ledger-export-reads.js'
-import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { makeLedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
+import { LedgerIngest } from '../src/main/store/ledger-ports.js'
 import type { ActiveCurrency } from '../src/shared/schemas/fx.js'
 import {
   buildFixtureCachedCall,
@@ -25,6 +15,7 @@ import {
   FIXTURE_SOURCE_PATH,
 } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
+import { PRE_RETIREMENT_EXPORT_EXPECTATIONS } from './fixtures/pre-retirement-export-expectations.js'
 
 const USD: ActiveCurrency = { code: 'USD', symbol: '$', rate: 1 }
 const JPY: ActiveCurrency = { code: 'JPY', symbol: '¥', rate: 150 }
@@ -443,7 +434,7 @@ describe('direct export table calculation', () => {
         ],
       }),
     },
-  ])('matches the legacy snapshot export byte for byte on native $name facts', ({ cachedFile }) => {
+  ] as const)('matches pinned pre-retirement bytes on native $name facts', ({ name, cachedFile }) => {
     const { runtime } = openLedgerFixture()
     runtime.runSync(
       Effect.flatMap(LedgerIngest, ingest =>
@@ -456,33 +447,15 @@ describe('direct export table calculation', () => {
         }),
       ),
     )
-    const { exportData, requestData } = runtime.runSync(
-      Effect.gen(function* () {
-        const exports = yield* LedgerExportReads
-        const queries = yield* LedgerQueries
-        return {
-          exportData: yield* exports.getExportData(),
-          requestData: yield* queries.getRequestSnapshotData(),
-        }
-      }),
-    )
-    const inputs = {
-      catalogue: catalogue(),
-      proxyPaths: { paths: [], caseSensitive: false },
-    }
-    const snapshot = makeLedgerQuerySnapshot({ ...requestData, ...inputs })
-    const aggregation = buildSessionSummariesFromSnapshotResult(snapshot, {
-      range: { start: new Date(-8.64e15), end: new Date(8.64e15) },
-    })
-    const projects = groupSummariesIntoProjects(aggregation.summaries)
-    const direct = calculateExportData(exportData, inputs.catalogue)
-    expect(direct.unpricedModels).toEqual(aggregation.unpricedModels)
+    const exportData = runtime.runSync(Effect.flatMap(LedgerExportReads, exports => exports.getExportData()))
+    const direct = calculateExportData(exportData, catalogue())
+    expect(direct.unpricedModels).toEqual([])
+    const pinned = PRE_RETIREMENT_EXPORT_EXPECTATIONS[name]
     for (const currency of [USD, JPY]) {
       const rows = buildExportRows(direct.data, currency)
-      expect(buildCsvExportFilesFromRows(rows, currency, GENERATED)).toEqual(
-        buildCsvExportFiles(projects, currency, GENERATED),
-      )
-      expect(buildJsonExportFromRows(rows, currency, GENERATED)).toBe(buildJsonExport(projects, currency, GENERATED))
+      const expected = currency.code === 'USD' ? pinned.USD : pinned.JPY
+      expect(buildCsvExportFilesFromRows(rows, currency, GENERATED).map(file => file.contents)).toEqual(expected.csv)
+      expect(buildJsonExportFromRows(rows, currency, GENERATED)).toBe(expected.json)
     }
   })
 })

@@ -6,12 +6,12 @@ import * as Effect from 'effect/Effect'
 import { describe, expect, it, vi } from 'vitest'
 
 import { queryExport } from '../src/main/application/export-query.js'
-import { buildCsvExportFiles, buildJsonExport } from '../src/main/export-calculation.js'
+import { buildCsvExportFilesFromRows, buildJsonExportFromRows } from '../src/main/export-calculation.js'
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
 import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import { buildExportSerializationRows } from './fixtures/export-serialization.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
-import { buildFixtureReport } from './fixtures/report.js'
 
 const GENERATED = '2026-07-14T12:34:56.000Z'
 const USD = { code: 'USD', symbol: '$', rate: 1 } as const
@@ -120,8 +120,8 @@ describe('queryExport (ADR 0009: carries the selected display currency at export
 
 describe('pure export serialization', () => {
   it('keeps the literal CSV table set, headers, values, escaping and JSON contract', () => {
-    const projects = buildFixtureReport()
-    const files = buildCsvExportFiles(projects, USD, GENERATED)
+    const rows = buildExportSerializationRows()
+    const files = buildCsvExportFilesFromRows(rows, USD, GENERATED)
     expect(files.map(file => file.name)).toEqual([
       'README.txt',
       'daily.csv',
@@ -187,7 +187,7 @@ describe('pure export serialization', () => {
       'shell-commands.csv': 'Command,Calls,Share (%)\nls,1,100\n',
     })
 
-    const json = JSON.parse(buildJsonExport(projects, USD, GENERATED)) as Record<string, unknown>
+    const json = JSON.parse(buildJsonExportFromRows(rows, USD, GENERATED)) as Record<string, unknown>
     expect(json).toEqual({
       schema: 'watchtower.export.v1',
       generated: GENERATED,
@@ -264,12 +264,12 @@ describe('pure export serialization', () => {
       shellCommands: [{ Command: 'ls', Calls: 1, 'Share (%)': 100 }],
     })
 
-    const call = projects[0]?.sessions[0]?.turns[0]?.assistantCalls[0]
-    if (!call) throw new Error('fixture call missing')
-    call.model = '=SUM(1,2)'
-    expect(buildCsvExportFiles(projects, USD, GENERATED).find(file => file.name === 'records.csv')?.contents).toContain(
-      '"\'=SUM(1,2)"',
-    )
+    const record = rows.records[0]
+    if (!record) throw new Error('fixture record missing')
+    record.model = '=SUM(1,2)'
+    expect(
+      buildCsvExportFilesFromRows(rows, USD, GENERATED).find(file => file.name === 'records.csv')?.contents,
+    ).toContain('"\'=SUM(1,2)"')
   })
 })
 
