@@ -1,9 +1,13 @@
+import { Effect, Result, Schema, Stream } from 'effect'
 import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, join } from 'path'
 
+import { type AppPaths, overrideFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { captureScanPricing } from '../models.js'
+import { isScanAbortedError } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { DateRange } from '../types.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
@@ -20,6 +24,8 @@ const USD_PER_CREDIT = 0.01
 // product name is still on disk). Development and staging channels use
 // `manicode-dev` and `manicode-staging` -- we walk all three when present.
 const CHANNELS = ['manicode', 'manicode-dev', 'manicode-staging'] as const
+const PROVIDER_NAME = 'codebuff'
+const ENV_DIR = 'CODEBUFF_DATA_DIR'
 
 const modelDisplayNames: Record<string, string> = {
   codebuff: 'Codebuff',
@@ -56,116 +62,92 @@ const toolNameMap: Record<string, string> = {
 // distinguishing "coding" vs "exploration" vs "planning" work.
 const IGNORED_TOOLS = new Set(['suggest_followups', 'end_turn'])
 
-type CodebuffUsage = {
-  inputTokens?: number
-  input_tokens?: number
-  promptTokens?: number
-  prompt_tokens?: number
-  outputTokens?: number
-  output_tokens?: number
-  completionTokens?: number
-  completion_tokens?: number
-  cacheCreationInputTokens?: number
-  cache_creation_input_tokens?: number
-  cacheReadInputTokens?: number
-  cache_read_input_tokens?: number
-  promptTokensDetails?: { cachedTokens?: number }
-  prompt_tokens_details?: { cached_tokens?: number }
+const recordSchema = Schema.Record(Schema.String, Schema.Unknown)
+const unknownArraySchema = Schema.Array(Schema.Unknown)
+const finiteSchema = Schema.Finite
+const stringSchema = Schema.String
+const messagesJsonSchema = Schema.fromJsonString(unknownArraySchema)
+const runStateJsonSchema = Schema.fromJsonString(Schema.Unknown)
+const decodeRecord = Schema.decodeUnknownResult(recordSchema)
+const decodeArray = Schema.decodeUnknownResult(unknownArraySchema)
+const decodeFinite = Schema.decodeUnknownResult(finiteSchema)
+const decodeString = Schema.decodeUnknownResult(stringSchema)
+const decodeMessagesJson = Schema.decodeUnknownResult(messagesJsonSchema)
+const decodeRunStateJson = Schema.decodeUnknownResult(runStateJsonSchema)
+
+type JsonRecord = Record<string, unknown>
+
+function asRecord(value: unknown): JsonRecord | null {
+  const decoded = decodeRecord(value)
+  return Result.isSuccess(decoded) ? decoded.success : null
 }
 
-type CodebuffBlock = {
-  type?: string
-  content?: string
-  toolName?: string
-  input?: Record<string, unknown>
-  output?: string
-  agentName?: string
-  agentType?: string
-  status?: string
-  blocks?: CodebuffBlock[]
+function asArray(value: unknown): readonly unknown[] | null {
+  const decoded = decodeArray(value)
+  return Result.isSuccess(decoded) ? decoded.success : null
 }
 
-type CodebuffHistoryMessage = {
-  role?: string
-  providerOptions?: {
-    codebuff?: { model?: string; usage?: CodebuffUsage }
-    usage?: CodebuffUsage
-  }
+function stringValue(value: unknown): string | undefined {
+  const decoded = decodeString(value)
+  return Result.isSuccess(decoded) ? decoded.success : undefined
 }
 
-type CodebuffMetadata = {
-  model?: string
-  modelId?: string
-  timestamp?: string | number
-  usage?: CodebuffUsage
-  codebuff?: { model?: string; usage?: CodebuffUsage }
-  runState?: {
-    cwd?: string
-    sessionState?: {
-      cwd?: string
-      projectContext?: { cwd?: string }
-      fileContext?: { cwd?: string }
-      mainAgentState?: {
-        agentType?: string
-        messageHistory?: CodebuffHistoryMessage[]
-      }
-    }
-  }
+function finiteValue(value: unknown): number | undefined {
+  const decoded = decodeFinite(value)
+  return Result.isSuccess(decoded) ? decoded.success : undefined
 }
 
-type CodebuffChatMessage = {
-  id?: string
-  variant?: string
-  role?: string
-  content?: string
-  timestamp?: string | number
-  credits?: number
-  blocks?: CodebuffBlock[]
-  metadata?: CodebuffMetadata
+function field(record: JsonRecord | null, key: string): unknown {
+  return record?.[key]
 }
 
-function getCodebuffBaseDir(override?: string): string {
+function getCodebuffBaseDir(override: string | undefined, paths: AppPaths | undefined): string {
   if (override && override.trim()) return override
-  const envPath = process.env['CODEBUFF_DATA_DIR']
+  const envPath = overrideFor(paths, ENV_DIR)
   if (envPath && envPath.trim()) return envPath
   return join(homedir(), '.config', 'manicode')
 }
 
-function pickNumber(...vals: Array<number | undefined>): number | undefined {
-  for (const v of vals) {
-    if (typeof v === 'number' && Number.isFinite(v)) return v
+function pickNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const decoded = finiteValue(value)
+    if (decoded !== undefined) return decoded
   }
   return undefined
 }
 
-function normalizeUsage(u: CodebuffUsage | undefined): {
-  input: number
-  output: number
-  cacheRead: number
-  cacheWrite: number
-} {
-  if (!u) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+function normalizeUsage(value: unknown): { input: number; output: number; cacheRead: number; cacheWrite: number } {
+  const usage = asRecord(value)
+  if (!usage) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  const promptDetails = asRecord(usage['promptTokensDetails'])
+  const promptDetailsSnake = asRecord(usage['prompt_tokens_details'])
   return {
-    input: pickNumber(u.inputTokens, u.input_tokens, u.promptTokens, u.prompt_tokens) ?? 0,
-    output: pickNumber(u.outputTokens, u.output_tokens, u.completionTokens, u.completion_tokens) ?? 0,
+    input: pickNumber(usage['inputTokens'], usage['input_tokens'], usage['promptTokens'], usage['prompt_tokens']) ?? 0,
+    output:
+      pickNumber(
+        usage['outputTokens'],
+        usage['output_tokens'],
+        usage['completionTokens'],
+        usage['completion_tokens'],
+      ) ?? 0,
     cacheRead:
       pickNumber(
-        u.cacheReadInputTokens,
-        u.cache_read_input_tokens,
-        u.promptTokensDetails?.cachedTokens,
-        u.prompt_tokens_details?.cached_tokens,
+        usage['cacheReadInputTokens'],
+        usage['cache_read_input_tokens'],
+        promptDetails?.['cachedTokens'],
+        promptDetailsSnake?.['cached_tokens'],
       ) ?? 0,
-    cacheWrite: pickNumber(u.cacheCreationInputTokens, u.cache_creation_input_tokens) ?? 0,
+    cacheWrite: pickNumber(usage['cacheCreationInputTokens'], usage['cache_creation_input_tokens']) ?? 0,
   }
 }
 
-function coerceTimestamp(value: string | number | undefined): string {
-  if (value == null) return ''
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? new Date(value).toISOString() : ''
-  }
-  const parsed = Date.parse(value)
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : value
+function coerceTimestamp(value: unknown): string {
+  const numeric = finiteValue(value)
+  if (numeric !== undefined) return new Date(numeric).toISOString()
+  const text = stringValue(value)
+  if (text === undefined) return ''
+  const parsed = Date.parse(text)
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : text
 }
 
 function parseChatIdToIso(chatId: string): string {
@@ -174,142 +156,175 @@ function parseChatIdToIso(chatId: string): string {
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : ''
 }
 
-function extractCwd(meta: CodebuffMetadata | undefined): string | null {
-  const rs = meta?.runState
-  if (!rs) return null
-  return (
-    rs.sessionState?.projectContext?.cwd ?? rs.sessionState?.fileContext?.cwd ?? rs.sessionState?.cwd ?? rs.cwd ?? null
-  )
+function extractCwd(value: unknown): string | null {
+  const metadata = asRecord(value)
+  const runState = asRecord(field(metadata, 'runState'))
+  const sessionState = asRecord(field(runState, 'sessionState'))
+  const projectContext = asRecord(field(sessionState, 'projectContext'))
+  const fileContext = asRecord(field(sessionState, 'fileContext'))
+  const cwd =
+    field(projectContext, 'cwd') ?? field(fileContext, 'cwd') ?? field(sessionState, 'cwd') ?? field(runState, 'cwd')
+  return stringValue(cwd) ?? null
 }
 
-function extractAgentType(meta: CodebuffMetadata | undefined): string | null {
-  return meta?.runState?.sessionState?.mainAgentState?.agentType ?? null
+function extractAgentType(metadata: JsonRecord | null): unknown {
+  const runState = asRecord(field(metadata, 'runState'))
+  const sessionState = asRecord(field(runState, 'sessionState'))
+  const mainAgentState = asRecord(field(sessionState, 'mainAgentState'))
+  return field(mainAgentState, 'agentType')
 }
 
-function collectBlockTools(blocks: CodebuffBlock[] | undefined, acc: { tools: string[]; bash: string[] }): void {
-  if (!Array.isArray(blocks)) return
-  for (const block of blocks) {
-    if (!block || typeof block !== 'object') continue
-    if (block.type === 'tool' && typeof block.toolName === 'string') {
-      const raw = block.toolName
-      if (!IGNORED_TOOLS.has(raw)) {
-        acc.tools.push(toolNameMap[raw] ?? raw)
-      }
-      if ((raw === 'run_terminal_command' || raw === 'terminal') && block.input) {
-        const cmd = block.input['command']
-        if (typeof cmd === 'string') {
-          acc.bash.push(...extractBashCommands(cmd))
-        }
+function collectBlockTools(value: unknown, acc: { tools: string[]; bash: string[] }): void {
+  const blocks = asArray(value)
+  if (!blocks) return
+  for (const candidate of blocks) {
+    const block = asRecord(candidate)
+    if (!block) continue
+    const type = stringValue(block['type'])
+    const raw = stringValue(block['toolName'])
+    if (type === 'tool' && raw !== undefined) {
+      if (!IGNORED_TOOLS.has(raw)) acc.tools.push(toolNameMap[raw] ?? raw)
+      if (raw === 'run_terminal_command' || raw === 'terminal') {
+        const input = asRecord(block['input'])
+        const command = stringValue(input?.['command'])
+        if (command !== undefined) acc.bash.push(...extractBashCommands(command))
       }
     }
-    if (block.type === 'agent' && Array.isArray(block.blocks)) {
-      collectBlockTools(block.blocks, acc)
-    }
+    if (type === 'agent') collectBlockTools(block['blocks'], acc)
   }
 }
 
-function resolveModel(meta: CodebuffMetadata | undefined, stashedModel: string | null): string {
-  const direct = meta?.model ?? meta?.modelId ?? meta?.codebuff?.model
+function resolveModel(metadata: JsonRecord | null, stashedModel: unknown): unknown {
+  const codebuff = asRecord(field(metadata, 'codebuff'))
+  const direct = field(metadata, 'model') ?? field(metadata, 'modelId') ?? field(codebuff, 'model')
   if (direct) return direct
   if (stashedModel) return stashedModel
-  const agentType = extractAgentType(meta)
+  const agentType = extractAgentType(metadata)
   if (agentType) return `codebuff-${agentType}`
   return 'codebuff'
 }
 
-function usageFromHistory(meta: CodebuffMetadata | undefined): {
-  model: string | null
+function usageFromHistory(metadata: JsonRecord | null): {
+  model: unknown
   input: number
   output: number
   cacheRead: number
   cacheWrite: number
 } {
-  const hist = meta?.runState?.sessionState?.mainAgentState?.messageHistory
-  if (!Array.isArray(hist)) return { model: null, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-  for (let i = hist.length - 1; i >= 0; i--) {
-    const entry = hist[i]
-    if (!entry || entry.role !== 'assistant' || !entry.providerOptions) continue
-    const u = normalizeUsage(entry.providerOptions.usage ?? entry.providerOptions.codebuff?.usage)
-    if (u.input > 0 || u.output > 0 || u.cacheRead > 0 || u.cacheWrite > 0) {
-      return { model: entry.providerOptions.codebuff?.model ?? null, ...u }
+  const runState = asRecord(field(metadata, 'runState'))
+  const sessionState = asRecord(field(runState, 'sessionState'))
+  const mainAgentState = asRecord(field(sessionState, 'mainAgentState'))
+  const history = asArray(field(mainAgentState, 'messageHistory'))
+  if (!history) return { model: null, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+
+  for (let index = history.length - 1; index >= 0; index--) {
+    const entry = asRecord(history[index])
+    const providerOptions = asRecord(field(entry, 'providerOptions'))
+    if (stringValue(field(entry, 'role')) !== 'assistant' || !providerOptions) continue
+    const codebuff = asRecord(field(providerOptions, 'codebuff'))
+    const usage = normalizeUsage(field(providerOptions, 'usage') ?? field(codebuff, 'usage'))
+    if (usage.input > 0 || usage.output > 0 || usage.cacheRead > 0 || usage.cacheWrite > 0) {
+      return { model: field(codebuff, 'model') ?? null, ...usage }
     }
   }
   return { model: null, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 }
 
-async function readJson<T>(filePath: string): Promise<T | null> {
-  try {
-    const raw = await readFile(filePath, 'utf-8')
-    return JSON.parse(raw) as T
-  } catch {
-    return null
-  }
-}
+const readJsonEffect = Effect.fnUntraced(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<unknown | null, Error> {
+  const raw = yield* scanIo(() => readFile(filePath, 'utf-8'), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
+  if (raw === null) return null
+  const decoded = decodeRunStateJson(raw)
+  return Result.isSuccess(decoded) ? decoded.success : null
+})
 
-async function discoverChannel(root: string): Promise<SessionSource[]> {
+const directoryNamesEffect = Effect.fnUntraced(function* (
+  directory: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<string[], Error> {
+  return yield* scanIo(() => readdir(directory), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed([]))),
+  )
+})
+
+const isDirectoryEffect = Effect.fnUntraced(function* (
+  path: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<boolean, Error> {
+  return yield* scanIo(() => stat(path), signal).pipe(
+    Effect.map(info => info.isDirectory()),
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(false))),
+  )
+})
+
+const isFileEffect = Effect.fnUntraced(function* (
+  path: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<boolean, Error> {
+  return yield* scanIo(() => stat(path), signal).pipe(
+    Effect.map(info => info.isFile()),
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(false))),
+  )
+})
+
+const discoverChannelEffect = Effect.fnUntraced(function* (
+  root: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<SessionSource[], Error> {
   const sources: SessionSource[] = []
   const projectsDir = join(root, 'projects')
-
-  let projectNames: string[]
-  try {
-    projectNames = await readdir(projectsDir)
-  } catch {
-    return sources
-  }
+  const projectNames = yield* directoryNamesEffect(projectsDir, signal)
 
   for (const projectName of projectNames) {
+    yield* checkScanAbort(signal)
     const chatsDir = join(projectsDir, projectName, 'chats')
-    let chatIds: string[]
-    try {
-      chatIds = await readdir(chatsDir)
-    } catch {
-      continue
-    }
+    const chatIds = yield* directoryNamesEffect(chatsDir, signal)
 
     for (const chatId of chatIds) {
+      yield* checkScanAbort(signal)
       const chatDir = join(chatsDir, chatId)
-      const dirStat = await stat(chatDir).catch(() => null)
-      if (!dirStat?.isDirectory()) continue
+      if (!(yield* isDirectoryEffect(chatDir, signal))) continue
 
       const messagesPath = join(chatDir, 'chat-messages.json')
-      const messagesStat = await stat(messagesPath).catch(() => null)
-      if (!messagesStat?.isFile()) continue
+      if (!(yield* isFileEffect(messagesPath, signal))) continue
 
       // Resolve the real cwd from run-state.json so sessions group by the
       // originating project directory instead of the sanitized chat folder
       // name (which is often the same for many users).
-      const runState = await readJson<CodebuffMetadata['runState']>(join(chatDir, 'run-state.json'))
-      const cwd = extractCwd({ runState: runState ?? undefined })
+      const runState = yield* readJsonEffect(join(chatDir, 'run-state.json'), signal)
+      const cwd = extractCwd({ runState })
       const project = cwd ? basename(cwd) : projectName
-
-      sources.push({ path: chatDir, project, provider: 'codebuff' })
+      sources.push({ path: chatDir, project, provider: PROVIDER_NAME })
     }
   }
 
   return sources
-}
+})
 
-async function discoverSessionsInBase(baseDir: string): Promise<SessionSource[]> {
+const discoverSessionsInBaseEffect = Effect.fnUntraced(function* (
+  baseDir: string,
+  singleRoot: boolean,
+  signal?: AbortSignal,
+): Effect.fn.Return<SessionSource[], Error> {
   const results: SessionSource[] = []
-
-  // Honor an explicit override: walk only the provided directory even if it
-  // matches one of the channel names literally.
-  if (process.env['CODEBUFF_DATA_DIR'] || baseDir !== join(homedir(), '.config', 'manicode')) {
-    const rootStat = await stat(baseDir).catch(() => null)
-    if (!rootStat?.isDirectory()) return results
-    results.push(...(await discoverChannel(baseDir)))
-    return results
+  if (singleRoot) {
+    if (!(yield* isDirectoryEffect(baseDir, signal))) return results
+    return yield* discoverChannelEffect(baseDir, signal)
   }
 
   const configDir = join(homedir(), '.config')
   for (const channel of CHANNELS) {
+    yield* checkScanAbort(signal)
     const root = join(configDir, channel)
-    const rootStat = await stat(root).catch(() => null)
-    if (!rootStat?.isDirectory()) continue
-    results.push(...(await discoverChannel(root)))
+    if (!(yield* isDirectoryEffect(root, signal))) continue
+    results.push(...(yield* discoverChannelEffect(root, signal)))
   }
   return results
-}
+})
 
 // Downstream aggregation groups sessions by `(provider, sessionId, project)`
 // (see src/parser.ts). Codebuff chat folders are ISO timestamps, which means
@@ -335,105 +350,163 @@ function extractChannelFromChatDir(chatDir: string): string | null {
   return channel ? channel : null
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
-  const pricing = context?.pricing ?? captureScanPricing()
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const chatDir = source.path
-      const chatId = basename(chatDir)
-      const channel = extractChannelFromChatDir(chatDir)
-      const sessionId = channel ? `${channel}/${chatId}` : chatId
-      const fallbackTs = parseChatIdToIso(chatId)
+function createParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  pricing: ReturnType<typeof captureScanPricing>,
+  context?: ProviderScanContext,
+): SessionParser {
+  const signal = context?.signal
+  const parseEffect = Effect.fn('parseCodebuffSession')(function* (
+    onUnparsedCall?: Effect.Effect<void>,
+  ): Effect.fn.Return<Stream.Stream<ParsedProviderCall, Error>, Error> {
+    yield* checkScanAbort(signal)
+    // Keep the legacy uncapped, single source read. In particular, do not stat
+    // first or route this through the capped shared whole-file reader.
+    const raw = yield* scanIo(() => readFile(join(source.path, 'chat-messages.json'), 'utf-8'), signal).pipe(
+      Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+    )
+    if (raw === null) return Stream.empty
 
-      const messages = await readJson<CodebuffChatMessage[]>(join(chatDir, 'chat-messages.json'))
-      if (!Array.isArray(messages)) return
+    const decodedMessages = decodeMessagesJson(raw)
+    if (Result.isFailure(decodedMessages)) return Stream.empty
 
-      let pendingUserMessage = ''
+    const chatDir = source.path
+    const chatId = basename(chatDir)
+    const channel = extractChannelFromChatDir(chatDir)
+    const sessionId = channel ? `${channel}/${chatId}` : chatId
+    const fallbackTs = parseChatIdToIso(chatId)
+    let pendingUserMessage = ''
+    let messageIndex = 0
 
-      for (const [idx, msg] of messages.entries()) {
-        if (!msg || typeof msg !== 'object') continue
+    return Stream.fromIterable(decodedMessages.success).pipe(
+      Stream.mapEffect(candidate =>
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          const index = messageIndex++
+          const msg = asRecord(candidate)
+          if (!msg) return Result.fail(undefined)
 
-        const variant = msg.variant ?? msg.role
-        if (variant === 'user') {
-          if (typeof msg.content === 'string' && msg.content.length > 0) {
-            pendingUserMessage = msg.content
+          const rawVariant = field(msg, 'variant') ?? field(msg, 'role')
+          const variant = stringValue(rawVariant)
+          if (variant === 'user') {
+            const content = stringValue(field(msg, 'content'))
+            if (content !== undefined && content.length > 0) pendingUserMessage = content
+            return Result.fail(undefined)
           }
-          continue
-        }
+          if (variant !== 'ai' && variant !== 'agent' && variant !== 'assistant') return Result.fail(undefined)
 
-        if (variant !== 'ai' && variant !== 'agent' && variant !== 'assistant') continue
+          const credits = finiteValue(field(msg, 'credits')) ?? 0
+          const metadata = asRecord(field(msg, 'metadata'))
+          const codebuffMetadata = asRecord(field(metadata, 'codebuff'))
+          const directUsage = normalizeUsage(field(metadata, 'usage') ?? field(codebuffMetadata, 'usage'))
+          const stashedUsage = usageFromHistory(metadata)
+          const hasDirect =
+            directUsage.input > 0 || directUsage.output > 0 || directUsage.cacheRead > 0 || directUsage.cacheWrite > 0
+          const usage = hasDirect ? directUsage : stashedUsage
+          const stashedModel = stashedUsage.model
 
-        const credits = typeof msg.credits === 'number' && Number.isFinite(msg.credits) ? msg.credits : 0
-        const directUsage = normalizeUsage(msg.metadata?.usage ?? msg.metadata?.codebuff?.usage)
-        const stashedUsage = usageFromHistory(msg.metadata)
+          // Skip messages with neither credits nor tokens -- they're typically
+          // in-progress mode dividers or empty framing blocks.
+          if (
+            credits === 0 &&
+            usage.input === 0 &&
+            usage.output === 0 &&
+            usage.cacheRead === 0 &&
+            usage.cacheWrite === 0
+          ) {
+            return Result.fail(undefined)
+          }
 
-        const hasDirect =
-          directUsage.input > 0 || directUsage.output > 0 || directUsage.cacheRead > 0 || directUsage.cacheWrite > 0
-        const usage = hasDirect ? directUsage : stashedUsage
-        const stashedModel = stashedUsage.model
+          const selectedModel = resolveModel(metadata, stashedModel)
+          const timestamp = yield* Effect.try({
+            try: () => coerceTimestamp(field(msg, 'timestamp') ?? field(metadata, 'timestamp')) || fallbackTs,
+            catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+          })
+          const dedupId = field(msg, 'id') ?? String(index)
+          const dedupKey = `${PROVIDER_NAME}:${chatDir}:${dedupId}`
+          if (seenKeys.has(dedupKey)) return Result.fail(undefined)
+          seenKeys.add(dedupKey)
 
-        // Skip messages with neither credits nor tokens -- they're typically
-        // in-progress mode dividers or empty framing blocks.
-        if (
-          credits === 0 &&
-          usage.input === 0 &&
-          usage.output === 0 &&
-          usage.cacheRead === 0 &&
-          usage.cacheWrite === 0
-        ) {
-          continue
-        }
+          const decodedModel = decodeString(selectedModel)
+          if (Result.isFailure(decodedModel)) {
+            // The old parser passed truthy malformed model values through to
+            // the canonical string schema, which omitted and tallied the row.
+            // Keep that verdict here without falling through to a sibling
+            // model field or using an unsafe cast. As before, the row is
+            // marked seen and consumes its pending prompt before omission.
+            // Pricing now receives only valid models; malformed rows are
+            // omitted before calling it instead of passing an invalid value.
+            pendingUserMessage = ''
+            if (onUnparsedCall) yield* onUnparsedCall
+            return Result.fail(undefined)
+          }
+          const model = decodedModel.success
 
-        const model = resolveModel(msg.metadata, stashedModel)
-        const timestamp = coerceTimestamp(msg.timestamp ?? msg.metadata?.timestamp) || fallbackTs
+          const acc = { tools: [] as string[], bash: [] as string[] }
+          collectBlockTools(field(msg, 'blocks'), acc)
 
-        const dedupId = msg.id ?? String(idx)
-        const dedupKey = `codebuff:${chatDir}:${dedupId}`
-        if (seenKeys.has(dedupKey)) continue
-        seenKeys.add(dedupKey)
+          // Prefer calculated cost from tokens when available (multi-provider
+          // models routed through Codebuff still show up in LiteLLM); otherwise
+          // fall back to the credit-based approximation.
+          let costUSD = yield* Effect.try({
+            try: () => pricing.calculateCost(model, usage.input, usage.output, usage.cacheWrite, usage.cacheRead, 0),
+            catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+          })
+          if (costUSD === 0 && credits > 0) costUSD = credits * USD_PER_CREDIT
 
-        const acc = { tools: [] as string[], bash: [] as string[] }
-        collectBlockTools(msg.blocks, acc)
+          const call: ParsedProviderCall = {
+            provider: PROVIDER_NAME,
+            model,
+            inputTokens: usage.input,
+            outputTokens: usage.output,
+            cacheCreationInputTokens: usage.cacheWrite,
+            cacheReadInputTokens: usage.cacheRead,
+            cachedInputTokens: usage.cacheRead,
+            reasoningTokens: 0,
+            webSearchRequests: 0,
+            costUSD,
+            tools: acc.tools,
+            bashCommands: acc.bash,
+            timestamp,
+            speed: 'standard',
+            deduplicationKey: dedupKey,
+            userMessage: pendingUserMessage,
+            sessionId,
+          }
+          pendingUserMessage = ''
+          return Result.succeed(call)
+        }),
+      ),
+      Stream.filterMap(call => call),
+    )
+  })
 
-        // Prefer calculated cost from tokens when available (multi-provider
-        // models routed through Codebuff still show up in LiteLLM); otherwise
-        // fall back to the credit-based approximation.
-        let costUSD = pricing.calculateCost(model, usage.input, usage.output, usage.cacheWrite, usage.cacheRead, 0)
-        if (costUSD === 0 && credits > 0) {
-          costUSD = credits * USD_PER_CREDIT
-        }
-
-        yield {
-          provider: 'codebuff',
-          model,
-          inputTokens: usage.input,
-          outputTokens: usage.output,
-          cacheCreationInputTokens: usage.cacheWrite,
-          cacheReadInputTokens: usage.cacheRead,
-          cachedInputTokens: usage.cacheRead,
-          reasoningTokens: 0,
-          webSearchRequests: 0,
-          costUSD,
-          tools: acc.tools,
-          bashCommands: acc.bash,
-          timestamp,
-          speed: 'standard',
-          deduplicationKey: dedupKey,
-          userMessage: pendingUserMessage,
-          sessionId,
-        }
-
-        pendingUserMessage = ''
-      }
+  return {
+    parseStream: onUnparsedCall => Stream.unwrap(parseEffect(onUnparsedCall)),
+    // Remove when scan/parser and external iterator callers consume parseStream.
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      yield* Stream.toAsyncIterable(Stream.unwrap(parseEffect()))
     },
   }
 }
 
-export function createCodebuffProvider(baseDir?: string): Provider {
-  const dir = getCodebuffBaseDir(baseDir)
+export function createCodebuffProvider(baseDir?: string, paths?: AppPaths): Provider {
+  const envOverride = overrideFor(paths, ENV_DIR)
+  const dir = getCodebuffBaseDir(baseDir, paths)
+  const defaultDir = join(homedir(), '.config', 'manicode')
+  // Match the old resolver: raw truthy env overrides force one root even if
+  // trimming resolves them back to the default path.
+  const singleRoot = Boolean(envOverride) || dir !== defaultDir
+
+  const discoverEffect = Effect.fn('discoverCodebuffSessions')(function* (
+    context?: ProviderScanContext,
+  ): Effect.fn.Return<SessionSource[], Error> {
+    return yield* discoverSessionsInBaseEffect(dir, singleRoot, context?.signal)
+  })
 
   return {
-    name: 'codebuff',
+    name: PROVIDER_NAME,
     displayName: 'Codebuff',
 
     modelDisplayName(model: string): string {
@@ -444,8 +517,11 @@ export function createCodebuffProvider(baseDir?: string): Provider {
       return toolNameMap[rawTool] ?? rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      return discoverSessionsInBase(dir)
+    discoverSessionsEffect: discoverEffect,
+    // Remove this Promise edge after external callers consume native discovery.
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(
@@ -454,7 +530,8 @@ export function createCodebuffProvider(baseDir?: string): Provider {
       _dateRange?: DateRange,
       context?: ProviderScanContext,
     ): SessionParser {
-      return createParser(source, seenKeys, context)
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createParser(source, seenKeys, pricing, context)
     },
   }
 }
