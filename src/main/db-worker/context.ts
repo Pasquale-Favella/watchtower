@@ -12,15 +12,7 @@ import { CommandRunner } from '../agents/command-runner.js'
 import { clearLedger } from '../application/clear-ledger.js'
 import { queryActiveCurrency, selectDisplayCurrency } from '../application/currency-commands.js'
 import { GatewayReports } from '../application/gateway-reports.js'
-import {
-  addModelAlias,
-  dismissSkill,
-  removeModelAlias,
-  removeModelPrice,
-  setLedgerMcpStartupMode,
-  setModelPrice,
-  setRefreshCadence,
-} from '../application/ledger-config-commands.js'
+import { setRefreshCadence } from '../application/ledger-config-commands.js'
 import { resolveCadenceMs } from '../cadence.js'
 import type { Env } from '../env.js'
 import { type CurrencyOption, FxRates, isValidCurrencyCode, listCurrencies, refreshFxRateWithRates } from '../fx.js'
@@ -41,6 +33,7 @@ import {
 import type { DateRange } from '../pipeline/types.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../store/ledger-ports.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
+import { ledgerConfigRequest } from './config-dispatch.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 import { ledgerQueryRequest } from './query-dispatch.js'
 
@@ -431,6 +424,12 @@ export class DbWorkerContext {
     if (this.closed && op !== 'shutdown') throw new Error('db-worker is shutting down')
     const query = ledgerQueryRequest(op, args)
     if (query) return this.runtime.runPromise(query)
+    const command = ledgerConfigRequest(
+      op,
+      args,
+      Effect.sync(() => this.emit({ event: 'config:changed' })),
+    )
+    if (command) return this.runtime.runPromise(command)
     switch (op) {
       case 'scan:start': {
         const options = args[0] as { provider?: string } | undefined
@@ -517,65 +516,8 @@ export class DbWorkerContext {
         )
       }
 
-      /** Not-a-skill dismissal write (ticket 25): a ledger config-table upsert,
-       * so dismissals survive `clear()`. */
-      case 'skills:dismiss': {
-        const req = args[0] as { source: 'skill' | 'bash' | 'tool'; name: string; reason: string }
-        await this.runtime.runPromise(dismissSkill(req))
-        return { ok: true }
-      }
-
-      /** Quick-add alias (ADR 0010): map an unpriced model to a priced one,
-       * writing directly to the ledger's `model_alias` config table. The
-       * `config:changed` event tells the mounted view to refetch (query-time
-       * config — no rescan). */
-      case 'models:addAlias': {
-        await this.runtime.runPromise(addModelAlias(args[0], args[1]))
-        this.emit({ event: 'config:changed' })
-        return { ok: true }
-      }
-
-      /** Read the current model-alias config (Settings › Model aliases CRUD). */
-      case 'models:getAliases':
-        return this.runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getModelAliases()))
-
-      /** Remove a model alias (Settings › Model aliases CRUD). */
-      case 'models:removeAlias': {
-        await this.runtime.runPromise(removeModelAlias(args[0]))
-        this.emit({ event: 'config:changed' })
-        return { ok: true }
-      }
-
-      /** Read the current price-override config (Settings › Pricing CRUD). */
-      case 'models:getPriceOverrides':
-        return this.runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getPriceOverrides()))
-
-      /** Remove a price override (Settings › Pricing CRUD): a pure config delete —
-       * display cost reverts to the stored base on the next query (query-time
-       * pricing), no row updates, no rescan. */
-      case 'models:removePriceOverride': {
-        await this.runtime.runPromise(removeModelPrice(args[0]))
-        this.emit({ event: 'config:changed' })
-        return { ok: true }
-      }
-
-      /** Quick-add price override (ADR 0010): a manual price (USD per 1M tokens)
-       * for a model, a pure upsert on the ledger's `price_override` config table
-       * (display cost recomputes on read) plus a `config:changed` event. */
-      case 'models:setPrice': {
-        await this.runtime.runPromise(setModelPrice(args[0], args[1], args[2]))
-        this.emit({ event: 'config:changed' })
-        return { ok: true }
-      }
-
       case 'settings:info':
         return this.settingsInfo()
-
-      case 'ledger-mcp:startup:get':
-        return this.runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getLedgerMcpStartupMode()))
-
-      case 'ledger-mcp:startup:set':
-        return this.runtime.runPromise(setLedgerMcpStartupMode(args[0]))
 
       case 'settings:clear': {
         await this.runtime.runPromise(clearLedger())

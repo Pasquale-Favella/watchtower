@@ -15,6 +15,7 @@ import * as SqlError from 'effect/unstable/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { dismissSkill, setModelPrice } from '../src/main/application/ledger-config-commands.js'
+import { ledgerConfigRequest } from '../src/main/db-worker/config-dispatch.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { workerProtocolError } from '../src/main/db-worker/protocol-errors.js'
@@ -67,6 +68,41 @@ async function withWorker(
 afterEach(() => vi.restoreAllMocks())
 
 describe('worker configuration commands use the owned ports', () => {
+  it('selects a lazy command and broadcasts only after the configured write', async () => {
+    const steps: string[] = []
+    const write = vi.fn((model: string, aliasOf: string) =>
+      Effect.sync(() => {
+        steps.push(`write:${model}:${aliasOf}`)
+      }),
+    )
+    const request = ledgerConfigRequest(
+      'models:addAlias',
+      [' model ', ' target '],
+      Effect.sync(() => {
+        steps.push('config:changed')
+      }),
+    )
+    expect(write).not.toHaveBeenCalled()
+    expect(steps).toEqual([])
+    if (!request) throw new Error('Alias command was not selected')
+
+    const result = await Effect.runPromise(
+      request.pipe(Effect.provideService(LedgerConfig, fakeConfig({ setModelAlias: write }))),
+    )
+    expect(result).toEqual({ ok: true })
+    expect(steps).toEqual(['write:model:target', 'config:changed'])
+    expect(write).toHaveBeenCalledOnce()
+  })
+
+  it('leaves scan, cadence, settings and unknown operations to worker supervision', () => {
+    const changed = vi.fn()
+    const notification = Effect.sync(changed)
+    for (const op of ['scan:start', 'cadence:set', 'settings:clear', 'unknown']) {
+      expect(ledgerConfigRequest(op, [], notification)).toBeUndefined()
+    }
+    expect(changed).not.toHaveBeenCalled()
+  })
+
   it('persists configuration through the native root without using facade methods', async () => {
     await withWorker(async (context, owner, events) => {
       const facadeMethods = [
