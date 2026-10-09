@@ -1,13 +1,21 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { CoachSdkFailure } from '../src/main/agents/coach-errors.js'
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { CoachStreamPart } from '../src/main/agents/events.js'
-import { acpSpawnCommand, createHarnessRuntime, isAuthFailureMessage, killTreeBeforeForceCleanup, type HarnessSdk } from '../src/main/agents/runtime.js'
 import { harnessSpecs } from '../src/main/agents/harnesses/index.js'
 import { decodeResumeCursor } from '../src/main/agents/resume-cursor.js'
+import {
+  acpSpawnCommand,
+  createHarnessRuntime,
+  type HarnessSdk,
+  isAuthFailureMessage,
+  killTreeBeforeForceCleanup,
+} from '../src/main/agents/runtime.js'
 
 const claudeHarness: HarnessInfo = {
   name: 'claude',
@@ -109,7 +117,12 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
     const workspace = realWorkspace()
 
-    for await (const _event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: workspace, prompt: 'p' })) {
+    for await (const _event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: workspace,
+      prompt: 'p',
+    })) {
       // no-op
     }
 
@@ -126,7 +139,12 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const { sdk, createACPProvider } = fakeSdk([])
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
-    for await (const _event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+    for await (const _event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
       // no-op
     }
 
@@ -152,7 +170,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     expect(createACPProvider.mock.calls[0]![0].existingSessionId).toBe('sess_prev')
   })
 
-  it('rides the agent\'s handshake models/modes on the session event (progressive selection)', async () => {
+  it("rides the agent's handshake models/modes on the session event (progressive selection)", async () => {
     const { sdk, sessionResponse } = fakeSdk([])
     sessionResponse.models = {
       availableModels: [
@@ -171,7 +189,12 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     const events = []
-    for await (const event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
       events.push(event)
     }
 
@@ -195,7 +218,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     })
   })
 
-  it('forwards the user\'s modelId and modeId to languageModel()', async () => {
+  it("forwards the user's modelId and modeId to languageModel()", async () => {
     const { sdk, provider } = fakeSdk([])
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
@@ -217,7 +240,12 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     await expect(async () => {
-      for await (const _event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: 'C:\\nonexistent\\path', prompt: 'p' })) {
+      for await (const _event of runtime.run({
+        harness: claudeHarness,
+        modelId: 'm',
+        workspacePath: 'C:\\nonexistent\\path',
+        prompt: 'p',
+      })) {
         // no-op
       }
     }).rejects.toThrow(/real on-disk/i)
@@ -247,13 +275,21 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     const events = []
-    for await (const event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
       events.push(event)
     }
 
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'error', message: 'agent binary not found' },
+      {
+        kind: 'error',
+        message: 'Claude Code could not complete its session handshake. Check the installation and try again.',
+      },
     ])
     expect(streamText).not.toHaveBeenCalled()
     expect(provider.cleanup).toHaveBeenCalledOnce()
@@ -264,13 +300,18 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     const events = []
-    for await (const event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
       events.push(event)
     }
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
       { kind: 'session', resumeCursor: expect.any(String) },
-      { kind: 'error', message: 'credential wall' },
+      { kind: 'error', message: 'Claude Code could not complete the request. Check its sign-in and try again.' },
     ])
   })
 
@@ -279,7 +320,13 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const { sdk, createACPProvider } = fakeSdk([])
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
-    for await (const _event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p', allowApiKeyEnv: true })) {
+    for await (const _event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+      allowApiKeyEnv: true,
+    })) {
       // no-op
     }
 
@@ -289,11 +336,18 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
 
   it('maps a warm-up authentication wall to the actionable Claude sign-in error', async () => {
     const { sdk, provider, streamText } = fakeSdk([])
-    provider.initSession.mockRejectedValue(new Error('Internal error: Failed to authenticate: OAuth session expired and could not be refreshed'))
+    provider.initSession.mockRejectedValue(
+      new Error('Internal error: Failed to authenticate: OAuth session expired and could not be refreshed'),
+    )
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     const events = []
-    for await (const event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
       events.push(event)
     }
 
@@ -301,17 +355,25 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
       { kind: 'status', state: 'starting' },
       { kind: 'error', message: expect.stringContaining('claude auth login') },
     ])
-    expect((events[1] as { message: string }).message).toContain('OAuth session expired')
+    expect((events[1] as { message: string }).message).not.toContain('OAuth session expired')
+    expect((events[1] as { message: string }).message).not.toContain('Internal error')
     expect(streamText).not.toHaveBeenCalled()
     expect(provider.cleanup).toHaveBeenCalledOnce()
   })
 
   it('maps a stream-time authentication wall to the actionable Claude sign-in error', async () => {
-    const { sdk } = fakeSdk([{ type: 'error', error: new Error('Failed to authenticate: OAuth session expired and could not be refreshed') }])
+    const { sdk } = fakeSdk([
+      { type: 'error', error: new Error('Failed to authenticate: OAuth session expired and could not be refreshed') },
+    ])
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     const events = []
-    for await (const event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+    for await (const event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
       events.push(event)
     }
 
@@ -326,10 +388,21 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const { sdk, provider } = fakeSdk([])
     provider.initSession.mockRejectedValue(new Error('Failed to authenticate'))
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
-    const codexHarness: HarnessInfo = { ...claudeHarness, name: 'codex', kind: 'codex', displayName: 'Codex', scrubEnv: ['OPENAI_API_KEY'] }
+    const codexHarness: HarnessInfo = {
+      ...claudeHarness,
+      name: 'codex',
+      kind: 'codex',
+      displayName: 'Codex',
+      scrubEnv: ['OPENAI_API_KEY'],
+    }
 
     const events = []
-    for await (const event of runtime.run({ harness: codexHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+    for await (const event of runtime.run({
+      harness: codexHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
       events.push(event)
     }
 
@@ -341,7 +414,9 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
   })
 
   it('isAuthFailureMessage matches auth walls only — never plain session/resume expiries', () => {
-    expect(isAuthFailureMessage('Internal error: Failed to authenticate: OAuth session expired and could not be refreshed')).toBe(true)
+    expect(
+      isAuthFailureMessage('Internal error: Failed to authenticate: OAuth session expired and could not be refreshed'),
+    ).toBe(true)
     expect(isAuthFailureMessage('Session expired. Please run /login to sign in again.')).toBe(true)
     expect(isAuthFailureMessage('Not logged in · Please run /login')).toBe(true)
     expect(isAuthFailureMessage('ACPError: authentication_failed')).toBe(true)
@@ -351,10 +426,161 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     expect(isAuthFailureMessage('ACP session expired, resume with a fresh id')).toBe(false)
   })
 
-  it('cancelling the run interrupts the SAME SDK iterator and cleans up the provider', async () => {
-    const { sdk, provider, streamText } = fakeSdk([
-      { type: 'text-delta', text: 'slow text' },
+  it('tags a synchronous provider factory rejection without exposing its detail', async () => {
+    const { sdk } = fakeSdk([])
+    sdk.createACPProvider = vi.fn(() => {
+      throw new Error('secret binary path and raw provider diagnostic')
+    })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const events = []
+
+    for await (const event of runtime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })) {
+      events.push(event)
+    }
+
+    expect(events).toEqual([
+      {
+        kind: 'error',
+        message: 'Claude Code could not be started. Check that it is installed and try again.',
+      },
     ])
+    expect(JSON.stringify(events)).not.toContain('secret binary path')
+  })
+
+  it('keeps selection SDK rejection typed while preserving unavailable-selection guidance', async () => {
+    const { sdk, provider } = fakeSdk([])
+    Object.assign(provider, {
+      setModel: vi.fn(async () => {
+        throw new Error('secret rejected model details')
+      }),
+    })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const run = runtime.run({
+      harness: claudeHarness,
+      modelId: 'requested-model',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })
+
+    const events = []
+    for await (const event of run) events.push(event)
+    expect(events.at(-1)).toEqual({
+      kind: 'error',
+      message: 'Claude Code could not apply the selected model or mode. Refresh the selection and try again.',
+    })
+    expect(JSON.stringify(events)).not.toContain('secret rejected model details')
+
+    const { sdk: unavailableSdk, provider: unavailableProvider } = fakeSdk([])
+    unavailableProvider.initSession.mockImplementation(async () => ({
+      sessionId: 'sess_9',
+      models: { availableModels: [{ modelId: 'available', name: 'Available' }], currentModelId: 'available' },
+    }))
+    const unavailableRuntime = createHarnessRuntime(unavailableSdk, { platform: 'linux' })
+    const unavailableEvents = []
+    for await (const event of unavailableRuntime.run({
+      harness: claudeHarness,
+      modelId: 'missing-model',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
+      unavailableEvents.push(event)
+    }
+    expect(unavailableEvents.at(-1)).toEqual({ kind: 'error', message: 'Model "missing-model" is not available' })
+  })
+
+  it('types synchronous stream creation and rejected iterator pulls as SDK failures', async () => {
+    const createSdk = fakeSdk([]).sdk
+    createSdk.streamText = vi.fn(() => {
+      throw new Error('raw stream constructor diagnostic')
+    })
+    const createRuntime = createHarnessRuntime(createSdk, { platform: 'linux' })
+    const createRun = createRuntime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+    await expect(
+      (async () => {
+        for await (const _event of createRun) {
+          // consume
+        }
+      })(),
+    ).rejects.toMatchObject({ _tag: 'CoachSdkFailure', stage: 'stream-create', authentication: false })
+
+    const pullSdk = fakeSdk([]).sdk
+    pullSdk.streamText = vi.fn(() => ({
+      [Symbol.asyncIterator]: () => ({ next: async () => Promise.reject(new Error('raw iterator diagnostic')) }),
+    }))
+    const pullRuntime = createHarnessRuntime(pullSdk, { platform: 'linux' })
+    const pullRun = pullRuntime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+    await expect(
+      (async () => {
+        for await (const _event of pullRun) {
+          // consume
+        }
+      })(),
+    ).rejects.toMatchObject({ _tag: 'CoachSdkFailure', stage: 'stream-next', authentication: false })
+  })
+
+  it('keeps catalogue and stream normalization defects outside the expected SDK failure channel', async () => {
+    const catalogDefect = new Error('catalogue computation defect')
+    const { sdk, provider } = fakeSdk([])
+    provider.initSession.mockImplementation(async () => ({
+      sessionId: 'sess_9',
+      models: {
+        availableModels: [
+          new Proxy(
+            {},
+            {
+              get: () => {
+                throw catalogDefect
+              },
+            },
+          ),
+        ],
+        currentModelId: 'available',
+      },
+    }))
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const run = runtime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+
+    await expect(
+      (async () => {
+        for await (const _event of run) {
+          // consume
+        }
+      })(),
+    ).rejects.toBe(catalogDefect)
+
+    const normalizerDefect = new Error('stream normalization defect')
+    const streamSdk = fakeSdk([]).sdk
+    streamSdk.streamText = vi.fn(
+      () =>
+        ({
+          [Symbol.asyncIterator]: () => ({
+            next: async () => ({
+              done: false as const,
+              value: new Proxy(
+                {},
+                {
+                  get: () => {
+                    throw normalizerDefect
+                  },
+                },
+              ),
+            }),
+          }),
+        }) as unknown as AsyncIterable<CoachStreamPart>,
+    )
+    const streamRuntime = createHarnessRuntime(streamSdk, { platform: 'linux' })
+    const streamRun = streamRuntime.run({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+    await expect(
+      (async () => {
+        for await (const _event of streamRun) {
+          // consume
+        }
+      })(),
+    ).rejects.toBe(normalizerDefect)
+  })
+
+  it('cancelling the run interrupts the SAME SDK iterator and cleans up the provider', async () => {
+    const { sdk, provider, streamText } = fakeSdk([{ type: 'text-delta', text: 'slow text' }])
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     const gen = runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })
@@ -367,7 +593,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     expect(streamText).toHaveBeenCalledOnce()
 
     // Consumer cancels the outer generator mid-run.
-    await gen.return()
+    await gen.return(undefined)
     const exhausted = await gen.next()
     expect(exhausted.done).toBe(true)
     expect(provider.cleanup).toHaveBeenCalledOnce()
@@ -384,7 +610,7 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     const signal = streamText.mock.calls[0]![0].abortSignal as AbortSignal
     expect(signal.aborted).toBe(false)
 
-    await gen.return()
+    await gen.return(undefined)
 
     expect(signal.aborted).toBe(true)
   })
@@ -402,8 +628,93 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
     await gen.next()
     await gen.next()
     await gen.next()
-    await expect(gen.return()).resolves.toMatchObject({ done: true })
+    await expect(gen.return(undefined)).resolves.toMatchObject({ done: true })
     expect(provider.cleanup).toHaveBeenCalledOnce()
+  })
+
+  it('stops a pending pull through the independent handle and forces cleanup once', async () => {
+    const { sdk, provider } = fakeSdk([])
+    const iterator = {
+      next: vi
+        .fn()
+        .mockResolvedValueOnce({ done: false as const, value: { type: 'text-delta' as const, text: 'live' } })
+        .mockImplementation(() => new Promise<never>(() => {})),
+      return: vi.fn(() => new Promise<never>(() => {})),
+    }
+    let capturedSignal: AbortSignal | undefined
+    const controlledStreamText = vi.fn((options: { abortSignal?: AbortSignal }) => {
+      capturedSignal = options.abortSignal
+      return { [Symbol.asyncIterator]: () => iterator }
+    })
+    sdk.streamText = controlledStreamText
+    const forceCleanup = vi.fn()
+    Object.assign(provider, { cleanup: vi.fn(() => new Promise<never>(() => {})), forceCleanup })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux', cancelDrainMs: 15 })
+    const run = runtime.runControlled!({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+
+    await expect(run.events.next()).resolves.toMatchObject({ value: { kind: 'status', state: 'starting' } })
+    await expect(run.events.next()).resolves.toMatchObject({ value: { kind: 'session' } })
+    await expect(run.events.next()).resolves.toMatchObject({ value: { kind: 'text', delta: 'live' } })
+    const pendingPull = run.events.next()
+    const stopping = run.stop()
+    expect(run.stop()).toBe(stopping)
+    await stopping
+
+    await expect(pendingPull).resolves.toEqual({ value: undefined, done: true })
+    expect(capturedSignal?.aborted).toBe(true)
+    expect(iterator.return).toHaveBeenCalledOnce()
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+    expect(forceCleanup).toHaveBeenCalledOnce()
+  })
+
+  it('forces cleanup once when a naturally completed stream has stalled provider cleanup', async () => {
+    const { sdk, provider } = fakeSdk([{ type: 'finish', finishReason: 'stop' }])
+    const forceCleanup = vi.fn()
+    Object.assign(provider, { cleanup: vi.fn(() => new Promise<never>(() => {})), forceCleanup })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux', cancelDrainMs: 15 })
+    const run = runtime.runControlled!({ harness: claudeHarness, workspacePath: realWorkspace(), prompt: 'p' })
+
+    const events: unknown[] = []
+    for await (const event of run.events) events.push(event)
+
+    expect(events.at(-1)).toEqual({ kind: 'status', state: 'done' })
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+    expect(forceCleanup).toHaveBeenCalledOnce()
+  })
+
+  it('does not create a fresh provider when stop races stale-resume cleanup', async () => {
+    const { sdk, provider, createACPProvider } = fakeSdk([])
+    let markCleanupStarted!: () => void
+    const cleanupStarted = new Promise<void>(resolve => {
+      markCleanupStarted = resolve
+    })
+    Object.assign(provider, {
+      initSession: vi.fn(async () => {
+        throw new Error('stale session')
+      }),
+      cleanup: vi.fn(() => {
+        markCleanupStarted()
+        return new Promise<never>(() => {})
+      }),
+    })
+    const forceCleanup = vi.fn()
+    Object.assign(provider, { forceCleanup })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux', cancelDrainMs: 15 })
+    const run = runtime.runControlled!({
+      harness: claudeHarness,
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+      sessionId: 'expired-session',
+    })
+
+    await expect(run.events.next()).resolves.toMatchObject({ value: { kind: 'status', state: 'starting' } })
+    const recovering = run.events.next()
+    await cleanupStarted
+    await run.stop()
+
+    await expect(recovering).resolves.toEqual({ value: undefined, done: true })
+    expect(createACPProvider).toHaveBeenCalledOnce()
+    expect(forceCleanup).toHaveBeenCalledOnce()
   })
 
   it('kills the Windows agent tree before the provider kills its shim', () => {
@@ -415,7 +726,9 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
         this.agentProcess = null
       },
     }
-    killTreeBeforeForceCleanup(model, pid => { order.push(`kill:${pid}`) })
+    killTreeBeforeForceCleanup(model, pid => {
+      order.push(`kill:${pid}`)
+    })
 
     model.forceCleanup()
     model.forceCleanup()
@@ -425,6 +738,30 @@ describe('createHarnessRuntime — the seam (system boundary mocked at the SDK)'
 })
 
 describe('createHarnessRuntime — inspect (the pre-flight handshake probe, map 47 ticket 50)', () => {
+  it('stops a stalled inspection handshake and forces provider cleanup', async () => {
+    const { sdk, provider } = fakeSdk([])
+    Object.assign(provider, {
+      initSession: vi.fn(() => new Promise<never>(() => {})),
+      cleanup: vi.fn(() => new Promise<never>(() => {})),
+    })
+    const forceCleanup = vi.fn()
+    Object.assign(provider, { forceCleanup })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux', cancelDrainMs: 15 })
+    const inspection = runtime.inspectControlled!({ harness: claudeHarness, workspacePath: realWorkspace() })
+
+    await vi.waitFor(() => expect(provider.initSession).toHaveBeenCalledOnce())
+    const result = expect(inspection.result).rejects.toMatchObject({
+      _tag: 'CoachSdkFailure',
+      stage: 'inspection',
+      reason: 'cancelled',
+    })
+    await inspection.stop()
+    await result
+
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+    expect(forceCleanup).toHaveBeenCalledOnce()
+  })
+
   it('returns the agent-declared models/modes from initSession without streaming a prompt', async () => {
     const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
     sessionResponse.models = {
@@ -486,8 +823,12 @@ describe('createHarnessRuntime — inspect (the pre-flight handshake probe, map 
     provider.initSession.mockRejectedValue(new Error('agent binary not found'))
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
-    await expect(runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() }))
-      .rejects.toThrow('agent binary not found')
+    const failure = await runtime.inspect({ harness: claudeHarness, workspacePath: realWorkspace() }).then(
+      () => undefined,
+      error => error,
+    )
+    expect(failure).toBeInstanceOf(CoachSdkFailure)
+    expect(failure).toMatchObject({ _tag: 'CoachSdkFailure', stage: 'inspection', reason: 'rejected' })
     expect(provider.cleanup).toHaveBeenCalledOnce()
   })
 
@@ -495,8 +836,9 @@ describe('createHarnessRuntime — inspect (the pre-flight handshake probe, map 
     const { sdk, createACPProvider } = fakeSdk([])
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
-    await expect(runtime.inspect({ harness: claudeHarness, workspacePath: 'C:\\nonexistent\\path' }))
-      .rejects.toThrow(/real on-disk/i)
+    await expect(runtime.inspect({ harness: claudeHarness, workspacePath: 'C:\\nonexistent\\path' })).rejects.toThrow(
+      /real on-disk/i,
+    )
     expect(createACPProvider).not.toHaveBeenCalled()
   })
 })
@@ -674,7 +1016,10 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
       { kind: 'session', resumeCursor: expect.any(String), models: expect.anything(), modes: expect.anything() },
-      { kind: 'error', message: 'Invalid params' },
+      {
+        kind: 'error',
+        message: 'Claude Code could not apply the selected model or mode. Refresh the selection and try again.',
+      },
     ])
     expect(streamText).not.toHaveBeenCalled()
   })
@@ -721,7 +1066,7 @@ describe('createHarnessRuntime — stale resume fallback', () => {
     const { sdk, provider, createACPProvider } = fakeSdk([])
     provider.initSession.mockRejectedValueOnce(new Error('loadSession failed'))
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
-    const mcpServers = [{ name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js'] }]
+    const mcpServers = [{ name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js'], env: [] }]
 
     const events = []
     for await (const event of runtime.run({
@@ -730,7 +1075,7 @@ describe('createHarnessRuntime — stale resume fallback', () => {
       workspacePath: realWorkspace(),
       prompt: 'p',
       sessionId: 'sess_probe',
-      freshPrompt: 'full briefing\n\nThe user\'s question:\np',
+      freshPrompt: "full briefing\n\nThe user's question:\np",
       mcpServers,
     })) {
       events.push(event)
@@ -771,7 +1116,10 @@ describe('createHarnessRuntime — stale resume fallback', () => {
 
     expect(events).toEqual([
       { kind: 'status', state: 'starting' },
-      { kind: 'error', message: 'agent down' },
+      {
+        kind: 'error',
+        message: 'Claude Code could not complete its session handshake. Check the installation and try again.',
+      },
     ])
     expect(streamText).not.toHaveBeenCalled()
     expect(createACPProvider).toHaveBeenCalledTimes(2)
@@ -813,9 +1161,13 @@ describe('registry → seam integration — every ACP spec maps to a provider co
     const workspace = realWorkspace()
     // `direct` is still a placeholder — every registered spec must be ACP, or
     // the seam's `no ACP adapter` guard would throw for it unnoticed.
-    expect(harnessSpecs.every(s => s.adapter.kind === 'acp'), 'every registered spec is ACP').toBe(true)
+    expect(
+      harnessSpecs.every(s => s.adapter.kind === 'acp'),
+      'every registered spec is ACP',
+    ).toBe(true)
 
     for (const spec of harnessSpecs) {
+      if (spec.adapter.kind !== 'acp') throw new Error(`${spec.kind} has no ACP adapter`)
       const { sdk, createACPProvider } = fakeSdk([])
       const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
       const harness: HarnessInfo = {
@@ -854,8 +1206,14 @@ describe('registry → seam integration — every ACP spec maps to a provider co
 
 describe('acpSpawnCommand — Windows shim handling (ticket: coach runs on win32)', () => {
   it('wraps a bare npm-shim command through cmd.exe /c on win32', () => {
-    expect(acpSpawnCommand('opencode', ['acp'], 'win32')).toEqual({ command: 'cmd.exe', args: ['/c', 'opencode', 'acp'] })
-    expect(acpSpawnCommand('claude-agent-acp', [], 'win32')).toEqual({ command: 'cmd.exe', args: ['/c', 'claude-agent-acp'] })
+    expect(acpSpawnCommand('opencode', ['acp'], 'win32')).toEqual({
+      command: 'cmd.exe',
+      args: ['/c', 'opencode', 'acp'],
+    })
+    expect(acpSpawnCommand('claude-agent-acp', [], 'win32')).toEqual({
+      command: 'cmd.exe',
+      args: ['/c', 'claude-agent-acp'],
+    })
   })
 
   it('passes a native .exe through unchanged on win32', () => {
@@ -873,7 +1231,12 @@ describe('createHarnessRuntime — win32 spawn wrapping end-to-end', () => {
     const { sdk, createACPProvider } = fakeSdk([])
     const runtime = createHarnessRuntime(sdk, { platform: 'win32' })
 
-    for await (const _event of runtime.run({ harness: claudeHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+    for await (const _event of runtime.run({
+      harness: claudeHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
       // no-op
     }
 
@@ -883,7 +1246,7 @@ describe('createHarnessRuntime — win32 spawn wrapping end-to-end', () => {
     expect(config.session.cwd).toBeDefined()
   })
 
-  it('spawns a BUNDLED harness via the app\'s own Node (ELECTRON_RUN_AS_NODE), no cmd shim', async () => {
+  it("spawns a BUNDLED harness via the app's own Node (ELECTRON_RUN_AS_NODE), no cmd shim", async () => {
     const { sdk, createACPProvider } = fakeSdk([])
     const runtime = createHarnessRuntime(sdk, { platform: 'win32' })
     const bundledHarness: HarnessInfo = {
@@ -895,7 +1258,12 @@ describe('createHarnessRuntime — win32 spawn wrapping end-to-end', () => {
       bundledEntry: 'C:\\app\\node_modules\\@agentclientprotocol\\codex-acp\\dist\\index.js',
     }
 
-    for await (const _event of runtime.run({ harness: bundledHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+    for await (const _event of runtime.run({
+      harness: bundledHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
       // no-op
     }
 
@@ -917,8 +1285,14 @@ describe('createHarnessRuntime — win32 spawn wrapping end-to-end', () => {
       bundledEntry: '/app/node_modules/acp/bin/gemini.js',
     }
     const spec = harnessSpecs.find(s => s.kind === 'gemini')!
+    if (spec.adapter.kind !== 'acp') throw new Error('Gemini has no ACP adapter')
 
-    for await (const _event of runtime.run({ harness: bundledHarness, modelId: 'm', workspacePath: realWorkspace(), prompt: 'p' })) {
+    for await (const _event of runtime.run({
+      harness: bundledHarness,
+      modelId: 'm',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })) {
       // no-op
     }
 
@@ -951,16 +1325,37 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
       },
       configOptions: [
         {
-          id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: 'agent',
-          options: [{ value: 'agent', name: 'Agent' }, { value: 'read-only', name: 'Read-only' }],
+          id: 'mode',
+          name: 'Mode',
+          category: 'mode',
+          type: 'select',
+          currentValue: 'agent',
+          options: [
+            { value: 'agent', name: 'Agent' },
+            { value: 'read-only', name: 'Read-only' },
+          ],
         },
         {
-          id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'gpt-5.6-luna',
-          options: [{ value: 'gpt-5.6-luna', name: 'GPT-5.6-Luna' }, { value: 'gpt-5.5', name: 'GPT-5.5' }],
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'gpt-5.6-luna',
+          options: [
+            { value: 'gpt-5.6-luna', name: 'GPT-5.6-Luna' },
+            { value: 'gpt-5.5', name: 'GPT-5.5' },
+          ],
         },
         {
-          id: 'reasoning_effort', name: 'Reasoning', category: 'thought_level', type: 'select', currentValue: 'high',
-          options: [{ value: 'high', name: 'High' }, { value: 'low', name: 'Low' }],
+          id: 'reasoning_effort',
+          name: 'Reasoning',
+          category: 'thought_level',
+          type: 'select',
+          currentValue: 'high',
+          options: [
+            { value: 'high', name: 'High' },
+            { value: 'low', name: 'Low' },
+          ],
         },
       ],
     }
@@ -987,12 +1382,26 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
       },
       configOptions: [
         {
-          id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'openrouter/a',
-          options: [{ value: 'openrouter/a', name: 'A' }, { value: 'openrouter/b', name: 'B' }],
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'openrouter/a',
+          options: [
+            { value: 'openrouter/a', name: 'A' },
+            { value: 'openrouter/b', name: 'B' },
+          ],
         },
         {
-          id: 'thought_level', name: 'Thinking', category: 'thought_level', type: 'select', currentValue: 'medium',
-          options: [{ value: 'low', name: 'Thinking: low' }, { value: 'medium', name: 'Thinking: medium' }],
+          id: 'thought_level',
+          name: 'Thinking',
+          category: 'thought_level',
+          type: 'select',
+          currentValue: 'medium',
+          options: [
+            { value: 'low', name: 'Thinking: low' },
+            { value: 'medium', name: 'Thinking: medium' },
+          ],
         },
       ],
     }
@@ -1008,7 +1417,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
 
     const events = []
     for await (const event of runtime.run({
-      harness: claudeHarness, modelId: 'gpt-5.5[low]', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modelId: 'gpt-5.5[low]',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
     })) {
       events.push(event)
     }
@@ -1034,7 +1446,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
 
     const events = []
     for await (const event of runtime.run({
-      harness: claudeHarness, modelId: 'gpt-5.6-luna[high]', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modelId: 'gpt-5.6-luna[high]',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
     })) {
       events.push(event)
     }
@@ -1059,7 +1474,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
 
     const events = []
     for await (const event of runtime.run({
-      harness: claudeHarness, modelId: 'gpt-5.5[ultra]', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modelId: 'gpt-5.5[ultra]',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
     })) {
       events.push(event)
     }
@@ -1081,7 +1499,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     for await (const _event of runtime.run({
-      harness: claudeHarness, modeId: 'read-only', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modeId: 'read-only',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
     })) {
       // no-op
     }
@@ -1100,7 +1521,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     for await (const _event of runtime.run({
-      harness: claudeHarness, modelId: 'openrouter/b', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modelId: 'openrouter/b',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
     })) {
       // no-op
     }
@@ -1119,7 +1543,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     for await (const _event of runtime.run({
-      harness: claudeHarness, modeId: 'low', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modeId: 'low',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
     })) {
       // no-op
     }
@@ -1138,7 +1565,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     for await (const _event of runtime.run({
-      harness: claudeHarness, modeId: 'medium', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modeId: 'medium',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
     })) {
       // no-op
     }
@@ -1159,7 +1589,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
 
     const events = []
     for await (const event of runtime.run({
-      harness: claudeHarness, modelId: 'gpt-5.5[low]', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modelId: 'gpt-5.5[low]',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
       sessionId: 'sess_prev',
     })) {
       events.push(event)
@@ -1181,7 +1614,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
     const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
 
     for await (const _event of runtime.run({
-      harness: claudeHarness, modeId: 'low', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modeId: 'low',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
       sessionId: 'sess_prev',
     })) {
       // no-op
@@ -1206,7 +1642,11 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
       },
       configOptions: [
         {
-          id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'gpt-5.6-terra',
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'gpt-5.6-terra',
           options: [
             { value: 'gpt-5.6-terra', name: 'GPT-5.6-Terra' },
             { value: 'gpt-5.6-luna', name: 'GPT-5.6-Luna' },
@@ -1221,7 +1661,8 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
     // does — a stale bracketed id must never reach it after a successful
     // base apply.
     const languageModel = vi.fn((modelId: string) => {
-      if (modelId.includes('[')) throw new Error(`Model "${modelId}" is not available. Available models: gpt-5.6-terra, gpt-5.6-luna, gpt-5.5`)
+      if (modelId.includes('['))
+        throw new Error(`Model "${modelId}" is not available. Available models: gpt-5.6-terra, gpt-5.6-luna, gpt-5.5`)
       return { providerId: 'acp' }
     })
     Object.assign(provider, { setModel, setConfigOption, languageModel })
@@ -1229,7 +1670,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
 
     const events = []
     for await (const event of runtime.run({
-      harness: claudeHarness, modelId: 'gpt-5.6-luna[low]', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modelId: 'gpt-5.6-luna[low]',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
     })) {
       events.push(event)
     }
@@ -1249,7 +1693,11 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
       sessionId: 'sess_9',
       configOptions: [
         {
-          id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'sonnet',
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'sonnet',
           options: [
             { value: 'opus', name: 'Opus' },
             { value: 'sonnet', name: 'Sonnet' },
@@ -1265,7 +1713,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
 
     const events = []
     for await (const event of runtime.run({
-      harness: claudeHarness, modelId: 'opus', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modelId: 'opus',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
     })) {
       events.push(event)
     }
@@ -1280,11 +1731,15 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
   it('falls back to the bracket base on a resumed session with no catalog (minimal handshake)', async () => {
     const { sdk, provider, streamText } = fakeSdk([])
     const setModel = vi.fn(async (id: string) => {
-      if (id === 'gpt-5.6-luna[low]') throw new Error('Model "gpt-5.6-luna[low]" is not available. Available models: gpt-5.6-terra, gpt-5.6-luna, gpt-5.5')
+      if (id === 'gpt-5.6-luna[low]')
+        throw new Error(
+          'Model "gpt-5.6-luna[low]" is not available. Available models: gpt-5.6-terra, gpt-5.6-luna, gpt-5.5',
+        )
       return {}
     })
     const languageModel = vi.fn((modelId: string) => {
-      if (modelId.includes('[')) throw new Error(`Model "${modelId}" is not available. Available models: gpt-5.6-terra, gpt-5.6-luna, gpt-5.5`)
+      if (modelId.includes('['))
+        throw new Error(`Model "${modelId}" is not available. Available models: gpt-5.6-terra, gpt-5.6-luna, gpt-5.5`)
       return { providerId: 'acp' }
     })
     Object.assign(provider, { setModel, languageModel })
@@ -1292,7 +1747,10 @@ describe('createHarnessRuntime — codex/pi live handshake shapes (regression)',
 
     const events = []
     for await (const event of runtime.run({
-      harness: claudeHarness, modelId: 'gpt-5.6-luna[low]', workspacePath: realWorkspace(), prompt: 'p',
+      harness: claudeHarness,
+      modelId: 'gpt-5.6-luna[low]',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
       sessionId: 'sess_prev',
     })) {
       events.push(event)

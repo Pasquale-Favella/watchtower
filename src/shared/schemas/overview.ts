@@ -1,152 +1,176 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
-export const overviewPeriodSchema = z.enum(['today', 'week', '30days', 'month', 'all', 'lifetime'])
-export type OverviewPeriod = z.infer<typeof overviewPeriodSchema>
+const finiteNumber = Schema.Finite
+const writable = Schema.mutableKey
+const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))
+const text = Schema.String
+const nullableNumber = Schema.NullOr(finiteNumber)
 
-export const overviewScopeSchema = z.object({
-  period: overviewPeriodSchema,
-  provider: z.string().optional(),
-  range: z.object({ since: z.string(), until: z.string() }).optional(),
+export const overviewPeriodSchema = Schema.Literals(['today', 'week', '30days', 'month', 'all', 'lifetime'])
+export type OverviewPeriod = Schema.Schema.Type<typeof overviewPeriodSchema>
+
+export const overviewScopeSchema = Schema.Struct({
+  period: writable(overviewPeriodSchema),
+  provider: writable(Schema.optional(text)),
+  range: writable(Schema.optional(Schema.Struct({ since: writable(text), until: writable(text) }))),
 })
-export type OverviewScope = z.infer<typeof overviewScopeSchema>
+export type OverviewScope = Schema.Schema.Type<typeof overviewScopeSchema>
 
-export const overviewKpisSchema = z.object({
-  cost: z.number(),
-  calls: z.number(),
-  sessions: z.number(),
-  inputTokens: z.number(),
-  outputTokens: z.number(),
-  cacheReadTokens: z.number(),
-  cacheWriteTokens: z.number(),
-  savingsUSD: z.number(),
-  estimatedCostUSD: z.number(),
-  oneShotRate: z.number().nullable(),
-  cacheHitPercent: z.number(),
+export const overviewKpisSchema = Schema.Struct({
+  cost: writable(finiteNumber),
+  calls: writable(finiteNumber),
+  sessions: writable(finiteNumber),
+  inputTokens: writable(finiteNumber),
+  outputTokens: writable(finiteNumber),
+  cacheReadTokens: writable(finiteNumber),
+  cacheWriteTokens: writable(finiteNumber),
+  savingsUSD: writable(finiteNumber),
+  estimatedCostUSD: writable(finiteNumber),
+  oneShotRate: writable(nullableNumber),
+  cacheHitPercent: writable(finiteNumber),
 })
-export type OverviewKpis = z.infer<typeof overviewKpisSchema>
+export type OverviewKpis = Schema.Schema.Type<typeof overviewKpisSchema>
 
-export const overviewDailyEntrySchema = z.object({ date: z.string(), costUSD: z.number(), calls: z.number(), sessions: z.number() })
-export type OverviewDailyEntry = z.infer<typeof overviewDailyEntrySchema>
-
-export const overviewModelRowSchema = z.object({
-  name: z.string(),
-  cost: z.number(),
-  calls: z.number(),
-  inputTokens: z.number(),
-  outputTokens: z.number(),
-  savingsUSD: z.number(),
-  /** Raw model ids merged into this row via an Alias. Present only when a
-   * merge happened — the lightweight provenance affordance so a merge never
-   * hides where spend came from (the Models audit lens is the full trace). */
-  sourceModels: z.array(z.string()).optional(),
+export const overviewDailyEntrySchema = Schema.Struct({
+  date: writable(text),
+  costUSD: writable(finiteNumber),
+  calls: writable(finiteNumber),
+  sessions: writable(finiteNumber),
 })
-export type OverviewModelRow = z.infer<typeof overviewModelRowSchema>
+export type OverviewDailyEntry = Schema.Schema.Type<typeof overviewDailyEntrySchema>
 
-export const overviewActivityRowSchema = z.object({ name: z.string(), cost: z.number(), turns: z.number(), oneShotRate: z.number().nullable() })
-export type OverviewActivityRow = z.infer<typeof overviewActivityRowSchema>
-
-export const overviewToolRowSchema = z.object({ name: z.string(), calls: z.number() })
-export type OverviewToolRow = z.infer<typeof overviewToolRowSchema>
-
-export const overviewMcpRowSchema = z.object({ name: z.string(), calls: z.number() })
-export type OverviewMcpRow = z.infer<typeof overviewMcpRowSchema>
-
-export const overviewSkillRowSchema = z.object({ name: z.string(), turns: z.number(), cost: z.number() })
-export type OverviewSkillRow = z.infer<typeof overviewSkillRowSchema>
-
-export const overviewSubagentRowSchema = z.object({ name: z.string(), calls: z.number(), cost: z.number() })
-export type OverviewSubagentRow = z.infer<typeof overviewSubagentRowSchema>
-
-export const overviewRetryTaxRowSchema = z.object({ name: z.string(), taxUSD: z.number(), retries: z.number(), retriesPerEdit: z.number().nullable() })
-export type OverviewRetryTaxRow = z.infer<typeof overviewRetryTaxRowSchema>
-
-export const overviewRetryTaxSchema = z.object({
-  totalUSD: z.number(),
-  retries: z.number(),
-  editTurns: z.number(),
-  byModel: z.array(overviewRetryTaxRowSchema),
+export const overviewModelRowSchema = Schema.Struct({
+  name: writable(text),
+  cost: writable(finiteNumber),
+  calls: writable(finiteNumber),
+  inputTokens: writable(finiteNumber),
+  outputTokens: writable(finiteNumber),
+  savingsUSD: writable(finiteNumber),
+  sourceModels: writable(Schema.optional(mutableArray(text))),
 })
-export type OverviewRetryTax = z.infer<typeof overviewRetryTaxSchema>
+export type OverviewModelRow = Schema.Schema.Type<typeof overviewModelRowSchema>
 
-export const overviewRoutingWasteRowSchema = z.object({
-  name: z.string(),
-  actualUSD: z.number(),
-  counterfactualUSD: z.number(),
-  savingsUSD: z.number(),
+export const overviewActivityRowSchema = Schema.Struct({
+  name: writable(text),
+  cost: writable(finiteNumber),
+  turns: writable(finiteNumber),
+  oneShotRate: writable(nullableNumber),
 })
-export type OverviewRoutingWasteRow = z.infer<typeof overviewRoutingWasteRowSchema>
-
-export const overviewRoutingWasteSchema = z.object({
-  baselineModel: z.string(),
-  baselineCostPerEdit: z.number(),
-  totalSavingsUSD: z.number(),
-  byModel: z.array(overviewRoutingWasteRowSchema),
+export type OverviewActivityRow = Schema.Schema.Type<typeof overviewActivityRowSchema>
+export const overviewToolRowSchema = Schema.Struct({ name: writable(text), calls: writable(finiteNumber) })
+export type OverviewToolRow = Schema.Schema.Type<typeof overviewToolRowSchema>
+export const overviewMcpRowSchema = Schema.Struct({ name: writable(text), calls: writable(finiteNumber) })
+export type OverviewMcpRow = Schema.Schema.Type<typeof overviewMcpRowSchema>
+export const overviewSkillRowSchema = Schema.Struct({
+  name: writable(text),
+  turns: writable(finiteNumber),
+  cost: writable(finiteNumber),
 })
-export type OverviewRoutingWaste = z.infer<typeof overviewRoutingWasteSchema>
-
-export const efficiencyGradeSchema = z.enum(['A+', 'A', 'B', 'C', 'D', 'F'])
-export type EfficiencyGrade = z.infer<typeof efficiencyGradeSchema>
-
-export const overviewEfficiencySchema = z.object({
-  score: z.number(),
-  grade: efficiencyGradeSchema,
-  oneShotRate: z.number().nullable(),
-  retryTax: overviewRetryTaxSchema,
-  routingWaste: overviewRoutingWasteSchema,
-  pricingCoverage: z.number(),
+export type OverviewSkillRow = Schema.Schema.Type<typeof overviewSkillRowSchema>
+export const overviewSubagentRowSchema = Schema.Struct({
+  name: writable(text),
+  calls: writable(finiteNumber),
+  cost: writable(finiteNumber),
 })
-export type OverviewEfficiency = z.infer<typeof overviewEfficiencySchema>
+export type OverviewSubagentRow = Schema.Schema.Type<typeof overviewSubagentRowSchema>
 
-export const overviewReworkedFileSchema = z.object({ path: z.string(), sessions: z.number(), edits: z.number() })
-export type OverviewReworkedFile = z.infer<typeof overviewReworkedFileSchema>
-
-export const overviewWorkflowSchema = z.object({
-  corrections: z.number(),
-  userTurns: z.number(),
-  correctionRate: z.number().nullable(),
-  medianTimeToFirstEditMs: z.number().nullable(),
-  topReworkedFiles: z.array(overviewReworkedFileSchema),
+export const overviewRetryTaxRowSchema = Schema.Struct({
+  name: writable(text),
+  taxUSD: writable(finiteNumber),
+  retries: writable(finiteNumber),
+  retriesPerEdit: writable(nullableNumber),
 })
-export type OverviewWorkflow = z.infer<typeof overviewWorkflowSchema>
-
-export const overviewUnpricedModelSchema = z.object({ model: z.string(), calls: z.number(), tokens: z.number() })
-export type OverviewUnpricedModel = z.infer<typeof overviewUnpricedModelSchema>
-
-export const overviewLocalSavingsRowSchema = z.object({
-  name: z.string(),
-  calls: z.number(),
-  actualUSD: z.number(),
-  savingsUSD: z.number(),
-  baselineModel: z.string(),
-  inputTokens: z.number(),
-  outputTokens: z.number(),
+export type OverviewRetryTaxRow = Schema.Schema.Type<typeof overviewRetryTaxRowSchema>
+export const overviewRetryTaxSchema = Schema.Struct({
+  totalUSD: writable(finiteNumber),
+  retries: writable(finiteNumber),
+  editTurns: writable(finiteNumber),
+  byModel: writable(mutableArray(overviewRetryTaxRowSchema)),
 })
-export type OverviewLocalSavingsRow = z.infer<typeof overviewLocalSavingsRowSchema>
-
-export const overviewLocalSavingsProviderRowSchema = z.object({ name: z.string(), calls: z.number(), savingsUSD: z.number() })
-export type OverviewLocalSavingsProviderRow = z.infer<typeof overviewLocalSavingsProviderRowSchema>
-
-export const overviewLocalModelSavingsSchema = z.object({
-  totalUSD: z.number(),
-  calls: z.number(),
-  byModel: z.array(overviewLocalSavingsRowSchema),
-  byProvider: z.array(overviewLocalSavingsProviderRowSchema),
+export type OverviewRetryTax = Schema.Schema.Type<typeof overviewRetryTaxSchema>
+export const overviewRoutingWasteRowSchema = Schema.Struct({
+  name: writable(text),
+  actualUSD: writable(finiteNumber),
+  counterfactualUSD: writable(finiteNumber),
+  savingsUSD: writable(finiteNumber),
 })
-export type OverviewLocalModelSavings = z.infer<typeof overviewLocalModelSavingsSchema>
-
-export const overviewPayloadSchema = z.object({
-  kpis: overviewKpisSchema,
-  daily: z.array(overviewDailyEntrySchema),
-  dataStart: z.string().nullable(),
-  models: z.array(overviewModelRowSchema),
-  activities: z.array(overviewActivityRowSchema),
-  tools: z.array(overviewToolRowSchema),
-  mcpServers: z.array(overviewMcpRowSchema),
-  skills: z.array(overviewSkillRowSchema),
-  subagents: z.array(overviewSubagentRowSchema),
-  efficiency: overviewEfficiencySchema,
-  workflow: overviewWorkflowSchema,
-  unpricedModels: z.array(overviewUnpricedModelSchema),
-  localModelSavings: overviewLocalModelSavingsSchema,
+export type OverviewRoutingWasteRow = Schema.Schema.Type<typeof overviewRoutingWasteRowSchema>
+export const overviewRoutingWasteSchema = Schema.Struct({
+  baselineModel: writable(text),
+  baselineCostPerEdit: writable(finiteNumber),
+  totalSavingsUSD: writable(finiteNumber),
+  byModel: writable(mutableArray(overviewRoutingWasteRowSchema)),
 })
-export type OverviewPayload = z.infer<typeof overviewPayloadSchema>
+export type OverviewRoutingWaste = Schema.Schema.Type<typeof overviewRoutingWasteSchema>
+export const efficiencyGradeSchema = Schema.Literals(['A+', 'A', 'B', 'C', 'D', 'F'])
+export type EfficiencyGrade = Schema.Schema.Type<typeof efficiencyGradeSchema>
+export const overviewEfficiencySchema = Schema.Struct({
+  score: writable(finiteNumber),
+  grade: writable(efficiencyGradeSchema),
+  oneShotRate: writable(nullableNumber),
+  retryTax: writable(overviewRetryTaxSchema),
+  routingWaste: writable(overviewRoutingWasteSchema),
+  pricingCoverage: writable(finiteNumber),
+})
+export type OverviewEfficiency = Schema.Schema.Type<typeof overviewEfficiencySchema>
+
+export const overviewReworkedFileSchema = Schema.Struct({
+  path: writable(text),
+  sessions: writable(finiteNumber),
+  edits: writable(finiteNumber),
+})
+export type OverviewReworkedFile = Schema.Schema.Type<typeof overviewReworkedFileSchema>
+export const overviewWorkflowSchema = Schema.Struct({
+  corrections: writable(finiteNumber),
+  userTurns: writable(finiteNumber),
+  correctionRate: writable(nullableNumber),
+  medianTimeToFirstEditMs: writable(nullableNumber),
+  topReworkedFiles: writable(mutableArray(overviewReworkedFileSchema)),
+})
+export type OverviewWorkflow = Schema.Schema.Type<typeof overviewWorkflowSchema>
+export const overviewUnpricedModelSchema = Schema.Struct({
+  model: writable(text),
+  calls: writable(finiteNumber),
+  tokens: writable(finiteNumber),
+})
+export type OverviewUnpricedModel = Schema.Schema.Type<typeof overviewUnpricedModelSchema>
+export const overviewLocalSavingsRowSchema = Schema.Struct({
+  name: writable(text),
+  calls: writable(finiteNumber),
+  actualUSD: writable(finiteNumber),
+  savingsUSD: writable(finiteNumber),
+  baselineModel: writable(text),
+  inputTokens: writable(finiteNumber),
+  outputTokens: writable(finiteNumber),
+})
+export type OverviewLocalSavingsRow = Schema.Schema.Type<typeof overviewLocalSavingsRowSchema>
+export const overviewLocalSavingsProviderRowSchema = Schema.Struct({
+  name: writable(text),
+  calls: writable(finiteNumber),
+  savingsUSD: writable(finiteNumber),
+})
+export type OverviewLocalSavingsProviderRow = Schema.Schema.Type<typeof overviewLocalSavingsProviderRowSchema>
+export const overviewLocalModelSavingsSchema = Schema.Struct({
+  totalUSD: writable(finiteNumber),
+  calls: writable(finiteNumber),
+  byModel: writable(mutableArray(overviewLocalSavingsRowSchema)),
+  byProvider: writable(mutableArray(overviewLocalSavingsProviderRowSchema)),
+})
+export type OverviewLocalModelSavings = Schema.Schema.Type<typeof overviewLocalModelSavingsSchema>
+
+export const overviewPayloadSchema = Schema.Struct({
+  kpis: writable(overviewKpisSchema),
+  daily: writable(mutableArray(overviewDailyEntrySchema)),
+  dataStart: writable(Schema.NullOr(text)),
+  models: writable(mutableArray(overviewModelRowSchema)),
+  activities: writable(mutableArray(overviewActivityRowSchema)),
+  tools: writable(mutableArray(overviewToolRowSchema)),
+  mcpServers: writable(mutableArray(overviewMcpRowSchema)),
+  skills: writable(mutableArray(overviewSkillRowSchema)),
+  subagents: writable(mutableArray(overviewSubagentRowSchema)),
+  efficiency: writable(overviewEfficiencySchema),
+  workflow: writable(overviewWorkflowSchema),
+  unpricedModels: writable(mutableArray(overviewUnpricedModelSchema)),
+  localModelSavings: writable(overviewLocalModelSavingsSchema),
+})
+export type OverviewPayload = Schema.Schema.Type<typeof overviewPayloadSchema>

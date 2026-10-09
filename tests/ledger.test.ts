@@ -2,8 +2,13 @@ import { mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+
+import * as Effect from 'effect/Effect'
+import * as SchemaAST from 'effect/SchemaAST'
 import { afterEach, describe, expect, it } from 'vitest'
+
 import { LedgerStore } from '../src/main/store/ledger.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
 import {
   currencyRateRowSchema,
   ledgerCallRowSchema,
@@ -19,6 +24,7 @@ import {
   buildFixtureCachedTurn,
   FIXTURE_SOURCE_PATH,
 } from './fixtures/cached-file.js'
+import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 const tempDirs: string[] = []
 
@@ -45,36 +51,51 @@ function withTempLedgerReadOnly(fn: (ro: DatabaseSync) => void): void {
   }
 }
 
-// Zod shape introspection for the parity gates below. The row schemas are
-// `z.object().transform()` pipes in Zod v4, so the storage-side input shape
-// lives at `.def.in`. JSON columns are the pipe fields (string through
-// `JSON.parse`); every other column is a scalar.
-type ZodInputField = { def: { type: string } }
-type ZodPipedObject = {
-  def: {
-    in?: { def: { shape?: Record<string, ZodInputField> } }
-    shape?: Record<string, ZodInputField>
-  }
+// Effect Schema shape introspection for the parity gates below. The row schemas
+// are `Schema.Struct` schemas composed with `Schema.encodeKeys` (or, for
+// `ledgerSourceRowSchema`, a `Schema.decodeTo` pair), so the storage-side input
+// shape is `SchemaAST.toEncoded(schema.ast)` — the encoded AST, carrying the
+// snake_case DDL column names and each column's stored AST. A JSON column is one
+// stored as TEXT that decodes to something which is not text.
+type RowSchemaAst = { readonly ast: SchemaAST.AST }
+
+interface RowColumn {
+  column: string
+  encodedType: SchemaAST.AST
+  decodedType: SchemaAST.AST | null
 }
 
-function zodInputShape(schema: unknown): Record<string, ZodInputField> {
-  const piped = schema as ZodPipedObject
-  const pipedShape = piped.def.in?.def.shape
-  if (pipedShape !== undefined) return pipedShape
-  const directShape = piped.def.shape
-  if (directShape !== undefined) return directShape
-  return {}
+function rowColumns(schema: RowSchemaAst): RowColumn[] {
+  if (!SchemaAST.isObjects(schema.ast)) throw new Error('row schema AST is not a struct')
+  const encoded = SchemaAST.toEncoded(schema.ast)
+  if (!SchemaAST.isObjects(encoded)) throw new Error('encoded row schema AST is not a struct')
+  const decoded = schema.ast.propertySignatures
+  // `encodeKeys` builds the encoded struct in the decoded field order, so the two
+  // lists pair by position. `ledgerSourceRowSchema` also GROUPS four flat
+  // `fingerprint_*` columns into one nested field, so it has no pair; its JSON
+  // set is then decided by the `_json` suffix, which the DDL column list below
+  // independently confirms.
+  const pairs = encoded.propertySignatures.length === decoded.length
+  return encoded.propertySignatures.map((property, index) => {
+    const decodedField = pairs ? decoded[index] : undefined
+    return { column: String(property.name), encodedType: property.type, decodedType: decodedField?.type ?? null }
+  })
 }
 
-function zodInputKeys(schema: unknown): string[] {
-  return Object.keys(zodInputShape(schema)).sort()
+function rowInputKeys(schema: RowSchemaAst): string[] {
+  return rowColumns(schema)
+    .map(f => f.column)
+    .sort()
 }
 
-function zodJsonKeys(schema: unknown): string[] {
-  const shape = zodInputShape(schema)
-  return Object.entries(shape)
-    .filter(([, field]) => field.def.type === 'pipe')
-    .map(([name]) => name)
+function rowJsonKeys(schema: RowSchemaAst): string[] {
+  return rowColumns(schema)
+    .filter(f =>
+      f.decodedType === null
+        ? f.column.endsWith('_json')
+        : SchemaAST.isString(f.encodedType) && !SchemaAST.isString(f.decodedType),
+    )
+    .map(f => f.column)
     .sort()
 }
 
@@ -86,9 +107,10 @@ function jsonIsNonEmpty(raw: string): boolean {
 }
 
 afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    // temp dirs are left to the OS; only the store handle is closed by tests
-  }
+  // The temp dirs themselves are left to the OS (only the store handle is
+  // closed by the tests); the list just has to be emptied so the next case
+  // does not inherit a stale entry.
+  tempDirs.length = 0
 })
 
 const baseInput = {
@@ -113,15 +135,46 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     expect(tables).not.toContain('ratio_metrics')
 
     const indexes = store.getIndexNames('ledger_call')
-    expect(indexes.sort()).toEqual([
-      'idx_ledger_call_timestamp',
-      'idx_ledger_call_session',
-      'idx_ledger_call_model',
-      'idx_ledger_call_project',
-      'idx_ledger_call_provider',
-    ].sort())
+    expect(indexes.sort()).toEqual(
+      [
+        'idx_ledger_call_timestamp',
+        'idx_ledger_call_session',
+        'idx_ledger_call_model',
+        'idx_ledger_call_project',
+        'idx_ledger_call_provider',
+      ].sort(),
+    )
+    const version = new DatabaseSync(store.dbPath, { readOnly: true })
+    expect(version.prepare('SELECT migration_id FROM watchtower_sql_migrations').get()).toEqual({ migration_id: 1 })
+    version.close()
 
     store.close()
+  })
+
+  it('upgrades a pre-version ledger without losing ledger rows or user config', () => {
+    const original = makeStore()
+    const dbPath = original.dbPath
+    original.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    original.setModelAlias('old-model', 'new-model')
+    original.close()
+
+    const legacy = new DatabaseSync(dbPath)
+    legacy.exec('DROP TABLE watchtower_sql_migrations')
+    legacy.close()
+
+    const upgraded = new LedgerStore(dbPath)
+    try {
+      expect(upgraded.getCalls()).toHaveLength(1)
+      expect(upgraded.getModelAliases()).toEqual([{ model: 'old-model', aliasOf: 'new-model' }])
+      const version = new DatabaseSync(dbPath, { readOnly: true })
+      try {
+        expect(version.prepare('SELECT migration_id FROM watchtower_sql_migrations').get()).toEqual({ migration_id: 1 })
+      } finally {
+        version.close()
+      }
+    } finally {
+      upgraded.close()
+    }
   })
 
   it('ports a new file: source/session/turn/call rows land and read back faithfully', () => {
@@ -184,6 +237,33 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       tools: ['Edit'],
     })
 
+    store.close()
+  })
+
+  it('ports through the Effect runtime at the synchronous db-worker boundary', () => {
+    const store = makeStore()
+    const result = store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+
+    expect(result.inserted).toEqual({ sessions: 1, turns: 1, calls: 1 })
+    expect(store.getCalls()).toHaveLength(1)
+    store.close()
+  })
+
+  it('rolls back earlier inserts when an Effect-managed port-in fails mid-transaction', () => {
+    const store = makeStore()
+    const triggerDb = new DatabaseSync(store.dbPath)
+    triggerDb.exec(`
+      CREATE TRIGGER fail_ledger_turn BEFORE INSERT ON ledger_turn
+      BEGIN SELECT RAISE(ABORT, 'injected port-in failure'); END;
+    `)
+    triggerDb.close()
+
+    expect(() => store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })).toThrow(
+      'Failed to execute statement',
+    )
+    expect(store.getSources()).toEqual([])
+    expect(store.getSessions()).toEqual([])
+    expect(store.getCalls()).toEqual([])
     store.close()
   })
 
@@ -355,6 +435,46 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     store.close()
   })
 
+  it('deleteSource() rolls back child-row deletes when one table delete fails', () => {
+    const store = makeStore()
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+
+    const triggerDb = new DatabaseSync(store.dbPath)
+    triggerDb.exec(`
+      CREATE TRIGGER fail_source_delete BEFORE DELETE ON ledger_session
+      BEGIN SELECT RAISE(ABORT, 'injected source deletion failure'); END;
+    `)
+    triggerDb.close()
+
+    expect(() => store.deleteSource(baseInput.provider, baseInput.envFingerprint, baseInput.filePath)).toThrow()
+    expect(store.getSources()).toHaveLength(1)
+    expect(store.getSessions()).toHaveLength(1)
+    expect(store.getTurns()).toHaveLength(1)
+    expect(store.getCalls()).toHaveLength(1)
+
+    store.close()
+  })
+
+  it('clear() rolls back all deletes when one table delete fails', () => {
+    const store = makeStore()
+    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+
+    const triggerDb = new DatabaseSync(store.dbPath)
+    triggerDb.exec(`
+      CREATE TRIGGER fail_clear_session BEFORE DELETE ON ledger_session
+      BEGIN SELECT RAISE(ABORT, 'injected clear failure'); END;
+    `)
+    triggerDb.close()
+
+    expect(() => store.clear()).toThrow()
+    expect(store.getSources()).toHaveLength(1)
+    expect(store.getSessions()).toHaveLength(1)
+    expect(store.getTurns()).toHaveLength(1)
+    expect(store.getCalls()).toHaveLength(1)
+
+    store.close()
+  })
+
   it('clear() reclaims disk space, so the Settings sizes visibly drop', () => {
     const store = makeStore()
     for (let i = 0; i < 200; i++) {
@@ -462,7 +582,10 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     const store = makeStore()
     const file = buildFixtureCachedFile()
     file.turns[0]!.calls[0]!.toolSequence = [
-      [{ tool: 'Edit', file: 'src/auth.ts' }, { tool: 'Bash', command: 'npm test' }],
+      [
+        { tool: 'Edit', file: 'src/auth.ts' },
+        { tool: 'Bash', command: 'npm test' },
+      ],
       [{ tool: 'Read', file: 'src/auth.ts' }],
     ]
 
@@ -471,45 +594,81 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     const calls = store.getCalls()
     expect(calls).toHaveLength(1)
     expect(calls[0]!.toolSequence).toEqual([
-      [{ tool: 'Edit', file: 'src/auth.ts' }, { tool: 'Bash', command: 'npm test' }],
+      [
+        { tool: 'Edit', file: 'src/auth.ts' },
+        { tool: 'Bash', command: 'npm test' },
+      ],
       [{ tool: 'Read', file: 'src/auth.ts' }],
     ])
 
     store.close()
   })
 
-  it('config writes are pure upserts and survive clear()', () => {
-    const store = makeStore()
-    store.setModelAlias('proxy-model', 'claude-sonnet-4.5')
-    store.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
-    store.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
-    store.setDisplayCurrency('EUR')
-    store.setRefreshCadence('5m')
-    store.dismissSkill('bash', 'git commit', 'not-a-skill')
+  it('config writes are pure upserts and survive clear()', async () => {
+    const fixture = openLedgerFixture()
+    const configProgram = Effect.gen(function* () {
+      const config = yield* LedgerConfig
+      yield* config.setModelAlias('proxy-model', 'claude-sonnet-4.5')
+      yield* config.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+      yield* config.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
+      yield* config.setDisplayCurrency('EUR')
+      yield* config.setRefreshCadence('5m')
+      yield* config.dismissSkill('bash', 'git commit', 'not-a-skill', '2026-07-01T00:00:00.000Z')
+      return {
+        aliases: yield* config.getModelAliases(),
+        overrides: yield* config.getPriceOverrides(),
+        rate: yield* config.getCurrencyRate('EUR'),
+        currency: yield* config.getDisplayCurrency(),
+        cadence: yield* config.getRefreshCadence(),
+        dismissals: yield* config.getSkillDismissals(),
+      }
+    })
+    const initial = await fixture.runtime.runPromise(configProgram)
+    expect(initial.aliases).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
+    expect(initial.overrides).toEqual([{ model: 'demo-model', inputPricePerMillion: 3, outputPricePerMillion: 15 }])
+    expect(initial.rate).toEqual({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
+    expect(initial.currency).toBe('EUR')
+    expect(initial.cadence).toBe('5m')
+    expect(initial.dismissals).toHaveLength(1)
 
-    expect(store.getModelAliases()).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
-    expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 3, outputPricePerMillion: 15 }])
-    expect(store.getCurrencyRate('EUR')).toEqual({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-07-01T00:00:00.000Z' })
-    expect(store.getDisplayCurrency()).toBe('EUR')
-    expect(store.getRefreshCadence()).toBe('5m')
-    expect(store.getSkillDismissals()).toHaveLength(1)
+    await fixture.runtime.runPromise(
+      Effect.flatMap(LedgerConfig, config =>
+        config.setPriceOverride('demo-model', { inputPricePerMillion: 4, outputPricePerMillion: 16 }),
+      ),
+    )
+    expect(
+      await fixture.runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getPriceOverrides())),
+    ).toEqual([{ model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 }])
 
-    // a second upsert overwrites, never appends
-    store.setPriceOverride('demo-model', { inputPricePerMillion: 4, outputPricePerMillion: 16 })
-    expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 }])
+    await fixture.runtime.runPromise(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
+    await fixture.runtime.runPromise(Effect.flatMap(LedgerIngest, ingest => ingest.clear()))
 
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    store.clear()
-
-    expect(store.getSources()).toEqual([])
-    expect(store.getModelAliases()).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
-    expect(store.getPriceOverrides()).toEqual([{ model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 }])
-    expect(store.getCurrencyRate('EUR')).not.toBeNull()
-    expect(store.getDisplayCurrency()).toBe('EUR')
-    expect(store.getRefreshCadence()).toBe('5m')
-    expect(store.getSkillDismissals()).toEqual([{ source: 'bash', name: 'git commit', reason: 'not-a-skill', created: expect.any(String) }])
-
-    store.close()
+    expect(await fixture.runtime.runPromise(Effect.flatMap(LedgerQueries, queries => queries.getSources()))).toEqual([])
+    const afterClear = await fixture.runtime.runPromise(
+      Effect.gen(function* () {
+        const config = yield* LedgerConfig
+        return {
+          aliases: yield* config.getModelAliases(),
+          overrides: yield* config.getPriceOverrides(),
+          rate: yield* config.getCurrencyRate('EUR'),
+          currency: yield* config.getDisplayCurrency(),
+          cadence: yield* config.getRefreshCadence(),
+          dismissals: yield* config.getSkillDismissals(),
+        }
+      }),
+    )
+    expect(afterClear.aliases).toEqual([{ model: 'proxy-model', aliasOf: 'claude-sonnet-4.5' }])
+    expect(afterClear.overrides).toEqual([{ model: 'demo-model', inputPricePerMillion: 4, outputPricePerMillion: 16 }])
+    expect(afterClear.rate).not.toBeNull()
+    expect(afterClear.currency).toBe('EUR')
+    expect(afterClear.cadence).toBe('5m')
+    expect(afterClear.dismissals).toEqual([
+      { source: 'bash', name: 'git commit', reason: 'not-a-skill', created: '2026-07-01T00:00:00.000Z' },
+    ])
   })
 
   it('skill dismissals upsert per pattern and are a pure upsert', () => {
@@ -532,10 +691,9 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
 
     store.close()
   })
-
 })
 
-describe('DDL-Zod parity: table and column shape (#97)', () => {
+describe('DDL-schema parity: table and column shape (#97)', () => {
   // The ledger's database shape is defined twice by hand: the DDL in
   // LedgerStore and the validation schemas in shared/schemas/ledger. This
   // gate locks the two together at the observable seam — a temporary store's
@@ -705,9 +863,11 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
   }
 
   function readTableNames(ro: DatabaseSync): string[] {
-    const rows = ro.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC",
-    ).all() as Array<{ name: string }>
+    const rows = ro
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'watchtower_sql_migrations' ORDER BY name ASC",
+      )
+      .all() as Array<{ name: string }>
     return rows.map(r => r.name)
   }
 
@@ -765,13 +925,13 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     })
   })
 
-  it('locks the Zod row schemas to the column catalog (schema-only drift fails)', () => {
+  it('locks the row schemas to the column catalog (schema-only drift fails)', () => {
     // The shape gate above locks live DDL against EXPECTED_COLUMNS. This
-    // locks EXPECTED_COLUMNS against the Zod input shapes, so a column added
-    // or renamed on either side alone turns red. JSON helper coverage (S8) is
-    // locked the same way: every `*_json` DDL column must be a JSON-parsing
-    // pipe in Zod, and vice versa. Behavioural proof plus the per-column
-    // exercise forcing live in #99.
+    // locks EXPECTED_COLUMNS against the row schemas' encoded (storage-side)
+    // shapes, so a column added or renamed on either side alone turns red. JSON
+    // helper coverage (S8) is locked the same way: every `*_json` DDL column
+    // must be a JSON-parsing schema, and vice versa. Behavioural proof plus the
+    // per-column exercise forcing live in #99.
     const linked = {
       ledger_source: ledgerSourceRowSchema,
       ledger_session: ledgerSessionRowSchema,
@@ -783,17 +943,17 @@ describe('DDL-Zod parity: table and column shape (#97)', () => {
     }
     for (const [table, schema] of Object.entries(linked)) {
       const dbColumns = EXPECTED_COLUMNS[table]!.map(c => c.name).sort()
-      expect(zodInputKeys(schema), `[${table}] Zod input keys match DDL columns`).toEqual(dbColumns)
+      expect(rowInputKeys(schema), `[${table}] encoded keys match DDL columns`).toEqual(dbColumns)
       const dbJson = dbColumns.filter(name => name.endsWith('_json'))
-      expect(zodJsonKeys(schema), `[${table}] JSON columns use JSON helpers`).toEqual(dbJson)
+      expect(rowJsonKeys(schema), `[${table}] JSON columns use JSON helpers`).toEqual(dbJson)
     }
     // refresh_cadence_config, display_currency_config, ledger_mcp_config and
-    // skills_dismissal_config have no Zod row schemas (scalar reads); the
-    // shape gate above owns them.
+    // skills_dismissal_config have no row schemas (scalar reads); the shape gate
+    // above owns them.
   })
 })
 
-describe('DDL-Zod parity: indexes and constraints (#98)', () => {
+describe('DDL-schema parity: indexes and constraints (#98)', () => {
   // The constraint gate: performance indexes, uniqueness and primary-key
   // coverage, plus the spots introspection cannot see. Named (`origin = 'c'`)
   // indexes are distinguished from implicit constraint auto-indexes
@@ -852,9 +1012,8 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
   }
 
   function readTableSql(ro: DatabaseSync, table: string): string {
-    const row = ro.prepare(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-    ).get(table) as { sql: string | null } | undefined
+    const row = ro.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as
+      { sql: string | null } | undefined
     return row?.sql ?? ''
   }
 
@@ -862,10 +1021,9 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
     withTempLedgerReadOnly(ro => {
       const list = readIndexList(ro, 'ledger_call')
       const named = list.filter(i => i.origin === 'c')
-      expect(
-        named.map(i => i.name).sort(),
-        '[ledger_call] named indexes',
-      ).toEqual(Object.keys(EXPECTED_NAMED_CALL_INDEXES).sort())
+      expect(named.map(i => i.name).sort(), '[ledger_call] named indexes').toEqual(
+        Object.keys(EXPECTED_NAMED_CALL_INDEXES).sort(),
+      )
       for (const [index, column] of Object.entries(EXPECTED_NAMED_CALL_INDEXES)) {
         const entry = named.find(i => i.name === index)
         expect(entry, `[ledger_call.${index}] present`).toBeDefined()
@@ -918,7 +1076,7 @@ describe('DDL-Zod parity: indexes and constraints (#98)', () => {
   })
 })
 
-describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
+describe('DDL-schema parity: adversarial round-trip (#99)', () => {
   // The behavioral proof for what shape assertions cannot see: one fixture
   // ports non-default payloads through every `*_json` column, exercises
   // nullable columns both empty and set plus both speed values, and asserts
@@ -1021,10 +1179,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
           canonicalCwd: '/workspace/demo-project',
           agentType: 'parity-harness',
           title: 'Parity adversarial round trip',
-          prLinks: [
-            'https://github.com/acme/demo-project/pull/7',
-            'https://github.com/acme/demo-project/pull/8',
-          ],
+          prLinks: ['https://github.com/acme/demo-project/pull/7', 'https://github.com/acme/demo-project/pull/8'],
           isSidechain: 1,
           parentSessionId: 'sess-parent-parity',
           agentSpawnLinks: { 'spawn-parity-1': 'sess-side-parity' },
@@ -1172,8 +1327,8 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
       const probe = new DatabaseSync(store.dbPath, { readOnly: true })
       try {
         for (const [table, schema] of Object.entries(jsonTables)) {
-          for (const column of zodJsonKeys(schema)) {
-            // Identifiers come from the fixed table map above plus Zod shape
+          for (const column of rowJsonKeys(schema)) {
+            // Identifiers come from the fixed table map above plus the encoded shape
             // keys — never from fixture input.
             const values = probe.prepare(`SELECT "${column}" AS v FROM "${table}"`).all() as Array<{ v: string }>
             expect(values.length, `[${table}.${column}] rows probed`).toBeGreaterThan(0)
@@ -1197,9 +1352,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
         verdict: 'new',
         cachedFile: buildFixtureCachedFile(),
       })
-      const unshaped = store
-        .getSources()
-        .find(s => s.filePath.endsWith('sess-unshaped.jsonl'))!
+      const unshaped = store.getSources().find(s => s.filePath.endsWith('sess-unshaped.jsonl'))!
       expect(unshaped.repoUrl).toBeUndefined()
       expect(unshaped.project).toBeUndefined()
     } finally {
@@ -1208,7 +1361,7 @@ describe('DDL-Zod parity: adversarial round-trip (#99)', () => {
   })
 })
 
-describe('DDL-Zod parity: targeted edge tests (#100)', () => {
+describe('DDL-schema parity: targeted edge tests (#100)', () => {
   // What neither the shape gates (#97/#98) nor the round trip (#99) reach:
   // platform identifier precision, enum closedness, and read-query column
   // coverage. Test-only, same seams as the file's existing tests.
@@ -1353,10 +1506,7 @@ describe('DDL-Zod parity: targeted edge tests (#100)', () => {
           canonicalCwd: '/workspace/demo-project',
           agentType: 'coverage-harness',
           title: 'Coverage probe',
-          prLinks: [
-            'https://github.com/acme/demo-project/pull/10',
-            'https://github.com/acme/demo-project/pull/9',
-          ],
+          prLinks: ['https://github.com/acme/demo-project/pull/10', 'https://github.com/acme/demo-project/pull/9'],
           isSidechain: 1,
           parentSessionId: 'sess-parent-cov',
           agentSpawnLinks: { 'spawn-cov-1': 'sess-cov-side' },

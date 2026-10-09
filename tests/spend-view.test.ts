@@ -1,31 +1,41 @@
+import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { buildSpendViewFromLedger } from '../src/main/spend-view.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
+
+import { querySpendView } from '../src/main/application/spend-query.js'
 import { normalizeProjectPathKey } from '../src/main/pipeline/parser.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
-import {
-  formatDayLabel, providerLabel, sankeyData, stackedRows,
-} from '../src/renderer/src/features/spend/lib.js'
+import { LedgerIngest } from '../src/main/store/ledger-ports.js'
+import type { WorkerRuntime } from '../src/main/worker-runtime.js'
+import { formatDayLabel, providerLabel, sankeyData, stackedRows } from '../src/renderer/src/features/spend/lib.js'
 import { isOtherNode, seriesColorForModel, seriesKeyForModel } from '../src/renderer/src/shared/lib/modelSeries.js'
+import type { PortInput } from '../src/shared/schemas/port.js'
+import type { SpendPayload } from '../src/shared/schemas/spend.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 const NOW = new Date(2026, 6, 15)
-
 
 // ── Ledger-backed Spend view (map 03) ──────────────────────────────────────
 // Same scope semantics as the report-based builder above, but facts come from
 // the aggregation seam (range + provider at the SQL read, sessions count by
 // their in-range turns). Fixtures are ported through `portIn`.
 
-function makeLedger(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-sp-'))
-  return new LedgerStore(join(dir, 'data.db'))
+function portIn(runtime: WorkerRuntime, input: PortInput): void {
+  runtime.runSync(Effect.flatMap(LedgerIngest, ingest => ingest.portIn(input)))
 }
 
-type SpendSessionSpec = { sessionId: string; provider: string; model: string; project: string; cost: number; date: string }
+function querySpend(runtime: WorkerRuntime, scope: Parameters<typeof viewInputs>[0], now: Date): SpendPayload {
+  return runtime.runSync(atTime(querySpendView(viewInputs(scope)), now))
+}
+
+type SpendSessionSpec = {
+  sessionId: string
+  provider: string
+  model: string
+  project: string
+  cost: number
+  date: string
+}
 
 // Distinct native checkouts per project label: the canonical key (not the
 // display name) is the grouping identity, so fixtures must not share one
@@ -51,9 +61,9 @@ function spendCachedFile(spec: SpendSessionSpec): CachedFile {
   })
 }
 
-function portSpendSessions(store: LedgerStore, specs: SpendSessionSpec[]): void {
+function portSpendSessions(runtime: WorkerRuntime, specs: SpendSessionSpec[]): void {
   specs.forEach((spec, i) => {
-    store.portIn({
+    portIn(runtime, {
       provider: spec.provider,
       envFingerprint: 'env-demo',
       filePath: `/cache/${spec.provider}/sess-${i}.jsonl`,
@@ -63,18 +73,22 @@ function portSpendSessions(store: LedgerStore, specs: SpendSessionSpec[]): void 
   })
 }
 
-describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
+describe('querySpendView (aggregation seam scope)', () => {
   it('aggregates daily stacked spend by model and by project for a custom range', () => {
-    const store = makeLedger()
-    portSpendSessions(store, [
+    const { runtime } = openLedgerFixture()
+    portSpendSessions(runtime, [
       { sessionId: 's-0', provider: 'claude', model: 'claude-opus-4', project: 'alpha', cost: 10, date: '2026-07-10' },
       { sessionId: 's-1', provider: 'claude', model: 'claude-sonnet-4', project: 'alpha', cost: 4, date: '2026-07-11' },
       { sessionId: 's-2', provider: 'claude', model: 'claude-opus-4', project: 'beta', cost: 6, date: '2026-07-10' },
     ])
-    const payload = buildSpendViewFromLedger(store, {
-      period: 'lifetime',
-      range: { since: '2026-07-10', until: '2026-07-12' },
-    }, NOW)
+    const payload = querySpend(
+      runtime,
+      {
+        period: 'lifetime',
+        range: { since: '2026-07-10', until: '2026-07-12' },
+      },
+      NOW,
+    )
 
     expect(payload.byModel).toEqual([
       { date: '2026-07-10', cost: 16, segments: [{ name: 'Opus 4', cost: 16 }] },
@@ -82,7 +96,14 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
       { date: '2026-07-12', cost: 0, segments: [] },
     ])
     expect(payload.byProject).toEqual([
-      { date: '2026-07-10', cost: 16, segments: [{ name: 'alpha', cost: 10 }, { name: 'beta', cost: 6 }] },
+      {
+        date: '2026-07-10',
+        cost: 16,
+        segments: [
+          { name: 'alpha', cost: 10 },
+          { name: 'beta', cost: 6 },
+        ],
+      },
       { date: '2026-07-11', cost: 4, segments: [{ name: 'alpha', cost: 4 }] },
       { date: '2026-07-12', cost: 0, segments: [] },
     ])
@@ -102,16 +123,15 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
         { model: 'Sonnet 4', project: spendKeyFor('alpha'), cost: 4 },
       ],
     })
-    store.close()
   })
 
   it('keeps period-scope spend flowing even when it falls outside the 15-day chart window', () => {
-    const store = makeLedger()
-    portSpendSessions(store, [
+    const { runtime } = openLedgerFixture()
+    portSpendSessions(runtime, [
       { sessionId: 's-0', provider: 'claude', model: 'claude-opus-4', project: 'alpha', cost: 5, date: '2026-07-01' },
       { sessionId: 's-1', provider: 'claude', model: 'claude-sonnet-4', project: 'beta', cost: 8, date: '2026-07-10' },
     ])
-    const payload = buildSpendViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 6, 20))
+    const payload = querySpend(runtime, { period: 'lifetime' }, new Date(2026, 6, 20))
 
     expect(payload.byModel).toHaveLength(15)
     expect(payload.byModel[0]!.date).toBe('2026-07-06')
@@ -125,29 +145,31 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
       { id: 'Sonnet 4', label: 'Sonnet 4', cost: 8 },
       { id: 'Opus 4', label: 'Opus 4', cost: 5 },
     ])
-    store.close()
   })
 
   it('filters to a single provider at the SQL read (per-source)', () => {
-    const store = makeLedger()
-    portSpendSessions(store, [
+    const { runtime } = openLedgerFixture()
+    portSpendSessions(runtime, [
       { sessionId: 's-0', provider: 'claude', model: 'claude-opus-4', project: 'alpha', cost: 10, date: '2026-07-10' },
       { sessionId: 's-1', provider: 'opencode', model: 'claude-haiku-4', project: 'beta', cost: 7, date: '2026-07-10' },
     ])
-    const payload = buildSpendViewFromLedger(store, {
-      period: 'lifetime',
-      provider: 'claude',
-      range: { since: '2026-07-10', until: '2026-07-10' },
-    }, NOW)
+    const payload = querySpend(
+      runtime,
+      {
+        period: 'lifetime',
+        provider: 'claude',
+        range: { since: '2026-07-10', until: '2026-07-10' },
+      },
+      NOW,
+    )
 
     expect(payload.byModel[0]).toEqual({ date: '2026-07-10', cost: 10, segments: [{ name: 'Opus 4', cost: 10 }] })
     expect(payload.byProject[0]).toEqual({ date: '2026-07-10', cost: 10, segments: [{ name: 'alpha', cost: 10 }] })
     expect(payload.flow.projects).toEqual([{ id: spendKeyFor('alpha'), label: 'alpha', cost: 10 }])
-    store.close()
   })
 
   it('rolls models beyond the top eight into an Other flow node', () => {
-    const store = makeLedger()
+    const { runtime } = openLedgerFixture()
     const specs: SpendSessionSpec[] = Array.from({ length: 10 }, (_, i) => ({
       sessionId: `s-${i}`,
       provider: 'claude',
@@ -156,32 +178,40 @@ describe('buildSpendViewFromLedger (aggregation seam scope)', () => {
       cost: 10 - i,
       date: `2026-07-${String(i + 1).padStart(2, '0')}`,
     }))
-    portSpendSessions(store, specs)
-    const payload = buildSpendViewFromLedger(store, {
-      period: 'lifetime',
-      range: { since: '2026-07-01', until: '2026-07-10' },
-    }, NOW)
+    portSpendSessions(runtime, specs)
+    const payload = querySpend(
+      runtime,
+      {
+        period: 'lifetime',
+        range: { since: '2026-07-01', until: '2026-07-10' },
+      },
+      NOW,
+    )
 
     expect(payload.flow.models).toHaveLength(9)
     expect(payload.flow.models.map(m => m.id)).toEqual([
-      'model-0', 'model-1', 'model-2', 'model-3', 'model-4',
-      'model-5', 'model-6', 'model-7', '__other__',
+      'model-0',
+      'model-1',
+      'model-2',
+      'model-3',
+      'model-4',
+      'model-5',
+      'model-6',
+      'model-7',
+      '__other__',
     ])
     expect(payload.flow.models[8]).toEqual({ id: '__other__', label: 'Other', cost: 3 })
     expect(payload.flow.projects).toEqual([{ id: spendKeyFor('alpha'), label: 'alpha', cost: 55 }])
-    store.close()
   })
 
   it('returns an empty payload for an empty ledger', () => {
-    const store = makeLedger()
-    const payload = buildSpendViewFromLedger(store, { period: 'lifetime' }, NOW)
+    const { runtime } = openLedgerFixture()
+    const payload = querySpend(runtime, { period: 'lifetime' }, NOW)
     expect(payload.byModel).toHaveLength(15)
     expect(payload.byModel.every(day => day.cost === 0 && day.segments.length === 0)).toBe(true)
     expect(payload.dataStart).toBeNull()
     expect(payload.flow).toEqual({ models: [], projects: [], links: [] })
-    store.close()
   })
-
 })
 
 describe('spend lib helpers', () => {

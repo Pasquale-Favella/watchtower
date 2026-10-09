@@ -14,6 +14,12 @@
 //   input/output token breakdowns for Copilot Chat users; legacy JSONL remains
 //   a fallback when richer sources are absent.
 //
+//   It also adds the Copilot CLI's OWN store, session-store.db, whose
+//   `assistant_usage_events` table records one row per API REQUEST. That is the
+//   only place a CLI session's per-request input / cache-read / cache-write
+//   split exists; the `session.shutdown` rollup in events.jsonl reports the
+//   same tokens lumped per model.
+//
 // HOW TO ENABLE THE OTEL SQLITE STORE:
 //   TWO settings must both be enabled in VS Code settings.json:
 //
@@ -40,13 +46,25 @@
 //   WATCHTOWER_COPILOT_WS_STORAGE_DIR — Override VS Code workspaceStorage
 //   WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR — Override VS Code globalStorage
 //   WATCHTOWER_COPILOT_JETBRAINS_DIR — Override the JetBrains github-copilot root
+//   WATCHTOWER_COPILOT_SESSION_STORE_DB — Override the CLI session-store.db path
 //
 // ARCHITECTURE:
-//   discoverSessions() returns OTel sessions and legacy JSONL sessions. When
-//   OTel is present, VS Code core chatSessions are skipped because they mirror
-//   the same Copilot turns under different IDs. OTel sessions carry the full
-//   token breakdown; JSONL sessions only carry output tokens (the original
-//   behaviour, as a fallback).
+//   discoverSessions() returns the CLI session-store source FIRST, then OTel
+//   sessions and legacy JSONL sessions. Order is load-bearing: the scan parses
+//   a provider's sources in the order discovery returned them (parser.ts
+//   `for (const source of sources)` → `changedSources` → the parse loop), and
+//   the store must be parsed before any `events.jsonl` source so it can record
+//   which (session, model) pairs it covers before the shutdown rollup reads
+//   that set. When OTel is present, VS Code core chatSessions are skipped
+//   because they mirror the same Copilot turns under different IDs.
+//
+// LIMITATIONS (session-store):
+//   - The rollup is SUPPRESSED, not reconciled, for every (session, model) the
+//     store covers. A session whose rollup carried MORE than the sum of its
+//     store rows (rows pruned, or a crash that skipped the write) therefore
+//     reports the store's smaller figure. Under-reporting, never invented
+//     spend — the residual that would fix it needs a serve-time cross-source
+//     pass this pipeline has no hook for. See the skip site.
 //
 // LIMITATIONS:
 //   - The OTel DB only contains Copilot Chat and Agent mode spans. Inline
@@ -57,23 +75,27 @@
 //     changes the schema, this parser will need updating.
 // =============================================================================
 
+import { createHash } from 'crypto'
+import { existsSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { homedir, platform } from 'os'
-import { join, basename, dirname, posix, win32 } from 'path'
-import { existsSync } from 'fs'
-import { createHash } from 'crypto'
-import { readSessionFile } from '../fs-utils.js'
-import { calculateCost } from '../models.js'
+import { basename, dirname, join, posix, win32 } from 'path'
+
+import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
+import { billableOutputTokens } from '../billable-output.js'
+import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
+import { readSessionFile } from '../fs-utils.js'
+import { captureScanPricing } from '../models.js'
+import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
+import type { ScanPricing } from '../scan-pricing.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+
+type CopilotParserContext = ProviderScanContext & { readonly pricing: ScanPricing }
 
 const estimateTokens = (text: string) => estimateTokensFromChars(text.length)
-import type {
-  Provider,
-  SessionSource,
-  SessionParser,
-  ParsedProviderCall,
-} from './types.js'
 
 // ---------------------------------------------------------------------------
 // Model display names (unchanged from original)
@@ -153,9 +175,7 @@ function normalizeTool(rawTool: string): string {
   return rawTool
 }
 
-const modelDisplayEntries = Object.entries(modelDisplayNames).sort(
-  (a, b) => b[0].length - a[0].length
-)
+const modelDisplayEntries = Object.entries(modelDisplayNames).sort((a, b) => b[0].length - a[0].length)
 
 // Tool names that represent shell/bash execution. When the AI calls one of
 // these, we extract the `arguments.command` string into bashCommands[].
@@ -165,8 +185,8 @@ const BASH_TOOL_NAMES = new Set(['bash', 'run_in_terminal', 'runInTerminal', 'ru
 // Types for JSONL session state events (unchanged from original)
 // ---------------------------------------------------------------------------
 type ToolRequest = {
-  toolName?: string  // older format
-  name?: string      // newer format (copilot-agent)
+  toolName?: string // older format
+  name?: string // newer format (copilot-agent)
   arguments?: Record<string, unknown>
 }
 
@@ -186,7 +206,7 @@ type UserMessageData = {
 
 type AssistantMessageData = {
   messageId: string
-  model?: string       // present in newer copilot-agent format
+  model?: string // present in newer copilot-agent format
   outputTokens: number
   interactionId?: string
   toolRequests?: ToolRequest[]
@@ -252,11 +272,89 @@ interface SpanAttributes {
 }
 
 // ---------------------------------------------------------------------------
+// Types for session-store.db rows (Copilot CLI)
+// ---------------------------------------------------------------------------
+//
+// One `assistant_usage_events` row is one API REQUEST. `input_tokens` is
+// cache-INCLUSIVE (uncached input + cache_read + cache_write), the same
+// convention the `session.shutdown` rollup in events.jsonl uses — see the
+// ShutdownModelUsage doc and the subtraction in the store parser.
+//
+// Only the columns this parser prices are listed; the store carries many more
+// (durations, TTFT, finish_reason, token_details_json) that have no field in
+// ParsedProviderCall. Every column is nullable in the file, so every field here
+// is read defensively and NULL is treated as 0.
+
+type SessionStoreUsageRow = {
+  id: number
+  session_id: string
+  model: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+  cache_read_tokens: number | null
+  cache_write_tokens: number | null
+  reasoning_tokens: number | null
+  initiator: string | null
+  created_at: string | null
+  cwd: string | null
+  repository: string | null
+}
+
+// ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
+//
+// Every seam below takes the AppPaths snapshot as ONE optional trailing
+// `paths` argument (`env.ts` seam convention). The snapshot REPORTS: each
+// reader keeps its own `??` / truthy / `isAbsolute` chain, so a `null` from
+// the snapshot produces exactly what `process.env[...] === undefined` did.
 
-function getCopilotSessionStateDir(override?: string): string {
-  return override ?? process.env['WATCHTOWER_COPILOT_SESSION_STATE_DIR'] ?? join(homedir(), '.copilot', 'session-state')
+export function getCopilotSessionStateDir(override?: string, paths?: AppPaths): string {
+  return (
+    override ??
+    overrideFor(paths, 'WATCHTOWER_COPILOT_SESSION_STATE_DIR') ??
+    join(homedir(), '.copilot', 'session-state')
+  )
+}
+
+/**
+ * Locate the Copilot CLI's `session-store.db`.
+ *
+ * The CLI writes one `assistant_usage_events` row per API request here. It is
+ * the ONLY place a CLI session's per-request input / cache-read / cache-write
+ * split exists — `events.jsonl` reports the same tokens lumped per model in its
+ * `session.shutdown` rollup, and one store spans every project, so its
+ * `sessions.cwd` / `sessions.repository` are what attribute a row to a project.
+ *
+ * The store sits BESIDE `session-state/`, so the path is derived from the
+ * already-registered `WATCHTOWER_COPILOT_SESSION_STATE_DIR` seam rather than
+ * from a second, independent `homedir()` read: one override then moves the
+ * whole CLI root, which is what a test or an embedder pointing the app at a
+ * copied `~/.copilot` actually means. With nothing overridden the default is
+ * still `~/.copilot/session-store.db`.
+ *
+ * `WATCHTOWER_COPILOT_SESSION_STORE_DB` is the eventual dedicated override, to
+ * match `WATCHTOWER_COPILOT_OTEL_DB`. It is NOT yet registered in
+ * `PROVIDER_ENV_KEYS` (src/main/env.ts) — the single place a provider env var
+ * is registered and the only thing `overrideFor` is typed against — so this
+ * reader cannot resolve it yet. Registering the key there (alphabetically,
+ * after `WATCHTOWER_COPILOT_SESSION_STATE_DIR`) and prepending
+ * `overrideFor(paths, 'WATCHTOWER_COPILOT_SESSION_STORE_DB')` is the follow-up;
+ * the existsSync gate below is unchanged either way.
+ *
+ * Returns null when the file is absent — the case on every machine that has
+ * never run the Copilot CLI, and the case that must leave every other Copilot
+ * source byte-for-byte unchanged.
+ */
+export function getCopilotSessionStoreDbPath(sessionStateDir?: string, paths?: AppPaths): string | null {
+  const override = overrideFor(paths, 'WATCHTOWER_COPILOT_SESSION_STORE_DB')
+  // The store sits beside `session-state/` in the CLI home, so the registered
+  // session-state override doubles as a way to move the whole CLI root. The
+  // dedicated override wins when set, for pointing at a relocated store alone.
+  const candidate = override
+    ? join(override, 'session-store.db')
+    : join(dirname(getCopilotSessionStateDir(sessionStateDir, paths)), 'session-store.db')
+  return existsSync(candidate) ? candidate : null
 }
 
 /**
@@ -267,9 +365,9 @@ function getCopilotSessionStateDir(override?: string): string {
  *   2. Platform-specific default VS Code global storage path
  *   3. VSCodium variant paths
  */
-function getAgentTracesDbPath(): string | null {
+export function getAgentTracesDbPath(paths?: AppPaths): string | null {
   // Allow explicit override
-  const envOverride = process.env['WATCHTOWER_COPILOT_OTEL_DB']
+  const envOverride = overrideFor(paths, 'WATCHTOWER_COPILOT_OTEL_DB')
   if (envOverride) {
     return existsSync(envOverride) ? envOverride : null
   }
@@ -281,9 +379,36 @@ function getAgentTracesDbPath(): string | null {
   if (p === 'darwin') {
     // macOS: VS Code, VS Code Insiders, VSCodium
     candidates.push(
-      join(home, 'Library', 'Application Support', 'Code', 'User', 'globalStorage', 'github.copilot-chat', 'agent-traces.db'),
-      join(home, 'Library', 'Application Support', 'Code - Insiders', 'User', 'globalStorage', 'github.copilot-chat', 'agent-traces.db'),
-      join(home, 'Library', 'Application Support', 'VSCodium', 'User', 'globalStorage', 'github.copilot-chat', 'agent-traces.db'),
+      join(
+        home,
+        'Library',
+        'Application Support',
+        'Code',
+        'User',
+        'globalStorage',
+        'github.copilot-chat',
+        'agent-traces.db',
+      ),
+      join(
+        home,
+        'Library',
+        'Application Support',
+        'Code - Insiders',
+        'User',
+        'globalStorage',
+        'github.copilot-chat',
+        'agent-traces.db',
+      ),
+      join(
+        home,
+        'Library',
+        'Application Support',
+        'VSCodium',
+        'User',
+        'globalStorage',
+        'github.copilot-chat',
+        'agent-traces.db',
+      ),
     )
   } else if (p === 'linux') {
     // Linux: VS Code, VS Code Insiders, VSCodium
@@ -294,7 +419,7 @@ function getAgentTracesDbPath(): string | null {
     )
   } else if (p === 'win32') {
     // Windows
-    const appdata = process.env['APPDATA'] ?? join(home, 'AppData', 'Roaming')
+    const appdata = platformFor(paths).appData ?? join(home, 'AppData', 'Roaming')
     candidates.push(
       join(appdata, 'Code', 'User', 'globalStorage', 'github.copilot-chat', 'agent-traces.db'),
       join(appdata, 'Code - Insiders', 'User', 'globalStorage', 'github.copilot-chat', 'agent-traces.db'),
@@ -325,17 +450,21 @@ function getAgentTracesDbPath(): string | null {
  * Ultimate, `intellij` for the community edition) containing
  * chat-agent-sessions/, chat-sessions/, and chat-edit-sessions/.
  */
-function getJetBrainsCopilotRoot(override?: string): string {
-  const envOverride = override ?? process.env['WATCHTOWER_COPILOT_JETBRAINS_DIR']
+export function getJetBrainsCopilotRoot(override?: string, paths?: AppPaths): string {
+  const envOverride = override ?? overrideFor(paths, 'WATCHTOWER_COPILOT_JETBRAINS_DIR')
   if (envOverride) return envOverride
 
-  const xdg = process.env['XDG_CONFIG_HOME']
+  const { xdgConfigHome: xdg, localAppData } = platformFor(paths)
+  // Reader-side asymmetry the snapshot must not resolve: an EMPTY or RELATIVE
+  // XDG_CONFIG_HOME is rejected here (`if (xdg && isAbsolute(xdg))`) and falls
+  // through to the platform default, while the plain `??` readers would join
+  // into a relative path. `null` ("unset") and `''` both fail this test.
   if (xdg && (posix.isAbsolute(xdg) || win32.isAbsolute(xdg))) {
     return join(xdg, 'github-copilot')
   }
 
   if (platform() === 'win32') {
-    const local = process.env['LOCALAPPDATA'] ?? join(homedir(), 'AppData', 'Local')
+    const local = localAppData ?? join(homedir(), 'AppData', 'Local')
     return join(local, 'github-copilot')
   }
 
@@ -363,23 +492,25 @@ function parseCwd(yaml: string): string | null {
  * are stored as separate key-value rows rather than a JSON blob.
  */
 function loadSpanAttributesFromTable(
-  db: ReturnType<typeof import('../sqlite.js')['openDatabase']>,
-  spanId: string
+  db: ReturnType<(typeof import('../sqlite.js'))['openDatabase']>,
+  spanId: string,
+  signal?: AbortSignal,
 ): SpanAttributes {
   try {
+    throwIfScanAborted(signal)
     const rows = db.query<{ key: string; value: string | null }>(
       `SELECT key, value FROM span_attributes WHERE span_id = ?`,
-      [spanId]
+      [spanId],
     )
+    throwIfScanAborted(signal)
     const attrs: SpanAttributes = {}
     for (const row of rows) {
+      throwIfScanAborted(signal)
       if (row.key && row.value) {
         try {
           // Try to parse numeric values
           const numValue = Number(row.value)
-          attrs[row.key as keyof SpanAttributes] = Number.isNaN(numValue) 
-            ? row.value
-            : numValue
+          attrs[row.key as keyof SpanAttributes] = Number.isNaN(numValue) ? row.value : numValue
         } catch {
           attrs[row.key as keyof SpanAttributes] = row.value
         }
@@ -387,6 +518,7 @@ function loadSpanAttributesFromTable(
     }
     return attrs
   } catch {
+    throwIfScanAborted(signal)
     return {}
   }
 }
@@ -517,7 +649,7 @@ function applyChatJournalAppend(root: unknown, path: ChatJournalPathSegment[], i
 
 function replayChatSessionJournal(content: string): unknown {
   let root: unknown = createReplayObject()
-  const lines = content.split('\n').filter((l) => l.trim())
+  const lines = content.split('\n').filter(l => l.trim())
 
   for (const line of lines) {
     let entry: unknown
@@ -651,9 +783,23 @@ function parseToolCommand(raw: unknown): string | null {
 // Shell control-flow keywords. These lead a statement but are not commands, so
 // they must never be reported as bash commands.
 const OTEL_SHELL_KEYWORDS = new Set([
-  'if', 'then', 'else', 'elif', 'fi',
-  'for', 'while', 'until', 'do', 'done',
-  'case', 'esac', 'select', 'function', 'in', 'time', 'coproc',
+  'if',
+  'then',
+  'else',
+  'elif',
+  'fi',
+  'for',
+  'while',
+  'until',
+  'do',
+  'done',
+  'case',
+  'esac',
+  'select',
+  'function',
+  'in',
+  'time',
+  'coproc',
 ])
 
 /**
@@ -726,43 +872,43 @@ function inferTranscriptModel(lines: string[]): string {
 // transcript format via session.start { producer: 'copilot-agent' })
 // ---------------------------------------------------------------------------
 
+/**
+ * @param coveredStoreKeys the provider-lifetime set of `${sessionId}\n${model}`
+ * pairs the session-store parser has already described. The `session.shutdown`
+ * handler skips its rollup for any pair in it — see the comment at that skip.
+ * OTel / chatSessions / JetBrains / transcript sources never consult it: they
+ * describe different tools' sessions, which the store does not record.
+ */
 function createJsonlParser(
   source: SessionSource,
-  seenKeys: Set<string>
+  seenKeys: Set<string>,
+  coveredStoreKeys: Set<string>,
+  context: CopilotParserContext,
 ): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const content = await readSessionFile(source.path)
+      throwIfScanAborted(context?.signal)
+      const content = await readSessionFile(source.path, 'utf8', { signal: context?.signal })
+      throwIfScanAborted(context?.signal)
       if (!content) return
       const sessionId = basename(dirname(source.path))
-      const lines = content.split('\n').filter((l) => l.trim())
+      const lines = content.split('\n').filter(l => l.trim())
 
       // Detect VS Code transcript format: the first session.start event has
       // { producer: 'copilot-agent' } and no outputTokens in messages.
-      let isTranscript = false
+      // VS Code transcript format, decided by DISCOVERY (see
+      // `JsonlSessionSource.sessionKind`), never by sniffing the producer
+      // field: the CLI and VS Code both write `copilot-agent`, and reading that
+      // as "this is a transcript" threw away every CLI session's
+      // `session.shutdown` input/cache rollup.
+      const isTranscript = (source as JsonlSessionSource).sessionKind === 'transcript'
       let currentModel = ''
       let pendingUserMessage = ''
       // Track the active subagent for this session (from subagent.selected events).
       // Resets when a new subagent is selected.
       let currentSubagentType: string | undefined
 
-      // First pass: detect format and infer transcript model if needed.
-      for (const line of lines) {
-        try {
-          const ev = JSON.parse(line) as CopilotEvent
-          if (ev.type === 'session.start') {
-            const data = ev.data as SessionStartData & { producer?: string }
-            if (data.producer === 'copilot-agent') {
-              isTranscript = true
-            }
-            break
-          }
-          if (ev.type === 'session.model_change') break // regular format
-        } catch {
-          continue
-        }
-      }
-
+      // First pass: infer the transcript model when this is a transcript file.
       if (isTranscript) {
         currentModel = inferTranscriptModel(lines)
         if (!currentModel) return // no toolCallIds to infer model from
@@ -773,7 +919,21 @@ function createJsonlParser(
       // timestamp, which the date-range filters silently drop.
       let lastEventTimestamp = ''
 
+      // One entry per model, summing every leg this session wrote; see the
+      // comment at the buffering site.
+      const rollupByModel = new Map<
+        string,
+        {
+          inputTokens: number
+          cacheWriteTokens: number
+          cacheReadTokens: number
+          reasoningTokens: number
+          timestamp: string
+        }
+      >()
+
       for (const line of lines) {
+        throwIfScanAborted(context?.signal)
         let event: CopilotEvent
         try {
           event = JSON.parse(line) as CopilotEvent
@@ -830,6 +990,32 @@ function createJsonlParser(
             const usage = metrics['usage']
             if (!isRecord(usage)) continue
 
+            // ── THE SHUTDOWN DOUBLE-COUNT, RESOLVED BY SUPPRESSION ──
+            //
+            // These are the SAME tokens the session-store's per-request rows
+            // describe, just lumped per model. Emitting both roughly doubles a
+            // CLI session's input and cache tokens. The store wins: it is
+            // written per REQUEST rather than only on a clean shutdown (a
+            // crash loses the rollup entirely), and it carries the per-request
+            // cache split the rollup does not.
+            //
+            // The set is populated by the store parser, which discoverSessions
+            // returns FIRST: the scan walks a provider's sources in discovery
+            // order (parser.ts `for (const source of sources)` builds
+            // `changedSources`, and the parse loop iterates that same array), so
+            // the store is always parsed before any events.jsonl source.
+            //
+            // WHAT THIS COSTS — stated plainly, not papered over: a session
+            // whose rollup carried MORE usage than the sum of its store rows
+            // (rows pruned by the CLI, or a crash that skipped the write) now
+            // reports the store's SMALLER figure. That under-reports. The
+            // reference implementation serves the excess as a residual via a
+            // serve-time two-pass reconciliation over the whole provider's
+            // sources, and this architecture has no such hook —
+            // createSessionParser is per-source with no cross-source pass.
+            // Under-reporting is the safe direction: it never invents spend.
+            if (coveredStoreKeys.has(`${sessionId}\n${model}`)) continue
+
             const cacheReadTokens = numberOrZero(usage['cacheReadTokens'])
             const cacheWriteTokens = numberOrZero(usage['cacheWriteTokens'])
             const reasoningTokens = numberOrZero(usage['reasoningTokens'])
@@ -837,46 +1023,29 @@ function createJsonlParser(
             // cache_write). calculateCost expects the uncached input alone with
             // cache tokens billed separately, so subtract the cache components.
             // Clamp at 0 in case a future schema reports input non-inclusively.
-            const inputTokens = Math.max(
-              0,
-              numberOrZero(usage['inputTokens']) - cacheReadTokens - cacheWriteTokens
-            )
+            const inputTokens = Math.max(0, numberOrZero(usage['inputTokens']) - cacheReadTokens - cacheWriteTokens)
 
             // Nothing this call would add over the per-turn events, so skip it
             // to avoid an empty $0 row (output is intentionally excluded).
             if (inputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0) continue
 
-            const dedupKey = `copilot:${sessionId}:shutdown:${model}`
-            if (seenKeys.has(dedupKey)) continue
-            seenKeys.add(dedupKey)
-
-            // Tokens are real counts written by the CLI, so this cost is
-            // measured, not char-estimated: costIsEstimated is false.
-            const costUSD = calculateCost(model, inputTokens, 0, cacheWriteTokens, cacheReadTokens, 0)
-
-            yield {
-              provider: 'copilot',
-              sessionId,
-              model,
-              inputTokens,
-              outputTokens: 0,
-              cacheCreationInputTokens: cacheWriteTokens,
-              cacheReadInputTokens: cacheReadTokens,
-              cachedInputTokens: 0,
-              reasoningTokens,
-              webSearchRequests: 0,
-              costUSD,
-              costIsEstimated: false,
-              tools: [],
-              bashCommands: [],
+            // A resumed session writes one rollup PER LEG, and each leg reports
+            // what THAT leg consumed - verified against the rollups on disk,
+            // where a single session's `gpt-5.5` legs read in=1,010,433 then
+            // 497,389 then 3,326,890 then 3,670,377: not monotonic, so neither
+            // the first nor the last leg is the session total and a delta is
+            // meaningless. 14 of the 81 CLI sessions write more than one leg, up
+            // to eight. So SUM the legs per model, and emit once after the
+            // event loop - yielding inline under the per-(session, model) dedup
+            // key would bill one leg and discard the rest.
+            const prior = rollupByModel.get(model)
+            rollupByModel.set(model, {
+              inputTokens: (prior?.inputTokens ?? 0) + inputTokens,
+              cacheWriteTokens: (prior?.cacheWriteTokens ?? 0) + cacheWriteTokens,
+              cacheReadTokens: (prior?.cacheReadTokens ?? 0) + cacheReadTokens,
+              reasoningTokens: (prior?.reasoningTokens ?? 0) + reasoningTokens,
               timestamp: shutdownTimestamp,
-              speed: 'standard' as const,
-              deduplicationKey: dedupKey,
-              userMessage: '',
-              ...(source.workingDirectory
-                ? { projectPath: source.workingDirectory, workingDirectory: source.workingDirectory }
-                : {}),
-            }
+            })
           }
           continue
         }
@@ -898,17 +1067,19 @@ function createJsonlParser(
           seenKeys.add(dedupKey)
 
           const tools = toolRequests
-            .map((t) => {
-              const raw = typeof t === 'object' && t !== null
-                ? ((t as { name?: unknown; toolName?: unknown }).name ?? (t as { name?: unknown; toolName?: unknown }).toolName)
-                : null
+            .map(t => {
+              const raw =
+                typeof t === 'object' && t !== null
+                  ? ((t as { name?: unknown; toolName?: unknown }).name ??
+                    (t as { name?: unknown; toolName?: unknown }).toolName)
+                  : null
               return typeof raw === 'string' ? normalizeTool(raw) : null
             })
             .filter((t): t is string => t !== null)
 
-          const skills = toolRequests.flatMap((t) => {
+          const skills = toolRequests.flatMap(t => {
             if (typeof t !== 'object' || t === null) return []
-            const name = (t.name ?? t.toolName) ?? ''
+            const name = t.name ?? t.toolName ?? ''
             if (name !== 'skill') return []
             const skill = t.arguments?.['skill']
             return typeof skill === 'string' && skill.trim().length > 0 ? [skill.trim()] : []
@@ -918,9 +1089,9 @@ function createJsonlParser(
           // raw command through the shared extractBashCommands helper so chained
           // commands are normalised the same way as every other provider
           // (see bash-utils.ts, parser.ts, forge.ts, grok.ts, etc.).
-          const bashCommands = toolRequests.flatMap((t) => {
+          const bashCommands = toolRequests.flatMap(t => {
             if (typeof t !== 'object' || t === null) return []
-            const name = (t.name ?? t.toolName) ?? ''
+            const name = t.name ?? t.toolName ?? ''
             if (!BASH_TOOL_NAMES.has(name)) return []
             const cmd = t.arguments?.['command']
             return typeof cmd === 'string' ? extractBashCommands(cmd) : []
@@ -929,7 +1100,7 @@ function createJsonlParser(
           // Copilot JSONL only logs outputTokens; inputTokens are NOT available.
           // Cost will be lower than actual API cost. This is the original
           // behaviour — OTel data (below) replaces it when available.
-          const costUSD = calculateCost(currentModel, 0, outputTokens, 0, 0, 0)
+          const costUSD = context.pricing.calculateCost(currentModel, 0, outputTokens, 0, 0, 0)
 
           yield {
             provider: 'copilot',
@@ -958,17 +1129,65 @@ function createJsonlParser(
           pendingUserMessage = ''
         }
       }
+
+      // The CLI shutdown rollups, one per model, each the session's final
+      // cumulative figure. Output is excluded on purpose: the per-turn
+      // `assistant.message` events above already carry it.
+      for (const [model, rollup] of rollupByModel) {
+        throwIfScanAborted(context?.signal)
+        const dedupKey = `copilot:${sessionId}:shutdown:${model}`
+        if (seenKeys.has(dedupKey)) continue
+        seenKeys.add(dedupKey)
+
+        // Tokens are real counts written by the CLI, so this cost is measured,
+        // not char-estimated.
+        const costUSD = context.pricing.calculateCost(
+          model,
+          rollup.inputTokens,
+          0,
+          rollup.cacheWriteTokens,
+          rollup.cacheReadTokens,
+          0,
+        )
+
+        yield {
+          provider: 'copilot',
+          sessionId,
+          model,
+          inputTokens: rollup.inputTokens,
+          outputTokens: 0,
+          cacheCreationInputTokens: rollup.cacheWriteTokens,
+          cacheReadInputTokens: rollup.cacheReadTokens,
+          cachedInputTokens: 0,
+          reasoningTokens: rollup.reasoningTokens,
+          webSearchRequests: 0,
+          costUSD,
+          costIsEstimated: false,
+          tools: [],
+          bashCommands: [],
+          timestamp: rollup.timestamp,
+          speed: 'standard' as const,
+          deduplicationKey: dedupKey,
+          userMessage: '',
+          ...(source.workingDirectory
+            ? { projectPath: source.workingDirectory, workingDirectory: source.workingDirectory }
+            : {}),
+        }
+      }
     },
   }
 }
 
 function createChatSessionParser(
   source: SessionSource,
-  seenKeys: Set<string>
+  seenKeys: Set<string>,
+  context: CopilotParserContext,
 ): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const content = await readSessionFile(source.path)
+      throwIfScanAborted(context?.signal)
+      const content = await readSessionFile(source.path, 'utf8', { signal: context?.signal })
+      throwIfScanAborted(context?.signal)
       if (!content) return
 
       const root = replayChatSessionJournal(content)
@@ -979,6 +1198,7 @@ function createChatSessionParser(
       const requests = Array.isArray(root['requests']) ? root['requests'] : []
 
       for (let index = 0; index < requests.length; index++) {
+        throwIfScanAborted(context?.signal)
         const rawReq = requests[index]
         if (!isRecord(rawReq)) continue
 
@@ -999,7 +1219,7 @@ function createChatSessionParser(
         seenKeys.add(dedupKey)
 
         const model = modelFromChatSessionRequest(rawReq, metadata)
-        const costUSD = calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
+        const costUSD = context.pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
         const timestamp = timestampToISO(rawReq['timestamp']) || sessionCreatedAt
 
         yield {
@@ -1026,6 +1246,297 @@ function createChatSessionParser(
             : {}),
         }
       }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// session-store.db parser — the Copilot CLI's per-request usage ledger
+// ---------------------------------------------------------------------------
+//
+// The CLI writes one `assistant_usage_events` row per API REQUEST. Between the
+// store and events.jsonl the three sources divide the work like this:
+//
+//   input / cache-read / cache-write   store rows are authoritative (per
+//                                     request); the events.jsonl
+//                                     `session.shutdown` rollup reports the
+//                                     same tokens lumped per model.
+//   output                             events.jsonl `assistant.message`
+//                                     owns it, per turn.
+//   compaction output                  the store row is the ONLY copy — a
+//                                     compaction request produces no
+//                                     assistant message to own it.
+//
+// The dedup key namespace `copilot-store:` is distinct from every other key
+// this file mints (`copilot:<session>:shutdown:<model>`,
+// `copilot:<session>:<messageId>`, `copilot-chatsession:…`, `copilot:jb:…`,
+// `copilot-otel:<spanId>`), so a store row can never be mistaken for one of
+// them by the shared `seenKeys` set.
+
+/**
+ * The content discriminator folded into a store row's dedup key.
+ *
+ * `id` alone is NOT a safe identity: it is AUTOINCREMENT, so it is stable
+ * within one database lifetime but a recreated database at the same path
+ * restarts the sequence. A bare `copilot-store:<session>:<id>` key would then
+ * let the durable cache treat a genuinely different request as already cached
+ * and silently swallow it forever. Hashing the row's own model and token
+ * counts makes a re-created database produce a DIFFERENT key for a different
+ * row, while a byte-identical re-insert (a backup restore, `VACUUM INTO`)
+ * still collapses to the same key — which is the point: that IS the same row.
+ */
+function sessionStoreContentHash(row: {
+  model: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  reasoningTokens: number
+  initiator: string
+}): string {
+  const material = [
+    row.model,
+    row.inputTokens,
+    row.outputTokens,
+    row.cacheReadTokens,
+    row.cacheWriteTokens,
+    row.reasoningTokens,
+    row.initiator,
+  ].join('|')
+  return createHash('sha256').update(material).digest('hex').slice(0, 12)
+}
+
+/**
+ * Resolve a store row's project label.
+ *
+ * One database spans every project, so attribution has to come from the
+ * `sessions` row: `repository` is the plugin's own `owner/name` (the analogue
+ * of the OTel source's `github.copilot.git.repository`), and `cwd` is the
+ * checkout it ran in. Precedence mirrors the JetBrains parser's: the store's
+ * own recorded label wins, then the workspace basename, then one honest bucket
+ * — never a chat-thread title, which would pollute By-Project.
+ */
+/**
+ * The last segment of a project path, whichever separator style it uses.
+ *
+ * A Copilot store is written by whichever machine ran the CLI, so a `cwd` or
+ * `repository` can arrive carrying the other platform's separators — a
+ * Windows path read on a POSIX host, or a synced database read on Windows.
+ * The platform's own `basename` is correct only for its own style and returns
+ * the whole string for the other, which files a session under a project
+ * literally named `C:\work\no-repo`.
+ *
+ * Pure string handling on purpose: it calls no `path` helper, so the result
+ * cannot depend on the host platform. The `.git` suffix is stripped by the
+ * caller before the segment is taken, as before.
+ */
+function lastPathSegment(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return cut >= 0 ? trimmed.slice(cut + 1) : trimmed
+}
+
+function resolveStoreProject(cwd: string | null, repository: string | null): string {
+  const repo = readString(repository)
+    .trim()
+    .replace(/\.git$/, '')
+  if (repo) {
+    const name = lastPathSegment(repo)
+    if (name) return name
+  }
+  const dir = readString(cwd).trim()
+  if (dir) {
+    const name = lastPathSegment(dir)
+    if (name) return name
+  }
+  return 'copilot-cli'
+}
+
+/**
+ * Parse `session-store.db` into one `ParsedProviderCall` per API request.
+ *
+ * `coveredStoreKeys` is the provider-lifetime set of `${sessionId}\n${model}`
+ * pairs this store has described. The `session.shutdown` handler consults it to
+ * decide whether to skip its rollup (see createJsonlParser); the store source is
+ * discovered FIRST so that set is populated before any events.jsonl source is
+ * parsed.
+ *
+ * A missing / empty / corrupt / locked database yields nothing and throws
+ * nothing: the CLI writes this file live (with `-wal` / `-shm` siblings), so a
+ * transient lock is routine and must never abort a scan. Failures are reported
+ * through the provider's existing problem-reporting path and the parse returns
+ * empty, exactly as a table-less database does.
+ */
+function createSessionStoreParser(
+  source: SessionStoreSource,
+  seenKeys: Set<string>,
+  coveredStoreKeys: Set<string>,
+  context: CopilotParserContext,
+): SessionParser {
+  return {
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      throwIfScanAborted(context?.signal)
+      const { openDatabase } = await import('../sqlite.js')
+      throwIfScanAborted(context?.signal)
+
+      let db: ReturnType<typeof openDatabase>
+      try {
+        db = openDatabase(source.path)
+      } catch (err) {
+        // Read-only open failed: locked, truncated, not SQLite, or the driver
+        // is unavailable. Emit nothing and say so, the same degradation the
+        // pipeline expects of any provider that cannot read its source.
+        reportProviderIssue('copilot', fileErrorCode(err, 'session-store-unreadable'), source.path)
+        return
+      }
+
+      const sourceCoveredKeys = new Set<string>()
+      try {
+        let rows: SessionStoreUsageRow[]
+        try {
+          throwIfScanAborted(context?.signal)
+          rows = db.query<SessionStoreUsageRow>(
+            `SELECT
+               u.id, u.session_id, u.model,
+               u.input_tokens, u.output_tokens,
+               u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,
+               u.initiator, u.created_at,
+               s.cwd, s.repository
+             FROM assistant_usage_events u
+             LEFT JOIN sessions s ON s.id = u.session_id
+             ORDER BY u.id ASC`,
+          )
+        } catch (err) {
+          if (isScanAbortedError(err)) throw err
+          // Opened but unreadable as a usage store: a foreign / older schema, or
+          // a page the WAL has not checkpointed into the main file yet.
+          reportProviderIssue('copilot', fileErrorCode(err, 'session-store-unreadable'), source.path)
+          return
+        }
+
+        for (const row of rows) {
+          throwIfScanAborted(context?.signal)
+          const sessionId = readString(row.session_id)
+          if (!sessionId) continue
+
+          // A hand-built store can carry an empty model. Never drop a billable
+          // row for an unnameable model: 'unknown' prices at $0 and surfaces
+          // through the existing unpriced-model signal, which is the honest
+          // outcome — silently discarding the row would hide real spend.
+          const model = readString(row.model).trim() || 'unknown'
+          const initiator = readString(row.initiator).trim()
+
+          const cacheReadTokens = numberOrZero(row.cache_read_tokens)
+          const cacheWriteTokens = numberOrZero(row.cache_write_tokens)
+          const reasoningTokens = numberOrZero(row.reasoning_tokens)
+          const rawInputTokens = numberOrZero(row.input_tokens)
+          const rawOutputTokens = numberOrZero(row.output_tokens)
+
+          // `input_tokens` is cache-INCLUSIVE (uncached input + cache_read +
+          // cache_write) — the same convention the events.jsonl
+          // `session.shutdown` rollup uses. calculateCost wants the uncached
+          // input alone with the cache components billed separately, so
+          // subtract them. Clamped at 0 for the same reason as there: a future
+          // schema must not make a negative uncached input.
+          const inputTokens = Math.max(0, rawInputTokens - cacheReadTokens - cacheWriteTokens)
+
+          // Nothing billable in this row (a failed / filtered request the CLI
+          // still logged). Skipping avoids an empty $0 row in every view.
+          if (inputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0 && rawOutputTokens === 0) continue
+
+          // This (session, model) is now described by the store, so the
+          // events.jsonl rollup for it must stand down. See createJsonlParser
+          // for what that costs.
+          const coveredKey = `${sessionId}\n${model}`
+
+          // OUTPUT OWNERSHIP — the one place this source could double-count.
+          //
+          // Every non-compaction request's output is already reported by the
+          // per-turn `assistant.message` event in events.jsonl, which is parsed
+          // from a DIFFERENT source later in the same pass. There is no
+          // serve-time cross-source pass in this architecture to reconcile the
+          // two, and `seenKeys` cannot arbitrate either (the two rows carry
+          // different dedup keys, so claiming a shared one would drop the
+          // per-turn row and lose its tools / bashCommands / userMessage —
+          // strictly worse than a counted token).
+          //
+          // So the store yields OUTPUT ONLY for compaction rows, which produce
+          // no assistant message of their own and whose `output_tokens` is
+          // therefore the only copy anywhere. Every other row is emitted with
+          // output 0 and the per-turn event keeps ownership.
+          //
+          // COST OF THIS CHOICE: a non-compaction request whose per-turn
+          // `assistant.message` is missing from events.jsonl (a pruned or
+          // unreadable session file) contributes no output at all. That
+          // under-reports. The alternative — emitting every row's output —
+          // over-reports on every normal session, which is the worse direction:
+          // it invents spend.
+          const outputTokens = initiator === 'compaction' ? rawOutputTokens : 0
+
+          // `copilot` is in OUTPUT_INCLUSIVE_REASONING_PROVIDERS, so
+          // reasoning is already inside the store's `output_tokens` and must
+          // NOT be added again. billableOutputTokens is the single place that
+          // answers that question; the arithmetic is never reimplemented here.
+          const costUSD = context.pricing.calculateCost(
+            model,
+            inputTokens,
+            billableOutputTokens('copilot', outputTokens, reasoningTokens),
+            cacheWriteTokens,
+            cacheReadTokens,
+            0,
+          )
+
+          const dedupKey = `copilot-store:${sessionId}:${row.id}:${sessionStoreContentHash({
+            model,
+            inputTokens: rawInputTokens,
+            outputTokens: rawOutputTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
+            reasoningTokens,
+            initiator,
+          })}`
+          sourceCoveredKeys.add(coveredKey)
+          if (seenKeys.has(dedupKey)) continue
+          seenKeys.add(dedupKey)
+
+          const cwd = readString(row.cwd).trim() || null
+          // The row's own `created_at`, normalized through the same helper the
+          // JSONL / chatSessions paths use, so a row can never be dropped by
+          // the period filter on a formatting difference. A row with no usable
+          // timestamp falls back to the session-state file's mtime (the same
+          // fallback the JetBrains parser uses) rather than being dropped.
+          const timestamp = timestampToISO(row.created_at) || source.mtime
+
+          yield {
+            provider: 'copilot',
+            sessionId,
+            project: resolveStoreProject(row.cwd, row.repository),
+            model,
+            inputTokens,
+            outputTokens,
+            cacheCreationInputTokens: cacheWriteTokens,
+            cacheReadInputTokens: cacheReadTokens,
+            cachedInputTokens: 0,
+            reasoningTokens,
+            webSearchRequests: 0,
+            costUSD,
+            // These are real counts the CLI wrote per request, not estimates
+            // from characters — the same contract the shutdown rollup sets.
+            costIsEstimated: false,
+            tools: [],
+            bashCommands: [],
+            timestamp,
+            speed: 'standard' as const,
+            deduplicationKey: dedupKey,
+            userMessage: '',
+            ...(cwd ? { projectPath: cwd, workingDirectory: cwd } : {}),
+          }
+        }
+        throwIfScanAborted(context?.signal)
+      } finally {
+        db.close()
+      }
+      for (const key of sourceCoveredKeys) coveredStoreKeys.add(key)
     },
   }
 }
@@ -1120,7 +1631,11 @@ function inferJetBrainsProject(raw: string): string | undefined {
   while ((m = re.exec(raw))) {
     // Decode %20 etc. and strip a trailing .rej/.orig suffix noise; keep the dir.
     let p = m[1]
-    try { p = decodeURIComponent(p) } catch { /* leave as-is */ }
+    try {
+      p = decodeURIComponent(p)
+    } catch {
+      /* leave as-is */
+    }
     const dir = p.slice(0, p.lastIndexOf('/'))
     if (dir.startsWith('/')) seen.add(dir)
   }
@@ -1242,7 +1757,9 @@ function extractJetBrainsConversations(raw: string): JBConversation[] {
     // The title is the Java-UTF string between the `value` marker and `source`.
     const tm = window.match(/value.{1,6}?([\x20-\x7e]{3,80}?)t\x00\x06source/)
     if (!tm) continue
-    const title = Buffer.from(tm[1].replace(/^[^A-Za-z0-9]*/, ''), 'latin1').toString('utf8').trim()
+    const title = Buffer.from(tm[1].replace(/^[^A-Za-z0-9]*/, ''), 'latin1')
+      .toString('utf8')
+      .trim()
     if (!title) continue
     // Keep the latest non-default title; only fall back to a default if no
     // meaningful title has been seen for this conversation yet.
@@ -1261,12 +1778,27 @@ function matchJsonObject(raw: string, start: number): { chunk: string; end: numb
   let i = start
   for (; i < raw.length; i++) {
     const c = raw[i]
-    if (esc) { esc = false; continue }
-    if (c === '\\') { esc = true; continue }
-    if (c === '"') { inStr = !inStr; continue }
+    if (esc) {
+      esc = false
+      continue
+    }
+    if (c === '\\') {
+      esc = true
+      continue
+    }
+    if (c === '"') {
+      inStr = !inStr
+      continue
+    }
     if (inStr) continue
     if (c === '{') depth++
-    else if (c === '}') { depth--; if (depth === 0) { i++; break } }
+    else if (c === '}') {
+      depth--
+      if (depth === 0) {
+        i++
+        break
+      }
+    }
   }
   return { chunk: raw.slice(start, i), end: i }
 }
@@ -1403,7 +1935,7 @@ function extractJetBrainsDbTurns(raw: string): JBDbTurn[] {
   const conversations = extractJetBrainsConversations(raw)
   // Precompute the byte offset of each conversation GUID's full form so a turn
   // can be attributed to the conversation whose id most recently precedes it.
-  const convById = new Map(conversations.map((c) => [c.id, c]))
+  const convById = new Map(conversations.map(c => [c.id, c]))
 
   const turns: JBDbTurn[] = []
   const seenReplies = new Set<string>() // keyed by `${conversationId}::${reply}`
@@ -1466,7 +1998,8 @@ function extractJetBrainsDbTurns(raw: string): JBDbTurn[] {
     // It starts with a UUID-keyed Value entry: {"<uuid>":{"type":"Value",...}}.
     // Hex is matched case-insensitively — an uppercase UUID must not cause the
     // whole session to fall through to $0 (the exact bug this path fixes).
-    const outerDocRe = /[\x00-\x1f\x7f-\xff]\{"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}":\{"type":"Value"/g
+    const outerDocRe =
+      /[\x00-\x1f\x7f-\xff]\{"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}":\{"type":"Value"/g
     let dm: RegExpExecArray | null
     while ((dm = outerDocRe.exec(raw))) {
       // Skip the leading binary byte; matchJsonObject starts at the '{'.
@@ -1539,10 +2072,12 @@ function extractJetBrainsDbTurns(raw: string): JBDbTurn[] {
 
 function createJetBrainsParser(
   source: JetBrainsSessionSource,
-  seenKeys: Set<string>
+  seenKeys: Set<string>,
+  context: CopilotParserContext,
 ): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
+      throwIfScanAborted(context?.signal)
       const sessionId = source.sessionId
 
       // Nitrite .db (the store's authoritative session content). Read as latin1
@@ -1550,10 +2085,12 @@ function createJetBrainsParser(
       if (source.dbPath) {
         let dbRaw: string | null = null
         try {
-          dbRaw = await readSessionFile(source.dbPath, 'latin1')
-        } catch {
+          dbRaw = await readSessionFile(source.dbPath, 'latin1', { signal: context?.signal })
+        } catch (error) {
+          if (isScanAbortedError(error)) throw error
           dbRaw = null
         }
+        throwIfScanAborted(context?.signal)
         if (dbRaw) {
           const storeModel = inferJetBrainsModel(dbRaw)
           const turns = extractJetBrainsDbTurns(dbRaw)
@@ -1568,6 +2105,7 @@ function createJetBrainsParser(
           // share replyText '') distinct within a conversation.
           const perContentIndex = new Map<string, number>()
           for (const turn of turns) {
+            throwIfScanAborted(context?.signal)
             // One .db holds many chat tabs; group each turn under its own
             // conversation so the user sees one session per tab, not per file.
             const convId = turn.conversationId || sessionId
@@ -1583,7 +2121,7 @@ function createJetBrainsParser(
             const model = turn.model || storeModel || 'copilot-anthropic-auto'
             // Errored turns (failed generation) contribute no billable output.
             const outputTokens = turn.errored ? 0 : estimateTokens(turn.replyText)
-            const costUSD = outputTokens > 0 ? calculateCost(model, 0, outputTokens, 0, 0, 0) : 0
+            const costUSD = outputTokens > 0 ? context.pricing.calculateCost(model, 0, outputTokens, 0, 0, 0) : 0
             // Project resolution precedence:
             //   1. projectName — the plugin's own recorded label (1.12+),
             //      joined across kind dirs by store id. Authoritative.
@@ -1592,8 +2130,7 @@ function createJetBrainsParser(
             //   3. one honest bucket when neither signal exists.
             // The conversation TITLE is a chat-thread name, NOT a project, and is
             // kept out of `project` (it would otherwise pollute By-Project).
-            const project =
-              source.projectName || turn.conversationProject || 'copilot-jetbrains'
+            const project = source.projectName || turn.conversationProject || 'copilot-jetbrains'
 
             yield {
               provider: 'copilot',
@@ -1621,7 +2158,6 @@ function createJetBrainsParser(
           }
         }
       }
-
     },
   }
 }
@@ -1630,19 +2166,19 @@ function createJetBrainsParser(
 // OTel SQLite parser — reads agent-traces.db for FULL token data
 // ---------------------------------------------------------------------------
 
-function createOtelParser(
-  source: SessionSource,
-  seenKeys: Set<string>
-): SessionParser {
+function createOtelParser(source: SessionSource, seenKeys: Set<string>, context: CopilotParserContext): SessionParser {
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
+      throwIfScanAborted(context?.signal)
       // Lazy-load the SQLite module (same pattern as Cursor/OpenCode providers)
       const { openDatabase } = await import('../sqlite.js')
+      throwIfScanAborted(context?.signal)
 
       // One DB open handles ALL conversations — avoids N opens for N conversations.
       const db = openDatabase(source.path)
 
       try {
+        throwIfScanAborted(context?.signal)
         // ---------------------------------------------------------------
         // Get all distinct conversations in the DB with their project names.
         // ---------------------------------------------------------------
@@ -1662,10 +2198,12 @@ function createOtelParser(
              ON s.span_id = sa_repo.span_id AND sa_repo.key = 'github.copilot.git.repository'
            WHERE sa_conv.value IS NOT NULL
            GROUP BY sa_conv.value
-           ORDER BY min_start DESC`
+           ORDER BY min_start DESC`,
         )
+        throwIfScanAborted(context?.signal)
 
         for (const convRow of conversationRows) {
+          throwIfScanAborted(context?.signal)
           const conversationId = convRow.conversation_id
           if (!conversationId) continue
 
@@ -1684,12 +2222,14 @@ function createOtelParser(
              INNER JOIN span_attributes sa 
                ON s.span_id = sa.span_id AND sa.key = 'gen_ai.conversation.id' AND sa.value = ?
              ORDER BY s.start_time_ms ASC`,
-            [conversationId]
+            [conversationId],
           )
+          throwIfScanAborted(context?.signal)
 
           // Collect trace IDs and span IDs belonging to this conversation
           const traceIds = new Set<string>()
           for (const row of spanIdRows) {
+            throwIfScanAborted(context?.signal)
             traceIds.add(row.trace_id)
           }
 
@@ -1710,8 +2250,9 @@ function createOtelParser(
             response_model: string | null
           }>(
             `SELECT span_id, trace_id, operation_name, start_time_ms, response_model FROM spans WHERE trace_id IN (${tracePlaceholders})`,
-            traceIdArr
+            traceIdArr,
           )
+          throwIfScanAborted(context?.signal)
 
           // Collect tool names, shell commands and subagent names from the
           // execute_tool / invoke_agent spans for each trace. These mirror the
@@ -1731,9 +2272,13 @@ function createOtelParser(
           const bashByTrace = new Map<string, string[]>()
           const subagentsByTrace = new Map<string, string[]>()
           const chatSpanIds: string[] = []
-          const spanMetaById = new Map<string, { trace_id: string; start_time_ms: number; response_model: string | null }>()
+          const spanMetaById = new Map<
+            string,
+            { trace_id: string; start_time_ms: number; response_model: string | null }
+          >()
 
           for (const span of traceSpans) {
+            throwIfScanAborted(context?.signal)
             const opName = span.operation_name || ''
             spanMetaById.set(span.span_id, span)
 
@@ -1744,7 +2289,7 @@ function createOtelParser(
 
             if (opName === 'execute_tool') {
               // Load tool name from attributes and normalise to display form
-              const attrs = loadSpanAttributesFromTable(db, span.span_id)
+              const attrs = loadSpanAttributesFromTable(db, span.span_id, context?.signal)
               const rawToolName = attrs['gen_ai.tool.name'] as string | undefined
               if (rawToolName) {
                 const existing = toolsByTrace.get(span.trace_id) ?? []
@@ -1770,7 +2315,7 @@ function createOtelParser(
             // chat session. The root turn agent ('GitHub Copilot Chat') has no
             // parent session and is skipped to avoid a bogus agents-view entry.
             if (opName === 'invoke_agent') {
-              const attrs = loadSpanAttributesFromTable(db, span.span_id)
+              const attrs = loadSpanAttributesFromTable(db, span.span_id, context?.signal)
               const parentSession = attrs['copilot_chat.parent_chat_session_id']
               const agentName = attrs['gen_ai.agent.name'] as string | undefined
               if (parentSession && agentName) {
@@ -1783,7 +2328,8 @@ function createOtelParser(
 
           // Yield one ParsedProviderCall per chat span
           for (const spanId of chatSpanIds) {
-            const attrs = loadSpanAttributesFromTable(db, spanId)
+            throwIfScanAborted(context?.signal)
+            const attrs = loadSpanAttributesFromTable(db, spanId, context?.signal)
 
             const spanMetadata = spanMetaById.get(spanId)
             if (!spanMetadata) continue
@@ -1823,13 +2369,13 @@ function createOtelParser(
             const timestamp = epochToISO(spanMetadata.start_time_ms)
 
             // calculateCost with FULL token data — this is the key improvement.
-            const costUSD = calculateCost(
+            const costUSD = context.pricing.calculateCost(
               model,
               inputTokens,
               outputTokens,
               cacheCreationTokens,
               cacheReadTokens,
-              0 // reasoningTokens — not exposed in current OTel schema
+              0, // reasoningTokens — not exposed in current OTel schema
             )
 
             yield {
@@ -1873,6 +2419,17 @@ interface OTelSessionSource extends SessionSource {
 
 interface JsonlSessionSource extends SessionSource {
   sourceType: 'jsonl'
+  // Which of the two on-disk JSONL layouts this is, decided at DISCOVERY from
+  // where the file was found - never from its contents. The Copilot CLI writes
+  // `session-state/<sessionId>/events.jsonl`; a VS Code transcript is
+  // `.../transcripts/<sessionId>.jsonl`. Both carry the SAME
+  // `session.start.producer` of `copilot-agent`, so sniffing the producer
+  // calls every CLI session a transcript - and a transcript is exactly the
+  // shape that must NOT be trusted for the `session.shutdown` input/cache
+  // rollup. The consequence is silent and total: a CLI session contributes its
+  // per-turn output and nothing else, so all of its input and cache tokens go
+  // unrecorded.
+  sessionKind: 'cli' | 'transcript'
 }
 
 interface ChatSessionSource extends SessionSource {
@@ -1900,6 +2457,14 @@ interface JetBrainsSessionSource extends SessionSource {
   projectName?: string
 }
 
+interface SessionStoreSource extends SessionSource {
+  sourceType: 'sessionstore'
+  // File mtime (ISO). A row whose `created_at` is missing or unparseable falls
+  // back to this so the row still lands inside a date range instead of being
+  // silently filtered out (the same fallback the JetBrains parser uses).
+  mtime: string
+}
+
 function isOtelSource(source: SessionSource): source is OTelSessionSource {
   return (source as OTelSessionSource).sourceType === 'otel'
 }
@@ -1912,12 +2477,17 @@ function isJetBrainsSource(source: SessionSource): source is JetBrainsSessionSou
   return (source as JetBrainsSessionSource).sourceType === 'jetbrains'
 }
 
+function isSessionStoreSource(source: SessionSource): source is SessionStoreSource {
+  return (source as SessionStoreSource).sourceType === 'sessionstore'
+}
+
 // ---------------------------------------------------------------------------
 // Session discovery: JSONL (original)
 // ---------------------------------------------------------------------------
 
 async function discoverJsonlSessions(
-  sessionStateDir: string
+  sessionStateDir: string,
+  context?: ProviderScanContext,
 ): Promise<JsonlSessionSource[]> {
   const sources: JsonlSessionSource[] = []
 
@@ -1925,26 +2495,33 @@ async function discoverJsonlSessions(
   try {
     sessionDirs = await readdir(sessionStateDir)
   } catch {
+    throwIfScanAborted(context?.signal)
     return sources
   }
 
   for (const sessionId of sessionDirs) {
+    throwIfScanAborted(context?.signal)
     const eventsPath = join(sessionStateDir, sessionId, 'events.jsonl')
-    const s = await stat(eventsPath).catch(() => null)
+    const s = await stat(eventsPath).catch(() => {
+      throwIfScanAborted(context?.signal)
+      return null
+    })
+    throwIfScanAborted(context?.signal)
     if (!s?.isFile()) continue
 
     let project = sessionId
     let workingDirectory: string | undefined
     try {
-      const yaml = await readSessionFile(
-        join(sessionStateDir, sessionId, 'workspace.yaml')
-      )
+      const yaml = await readSessionFile(join(sessionStateDir, sessionId, 'workspace.yaml'), 'utf8', {
+        signal: context?.signal,
+      })
       const cwd = parseCwd(yaml ?? '')
       if (cwd) {
         project = basename(cwd)
         workingDirectory = cwd
       }
     } catch {
+      throwIfScanAborted(context?.signal)
       // workspace.yaml may not exist
     }
 
@@ -1953,6 +2530,7 @@ async function discoverJsonlSessions(
       project,
       provider: 'copilot',
       sourceType: 'jsonl',
+      sessionKind: 'cli',
       ...(workingDirectory ? { workingDirectory } : {}),
     })
   }
@@ -1964,18 +2542,59 @@ async function discoverJsonlSessions(
 // Session discovery: OTel SQLite
 // ---------------------------------------------------------------------------
 
-async function discoverOtelSessions(
-  dbPath: string
-): Promise<OTelSessionSource[]> {
+async function discoverOtelSessions(dbPath: string, context?: ProviderScanContext): Promise<OTelSessionSource[]> {
   // Verify the DB file exists. Return one source per DB file; the parser
   // opens the DB once and iterates all conversations in a single DB open,
   // which is far more efficient than one source (and one DB open) per conversation.
   try {
     await stat(dbPath)
   } catch {
+    throwIfScanAborted(context?.signal)
     return []
   }
+  throwIfScanAborted(context?.signal)
   return [{ path: dbPath, project: 'copilot-chat', provider: 'copilot', sourceType: 'otel' }]
+}
+
+// ---------------------------------------------------------------------------
+// Session discovery: Copilot CLI session-store.db
+// ---------------------------------------------------------------------------
+
+/**
+ * Discover the CLI's `session-store.db` as ONE source.
+ *
+ * One file spans every project and every session, so a source per session (as
+ * the OTel path could afford, since it queries per conversation) would mean N
+ * opens of the same database for no gain. One source, one open, one pass over
+ * `assistant_usage_events`.
+ *
+ * The project label here is a PLACEHOLDER — real attribution comes from each
+ * row's `sessions.cwd` / `sessions.repository`, which is the only place the
+ * store records it. The placeholder only applies to a row whose session has
+ * neither.
+ */
+async function discoverSessionStoreSessions(
+  dbPath: string,
+  context?: ProviderScanContext,
+): Promise<SessionStoreSource[]> {
+  try {
+    throwIfScanAborted(context?.signal)
+    const dbStat = await stat(dbPath)
+    throwIfScanAborted(context?.signal)
+    if (!dbStat.isFile()) return []
+    return [
+      {
+        path: dbPath,
+        project: 'copilot-cli',
+        provider: 'copilot',
+        sourceType: 'sessionstore',
+        mtime: dbStat.mtime.toISOString(),
+      },
+    ]
+  } catch {
+    throwIfScanAborted(context?.signal)
+    return []
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1994,19 +2613,31 @@ const JETBRAINS_DB_NAMES: Record<string, string> = {
 }
 
 /** Locate the Nitrite .db in a store dir (known name, else any *-nitrite.db). */
-async function findNitriteDbPath(storeDir: string, kind: string): Promise<string | null> {
+async function findNitriteDbPath(
+  storeDir: string,
+  kind: string,
+  context?: ProviderScanContext,
+): Promise<string | null> {
   const known = JETBRAINS_DB_NAMES[kind]
   if (known) {
     const p = join(storeDir, known)
-    if ((await stat(p).catch(() => null))?.isFile()) return p
+    try {
+      throwIfScanAborted(context?.signal)
+      const fileStat = await stat(p)
+      throwIfScanAborted(context?.signal)
+      if (fileStat.isFile()) return p
+    } catch {
+      throwIfScanAborted(context?.signal)
+    }
   }
   let files: string[]
   try {
     files = await readdir(storeDir)
   } catch {
+    throwIfScanAborted(context?.signal)
     return null
   }
-  const db = files.find((f) => f.endsWith('-nitrite.db'))
+  const db = files.find(f => f.endsWith('-nitrite.db'))
   return db ? join(storeDir, db) : null
 }
 
@@ -2022,7 +2653,8 @@ async function findNitriteDbPath(storeDir: string, kind: string): Promise<string
  * assistant reply text (see createJetBrainsParser).
  */
 async function discoverJetBrainsSessions(
-  root: string
+  root: string,
+  context?: ProviderScanContext,
 ): Promise<JetBrainsSessionSource[]> {
   const sources: JetBrainsSessionSource[] = []
 
@@ -2030,25 +2662,33 @@ async function discoverJetBrainsSessions(
   try {
     ideDirs = await readdir(root)
   } catch {
+    throwIfScanAborted(context?.signal)
     return sources
   }
 
   for (const ide of ideDirs) {
+    throwIfScanAborted(context?.signal)
     for (const kind of JETBRAINS_SESSION_KINDS) {
       const kindDir = join(root, ide, kind)
       let storeDirs: string[]
       try {
         storeDirs = await readdir(kindDir)
       } catch {
+        throwIfScanAborted(context?.signal)
         continue // this IDE doesn't have this session kind
       }
 
       for (const storeId of storeDirs) {
+        throwIfScanAborted(context?.signal)
         const storeDir = join(kindDir, storeId)
-        const dbPath = await findNitriteDbPath(storeDir, kind)
+        const dbPath = await findNitriteDbPath(storeDir, kind, context)
         if (!dbPath) continue
 
-        const dbStat = await stat(dbPath).catch(() => null)
+        const dbStat = await stat(dbPath).catch(() => {
+          throwIfScanAborted(context?.signal)
+          return null
+        })
+        throwIfScanAborted(context?.signal)
         const mtime = (dbStat?.mtime ?? new Date(0)).toISOString()
 
         sources.push({
@@ -2070,7 +2710,7 @@ async function discoverJetBrainsSessions(
   // store — NOT the chat-agent-sessions store where the billable turns live.
   // Without this join, every current agent session falls to the generic bucket
   // even though its repo name is sitting one store dir over.
-  await resolveJetBrainsProjectNames(sources)
+  await resolveJetBrainsProjectNames(sources, context)
 
   return sources
 }
@@ -2082,23 +2722,28 @@ async function discoverJetBrainsSessions(
  * id. Best-effort — read/parse failures leave projectName undefined.
  */
 async function resolveJetBrainsProjectNames(
-  sources: JetBrainsSessionSource[]
+  sources: JetBrainsSessionSource[],
+  context?: ProviderScanContext,
 ): Promise<void> {
   const byStore = new Map<string, string>()
   for (const src of sources) {
+    throwIfScanAborted(context?.signal)
     // Already found this store's name via a sibling-kind source — skip the read.
     if (!src.dbPath || byStore.has(src.storeId)) continue
     let raw: string | null = null
     try {
-      raw = await readSessionFile(src.dbPath, 'latin1')
-    } catch {
+      raw = await readSessionFile(src.dbPath, 'latin1', { signal: context?.signal })
+    } catch (error) {
+      if (isScanAbortedError(error)) throw error
       raw = null
     }
+    throwIfScanAborted(context?.signal)
     if (!raw) continue
     const name = extractJetBrainsProjectName(raw)
     if (name) byStore.set(src.storeId, name)
   }
   for (const src of sources) {
+    throwIfScanAborted(context?.signal)
     const name = byStore.get(src.storeId)
     if (name) src.projectName = name
   }
@@ -2181,11 +2826,17 @@ function copilotWorkspaceFsPath(uri: string): string | undefined {
   return path.replace(/^\/([a-zA-Z]:\/)/, '$1')
 }
 
-async function resolveWorkspaceProject(wsDir: string, hashDir: string): Promise<{ project: string; workingDirectory?: string }> {
+async function resolveWorkspaceProject(
+  wsDir: string,
+  hashDir: string,
+  context?: ProviderScanContext,
+): Promise<{ project: string; workingDirectory?: string }> {
   let project = hashDir
   let workingDirectory: string | undefined
   try {
-    const wsJson = await readSessionFile(join(wsDir, hashDir, 'workspace.json'))
+    const wsJson = await readSessionFile(join(wsDir, hashDir, 'workspace.json'), 'utf8', {
+      signal: context?.signal,
+    })
     if (wsJson) {
       const data = JSON.parse(wsJson) as { folder?: string }
       if (typeof data.folder === 'string') {
@@ -2204,23 +2855,30 @@ async function resolveWorkspaceProject(wsDir: string, hashDir: string): Promise<
         }
       }
     }
-  } catch {
+  } catch (error) {
+    if (isScanAbortedError(error)) throw error
     // workspace.json may be absent or malformed
   }
   return workingDirectory ? { project, workingDirectory } : { project }
 }
 
-async function hasChatSessionFiles(chatSessionsDir: string): Promise<boolean> {
+async function hasChatSessionFiles(chatSessionsDir: string, context?: ProviderScanContext): Promise<boolean> {
   let files: string[]
   try {
     files = await readdir(chatSessionsDir)
   } catch {
+    throwIfScanAborted(context?.signal)
     return false
   }
 
   for (const file of files) {
+    throwIfScanAborted(context?.signal)
     if (!file.endsWith('.jsonl')) continue
-    const s = await stat(join(chatSessionsDir, file)).catch(() => null)
+    const s = await stat(join(chatSessionsDir, file)).catch(() => {
+      throwIfScanAborted(context?.signal)
+      return null
+    })
+    throwIfScanAborted(context?.signal)
     if (s?.isFile()) return true
   }
   return false
@@ -2231,32 +2889,42 @@ async function hasChatSessionFiles(chatSessionsDir: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 async function discoverWorkspaceChatSessions(
-  workspaceStorageDirs: string[]
+  workspaceStorageDirs: string[],
+  context?: ProviderScanContext,
 ): Promise<ChatSessionSource[]> {
   const sources: ChatSessionSource[] = []
 
   for (const wsDir of workspaceStorageDirs) {
+    throwIfScanAborted(context?.signal)
     let hashDirs: string[]
     try {
       hashDirs = await readdir(wsDir)
     } catch {
+      throwIfScanAborted(context?.signal)
       continue
     }
 
     for (const hashDir of hashDirs) {
+      throwIfScanAborted(context?.signal)
       const chatSessionsDir = join(wsDir, hashDir, 'chatSessions')
       let files: string[]
       try {
         files = await readdir(chatSessionsDir)
       } catch {
+        throwIfScanAborted(context?.signal)
         continue
       }
 
-      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir)
+      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir, context)
       for (const file of files) {
+        throwIfScanAborted(context?.signal)
         if (!file.endsWith('.jsonl')) continue
         const path = join(chatSessionsDir, file)
-        const s = await stat(path).catch(() => null)
+        const s = await stat(path).catch(() => {
+          throwIfScanAborted(context?.signal)
+          return null
+        })
+        throwIfScanAborted(context?.signal)
         if (!s?.isFile()) continue
         sources.push({
           path,
@@ -2273,23 +2941,31 @@ async function discoverWorkspaceChatSessions(
 }
 
 async function discoverEmptyWindowChatSessions(
-  globalStorageDirs: string[]
+  globalStorageDirs: string[],
+  context?: ProviderScanContext,
 ): Promise<ChatSessionSource[]> {
   const sources: ChatSessionSource[] = []
 
   for (const globalDir of globalStorageDirs) {
+    throwIfScanAborted(context?.signal)
     const chatSessionsDir = join(globalDir, 'emptyWindowChatSessions')
     let files: string[]
     try {
       files = await readdir(chatSessionsDir)
     } catch {
+      throwIfScanAborted(context?.signal)
       continue
     }
 
     for (const file of files) {
+      throwIfScanAborted(context?.signal)
       if (!file.endsWith('.jsonl')) continue
       const path = join(chatSessionsDir, file)
-      const s = await stat(path).catch(() => null)
+      const s = await stat(path).catch(() => {
+        throwIfScanAborted(context?.signal)
+        return null
+      })
+      throwIfScanAborted(context?.signal)
       if (!s?.isFile()) continue
       sources.push({
         path,
@@ -2313,41 +2989,52 @@ async function discoverEmptyWindowChatSessions(
  * Project is read from {wsDir}/{hash}/workspace.json (folder URI).
  */
 async function discoverTranscriptSessions(
-  workspaceStorageDirs: string[]
+  workspaceStorageDirs: string[],
+  context?: ProviderScanContext,
 ): Promise<JsonlSessionSource[]> {
   const sources: JsonlSessionSource[] = []
 
   for (const wsDir of workspaceStorageDirs) {
+    throwIfScanAborted(context?.signal)
     let hashDirs: string[]
     try {
       hashDirs = await readdir(wsDir)
     } catch {
+      throwIfScanAborted(context?.signal)
       continue
     }
 
     for (const hashDir of hashDirs) {
+      throwIfScanAborted(context?.signal)
       const chatSessionsDir = join(wsDir, hashDir, 'chatSessions')
-      if (await hasChatSessionFiles(chatSessionsDir)) continue
+      if (await hasChatSessionFiles(chatSessionsDir, context)) continue
 
       const transcriptsDir = join(wsDir, hashDir, 'GitHub.copilot-chat', 'transcripts')
-      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir)
+      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir, context)
 
       let transcriptFiles: string[]
       try {
         transcriptFiles = await readdir(transcriptsDir)
       } catch {
+        throwIfScanAborted(context?.signal)
         continue
       }
 
       for (const file of transcriptFiles) {
+        throwIfScanAborted(context?.signal)
         if (!file.endsWith('.jsonl')) continue
-        const s = await stat(join(transcriptsDir, file)).catch(() => null)
+        const s = await stat(join(transcriptsDir, file)).catch(() => {
+          throwIfScanAborted(context?.signal)
+          return null
+        })
+        throwIfScanAborted(context?.signal)
         if (!s?.isFile()) continue
         sources.push({
           path: join(transcriptsDir, file),
           project,
           provider: 'copilot',
           sourceType: 'jsonl',
+          sessionKind: 'transcript',
           ...(workingDirectory ? { workingDirectory } : {}),
         })
       }
@@ -2361,10 +3048,29 @@ export function createCopilotProvider(
   sessionStateDir?: string,
   workspaceStorageDir?: string,
   globalStorageDir?: string,
-  jetbrainsDir?: string
+  jetbrainsDir?: string,
+  paths?: AppPaths,
 ): Provider {
   // jsonlDir is resolved lazily inside discoverSessions so that env-var
   // overrides set after module load (e.g. in tests) are respected.
+
+  /**
+   * The provider-lifetime set of `${sessionId}\n${model}` pairs the
+   * session-store has described.
+   *
+   * It lives in the provider closure because the architecture gives a provider
+   * no per-scan object: `createSessionParser` is called once per source and
+   * nothing threads state between them. The store source is discovered FIRST
+   * (see discoverSessions) and the scan parses sources in discovery order, so
+   * by the time any events.jsonl source asks, this set already holds every
+   * pair the store covered in this pass.
+   *
+   * Lifetime rather than per-scan is deliberate and matches how the pipeline
+   * already treats durable providers: copilot's cached turns are never evicted,
+   * so a pair covered once stays covered, and the set is monotonically true
+   * rather than flapping between passes.
+   */
+  const coveredStoreKeys = new Set<string>()
 
   /**
    * Returns the workspaceStorage directories to scan for transcript sessions.
@@ -2375,16 +3081,27 @@ export function createCopilotProvider(
    */
   function getWsDirs(): string[] {
     if (workspaceStorageDir !== undefined) return [workspaceStorageDir]
-    const envDir = process.env['WATCHTOWER_COPILOT_WS_STORAGE_DIR']
+    const envDir = overrideFor(paths, 'WATCHTOWER_COPILOT_WS_STORAGE_DIR')
     if (envDir) return [envDir]
     return getVSCodeWorkspaceStorageDirs(homedir(), platform())
   }
 
   function getGlobalDirs(): string[] {
     if (globalStorageDir !== undefined) return [globalStorageDir]
-    const envDir = process.env['WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR']
+    const envDir = overrideFor(paths, 'WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR')
     if (envDir) return [envDir]
     return getVSCodeGlobalStorageDirs(homedir(), platform())
+  }
+
+  /**
+   * Locate the CLI store, or null when there is none.
+   *
+   * Resolved lazily inside discoverSessions (like the session-state dir) so an
+   * override set after module load is respected, and derived from the CLI home
+   * so the one session-state seam redirects both roots.
+   */
+  function getSessionStorePath(): string | null {
+    return getCopilotSessionStoreDbPath(sessionStateDir, paths)
   }
 
   return {
@@ -2403,95 +3120,135 @@ export function createCopilotProvider(
       return normalizeTool(rawTool)
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
+    async discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      throwIfScanAborted(context?.signal)
       const sources: SessionSource[] = []
       let discoveredOtel = false
 
-      // 1. Discover OTel sessions (preferred — full token data)
-      const disableOtel = process.env['WATCHTOWER_COPILOT_DISABLE_OTEL'] === '1'
+      // 1. Discover the Copilot CLI session store FIRST. ORDER IS LOAD-BEARING.
+      //
+      // The scan walks a provider's sources in exactly the order discovery
+      // returned them — `parseProviderSources` builds `changedSources` with
+      // `for (const source of sources)` and then parses that same array in
+      // sequence — so a source returned first is parsed first, always. The
+      // store must precede every events.jsonl source because the JSONL
+      // `session.shutdown` handler reads `coveredStoreKeys`, which only the
+      // store parser populates. If the order ever changed, the rollup would
+      // silently start double-counting again.
+      try {
+        const storePath = getSessionStorePath()
+        if (storePath) {
+          const storeSources = await discoverSessionStoreSessions(storePath, context)
+          sources.push(...storeSources)
+        }
+      } catch {
+        throwIfScanAborted(context?.signal)
+        // session-store discovery failed — the events.jsonl rollup stays the
+        // fallback, which is exactly the pre-store behaviour.
+      }
+
+      // 2. Discover OTel sessions (preferred — full token data)
+      // `=== '1'`, not a presence check: any other value (including `'0'` and
+      // `''`) leaves OTel enabled, exactly as before.
+      const disableOtel = overrideFor(paths, 'WATCHTOWER_COPILOT_DISABLE_OTEL') === '1'
       if (!disableOtel) {
-        const dbPath = getAgentTracesDbPath()
+        const dbPath = getAgentTracesDbPath(paths)
         if (dbPath) {
           try {
-            const otelSources = await discoverOtelSessions(dbPath)
+            const otelSources = await discoverOtelSessions(dbPath, context)
             discoveredOtel = otelSources.length > 0
             sources.push(...otelSources)
           } catch {
+            throwIfScanAborted(context?.signal)
             // OTel discovery failed — fall through to JSONL
           }
         }
       }
 
-      // 2. Discover JSONL sessions (fallback — output tokens only)
+      // 3. Discover JSONL sessions (fallback — output tokens only)
       try {
-        const jsonlDir = getCopilotSessionStateDir(sessionStateDir)
-        const jsonlSources = await discoverJsonlSessions(jsonlDir)
+        const jsonlDir = getCopilotSessionStateDir(sessionStateDir, paths)
+        const jsonlSources = await discoverJsonlSessions(jsonlDir, context)
         sources.push(...jsonlSources)
       } catch {
+        throwIfScanAborted(context?.signal)
         // JSONL discovery failed
       }
 
       // Prefer OTel over chatSessions: they can mirror the same turns under
       // incompatible IDs, and OTel carries richer token/cache data.
       if (!discoveredOtel) {
-        // 3. Discover VS Code core chatSessions journals
+        // 4. Discover VS Code core chatSessions journals
         try {
-          const chatSessionSources = await discoverWorkspaceChatSessions(getWsDirs())
+          const chatSessionSources = await discoverWorkspaceChatSessions(getWsDirs(), context)
           sources.push(...chatSessionSources)
         } catch {
+          throwIfScanAborted(context?.signal)
           // Workspace chatSessions discovery failed
         }
 
-        // 4. Discover VS Code empty-window chatSessions journals
+        // 5. Discover VS Code empty-window chatSessions journals
         try {
-          const emptyWindowSources = await discoverEmptyWindowChatSessions(getGlobalDirs())
+          const emptyWindowSources = await discoverEmptyWindowChatSessions(getGlobalDirs(), context)
           sources.push(...emptyWindowSources)
         } catch {
+          throwIfScanAborted(context?.signal)
           // Empty-window chatSessions discovery failed
         }
       }
 
-      // 5. Discover VS Code workspace transcript sessions
+      // 6. Discover VS Code workspace transcript sessions
       try {
-        const transcriptSources = await discoverTranscriptSessions(getWsDirs())
+        const transcriptSources = await discoverTranscriptSessions(getWsDirs(), context)
         sources.push(...transcriptSources)
       } catch {
+        throwIfScanAborted(context?.signal)
         // Transcript discovery failed
       }
 
-      // 6. Discover JetBrains IDE sessions (IntelliJ, PyCharm, …). These live
+      // 7. Discover JetBrains IDE sessions (IntelliJ, PyCharm, …). These live
       // in a store none of the VS Code / CLI sources touch, so there is no
       // overlap to dedupe against; the shared seenKeys set still guards it.
       try {
-        const jetbrainsSources = await discoverJetBrainsSessions(
-          getJetBrainsCopilotRoot(jetbrainsDir)
-        )
+        const jetbrainsSources = await discoverJetBrainsSessions(getJetBrainsCopilotRoot(jetbrainsDir, paths), context)
         sources.push(...jetbrainsSources)
       } catch {
+        throwIfScanAborted(context?.signal)
         // JetBrains discovery failed
       }
 
+      throwIfScanAborted(context?.signal)
       return sources
     },
 
     createSessionParser(
       source: SessionSource,
-      seenKeys: Set<string>
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
     ): SessionParser {
+      throwIfScanAborted(context?.signal)
+      const parserContext: CopilotParserContext = {
+        ...context,
+        pricing: context?.pricing ?? captureScanPricing(),
+      }
       // Route to the correct parser based on source type.
       // The dedup key set (seenKeys) is shared across both parsers,
       // so if OTel already yielded a span, the JSONL parser will skip
       // the matching assistant.message (and vice versa).
+      if (isSessionStoreSource(source)) {
+        return createSessionStoreParser(source, seenKeys, coveredStoreKeys, parserContext)
+      }
       if (isOtelSource(source)) {
-        return createOtelParser(source, seenKeys)
+        return createOtelParser(source, seenKeys, parserContext)
       }
       if (isChatSessionSource(source)) {
-        return createChatSessionParser(source, seenKeys)
+        return createChatSessionParser(source, seenKeys, parserContext)
       }
       if (isJetBrainsSource(source)) {
-        return createJetBrainsParser(source, seenKeys)
+        return createJetBrainsParser(source, seenKeys, parserContext)
       }
-      return createJsonlParser(source, seenKeys)
+      return createJsonlParser(source, seenKeys, coveredStoreKeys, parserContext)
     },
   }
 }

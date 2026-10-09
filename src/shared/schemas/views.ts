@@ -1,154 +1,184 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
-export const providerRowSchema = z.object({
-  name: z.string(),
-  cost: z.number(),
-  calls: z.number(),
-  sessions: z.number(),
+const finiteNumber = Schema.Number.pipe(Schema.check(Schema.isFinite()))
+const writable = Schema.mutableKey
+const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))
+
+export const providerRowSchema = Schema.Struct({
+  name: writable(Schema.String),
+  cost: writable(finiteNumber),
+  calls: writable(finiteNumber),
+  sessions: writable(finiteNumber),
 })
-export type ProviderRow = z.infer<typeof providerRowSchema>
+export type ProviderRow = Schema.Schema.Type<typeof providerRowSchema>
 
-export const dashboardViewsSchema = z.object({
-  kpis: z.object({
-    totalCost: z.number(),
-    totalEstimatedCost: z.number(),
-    totalSavings: z.number(),
-    totalProxiedCost: z.number(),
-    totalCalls: z.number(),
-    totalSessions: z.number(),
-    totalProjects: z.number(),
-    totalInputTokens: z.number(),
-    totalOutputTokens: z.number(),
-    totalCacheReadTokens: z.number(),
-    totalCacheWriteTokens: z.number(),
-    totalReasoningTokens: z.number(),
-  }),
-  costOverTime: z.array(z.object({ date: z.string(), cost: z.number() })),
-  byProvider: z.array(providerRowSchema),
-  byModel: z.array(z.object({ name: z.string(), cost: z.number(), calls: z.number() })),
-  byProject: z.array(z.object({ name: z.string(), cost: z.number(), calls: z.number() })),
-  byCategory: z.array(z.object({ name: z.string(), cost: z.number(), turns: z.number() })),
+export const dashboardViewsSchema = Schema.Struct({
+  kpis: writable(
+    Schema.Struct({
+      totalCost: writable(finiteNumber),
+      totalEstimatedCost: writable(finiteNumber),
+      totalSavings: writable(finiteNumber),
+      totalProxiedCost: writable(finiteNumber),
+      totalCalls: writable(finiteNumber),
+      totalSessions: writable(finiteNumber),
+      totalProjects: writable(finiteNumber),
+      totalInputTokens: writable(finiteNumber),
+      totalOutputTokens: writable(finiteNumber),
+      totalCacheReadTokens: writable(finiteNumber),
+      totalCacheWriteTokens: writable(finiteNumber),
+      totalReasoningTokens: writable(finiteNumber),
+    }),
+  ),
+  costOverTime: writable(mutableArray(Schema.Struct({ date: writable(Schema.String), cost: writable(finiteNumber) }))),
+  byProvider: writable(mutableArray(providerRowSchema)),
+  byModel: writable(
+    mutableArray(
+      Schema.Struct({ name: writable(Schema.String), cost: writable(finiteNumber), calls: writable(finiteNumber) }),
+    ),
+  ),
+  byProject: writable(
+    mutableArray(
+      Schema.Struct({ name: writable(Schema.String), cost: writable(finiteNumber), calls: writable(finiteNumber) }),
+    ),
+  ),
+  byCategory: writable(
+    mutableArray(
+      Schema.Struct({ name: writable(Schema.String), cost: writable(finiteNumber), turns: writable(finiteNumber) }),
+    ),
+  ),
 })
-export type DashboardViews = z.infer<typeof dashboardViewsSchema>
+export type DashboardViews = Schema.Schema.Type<typeof dashboardViewsSchema>
 
-export const projectRowSchema = z.object({
-  project: z.string(),
-  projectPath: z.string(),
-  repoUrl: z.string().optional(),
-  cost: z.number(),
-  calls: z.number(),
-  sessions: z.number(),
-  firstTimestamp: z.string(),
-  lastTimestamp: z.string(),
+export const projectRowSchema = Schema.Struct({
+  project: writable(Schema.String),
+  projectPath: writable(Schema.String),
+  repoUrl: writable(Schema.optional(Schema.String)),
+  cost: writable(finiteNumber),
+  calls: writable(finiteNumber),
+  sessions: writable(finiteNumber),
+  firstTimestamp: writable(Schema.String),
+  lastTimestamp: writable(Schema.String),
 })
-export type ProjectRow = z.infer<typeof projectRowSchema>
+export type ProjectRow = Schema.Schema.Type<typeof projectRowSchema>
 
-export const sessionRowSchema = z.object({
-  sessionId: z.string(),
-  title: z.string(),
-  project: z.string(),
-  provider: z.string(),
-  models: z.array(z.string()),
+export const sessionRowSchema = Schema.Struct({
+  sessionId: writable(Schema.String),
+  title: writable(Schema.String),
+  project: writable(Schema.String),
+  provider: writable(Schema.String),
+  models: writable(mutableArray(Schema.String)),
   /** Per-model raw feeders for Alias-merged rows (`models` holds the merged
    * identity). Present only when a merge happened. */
-  modelProvenance: z.record(z.string(), z.array(z.string())).optional(),
-  cost: z.number(),
-  savingsUSD: z.number(),
-  calls: z.number(),
-  turns: z.number(),
-  inputTokens: z.number(),
-  outputTokens: z.number(),
-  startedAt: z.string(),
-  endedAt: z.string(),
+  modelProvenance: writable(Schema.optional(Schema.Record(Schema.String, mutableArray(Schema.String)))),
+  cost: writable(finiteNumber),
+  savingsUSD: writable(finiteNumber),
+  calls: writable(finiteNumber),
+  turns: writable(finiteNumber),
+  inputTokens: writable(finiteNumber),
+  outputTokens: writable(finiteNumber),
+  startedAt: writable(Schema.String),
+  endedAt: writable(Schema.String),
 })
-export type SessionRow = z.infer<typeof sessionRowSchema>
+export type SessionRow = Schema.Schema.Type<typeof sessionRowSchema>
 
-export const skillRowSchema = z.object({
-  name: z.string(),
-  turns: z.number(),
-  cost: z.number(),
-  savingsUSD: z.number(),
+export const skillRowSchema = Schema.Struct({
+  name: writable(Schema.String),
+  turns: writable(finiteNumber),
+  cost: writable(finiteNumber),
+  savingsUSD: writable(finiteNumber),
 })
-export type SkillRow = z.infer<typeof skillRowSchema>
+export type SkillRow = Schema.Schema.Type<typeof skillRowSchema>
 
-export const subagentRowSchema = z.object({
-  name: z.string(),
-  calls: z.number(),
-  cost: z.number(),
-  savingsUSD: z.number(),
+export const subagentRowSchema = Schema.Struct({
+  name: writable(Schema.String),
+  calls: writable(finiteNumber),
+  cost: writable(finiteNumber),
+  savingsUSD: writable(finiteNumber),
 })
-export type SubagentRow = z.infer<typeof subagentRowSchema>
+export type SubagentRow = Schema.Schema.Type<typeof subagentRowSchema>
 
-export const analyticalViewsSchema = z.object({
-  providers: z.array(providerRowSchema),
-  models: z.array(z.object({ name: z.string(), cost: z.number(), calls: z.number() })),
-  categories: z.array(z.object({ name: z.string(), cost: z.number(), turns: z.number() })),
-  skills: z.array(skillRowSchema),
-  subagents: z.array(subagentRowSchema),
+export const analyticalViewsSchema = Schema.Struct({
+  providers: writable(mutableArray(providerRowSchema)),
+  models: writable(
+    mutableArray(
+      Schema.Struct({ name: writable(Schema.String), cost: writable(finiteNumber), calls: writable(finiteNumber) }),
+    ),
+  ),
+  categories: writable(
+    mutableArray(
+      Schema.Struct({ name: writable(Schema.String), cost: writable(finiteNumber), turns: writable(finiteNumber) }),
+    ),
+  ),
+  skills: writable(mutableArray(skillRowSchema)),
+  subagents: writable(mutableArray(subagentRowSchema)),
 })
-export type AnalyticalViews = z.infer<typeof analyticalViewsSchema>
+export type AnalyticalViews = Schema.Schema.Type<typeof analyticalViewsSchema>
 
-export const searchHitSchema = z.object({
-  sessionId: z.string(),
-  project: z.string(),
-  provider: z.string(),
-  timestamp: z.string(),
-  kind: z.enum(['message', 'bash']),
-  snippet: z.string(),
+export const searchHitSchema = Schema.Struct({
+  sessionId: writable(Schema.String),
+  project: writable(Schema.String),
+  provider: writable(Schema.String),
+  timestamp: writable(Schema.String),
+  kind: writable(Schema.Literals(['message', 'bash'])),
+  snippet: writable(Schema.String),
 })
-export type SearchHit = z.infer<typeof searchHitSchema>
+export type SearchHit = Schema.Schema.Type<typeof searchHitSchema>
 
-export const sessionDetailCallSchema = z.object({
-  provider: z.string(),
-  model: z.string(),
-  costUSD: z.number(),
-  isEstimated: z.boolean().optional(),
-  savingsUSD: z.number().optional(),
-  speed: z.enum(['standard', 'fast']),
-  hasPlanMode: z.boolean(),
-  tools: z.array(z.string()),
-  mcpTools: z.array(z.string()),
-  skills: z.array(z.string()),
-  subagentTypes: z.array(z.string()),
-  usage: z.object({
-    inputTokens: z.number(),
-    outputTokens: z.number(),
-    reasoningTokens: z.number(),
-    cacheReadInputTokens: z.number(),
-    cacheCreationInputTokens: z.number(),
-  }),
-})
-
-export const sessionDetailTurnSchema = z.object({
-  timestamp: z.string(),
-  userMessage: z.string(),
-  category: z.string(),
-  gitBranch: z.string().optional(),
-  prRefs: z.array(z.string()),
-  retries: z.number(),
-  hasEdits: z.boolean(),
-  assistantCalls: z.array(sessionDetailCallSchema),
+export const sessionDetailCallSchema = Schema.Struct({
+  provider: writable(Schema.String),
+  model: writable(Schema.String),
+  costUSD: writable(finiteNumber),
+  isEstimated: writable(Schema.optional(Schema.Boolean)),
+  savingsUSD: writable(Schema.optional(finiteNumber)),
+  speed: writable(Schema.Literals(['standard', 'fast'])),
+  hasPlanMode: writable(Schema.Boolean),
+  tools: writable(mutableArray(Schema.String)),
+  mcpTools: writable(mutableArray(Schema.String)),
+  skills: writable(mutableArray(Schema.String)),
+  subagentTypes: writable(mutableArray(Schema.String)),
+  usage: writable(
+    Schema.Struct({
+      inputTokens: writable(finiteNumber),
+      outputTokens: writable(finiteNumber),
+      reasoningTokens: writable(finiteNumber),
+      cacheReadInputTokens: writable(finiteNumber),
+      cacheCreationInputTokens: writable(finiteNumber),
+    }),
+  ),
 })
 
-export const sessionDetailSchema = z.object({
-  sessionId: z.string(),
-  project: z.string(),
-  provider: z.string(),
-  title: z.string(),
-  workingDirectory: z.string().optional(),
-  firstTimestamp: z.string(),
-  lastTimestamp: z.string(),
-  totalCostUSD: z.number(),
-  totalEstimatedCostUSD: z.number(),
-  totalSavingsUSD: z.number(),
-  totalInputTokens: z.number(),
-  totalOutputTokens: z.number(),
-  totalCacheReadTokens: z.number(),
-  totalCacheWriteTokens: z.number(),
-  totalReasoningTokens: z.number(),
-  apiCalls: z.number(),
-  prLinks: z.array(z.string()),
-  modelBreakdown: z.record(z.string(), z.object({ calls: z.number(), costUSD: z.number() })),
-  turns: z.array(sessionDetailTurnSchema),
+export const sessionDetailTurnSchema = Schema.Struct({
+  timestamp: writable(Schema.String),
+  userMessage: writable(Schema.String),
+  category: writable(Schema.String),
+  gitBranch: writable(Schema.optional(Schema.String)),
+  prRefs: writable(mutableArray(Schema.String)),
+  retries: writable(finiteNumber),
+  hasEdits: writable(Schema.Boolean),
+  assistantCalls: writable(mutableArray(sessionDetailCallSchema)),
 })
-export type SessionDetail = z.infer<typeof sessionDetailSchema>
+
+export const sessionDetailSchema = Schema.Struct({
+  sessionId: writable(Schema.String),
+  project: writable(Schema.String),
+  provider: writable(Schema.String),
+  title: writable(Schema.String),
+  workingDirectory: writable(Schema.optional(Schema.String)),
+  firstTimestamp: writable(Schema.String),
+  lastTimestamp: writable(Schema.String),
+  totalCostUSD: writable(finiteNumber),
+  totalEstimatedCostUSD: writable(finiteNumber),
+  totalSavingsUSD: writable(finiteNumber),
+  totalInputTokens: writable(finiteNumber),
+  totalOutputTokens: writable(finiteNumber),
+  totalCacheReadTokens: writable(finiteNumber),
+  totalCacheWriteTokens: writable(finiteNumber),
+  totalReasoningTokens: writable(finiteNumber),
+  apiCalls: writable(finiteNumber),
+  prLinks: writable(mutableArray(Schema.String)),
+  modelBreakdown: writable(
+    Schema.Record(Schema.String, Schema.Struct({ calls: writable(finiteNumber), costUSD: writable(finiteNumber) })),
+  ),
+  turns: writable(mutableArray(sessionDetailTurnSchema)),
+})
+export type SessionDetail = Schema.Schema.Type<typeof sessionDetailSchema>

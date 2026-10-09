@@ -28,7 +28,14 @@ describe('scopeWindowLabel — the agent-facing data-window caption (matches the
 describe('buildLedgerBriefing — the MCP tool briefing (lifetime-serving)', () => {
   it('names every ledger tool and the scope-argument filtering mechanism', () => {
     const briefing = buildLedgerBriefing()
-    for (const tool of ['ledger_scope', 'ledger_overview', 'ledger_sessions', 'ledger_models', 'ledger_skills', 'ledger_calls']) {
+    for (const tool of [
+      'ledger_scope',
+      'ledger_overview',
+      'ledger_sessions',
+      'ledger_models',
+      'ledger_skills',
+      'ledger_calls',
+    ]) {
       expect(briefing).toContain(tool)
     }
     // The server serves the FULL lifetime ledger, filtered per-tool by the
@@ -48,7 +55,7 @@ describe('buildLedgerBriefing — the MCP tool briefing (lifetime-serving)', () 
     expect(briefing).toContain('so the user always knows what your numbers cover')
   })
 
-  it('names the user\'s current window ONLY as a suggested default when one is provided', () => {
+  it("names the user's current window ONLY as a suggested default when one is provided", () => {
     const briefing = buildLedgerBriefing(scope30)
     expect(briefing).toContain('Last 30 days · claude')
     expect(briefing).toContain('a good default window')
@@ -89,7 +96,9 @@ describe('buildLedgerBriefing — the MCP tool briefing (lifetime-serving)', () 
 
 describe('buildScopeUpdate', () => {
   it('names the new default ledger window', () => {
-    expect(buildScopeUpdate(scope30)).toBe('The user has switched their view to Last 30 days · claude — use it as the default window for ledger queries from now on.')
+    expect(buildScopeUpdate(scope30)).toBe(
+      'The user has switched their view to Last 30 days · claude — use it as the default window for ledger queries from now on.',
+    )
   })
 })
 

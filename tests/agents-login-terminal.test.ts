@@ -16,7 +16,11 @@ describe('openLoginTerminal', () => {
     const spawn = vi.fn(() => spawned)
 
     expect(openLoginTerminal('codex', () => ['codex', 'login'], { platform: 'win32', spawn })).toEqual({ ok: true })
-    expect(spawn).toHaveBeenCalledWith('cmd.exe', ['/k', 'codex', 'login'], { detached: true, stdio: 'ignore', windowsHide: false })
+    expect(spawn).toHaveBeenCalledWith('cmd.exe', ['/k', 'codex', 'login'], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    })
     expect(spawned.unref).toHaveBeenCalledOnce()
   })
 
@@ -24,10 +28,17 @@ describe('openLoginTerminal', () => {
     const executed = child()
     const execFile = vi.fn(() => executed)
 
-    expect(openLoginTerminal('claude', () => ['claude', 'auth', 'login'], { platform: 'darwin', execFile: execFile as never })).toEqual({ ok: true })
+    expect(
+      openLoginTerminal('claude', () => ['claude', 'auth', 'login'], {
+        platform: 'darwin',
+        execFile: execFile as never,
+      }),
+    ).toEqual({ ok: true })
     expect(execFile).toHaveBeenCalledWith('osascript', [
-      '-e', 'tell application "Terminal" to do script "claude auth login"',
-      '-e', 'tell application "Terminal" to activate',
+      '-e',
+      'tell application "Terminal" to do script "claude auth login"',
+      '-e',
+      'tell application "Terminal" to activate',
     ])
   })
 
@@ -36,13 +47,22 @@ describe('openLoginTerminal', () => {
     const spawn = vi.fn(() => spawned)
 
     expect(openLoginTerminal('goose', () => ['goose', 'configure'], { platform: 'linux', spawn })).toEqual({ ok: true })
-    expect(spawn).toHaveBeenCalledWith('x-terminal-emulator', ['-e', 'goose', 'configure'], { detached: true, stdio: 'ignore' })
+    expect(spawn).toHaveBeenCalledWith('x-terminal-emulator', ['-e', 'goose', 'configure'], {
+      detached: true,
+      stdio: 'ignore',
+    })
     expect(spawned.unref).toHaveBeenCalledOnce()
   })
 
   it('returns a failure for an unknown instance or missing command', () => {
-    expect(openLoginTerminal('missing', () => undefined, { platform: 'linux' })).toEqual({ ok: false, error: expect.any(String) })
-    expect(openLoginTerminal('missing', () => [], { platform: 'linux' })).toEqual({ ok: false, error: expect.any(String) })
+    expect(openLoginTerminal('missing', () => undefined, { platform: 'linux' })).toEqual({
+      ok: false,
+      error: expect.any(String),
+    })
+    expect(openLoginTerminal('missing', () => [], { platform: 'linux' })).toEqual({
+      ok: false,
+      error: expect.any(String),
+    })
   })
 
   it('does not throw when a spawned terminal emits an error', () => {
@@ -52,5 +72,20 @@ describe('openLoginTerminal', () => {
 
     expect(() => spawned.emit('error', new Error('terminal unavailable'))).not.toThrow()
     expect(result).toEqual({ ok: true })
+  })
+
+  it.each(['win32', 'darwin', 'linux'] as const)('bounds synchronous native launch failures on %s', platform => {
+    const fail = () => {
+      throw new Error('private path C:\\Users\\person\\terminal token=secret')
+    }
+    const result = openLoginTerminal('codex', () => ['codex', 'login'], {
+      platform,
+      spawn: fail,
+      execFile: fail as never,
+    })
+    expect(result).toEqual({
+      ok: false,
+      error: 'The login terminal could not be opened. Run the harness login command in a terminal.',
+    })
   })
 })

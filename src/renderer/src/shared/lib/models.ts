@@ -61,9 +61,12 @@ export function providerTitle(name: string): string {
 
 /** A row's cost is "estimated" when it has no live pricing entry, or when the
  * attributed cost diverges from a straight rate x displayed-token recompute.
- * The builder's rates already mirror override/alias resolution, so a residual
- * gap here points at fast-mode multipliers or the 1-hour cache rate that
- * `calculateCost` applies on top of the flat per-token rates. */
+ * The builder's rates already mirror override/alias resolution and the
+ * context-window tier, so a residual gap here is expected when the bucket's
+ * calls did not all price the same way: the fast-mode multiplier or the
+ * 1-hour cache rate that `calculateCost` applies on top of the flat per-token
+ * rates, or a bucket straddling a tier threshold, where the per-call tier
+ * decision is averaged away by the per-bucket recompute. */
 export function isAuditEstimated(row: AuditRow): boolean {
   if (!row.rates) return true
   return Math.abs(row.cost.recomputedTotalUSD - row.attributedCostUSD) > 0.005
@@ -77,12 +80,13 @@ export function groupTaskRows(rows: ModelReportRow[]): ModelTaskGroup[] {
     const key = `${row.provider}\u0000${row.model}`
     const group = groups.get(key)
     if (group) group.rows.push(row)
-    else groups.set(key, {
-      provider: row.provider,
-      model: row.model,
-      modelDisplayName: row.modelDisplayName,
-      rows: [row],
-    })
+    else
+      groups.set(key, {
+        provider: row.provider,
+        model: row.model,
+        modelDisplayName: row.modelDisplayName,
+        rows: [row],
+      })
   }
   return [...groups.values()]
 }

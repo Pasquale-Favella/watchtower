@@ -3,12 +3,13 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   describeCatalog,
   executeSelectionPlan,
-  MODEL_ROUTING,
-  planModeSelection,
-  planModelSelection,
-  routingPolicyFor,
   type HarnessCatalog,
+  MODEL_ROUTING,
+  planModelSelection,
+  planModeSelection,
+  routingPolicyFor,
   type SelectionProvider,
+  SelectionUnavailableError,
 } from '../src/main/agents/model-routing.js'
 
 function select(id: string, category: string, currentValue: string, values: string[]) {
@@ -39,7 +40,10 @@ const routingCases = [
       ],
     },
     id: 'gpt-5.5[low]',
-    expected: [{ via: 'config', configId: 'model', value: 'gpt-5.5' }, { via: 'config', configId: 'reasoning_effort', value: 'low' }],
+    expected: [
+      { via: 'config', configId: 'model', value: 'gpt-5.5' },
+      { via: 'config', configId: 'reasoning_effort', value: 'low' },
+    ],
     appliedId: 'gpt-5.5',
   },
   {
@@ -48,7 +52,10 @@ const routingCases = [
     session: {
       models: { availableModels: [{ modelId: 'a', name: 'A' }], currentModelId: 'a' },
       modes: { availableModes: [{ id: 'low', name: 'Low' }], currentModeId: 'medium' },
-      configOptions: [select('model', 'model', 'a', ['a', 'b']), select('thought_level', 'thought_level', 'medium', ['low', 'medium'])],
+      configOptions: [
+        select('model', 'model', 'a', ['a', 'b']),
+        select('thought_level', 'thought_level', 'medium', ['low', 'medium']),
+      ],
     },
     id: 'b',
     expected: [{ via: 'config', configId: 'model', value: 'b' }],
@@ -70,7 +77,10 @@ const routingCases = [
     kind: 'claude',
     session: {
       modes: { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'default' },
-      configOptions: [select('model', 'model', 'sonnet', ['sonnet', 'opus']), select('reasoning_effort', 'thought_level', 'medium', ['low', 'medium'])],
+      configOptions: [
+        select('model', 'model', 'sonnet', ['sonnet', 'opus']),
+        select('reasoning_effort', 'thought_level', 'medium', ['low', 'medium']),
+      ],
     },
     id: 'plan',
     expected: [{ via: 'legacy', value: 'plan' }],
@@ -80,7 +90,9 @@ const routingCases = [
 ] as const
 
 describe('model-routing catalogs and policies', () => {
-  it.each(routingCases)('$name', ({ kind, session, id, expected, appliedId, mode }) => {
+  it.each(routingCases)('$name', testCase => {
+    const { kind, session, id, expected, appliedId } = testCase
+    const mode = 'mode' in testCase && testCase.mode
     const policy = routingPolicyFor(kind)
     const plan = mode
       ? planModeSelection(policy, catalog(session), id)
@@ -101,7 +113,13 @@ describe('model-routing catalogs and policies', () => {
 
   it('routes Pi thinking modes through legacy setMode', () => {
     const session = {
-      modes: { availableModes: [{ id: 'low', name: 'Low' }, { id: 'medium', name: 'Medium' }], currentModeId: 'medium' },
+      modes: {
+        availableModes: [
+          { id: 'low', name: 'Low' },
+          { id: 'medium', name: 'Medium' },
+        ],
+        currentModeId: 'medium',
+      },
       configOptions: [select('thought_level', 'thought_level', 'medium', ['low', 'medium'])],
     }
     const plan = planModeSelection(routingPolicyFor('pi'), catalog(session), 'low')
@@ -112,24 +130,36 @@ describe('model-routing catalogs and policies', () => {
   })
 
   it('keeps OpenCode model and mode writes on configOptions', () => {
-    const session = { configOptions: [select('model', 'model', 'a', ['a', 'b']), select('mode', 'mode', 'build', ['build', 'plan'])] }
+    const session = {
+      configOptions: [select('model', 'model', 'a', ['a', 'b']), select('mode', 'mode', 'build', ['build', 'plan'])],
+    }
     const modelPlan = planModelSelection(routingPolicyFor('opencode'), catalog(session), 'b')
     const modePlan = planModeSelection(routingPolicyFor('opencode'), catalog(session), 'plan')
     expect(writes(modelPlan)).toEqual([{ writes: [{ via: 'config', configId: 'model', value: 'b' }], appliedId: 'b' }])
-    expect(writes(modePlan)).toEqual([{ writes: [{ via: 'config', configId: 'mode', value: 'plan' }], appliedId: 'plan' }])
+    expect(writes(modePlan)).toEqual([
+      { writes: [{ via: 'config', configId: 'mode', value: 'plan' }], appliedId: 'plan' },
+    ])
   })
 
   it('supports Claude config model/effort beside legacy modes', () => {
     const session = {
       modes: { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'default' },
-      configOptions: [select('model', 'model', 'sonnet', ['sonnet', 'opus']), select('reasoning_effort', 'thought_level', 'medium', ['low', 'medium'])],
+      configOptions: [
+        select('model', 'model', 'sonnet', ['sonnet', 'opus']),
+        select('reasoning_effort', 'thought_level', 'medium', ['low', 'medium']),
+      ],
     }
     const modelPlan = planModelSelection(routingPolicyFor('claude'), catalog(session), 'opus[low]')
     const modePlan = planModeSelection(routingPolicyFor('claude'), catalog(session), 'plan')
-    expect(writes(modelPlan)).toEqual([{
-      writes: [{ via: 'config', configId: 'model', value: 'opus' }, { via: 'config', configId: 'reasoning_effort', value: 'low' }],
-      appliedId: 'opus',
-    }])
+    expect(writes(modelPlan)).toEqual([
+      {
+        writes: [
+          { via: 'config', configId: 'model', value: 'opus' },
+          { via: 'config', configId: 'reasoning_effort', value: 'low' },
+        ],
+        appliedId: 'opus',
+      },
+    ])
     expect(writes(modePlan)).toEqual([{ writes: [{ via: 'legacy', value: 'plan' }], appliedId: 'plan' }])
   })
 
@@ -145,7 +175,9 @@ describe('model-routing catalogs and policies', () => {
       configOptions: [select('model', 'model', 'other', ['gpt-5.5', 'other'])],
     }
     const plan = planModelSelection(routingPolicyFor('codex'), catalog(session), 'gpt-5.5[low]')
-    expect(writes(plan)).toEqual([{ writes: [{ via: 'config', configId: 'model', value: 'gpt-5.5' }], appliedId: 'gpt-5.5' }])
+    expect(writes(plan)).toEqual([
+      { writes: [{ via: 'config', configId: 'model', value: 'gpt-5.5' }], appliedId: 'gpt-5.5' },
+    ])
   })
 
   it('guesses minimal resumed-session writes in the documented order', () => {
@@ -168,13 +200,18 @@ describe('model-routing catalogs and policies', () => {
 
   it('never throws for malformed catalogs and preserves grouped labels', () => {
     expect(() => describeCatalog({ models: { availableModels: 'nope' }, configOptions: 'nope' })).not.toThrow()
-    expect(describeCatalog({ models: { availableModels: [{}] }, modes: { availableModes: [{}] } })).toEqual({ selects: {}, legacy: {} })
+    expect(describeCatalog({ models: { availableModels: [{}] }, modes: { availableModes: [{}] } })).toEqual({
+      selects: {},
+      legacy: {},
+    })
     const result = describeCatalog({
-      configOptions: [{
-        id: 'model',
-        currentValue: 'a-1',
-        options: [{ name: 'Group A', options: [{ value: 'a-1', name: 'One' }] }],
-      }],
+      configOptions: [
+        {
+          id: 'model',
+          currentValue: 'a-1',
+          options: [{ name: 'Group A', options: [{ value: 'a-1', name: 'One' }] }],
+        },
+      ],
     })
     expect(result.models?.availableModels[0]?.name).toBe('Group A / One')
   })
@@ -183,7 +220,9 @@ describe('model-routing catalogs and policies', () => {
 describe('model-routing executor', () => {
   it('runs the next alternative after a failed primary write', async () => {
     const provider: SelectionProvider = {
-      setConfigOption: vi.fn(async () => { throw new Error('config unavailable') }),
+      setConfigOption: vi.fn(async () => {
+        throw new Error('config unavailable')
+      }),
       setModel: vi.fn(async () => ({})),
     }
     const plan = planModelSelection(
@@ -199,21 +238,37 @@ describe('model-routing executor', () => {
   })
 
   it('skips a missing setter for a valid catalog route', async () => {
-    const plan = planModelSelection(routingPolicyFor('default'), catalog({ configOptions: [select('model', 'model', 'a', ['a', 'b'])] }), 'b')
+    const plan = planModelSelection(
+      routingPolicyFor('default'),
+      catalog({ configOptions: [select('model', 'model', 'a', ['a', 'b'])] }),
+      'b',
+    )
     await expect(executeSelectionPlan({}, 'sess', plan)).resolves.toBe('b')
   })
 
   it('rethrows the primary provider error when all alternatives fail', async () => {
     const error = new Error('Invalid params')
-    const provider: SelectionProvider = { setConfigOption: vi.fn(async () => { throw error }) }
-    const plan = planModelSelection(routingPolicyFor('default'), catalog({ configOptions: [select('model', 'model', 'old', ['a'])] }), 'a')
+    const provider: SelectionProvider = {
+      setConfigOption: vi.fn(async () => {
+        throw error
+      }),
+    }
+    const plan = planModelSelection(
+      routingPolicyFor('default'),
+      catalog({ configOptions: [select('model', 'model', 'old', ['a'])] }),
+      'a',
+    )
     await expect(executeSelectionPlan(provider, 'sess', plan)).rejects.toBe(error)
   })
 
   it('surfaces the fallback error when the primary and its fallback both fail', async () => {
     const provider: SelectionProvider = {
-      setConfigOption: vi.fn(async () => { throw new Error('config rejected') }),
-      setModel: vi.fn(async () => { throw new Error('legacy rejected') }),
+      setConfigOption: vi.fn(async () => {
+        throw new Error('config rejected')
+      }),
+      setModel: vi.fn(async () => {
+        throw new Error('legacy rejected')
+      }),
     }
     const plan = planModelSelection(
       routingPolicyFor('default'),
@@ -224,5 +279,19 @@ describe('model-routing executor', () => {
       'a',
     )
     await expect(executeSelectionPlan(provider, 'sess', plan)).rejects.toThrow('legacy rejected')
+  })
+
+  it('tags a valid but unavailable selection separately from SDK setter rejection', async () => {
+    const plan = planModelSelection(
+      routingPolicyFor('default'),
+      catalog({ models: { availableModels: [{ modelId: 'a', name: 'A' }], currentModelId: 'a' } }),
+      'missing-model',
+    )
+
+    await expect(executeSelectionPlan({}, 'sess', plan)).rejects.toMatchObject({
+      _tag: 'SelectionUnavailableError',
+      message: 'Model "missing-model" is not available',
+    })
+    await expect(executeSelectionPlan({}, 'sess', plan)).rejects.toBeInstanceOf(SelectionUnavailableError)
   })
 })

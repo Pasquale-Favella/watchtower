@@ -12,10 +12,7 @@ const DEFAULT_PERIOD_KEY = 'watchtower:defaultPeriod'
 /** Reads the persisted default period, validating it against the canonical
  * set so a stale/corrupt value falls back instead of breaking the period
  * switcher. `null` storage (hardened contexts) also falls back. */
-export function readStoredDefaultPeriod(
-  storage: Pick<Storage, 'getItem'> | null,
-  fallback: string,
-): string {
+export function readStoredDefaultPeriod(storage: Pick<Storage, 'getItem'> | null, fallback: string): string {
   try {
     const saved = storage?.getItem(DEFAULT_PERIOD_KEY)
     if (saved && DEFAULT_PERIOD_VALUES.includes(saved)) return saved
@@ -26,10 +23,7 @@ export function readStoredDefaultPeriod(
 }
 
 /** Persists a default period, ignoring values outside the canonical set. */
-export function writeStoredDefaultPeriod(
-  storage: Pick<Storage, 'setItem'> | null,
-  value: string,
-): void {
+export function writeStoredDefaultPeriod(storage: Pick<Storage, 'setItem'> | null, value: string): void {
   if (!DEFAULT_PERIOD_VALUES.includes(value)) return
   try {
     storage?.setItem(DEFAULT_PERIOD_KEY, value)
@@ -61,11 +55,7 @@ export type PricingValidation =
 
 /** Validates the Settings › Pricing add form. Input/output are required and
  * must parse to positive numbers; the model must be non-empty. */
-export function validatePricing(
-  modelRaw: string,
-  inputRaw: string,
-  outputRaw: string,
-): PricingValidation {
+export function validatePricing(modelRaw: string, inputRaw: string, outputRaw: string): PricingValidation {
   if (!modelRaw.trim()) return { ok: false, error: 'Enter a model name.' }
   const input = parseRate(inputRaw)
   const output = parseRate(outputRaw)

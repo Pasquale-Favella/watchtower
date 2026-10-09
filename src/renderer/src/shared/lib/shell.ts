@@ -13,10 +13,7 @@ function titleCase(id: string): string {
  */
 export function providerOptionsFromDetected(detectedNames: string[]): ProviderOption[] {
   const unique = Array.from(new Set(detectedNames)).sort((a, b) => a.localeCompare(b))
-  return [
-    { value: 'all', label: 'All providers' },
-    ...unique.map(name => ({ value: name, label: titleCase(name) }))
-  ]
+  return [{ value: 'all', label: 'All providers' }, ...unique.map(name => ({ value: name, label: titleCase(name) }))]
 }
 
 /** The top bar's scope caption: "period · provider[ · config]". */
@@ -37,7 +34,7 @@ export const CADENCE_UI_OPTIONS: ReadonlyArray<{ value: string; label: string }>
   { value: '1m', label: '1 minute' },
   { value: '3m', label: '3 minutes' },
   { value: '5m', label: '5 minutes' },
-  { value: '10m', label: '10 minutes' }
+  { value: '10m', label: '10 minutes' },
 ]
 
 /**

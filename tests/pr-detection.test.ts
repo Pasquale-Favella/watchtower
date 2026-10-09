@@ -1,8 +1,14 @@
-import { describe, expect, it } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import { describe, expect, it } from 'vitest'
+
+import { queryPullRequestsView } from '../src/main/application/pull-requests-query.js'
 import {
+  cachedTurnToClassified,
   collectPrUrlsFromEntry,
   collectSessionMeta,
   compactEntry,
@@ -10,18 +16,19 @@ import {
   extractPrUrlsFromProviderCall,
   extractPrUrlsFromText,
   groupIntoTurns,
-  cachedTurnToClassified,
 } from '../src/main/pipeline/parser.js'
-import { shortenPrUrl } from '../src/main/pipeline/sessions-report.js'
-import { buildPullRequestsViewFromLedger } from '../src/main/pull-requests-view.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { sectionNeedsPrEvidenceReparse } from '../src/main/pipeline/session-cache.js'
-import { providerSectionSchema } from '../src/shared/schemas/session-cache.js'
-import { buildAssistantCall } from '../src/main/pipeline/providers/session-message.js'
 import { codex } from '../src/main/pipeline/providers/codex.js'
+import { buildAssistantCall } from '../src/main/pipeline/providers/session-message.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
+import { sectionNeedsPrEvidenceReparse } from '../src/main/pipeline/session-cache.js'
+import { shortenPrUrl } from '../src/main/pipeline/sessions-report.js'
 import type { JournalEntry } from '../src/main/pipeline/types.js'
+import { LedgerIngest } from '../src/main/store/ledger-ports.js'
+import type { WorkerRuntime } from '../src/main/worker-runtime.js'
+import type { PortInput } from '../src/shared/schemas/port.js'
+import { providerSectionSchema } from '../src/shared/schemas/session-cache.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 const GH = 'https://github.com/acme/repo/pull/12'
 const GHE = 'https://ghe.corp.example.com/acme/widget/pull/34'
@@ -66,18 +73,22 @@ describe('extractPrUrlsFromText (provider-neutral shapes)', () => {
 
 describe('extractPrUrlsFromProviderCall', () => {
   it('unions user message, bash commands and tool commands', () => {
-    expect(extractPrUrlsFromProviderCall({
-      userMessage: 'keep going',
-      bashCommands: [`gh pr view ${GH} --comments`],
-      toolSequence: [[{ tool: 'Bash', command: `gh pr create --title x --body ${GHE}` }]],
-    })).toEqual([GHE, GH])
+    expect(
+      extractPrUrlsFromProviderCall({
+        userMessage: 'keep going',
+        bashCommands: [`gh pr view ${GH} --comments`],
+        toolSequence: [[{ command: `gh pr create --title x --body ${GHE}` }]],
+      }),
+    ).toEqual([GHE, GH])
   })
 
   it('scans provider-persisted assistant text', () => {
-    expect(extractPrUrlsFromProviderCall({
-      userMessage: 'ship it',
-      assistantText: `Done, opened ${GITLAB} for review`,
-    })).toEqual([GITLAB])
+    expect(
+      extractPrUrlsFromProviderCall({
+        userMessage: 'ship it',
+        assistantText: `Done, opened ${GITLAB} for review`,
+      }),
+    ).toEqual([GITLAB])
   })
 
   it('returns [] when nothing references a PR', () => {
@@ -159,8 +170,7 @@ describe('Claude assistant / tool-result PR capture', () => {
       sessionId: 'sess-1',
       message: { role: 'user', content: [{ type: 'text', text: 'implement the widget' }] },
     }
-    const entries = [userEntry, assistantEntry(`Done, see ${GH}`), toolResultEntry(GHE)]
-      .map(raw => compactEntry(raw))
+    const entries = [userEntry, assistantEntry(`Done, see ${GH}`), toolResultEntry(GHE)].map(raw => compactEntry(raw))
     const turns = groupIntoTurns(entries, new Set())
     expect(turns).toHaveLength(1)
     expect(turns[0]!.prRefs).toEqual([GHE, GH])
@@ -183,38 +193,39 @@ describe('cachedTurnToClassified fallback (pre-capture cache entries)', () => {
 })
 
 describe('end-to-end: pre-capture shaped sessions reach the PR section', () => {
-  function ledgerWithTurns(turns: CachedFile['turns'], prLinks?: string[]): LedgerStore {
-    const dir = mkdtempSync(join(tmpdir(), 'tr-pr-detect-'))
-    const store = new LedgerStore(join(dir, 'data.db'))
+  function ledgerWithTurns(turns: CachedFile['turns'], prLinks?: string[]): WorkerRuntime {
+    const { runtime } = openLedgerFixture()
     const file = buildFixtureCachedFile({ turns, ...(prLinks ? { prLinks } : {}) })
-    store.portIn({
-      provider: 'opencode',
-      envFingerprint: 'env-demo',
-      filePath: '/cache/opencode/sess-9.jsonl',
-      verdict: 'new',
-      cachedFile: file,
-    })
-    return store
+    runtime.runSync(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          provider: 'opencode',
+          envFingerprint: 'env-demo',
+          filePath: '/cache/opencode/sess-9.jsonl',
+          verdict: 'new',
+          cachedFile: file,
+        } satisfies PortInput),
+      ),
+    )
+    return runtime
   }
 
   it('a session whose only evidence is a GHE link in the prompt appears', () => {
-    const store = ledgerWithTurns([
-      buildFixtureCachedTurn(0, `continue work on ${GHE}`),
-    ])
-    const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
+    const runtime = ledgerWithTurns([buildFixtureCachedTurn(0, `continue work on ${GHE}`)])
+    const payload = runtime.runSync(
+      atTime(queryPullRequestsView(viewInputs({ period: 'lifetime' })), new Date(2026, 7, 6)),
+    )
     expect(payload.rows.map(r => r.url)).toEqual([GHE])
     expect(payload.rows[0]!.label).toBe('acme/widget#34')
-    store.close()
   })
 
   it('a session whose only evidence is a gh command in the turn appears', () => {
     const call = { ...buildFixtureCachedCall(0), bashCommands: [`gh pr view ${GH} --comments`] }
-    const store = ledgerWithTurns([
-      buildFixtureCachedTurn(0, 'look at the failing check', { calls: [call] }),
-    ])
-    const payload = buildPullRequestsViewFromLedger(store, { period: 'lifetime' }, new Date(2026, 7, 6))
+    const runtime = ledgerWithTurns([buildFixtureCachedTurn(0, 'look at the failing check', { calls: [call] })])
+    const payload = runtime.runSync(
+      atTime(queryPullRequestsView(viewInputs({ period: 'lifetime' })), new Date(2026, 7, 6)),
+    )
     expect(payload.rows.map(r => r.url)).toEqual([GH])
-    store.close()
   })
 })
 
@@ -229,8 +240,8 @@ describe('shared assistant-call seam (opencode / kilo-code)', () => {
       timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
       userMessage: 'ship it',
     })
-    expect(call?.assistantText).toContain(GH)
     expect(extractPrUrlsFromProviderCall(call!)).toEqual([GH])
+    expect(call).toHaveProperty('assistantText')
   })
 
   it('buildAssistantCall keeps tool inputs as PR evidence', () => {
@@ -243,7 +254,8 @@ describe('shared assistant-call seam (opencode / kilo-code)', () => {
       timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
       userMessage: 'check ci',
     })
-    expect(call?.assistantText).toContain(GHE)
+    expect(extractPrUrlsFromProviderCall(call!)).toEqual([GHE])
+    expect(call).toHaveProperty('assistantText')
   })
 
   it('buildAssistantCall omits assistantText when there is no text', () => {
@@ -256,7 +268,8 @@ describe('shared assistant-call seam (opencode / kilo-code)', () => {
       timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
       userMessage: 'read the file',
     })
-    expect(call?.assistantText).toBeUndefined()
+    expect(call).not.toHaveProperty('assistantText')
+    expect(extractPrUrlsFromProviderCall(call!)).toEqual([])
   })
 })
 
@@ -266,16 +279,40 @@ describe('codex assistant text reaches the PR seam', () => {
     process.env['WATCHTOWER_CACHE_DIR'] = mkdtempSync(join(tmpdir(), 'tr-codex-cache-'))
     const filePath = join(dir, 'rollout-2026-07-20.jsonl')
     const lines = [
-      { type: 'session_meta', timestamp: '2026-07-20T10:00:00.000Z', payload: { session_id: 'sess-x', cwd: '/work/demo', model: 'gpt-5' } },
-      { type: 'response_item', timestamp: '2026-07-20T10:00:01.000Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'ship the widget' }] } },
-      { type: 'response_item', timestamp: '2026-07-20T10:00:02.000Z', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `Done, opened ${GH}` }] } },
       {
-        type: 'event_msg', timestamp: '2026-07-20T10:00:03.000Z',
+        type: 'session_meta',
+        timestamp: '2026-07-20T10:00:00.000Z',
+        payload: { session_id: 'sess-x', cwd: '/work/demo', model: 'gpt-5' },
+      },
+      {
+        type: 'response_item',
+        timestamp: '2026-07-20T10:00:01.000Z',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'ship the widget' }] },
+      },
+      {
+        type: 'response_item',
+        timestamp: '2026-07-20T10:00:02.000Z',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `Done, opened ${GH}` }] },
+      },
+      {
+        type: 'event_msg',
+        timestamp: '2026-07-20T10:00:03.000Z',
         payload: {
           type: 'token_count',
           info: {
-            total_token_usage: { total_tokens: 100, input_tokens: 60, cached_input_tokens: 0, output_tokens: 30, reasoning_output_tokens: 10 },
-            last_token_usage: { input_tokens: 60, cached_input_tokens: 0, output_tokens: 30, reasoning_output_tokens: 10 },
+            total_token_usage: {
+              total_tokens: 100,
+              input_tokens: 60,
+              cached_input_tokens: 0,
+              output_tokens: 30,
+              reasoning_output_tokens: 10,
+            },
+            last_token_usage: {
+              input_tokens: 60,
+              cached_input_tokens: 0,
+              output_tokens: 30,
+              reasoning_output_tokens: 10,
+            },
           },
         },
       },
@@ -285,21 +322,25 @@ describe('codex assistant text reaches the PR seam', () => {
     const calls = []
     for await (const call of parser.parse()) calls.push(call)
     expect(calls).toHaveLength(1)
-    expect(calls[0]!.assistantText).toContain(GH)
+    expect(calls[0]).toHaveProperty('assistantText')
     expect(extractPrUrlsFromProviderCall(calls[0]!)).toEqual([GH])
   })
 })
 
 describe('one-shot PR-evidence re-parse marker', () => {
   it('fires for sections written before the capture', () => {
-    expect(sectionNeedsPrEvidenceReparse({ envFingerprint: 'x', files: {} })).toBe(true)
-    expect(sectionNeedsPrEvidenceReparse({ envFingerprint: 'x', files: {}, prEvidenceV1: false })).toBe(true)
-    expect(sectionNeedsPrEvidenceReparse({ envFingerprint: 'x', files: {}, prEvidenceV1: true })).toBe(false)
+    expect(sectionNeedsPrEvidenceReparse({})).toBe(true)
+    expect(sectionNeedsPrEvidenceReparse({ prEvidenceV1: false })).toBe(true)
+    expect(sectionNeedsPrEvidenceReparse({ prEvidenceV1: true })).toBe(false)
   })
 
   it('the section schema accepts old sections and stamped ones', () => {
-    expect(providerSectionSchema.safeParse({ envFingerprint: 'x', files: {} }).success).toBe(true)
-    const stamped = providerSectionSchema.parse({ envFingerprint: 'x', files: {}, prEvidenceV1: true })
+    expect(Schema.decodeUnknownResult(providerSectionSchema)({ envFingerprint: 'x', files: {} })._tag).toBe('Success')
+    const stamped = Schema.decodeUnknownSync(providerSectionSchema)({
+      envFingerprint: 'x',
+      files: {},
+      prEvidenceV1: true,
+    })
     expect(stamped.prEvidenceV1).toBe(true)
   })
 })

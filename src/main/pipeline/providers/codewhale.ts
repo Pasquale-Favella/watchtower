@@ -4,9 +4,10 @@ import { join } from 'path'
 
 import { extractBashCommands } from '../bash-utils.js'
 import { readSessionFile } from '../fs-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
 import type { ToolCall } from '../types.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const METADATA_PREFIX_BYTES = 64 * 1024
 
@@ -112,7 +113,7 @@ function parseMetadata(value: unknown): CodeWhaleMetadata | null {
     model: nonEmptyString(value['model']),
     model_provider: nonEmptyString(value['model_provider']),
     workspace: nonEmptyString(value['workspace']),
-    cost: isRecord(value['cost']) ? value['cost'] as CodeWhaleCost : undefined,
+    cost: isRecord(value['cost']) ? (value['cost'] as CodeWhaleCost) : undefined,
   }
 }
 
@@ -224,15 +225,15 @@ async function readSessionMetadata(filePath: string): Promise<CodeWhaleMetadata 
 function defaultSessionDirs(): string[] {
   const configuredHome = process.env['CODEWHALE_HOME']?.trim()
   if (configuredHome) return [join(configuredHome, 'sessions')]
-  return [
-    join(homedir(), '.codewhale', 'sessions'),
-    join(homedir(), '.deepseek', 'sessions'),
-  ]
+  return [join(homedir(), '.codewhale', 'sessions'), join(homedir(), '.deepseek', 'sessions')]
 }
 
 function projectName(workspace: string | undefined): string {
   if (!workspace) return 'CodeWhale'
-  const parts = workspace.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
+  const parts = workspace
+    .replace(/[\\/]+$/, '')
+    .split(/[\\/]/)
+    .filter(Boolean)
   return parts.at(-1) ?? 'CodeWhale'
 }
 
@@ -267,14 +268,15 @@ function normalizeTimestamp(value: string | undefined): string {
 function firstUserMessage(messages: CodeWhaleMessage[]): string {
   for (const message of messages) {
     if (message.role !== 'user') continue
-    const text = typeof message.content === 'string'
-      ? message.content
-      : Array.isArray(message.content)
+    const text =
+      typeof message.content === 'string'
         ? message.content
-          .filter(block => block?.type === 'text' && typeof block.text === 'string')
-          .map(block => block.text)
-          .join(' ')
-        : ''
+        : Array.isArray(message.content)
+          ? message.content
+              .filter(block => block?.type === 'text' && typeof block.text === 'string')
+              .map(block => block.text)
+              .join(' ')
+          : ''
     if (text.trim()) return Array.from(text.trim()).slice(0, 500).join('')
   }
   return ''
@@ -283,9 +285,7 @@ function firstUserMessage(messages: CodeWhaleMessage[]): string {
 function mapToolName(rawName: string): string {
   if (rawName.startsWith('mcp__')) return rawName
   if (rawName.startsWith('agents/')) return 'Agent'
-  return Object.prototype.hasOwnProperty.call(toolNameMap, rawName)
-    ? toolNameMap[rawName]!
-    : rawName
+  return Object.prototype.hasOwnProperty.call(toolNameMap, rawName) ? toolNameMap[rawName]! : rawName
 }
 
 function toolInput(value: unknown): Record<string, unknown> {
@@ -366,7 +366,8 @@ function reportedCost(cost: CodeWhaleCost | undefined): { value: number; exact: 
   }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const raw = await readSessionFile(source.path)
@@ -377,9 +378,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         try {
           const saved = JSON.parse(raw) as CodeWhaleSession
           metadata = parseMetadata(saved.metadata)
-          messages = Array.isArray(saved.messages)
-            ? saved.messages.filter(isRecord) as CodeWhaleMessage[]
-            : []
+          messages = Array.isArray(saved.messages) ? (saved.messages.filter(isRecord) as CodeWhaleMessage[]) : []
         } catch {
           // A truncated transcript can still have complete, authoritative
           // aggregate metadata at the front of the file.
@@ -390,9 +389,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       const totalTokens = safeTokenCount(metadata.total_tokens)
       const model = metadata.model ?? metadata.model_provider ?? 'unknown'
       const localCost = reportedCost(metadata.cost)
-      const costUSD = localCost.exact
-        ? localCost.value
-        : calculateCost(model, totalTokens, 0, 0, 0, 0)
+      const costUSD = localCost.exact ? localCost.value : pricing.calculateCost(model, totalTokens, 0, 0, 0, 0)
       if (totalTokens === 0 && costUSD === 0) return
 
       const deduplicationKey = `codewhale:${metadata.id}`
@@ -441,9 +438,8 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
 }
 
 export function createCodeWhaleProvider(overrideDirs?: string | string[]): Provider {
-  const configuredDirs = overrideDirs === undefined
-    ? undefined
-    : Array.isArray(overrideDirs) ? overrideDirs : [overrideDirs]
+  const configuredDirs =
+    overrideDirs === undefined ? undefined : Array.isArray(overrideDirs) ? overrideDirs : [overrideDirs]
 
   return {
     name: 'codewhale',
@@ -473,8 +469,13 @@ export function createCodeWhaleProvider(overrideDirs?: string | string[]): Provi
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

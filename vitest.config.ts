@@ -11,6 +11,9 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.ts'],
-    testTimeout: 120_000
+    // Bound stalled tests in real time. Virtual-time tests also use
+    // runEffectTest to interrupt parked fibers; longer integration tests
+    // must set their own explicit timeout.
+    testTimeout: 20_000,
   }
 })

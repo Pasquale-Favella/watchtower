@@ -52,20 +52,30 @@ function CompareRows({
 }) {
   return (
     <div className="flex flex-col">
-      <div className={cn(ROW_GRID, 'border-b border-border pb-1.5')}>
-        <span className="text-[10.5px] uppercase tracking-wide text-muted-foreground">Metric</span>
-        <span className={cn(VALUE_CELL, 'truncate text-[10.5px] font-medium text-foreground')} title={modelA}>{modelA}</span>
-        <span className={cn(VALUE_CELL, 'truncate text-[10.5px] font-medium text-foreground')} title={modelB}>{modelB}</span>
+      <div className={cn(ROW_GRID, 'border-border border-b pb-1.5')}>
+        <span className="text-muted-foreground text-[10.5px] tracking-wide uppercase">Metric</span>
+        <span className={cn(VALUE_CELL, 'text-foreground truncate text-[10.5px] font-medium')} title={modelA}>
+          {modelA}
+        </span>
+        <span className={cn(VALUE_CELL, 'text-foreground truncate text-[10.5px] font-medium')} title={modelB}>
+          {modelB}
+        </span>
       </div>
       {rows.map(row => {
         const winner = 'winner' in row ? row.winner : 'none'
         return (
           <div key={row.label} className={cn(ROW_GRID, 'items-center py-[5px]')}>
-            <span className="truncate text-[11.5px] text-muted-foreground" title={row.label}>{row.label}</span>
-            <span className={cn(VALUE_CELL, 'text-[11.5px]', showWinners ? winnerClass(winner, 'a') : 'text-foreground')}>
+            <span className="text-muted-foreground truncate text-[11.5px]" title={row.label}>
+              {row.label}
+            </span>
+            <span
+              className={cn(VALUE_CELL, 'text-[11.5px]', showWinners ? winnerClass(winner, 'a') : 'text-foreground')}
+            >
               {compareValue(row.valueA, row.formatFn)}
             </span>
-            <span className={cn(VALUE_CELL, 'text-[11.5px]', showWinners ? winnerClass(winner, 'b') : 'text-foreground')}>
+            <span
+              className={cn(VALUE_CELL, 'text-[11.5px]', showWinners ? winnerClass(winner, 'b') : 'text-foreground')}
+            >
               {compareValue(row.valueB, row.formatFn)}
             </span>
           </div>
@@ -83,15 +93,23 @@ function MetricsCard({ rows, modelA, modelB }: { rows: ComparisonRow[]; modelA: 
   )
 }
 
-function CategoryCard({ categories, modelA, modelB }: { categories: CategoryComparison[]; modelA: string; modelB: string }) {
+function CategoryCard({
+  categories,
+  modelA,
+  modelB,
+}: {
+  categories: CategoryComparison[]
+  modelA: string
+  modelB: string
+}) {
   return (
     <Panel title="Category head-to-head" right="One-shot rate · edit turns">
       <div className="mb-2.5 flex items-center gap-3">
-        <span className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+        <span className="text-muted-foreground flex items-center gap-1.5 text-[10.5px]">
           <span className="size-[8px] rounded-full" style={{ background: seriesColorForModel(modelA) }} />
           {modelA}
         </span>
-        <span className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+        <span className="text-muted-foreground flex items-center gap-1.5 text-[10.5px]">
           <span className="size-[8px] rounded-full" style={{ background: seriesColorForModel(modelB) }} />
           {modelB}
         </span>
@@ -99,10 +117,22 @@ function CategoryCard({ categories, modelA, modelB }: { categories: CategoryComp
       <div className="flex flex-col">
         {categories.map(category => (
           <div key={category.category} className="grid grid-cols-[minmax(0,1fr)_170px] items-center gap-x-3 py-[5px]">
-            <span className="truncate text-[11.5px] text-muted-foreground" title={category.category}>{categoryLabel(category.category)}</span>
+            <span className="text-muted-foreground truncate text-[11.5px]" title={category.category}>
+              {categoryLabel(category.category)}
+            </span>
             <div className="flex flex-col gap-[3px]">
-              <BarRow rate={category.oneShotRateA} turns={category.editTurnsA} winner={category.winner === 'a'} color={seriesColorForModel(modelA)} />
-              <BarRow rate={category.oneShotRateB} turns={category.editTurnsB} winner={category.winner === 'b'} color={seriesColorForModel(modelB)} />
+              <BarRow
+                rate={category.oneShotRateA}
+                turns={category.editTurnsA}
+                winner={category.winner === 'a'}
+                color={seriesColorForModel(modelA)}
+              />
+              <BarRow
+                rate={category.oneShotRateB}
+                turns={category.editTurnsB}
+                winner={category.winner === 'b'}
+                color={seriesColorForModel(modelB)}
+              />
             </div>
           </div>
         ))}
@@ -111,10 +141,20 @@ function CategoryCard({ categories, modelA, modelB }: { categories: CategoryComp
   )
 }
 
-function BarRow({ rate, turns, winner, color }: { rate: number | null; turns: number; winner: boolean; color: string }) {
+function BarRow({
+  rate,
+  turns,
+  winner,
+  color,
+}: {
+  rate: number | null
+  turns: number
+  winner: boolean
+  color: string
+}) {
   return (
     <div className="flex items-center gap-2">
-      <span className="h-[6px] flex-1 overflow-hidden rounded-full bg-muted">
+      <span className="bg-muted h-[6px] flex-1 overflow-hidden rounded-full">
         <span className="block h-full rounded-full" style={{ width: `${rate ?? 0}%`, background: color }} />
       </span>
       <span className={cn(VALUE_CELL, 'w-[72px] text-[10.5px]', winner ? 'text-success' : 'text-muted-foreground')}>
@@ -145,8 +185,17 @@ function ModelPicker({
 }) {
   const selected = models.find(model => model.model === value)
   return (
-    <Select value={value ?? ''} onValueChange={next => { if (next) onChange(next) }}>
-      <SelectTrigger size="sm" aria-label={label} className="h-[26px] rounded-md border-border px-2 text-[11px] text-foreground">
+    <Select
+      value={value ?? ''}
+      onValueChange={next => {
+        if (next) onChange(next)
+      }}
+    >
+      <SelectTrigger
+        size="sm"
+        aria-label={label}
+        className="border-border text-foreground h-[26px] rounded-md px-2 text-[11px]"
+      >
         <SelectValue>{selected?.displayName ?? 'Pick a model'}</SelectValue>
       </SelectTrigger>
       <SelectContent align="center">
@@ -198,9 +247,7 @@ export function CompareView(): React.JSX.Element {
   // side nudges that side to the next available model.
   const pick = (side: 'a' | 'b', next: string): void => {
     const other = side === 'a' ? pair?.modelB : pair?.modelA
-    const nudge = other !== next
-      ? other
-      : (payload?.models.find(model => model.model !== next)?.model ?? null)
+    const nudge = other !== next ? other : (payload?.models.find(model => model.model !== next)?.model ?? null)
     const modelA = side === 'a' ? next : nudge
     const modelB = side === 'b' ? next : nudge
     if (modelA && modelB && modelA !== modelB) {
@@ -219,22 +266,30 @@ export function CompareView(): React.JSX.Element {
       )}
 
       {payload === null ? (
-        error ? <ErrorPanel message={error} /> : (
+        error ? (
+          <ErrorPanel message={error} />
+        ) : (
           <LoadingRegion label="Loading comparison…" className="flex flex-col gap-4">
             <div className="flex items-center justify-center gap-2.5">
               <Skeleton className="h-[26px] w-44 rounded-md" />
               <Skeleton className="h-3 w-6" />
               <Skeleton className="h-[26px] w-44 rounded-md" />
             </div>
-            <SkeletonCard title><SkeletonLines lines={6} /></SkeletonCard>
+            <SkeletonCard title>
+              <SkeletonLines lines={6} />
+            </SkeletonCard>
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              <SkeletonCard title><SkeletonLines lines={5} /></SkeletonCard>
-              <SkeletonCard title><SkeletonLines lines={5} /></SkeletonCard>
+              <SkeletonCard title>
+                <SkeletonLines lines={5} />
+              </SkeletonCard>
+              <SkeletonCard title>
+                <SkeletonLines lines={5} />
+              </SkeletonCard>
             </div>
           </LoadingRegion>
         )
       ) : models.length < 2 ? (
-        <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-center text-[12px] text-muted-foreground">
+        <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-center text-[12px]">
           Need at least two models with usage in this range to compare.
         </div>
       ) : (
@@ -246,7 +301,7 @@ export function CompareView(): React.JSX.Element {
               onChange={next => pick('a', next)}
               label="First model"
             />
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">vs</span>
+            <span className="text-muted-foreground text-[11px] font-medium tracking-wide uppercase">vs</span>
             <ModelPicker
               models={models}
               value={pair?.modelB ?? null}
@@ -257,11 +312,23 @@ export function CompareView(): React.JSX.Element {
 
           {payload.report && (
             <>
-              <MetricsCard rows={payload.report.metrics} modelA={payload.report.modelA.displayName} modelB={payload.report.modelB.displayName} />
+              <MetricsCard
+                rows={payload.report.metrics}
+                modelA={payload.report.modelA.displayName}
+                modelB={payload.report.modelB.displayName}
+              />
 
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                <CategoryCard categories={payload.report.categories} modelA={payload.report.modelA.displayName} modelB={payload.report.modelB.displayName} />
-                <WorkingStyleCard rows={payload.report.workingStyle} modelA={payload.report.modelA.displayName} modelB={payload.report.modelB.displayName} />
+                <CategoryCard
+                  categories={payload.report.categories}
+                  modelA={payload.report.modelA.displayName}
+                  modelB={payload.report.modelB.displayName}
+                />
+                <WorkingStyleCard
+                  rows={payload.report.workingStyle}
+                  modelA={payload.report.modelA.displayName}
+                  modelB={payload.report.modelB.displayName}
+                />
               </div>
             </>
           )}

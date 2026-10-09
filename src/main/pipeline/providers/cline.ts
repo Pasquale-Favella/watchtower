@@ -1,9 +1,16 @@
-import { stat } from 'fs/promises'
+import { Effect } from 'effect'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 
-import { discoverClineTasks, createClineParser, getVSCodeGlobalStoragePath } from './vscode-cline-parser.js'
-import type { Provider, SessionSource, SessionParser } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import {
+  type ClineTaskCandidate,
+  createClineParser,
+  discoverClineTaskCandidatesInBaseDirsEffect,
+  getVSCodeGlobalStoragePath,
+} from './vscode-cline-parser.js'
 
 const EXTENSION_ID = 'saoudrizwan.claude-dev'
 
@@ -17,16 +24,11 @@ function normalizeOverrideDirs(overrideDirs?: string | string[]): string[] | und
   return Array.isArray(overrideDirs) ? overrideDirs : [overrideDirs]
 }
 
-async function dedupeTaskSources(sources: SessionSource[]): Promise<SessionSource[]> {
-  const candidates = await Promise.all(sources.map(async source => ({
-    source,
-    mtimeMs: (await stat(join(source.path, 'ui_messages.json')).catch(() => null))?.mtimeMs ?? 0,
-  })))
-
+function dedupeTaskCandidates(candidates: ClineTaskCandidate[]): SessionSource[] {
   const seenTaskIds = new Set<string>()
   const deduped: SessionSource[] = []
 
-  for (const { source } of candidates.sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+  for (const { source } of [...candidates].sort((a, b) => b.mtimeMs - a.mtimeMs)) {
     const taskId = basename(source.path)
     if (seenTaskIds.has(taskId)) continue
     seenTaskIds.add(taskId)
@@ -38,6 +40,12 @@ async function dedupeTaskSources(sources: SessionSource[]): Promise<SessionSourc
 
 export function createClineProvider(overrideDirs?: string | string[]): Provider {
   const configuredDirs = normalizeOverrideDirs(overrideDirs)
+  const discoverEffect = (context?: ProviderScanContext) => {
+    const baseDirs = configuredDirs ?? [getVSCodeGlobalStoragePath(EXTENSION_ID), getClineDataPath()]
+    return discoverClineTaskCandidatesInBaseDirsEffect(baseDirs, 'cline', 'Cline', context?.signal).pipe(
+      Effect.map(dedupeTaskCandidates),
+    )
+  }
 
   return {
     name: 'cline',
@@ -51,21 +59,23 @@ export function createClineProvider(overrideDirs?: string | string[]): Provider 
       return rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      const baseDirs = configuredDirs ?? [
-        getVSCodeGlobalStoragePath(EXTENSION_ID),
-        getClineDataPath(),
-      ]
-
-      const sources = await Promise.all(
-        baseDirs.map(dir => discoverClineTasks(EXTENSION_ID, 'cline', 'Cline', dir)),
-      )
-
-      return dedupeTaskSources(sources.flat())
+    discoverSessionsEffect(context?: ProviderScanContext) {
+      return discoverEffect(context)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createClineParser(source, seenKeys, 'cline')
+    // Remove when direct discovery callers consume the native Effect path.
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      return Effect.runPromise(discoverEffect(context))
+    },
+
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing()
+      return createClineParser(source, seenKeys, 'cline', 'cline-auto', pricing, context)
     },
   }
 }

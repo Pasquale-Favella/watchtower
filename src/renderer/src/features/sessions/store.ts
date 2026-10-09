@@ -16,11 +16,15 @@ export interface SessionsState extends ScopedDataSlice<SessionRow[]> {
 }
 
 export const useSessionsStore = create<SessionsState>()((set, get) => ({
-  ...scopedDataSlice<SessionRow[]>(fetchSessionRows, patch => set(patch), () => get()),
+  ...scopedDataSlice<SessionRow[]>(
+    fetchSessionRows,
+    patch => set(patch),
+    () => get(),
+  ),
   session: null,
   sessionError: null,
   sessionStatus: 'idle',
-  loadSession: async (sessionId) => {
+  loadSession: async sessionId => {
     set({ session: null, sessionError: null, sessionStatus: 'loading' })
     const result = await fetchSession(sessionId)
     if (result.ok) set({ session: result.data, sessionStatus: 'ready' })
@@ -29,4 +33,6 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   clearSession: () => set({ session: null, sessionError: null, sessionStatus: 'idle' }),
 }))
 
-subscribeToRefresh(() => { void useSessionsStore.getState().reload() })
+subscribeToRefresh(() => {
+  void useSessionsStore.getState().reload()
+})

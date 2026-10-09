@@ -1,14 +1,35 @@
-import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
+
+import type { ActiveCurrency, CurrencyOption } from '../main/fx.js'
+import type { UpdateStatus } from '../main/updates.js'
+import type {
+  CoachEventEnvelope,
+  CoachHarnessesResult,
+  CoachHarnessRow,
+  CoachInspectRequest,
+  CoachInspectResult,
+  CoachLoginTerminalResult,
+  CoachRunRequest,
+  CoachRunResult,
+} from '../shared/schemas/agents.js'
+import type { ComparePair, ComparePayload } from '../shared/schemas/compare.js'
+import type { ExportResult } from '../shared/schemas/export.js'
+import type {
+  LedgerMcpConnection,
+  LedgerMcpStatus,
+  PricingRefreshResult,
+  ScanProgressMessage,
+  ScanResult,
+  ScanStatus,
+  SettingsInfo,
+  StoreChangedMessage,
+} from '../shared/schemas/ipc.js'
+import type { ModelsPayload } from '../shared/schemas/models.js'
+import type { OptimizePayload } from '../shared/schemas/optimize.js'
+import type { OverviewPayload, OverviewScope } from '../shared/schemas/overview.js'
+import type { PullRequestsPayload } from '../shared/schemas/pull-requests.js'
 import type { ScanMetadata } from '../shared/schemas/scan.js'
-import type { DashboardViews, SessionDetail, SessionRow, ProjectRow, AnalyticalViews, SearchHit } from '../main/views.js'
-import type { OverviewPayload, OverviewScope } from '../main/overview.js'
-import type { PullRequestsPayload } from '../main/pull-requests-view.js'
-import type { SpendPayload } from '../main/spend-view.js'
-import type { ModelsPayload } from '../main/models-view.js'
-import type { ComparePair, ComparePayload } from '../main/compare-view.js'
-import type { OptimizePayload } from '../main/optimize-view.js'
-import type { YieldPayload } from '../main/yield-view.js'
 import type {
   SkillsDismissalRequest,
   SkillsDismissalResult,
@@ -17,59 +38,45 @@ import type {
   SkillsSaveResult,
   SkillsThresholds,
 } from '../shared/schemas/skills.js'
-import type { UpdateStatus } from '../main/updates.js'
-import type { ActiveCurrency, CurrencyOption } from '../main/fx.js'
-import type { ExportResult } from '../main/export.js'
+import type { SpendPayload } from '../shared/schemas/spend.js'
 import type {
-  PricingRefreshResult,
-  ScanProgressMessage,
-  ScanResult,
-  ScanStatus,
-  SettingsInfo,
-  StoreChangedMessage,
-  LedgerMcpConnection,
-  LedgerMcpStatus,
-} from '../shared/schemas/ipc.js'
-import type {
-  CoachEventEnvelope,
-  CoachHarnessRow,
-  CoachHarnessesResult,
-  CoachLoginTerminalResult,
-  CoachInspectRequest,
-  CoachInspectResult,
-  CoachRunRequest,
-  CoachRunResult,
-} from '../shared/schemas/agents.js'
+  AnalyticalViews,
+  DashboardViews,
+  ProjectRow,
+  SearchHit,
+  SessionDetail,
+  SessionRow,
+} from '../shared/schemas/views.js'
+import type { YieldPayload } from '../shared/schemas/yield.js'
 
 export type {
+  CoachEventEnvelope,
+  CoachHarnessesResult,
+  CoachHarnessRow,
+  CoachInspectResult,
+  CoachLoginTerminalResult,
+  CoachRunRequest,
+  CoachRunResult,
+} from '../shared/schemas/agents.js'
+export type {
+  LedgerMcpConnection,
+  LedgerMcpStatus,
   PricingRefreshResult,
   ScanProgressMessage,
   ScanResult,
   ScanStatus,
   SettingsInfo,
   StoreChangedMessage,
-  LedgerMcpConnection,
-  LedgerMcpStatus,
 } from '../shared/schemas/ipc.js'
-export type {
-  CoachEventEnvelope,
-  CoachHarnessRow,
-  CoachHarnessesResult,
-  CoachLoginTerminalResult,
-  CoachInspectResult,
-  CoachRunRequest,
-  CoachRunResult,
-} from '../shared/schemas/agents.js'
 
 const api = {
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome,
-    node: process.versions.node
+    node: process.versions.node,
   },
   platform: process.platform,
-  scan: (options?: { provider?: string }): Promise<ScanResult> =>
-    ipcRenderer.invoke('scan:start', options),
+  scan: (options?: { provider?: string }): Promise<ScanResult> => ipcRenderer.invoke('scan:start', options),
   abort: (): void => ipcRenderer.send('scan:abort'),
   onProgress: (callback: (progress: ScanProgressMessage) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, progress: ScanProgressMessage): void => callback(progress)
@@ -113,31 +120,32 @@ const api = {
   getAnalytics: (): Promise<AnalyticalViews | null> => ipcRenderer.invoke('store:analytics'),
   getOverview: (scope: OverviewScope): Promise<OverviewPayload | null> => ipcRenderer.invoke('overview:query', scope),
   getSessionRows: (scope: OverviewScope): Promise<SessionRow[]> => ipcRenderer.invoke('sessions:view', scope),
-  getPullRequests: (scope: OverviewScope): Promise<PullRequestsPayload | null> => ipcRenderer.invoke('pullRequests:view', scope),
+  getPullRequests: (scope: OverviewScope): Promise<PullRequestsPayload | null> =>
+    ipcRenderer.invoke('pullRequests:view', scope),
   getSpend: (scope: OverviewScope): Promise<SpendPayload | null> => ipcRenderer.invoke('spend:view', scope),
   getModels: (scope: OverviewScope): Promise<ModelsPayload | null> => ipcRenderer.invoke('models:view', scope),
   getCompare: (scope: OverviewScope, pair?: ComparePair): Promise<ComparePayload | null> =>
     ipcRenderer.invoke('compare:view', scope, pair),
-  getOptimize: (scope: OverviewScope): Promise<OptimizePayload | null> =>
-    ipcRenderer.invoke('optimize:view', scope),
-  getYield: (scope: OverviewScope): Promise<YieldPayload | null> =>
-    ipcRenderer.invoke('optimize:yield', scope),
+  getOptimize: (scope: OverviewScope): Promise<OptimizePayload | null> => ipcRenderer.invoke('optimize:view', scope),
+  getYield: (scope: OverviewScope): Promise<YieldPayload | null> => ipcRenderer.invoke('optimize:yield', scope),
   getSkills: (scope: OverviewScope, thresholds?: SkillsThresholds): Promise<SkillsPayload | null> =>
     ipcRenderer.invoke('skills:view', scope, thresholds),
   dismissSkill: (request: SkillsDismissalRequest): Promise<SkillsDismissalResult> =>
     ipcRenderer.invoke('skills:dismiss', request),
-  saveSkill: (request: SkillsSaveRequest): Promise<SkillsSaveResult> =>
-    ipcRenderer.invoke('skills:save', request),
-  addModelAlias: (model: string, aliasOf: string): Promise<{ ok: true }> => ipcRenderer.invoke('models:addAlias', model, aliasOf),
+  saveSkill: (request: SkillsSaveRequest): Promise<SkillsSaveResult> => ipcRenderer.invoke('skills:save', request),
+  addModelAlias: (model: string, aliasOf: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('models:addAlias', model, aliasOf),
   setModelPrice: (model: string, inputPricePerMillion: number, outputPricePerMillion: number): Promise<{ ok: true }> =>
     ipcRenderer.invoke('models:setPrice', model, inputPricePerMillion, outputPricePerMillion),
   /** Settings › Model aliases CRUD: the current alias config plus removal. */
   getModelAliases: (): Promise<Array<{ model: string; aliasOf: string }>> => ipcRenderer.invoke('models:getAliases'),
   removeModelAlias: (model: string): Promise<{ ok: true }> => ipcRenderer.invoke('models:removeAlias', model),
   /** Settings › Pricing CRUD: the current price-override config plus removal. */
-  getPriceOverrides: (): Promise<Array<{ model: string; inputPricePerMillion: number; outputPricePerMillion: number }>> =>
-    ipcRenderer.invoke('models:getPriceOverrides'),
-  removePriceOverride: (model: string): Promise<{ ok: true }> => ipcRenderer.invoke('models:removePriceOverride', model),
+  getPriceOverrides: (): Promise<
+    Array<{ model: string; inputPricePerMillion: number; outputPricePerMillion: number }>
+  > => ipcRenderer.invoke('models:getPriceOverrides'),
+  removePriceOverride: (model: string): Promise<{ ok: true }> =>
+    ipcRenderer.invoke('models:removePriceOverride', model),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('open-external', url),
   /** macOS Full Disk Access pane (ADR 0015); a no-op on other platforms. */
   openSystemSettings: (): Promise<boolean> => ipcRenderer.invoke('open-fda-settings'),
@@ -178,8 +186,8 @@ const api = {
    * owned by the main process, and the harness reads platform data through the
    * in-app ledger MCP server. */
   getCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses'),
-    openCoachLoginTerminal: (instanceId: string): Promise<CoachLoginTerminalResult> =>
-      ipcRenderer.invoke('coach:open-login-terminal', instanceId),
+  openCoachLoginTerminal: (instanceId: string): Promise<CoachLoginTerminalResult> =>
+    ipcRenderer.invoke('coach:open-login-terminal', instanceId),
   refreshCoachHarnesses: (): Promise<CoachHarnessesResult> => ipcRenderer.invoke('coach:harnesses-refresh'),
   onCoachHarnessesChanged: (callback: (rows: CoachHarnessRow[]) => void): (() => void) => {
     const listener = (_event: IpcRendererEvent, rows: CoachHarnessRow[]): void => callback(rows)
@@ -194,8 +202,7 @@ const api = {
     ipcRenderer.invoke('coach:inspect', request),
   /** Starts a harness run; resolves with the immediate ack. Events stream on
    * `onCoachEvent` keyed by the returned runId. */
-  startCoachRun: (request: CoachRunRequest): Promise<CoachRunResult> =>
-    ipcRenderer.invoke('coach:run', request),
+  startCoachRun: (request: CoachRunRequest): Promise<CoachRunResult> => ipcRenderer.invoke('coach:run', request),
   /** Interrupts the active run (fire-and-forget). */
   cancelCoachRun: (runId: string): void => ipcRenderer.send('coach:cancel', runId),
   /** Brand-new conversation: cancels active runs and cleans the temp workspace

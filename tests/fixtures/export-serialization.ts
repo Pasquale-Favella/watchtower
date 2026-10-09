@@ -1,0 +1,93 @@
+import type { ExportRows } from '../../src/main/export-calculation.js'
+
+export function buildExportSerializationRows(): ExportRows {
+  return {
+    daily: [
+      {
+        Date: '2026-07-01',
+        'Cost (USD)': 0.42,
+        'Saved (USD)': 0,
+        'API Calls': 1,
+        Sessions: 1,
+        'Input Tokens': 100,
+        'Output Tokens': 50,
+        'Cache Read Tokens': 20,
+        'Cache Write Tokens': 0,
+      },
+    ],
+    activity: [
+      { Activity: 'Coding', 'Cost (USD)': 0.42, 'Share (%)': 100, Turns: 1 },
+      { Activity: 'Debugging', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'Feature Dev', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'Refactoring', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'Testing', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'Exploration', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'Planning', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'Delegation', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'Git Ops', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'Build/Deploy', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'Conversation', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'Brainstorming', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+      { Activity: 'General', 'Cost (USD)': 0, 'Share (%)': 0, Turns: 0 },
+    ],
+    models: [
+      {
+        Model: 'demo-model',
+        'Cost (USD)': 0.42,
+        'Saved (USD)': 0,
+        'Share (%)': 100,
+        'API Calls': 1,
+        'Input Tokens': 100,
+        'Output Tokens': 50,
+        'Cache Read Tokens': 20,
+        'Cache Write Tokens': 0,
+      },
+    ],
+    projects: [
+      {
+        Project: '/tmp/demo',
+        repoUrl: undefined,
+        'Cost (USD)': 0.42,
+        'Saved (USD)': 0,
+        'Avg/Session (USD)': 0.42,
+        'Share (%)': 100,
+        'API Calls': 1,
+        Sessions: 1,
+      },
+    ],
+    sessions: [
+      {
+        Project: '/tmp/demo',
+        repoUrl: undefined,
+        'Session ID': 'sess-0',
+        'Started At': '2026-07-01T09:00:00.000Z',
+        'Cost (USD)': 0.42,
+        'Saved (USD)': 0,
+        'API Calls': 1,
+        Turns: 1,
+        model: 'demo-model',
+      },
+    ],
+    records: [
+      {
+        project: '/tmp/demo',
+        repoUrl: undefined,
+        sessionId: 'sess-0',
+        timestamp: '2026-07-01T10:00:00.000Z',
+        category: 'coding',
+        provider: 'opencode',
+        model: 'demo-model',
+        inputTokens: 100,
+        outputTokens: 50,
+        reasoningTokens: 5,
+        cacheWriteTokens: 0,
+        cacheReadTokens: 20,
+        cost: 0.42,
+        savings: 0,
+      },
+    ],
+    tools: [{ Tool: 'bash', Calls: 1, 'Share (%)': 100 }],
+    mcp: [],
+    shellCommands: [{ Command: 'ls', Calls: 1, 'Share (%)': 100 }],
+  }
+}

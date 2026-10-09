@@ -10,6 +10,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { createLedgerMcpHttpHandler } from '../src/main/agents/ledger-mcp/http-server.js'
 import { bearerHeaderValue } from '../src/main/agents/ledger-mcp/auth.js'
 import { ledgerMcpTransportFor } from '../src/main/agents/ledger-mcp/config.js'
+import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'
 import { LedgerStore } from '../src/main/store/ledger.js'
 
 const TOKEN = 'test-bearer-token'
@@ -24,9 +25,13 @@ function seedLedger(): { dbPath: string; cleanup: () => void } {
 
   const db = new DatabaseSync(dbPath)
   db.exec('BEGIN')
-  const sourceId = Number(db.prepare(
-    "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('claude', 'fp1', 'C:\\work\\.claude\\sessions.json')",
-  ).run().lastInsertRowid)
+  const sourceId = Number(
+    db
+      .prepare(
+        "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('claude', 'fp1', 'C:\\work\\.claude\\sessions.json')",
+      )
+      .run().lastInsertRowid,
+  )
   db.prepare(
     "INSERT INTO ledger_session (source_id, session_id, project, working_directory, agent_type, title) VALUES (?, 'sess-a', 'watchtower', 'C:\\work', 'claude', 'Fix bug')",
   ).run(sourceId)
@@ -46,23 +51,23 @@ function seedLedger(): { dbPath: string; cleanup: () => void } {
 }
 
 const servers: Server[] = []
-const stores: LedgerStore[] = []
+const disposals: Array<() => Promise<void>> = []
 const dirs: Array<() => void> = []
 
 afterEach(async () => {
   for (const server of servers.splice(0)) {
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
-  for (const store of stores.splice(0)) store.close()
+  for (const dispose of disposals.splice(0)) await dispose()
   for (const cleanup of dirs.splice(0)) cleanup()
 })
 
 async function serveLedger(): Promise<{ baseUrl: string }> {
   const seeded = seedLedger()
   dirs.push(seeded.cleanup)
-  const store = new LedgerStore(seeded.dbPath, { readOnly: true })
-  stores.push(store)
-  const handler = createLedgerMcpHttpHandler(store, TOKEN)
+  const runtime = await createLedgerMcpQueryRuntime(seeded.dbPath)
+  disposals.push(runtime.dispose)
+  const handler = createLedgerMcpHttpHandler(runtime.queries, TOKEN)
   const server = createServer((req, res) => {
     void handler(req, res)
   })

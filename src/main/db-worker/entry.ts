@@ -1,6 +1,13 @@
 import { parentPort, workerData } from 'node:worker_threads'
+
+import * as Effect from 'effect/Effect'
+
+import { initAppPaths } from '../env.js'
+import { openWorkerRuntime } from '../worker-runtime.js'
 import { DbWorkerContext } from './context.js'
+import { makeWorkerOperationalLogSink } from './operational-log-sink.js'
 import type { DbWorkerData, DbWorkerRequest, DbWorkerResponse } from './protocol.js'
+import { workerProtocolError } from './protocol-errors.js'
 
 /**
  * The db-worker thread entry (ADR 0023) — emitted as `out/main/db-worker.js`
@@ -23,9 +30,25 @@ const init = workerData as DbWorkerData
 // DB) reports and exits instead of serving errors forever — the client never
 // respawns a worker that never lived.
 try {
-  process.env['WATCHTOWER_CACHE_DIR'] = init.cacheDir
+  // The sync discovery paths (provider homes, platform roots, caches) still
+  // arrive via `init` — captured as the `AppPaths` startup snapshot instead of
+  // ambient env mutation. Only `cacheDir` is threaded today; the rest fall
+  // back to the same pure resolvers the `process.env` readers already use.
+  initAppPaths({ cacheDir: init.cacheDir })
 
-  const ctx = new DbWorkerContext(init, event => port.postMessage(event))
+  const logSink = makeWorkerOperationalLogSink(event => port.postMessage(event))
+  const runtime = openWorkerRuntime(init.dbPath, logSink)
+  let ctx: DbWorkerContext
+  try {
+    ctx = new DbWorkerContext(init, event => port.postMessage(event), { runtime })
+  } catch (error) {
+    try {
+      Effect.runSync(runtime.disposeEffect)
+    } catch {
+      // Keep the context-construction failure as the boot error.
+    }
+    throw error
+  }
 
   // Deliberately no dispatch queue: every ledger call is synchronous
   // (`node:sqlite`), so each one is atomic — no two store operations can
@@ -39,16 +62,17 @@ try {
     const req = raw as DbWorkerRequest
     void ctx.dispatch(req.op, req.args).then(
       data => port.postMessage({ id: req.id, ok: true, data } satisfies DbWorkerResponse),
-      err => port.postMessage({
-        id: req.id,
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-      } satisfies DbWorkerResponse),
+      err =>
+        port.postMessage({
+          id: req.id,
+          ok: false,
+          error: workerProtocolError(err),
+        } satisfies DbWorkerResponse),
     )
   })
 
   port.postMessage({ event: 'ready' })
 } catch (err) {
-  port.postMessage({ event: 'init-error', error: err instanceof Error ? err.message : String(err) })
+  port.postMessage({ event: 'init-error', error: workerProtocolError(err) })
   process.exitCode = 1
 }

@@ -1,8 +1,6 @@
-import { execFile } from 'child_process'
-import { promisify } from 'util'
-import type { ProjectSummary } from './types.js'
+import * as Effect from 'effect/Effect'
 
-const execFileAsync = promisify(execFile)
+import { CommandRunner } from '../agents/command-runner.js'
 
 const GIT_TIMEOUT_MS = 2_000
 
@@ -11,43 +9,15 @@ const GIT_TIMEOUT_MS = 2_000
  * Non lancia mai: tutti gli errori (cwd inesistente, non-repo, remote assente,
  * git non installato, timeout) diventano `undefined`.
  */
-export async function getRepoUrl(cwd: string): Promise<string | undefined> {
-  try {
-    const { stdout } = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
-      cwd,
-      timeout: GIT_TIMEOUT_MS,
-      windowsHide: true,
-    })
-    const url = stdout.trim()
-    return url || undefined
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * Popola `repoUrl` su ogni progetto in parallelo (worker pool).
- * Ignora silenziosamente ogni fallimento — il repoUrl è puramente informativo.
- */
-export async function attachRepoUrls(
-  projects: ProjectSummary[],
-  concurrency = 8,
-): Promise<void> {
-  const queue = [...projects]
-  const workers: Promise<void>[] = []
-  for (let i = 0; i < concurrency; i++) {
-    workers.push(
-      (async () => {
-        while (queue.length > 0) {
-          const project = queue.shift()
-          if (!project || !project.projectPath) continue
-          project.repoUrl = await getRepoUrl(project.projectPath)
-        }
-      })(),
-    )
-  }
-  await Promise.all(workers)
-}
+export const getRepoUrlEffect = Effect.fnUntraced(function* (
+  cwd: string,
+): Effect.fn.Return<string | undefined, never, CommandRunner> {
+  const runner = yield* CommandRunner
+  return yield* runner.run('git', ['remote', 'get-url', 'origin'], { cwd, timeoutMs: GIT_TIMEOUT_MS }).pipe(
+    Effect.map(result => (result.exitCode === 0 ? result.stdout.trim() || undefined : undefined)),
+    Effect.catch(() => Effect.succeed(undefined)),
+  )
+})
 
 /**
  * Versione breve leggibile di un URL git, per la tabella.

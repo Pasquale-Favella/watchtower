@@ -11,14 +11,28 @@ export function AuditTable({ rows, actions }: { rows: AuditRow[]; actions: Prici
       <TableHeader>
         <TableRow className="hover:bg-transparent">
           <TableHead className={TH}>Model</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Calls</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Input</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Output</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Reasoning</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Norm out</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Cache wr</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Cache rd</TableHead>
-          <TableHead className="text-right text-[10.5px] uppercase tracking-wide text-muted-foreground">Cost</TableHead>
+          <TableHead className="text-muted-foreground text-right text-[10.5px] tracking-wide uppercase">
+            Calls
+          </TableHead>
+          <TableHead className="text-muted-foreground text-right text-[10.5px] tracking-wide uppercase">
+            Input
+          </TableHead>
+          <TableHead className="text-muted-foreground text-right text-[10.5px] tracking-wide uppercase">
+            Output
+          </TableHead>
+          <TableHead className="text-muted-foreground text-right text-[10.5px] tracking-wide uppercase">
+            Reasoning
+          </TableHead>
+          <TableHead className="text-muted-foreground text-right text-[10.5px] tracking-wide uppercase">
+            Norm out
+          </TableHead>
+          <TableHead className="text-muted-foreground text-right text-[10.5px] tracking-wide uppercase">
+            Cache wr
+          </TableHead>
+          <TableHead className="text-muted-foreground text-right text-[10.5px] tracking-wide uppercase">
+            Cache rd
+          </TableHead>
+          <TableHead className="text-muted-foreground text-right text-[10.5px] tracking-wide uppercase">Cost</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -26,11 +40,13 @@ export function AuditTable({ rows, actions }: { rows: AuditRow[]; actions: Prici
           const estimated = isAuditEstimated(row)
           return (
             <TableRow key={`${row.provider}-${row.model}-${index}`}>
-              <TableCell className="text-[12px] font-medium text-foreground">
+              <TableCell className="text-foreground text-[12px] font-medium">
                 <span className="flex items-center gap-2">
                   <ModelDot model={row.modelDisplayName || row.model} />
                   <span className="flex min-w-0 flex-col">
-                    <span className="min-w-0 truncate" title={row.model}>{row.modelDisplayName}</span>
+                    <span className="min-w-0 truncate" title={row.model}>
+                      {row.modelDisplayName}
+                    </span>
                     {row.aliasOf ? (
                       <AliasLines
                         target={row.aliasOf}
@@ -43,13 +59,15 @@ export function AuditTable({ rows, actions }: { rows: AuditRow[]; actions: Prici
                       <OverrideLine
                         inputPricePerMillion={row.override.inputPricePerMillion}
                         outputPricePerMillion={row.override.outputPricePerMillion}
-                        onEdit={() => actions.onEditOverride({
-                          provider: row.provider,
-                          model: row.aliasOf ?? row.model,
-                          modelDisplayName: row.aliasOf ?? row.modelDisplayName,
-                          inputPricePerMillion: row.override!.inputPricePerMillion,
-                          outputPricePerMillion: row.override!.outputPricePerMillion,
-                        })}
+                        onEdit={() =>
+                          actions.onEditOverride({
+                            provider: row.provider,
+                            model: row.aliasOf ?? row.model,
+                            modelDisplayName: row.aliasOf ?? row.modelDisplayName,
+                            inputPricePerMillion: row.override!.inputPricePerMillion,
+                            outputPricePerMillion: row.override!.outputPricePerMillion,
+                          })
+                        }
                         onRemove={() => actions.onRemoveOverride(row.aliasOf ?? row.model)}
                       />
                     ) : null}
@@ -61,12 +79,22 @@ export function AuditTable({ rows, actions }: { rows: AuditRow[]; actions: Prici
               <TableCell className={cn(MUT_CELL, 'text-[11px]')}>{formatCompact(row.raw.outputTokens)}</TableCell>
               <TableCell className={cn(MUT_CELL, 'text-[11px]')}>{formatCompact(row.raw.reasoningTokens)}</TableCell>
               <TableCell className={cn(MUT_CELL, 'text-[11px]')}>{formatCompact(row.displayed.outputTokens)}</TableCell>
-              <TableCell className={cn(MUT_CELL, 'text-[11px]')}>{formatCompact(row.displayed.cacheWriteTokens)}</TableCell>
-              <TableCell className={cn(MUT_CELL, 'text-[11px]')}>{formatCompact(row.displayed.cacheReadTokens)}</TableCell>
-              <TableCell className={cn(NUM_CELL, 'text-[11.5px] text-foreground')}>
+              <TableCell className={cn(MUT_CELL, 'text-[11px]')}>
+                {formatCompact(row.displayed.cacheWriteTokens)}
+              </TableCell>
+              <TableCell className={cn(MUT_CELL, 'text-[11px]')}>
+                {formatCompact(row.displayed.cacheReadTokens)}
+              </TableCell>
+              <TableCell className={cn(NUM_CELL, 'text-foreground text-[11.5px]')}>
                 {formatUsd(row.attributedCostUSD)}
                 {estimated && (
-                  <span className="ml-1 text-[9px] font-normal uppercase text-warning" title="Cost is estimated (no live pricing or derived rate)"> est</span>
+                  <span
+                    className="text-warning ml-1 text-[9px] font-normal uppercase"
+                    title="Cost is estimated (no live pricing or derived rate)"
+                  >
+                    {' '}
+                    est
+                  </span>
                 )}
               </TableCell>
             </TableRow>

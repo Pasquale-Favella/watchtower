@@ -69,8 +69,12 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
     const s = useScanStore.getState()
     expect(s.scanning).toBe(true)
     expect(s.progress).toHaveLength(2)
-    expect(s.progress.find(p => p.provider === 'openai'))
-      .toEqual({ provider: 'openai', processed: 40, total: 100, done: false })
+    expect(s.progress.find(p => p.provider === 'openai')).toEqual({
+      provider: 'openai',
+      processed: 40,
+      total: 100,
+      done: false,
+    })
   })
 
   it('onProgress marks a port-in stage as done', () => {

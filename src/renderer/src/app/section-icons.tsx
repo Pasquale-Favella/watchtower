@@ -1,8 +1,15 @@
 import type { ReactNode } from 'react'
 
 import {
-  LayoutDashboard, PanelsTopLeft, GitPullRequestArrow, BarChart3, Lightbulb,
-  Layers, ArrowLeftRight, Sparkles, Settings,
+  LayoutDashboard,
+  PanelsTopLeft,
+  GitPullRequestArrow,
+  BarChart3,
+  Lightbulb,
+  Layers,
+  ArrowLeftRight,
+  Sparkles,
+  Settings,
 } from 'lucide-react'
 
 import type { Section } from '../../../shared/schemas/renderer.js'

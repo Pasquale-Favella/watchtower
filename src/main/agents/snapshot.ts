@@ -1,10 +1,15 @@
+import * as Context from 'effect/Context'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
-import * as Fiber from 'effect/Fiber'
+import * as FiberHandle from 'effect/FiberHandle'
+import * as Layer from 'effect/Layer'
+
 import type { CoachHarnessRow } from '../../shared/schemas/agents.js'
-import { safeLogOperationalEvent } from '../operational-log.js'
+import { type OperationalLogCounter, PROBE_OUTCOME_COUNTER } from '../operational-log.js'
+import { CommandRunner } from './command-runner.js'
 import type { HarnessInfo } from './detect.js'
 import { harnessSpecs } from './harnesses/index.js'
-import { probeHarness, type ProbeResult, type ProbeStatus } from './probe.js'
+import { probeHarnessWithCommandRunner, type ProbeResult, type ProbeStatus } from './probe.js'
 
 export interface HarnessInstance {
   instanceId: string
@@ -15,21 +20,59 @@ export interface HarnessInstance {
   message?: string
 }
 
-export interface HarnessSnapshotStoreDeps {
-  detect: () => Promise<HarnessInfo[]>
-  probe: (info: HarnessInfo) => Effect.Effect<ProbeResult, never>
-  onChange: (rows: CoachHarnessRow[]) => void
-  concurrency?: number
+export interface HarnessSnapshotCounters {
+  incrementCounter: (
+    name: OperationalLogCounter,
+    amount?: number,
+    fields?: Record<string, unknown>,
+  ) => Effect.Effect<void>
 }
 
-export interface HarnessSnapshotStore {
-  list: () => Promise<CoachHarnessRow[]>
-  refresh: () => Promise<CoachHarnessRow[]>
-  get: (instanceId: string) => Promise<HarnessInstance | undefined>
-  /** Records the sign-in state a real run proved (finished turn / auth wall). */
-  reportAuth: (instanceId: string, status: 'configured' | 'unauthenticated') => void
-  start: () => void
-  dispose: () => Promise<void>
+export interface HarnessSnapshotService {
+  readonly list: () => Effect.Effect<CoachHarnessRow[], unknown>
+  readonly refresh: () => Effect.Effect<CoachHarnessRow[], unknown>
+  readonly get: (instanceId: string) => Effect.Effect<HarnessInstance | undefined, unknown>
+  readonly reportAuth: (instanceId: string, status: 'configured' | 'unauthenticated') => Effect.Effect<void>
+  readonly start: () => Effect.Effect<void, unknown>
+}
+
+export interface HarnessSnapshotOptions {
+  readonly detect: () => Promise<HarnessInfo[]>
+  readonly onChange: (rows: CoachHarnessRow[]) => void
+  readonly readPath?: () => string | undefined
+  readonly concurrency?: number
+  readonly counters?: HarnessSnapshotCounters
+}
+
+/** Owns the current harness inventory and its scoped probe batch. */
+export class HarnessSnapshot extends Context.Service<HarnessSnapshot, HarnessSnapshotService>()(
+  'watchtower/agents/HarnessSnapshot',
+) {}
+
+/** Probe capability used by the main runtime; its version is captured when the root is composed. */
+export class HarnessProbe extends Context.Service<
+  HarnessProbe,
+  { readonly probe: (info: HarnessInfo) => Effect.Effect<ProbeResult> }
+>()('watchtower/agents/HarnessProbe') {
+  static readonly layerWithClientVersion = (clientVersion: string): Layer.Layer<HarnessProbe, never, CommandRunner> =>
+    Layer.effect(
+      HarnessProbe,
+      Effect.map(CommandRunner, runner =>
+        HarnessProbe.of({
+          probe: info =>
+            probeHarnessWithCommandRunner(info, clientVersion).pipe(Effect.provideService(CommandRunner, runner)),
+        }),
+      ),
+    )
+
+  static readonly layerWithProbe = (
+    probeImpl: (info: HarnessInfo) => Effect.Effect<ProbeResult>,
+  ): Layer.Layer<HarnessProbe> => Layer.succeed(HarnessProbe, HarnessProbe.of({ probe: probeImpl }))
+}
+
+const liveSnapshotCounters: HarnessSnapshotCounters = {
+  incrementCounter: (name, amount = 1, fields = {}) =>
+    Effect.logInfo(name).pipe(Effect.annotateLogs({ event: name, context: 'main', ...fields, count: amount })),
 }
 
 function instanceIdFor(info: HarnessInfo): string {
@@ -58,117 +101,121 @@ function toRow(instance: HarnessInstance): CoachHarnessRow {
   }
 }
 
-export function createHarnessSnapshotStore(deps: HarnessSnapshotStoreDeps): HarnessSnapshotStore {
-  const instances = new Map<string, HarnessInstance>()
-  const concurrency = deps.concurrency ?? 4
-  let detected = false
-  let lastPath: string | undefined
-  let detectionPromise: Promise<void> | null = null
-  let probeFiber: Fiber.Fiber<unknown, never> | null = null
-  let generation = 0
-  let disposed = false
+function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
+  return Effect.gen(function* () {
+    const probe = yield* HarnessProbe
+    const probeHandle = yield* FiberHandle.make<unknown, never>()
+    const detectionHandle = yield* FiberHandle.make<unknown, unknown>()
+    const instances = new Map<string, HarnessInstance>()
+    const concurrency = options.concurrency ?? 4
+    const counters = options.counters ?? liveSnapshotCounters
+    const readPath = options.readPath ?? (() => process.env.PATH)
+    let detected = false
+    let lastPath: string | undefined
+    let flight: Deferred.Deferred<CoachHarnessRow[], unknown> | null = null
 
-  function rows(): CoachHarnessRow[] {
-    return [...instances.values()]
-      .sort((left, right) => preferenceFor(left.info) - preferenceFor(right.info) || left.info.displayName.localeCompare(right.info.displayName))
-      .map(toRow)
-  }
+    const rows = (): CoachHarnessRow[] =>
+      [...instances.values()]
+        .sort(
+          (left, right) =>
+            preferenceFor(left.info) - preferenceFor(right.info) ||
+            left.info.displayName.localeCompare(right.info.displayName),
+        )
+        .map(toRow)
 
-  function publish(): void {
-    try { deps.onChange(rows()) } catch { /* UI notification must not stop probes */ }
-  }
-
-  async function interruptProbes(): Promise<void> {
-    const fiber = probeFiber
-    probeFiber = null
-    if (fiber) await Effect.runPromise(Fiber.interrupt(fiber))
-  }
-
-  function settle(info: HarnessInfo, result: ProbeResult, probeGeneration: number): void {
-    safeLogOperationalEvent(result.status === 'error' ? 'error' : 'info', 'harness.probe', {
-      kind: info.kind,
-      status: result.status,
+    const publish = Effect.fnUntraced(function* () {
+      yield* Effect.try({ try: () => options.onChange(rows()), catch: () => undefined }).pipe(Effect.ignore)
     })
-    if (disposed || probeGeneration !== generation) return
-    const instanceId = instanceIdFor(info)
-    const current = instances.get(instanceId)
-    if (!current) return
-    instances.set(instanceId, {
-      ...current,
-      status: result.status,
-      auth: result.auth,
-      version: result.version,
-      message: result.message,
-    })
-    publish()
-  }
 
-  function launchProbes(infos: HarnessInfo[], probeGeneration: number): void {
-    const effects = infos.map(info => deps.probe(info).pipe(
-      Effect.tap(result => Effect.sync(() => settle(info, result, probeGeneration))),
-    ))
-    probeFiber = Effect.runFork(Effect.zipRight(Effect.yieldNow(), Effect.all(effects, { concurrency })))
-  }
+    const settle = (info: HarnessInfo, result: ProbeResult) =>
+      Effect.gen(function* () {
+        const record = { event: 'harness.probe', context: 'main', kind: info.kind, status: result.status }
+        yield* (result.status === 'error' ? Effect.logError('harness.probe') : Effect.logInfo('harness.probe')).pipe(
+          Effect.annotateLogs(record),
+        )
+        yield* counters
+          .incrementCounter(PROBE_OUTCOME_COUNTER, 1, { kind: info.kind, status: result.status })
+          .pipe(Effect.catchDefect(() => Effect.void))
 
-  async function detectAndProbe(): Promise<void> {
-    if (detectionPromise) return detectionPromise
-    detectionPromise = (async () => {
-      await interruptProbes()
-      if (disposed) return
-      const infos = await deps.detect()
-      if (disposed) return
-      generation += 1
-      lastPath = process.env.PATH
-      detected = true
-      instances.clear()
-      for (const info of infos) {
-        instances.set(instanceIdFor(info), {
-          instanceId: instanceIdFor(info),
-          info,
-          status: 'pending',
-          auth: { status: 'unknown' },
+        const instanceId = instanceIdFor(info)
+        const current = instances.get(instanceId)
+        if (!current) return
+        instances.set(instanceId, {
+          ...current,
+          status: result.status,
+          auth: result.auth,
+          version: result.version,
+          message: result.message,
         })
-      }
-      publish()
-      launchProbes(infos, generation)
-    })().finally(() => { detectionPromise = null })
-    return detectionPromise
-  }
-
-  async function list(): Promise<CoachHarnessRow[]> {
-    if (!detected || lastPath !== process.env.PATH) await detectAndProbe()
-    return rows()
-  }
-
-  return {
-    list,
-    async refresh() {
-      await detectAndProbe()
-      return rows()
-    },
-    async get(instanceId) {
-      await list()
-      return instances.get(instanceId)
-    },
-    reportAuth(instanceId, status) {
-      const current = instances.get(instanceId)
-      if (!current || current.status === 'error' || current.status === 'pending' || current.auth.status === status) return
-      instances.set(instanceId, {
-        ...current,
-        status: status === 'configured' ? 'ready' : 'warning',
-        auth: { ...current.auth, status },
-        message: status === 'unauthenticated' ? `${current.info.displayName} is not signed in` : undefined,
+        yield* publish()
       })
-      publish()
-    },
-    start() {
-      void list()
-    },
-    async dispose() {
-      disposed = true
-      generation += 1
-      await interruptProbes()
-      instances.clear()
-    },
-  }
+
+    const completeDetection = (deferred: Deferred.Deferred<CoachHarnessRow[], unknown>) =>
+      Effect.gen(function* () {
+        yield* FiberHandle.clear(probeHandle)
+        const infos = yield* Effect.tryPromise({ try: options.detect, catch: error => error })
+        lastPath = readPath()
+        detected = true
+        instances.clear()
+        for (const info of infos) {
+          instances.set(instanceIdFor(info), {
+            instanceId: instanceIdFor(info),
+            info,
+            status: 'pending',
+            auth: { status: 'unknown' },
+          })
+        }
+        yield* publish()
+        const probes = infos.map(info => probe.probe(info).pipe(Effect.flatMap(result => settle(info, result))))
+        yield* FiberHandle.run(probeHandle, Effect.all(probes, { concurrency }).pipe(Effect.asVoid))
+        return rows()
+      }).pipe(
+        Effect.exit,
+        Effect.flatMap(exit =>
+          Deferred.done(deferred, exit).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                if (flight === deferred) flight = null
+              }),
+            ),
+          ),
+        ),
+      )
+
+    const requestDetection = (always: boolean): Effect.Effect<CoachHarnessRow[], unknown> =>
+      Effect.gen(function* () {
+        if (flight) return yield* Deferred.await(flight)
+        if (!always && detected && lastPath === readPath()) return rows()
+
+        const deferred = yield* Deferred.make<CoachHarnessRow[], unknown>()
+        flight = deferred
+        yield* FiberHandle.run(detectionHandle, completeDetection(deferred))
+        return yield* Deferred.await(deferred)
+      })
+
+    return HarnessSnapshot.of({
+      list: () => requestDetection(false),
+      refresh: () => requestDetection(true),
+      get: instanceId =>
+        requestDetection(false).pipe(Effect.flatMap(() => Effect.sync(() => instances.get(instanceId)))),
+      reportAuth: (instanceId, status) =>
+        Effect.gen(function* () {
+          const current = instances.get(instanceId)
+          if (!current || current.status === 'error' || current.status === 'pending' || current.auth.status === status)
+            return
+          instances.set(instanceId, {
+            ...current,
+            status: status === 'configured' ? 'ready' : 'warning',
+            auth: { ...current.auth, status },
+            message: status === 'unauthenticated' ? `${current.info.displayName} is not signed in` : undefined,
+          })
+          yield* publish()
+        }),
+      start: () => requestDetection(false).pipe(Effect.asVoid),
+    })
+  })
 }
+
+export const harnessSnapshotLayer = (
+  options: HarnessSnapshotOptions,
+): Layer.Layer<HarnessSnapshot, never, HarnessProbe> => Layer.effect(HarnessSnapshot, makeHarnessSnapshot(options))

@@ -1,26 +1,24 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
-import { join } from 'path'
 import { homedir } from 'os'
+import { join } from 'path'
 
-import { calculateCost } from '../models.js'
+import type { AppPaths } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { readCachedResults, writeCachedResults } from '../cursor-cache.js'
-import { isSqliteAvailable, isSqliteBusyError, openDatabase, blobToText, type SqliteDatabase } from '../sqlite.js'
-import { estimateTokensFromChars } from '../token-estimate.js'
 import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../file-errors.js'
+import { captureScanPricing } from '../models.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { estimateTokensFromChars } from '../token-estimate.js'
 import type { DateRange } from '../types.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 /** Matches cli-date.ts "all" period cap (6 months). */
 const CURSOR_MAX_LOOKBACK_MONTHS = 6
 
 export function getCursorTimeFloor(dateRange?: DateRange): string {
   const now = new Date()
-  const maxStart = new Date(
-    now.getFullYear(),
-    now.getMonth() - CURSOR_MAX_LOOKBACK_MONTHS,
-    now.getDate(),
-  )
+  const maxStart = new Date(now.getFullYear(), now.getMonth() - CURSOR_MAX_LOOKBACK_MONTHS, now.getDate())
   const start = dateRange?.start ?? maxStart
   const effective = start < maxStart ? maxStart : start
   return effective.toISOString()
@@ -105,8 +103,8 @@ function getCursorWorkspaceStorageDir(globalDbPath: string): string {
 ///     composerId opened in that workspace
 /// We walk every workspace dir, pull both, and build composerId -> folder.
 type WorkspaceMapping = {
-  composerToWorkspace: Map<string, string>     // composerId -> folder URI
-  workspaceProjectName: Map<string, string>    // folder URI -> sanitized project name
+  composerToWorkspace: Map<string, string> // composerId -> folder URI
+  workspaceProjectName: Map<string, string> // folder URI -> sanitized project name
 }
 
 const ORPHAN_TAG = '__orphan__'
@@ -162,10 +160,7 @@ let workspaceMapCacheRoot: string | null = null
 /// undefined checkout (remote URI, orphan source) leaves the call untouched
 /// so the session keeps flowing to the orphan bucket. Pure — the yield-attach
 /// seam under test without a bubble-DB fixture.
-export function attachWorkspacePaths(
-  call: ParsedProviderCall,
-  workspacePath: string | undefined,
-): ParsedProviderCall {
+export function attachWorkspacePaths(call: ParsedProviderCall, workspacePath: string | undefined): ParsedProviderCall {
   return workspacePath ? { ...call, projectPath: workspacePath, workingDirectory: workspacePath } : call
 }
 
@@ -381,7 +376,9 @@ const USER_MESSAGES_QUERY = `
 // caller can splice in an optional `ROWID >= ?` cutoff without rewriting
 // the whole template. The original combined string is preserved as
 // BUBBLE_QUERY_SINCE for any caller that doesn't want the cap.
-const BUBBLE_QUERY_SINCE_HEAD = BUBBLE_QUERY_BASE + `
+const BUBBLE_QUERY_SINCE_HEAD =
+  BUBBLE_QUERY_BASE +
+  `
     AND json_extract(value, '$.createdAt') IS NOT NULL
     AND json_extract(value, '$.createdAt') > ?`
 const BUBBLE_QUERY_SINCE_TAIL = `
@@ -415,7 +412,7 @@ const BUBBLE_QUERY_PAGE = `
 function validateSchema(db: SqliteDatabase): boolean {
   try {
     const rows = db.query<{ cnt: number }>(
-      "SELECT COUNT(*) as cnt FROM cursorDiskKV WHERE key LIKE 'bubbleId:%' LIMIT 1"
+      "SELECT COUNT(*) as cnt FROM cursorDiskKV WHERE key LIKE 'bubbleId:%' LIMIT 1",
     )
     return rows.length > 0
   } catch (err) {
@@ -493,7 +490,10 @@ function scanBubblesPaged(
     if (batch.length === 0) break
 
     for (const row of batch) {
-      if (collected.length >= budget) { truncated = true; break paging }
+      if (collected.length >= budget) {
+        truncated = true
+        break paging
+      }
       if (row.created_at != null && row.created_at > timeFloor) collected.push(row)
     }
 
@@ -533,7 +533,9 @@ type ComposerMeta = { tokens: number; createdAt: number | null }
 function loadComposerMeta(db: SqliteDatabase): Map<string, ComposerMeta> {
   const map = new Map<string, ComposerMeta>()
   try {
-    const rows = db.query<{ composer_id: string; used: number | null; ctx: number | null; created_at: number | null }>(COMPOSER_META_QUERY)
+    const rows = db.query<{ composer_id: string; used: number | null; ctx: number | null; created_at: number | null }>(
+      COMPOSER_META_QUERY,
+    )
     for (const r of rows) {
       // `||` rather than `??`: a recorded-but-zero breakdown must fall through
       // to the context meter instead of shadowing it.
@@ -666,7 +668,12 @@ function loadAgentStreams(
     }
     if (!Array.isArray(content)) continue
     const bucket = bucketFor(currentRequestId)
-    for (const block of content as Array<{ type?: string; text?: unknown; toolName?: unknown; args?: { command?: unknown } }>) {
+    for (const block of content as Array<{
+      type?: string
+      text?: unknown
+      toolName?: unknown
+      args?: { command?: unknown }
+    }>) {
       if (block == null || typeof block !== 'object') continue
       if (typeof block.text === 'string') bucket.assistantChars += block.text.length
       if (block.type !== 'tool-call' || typeof block.toolName !== 'string' || !block.toolName) continue
@@ -704,6 +711,7 @@ function parseBubbles(
   seenKeys: Set<string>,
   timeFloor: string,
   agentKvTimestamp: string,
+  pricing: ScanPricing,
 ): { calls: ParsedProviderCall[] } {
   const results: ParsedProviderCall[] = []
   let skipped = 0
@@ -723,9 +731,7 @@ function parseBubbles(
 
   let total = 0
   try {
-    const countRows = db.query<{ cnt: number }>(
-      "SELECT COUNT(*) as cnt FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'"
-    )
+    const countRows = db.query<{ cnt: number }>("SELECT COUNT(*) as cnt FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'")
     total = countRows[0]?.cnt ?? 0
   } catch (err) {
     rethrowBusy(err)
@@ -783,7 +789,19 @@ function parseBubbles(
     return 'text'
   }
 
-  const emit = (call: Omit<ParsedProviderCall, 'provider' | 'speed' | 'cacheCreationInputTokens' | 'cacheReadInputTokens' | 'cachedInputTokens' | 'reasoningTokens' | 'webSearchRequests' | 'costIsEstimated'>): void => {
+  const emit = (
+    call: Omit<
+      ParsedProviderCall,
+      | 'provider'
+      | 'speed'
+      | 'cacheCreationInputTokens'
+      | 'cacheReadInputTokens'
+      | 'cachedInputTokens'
+      | 'reasoningTokens'
+      | 'webSearchRequests'
+      | 'costIsEstimated'
+    >,
+  ): void => {
     results.push({
       provider: 'cursor',
       cacheCreationInputTokens: 0,
@@ -849,9 +867,10 @@ function parseBubbles(
 
       // User bubbles (type=1) carry no modelInfo, so fall back to the
       // conversation's model seen on its assistant bubbles or agent stream.
-      const effectiveModel = row.model ?? scans.get(conversationId)?.model ?? agentStreams.get(conversationId)?.model ?? null
+      const effectiveModel =
+        row.model ?? scans.get(conversationId)?.model ?? agentStreams.get(conversationId)?.model ?? null
       const pricingModel = resolveModel(effectiveModel)
-      const costUSD = calculateCost(pricingModel, inputTokens, outputTokens, 0, 0, 0)
+      const costUSD = pricing.calculateCost(pricingModel, inputTokens, outputTokens, 0, 0, 0)
 
       const userQuestion = lastUserMsg.get(conversationId) ?? ''
       const assistantText = blobToText(row.user_text)
@@ -875,10 +894,7 @@ function parseBubbles(
         inputTokens,
         outputTokens,
         costUSD,
-        tools: [
-          ...(hasCode ? ['cursor:edit', ...languages.map(l => `lang:${l}`)] : []),
-          ...(agentTurn?.tools ?? []),
-        ],
+        tools: [...(hasCode ? ['cursor:edit', ...languages.map(l => `lang:${l}`)] : []), ...(agentTurn?.tools ?? [])],
         bashCommands: agentTurn?.bash ?? [],
         timestamp: createdAt,
         deduplicationKey: dedupKey,
@@ -902,9 +918,10 @@ function parseBubbles(
     if (source !== 'meter' && source !== 'stream') continue
     const stream = agentStreams.get(cid)
     const meta = composerMeta.get(cid)
-    const inputTokens = source === 'meter'
-      ? meta?.tokens ?? 0
-      : estimateTokensFromChars((stream?.userChars ?? 0) + (stream?.contextChars ?? 0))
+    const inputTokens =
+      source === 'meter'
+        ? (meta?.tokens ?? 0)
+        : estimateTokensFromChars((stream?.userChars ?? 0) + (stream?.contextChars ?? 0))
     // Reply text normally lives on assistant bubbles; count the stream's
     // reply deltas only when the bubbles carried none.
     const outputTokens = scan.assistantTextChars > 0 ? 0 : estimateTokensFromChars(stream?.assistantChars ?? 0)
@@ -915,7 +932,8 @@ function parseBubbles(
     seenKeys.add(dedupKey)
 
     const createdAtMs = meta?.createdAt
-    const timestamp = typeof createdAtMs === 'number' && createdAtMs > 0 ? new Date(createdAtMs).toISOString() : scan.firstBubbleTs
+    const timestamp =
+      typeof createdAtMs === 'number' && createdAtMs > 0 ? new Date(createdAtMs).toISOString() : scan.firstBubbleTs
     if (!timestamp) continue
 
     const effectiveModel = scan.model ?? stream?.model ?? null
@@ -923,7 +941,7 @@ function parseBubbles(
       model: modelForDisplay(effectiveModel),
       inputTokens,
       outputTokens,
-      costUSD: calculateCost(resolveModel(effectiveModel), inputTokens, outputTokens, 0, 0, 0),
+      costUSD: pricing.calculateCost(resolveModel(effectiveModel), inputTokens, outputTokens, 0, 0, 0),
       tools: stream?.tools ?? [],
       bashCommands: stream?.bash ?? [],
       timestamp,
@@ -949,7 +967,7 @@ function parseBubbles(
       model: modelForDisplay(stream.model),
       inputTokens,
       outputTokens,
-      costUSD: calculateCost(resolveModel(stream.model), inputTokens, outputTokens, 0, 0, 0),
+      costUSD: pricing.calculateCost(resolveModel(stream.model), inputTokens, outputTokens, 0, 0, 0),
       tools: stream.tools,
       bashCommands: stream.bash,
       timestamp: agentKvTimestamp,
@@ -974,6 +992,8 @@ function createParser(
   source: SessionSource,
   seenKeys: Set<string>,
   dateRange?: DateRange,
+  paths?: AppPaths,
+  pricing = captureScanPricing(),
 ): SessionParser {
   const timeFloor = getCursorTimeFloor(dateRange)
 
@@ -1050,9 +1070,12 @@ function createParser(
           } catch {
             agentKvTimestamp = new Date().toISOString()
           }
-          const { calls: bubbleCalls } = parseBubbles(db, localSeen, timeFloor, agentKvTimestamp)
+          const { calls: bubbleCalls } = parseBubbles(db, localSeen, timeFloor, agentKvTimestamp, pricing)
           allCalls = bubbleCalls
-          await writeCachedResults(dbPath, allCalls, timeFloor)
+          // Suppression comes off the `AppPaths` snapshot threaded by
+          // `createCursorProvider`; `undefined` (no snapshot threaded) falls
+          // back to the `process.env` read inside `writeCachedResults`.
+          await writeCachedResults(dbPath, allCalls, timeFloor, paths?.suppressCacheWrites)
         } finally {
           db.close()
         }
@@ -1072,7 +1095,7 @@ function createParser(
   }
 }
 
-export function createCursorProvider(dbPathOverride?: string): Provider {
+export function createCursorProvider(dbPathOverride?: string, paths?: AppPaths): Provider {
   return {
     name: 'cursor',
     displayName: 'Cursor',
@@ -1116,8 +1139,13 @@ export function createCursorProvider(dbPathOverride?: string): Provider {
       return sources
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
-      return createParser(source, seenKeys, dateRange)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, dateRange, paths, context?.pricing ?? captureScanPricing())
     },
   }
 }

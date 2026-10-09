@@ -1,18 +1,21 @@
 import { basename, dirname } from 'node:path'
-import { cachedTurnToClassified } from '../pipeline/parser.js'
-import type { CachedCall, CachedFile } from '../pipeline/session-cache.js'
-import type { ParsedApiCall } from '../pipeline/types.js'
+
+import * as Schema from 'effect/Schema'
+
 import {
-  mappedFileSchema,
-  type FileVerdict,
   type MappedCall,
   type MappedFile,
-  type MappedFingerprint,
+  mappedFileSchema,
   type MappedSession,
   type MappedSource,
   type MappedTurn,
   type PortInput,
 } from '../../shared/schemas/port.js'
+import { captureScanPricing } from '../pipeline/models.js'
+import { cachedTurnToClassified } from '../pipeline/parser.js'
+import type { ScanPricing } from '../pipeline/scan-pricing.js'
+import type { CachedCall } from '../pipeline/session-cache.js'
+import type { ParsedApiCall } from '../pipeline/types.js'
 
 export type {
   FileVerdict,
@@ -34,7 +37,7 @@ export type {
  * every read.
  */
 
-export function mapFileToLedgerRows(input: PortInput): MappedFile {
+export function mapFileToLedgerRows(input: PortInput, pricing: ScanPricing = captureScanPricing()): MappedFile {
   const { provider, envFingerprint, filePath, cachedFile, repoUrl, project, workingDirectory } = input
 
   // Branch carry-forward across the full turn list, mirroring the pipeline so
@@ -42,7 +45,7 @@ export function mapFileToLedgerRows(input: PortInput): MappedFile {
   let carriedBranch: string | undefined
   const classifiedTurns = cachedFile.turns.map(turn => {
     if (turn.gitBranch) carriedBranch = turn.gitBranch
-    return cachedTurnToClassified(turn, carriedBranch)
+    return cachedTurnToClassified(turn, carriedBranch, pricing)
   })
   const everHadBranch = carriedBranch !== undefined
 
@@ -75,7 +78,8 @@ export function mapFileToLedgerRows(input: PortInput): MappedFile {
   // Discovery-time metadata beats the cache fallbacks: `canonicalProjectName`/
   // `canonicalCwd` are set only for Claude worktrees, so without `project`/`workingDirectory`
   // every other provider degrades to the directory UUID — the pre-fix symptom.
-  const projectPath = cachedFile.canonicalCwd ?? workingDirectory ?? firstCallWorkingDirectory ?? firstCallProjectPath ?? dirName
+  const projectPath =
+    cachedFile.canonicalCwd ?? workingDirectory ?? firstCallWorkingDirectory ?? firstCallProjectPath ?? dirName
   const projectName = project ?? cachedFile.canonicalProjectName ?? dirName
 
   // Session PR links = union of every turn's resolved refs + the file's native
@@ -137,7 +141,7 @@ export function mapFileToLedgerRows(input: PortInput): MappedFile {
 
   // Validate the assembled mapping at the seam before any ledger write: a bad
   // mapping fails loudly here, never as a silently corrupt ledger row.
-  return mappedFileSchema.parse({ source, session, turns, calls })
+  return Schema.decodeUnknownSync(mappedFileSchema)({ source, session, turns, calls })
 }
 
 function mapCallToLedgerRow(

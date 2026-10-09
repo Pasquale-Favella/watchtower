@@ -6,7 +6,13 @@ import { Input } from '@/shared/components/ui/input'
 import { Separator } from '@/shared/components/ui/separator'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { LoadingRegion } from '@/shared/components/skeletons'
-import { dedupeGroups, ModelPickerCombobox, uniqueAliasTargets, usagePickerItem, type ModelPickerGroup } from '@/features/models/model-picker'
+import {
+  dedupeGroups,
+  ModelPickerCombobox,
+  uniqueAliasTargets,
+  usagePickerItem,
+  type ModelPickerGroup,
+} from '@/features/models/model-picker'
 import { usePricingStore } from '@/features/models/pricing-store'
 import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
 import { validatePricing } from '@/features/settings/lib'
@@ -43,32 +49,36 @@ export function PricingPane() {
   // Picker candidates: existing overrides with their rates, every aliased
   // target, and the store-derived usage models not priced yet — deduped so
   // each model appears once (first group wins).
-  const modelGroups = useMemo<ModelPickerGroup[]>(() => dedupeGroups([
-    {
-      label: 'Existing overrides',
-      items: (overrides ?? []).map(override => ({
-        id: `override:${override.model}`,
-        value: override.model,
-        label: override.model,
-        dot: override.model,
-        sub: `in ${override.inputPricePerMillion} · out ${override.outputPricePerMillion}`,
-      })),
-    },
-    {
-      label: 'Aliased targets',
-      items: uniqueAliasTargets(aliases ?? []).map(alias => ({
-        id: `aliased:${alias.aliasOf}`,
-        value: alias.aliasOf,
-        label: alias.aliasOf,
-        dot: alias.aliasOf,
-        sub: `target of ${alias.model}`,
-      })),
-    },
-    {
-      label: 'Not priced',
-      items: unpriced.map(usagePickerItem),
-    },
-  ]), [overrides, aliases, unpriced])
+  const modelGroups = useMemo<ModelPickerGroup[]>(
+    () =>
+      dedupeGroups([
+        {
+          label: 'Existing overrides',
+          items: (overrides ?? []).map(override => ({
+            id: `override:${override.model}`,
+            value: override.model,
+            label: override.model,
+            dot: override.model,
+            sub: `in ${override.inputPricePerMillion} · out ${override.outputPricePerMillion}`,
+          })),
+        },
+        {
+          label: 'Aliased targets',
+          items: uniqueAliasTargets(aliases ?? []).map(alias => ({
+            id: `aliased:${alias.aliasOf}`,
+            value: alias.aliasOf,
+            label: alias.aliasOf,
+            dot: alias.aliasOf,
+            sub: `target of ${alias.model}`,
+          })),
+        },
+        {
+          label: 'Not priced',
+          items: unpriced.map(usagePickerItem),
+        },
+      ]),
+    [overrides, aliases, unpriced],
+  )
 
   const add = async (): Promise<void> => {
     const pricing = validatePricing(model, input, output)
@@ -108,27 +118,25 @@ export function PricingPane() {
             ))}
           </LoadingRegion>
         ) : overrides.length === 0 ? (
-          <p className="text-[11.5px] text-muted-foreground">No price overrides configured. Add one below to price an unrecognized or local model.</p>
+          <p className="text-muted-foreground text-[11.5px]">
+            No price overrides configured. Add one below to price an unrecognized or local model.
+          </p>
         ) : (
           <ul className="flex flex-col gap-2">
             {overrides.map(override => (
               <li key={override.model} className="flex items-center gap-2">
                 <code className="min-w-0 flex-1 truncate font-mono text-[11.5px]">{override.model}</code>
-                <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">
+                <span className="text-muted-foreground shrink-0 font-mono text-[10.5px]">
                   in {override.inputPricePerMillion} · out {override.outputPricePerMillion}
                 </span>
-                <ConfirmRemove
-                  label="Remove"
-                  prompt="Remove?"
-                  onConfirm={() => void removeOverride(override.model)}
-                />
+                <ConfirmRemove label="Remove" prompt="Remove?" onConfirm={() => void removeOverride(override.model)} />
               </li>
             ))}
           </ul>
         )}
         <Separator className="my-3" />
         <div className="flex flex-col gap-2">
-          <span className="text-[10.5px] font-medium text-muted-foreground">Model</span>
+          <span className="text-muted-foreground text-[10.5px] font-medium">Model</span>
           <ModelPickerCombobox
             groups={modelGroups}
             value={model}
@@ -165,9 +173,12 @@ export function PricingPane() {
             </Button>
           </div>
         </div>
-        {(error || storeError) && <p className="mt-2 text-[11px] text-destructive">{error ?? storeError}</p>}
+        {(error || storeError) && <p className="text-destructive mt-2 text-[11px]">{error ?? storeError}</p>}
       </Card>
-      <p className="text-[11px] text-muted-foreground">A configured model is overridden; an unknown one is added. Removing an override reverts its stored calls to the standard pricing — no rescan needed.</p>
+      <p className="text-muted-foreground text-[11px]">
+        A configured model is overridden; an unknown one is added. Removing an override reverts its stored calls to the
+        standard pricing — no rescan needed.
+      </p>
     </div>
   )
 }

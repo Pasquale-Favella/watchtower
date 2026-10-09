@@ -11,7 +11,12 @@ const dotClass: Record<CoachHarnessRow['status'], string> = {
 }
 
 export function HarnessStatusDot({ status, className }: { status: CoachHarnessRow['status']; className?: string }) {
-  return <span aria-label={statusLabel(status)} className={cn('size-1.5 shrink-0 rounded-full', dotClass[status], className)} />
+  return (
+    <span
+      aria-label={statusLabel(status)}
+      className={cn('size-1.5 shrink-0 rounded-full', dotClass[status], className)}
+    />
+  )
 }
 
 export function harnessTooltip(row: CoachHarnessRow): string {
@@ -19,5 +24,7 @@ export function harnessTooltip(row: CoachHarnessRow): string {
     `${row.displayName} — ${statusLabel(row.status)}`,
     row.message,
     row.version ? `Version ${row.version}` : undefined,
-  ].filter(Boolean).join(' · ')
+  ]
+    .filter(Boolean)
+    .join(' · ')
 }

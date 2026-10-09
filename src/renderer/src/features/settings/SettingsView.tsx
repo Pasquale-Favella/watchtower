@@ -31,21 +31,24 @@ export function SettingsView(): React.JSX.Element {
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="flex items-center gap-2.5 border-b border-border px-4 pb-[11px] pt-[13px]">
+      <div className="border-border flex items-center gap-2.5 border-b px-4 pt-[13px] pb-[11px]">
         <SidebarTrigger className="-ml-1" />
         <Separator orientation="vertical" className="mr-1 h-4" />
         <div className="text-sm font-semibold tracking-tight">Settings</div>
         <div className="flex-1" />
       </div>
       <div className="flex flex-1">
-        <nav className="flex w-[198px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border p-3.5" aria-label="Settings sections">
+        <nav
+          className="border-border flex w-[198px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r p-3.5"
+          aria-label="Settings sections"
+        >
           {RAIL_ITEMS.map(item => (
             <button
               key={item.id}
               type="button"
               aria-current={pane === item.id ? 'page' : undefined}
               onClick={() => setPane(item.id)}
-              className={`cursor-pointer rounded-md px-2.5 py-[7px] text-left text-[12.5px] hover:bg-accent hover:text-foreground ${pane === item.id ? 'bg-accent text-foreground' : 'text-muted-foreground'}`}
+              className={`hover:bg-accent hover:text-foreground cursor-pointer rounded-md px-2.5 py-[7px] text-left text-[12.5px] ${pane === item.id ? 'bg-accent text-foreground' : 'text-muted-foreground'}`}
             >
               {item.label}
             </button>

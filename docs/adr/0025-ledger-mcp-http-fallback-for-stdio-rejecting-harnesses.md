@@ -40,7 +40,8 @@ transports over the shared read-only store). The app boots it as plain node
 on an ephemeral 127.0.0.1 port per run (`sidecar.ts`), hands the agent an
 `http` server config with a per-spawn bearer token, and kills it when the
 run's stream settles (end, error, or cancel). No new dependencies (node:http
-+ the existing MCP SDK); minimal spawn env (no app secrets inherited).
+
+- the existing MCP SDK); minimal spawn env (no app secrets inherited).
 
 ### 3. Booking the failure mode
 

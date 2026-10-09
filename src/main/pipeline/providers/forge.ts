@@ -3,10 +3,11 @@ import { homedir } from 'os'
 import { join } from 'path'
 
 import { extractBashCommands } from '../bash-utils.js'
-import { calculateCost } from '../models.js'
-import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { reportProviderIssue } from '../file-errors.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
+import { captureScanPricing } from '../models.js'
+import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type ConversationRow = {
   conversation_id: string
@@ -39,7 +40,9 @@ const DEFAULT_DB_PATH = join(homedir(), '.forge', '.forge.db')
 
 function validateSchema(db: SqliteDatabase): boolean {
   try {
-    db.query('SELECT conversation_id, title, CAST(workspace_id AS TEXT) AS workspace_id, context, created_at, updated_at FROM conversations LIMIT 1')
+    db.query(
+      'SELECT conversation_id, title, CAST(workspace_id AS TEXT) AS workspace_id, context, created_at, updated_at FROM conversations LIMIT 1',
+    )
     return true
   } catch {
     return false
@@ -102,10 +105,14 @@ function pushUnique(values: string[], value: string): void {
 }
 
 function toolCalls(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter(v => v && typeof v === 'object') as Record<string, unknown>[] : []
+  return Array.isArray(value) ? (value.filter(v => v && typeof v === 'object') as Record<string, unknown>[]) : []
 }
 
-function extractToolsAndCommands(calls: Record<string, unknown>[]): { tools: string[]; bashCommands: string[]; firstCallId?: string } {
+function extractToolsAndCommands(calls: Record<string, unknown>[]): {
+  tools: string[]
+  bashCommands: string[]
+  firstCallId?: string
+} {
   const tools: string[] = []
   const bashCommands: string[] = []
   let firstCallId: string | undefined
@@ -138,7 +145,8 @@ function splitSourcePath(path: string): { dbPath: string; conversationId: string
   return { dbPath: path.slice(0, idx), conversationId: path.slice(idx + 1) }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       if (!isSqliteAvailable()) {
@@ -212,7 +220,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
             cachedInputTokens,
             reasoningTokens: 0,
             webSearchRequests: 0,
-            costUSD: calculateCost(model, inputTokens, outputTokens, 0, cachedInputTokens, 0),
+            costUSD: pricing.calculateCost(model, inputTokens, outputTokens, 0, cachedInputTokens, 0),
             tools,
             bashCommands,
             timestamp: sqliteTimestampToIso(row.updated_at ?? row.created_at),
@@ -276,8 +284,13 @@ export function createForgeProvider(dbPath = DEFAULT_DB_PATH): Provider {
       return discoverFromDb(dbPath)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

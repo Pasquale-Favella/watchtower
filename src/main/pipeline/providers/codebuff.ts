@@ -1,10 +1,11 @@
 import { readdir, readFile, stat } from 'fs/promises'
-import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
+import { basename, dirname, join } from 'path'
 
-import { calculateCost } from '../models.js'
 import { extractBashCommands } from '../bash-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // Codebuff (formerly Manicode) uses a credit-based billing system. The local
 // chat-messages.json doesn't record per-call token counts the way Claude Code
@@ -177,11 +178,7 @@ function extractCwd(meta: CodebuffMetadata | undefined): string | null {
   const rs = meta?.runState
   if (!rs) return null
   return (
-    rs.sessionState?.projectContext?.cwd ??
-    rs.sessionState?.fileContext?.cwd ??
-    rs.sessionState?.cwd ??
-    rs.cwd ??
-    null
+    rs.sessionState?.projectContext?.cwd ?? rs.sessionState?.fileContext?.cwd ?? rs.sessionState?.cwd ?? rs.cwd ?? null
   )
 }
 
@@ -281,9 +278,7 @@ async function discoverChannel(root: string): Promise<SessionSource[]> {
       // Resolve the real cwd from run-state.json so sessions group by the
       // originating project directory instead of the sanitized chat folder
       // name (which is often the same for many users).
-      const runState = await readJson<CodebuffMetadata['runState']>(
-        join(chatDir, 'run-state.json'),
-      )
+      const runState = await readJson<CodebuffMetadata['runState']>(join(chatDir, 'run-state.json'))
       const cwd = extractCwd({ runState: runState ?? undefined })
       const project = cwd ? basename(cwd) : projectName
 
@@ -302,7 +297,7 @@ async function discoverSessionsInBase(baseDir: string): Promise<SessionSource[]>
   if (process.env['CODEBUFF_DATA_DIR'] || baseDir !== join(homedir(), '.config', 'manicode')) {
     const rootStat = await stat(baseDir).catch(() => null)
     if (!rootStat?.isDirectory()) return results
-    results.push(...await discoverChannel(baseDir))
+    results.push(...(await discoverChannel(baseDir)))
     return results
   }
 
@@ -311,7 +306,7 @@ async function discoverSessionsInBase(baseDir: string): Promise<SessionSource[]>
     const root = join(configDir, channel)
     const rootStat = await stat(root).catch(() => null)
     if (!rootStat?.isDirectory()) continue
-    results.push(...await discoverChannel(root))
+    results.push(...(await discoverChannel(root)))
   }
   return results
 }
@@ -340,7 +335,8 @@ function extractChannelFromChatDir(chatDir: string): string | null {
   return channel ? channel : null
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
   return {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
       const chatDir = source.path
@@ -349,9 +345,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
       const sessionId = channel ? `${channel}/${chatId}` : chatId
       const fallbackTs = parseChatIdToIso(chatId)
 
-      const messages = await readJson<CodebuffChatMessage[]>(
-        join(chatDir, 'chat-messages.json'),
-      )
+      const messages = await readJson<CodebuffChatMessage[]>(join(chatDir, 'chat-messages.json'))
       if (!Array.isArray(messages)) return
 
       let pendingUserMessage = ''
@@ -374,16 +368,19 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         const stashedUsage = usageFromHistory(msg.metadata)
 
         const hasDirect =
-          directUsage.input > 0 ||
-          directUsage.output > 0 ||
-          directUsage.cacheRead > 0 ||
-          directUsage.cacheWrite > 0
+          directUsage.input > 0 || directUsage.output > 0 || directUsage.cacheRead > 0 || directUsage.cacheWrite > 0
         const usage = hasDirect ? directUsage : stashedUsage
         const stashedModel = stashedUsage.model
 
         // Skip messages with neither credits nor tokens -- they're typically
         // in-progress mode dividers or empty framing blocks.
-        if (credits === 0 && usage.input === 0 && usage.output === 0 && usage.cacheRead === 0 && usage.cacheWrite === 0) {
+        if (
+          credits === 0 &&
+          usage.input === 0 &&
+          usage.output === 0 &&
+          usage.cacheRead === 0 &&
+          usage.cacheWrite === 0
+        ) {
           continue
         }
 
@@ -401,7 +398,7 @@ function createParser(source: SessionSource, seenKeys: Set<string>): SessionPars
         // Prefer calculated cost from tokens when available (multi-provider
         // models routed through Codebuff still show up in LiteLLM); otherwise
         // fall back to the credit-based approximation.
-        let costUSD = calculateCost(model, usage.input, usage.output, usage.cacheWrite, usage.cacheRead, 0)
+        let costUSD = pricing.calculateCost(model, usage.input, usage.output, usage.cacheWrite, usage.cacheRead, 0)
         if (costUSD === 0 && credits > 0) {
           costUSD = credits * USD_PER_CREDIT
         }
@@ -451,8 +448,13 @@ export function createCodebuffProvider(baseDir?: string): Provider {
       return discoverSessionsInBase(dir)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

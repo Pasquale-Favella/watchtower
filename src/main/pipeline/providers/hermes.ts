@@ -1,12 +1,17 @@
+import { Effect, Result, Schema, Stream } from 'effect'
 import { readdir, stat } from 'fs/promises'
-import { basename, dirname, join } from 'path'
 import { homedir } from 'os'
+import { basename, dirname, join } from 'path'
 
-import { calculateCost, getShortModelName } from '../models.js'
-import { isSqliteAvailable, openDatabase, isSqliteBusyError, type SqliteDatabase } from '../sqlite.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { billableOutputTokens } from '../billable-output.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import { isScanAbortedError } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
+import { isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import type { DateRange } from '../types.js'
 import type { ToolCall } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type HermesSessionRow = {
   id: string
@@ -37,23 +42,110 @@ type HermesMessageRow = {
   timestamp: number | null
 }
 
-type HermesToolCall = {
-  function?: {
-    name?: string
-    arguments?: string
-  }
-}
-
 type ProfileDb = {
   dbPath: string
   profile: string
 }
 
-type TableInfoRow = {
-  name: string
+type TableColumn = keyof HermesSessionRow | keyof HermesMessageRow
+
+const nullableString = Schema.NullOr(Schema.String)
+const nullableFinite = Schema.NullOr(Schema.Finite)
+const sqliteCostValueSchema = Schema.Union([Schema.Number, Schema.String, Schema.Uint8Array])
+const nullableSqliteCostValue = Schema.NullOr(sqliteCostValueSchema)
+const tableInfoSchema = Schema.Struct({ name: Schema.String })
+const discoveryRowSchema = Schema.Struct({ id: Schema.String })
+const recordedCostsSchema = Schema.Struct({
+  estimated_cost_usd: nullableSqliteCostValue,
+  actual_cost_usd: nullableSqliteCostValue,
+})
+const parserSessionRowSchema = Schema.Struct({
+  id: Schema.String,
+  model: nullableString,
+  cwd: nullableString,
+  input_tokens: Schema.Finite,
+  output_tokens: Schema.Finite,
+  cache_read_tokens: Schema.Finite,
+  cache_write_tokens: Schema.Finite,
+  reasoning_tokens: Schema.Finite,
+  started_at: nullableFinite,
+})
+const messageRoleSchema = Schema.Struct({ role: Schema.String })
+const userMessageFieldsSchema = Schema.Struct({ content: nullableString })
+const assistantMessageFieldsSchema = Schema.Struct({ tool_calls: nullableString })
+const toolMessageFieldsSchema = Schema.Struct({ tool_name: nullableString })
+const toolCallSchema = Schema.Struct({
+  function: Schema.optional(
+    Schema.Struct({
+      name: Schema.optional(Schema.String),
+      arguments: Schema.optional(Schema.Unknown),
+    }),
+  ),
+})
+const jsonArraySchema = Schema.Array(Schema.Unknown)
+const argumentRecordSchema = Schema.Record(Schema.String, Schema.Unknown)
+
+type ParserSessionRow = Schema.Schema.Type<typeof parserSessionRowSchema>
+type RecordedCosts = Schema.Schema.Type<typeof recordedCostsSchema>
+type MessageRow = {
+  role: string
+  content?: string | null
+  tool_calls?: string | null
+  tool_name?: string | null
+}
+type ToolCallValue = Schema.Schema.Type<typeof toolCallSchema>
+type DiscoveryRow = Schema.Schema.Type<typeof discoveryRowSchema>
+
+const decodeTableInfo = Schema.decodeUnknownResult(tableInfoSchema)
+const decodeDiscoveryRow = Schema.decodeUnknownResult(discoveryRowSchema)
+const decodeRecordedCosts = Schema.decodeUnknownResult(recordedCostsSchema)
+const decodeParserSessionRow = Schema.decodeUnknownResult(parserSessionRowSchema)
+const decodeSelectedRecordedCost = Schema.decodeUnknownResult(Schema.Finite)
+const decodeMessageRole = Schema.decodeUnknownResult(messageRoleSchema)
+const decodeUserMessageFields = Schema.decodeUnknownResult(userMessageFieldsSchema)
+const decodeAssistantMessageFields = Schema.decodeUnknownResult(assistantMessageFieldsSchema)
+const decodeToolMessageFields = Schema.decodeUnknownResult(toolMessageFieldsSchema)
+const decodeToolCall = Schema.decodeUnknownResult(toolCallSchema)
+const decodeJsonArray = Schema.decodeUnknownResult(jsonArraySchema)
+const decodeArgumentRecord = Schema.decodeUnknownResult(argumentRecordSchema)
+const decodeString = Schema.decodeUnknownResult(Schema.String)
+
+function selectRecordedCost(costs: RecordedCosts): Result.Result<number | null, Schema.SchemaError> {
+  if (Number(costs.actual_cost_usd ?? 0) > 0) return decodeSelectedRecordedCost(costs.actual_cost_usd)
+  if (Number(costs.estimated_cost_usd ?? 0) > 0) return decodeSelectedRecordedCost(costs.estimated_cost_usd)
+  return Result.succeed(null)
 }
 
-type TableColumn = keyof HermesSessionRow | keyof HermesMessageRow
+class HermesDatabaseError extends Schema.TaggedError<HermesDatabaseError>()('HermesDatabaseError', {
+  operation: Schema.Literals(['open', 'read', 'close']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause), { cause })
+}
+
+function databaseError(operation: HermesDatabaseError['operation'], cause: unknown): HermesDatabaseError {
+  const error = toError(cause)
+  return new HermesDatabaseError({ operation, cause: error, message: error.message })
+}
+
+const sourceRows = Effect.fnUntraced(function* <A>(
+  path: string,
+  read: (db: SqliteDatabase) => A,
+): Effect.fn.Return<A, HermesDatabaseError> {
+  const readResult = yield* Effect.acquireUseRelease(
+    Effect.try({
+      try: () => openDatabase(path),
+      catch: cause => databaseError('open', cause),
+    }),
+    db => Effect.result(Effect.try({ try: () => read(db), catch: cause => databaseError('read', cause) })),
+    db => Effect.try({ try: () => db.close(), catch: cause => databaseError('close', cause) }),
+  )
+  if (Result.isFailure(readResult)) return yield* Effect.fail(readResult.failure)
+  return readResult.success
+})
 
 const toolNameMap: Record<string, string> = {
   terminal: 'Bash',
@@ -101,22 +193,32 @@ function parseProfileName(dbPath: string, hermesHome: string): string {
   return 'default'
 }
 
-async function findStateDbs(hermesHome: string): Promise<ProfileDb[]> {
+const findStateDbs = Effect.fn('findHermesStateDbs')(function* (
+  hermesHome: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<ProfileDb[], Error> {
   const dbs: ProfileDb[] = []
   const rootDb = join(hermesHome, 'state.db')
-  const rootStat = await stat(rootDb).catch(() => null)
+  const rootStat = yield* scanIo(() => stat(rootDb), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
   if (rootStat?.isFile()) dbs.push({ dbPath: rootDb, profile: 'default' })
 
   const profilesDir = join(hermesHome, 'profiles')
-  const profiles = await readdir(profilesDir, { withFileTypes: true }).catch(() => [])
+  const profiles = yield* scanIo(() => readdir(profilesDir, { withFileTypes: true }), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed([]))),
+  )
   for (const entry of profiles) {
+    yield* checkScanAbort(signal)
     if (!entry.isDirectory()) continue
     const dbPath = join(profilesDir, entry.name, 'state.db')
-    const s = await stat(dbPath).catch(() => null)
-    if (s?.isFile()) dbs.push({ dbPath, profile: entry.name })
+    const info = yield* scanIo(() => stat(dbPath), signal).pipe(
+      Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+    )
+    if (info?.isFile()) dbs.push({ dbPath, profile: entry.name })
   }
   return dbs
-}
+})
 
 function encodeSourcePath(dbPath: string, sessionId: string): string {
   return `${dbPath}#hermes-session=${encodeURIComponent(sessionId)}`
@@ -144,7 +246,12 @@ function validateSchema(db: SqliteDatabase): boolean {
 }
 
 function getSessionColumns(db: SqliteDatabase): Set<string> {
-  return new Set(db.query<TableInfoRow>('PRAGMA table_info(sessions)').map(row => row.name))
+  return new Set(
+    db.query('PRAGMA table_info(sessions)').flatMap(raw => {
+      const decoded = decodeTableInfo(raw)
+      return Result.isSuccess(decoded) ? [decoded.success.name] : []
+    }),
+  )
 }
 
 function numberColumn(columns: Set<string>, name: TableColumn): string {
@@ -156,7 +263,12 @@ function nullableColumn(columns: Set<string>, name: TableColumn): string {
 }
 
 function getMessageColumns(db: SqliteDatabase): Set<string> {
-  return new Set(db.query<TableInfoRow>('PRAGMA table_info(messages)').map(row => row.name))
+  return new Set(
+    db.query('PRAGMA table_info(messages)').flatMap(raw => {
+      const decoded = decodeTableInfo(raw)
+      return Result.isSuccess(decoded) ? [decoded.success.name] : []
+    }),
+  )
 }
 
 function usageExpression(columns: Set<string>): string {
@@ -167,9 +279,7 @@ function usageExpression(columns: Set<string>): string {
     'cache_write_tokens',
     'reasoning_tokens',
   ]
-  const parts = usageColumns
-    .filter(name => columns.has(name))
-    .map(name => `coalesce(${name}, 0)`)
+  const parts = usageColumns.filter(name => columns.has(name)).map(name => `coalesce(${name}, 0)`)
   return parts.length > 0 ? parts.join(' + ') : '0'
 }
 
@@ -179,9 +289,30 @@ function parseTimestamp(raw: number | null): string {
   return new Date(ms).toISOString()
 }
 
-function firstUserMessage(messages: HermesMessageRow[]): string {
+function decodeMessageRow(raw: unknown): MessageRow | null {
+  const decodedRole = decodeMessageRole(raw)
+  if (Result.isFailure(decodedRole)) return null
+  const role = decodedRole.success.role
+  if (role === 'user' || role === 'system') {
+    const decoded = decodeUserMessageFields(raw)
+    return Result.isSuccess(decoded) ? { role, content: decoded.success.content } : null
+  }
+  if (role === 'assistant') {
+    const decoded = decodeAssistantMessageFields(raw)
+    return Result.isSuccess(decoded) ? { role, tool_calls: decoded.success.tool_calls } : null
+  }
+  if (role === 'tool') {
+    const decoded = decodeToolMessageFields(raw)
+    return Result.isSuccess(decoded) ? { role, tool_name: decoded.success.tool_name } : null
+  }
+  return { role }
+}
+
+function firstUserMessage(messages: MessageRow[]): string {
   const msg = messages.find(m => m.role === 'user' && typeof m.content === 'string' && m.content.trim().length > 0)
-  return Array.from(msg?.content ?? '').slice(0, 500).join('')
+  return Array.from(msg?.content ?? '')
+    .slice(0, 500)
+    .join('')
 }
 
 function mapToolName(raw: string): string {
@@ -193,17 +324,26 @@ function mapToolName(raw: string): string {
   return toolNameMap[raw] ?? raw
 }
 
-function parseToolCalls(raw: string | null): HermesToolCall[] {
+function parseToolCalls(raw: string | null): ToolCallValue[] {
   if (!raw) return []
   try {
     const parsed = JSON.parse(raw) as unknown
-    return Array.isArray(parsed) ? parsed as HermesToolCall[] : []
+    const decoded = decodeJsonArray(parsed)
+    if (Result.isFailure(decoded)) return []
+    return decoded.success.flatMap(candidate => {
+      const call = decodeToolCall(candidate)
+      return Result.isSuccess(call) ? [call.success] : []
+    })
   } catch {
     return []
   }
 }
 
-function collectTools(messages: HermesMessageRow[]): { tools: string[]; toolSequence: ToolCall[][]; bashCommands: string[] } {
+function collectTools(messages: MessageRow[]): {
+  tools: string[]
+  toolSequence: ToolCall[][]
+  bashCommands: string[]
+} {
   const tools: string[] = []
   const toolSequence: ToolCall[][] = []
   const bashCommands: string[] = []
@@ -211,22 +351,25 @@ function collectTools(messages: HermesMessageRow[]): { tools: string[]; toolSequ
   for (const msg of messages) {
     if (msg.role === 'assistant') {
       const currentTurnTools: ToolCall[] = []
-      for (const call of parseToolCalls(msg.tool_calls)) {
+      for (const call of parseToolCalls(msg.tool_calls ?? null)) {
         const rawName = call.function?.name ?? ''
         if (!rawName) continue
         const mapped = mapToolName(rawName)
         tools.push(mapped)
         const toolCall: ToolCall = { tool: mapped }
-        const rawArgs = call.function?.arguments
-        if (rawArgs) {
+        const decodedArgs = decodeString(call.function?.arguments)
+        if (Result.isSuccess(decodedArgs) && decodedArgs.success) {
           try {
-            const args = JSON.parse(rawArgs) as Record<string, unknown>
-            const file = args['path'] ?? args['file_path']
-            if (typeof file === 'string') toolCall.file = file
-            const command = args['command']
-            if (typeof command === 'string') {
-              toolCall.command = command
-              bashCommands.push(command)
+            const parsedArgs = JSON.parse(decodedArgs.success) as unknown
+            const args = decodeArgumentRecord(parsedArgs)
+            if (Result.isSuccess(args)) {
+              const file = decodeString(args.success['path'] ?? args.success['file_path'])
+              if (Result.isSuccess(file)) toolCall.file = file.success
+              const command = decodeString(args.success['command'])
+              if (Result.isSuccess(command)) {
+                toolCall.command = command.success
+                bashCommands.push(command.success)
+              }
             }
           } catch {
             // Ignore malformed arguments from historical sessions.
@@ -249,7 +392,7 @@ function collectTools(messages: HermesMessageRow[]): { tools: string[]; toolSequ
   }
 }
 
-function inferProject(messages: HermesMessageRow[], fallback: string): { project: string; projectPath?: string } {
+function inferProject(messages: MessageRow[], fallback: string): { project: string; projectPath?: string } {
   const cwdPattern = /^Current working directory:\s*([a-zA-Z]:\\[^\r\n`"]+|\/[^\r\n`"\\]+)/m
   for (const msg of messages) {
     if (msg.role !== 'user' && msg.role !== 'system') continue
@@ -263,20 +406,16 @@ function inferProject(messages: HermesMessageRow[], fallback: string): { project
   return { project: fallback }
 }
 
-async function discoverFromDb(dbPath: string, profile: string): Promise<SessionSource[]> {
-  let db: SqliteDatabase
-  try {
-    db = openDatabase(dbPath)
-  } catch {
-    return []
-  }
-
-  try {
+const discoverFromDb = Effect.fn('discoverHermesSessionsFromDb')(function* (
+  dbPath: string,
+  profile: string,
+): Effect.fn.Return<SessionSource[], Error> {
+  const rows = yield* sourceRows(dbPath, db => {
     if (!validateSchema(db)) return []
     const columns = getSessionColumns(db)
     const usage = usageExpression(columns)
     const orderBy = columns.has('started_at') ? 'started_at DESC' : 'id DESC'
-    const rows = db.query<HermesSessionRow>(
+    return db.query(
       `SELECT id,
               ${nullableColumn(columns, 'title')},
               ${numberColumn(columns, 'input_tokens')},
@@ -289,168 +428,228 @@ async function discoverFromDb(dbPath: string, profile: string): Promise<SessionS
        ORDER BY ${orderBy}
        LIMIT 10000`,
     )
-
-    return rows.map(row => ({
-      path: encodeSourcePath(dbPath, row.id),
-      project: sanitizeProject(profile),
-      provider: 'hermes',
-    }))
-  } catch (err) {
-    if (isSqliteBusyError(err)) throw err
-    reportProviderIssue('hermes', fileErrorCode(err, 'db-query-failed'))
-    return []
-  } finally {
-    db.close()
-  }
-}
-
-function createParser(source: SessionSource, seenKeys: Set<string>, hermesHome: string): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      if (!isSqliteAvailable()) {
-        reportProviderIssue('hermes', 'sqlite-unavailable')
-        return
+  }).pipe(
+    Effect.catchTag('HermesDatabaseError', error => {
+      if (error.operation === 'close' || (error.operation === 'read' && isSqliteBusyError(error.cause))) {
+        return Effect.fail(toError(error.cause))
       }
+      if (error.operation === 'read') reportProviderIssue('hermes', fileErrorCode(error.cause, 'db-query-failed'))
+      return Effect.succeed([])
+    }),
+  )
 
-      const decoded = decodeSourcePath(source.path)
-      if (!decoded) return
-      const profile = parseProfileName(decoded.dbPath, hermesHome)
+  return rows.flatMap(raw => {
+    const decoded = decodeDiscoveryRow(raw)
+    if (Result.isFailure(decoded)) return []
+    const row: DiscoveryRow = decoded.success
+    return [
+      {
+        path: encodeSourcePath(dbPath, row.id),
+        project: sanitizeProject(profile),
+        provider: 'hermes',
+      },
+    ]
+  })
+})
 
-      let db: SqliteDatabase
-      try {
-        db = openDatabase(decoded.dbPath)
-      } catch (err) {
-        reportProviderIssue('hermes', fileErrorCode(err, 'db-open-failed'))
-        return
-      }
+function createParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  hermesHome: string,
+  context?: ProviderScanContext,
+): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
+  const signal = context?.signal
+  const parseEffect = Effect.fnUntraced(function* (
+    onUnparsedCall: Effect.Effect<void>,
+  ): Effect.fn.Return<Stream.Stream<ParsedProviderCall, Error>, Error> {
+    yield* checkScanAbort(signal)
+    if (!isSqliteAvailable()) {
+      reportProviderIssue('hermes', 'sqlite-unavailable')
+      return Stream.empty
+    }
 
-      let result: ParsedProviderCall | undefined
-      try {
-        if (!validateSchema(db)) return
-        const columns = getSessionColumns(db)
-        const rows = db.query<HermesSessionRow>(
-          `SELECT id,
-                  ${nullableColumn(columns, 'source')},
-                  ${nullableColumn(columns, 'model')},
-                  ${nullableColumn(columns, 'cwd')},
-                  ${nullableColumn(columns, 'billing_provider')},
-                  ${numberColumn(columns, 'input_tokens')},
-                  ${numberColumn(columns, 'output_tokens')},
-                  ${numberColumn(columns, 'cache_read_tokens')},
-                  ${numberColumn(columns, 'cache_write_tokens')},
-                  ${numberColumn(columns, 'reasoning_tokens')},
-                  ${nullableColumn(columns, 'estimated_cost_usd')},
-                  ${nullableColumn(columns, 'actual_cost_usd')},
-                  ${numberColumn(columns, 'api_call_count')},
-                  ${numberColumn(columns, 'tool_call_count')},
-                  ${nullableColumn(columns, 'started_at')},
-                  ${nullableColumn(columns, 'ended_at')},
-                  ${nullableColumn(columns, 'title')}
-           FROM sessions
-           WHERE id = ?`,
-          [decoded.sessionId],
-        )
-        const row = rows[0]
-        if (!row) return
+    const decoded = decodeSourcePath(source.path)
+    if (!decoded) return Stream.empty
+    const profile = parseProfileName(decoded.dbPath, hermesHome)
 
-        const messageColumns = getMessageColumns(db)
-        const orderColumns = ['timestamp', 'id'].filter(name => messageColumns.has(name))
-        const orderBy = orderColumns.length > 0 ? `ORDER BY ${orderColumns.join(' ASC, ')} ASC` : ''
-        const messages = db.query<HermesMessageRow>(
-          `SELECT ${numberColumn(messageColumns, 'id')},
-                  role,
-                  content,
-                  tool_calls,
-                  ${nullableColumn(messageColumns, 'tool_name')},
-                  ${nullableColumn(messageColumns, 'timestamp')}
-           FROM messages
-           WHERE session_id = ?
-           ${orderBy}`,
-          [decoded.sessionId],
-        )
-
-        const inputTokens = row.input_tokens ?? 0
-        const outputTokens = row.output_tokens ?? 0
-        const cacheReadTokens = row.cache_read_tokens ?? 0
-        const cacheWriteTokens = row.cache_write_tokens ?? 0
-        const reasoningTokens = row.reasoning_tokens ?? 0
-        if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens + reasoningTokens === 0) return
-
-        const model = row.model ?? 'unknown'
-        const { tools, toolSequence, bashCommands } = collectTools(messages)
-        // Hermes records the session's working directory in sessions.cwd.
-        // Prefer it; fall back to scraping a "Current working directory:" line
-        // from the transcript (older builds), then to the profile name.
-        const cwd = row.cwd?.trim()
-        const projectInfo = cwd
-          ? { project: sanitizeProject(cwd), projectPath: cwd }
-          : inferProject(messages, sanitizeProject(profile))
-        const timestamp = parseTimestamp(row.started_at)
-        const dedupKey = `hermes:${profile}:${row.id}`
-        if (seenKeys.has(dedupKey)) return
-        seenKeys.add(dedupKey)
-
-        // Hermes bills reasoning tokens at the output rate (same as Gemini).
-        // The LiteLLM model table is used as a fallback when Hermes has not
-        // stored an actual or estimated cost for the session.
-        const calculatedCost = calculateCost(
-          model,
-          inputTokens,
-          outputTokens + reasoningTokens,
-          cacheWriteTokens,
-          cacheReadTokens,
-          0,
-        )
-        const recordedCost =
-          (row.actual_cost_usd ?? 0) > 0 ? row.actual_cost_usd!
-          : (row.estimated_cost_usd ?? 0) > 0 ? row.estimated_cost_usd!
-          : null
-        // When Hermes stored no cost (e.g. subscription-billed sessions), the
-        // figure is our LiteLLM-priced estimate from the session token totals.
-        const costUSD = recordedCost ?? calculatedCost
-        const costIsEstimated = recordedCost === null
-
-        result = {
-          provider: 'hermes',
-          model,
-          inputTokens,
-          outputTokens,
-          cacheCreationInputTokens: cacheWriteTokens,
-          cacheReadInputTokens: cacheReadTokens,
-          cachedInputTokens: cacheReadTokens,
-          reasoningTokens,
-          webSearchRequests: 0,
-          costUSD,
-          costIsEstimated,
-          tools,
-          bashCommands,
-          timestamp,
-          speed: 'standard',
-          deduplicationKey: dedupKey,
-          turnId: `${row.id}:session`,
-          toolSequence: toolSequence.length > 0 ? toolSequence : undefined,
-          userMessage: firstUserMessage(messages),
-          sessionId: row.id,
-          project: projectInfo.project,
-          projectPath: projectInfo.projectPath,
+    const materialized = yield* sourceRows(decoded.dbPath, db => {
+      if (!validateSchema(db)) return null
+      const columns = getSessionColumns(db)
+      const rows = db.query(
+        `SELECT id,
+                ${nullableColumn(columns, 'source')},
+                ${nullableColumn(columns, 'model')},
+                ${nullableColumn(columns, 'cwd')},
+                ${nullableColumn(columns, 'billing_provider')},
+                ${numberColumn(columns, 'input_tokens')},
+                ${numberColumn(columns, 'output_tokens')},
+                ${numberColumn(columns, 'cache_read_tokens')},
+                ${numberColumn(columns, 'cache_write_tokens')},
+                ${numberColumn(columns, 'reasoning_tokens')},
+                ${nullableColumn(columns, 'estimated_cost_usd')},
+                ${nullableColumn(columns, 'actual_cost_usd')},
+                ${numberColumn(columns, 'api_call_count')},
+                ${numberColumn(columns, 'tool_call_count')},
+                ${nullableColumn(columns, 'started_at')},
+                ${nullableColumn(columns, 'ended_at')},
+                ${nullableColumn(columns, 'title')}
+         FROM sessions
+         WHERE id = ?`,
+        [decoded.sessionId],
+      )
+      const messageColumns = getMessageColumns(db)
+      const orderColumns = ['timestamp', 'id'].filter(name => messageColumns.has(name))
+      const orderBy = orderColumns.length > 0 ? `ORDER BY ${orderColumns.join(' ASC, ')} ASC` : ''
+      const messages = db.query(
+        `SELECT ${numberColumn(messageColumns, 'id')},
+                role,
+                content,
+                tool_calls,
+                ${nullableColumn(messageColumns, 'tool_name')},
+                ${nullableColumn(messageColumns, 'timestamp')}
+         FROM messages
+         WHERE session_id = ?
+         ${orderBy}`,
+        [decoded.sessionId],
+      )
+      return { rows, messages }
+    }).pipe(
+      Effect.catchTag('HermesDatabaseError', error => {
+        if (error.operation === 'open') {
+          reportProviderIssue('hermes', fileErrorCode(error.cause, 'db-open-failed'))
+          return Effect.succeed(null)
         }
-      } catch (err) {
-        // A transient lock on the live state.db must propagate so the caller
-        // retries, not get swallowed into an empty (negatively cached) result.
-        if (isSqliteBusyError(err)) throw err
-        reportProviderIssue('hermes', fileErrorCode(err, 'db-query-failed'))
-        return
-      } finally {
-        db.close()
-      }
+        if (error.operation === 'close' || isSqliteBusyError(error.cause)) {
+          return Effect.fail(toError(error.cause))
+        }
+        reportProviderIssue('hermes', fileErrorCode(error.cause, 'db-query-failed'))
+        return Effect.succeed(null)
+      }),
+    )
+    yield* checkScanAbort(signal)
+    if (materialized === null) return Stream.empty
 
-      if (result) yield result
+    const sessionRaw = materialized.rows[0]
+    if (!sessionRaw) return Stream.empty
+    const decodedSession = decodeParserSessionRow(sessionRaw)
+    if (Result.isFailure(decodedSession)) return Stream.empty
+    const row: ParserSessionRow = decodedSession.success
+    const decodedCosts = decodeRecordedCosts(sessionRaw)
+    if (Result.isFailure(decodedCosts)) return Stream.empty
+    const recordedCosts: RecordedCosts = decodedCosts.success
+    const messages: MessageRow[] = materialized.messages.flatMap(raw => {
+      const decodedMessage = decodeMessageRow(raw)
+      return decodedMessage === null ? [] : [decodedMessage]
+    })
+
+    const inputTokens = row.input_tokens
+    const outputTokens = row.output_tokens
+    const cacheReadTokens = row.cache_read_tokens
+    const cacheWriteTokens = row.cache_write_tokens
+    const reasoningTokens = row.reasoning_tokens
+    if (inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens + reasoningTokens === 0) return Stream.empty
+
+    const model = row.model ?? 'unknown'
+    const { tools, toolSequence, bashCommands } = collectTools(messages)
+    // Hermes records the session's working directory in sessions.cwd.
+    // Prefer it; fall back to scraping a "Current working directory:" line
+    // from the transcript (older builds), then to the profile name.
+    const cwd = row.cwd?.trim()
+    const projectInfo = cwd
+      ? { project: sanitizeProject(cwd), projectPath: cwd }
+      : inferProject(messages, sanitizeProject(profile))
+    const timestamp = parseTimestamp(row.started_at)
+    const dedupKey = `hermes:${profile}:${row.id}`
+    const baseCall = {
+      provider: 'hermes' as const,
+      model,
+      inputTokens,
+      outputTokens,
+      cacheCreationInputTokens: cacheWriteTokens,
+      cacheReadInputTokens: cacheReadTokens,
+      cachedInputTokens: cacheReadTokens,
+      reasoningTokens,
+      webSearchRequests: 0,
+      tools,
+      bashCommands,
+      timestamp,
+      speed: 'standard' as const,
+      deduplicationKey: dedupKey,
+      turnId: `${row.id}:session`,
+      toolSequence: toolSequence.length > 0 ? toolSequence : undefined,
+      userMessage: firstUserMessage(messages),
+      sessionId: row.id,
+      project: projectInfo.project,
+      projectPath: projectInfo.projectPath,
+    }
+
+    return Stream.fromIterable([baseCall]).pipe(
+      Stream.rechunk(1),
+      Stream.mapEffect(call =>
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          if (seenKeys.has(dedupKey)) return Result.fail(undefined)
+          seenKeys.add(dedupKey)
+
+          // Evaluate computed pricing even when Hermes stored a positive cost;
+          // legacy parser callback and failure ordering depend on this point.
+          const calculatedCost = yield* Effect.try({
+            try: () =>
+              pricing.calculateCost(
+                model,
+                inputTokens,
+                billableOutputTokens('hermes', outputTokens, reasoningTokens),
+                cacheWriteTokens,
+                cacheReadTokens,
+                0,
+              ),
+            catch: toError,
+          })
+          const decodedRecordedCost = selectRecordedCost(recordedCosts)
+          if (Result.isFailure(decodedRecordedCost)) {
+            yield* onUnparsedCall
+            return Result.fail(undefined)
+          }
+          const recordedCost = decodedRecordedCost.success
+          const costUSD = recordedCost ?? calculatedCost
+          const costIsEstimated = recordedCost === null
+          yield* checkScanAbort(signal)
+          return Result.succeed({ ...call, costUSD, costIsEstimated } satisfies ParsedProviderCall)
+        }),
+      ),
+      Stream.filterMap(call => call),
+    )
+  })
+
+  const parseStream = (onUnparsedCall: Effect.Effect<void> = Effect.void): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.unwrap(parseEffect(onUnparsedCall))
+  return {
+    parseStream,
+    // Remove this async-generator edge when all direct parser callers consume parseStream.
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      yield* Stream.toAsyncIterable(parseStream())
     },
   }
 }
 
 export function createHermesProvider(hermesHomeOverride?: string): Provider {
   const hermesHome = getHermesHome(hermesHomeOverride)
+  const discoverEffect = Effect.fn('discoverHermesSessions')(function* (
+    context?: ProviderScanContext,
+  ): Effect.fn.Return<SessionSource[], Error> {
+    yield* checkScanAbort(context?.signal)
+    if (!isSqliteAvailable()) return []
+    const dbs = yield* findStateDbs(hermesHome, context?.signal)
+    const sessions: SessionSource[] = []
+    for (const { dbPath, profile } of dbs) {
+      yield* checkScanAbort(context?.signal)
+      sessions.push(...(yield* discoverFromDb(dbPath, profile)))
+    }
+    yield* checkScanAbort(context?.signal)
+    return sessions
+  })
+
   return {
     name: 'hermes',
     displayName: 'Hermes Agent',
@@ -463,18 +662,20 @@ export function createHermesProvider(hermesHomeOverride?: string): Provider {
       return mapToolName(rawTool)
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      if (!isSqliteAvailable()) return []
-      const dbs = await findStateDbs(hermesHome)
-      const sessions: SessionSource[] = []
-      for (const { dbPath, profile } of dbs) {
-        sessions.push(...await discoverFromDb(dbPath, profile))
-      }
-      return sessions
+    discoverSessionsEffect: discoverEffect,
+    // Remove this Promise edge when every discovery caller uses the native Effect entry point.
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discoverEffect(context))
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys, hermesHome)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, hermesHome, context)
     },
   }
 }

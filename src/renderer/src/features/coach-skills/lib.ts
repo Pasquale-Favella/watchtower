@@ -12,7 +12,13 @@ export function statusLabel(status: CoachHarnessRow['status']): string {
 }
 
 export function harnessBadge(row: CoachHarnessRow): string | null {
-  return row.status === 'warning' ? 'Sign-in?' : row.status === 'error' ? 'Unavailable' : row.status === 'pending' ? 'Checking…' : null
+  return row.status === 'warning'
+    ? 'Sign-in?'
+    : row.status === 'error'
+      ? 'Unavailable'
+      : row.status === 'pending'
+        ? 'Checking…'
+        : null
 }
 
 /** Composite candidate key: the same name can come from different sources
@@ -48,10 +54,14 @@ export function craftSkillPrompt(candidate: SkillCandidate): string {
   const sample = clean(candidate.sample)
   // The concrete evidence sessions behind the pattern — real context the
   // harness can write against without guessing (newest first, capped).
-  const evidence = candidate.sourceSessions.slice(0, 3)
+  const evidence = candidate.sourceSessions
+    .slice(0, 3)
     .map(s => ({ ...s, project: clean(s.project) }))
     .filter(s => s.project.length > 0)
-    .map(s => `${tick}${s.project}${tick} · ${s.date} · ${s.turns} turn${s.turns === 1 ? '' : 's'} · ${s.costUSD.toFixed(2)} USD`)
+    .map(
+      s =>
+        `${tick}${s.project}${tick} · ${s.date} · ${s.turns} turn${s.turns === 1 ? '' : 's'} · ${s.costUSD.toFixed(2)} USD`,
+    )
   return [
     `Craft a SKILL.md for the ${kind} ${tick}${candidate.name}${tick} — a recurring pattern in my workflow:`,
     `- Frequency: ${candidate.frequency} occurrences across ${sessions} / ${projects}`,
