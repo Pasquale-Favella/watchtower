@@ -1,15 +1,57 @@
+import type { Dirent } from 'node:fs'
+
+import { Effect, Result, Schema, Stream } from 'effect'
 import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, delimiter, dirname, join, resolve } from 'path'
 
 import { billableOutputTokens } from '../billable-output.js'
-import { readSessionLines } from '../fs-utils.js'
+import { readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing, getShortModelName } from '../models.js'
-import type { ScanPricing } from '../scan-pricing.js'
+import { isScanAbortedError } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { DateRange } from '../types.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
-type JsonObject = Record<string, unknown>
+const lingtaiManifestSchema = Schema.Struct({
+  agent_id: Schema.optional(Schema.Unknown),
+  agent_name: Schema.optional(Schema.Unknown),
+  address: Schema.optional(Schema.Unknown),
+  nickname: Schema.optional(Schema.Unknown),
+  llm: Schema.optional(Schema.Unknown),
+})
+const lingtaiLedgerEntrySchema = Schema.Struct({
+  source: Schema.optional(Schema.Unknown),
+  em_id: Schema.optional(Schema.Unknown),
+  run_id: Schema.optional(Schema.Unknown),
+  ts: Schema.optional(Schema.Unknown),
+  input: Schema.optional(Schema.Unknown),
+  output: Schema.optional(Schema.Unknown),
+  thinking: Schema.optional(Schema.Unknown),
+  cached: Schema.optional(Schema.Unknown),
+  model: Schema.optional(Schema.Unknown),
+  endpoint: Schema.optional(Schema.Unknown),
+})
+const registryEntrySchema = Schema.Struct({ path: Schema.optional(Schema.Unknown) })
+const projectMetaSchema = Schema.Struct({ project_path: Schema.optional(Schema.Unknown) })
+const llmManifestSchema = Schema.Struct({
+  model: Schema.optional(Schema.Unknown),
+  base_url: Schema.optional(Schema.Unknown),
+})
+const jsonObjectSchema = Schema.Record(Schema.String, Schema.Unknown)
+const stringSchema = Schema.String
+const numericSchema = Schema.Union([Schema.Finite, Schema.String])
+const timestampSchema = Schema.Union([Schema.Finite, Schema.String])
+const decodeManifest = Schema.decodeUnknownResult(lingtaiManifestSchema)
+const decodeLedgerEntry = Schema.decodeUnknownResult(lingtaiLedgerEntrySchema)
+const decodeRegistryEntry = Schema.decodeUnknownResult(registryEntrySchema)
+const decodeProjectMeta = Schema.decodeUnknownResult(projectMetaSchema)
+const decodeLlmManifest = Schema.decodeUnknownResult(llmManifestSchema)
+const decodeObject = Schema.decodeUnknownResult(jsonObjectSchema)
+const decodeString = Schema.decodeUnknownResult(stringSchema)
+const decodeNumeric = Schema.decodeUnknownResult(numericSchema)
+const decodeTimestamp = Schema.decodeUnknownResult(timestampSchema)
+const decodeJson = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))
 
 type LingTaiAgentManifest = {
   agent_id?: string
@@ -20,19 +62,6 @@ type LingTaiAgentManifest = {
     model?: string
     base_url?: string
   }
-}
-
-type LingTaiLedgerEntry = {
-  source?: string
-  em_id?: string
-  run_id?: string
-  ts?: string | number
-  input?: number | string
-  output?: number | string
-  thinking?: number | string
-  cached?: number | string
-  model?: string
-  endpoint?: string
 }
 
 type LingTaiProviderOptions = {
@@ -60,14 +89,8 @@ function expandHome(raw: string): string {
 function splitPathList(raw: string | undefined): string[] {
   return (raw ?? '')
     .split(delimiter)
-    .map(p => p.trim())
+    .map(path => path.trim())
     .filter(Boolean)
-}
-
-async function existingDir(path: string): Promise<string | null> {
-  const resolved = resolve(expandHome(path))
-  const s = await stat(resolved).catch(() => null)
-  return s?.isDirectory() ? resolved : null
 }
 
 function getDefaultLingTaiHome(options: LingTaiProviderOptions): string {
@@ -87,31 +110,100 @@ function projectPrefixFromHome(lingtaiHome: string, defaultLingTaiHome: string):
   return projectName && projectName !== '.' ? sanitizeProject(projectName) : undefined
 }
 
-async function readRegisteredProjectPaths(globalDir: string): Promise<string[]> {
-  const projects: string[] = []
+function sanitizeProject(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed) return 'lingtai'
+  return trimmed.replace(/^[/\\]+/, '').replace(/[:/\\]/g, '-')
+}
 
-  const registryRaw = await readFile(join(globalDir, 'registry.jsonl'), 'utf-8').catch(() => '')
-  for (const line of registryRaw.split(/\r?\n/)) {
-    if (!line.trim()) continue
-    try {
-      const obj = asObject(JSON.parse(line))
-      const path = stringField(obj, 'path')
-      if (path) projects.push(path)
-    } catch {
-      // Ignore corrupt registry rows; LingTai treats this as append-only state.
+function stringField(obj: Record<string, unknown> | null, key: string): string | undefined {
+  const decoded = decodeString(obj?.[key])
+  return Result.isSuccess(decoded) && decoded.success.trim() ? decoded.success : undefined
+}
+
+function numericField(obj: Record<string, unknown>, key: string): number {
+  const decoded = decodeNumeric(obj[key])
+  if (Result.isFailure(decoded)) return 0
+  const n = typeof decoded.success === 'number' ? decoded.success : Number(decoded.success)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return Math.trunc(n)
+}
+
+function parseJson(raw: string): unknown | null {
+  if (!raw) return null
+  const decoded = decodeJson(raw)
+  return Result.isSuccess(decoded) ? decoded.success : null
+}
+
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause))
+}
+
+function readJsonEffect(path: string, signal?: AbortSignal): Effect.Effect<unknown | null, Error> {
+  return scanIo(() => readFile(path, 'utf-8'), signal).pipe(
+    Effect.map(parseJson),
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
+}
+
+function readAgentManifestEffect(
+  agentDir: string,
+  signal?: AbortSignal,
+): Effect.Effect<LingTaiAgentManifest | null, Error> {
+  return Effect.gen(function* () {
+    const parsed = yield* readJsonEffect(join(agentDir, '.agent.json'), signal)
+    const decoded = decodeManifest(parsed)
+    if (Result.isFailure(decoded)) return null
+
+    const manifest = decoded.success
+    const llmObject = decodeObject(manifest.llm)
+    const decodedLlm = Result.isSuccess(llmObject) ? decodeLlmManifest(llmObject.success) : null
+    const llm = decodedLlm && Result.isSuccess(decodedLlm) ? decodedLlm.success : null
+    return {
+      agent_id: stringField(manifest, 'agent_id'),
+      agent_name: stringField(manifest, 'agent_name'),
+      address: stringField(manifest, 'address'),
+      nickname: stringField(manifest, 'nickname') ?? null,
+      llm: llm ? { model: stringField(llm, 'model'), base_url: stringField(llm, 'base_url') } : undefined,
     }
-  }
+  })
+}
 
-  const briefDir = join(globalDir, 'brief', 'projects')
-  const entries = await readdir(briefDir, { withFileTypes: true }).catch(() => [])
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    const meta = await readJson<JsonObject>(join(briefDir, entry.name, 'meta.json'))
-    const path = stringField(meta, 'project_path')
-    if (path) projects.push(path)
-  }
+function readDirectoryEntriesEffect(path: string, signal?: AbortSignal): Effect.Effect<Dirent[] | null, Error> {
+  return scanIo(() => readdir(path, { withFileTypes: true }), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
+}
 
-  return projects
+function readRegisteredProjectPathsEffect(globalDir: string, signal?: AbortSignal): Effect.Effect<string[], Error> {
+  return Effect.gen(function* () {
+    const projects: string[] = []
+    const registryRaw = yield* scanIo(() => readFile(join(globalDir, 'registry.jsonl'), 'utf-8'), signal).pipe(
+      Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(''))),
+    )
+    for (const line of registryRaw.split(/\r?\n/)) {
+      yield* checkScanAbort(signal)
+      if (!line.trim()) continue
+      const parsed = parseJson(line)
+      const decoded = decodeRegistryEntry(parsed)
+      if (Result.isFailure(decoded)) continue
+      const path = stringField(decoded.success, 'path')
+      if (path) projects.push(path)
+    }
+
+    const briefDir = join(globalDir, 'brief', 'projects')
+    const entries = yield* readDirectoryEntriesEffect(briefDir, signal)
+    for (const entry of entries ?? []) {
+      yield* checkScanAbort(signal)
+      if (!entry.isDirectory()) continue
+      const meta = yield* readJsonEffect(join(briefDir, entry.name, 'meta.json'), signal)
+      const decoded = decodeProjectMeta(meta)
+      if (Result.isFailure(decoded)) continue
+      const path = stringField(decoded.success, 'project_path')
+      if (path) projects.push(path)
+    }
+    return projects
+  })
 }
 
 function cwdLingTaiHomes(cwd: string): string[] {
@@ -126,85 +218,47 @@ function cwdLingTaiHomes(cwd: string): string[] {
   return homes
 }
 
-async function getLingTaiHomes(options: LingTaiProviderOptions): Promise<LingTaiHome[]> {
+function existingDirEffect(path: string, signal?: AbortSignal): Effect.Effect<string | null, Error> {
+  const resolved = resolve(expandHome(path))
+  return scanIo(() => stat(resolved), signal).pipe(
+    Effect.map(info => (info.isDirectory() ? resolved : null)),
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
+}
+
+const getLingTaiHomesEffect = Effect.fnUntraced(function* (
+  options: LingTaiProviderOptions,
+  context?: ProviderScanContext,
+): Effect.fn.Return<LingTaiHome[], Error> {
+  const signal = context?.signal
+  yield* checkScanAbort(signal)
   const explicit = splitPathList(
     options.lingtaiHomeOverride ?? process.env['LINGTAI_HOME'] ?? process.env['LINGTAI_TUI_HOME'],
   )
   const defaultHome = getDefaultLingTaiHome(options)
-  const candidates = explicit.length
-    ? explicit
-    : [
-        defaultHome,
-        ...(await readRegisteredProjectPaths(getLingTaiGlobalDir(options))).map(project => join(project, '.lingtai')),
-        ...cwdLingTaiHomes(options.cwdOverride ?? process.cwd()),
-      ]
+  let candidates: string[]
+  if (explicit.length > 0) {
+    candidates = explicit
+  } else {
+    const registeredPaths = yield* readRegisteredProjectPathsEffect(getLingTaiGlobalDir(options), signal)
+    candidates = [
+      defaultHome,
+      ...registeredPaths.map(project => join(project, '.lingtai')),
+      ...cwdLingTaiHomes(options.cwdOverride ?? process.cwd()),
+    ]
+  }
 
   const seen = new Set<string>()
   const homes: LingTaiHome[] = []
   for (const candidate of candidates) {
-    const path = await existingDir(candidate)
+    yield* checkScanAbort(signal)
+    const path = yield* existingDirEffect(candidate, signal)
     if (!path || seen.has(path)) continue
     seen.add(path)
     homes.push({ path, projectPrefix: explicit.length ? undefined : projectPrefixFromHome(path, defaultHome) })
   }
-
   return homes
-}
-
-function sanitizeProject(raw: string): string {
-  const trimmed = raw.trim()
-  if (!trimmed) return 'lingtai'
-  return trimmed.replace(/^[/\\]+/, '').replace(/[:/\\]/g, '-')
-}
-
-function asObject(value: unknown): JsonObject | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : null
-}
-
-function stringField(obj: JsonObject | null, key: string): string | undefined {
-  const value = obj?.[key]
-  return typeof value === 'string' && value.trim() ? value : undefined
-}
-
-function numericField(obj: JsonObject, key: keyof LingTaiLedgerEntry): number {
-  const raw = obj[key]
-  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
-  if (!Number.isFinite(n) || n <= 0) return 0
-  return Math.trunc(n)
-}
-
-async function readJson<T>(path: string): Promise<T | null> {
-  const raw = await readFile(path, 'utf-8').catch(() => null)
-  if (!raw) return null
-  try {
-    return JSON.parse(raw) as T
-  } catch {
-    return null
-  }
-}
-
-async function readAgentManifest(agentDir: string): Promise<LingTaiAgentManifest | null> {
-  const obj = asObject(await readJson<unknown>(join(agentDir, '.agent.json')))
-  if (!obj) return null
-  // .agent.json is untrusted: a planted file can be valid JSON with wrong-typed
-  // fields (e.g. `agent_name: {}`). Reading it as a raw cast let a non-string
-  // field reach sanitizeProject().trim() and throw — and because
-  // discoverAllSessions loops providers without a try/catch, that one file took
-  // down usage discovery for EVERY provider. Normalize to string-or-undefined
-  // here so no downstream string op ever sees a non-string.
-  const llm = asObject(obj['llm'])
-  return {
-    agent_id: stringField(obj, 'agent_id'),
-    agent_name: stringField(obj, 'agent_name'),
-    address: stringField(obj, 'address'),
-    nickname: stringField(obj, 'nickname') ?? null,
-    llm: llm ? { model: stringField(llm, 'model'), base_url: stringField(llm, 'base_url') } : undefined,
-  }
-}
-
-function agentDirFromLedgerPath(ledgerPath: string): string {
-  return dirname(dirname(ledgerPath))
-}
+})
 
 function projectFromManifest(manifest: LingTaiAgentManifest | null, fallback: string, prefix?: string): string {
   const name = sanitizeProject(manifest?.nickname ?? manifest?.agent_name ?? manifest?.address ?? fallback)
@@ -212,25 +266,28 @@ function projectFromManifest(manifest: LingTaiAgentManifest | null, fallback: st
 }
 
 function parseTimestamp(raw: unknown): string {
-  if (typeof raw === 'number' && Number.isFinite(raw)) {
-    const ms = raw < 1e12 ? raw * 1000 : raw
+  const decoded = decodeTimestamp(raw)
+  if (Result.isFailure(decoded)) return ''
+  if (typeof decoded.success === 'number') {
+    const ms = decoded.success < 1e12 ? decoded.success * 1000 : decoded.success
     return new Date(ms).toISOString()
   }
-  if (typeof raw !== 'string' || !raw.trim()) return ''
-  const d = new Date(raw)
-  return Number.isNaN(d.getTime()) ? '' : d.toISOString()
+  if (!decoded.success.trim()) return ''
+  const date = new Date(decoded.success)
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString()
 }
 
-function parseLedgerLine(line: string | Buffer): LingTaiLedgerEntry | null {
+function agentDirFromLedgerPath(ledgerPath: string): string {
+  return dirname(dirname(ledgerPath))
+}
+
+function parseLedgerLine(line: string | Buffer): Record<string, unknown> | null {
   const text = Buffer.isBuffer(line) ? line.toString('utf-8') : line
   if (!text.trim()) return null
-  try {
-    const parsed = JSON.parse(text) as unknown
-    const obj = asObject(parsed)
-    return obj ? (obj as LingTaiLedgerEntry) : null
-  } catch {
-    return null
-  }
+  const decodedJson = decodeJson(text)
+  if (Result.isFailure(decodedJson)) return null
+  const decodedEntry = decodeLedgerEntry(decodedJson.success)
+  return Result.isSuccess(decodedEntry) ? decodedEntry.success : null
 }
 
 function activityForSource(sourceLabel: string): { userMessage: string; tools: string[]; subagentTypes: string[] } {
@@ -267,136 +324,165 @@ function activityForSource(sourceLabel: string): { userMessage: string; tools: s
   }
 }
 
-async function discoverLedgersInHome(home: LingTaiHome): Promise<SessionSource[]> {
-  const entries = await readdir(home.path, { withFileTypes: true }).catch(() => [])
-  const sources: SessionSource[] = []
+function discoverLedgersInHomeEffect(home: LingTaiHome, signal?: AbortSignal): Effect.Effect<SessionSource[], Error> {
+  return Effect.gen(function* () {
+    const entries = yield* readDirectoryEntriesEffect(home.path, signal)
+    const sources: SessionSource[] = []
+    for (const entry of entries ?? []) {
+      yield* checkScanAbort(signal)
+      if (!entry.isDirectory()) continue
+      const agentDir = join(home.path, entry.name)
+      const ledgerPath = join(agentDir, 'logs', 'token_ledger.jsonl')
+      const ledgerStat = yield* scanIo(() => stat(ledgerPath), signal).pipe(
+        Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+      )
+      if (!ledgerStat?.isFile()) continue
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-
-    const agentDir = join(home.path, entry.name)
-    const ledgerPath = join(agentDir, 'logs', 'token_ledger.jsonl')
-    const s = await stat(ledgerPath).catch(() => null)
-    if (!s?.isFile()) continue
-
-    const manifest = await readAgentManifest(agentDir)
-    sources.push({
-      path: ledgerPath,
-      project: projectFromManifest(manifest, entry.name, home.projectPrefix),
-      provider: 'lingtai-tui',
-    })
-  }
-
-  return sources
-}
-
-async function discoverLedgers(homes: LingTaiHome[]): Promise<SessionSource[]> {
-  const sources: SessionSource[] = []
-  const seen = new Set<string>()
-
-  for (const home of homes) {
-    for (const source of await discoverLedgersInHome(home)) {
-      if (seen.has(source.path)) continue
-      seen.add(source.path)
-      sources.push(source)
+      const manifest = yield* readAgentManifestEffect(agentDir, signal)
+      sources.push({
+        path: ledgerPath,
+        project: projectFromManifest(manifest, entry.name, home.projectPrefix),
+        provider: 'lingtai-tui',
+      })
     }
-  }
-
-  return sources
+    return sources
+  })
 }
 
-function createParser(source: SessionSource, pricing: ScanPricing): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const agentDir = agentDirFromLedgerPath(source.path)
-      const manifest = await readAgentManifest(agentDir)
-      const agentId = manifest?.agent_id ?? basename(agentDir)
-      const fallbackModel = manifest?.llm?.model ?? 'unknown'
-      const fallbackEndpoint = manifest?.llm?.base_url ?? ''
-      const project = source.project || projectFromManifest(manifest, basename(agentDir))
-      const projectPath = agentDir
-
-      let lineNo = 0
-      for await (const line of readSessionLines(source.path)) {
-        lineNo += 1
-        const entry = parseLedgerLine(line)
-        if (!entry) continue
-
-        const obj = entry as JsonObject
-        const inputTotal = numericField(obj, 'input')
-        const outputTokens = numericField(obj, 'output')
-        const reasoningTokens = numericField(obj, 'thinking')
-        const cachedInputTokens = numericField(obj, 'cached')
-        const totalTokens = inputTotal + outputTokens + reasoningTokens + cachedInputTokens
-        if (totalTokens === 0) continue
-
-        // LingTai records provider-normalized input totals plus a separate
-        // cached count. Match the pipeline's normal shape by billing cached tokens
-        // in cacheReadInputTokens, not again as fresh input.
-        const inputTokens = Math.max(0, inputTotal - cachedInputTokens)
-        const model = stringField(obj, 'model') ?? fallbackModel
-        const endpoint = stringField(obj, 'endpoint') ?? fallbackEndpoint
-        const timestamp = parseTimestamp(entry.ts)
-        const sourceLabel = stringField(obj, 'source') ?? 'main'
-        const emId = stringField(obj, 'em_id') ?? ''
-        const runId = stringField(obj, 'run_id') ?? ''
-        const sessionId = runId || `${agentId}:${sourceLabel}`
-        const activity = activityForSource(sourceLabel)
-        const dedupKey = [
-          'lingtai-tui',
-          source.path,
-          lineNo,
-          timestamp,
-          model,
-          endpoint,
-          sourceLabel,
-          emId,
-          runId,
-          inputTotal,
-          outputTokens,
-          reasoningTokens,
-          cachedInputTokens,
-        ].join(':')
-
-        const costUSD = pricing.calculateCost(
-          model,
-          inputTokens,
-          billableOutputTokens('lingtai-tui', outputTokens, reasoningTokens),
-          0,
-          cachedInputTokens,
-          0,
-        )
-
-        yield {
-          provider: 'lingtai-tui',
-          model,
-          inputTokens,
-          outputTokens,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: cachedInputTokens,
-          cachedInputTokens,
-          reasoningTokens,
-          webSearchRequests: 0,
-          costUSD,
-          tools: activity.tools,
-          bashCommands: [],
-          subagentTypes: activity.subagentTypes,
-          timestamp,
-          speed: 'standard',
-          deduplicationKey: dedupKey,
-          turnId: `${sessionId}:line:${lineNo}`,
-          userMessage: activity.userMessage,
-          sessionId,
-          project,
-          projectPath,
-        }
+function discoverLedgersEffect(homes: LingTaiHome[], signal?: AbortSignal): Effect.Effect<SessionSource[], Error> {
+  return Effect.gen(function* () {
+    const sources: SessionSource[] = []
+    const seen = new Set<string>()
+    for (const home of homes) {
+      yield* checkScanAbort(signal)
+      for (const source of yield* discoverLedgersInHomeEffect(home, signal)) {
+        if (seen.has(source.path)) continue
+        seen.add(source.path)
+        sources.push(source)
       }
+    }
+    return sources
+  })
+}
+
+function createParser(source: SessionSource, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
+  const signal = context?.signal
+  const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
+        const agentDir = agentDirFromLedgerPath(source.path)
+        const manifest = yield* readAgentManifestEffect(agentDir, signal)
+        yield* checkScanAbort(signal)
+        const agentId = manifest?.agent_id ?? basename(agentDir)
+        const fallbackModel = manifest?.llm?.model ?? 'unknown'
+        const fallbackEndpoint = manifest?.llm?.base_url ?? ''
+        const project = source.project || projectFromManifest(manifest, basename(agentDir))
+        const projectPath = agentDir
+        let lineNo = 0
+
+        return readSessionLinesStream(source.path, undefined, signal ? { signal } : {}).pipe(
+          Stream.mapEffect(line =>
+            Effect.gen(function* () {
+              yield* checkScanAbort(signal)
+              lineNo += 1
+              const entry = parseLedgerLine(line)
+              if (!entry) return Result.fail(undefined)
+
+              const inputTotal = numericField(entry, 'input')
+              const outputTokens = numericField(entry, 'output')
+              const reasoningTokens = numericField(entry, 'thinking')
+              const cachedInputTokens = numericField(entry, 'cached')
+              const totalTokens = inputTotal + outputTokens + reasoningTokens + cachedInputTokens
+              if (totalTokens === 0) return Result.fail(undefined)
+
+              // LingTai stores cached usage inside its input total.
+              const inputTokens = Math.max(0, inputTotal - cachedInputTokens)
+              const model = stringField(entry, 'model') ?? fallbackModel
+              const endpoint = stringField(entry, 'endpoint') ?? fallbackEndpoint
+              const timestamp = parseTimestamp(entry['ts'])
+              const sourceLabel = stringField(entry, 'source') ?? 'main'
+              const emId = stringField(entry, 'em_id') ?? ''
+              const runId = stringField(entry, 'run_id') ?? ''
+              const sessionId = runId || `${agentId}:${sourceLabel}`
+              const activity = activityForSource(sourceLabel)
+              const dedupKey = [
+                'lingtai-tui',
+                source.path,
+                lineNo,
+                timestamp,
+                model,
+                endpoint,
+                sourceLabel,
+                emId,
+                runId,
+                inputTotal,
+                outputTokens,
+                reasoningTokens,
+                cachedInputTokens,
+              ].join(':')
+              const costUSD = yield* Effect.try({
+                try: () =>
+                  pricing.calculateCost(
+                    model,
+                    inputTokens,
+                    billableOutputTokens('lingtai-tui', outputTokens, reasoningTokens),
+                    0,
+                    cachedInputTokens,
+                    0,
+                  ),
+                catch: toError,
+              })
+
+              const call: ParsedProviderCall = {
+                provider: 'lingtai-tui',
+                model,
+                inputTokens,
+                outputTokens,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: cachedInputTokens,
+                cachedInputTokens,
+                reasoningTokens,
+                webSearchRequests: 0,
+                costUSD,
+                tools: activity.tools,
+                bashCommands: [],
+                subagentTypes: activity.subagentTypes,
+                timestamp,
+                speed: 'standard',
+                deduplicationKey: dedupKey,
+                turnId: `${sessionId}:line:${lineNo}`,
+                userMessage: activity.userMessage,
+                sessionId,
+                project,
+                projectPath,
+              }
+              yield* checkScanAbort(signal)
+              return Result.succeed(call)
+            }),
+          ),
+          Stream.filterMap(call => call),
+        )
+      }),
+    )
+
+  return {
+    parseStream,
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      // Remove when direct parser callers consume parseStream.
+      yield* Stream.toAsyncIterable(parseStream())
     },
   }
 }
 
 export function createLingTaiTuiProvider(options?: string | LingTaiProviderOptions): Provider {
   const providerOptions = normalizeOptions(options)
+  const discoverEffect = (context?: ProviderScanContext) =>
+    Effect.gen(function* () {
+      const homes = yield* getLingTaiHomesEffect(providerOptions, context)
+      return yield* discoverLedgersEffect(homes, context?.signal)
+    })
 
   return {
     name: 'lingtai-tui',
@@ -410,8 +496,11 @@ export function createLingTaiTuiProvider(options?: string | LingTaiProviderOptio
       return rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      return discoverLedgers(await getLingTaiHomes(providerOptions))
+    discoverSessionsEffect: discoverEffect,
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // Remove when external discovery callers use discoverSessionsEffect.
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(
@@ -420,8 +509,7 @@ export function createLingTaiTuiProvider(options?: string | LingTaiProviderOptio
       _dateRange?: DateRange,
       context?: ProviderScanContext,
     ): SessionParser {
-      const pricing = context?.pricing ?? captureScanPricing()
-      return createParser(source, pricing)
+      return createParser(source, context)
     },
   }
 }
