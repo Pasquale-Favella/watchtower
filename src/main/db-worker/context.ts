@@ -8,30 +8,18 @@ import type { SqlError } from 'effect/unstable/sql/SqlError'
 import { readdirSync, statSync } from 'fs'
 import { join } from 'path'
 
-import { CommandRunner } from '../agents/command-runner.js'
 import { clearLedger } from '../application/clear-ledger.js'
 import { queryActiveCurrency, selectDisplayCurrency } from '../application/currency-commands.js'
-import { GatewayReports } from '../application/gateway-reports.js'
 import { setRefreshCadence } from '../application/ledger-config-commands.js'
+import { scanLedger } from '../application/scan-ledger.js'
 import { resolveCadenceMs } from '../cadence.js'
-import type { Env } from '../env.js'
 import { type CurrencyOption, FxRates, isValidCurrencyCode, listCurrencies, refreshFxRateWithRates } from '../fx.js'
-import type { OperationalLog } from '../operational-log.js'
 import type { HttpFetch } from '../pipeline/fetch-utils.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
-import { getRepoUrlEffect } from '../pipeline/git-remote.js'
 import { refreshPricingNowEffect } from '../pipeline/models.js'
-import type { DeltaHandler } from '../pipeline/parser.js'
 import { getClaudeConfigDirs } from '../pipeline/providers/claude.js'
-import {
-  buildScanSummaryRecords,
-  runScan,
-  ScanAbortedError,
-  type ScanMetadata,
-  type ScanProgress,
-} from '../pipeline/scan.js'
-import type { DateRange } from '../pipeline/types.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../store/ledger-ports.js'
+import { buildScanSummaryRecords, ScanAbortedError, type ScanMetadata, type ScanProgress } from '../pipeline/scan.js'
+import { LedgerConfig, LedgerQueries } from '../store/ledger-ports.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
 import { ledgerConfigRequest } from './config-dispatch.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
@@ -51,18 +39,6 @@ function dirSize(path: string): number {
     // missing or unreadable dir counts as zero
   }
   return total
-}
-
-/**
- * The scan ALWAYS ports lifetime (epoch → now): the ledger must absorb every
- * file's full history on its first scan, and the old report-era 30-day default
- * (or any windowed scan) would silently strand anything outside the window
- * forever — a cold first scan has no cache entry to fall back to as an
- * `unchanged` backfill. The views apply their own period at read time
- * (aggregation), never at scan time, so a windowed scan is never wanted.
- */
-function lifetimeRange(): DateRange {
-  return { start: new Date(0), end: new Date() }
 }
 
 function abortedScanError(): ScanAbortedError {
@@ -126,64 +102,13 @@ export class DbWorkerContext {
 
   // ── Scan pipeline ───────────────────────────────────────────────────
 
-  /** Manual and background scans share one lifetime range and stream deltas
-   * through LedgerIngest. Repository lookups are memoized per project path.
-   * HttpFetch, Env, OperationalLog and LedgerIngest come from the worker runtime;
-   * this workflow does not construct layers. */
+  /** The application workflow receives the worker's cooperative stop state. */
   private performScan(
     options: { provider?: string } | undefined,
     emit: (progress: ScanProgress) => void,
     owner: ActiveScan,
-  ): Effect.Effect<
-    ScanMetadata,
-    unknown,
-    HttpFetch | Env | OperationalLog | LedgerIngest | CommandRunner | GatewayReports
-  > {
-    return Effect.gen(function* () {
-      const ingest = yield* LedgerIngest
-      const runner = yield* CommandRunner
-      const gateway = yield* GatewayReports
-      const range = lifetimeRange()
-      const repoUrlCache = new Map<string, string | undefined>()
-      const portIn: DeltaHandler = Effect.fnUntraced(function* (delta, pricing) {
-        if (delta.cachedFile.failed) return
-        if (owner.aborted) return yield* abortedScanError()
-        // Repository badge (#106): resolve from the canonical project path for
-        // every provider — the worktree-folded cwd when the parser derived one,
-        // else the provider's exact working directory. Same memoized-per-scan,
-        // silent-when-absent semantics as before; never an identity key.
-        const cwd = delta.cachedFile.canonicalCwd ?? delta.workingDirectory ?? delta.cachedFile.workingDirectory
-        let repoUrl: string | undefined
-        if (cwd) {
-          if (!repoUrlCache.has(cwd)) {
-            const resolved = yield* getRepoUrlEffect(cwd).pipe(Effect.provideService(CommandRunner, runner))
-            repoUrlCache.set(cwd, resolved)
-          }
-          repoUrl = repoUrlCache.get(cwd)
-        }
-        if (owner.aborted) return yield* abortedScanError()
-        yield* ingest.portIn({ ...delta, repoUrl }, pricing)
-      })
-      return yield* runScan(
-        { range, provider: options?.provider },
-        emit,
-        { isAborted: () => owner.aborted },
-        // Ledger port-in seam (ADR 0002): every settled session file is streamed
-        // to the ledger while the parse runs. The scan's delta wrapper already
-        // gates out failed parses; `unchanged` is a no-op inside portIn.
-        portIn,
-        {
-          gatewayEnabled: gateway.enabled,
-          fetchGatewayReport: gateway.getReport,
-        },
-        // Effect-native typed-abort proof (Wave 5 §2): `catchTag` on the `_tag`
-        // (NOT `instanceof`, NOT `either`). No `either` here, so no span-inside
-        // trap — any future `withSpan` must wrap OUTSIDE this `catchTag`, never
-        // inside a branch. Re-fails unchanged so envelopes/flag semantics stay
-        // byte-identical downstream (Promise-boundary `instanceof` + flag in the
-        // `scan:start`/background catches). Defects stay in Cause (no catchAll).
-      ).pipe(Effect.catchTag('ScanAbortedError', err => Effect.fail(err)))
-    })
+  ): ReturnType<typeof scanLedger> {
+    return scanLedger(options, emit, { isAborted: () => owner.aborted })
   }
 
   /** Forks into scanScope using the worker's services, then joins at the
@@ -284,9 +209,8 @@ export class DbWorkerContext {
       // background scans fail silently; manual ⌘R remains available.
       // Fiber interruption (abort/close) rides the abort flag so the oplog
       // stays `scan.abort` (warn), not `scan.error`. Promise-boundary
-      // `instanceof` + flag mapping stays (NOT `catchTag` — this is `await`,
-      // not an Effect); the Effect-native `catchTag` proof lives in
-      // `performScan`.
+      // Typed failures arrive from the application workflow; this Promise
+      // boundary also accounts for interruption through the owner flag.
       this.emit({ event: 'scan:idle' })
       this.emitScanFailure(owner.aborted ? abortedScanError() : err)
     }
@@ -457,10 +381,8 @@ export class DbWorkerContext {
           // Fiber interruption (abort/close) rides the abort flag so the wire
           // stays `{ok:false, aborted:true}` + `scan:error` even when the
           // failure is an interruption cause rather than `ScanAbortedError`.
-          // Promise-boundary `instanceof` + flag mapping stays (NOT `catchTag`
-          // — this is `await runTrackedScan`, not an Effect); the Effect-native
-          // `catchTag` proof lives in `performScan`. `store:changed` only on
-          // success (this `catch` never emits it).
+          // This Promise boundary maps application failures and the owner
+          // flag. Only a successful scan emits `store:changed`.
           const aborted = err instanceof ScanAbortedError || owner.aborted
           const normalized = aborted && !(err instanceof ScanAbortedError) ? abortedScanError() : err
           const message = aborted ? 'scan aborted' : err instanceof Error ? err.message : String(err)
