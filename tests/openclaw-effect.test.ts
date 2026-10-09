@@ -192,6 +192,26 @@ describe('OpenClaw Effect provider', () => {
     expect(calculateCost).toHaveBeenCalledWith('snapshot-model', 100, 40, 8, 12, 0)
   })
 
+  it('uses the final session identity for calls preceding a later session record', async () => {
+    const path = join(root, 'late-session.jsonl')
+    await writeLines(path, [
+      { type: 'session', id: 'initial', timestamp: '2026-10-01T10:00:00.000Z' },
+      { type: 'message', id: 'first', message: { role: 'assistant', usage } },
+      { type: 'session', id: 'final', timestamp: '2026-10-02T10:00:00.000Z' },
+      { type: 'message', message: { role: 'assistant', usage } },
+    ])
+    const seen = new Set<string>()
+    const calls = await Effect.runPromise(Stream.runCollect(parseStream(parser(path, seen))()))
+
+    expect(calls.map(call => call.sessionId)).toEqual(['final', 'final'])
+    expect(calls.map(call => call.deduplicationKey)).toEqual(['openclaw:final:first', 'openclaw:final:1'])
+    expect(calls.map(call => call.timestamp)).toEqual(['2026-10-01T10:00:00.000Z', '2026-10-02T10:00:00.000Z'])
+    expect(seen).toEqual(new Set(['openclaw:final:first', 'openclaw:final:1']))
+
+    const repeated = await Effect.runPromise(Stream.runCollect(parseStream(parser(path, seen))()))
+    expect(repeated).toEqual([])
+  })
+
   it('uses the parser captured pricing snapshot across awaited file IO', async () => {
     const path = join(root, 'captured.jsonl')
     const model = 'openclaw-captured-pricing-fixture'

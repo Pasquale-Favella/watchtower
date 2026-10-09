@@ -300,7 +300,6 @@ describe('no consumer of the seam reads a dropped column', () => {
       callKey: [],
       projectPath: [
         'src/main/canonical-session-project.ts:session',
-        'src/main/export-calculation.ts:project',
         'src/main/optimize-calculation.ts:a',
         'src/main/optimize-calculation.ts:b',
         'src/main/optimize-calculation.ts:p',
