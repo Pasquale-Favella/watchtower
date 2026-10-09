@@ -1,11 +1,7 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
 import { RepositoryInspection, RepositoryInspectionError } from '../src/main/application/repository-inspection.js'
@@ -14,41 +10,16 @@ import { queryYieldView } from '../src/main/application/yield-query.js'
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
 import type { SessionSummary } from '../src/main/pipeline/types.js'
 import {
+  LedgerIngest,
   LedgerQueries,
   type LedgerQueriesPort,
   type LedgerRequestSnapshotData,
 } from '../src/main/store/ledger-ports.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
 import { attributeYieldCommits, calculateYieldPayload, categorizeYieldSession } from '../src/main/yield-calculation.js'
 import { buildFixtureCachedFile } from './fixtures/cached-file.js'
+import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 const NOW = new Date('2026-10-05T12:00:00.000Z')
-const directories: string[] = []
-const stores: LedgerStore[] = []
-
-function makeStore(): LedgerStore {
-  const directory = mkdtempSync(join(tmpdir(), 'watchtower-yield-query-'))
-  directories.push(directory)
-  const store = new LedgerStore(join(directory, 'ledger.db'))
-  stores.push(store)
-  return store
-}
-
-afterEach(() => {
-  try {
-    let closeFailure: unknown
-    for (const store of stores.splice(0)) {
-      try {
-        store.close()
-      } catch (error) {
-        closeFailure ??= error
-      }
-    }
-    if (closeFailure !== undefined) throw closeFailure
-  } finally {
-    for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
-  }
-})
 
 function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -240,14 +211,18 @@ describe('queryYieldView', () => {
   })
 
   it('builds a literal Yield summary from one nonempty ledger snapshot', async () => {
-    const store = makeStore()
-    store.portIn({
-      provider: 'opencode',
-      envFingerprint: 'yield-query',
-      filePath: '/cache/yield-query.jsonl',
-      verdict: 'new',
-      cachedFile: buildFixtureCachedFile(),
-    })
+    const { runtime } = openLedgerFixture()
+    runtime.runSync(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          provider: 'opencode',
+          envFingerprint: 'yield-query',
+          filePath: '/cache/yield-query.jsonl',
+          verdict: 'new',
+          cachedFile: buildFixtureCachedFile(),
+        }),
+      ),
+    )
     let nowMillis = NOW.getTime()
     let nowReads = 0
     let snapshotReads = 0
@@ -273,7 +248,7 @@ describe('queryYieldView', () => {
           return []
         }),
     })
-    const payload = await Effect.runPromise(
+    const payload = await runtime.runPromise(
       Effect.gen(function* () {
         yield* Clock.Clock
         const actual = yield* LedgerQueries
@@ -295,7 +270,6 @@ describe('queryYieldView', () => {
           Effect.provideService(RepositoryInspection, inspection),
         )
       }).pipe(
-        Effect.provide(store.portsLayer),
         Effect.provideService(
           Clock.Clock,
           testClock(

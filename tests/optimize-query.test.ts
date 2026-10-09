@@ -1,21 +1,15 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
 import * as Effect from 'effect/Effect'
 import * as TestClock from 'effect/testing/TestClock'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import { AssistantSetup } from '../src/main/application/assistant-setup.js'
 import { queryOptimizeView } from '../src/main/application/optimize-query.js'
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
-const directories: string[] = []
-const stores: LedgerStore[] = []
 const catalogue = capturePricingCatalogue({
   prices: new Map(),
   overrides: new Map(),
@@ -26,38 +20,14 @@ const catalogue = capturePricingCatalogue({
 })
 const input = { scope: { period: 'lifetime' as const }, catalogue, proxyPaths: { paths: [], caseSensitive: false } }
 
-function makeStore(): LedgerStore {
-  const directory = mkdtempSync(join(tmpdir(), 'watchtower-optimize-query-'))
-  directories.push(directory)
-  const store = new LedgerStore(join(directory, 'ledger.db'))
-  stores.push(store)
-  return store
-}
-
-afterEach(() => {
-  try {
-    let closeFailure: unknown
-    for (const store of stores.splice(0)) {
-      try {
-        store.close()
-      } catch (error) {
-        closeFailure ??= error
-      }
-    }
-    if (closeFailure !== undefined) throw closeFailure
-  } finally {
-    for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
-  }
-})
-
 describe('queryOptimizeView', () => {
   it('captures the clock before loading one snapshot and skips filesystem setup for an empty result', async () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
     const reports: string[][] = []
     let setupCalls = 0
     let snapshotReads = 0
     const capturedInstant = new Date(2026, 6, 2, 12).getTime()
-    const result = await Effect.runPromise(
+    const result = await runtime.runPromise(
       Effect.gen(function* () {
         yield* TestClock.setTime(capturedInstant)
         const actual = yield* LedgerQueries
@@ -89,7 +59,7 @@ describe('queryOptimizeView', () => {
             }),
           ),
         )
-      }).pipe(Effect.provide(store.portsLayer), Effect.provide(TestClock.layer())),
+      }).pipe(Effect.provide(TestClock.layer())),
     )
 
     expect(result.findings).toEqual([])
@@ -101,42 +71,45 @@ describe('queryOptimizeView', () => {
   })
 
   it('loads Optimize setup once for nonempty project data and validates the result', async () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
     for (const index of [0, 1]) {
-      store.portIn({
-        provider: 'claude',
-        envFingerprint: 'optimize-query',
-        filePath: `/cache/optimize-query-${index}.jsonl`,
-        verdict: 'new',
-        cachedFile: buildFixtureCachedFile({
-          turns: [
-            buildFixtureCachedTurn(index, 'inspect generated files', {
-              sessionId: `claude-session-${index}`,
-              calls: [
-                {
-                  ...buildFixtureCachedCall(index),
-                  provider: 'claude',
-                  tools: ['mcp__filesystem__list'],
-                  toolSequence: [
-                    [
-                      { tool: 'Read', file: 'C:\\workspace\\node_modules\\generated.ts' },
-                      { tool: 'Read', file: 'C:\\workspace\\node_modules\\generated.ts' },
-                      { tool: 'Read', file: 'C:\\workspace\\node_modules\\generated.ts' },
-                      { tool: 'mcp__filesystem__list' },
-                    ],
+      runtime.runSync(
+        Effect.flatMap(LedgerIngest, ingest =>
+          ingest.portIn({
+            provider: 'claude',
+            envFingerprint: 'optimize-query',
+            filePath: `/cache/optimize-query-${index}.jsonl`,
+            verdict: 'new',
+            cachedFile: buildFixtureCachedFile({
+              turns: [
+                buildFixtureCachedTurn(index, 'inspect generated files', {
+                  sessionId: `claude-session-${index}`,
+                  calls: [
+                    {
+                      ...buildFixtureCachedCall(index),
+                      provider: 'claude',
+                      tools: ['mcp__filesystem__list'],
+                      toolSequence: [
+                        [
+                          { tool: 'Read', file: 'C:\\workspace\\node_modules\\generated.ts' },
+                          { tool: 'Read', file: 'C:\\workspace\\node_modules\\generated.ts' },
+                          { tool: 'Read', file: 'C:\\workspace\\node_modules\\generated.ts' },
+                          { tool: 'mcp__filesystem__list' },
+                        ],
+                      ],
+                    },
                   ],
-                },
+                }),
               ],
             }),
-          ],
-        }),
-      })
+          }),
+        ),
+      )
     }
     const setups: Array<{ directories: readonly string[]; home?: string }> = []
     const reports: string[][] = []
-    const result = await Effect.runPromise(
+    const result = await runtime.runPromise(
       queryOptimizeView({ ...input, homeDir: '/test-home' }).pipe(
-        Effect.provide(store.portsLayer),
         Effect.provideService(
           AssistantSetup,
           AssistantSetup.of({
