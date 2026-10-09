@@ -216,6 +216,7 @@ export interface AppPaths {
 export const PROVIDER_ENV_KEYS = [
   'CLAUDE_CONFIG_DIR',
   'CLAUDE_CONFIG_DIRS',
+  'CODEBUFF_DATA_DIR',
   'CODEWHALE_HOME',
   'COLUMNS',
   'CRUSH_GLOBAL_DATA',
@@ -225,6 +226,7 @@ export const PROVIDER_ENV_KEYS = [
   'LINGTAI_HOME',
   'LINGTAI_TUI_GLOBAL_DIR',
   'LINGTAI_TUI_HOME',
+  'MUX_ROOT',
   'OPENCODE_DATA_DIR',
   'OPENCODE_DB_PREFIX',
   'QUICKWORK_HOME',
@@ -238,6 +240,7 @@ export const PROVIDER_ENV_KEYS = [
   'WATCHTOWER_COPILOT_SESSION_STORE_DB',
   'WATCHTOWER_COPILOT_WS_STORAGE_DIR',
   'WATCHTOWER_DESKTOP_SESSIONS_DIR',
+  'WATCHTOWER_MUX_DIR',
   'WATCHTOWER_OPEN_DESIGN_DIR',
   'WATCHTOWER_PROGRESS',
   'WATCHTOWER_VERBOSE',
@@ -277,7 +280,6 @@ export type ProviderEnvKey = (typeof PROVIDER_ENV_KEYS)[number]
  * a key — the gate is read, so it is threaded; the direct read is what left.
  */
 export const REMAINING_DIRECT_ENV_READS: Readonly<Record<string, readonly string[]>> = {
-  'providers/codewhale.ts': ['CODEWHALE_HOME'],
   'providers/droid.ts': ['FACTORY_DIR'],
   'providers/hermes.ts': ['HERMES_HOME'],
   'providers/kimicode.ts': ['KIMI_CODE_HOME'],
@@ -395,6 +397,7 @@ export const ENV_VAR_SOURCES = {
   APPDATA: { kind: 'platform', field: 'appData' },
   CLAUDE_CONFIG_DIR: { kind: 'override' },
   CLAUDE_CONFIG_DIRS: { kind: 'override' },
+  CODEBUFF_DATA_DIR: { kind: 'override' },
   CODEWHALE_HOME: { kind: 'override' },
   CODEX_HOME: { kind: 'field', field: 'codexHome' },
   COLUMNS: { kind: 'override' },
@@ -406,6 +409,7 @@ export const ENV_VAR_SOURCES = {
   LINGTAI_TUI_GLOBAL_DIR: { kind: 'override' },
   LINGTAI_TUI_HOME: { kind: 'override' },
   LOCALAPPDATA: { kind: 'platform', field: 'localAppData' },
+  MUX_ROOT: { kind: 'override' },
   OPENCODE_DATA_DIR: { kind: 'override' },
   OPENCODE_DB_PREFIX: { kind: 'override' },
   QUICKWORK_HOME: { kind: 'override' },
@@ -420,6 +424,7 @@ export const ENV_VAR_SOURCES = {
   WATCHTOWER_COPILOT_SESSION_STORE_DB: { kind: 'override' },
   WATCHTOWER_COPILOT_WS_STORAGE_DIR: { kind: 'override' },
   WATCHTOWER_DESKTOP_SESSIONS_DIR: { kind: 'override' },
+  WATCHTOWER_MUX_DIR: { kind: 'override' },
   WATCHTOWER_OPEN_DESIGN_DIR: { kind: 'override' },
   WATCHTOWER_PROGRESS: { kind: 'override' },
   WATCHTOWER_VERBOSE: { kind: 'override' },
