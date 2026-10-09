@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import { Cause, Effect, Exit, Option, Stream } from 'effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -18,6 +19,7 @@ import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
 const tempDirs: string[] = []
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -218,9 +220,29 @@ describe('VS Code Cline family Effect provider', () => {
     await expect(nativeDiscovery(provider)).resolves.toEqual([{ path: newerTask, project: 'Cline', provider: 'cline' }])
   })
 
-  it('exposes native discovery only for fully migrated Cline, Roo, and IBM Bob chains', async () => {
+  it('exposes native discovery for Cline, Roo, IBM Bob and both Kilo branches', async () => {
     const base = tempDir()
     const task = makeTask(base, 'task-1', [])
+    const dataHome = tempDir()
+    vi.stubEnv('XDG_DATA_HOME', dataHome)
+    const dbDir = join(dataHome, 'kilo')
+    mkdirSync(dbDir)
+    const dbPath = join(dbDir, 'kilo.db')
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.exec(
+        'CREATE TABLE session (id TEXT, directory TEXT, title TEXT, time_created REAL, time_archived REAL, parent_id TEXT);' +
+          'CREATE TABLE message (id TEXT); CREATE TABLE part (id TEXT);',
+      )
+      db.prepare('INSERT INTO session (id, directory, title, time_created) VALUES (?, ?, ?, ?)').run(
+        'sqlite-session',
+        '/workspace/kilo',
+        'Kilo fixture',
+        1_750_000_000,
+      )
+    } finally {
+      db.close()
+    }
     const cline = createClineProvider(base)
     const roo = createRooCodeProvider(base)
     const bob = createIBMBobProvider(base)
@@ -229,7 +251,15 @@ describe('VS Code Cline family Effect provider', () => {
     await expect(nativeDiscovery(cline)).resolves.toEqual([{ path: task, project: 'Cline', provider: 'cline' }])
     await expect(nativeDiscovery(roo)).resolves.toEqual([{ path: task, project: 'Roo Code', provider: 'roo-code' }])
     await expect(nativeDiscovery(bob)).resolves.toEqual([{ path: task, project: 'IBM Bob', provider: 'ibm-bob' }])
-    expect(kilo.discoverSessionsEffect).toBeUndefined()
+    await expect(nativeDiscovery(kilo)).resolves.toEqual([
+      { path: task, project: 'KiloCode', provider: 'kilo-code' },
+      {
+        path: `${dbPath}:sqlite-session`,
+        project: 'workspace-kilo',
+        provider: 'kilo-code',
+        workingDirectory: '/workspace/kilo',
+      },
+    ])
   })
 
   it('preserves cancellation reasons at parser and discovery boundaries', async () => {
