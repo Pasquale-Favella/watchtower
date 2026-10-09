@@ -67,7 +67,7 @@ export function createKiloCodeProvider(overrideDir?: string | string[]): Provide
       if (source.path.includes('.db:')) {
         return createSqliteSessionParser(source, seenKeys, sqliteConfig, undefined, pricing)
       }
-      return createClineParser(source, seenKeys, PROVIDER_NAME, 'cline-auto', pricing)
+      return createClineParser(source, seenKeys, PROVIDER_NAME, 'cline-auto', pricing, context)
     },
   }
 }

@@ -1,3 +1,4 @@
+import { Effect } from 'effect'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -5,7 +6,7 @@ import { getShortModelName } from '../models.js'
 import { captureScanPricing } from '../models.js'
 import type { DateRange } from '../types.js'
 import type { Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
-import { createClineParser, discoverClineTasksInBaseDirs } from './vscode-cline-parser.js'
+import { createClineParser, discoverClineTaskCandidatesInBaseDirsEffect } from './vscode-cline-parser.js'
 
 const PROVIDER_NAME = 'ibm-bob'
 const DISPLAY_NAME = 'IBM Bob'
@@ -35,6 +36,13 @@ export function getIBMBobGlobalStorageDirs(): string[] {
 }
 
 export function createIBMBobProvider(overrideDir?: string): Provider {
+  const discoverEffect = (context?: ProviderScanContext) => {
+    const dirs = overrideDir ? [overrideDir] : getIBMBobGlobalStorageDirs()
+    return discoverClineTaskCandidatesInBaseDirsEffect(dirs, PROVIDER_NAME, DISPLAY_NAME, context?.signal).pipe(
+      Effect.map(candidates => candidates.map(candidate => candidate.source)),
+    )
+  }
+
   return {
     name: PROVIDER_NAME,
     displayName: DISPLAY_NAME,
@@ -47,9 +55,13 @@ export function createIBMBobProvider(overrideDir?: string): Provider {
       return rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      const dirs = overrideDir ? [overrideDir] : getIBMBobGlobalStorageDirs()
-      return discoverClineTasksInBaseDirs(dirs, PROVIDER_NAME, DISPLAY_NAME)
+    discoverSessionsEffect(context?: ProviderScanContext) {
+      return discoverEffect(context)
+    },
+
+    // Remove when direct discovery callers consume the native Effect path.
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(
@@ -59,7 +71,7 @@ export function createIBMBobProvider(overrideDir?: string): Provider {
       context?: ProviderScanContext,
     ): SessionParser {
       const pricing = context?.pricing ?? captureScanPricing()
-      return createClineParser(source, seenKeys, PROVIDER_NAME, FALLBACK_MODEL, pricing)
+      return createClineParser(source, seenKeys, PROVIDER_NAME, FALLBACK_MODEL, pricing, context)
     },
   }
 }
