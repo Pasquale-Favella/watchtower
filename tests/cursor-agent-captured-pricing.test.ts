@@ -6,24 +6,39 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
-  pauseNextRead: false,
-  onReadStarted: undefined as (() => void) | undefined,
-  releaseRead: undefined as (() => void) | undefined,
+  pauseNextOpen: false,
+  onOpenStarted: undefined as (() => void) | undefined,
+  releaseOpen: undefined as (() => void) | undefined,
 }))
 
-vi.mock('fs/promises', async importOriginal => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>()
+vi.mock('fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>()
   return {
     ...actual,
-    readFile: async (...args: Parameters<typeof actual.readFile>) => {
-      if (hooks.pauseNextRead && String(args[0]).endsWith('.txt')) {
-        hooks.pauseNextRead = false
-        await new Promise<void>(resolve => {
-          hooks.releaseRead = resolve
-          hooks.onReadStarted?.()
-        })
-      }
-      return actual.readFile(...args)
+    createReadStream: (
+      path: Parameters<typeof actual.createReadStream>[0],
+      options?: Parameters<typeof actual.createReadStream>[1],
+    ) => {
+      const streamOptions = typeof options === 'object' && options !== null ? options : {}
+      return actual.createReadStream(path, {
+        ...streamOptions,
+        fs: {
+          ...actual,
+          open: (filePath, flags, mode, callback) => {
+            const open = () => {
+              if (typeof mode === 'function') actual.open(filePath, flags, mode)
+              else if (callback) actual.open(filePath, flags, mode, callback)
+            }
+            if (hooks.pauseNextOpen && String(filePath).endsWith('.txt')) {
+              hooks.pauseNextOpen = false
+              hooks.releaseOpen = open
+              hooks.onOpenStarted?.()
+              return
+            }
+            open()
+          },
+        },
+      })
     },
   }
 })
@@ -43,9 +58,9 @@ let root = ''
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'watchtower-cursor-agent-captured-pricing-'))
-  hooks.pauseNextRead = false
-  hooks.onReadStarted = undefined
-  hooks.releaseRead = undefined
+  hooks.pauseNextOpen = false
+  hooks.onOpenStarted = undefined
+  hooks.releaseOpen = undefined
   setModelAliases({})
   setLocalModelSavings({})
   setPriceOverrides({ [MODEL]: { input: 1, output: 2, cacheCreation: 3, cacheRead: 4 } })
@@ -96,18 +111,18 @@ describe('Cursor Agent captured scan pricing', () => {
     const firstPricing = captureScanPricing()
     const parser = provider.createSessionParser(firstSource, new Set())
 
-    hooks.pauseNextRead = true
+    hooks.pauseNextOpen = true
     let started!: () => void
     const readStarted = new Promise<void>(resolve => {
       started = resolve
     })
-    hooks.onReadStarted = started
+    hooks.onOpenStarted = started
     const pending = collect(parser.parse())
     try {
       await readStarted
       setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
     } finally {
-      hooks.releaseRead?.()
+      hooks.releaseOpen?.()
     }
 
     const firstCalls = await pending
