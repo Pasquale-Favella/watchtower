@@ -76,7 +76,7 @@
 // =============================================================================
 
 import { createHash } from 'crypto'
-import { Effect, Result, Schema } from 'effect'
+import { Effect, Result, Schema, Stream } from 'effect'
 import { existsSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { homedir, platform } from 'os'
@@ -91,11 +91,62 @@ import { captureScanPricing } from '../models.js'
 import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
+import { blobToText, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 import type { DateRange } from '../types.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type CopilotParserContext = ProviderScanContext & { readonly pricing: ScanPricing }
+const sqliteTextBlobSchema = Schema.Union([Schema.String, Schema.Uint8Array])
+const nullableSqliteTextBlobSchema = Schema.NullOr(sqliteTextBlobSchema)
+const textOrNullTypeSchema = Schema.Literals(['text', 'null'])
+
+class CopilotDatabaseError extends Schema.TaggedError<CopilotDatabaseError>()('CopilotDatabaseError', {
+  operation: Schema.Literals(['open', 'read', 'close']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+type OwnedCopilotDatabase = { readonly db: SqliteDatabase; closed: boolean }
+
+function copilotDatabaseError(operation: CopilotDatabaseError['operation'], cause: unknown): CopilotDatabaseError {
+  const error = cause instanceof Error ? cause : new Error(String(cause), { cause })
+  return new CopilotDatabaseError({ operation, cause: error, message: error.message })
+}
+
+function closeCopilotDatabase(owned: OwnedCopilotDatabase): Effect.Effect<void, CopilotDatabaseError> {
+  return Effect.suspend(() => {
+    if (owned.closed) return Effect.void
+    owned.closed = true
+    return Effect.try({ try: () => owned.db.close(), catch: cause => copilotDatabaseError('close', cause) })
+  })
+}
+
+function openCopilotDatabase(path: string): Effect.Effect<OwnedCopilotDatabase, CopilotDatabaseError> {
+  return Effect.try({
+    try: () => ({ db: openDatabase(path), closed: false }),
+    catch: cause => copilotDatabaseError('open', cause),
+  })
+}
+
+function legacyCopilotParser(parseStream: NonNullable<SessionParser['parseStream']>): SessionParser {
+  return {
+    parseStream,
+    // Remove when all direct parser callers consume parseStream; retain the original
+    // SQLite cause for callers of the Promise compatibility surface.
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      try {
+        yield* Stream.toAsyncIterable(parseStream())
+      } catch (error) {
+        // The Promise compatibility boundary preserves native SQLite errors.
+        // eslint-disable-next-line no-restricted-syntax
+        if (error instanceof CopilotDatabaseError) throw error.cause
+        // eslint-disable-next-line no-restricted-syntax
+        throw error
+      }
+    },
+  }
+}
 
 const estimateTokens = (text: string) => estimateTokensFromChars(text.length)
 
@@ -273,6 +324,49 @@ interface SpanAttributes {
   [key: string]: unknown
 }
 
+const otelConversationRowSchema = Schema.Struct({
+  conversation_id: sqliteTextBlobSchema,
+  conversation_id_type: Schema.Literal('text'),
+  project: sqliteTextBlobSchema,
+  project_type: Schema.Literal('text'),
+  min_start: Schema.Finite,
+})
+const otelSpanIdRowSchema = Schema.Struct({
+  span_id: sqliteTextBlobSchema,
+  span_id_type: Schema.Literal('text'),
+  trace_id: sqliteTextBlobSchema,
+  trace_id_type: Schema.Literal('text'),
+})
+const otelTraceSpanRowSchema = Schema.Struct({
+  span_id: sqliteTextBlobSchema,
+  span_id_type: Schema.Literal('text'),
+  trace_id: sqliteTextBlobSchema,
+  trace_id_type: Schema.Literal('text'),
+  operation_name: nullableSqliteTextBlobSchema,
+  operation_name_type: textOrNullTypeSchema,
+  start_time_ms: Schema.Finite,
+  response_model: nullableSqliteTextBlobSchema,
+  response_model_type: textOrNullTypeSchema,
+})
+const spanAttributeRowSchema = Schema.Struct({
+  key: sqliteTextBlobSchema,
+  key_type: Schema.Literal('text'),
+  value: Schema.Union([Schema.Null, Schema.Number, sqliteTextBlobSchema]),
+  value_type: Schema.Literals(['null', 'integer', 'real', 'text', 'blob']),
+})
+const otelCallUsageSchema = Schema.Struct({
+  model: Schema.String,
+  inputTokens: Schema.Finite,
+  outputTokens: Schema.Finite,
+  cacheReadTokens: Schema.Finite,
+  cacheCreationTokens: Schema.Finite,
+})
+const decodeOtelConversationRow = Schema.decodeUnknownResult(otelConversationRowSchema)
+const decodeOtelSpanIdRow = Schema.decodeUnknownResult(otelSpanIdRowSchema)
+const decodeOtelTraceSpanRow = Schema.decodeUnknownResult(otelTraceSpanRowSchema)
+const decodeSpanAttributeRow = Schema.decodeUnknownResult(spanAttributeRowSchema)
+const decodeOtelCallUsage = Schema.decodeUnknownResult(otelCallUsageSchema)
+
 // ---------------------------------------------------------------------------
 // Types for session-store.db rows (Copilot CLI)
 // ---------------------------------------------------------------------------
@@ -287,20 +381,28 @@ interface SpanAttributes {
 // ParsedProviderCall. Every column is nullable in the file, so every field here
 // is read defensively and NULL is treated as 0.
 
-type SessionStoreUsageRow = {
-  id: number
-  session_id: string
-  model: string | null
-  input_tokens: number | null
-  output_tokens: number | null
-  cache_read_tokens: number | null
-  cache_write_tokens: number | null
-  reasoning_tokens: number | null
-  initiator: string | null
-  created_at: string | null
-  cwd: string | null
-  repository: string | null
-}
+const sessionStoreUsageRowSchema = Schema.Struct({
+  id: Schema.Finite,
+  session_id: nullableSqliteTextBlobSchema,
+  session_id_type: Schema.optional(textOrNullTypeSchema),
+  model: nullableSqliteTextBlobSchema,
+  model_type: Schema.optional(textOrNullTypeSchema),
+  input_tokens: Schema.NullOr(Schema.Finite),
+  output_tokens: Schema.NullOr(Schema.Finite),
+  cache_read_tokens: Schema.NullOr(Schema.Finite),
+  cache_write_tokens: Schema.NullOr(Schema.Finite),
+  reasoning_tokens: Schema.NullOr(Schema.Finite),
+  initiator: nullableSqliteTextBlobSchema,
+  initiator_type: Schema.optional(textOrNullTypeSchema),
+  created_at: nullableSqliteTextBlobSchema,
+  created_at_type: Schema.optional(textOrNullTypeSchema),
+  cwd: nullableSqliteTextBlobSchema,
+  cwd_type: Schema.optional(textOrNullTypeSchema),
+  repository: nullableSqliteTextBlobSchema,
+  repository_type: Schema.optional(textOrNullTypeSchema),
+})
+type SessionStoreUsageRow = Schema.Schema.Type<typeof sessionStoreUsageRowSchema>
+const decodeSessionStoreUsageRow = Schema.decodeUnknownResult(sessionStoreUsageRowSchema)
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -500,37 +602,53 @@ function parseCwd(yaml: string): string | null {
  * This handles the modern VS Code Copilot Chat schema where attributes
  * are stored as separate key-value rows rather than a JSON blob.
  */
-function loadSpanAttributesFromTable(
-  db: ReturnType<(typeof import('../sqlite.js'))['openDatabase']>,
+const loadSpanAttributesFromTable = Effect.fnUntraced(function* (
+  db: SqliteDatabase,
   spanId: string,
   signal?: AbortSignal,
-): SpanAttributes {
-  try {
-    throwIfScanAborted(signal)
-    const rows = db.query<{ key: string; value: string | null }>(
-      `SELECT key, value FROM span_attributes WHERE span_id = ?`,
-      [spanId],
-    )
-    throwIfScanAborted(signal)
-    const attrs: SpanAttributes = {}
-    for (const row of rows) {
-      throwIfScanAborted(signal)
-      if (row.key && row.value) {
-        try {
-          // Try to parse numeric values
-          const numValue = Number(row.value)
-          attrs[row.key as keyof SpanAttributes] = Number.isNaN(numValue) ? row.value : numValue
-        } catch {
-          attrs[row.key as keyof SpanAttributes] = row.value
-        }
-      }
+  onUnparsedCall?: Effect.Effect<void>,
+): Effect.fn.Return<SpanAttributes, CopilotDatabaseError | Error> {
+  yield* checkScanAbort(signal)
+  const rows = yield* Effect.try({
+    try: () =>
+      db.query(
+        `SELECT
+           CASE WHEN typeof(key) = 'text' THEN CAST(key AS BLOB) ELSE NULL END AS key,
+           typeof(key) AS key_type,
+           CASE WHEN typeof(value) = 'text' THEN CAST(value AS BLOB) ELSE value END AS value,
+           typeof(value) AS value_type
+         FROM span_attributes WHERE span_id = ?`,
+        [spanId],
+      ),
+    catch: cause => copilotDatabaseError('read', cause),
+  })
+  yield* checkScanAbort(signal)
+  const attrs: SpanAttributes = {}
+  for (const candidate of rows) {
+    const decoded = decodeSpanAttributeRow(candidate)
+    if (Result.isFailure(decoded)) {
+      if (onUnparsedCall) yield* onUnparsedCall
+      continue
     }
-    return attrs
-  } catch {
-    throwIfScanAborted(signal)
-    return {}
+    const { key: encodedKey, value, value_type: valueType } = decoded.success
+    const key = blobToText(encodedKey)
+    if (!key || value === null) continue
+    const rawValue = valueType === 'text' || valueType === 'blob' ? blobToText(value as Uint8Array | string) : value
+    if (rawValue !== '') {
+      if (
+        typeof rawValue === 'string' &&
+        (key === 'gen_ai.response.model' || key === 'gen_ai.request.model') &&
+        !rawValue.trim()
+      ) {
+        attrs[key as keyof SpanAttributes] = rawValue
+        continue
+      }
+      const numValue = Number(rawValue)
+      attrs[key as keyof SpanAttributes] = Number.isNaN(numValue) ? rawValue : numValue
+    }
   }
-}
+  return attrs
+})
 
 /**
  * Convert nanosecond or millisecond epoch to ISO timestamp.
@@ -1382,172 +1500,202 @@ function createSessionStoreParser(
   coveredStoreKeys: Set<string>,
   context: CopilotParserContext,
 ): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      throwIfScanAborted(context?.signal)
-      const { openDatabase } = await import('../sqlite.js')
-      throwIfScanAborted(context?.signal)
-
-      let db: ReturnType<typeof openDatabase>
-      try {
-        db = openDatabase(source.path)
-      } catch (err) {
-        // Read-only open failed: locked, truncated, not SQLite, or the driver
-        // is unavailable. Emit nothing and say so, the same degradation the
-        // pipeline expects of any provider that cannot read its source.
-        reportProviderIssue('copilot', fileErrorCode(err, 'session-store-unreadable'), source.path)
-        return
-      }
-
-      const sourceCoveredKeys = new Set<string>()
-      try {
-        let rows: SessionStoreUsageRow[]
-        try {
-          throwIfScanAborted(context?.signal)
-          rows = db.query<SessionStoreUsageRow>(
-            `SELECT
-               u.id, u.session_id, u.model,
-               u.input_tokens, u.output_tokens,
-               u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,
-               u.initiator, u.created_at,
-               s.cwd, s.repository
-             FROM assistant_usage_events u
-             LEFT JOIN sessions s ON s.id = u.session_id
-             ORDER BY u.id ASC`,
+  const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
+    Stream.scoped(
+      Stream.unwrap(
+        Effect.gen(function* () {
+          yield* checkScanAbort(context.signal)
+          const opened = yield* Effect.acquireRelease(
+            openCopilotDatabase(source.path).pipe(
+              Effect.catch(error => {
+                reportProviderIssue('copilot', fileErrorCode(error.cause, 'session-store-unreadable'), source.path)
+                return Effect.succeed(null)
+              }),
+            ),
+            owned => (owned ? closeCopilotDatabase(owned).pipe(Effect.orDie) : Effect.void),
           )
-        } catch (err) {
-          if (isScanAbortedError(err)) throw err
-          // Opened but unreadable as a usage store: a foreign / older schema, or
-          // a page the WAL has not checkpointed into the main file yet.
-          reportProviderIssue('copilot', fileErrorCode(err, 'session-store-unreadable'), source.path)
-          return
-        }
-
-        for (const row of rows) {
-          throwIfScanAborted(context?.signal)
-          const sessionId = readString(row.session_id)
-          if (!sessionId) continue
-
-          // A hand-built store can carry an empty model. Never drop a billable
-          // row for an unnameable model: 'unknown' prices at $0 and surfaces
-          // through the existing unpriced-model signal, which is the honest
-          // outcome — silently discarding the row would hide real spend.
-          const model = readString(row.model).trim() || 'unknown'
-          const initiator = readString(row.initiator).trim()
-
-          const cacheReadTokens = numberOrZero(row.cache_read_tokens)
-          const cacheWriteTokens = numberOrZero(row.cache_write_tokens)
-          const reasoningTokens = numberOrZero(row.reasoning_tokens)
-          const rawInputTokens = numberOrZero(row.input_tokens)
-          const rawOutputTokens = numberOrZero(row.output_tokens)
-
-          // `input_tokens` is cache-INCLUSIVE (uncached input + cache_read +
-          // cache_write) — the same convention the events.jsonl
-          // `session.shutdown` rollup uses. calculateCost wants the uncached
-          // input alone with the cache components billed separately, so
-          // subtract them. Clamped at 0 for the same reason as there: a future
-          // schema must not make a negative uncached input.
-          const inputTokens = Math.max(0, rawInputTokens - cacheReadTokens - cacheWriteTokens)
-
-          // Nothing billable in this row (a failed / filtered request the CLI
-          // still logged). Skipping avoids an empty $0 row in every view.
-          if (inputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0 && rawOutputTokens === 0) continue
-
-          // This (session, model) is now described by the store, so the
-          // events.jsonl rollup for it must stand down. See createJsonlParser
-          // for what that costs.
-          const coveredKey = `${sessionId}\n${model}`
-
-          // OUTPUT OWNERSHIP — the one place this source could double-count.
-          //
-          // Every non-compaction request's output is already reported by the
-          // per-turn `assistant.message` event in events.jsonl, which is parsed
-          // from a DIFFERENT source later in the same pass. There is no
-          // serve-time cross-source pass in this architecture to reconcile the
-          // two, and `seenKeys` cannot arbitrate either (the two rows carry
-          // different dedup keys, so claiming a shared one would drop the
-          // per-turn row and lose its tools / bashCommands / userMessage —
-          // strictly worse than a counted token).
-          //
-          // So the store yields OUTPUT ONLY for compaction rows, which produce
-          // no assistant message of their own and whose `output_tokens` is
-          // therefore the only copy anywhere. Every other row is emitted with
-          // output 0 and the per-turn event keeps ownership.
-          //
-          // COST OF THIS CHOICE: a non-compaction request whose per-turn
-          // `assistant.message` is missing from events.jsonl (a pruned or
-          // unreadable session file) contributes no output at all. That
-          // under-reports. The alternative — emitting every row's output —
-          // over-reports on every normal session, which is the worse direction:
-          // it invents spend.
-          const outputTokens = initiator === 'compaction' ? rawOutputTokens : 0
-
-          // `copilot` is in OUTPUT_INCLUSIVE_REASONING_PROVIDERS, so
-          // reasoning is already inside the store's `output_tokens` and must
-          // NOT be added again. billableOutputTokens is the single place that
-          // answers that question; the arithmetic is never reimplemented here.
-          const costUSD = context.pricing.calculateCost(
-            model,
-            inputTokens,
-            billableOutputTokens('copilot', outputTokens, reasoningTokens),
-            cacheWriteTokens,
-            cacheReadTokens,
-            0,
+          if (!opened) return Stream.empty
+          const sourceCoveredKeys = new Set<string>()
+          const rows = yield* Effect.try({
+            try: () =>
+              opened.db.query<SessionStoreUsageRow>(
+                `SELECT
+               u.id,
+               CASE WHEN typeof(u.session_id) = 'text' THEN CAST(u.session_id AS BLOB) ELSE NULL END AS session_id,
+               typeof(u.session_id) AS session_id_type,
+               CASE WHEN typeof(u.model) = 'text' THEN CAST(u.model AS BLOB) ELSE NULL END AS model,
+               typeof(u.model) AS model_type,
+             u.input_tokens, u.output_tokens,
+             u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,
+               CASE WHEN typeof(u.initiator) = 'text' THEN CAST(u.initiator AS BLOB) ELSE NULL END AS initiator,
+               typeof(u.initiator) AS initiator_type,
+               CASE WHEN typeof(u.created_at) = 'text' THEN CAST(u.created_at AS BLOB) ELSE NULL END AS created_at,
+               typeof(u.created_at) AS created_at_type,
+               CASE WHEN typeof(s.cwd) = 'text' THEN CAST(s.cwd AS BLOB) ELSE NULL END AS cwd,
+               typeof(s.cwd) AS cwd_type,
+               CASE WHEN typeof(s.repository) = 'text' THEN CAST(s.repository AS BLOB) ELSE NULL END AS repository,
+               typeof(s.repository) AS repository_type
+           FROM assistant_usage_events u
+           LEFT JOIN sessions s ON s.id = u.session_id
+           ORDER BY u.id ASC`,
+              ),
+            catch: cause => copilotDatabaseError('read', cause),
+          }).pipe(
+            Effect.catch(error => {
+              if (isScanAbortedError(error.cause)) return Effect.fail(error)
+              reportProviderIssue('copilot', fileErrorCode(error.cause, 'session-store-unreadable'), source.path)
+              return Effect.succeed(null)
+            }),
           )
+          if (!rows) return Stream.fromEffectDrain(closeCopilotDatabase(opened))
 
-          const dedupKey = `copilot-store:${sessionId}:${row.id}:${sessionStoreContentHash({
-            model,
-            inputTokens: rawInputTokens,
-            outputTokens: rawOutputTokens,
-            cacheReadTokens,
-            cacheWriteTokens,
-            reasoningTokens,
-            initiator,
-          })}`
-          sourceCoveredKeys.add(coveredKey)
-          if (seenKeys.has(dedupKey)) continue
-          seenKeys.add(dedupKey)
+          const calls = Stream.fromIterable(rows).pipe(
+            Stream.rechunk(1),
+            Stream.mapEffect(candidate =>
+              Effect.gen(function* () {
+                yield* checkScanAbort(context.signal)
+                const decodedRow = decodeSessionStoreUsageRow(candidate)
+                if (Result.isFailure(decodedRow)) {
+                  if (onUnparsedCall) yield* onUnparsedCall
+                  return Result.fail(undefined)
+                }
+                const row = decodedRow.success
+                const sessionId = blobToText(row.session_id)
+                if (!sessionId) return Result.fail(undefined)
 
-          const cwd = readString(row.cwd).trim() || null
-          // The row's own `created_at`, normalized through the same helper the
-          // JSONL / chatSessions paths use, so a row can never be dropped by
-          // the period filter on a formatting difference. A row with no usable
-          // timestamp falls back to the session-state file's mtime (the same
-          // fallback the JetBrains parser uses) rather than being dropped.
-          const timestamp = timestampToISO(row.created_at) || source.mtime
+                // A hand-built store can carry an empty model. Never drop a billable
+                // row for an unnameable model: 'unknown' prices at $0 and surfaces
+                // through the existing unpriced-model signal, which is the honest
+                // outcome — silently discarding the row would hide real spend.
+                const model = blobToText(row.model).trim() || 'unknown'
+                const initiator = blobToText(row.initiator).trim()
 
-          yield {
-            provider: 'copilot',
-            sessionId,
-            project: resolveStoreProject(row.cwd, row.repository),
-            model,
-            inputTokens,
-            outputTokens,
-            cacheCreationInputTokens: cacheWriteTokens,
-            cacheReadInputTokens: cacheReadTokens,
-            cachedInputTokens: 0,
-            reasoningTokens,
-            webSearchRequests: 0,
-            costUSD,
-            // These are real counts the CLI wrote per request, not estimates
-            // from characters — the same contract the shutdown rollup sets.
-            costIsEstimated: false,
-            tools: [],
-            bashCommands: [],
-            timestamp,
-            speed: 'standard' as const,
-            deduplicationKey: dedupKey,
-            userMessage: '',
-            ...(cwd ? { projectPath: cwd, workingDirectory: cwd } : {}),
-          }
-        }
-        throwIfScanAborted(context?.signal)
-      } finally {
-        db.close()
-      }
-      for (const key of sourceCoveredKeys) coveredStoreKeys.add(key)
-    },
-  }
+                const cacheReadTokens = numberOrZero(row.cache_read_tokens)
+                const cacheWriteTokens = numberOrZero(row.cache_write_tokens)
+                const reasoningTokens = numberOrZero(row.reasoning_tokens)
+                const rawInputTokens = numberOrZero(row.input_tokens)
+                const rawOutputTokens = numberOrZero(row.output_tokens)
+
+                // `input_tokens` is cache-INCLUSIVE (uncached input + cache_read +
+                // cache_write) — the same convention the events.jsonl
+                // `session.shutdown` rollup uses. calculateCost wants the uncached
+                // input alone with the cache components billed separately, so
+                // subtract them. Clamped at 0 for the same reason as there: a future
+                // schema must not make a negative uncached input.
+                const inputTokens = Math.max(0, rawInputTokens - cacheReadTokens - cacheWriteTokens)
+
+                // Nothing billable in this row (a failed / filtered request the CLI
+                // still logged). Skipping avoids an empty $0 row in every view.
+                if (inputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0 && rawOutputTokens === 0)
+                  return Result.fail(undefined)
+
+                // This (session, model) is now described by the store, so the
+                // events.jsonl rollup for it must stand down. See createJsonlParser
+                // for what that costs.
+                const coveredKey = `${sessionId}\n${model}`
+
+                // OUTPUT OWNERSHIP — the one place this source could double-count.
+                //
+                // Every non-compaction request's output is already reported by the
+                // per-turn `assistant.message` event in events.jsonl, which is parsed
+                // from a DIFFERENT source later in the same pass. There is no
+                // serve-time cross-source pass in this architecture to reconcile the
+                // two, and `seenKeys` cannot arbitrate either (the two rows carry
+                // different dedup keys, so claiming a shared one would drop the
+                // per-turn row and lose its tools / bashCommands / userMessage —
+                // strictly worse than a counted token).
+                //
+                // So the store yields OUTPUT ONLY for compaction rows, which produce
+                // no assistant message of their own and whose `output_tokens` is
+                // therefore the only copy anywhere. Every other row is emitted with
+                // output 0 and the per-turn event keeps ownership.
+                //
+                // COST OF THIS CHOICE: a non-compaction request whose per-turn
+                // `assistant.message` is missing from events.jsonl (a pruned or
+                // unreadable session file) contributes no output at all. That
+                // under-reports. The alternative — emitting every row's output —
+                // over-reports on every normal session, which is the worse direction:
+                // it invents spend.
+                const outputTokens = initiator === 'compaction' ? rawOutputTokens : 0
+
+                // `copilot` is in OUTPUT_INCLUSIVE_REASONING_PROVIDERS, so
+                // reasoning is already inside the store's `output_tokens` and must
+                // NOT be added again. billableOutputTokens is the single place that
+                // answers that question; the arithmetic is never reimplemented here.
+                const costUSD = yield* Effect.try({
+                  try: () =>
+                    context.pricing.calculateCost(
+                      model,
+                      inputTokens,
+                      billableOutputTokens('copilot', outputTokens, reasoningTokens),
+                      cacheWriteTokens,
+                      cacheReadTokens,
+                      0,
+                    ),
+                  catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+                })
+
+                const dedupKey = `copilot-store:${sessionId}:${row.id}:${sessionStoreContentHash({
+                  model,
+                  inputTokens: rawInputTokens,
+                  outputTokens: rawOutputTokens,
+                  cacheReadTokens,
+                  cacheWriteTokens,
+                  reasoningTokens,
+                  initiator,
+                })}`
+                sourceCoveredKeys.add(coveredKey)
+                if (seenKeys.has(dedupKey)) return Result.fail(undefined)
+                seenKeys.add(dedupKey)
+
+                const cwd = blobToText(row.cwd).trim() || null
+                // The row's own `created_at`, normalized through the same helper the
+                // JSONL / chatSessions paths use, so a row can never be dropped by
+                // the period filter on a formatting difference. A row with no usable
+                // timestamp falls back to the session-state file's mtime (the same
+                // fallback the JetBrains parser uses) rather than being dropped.
+                const timestamp = timestampToISO(blobToText(row.created_at)) || source.mtime
+
+                return Result.succeed({
+                  provider: 'copilot',
+                  sessionId,
+                  project: resolveStoreProject(cwd, blobToText(row.repository) || null),
+                  model,
+                  inputTokens,
+                  outputTokens,
+                  cacheCreationInputTokens: cacheWriteTokens,
+                  cacheReadInputTokens: cacheReadTokens,
+                  cachedInputTokens: 0,
+                  reasoningTokens,
+                  webSearchRequests: 0,
+                  costUSD,
+                  // These are real counts the CLI wrote per request, not estimates
+                  // from characters — the same contract the shutdown rollup sets.
+                  costIsEstimated: false,
+                  tools: [],
+                  bashCommands: [],
+                  timestamp,
+                  speed: 'standard' as const,
+                  deduplicationKey: dedupKey,
+                  userMessage: '',
+                  ...(cwd ? { projectPath: cwd, workingDirectory: cwd } : {}),
+                })
+              }),
+            ),
+            Stream.filterMap(value => value),
+          )
+          const finish = Stream.fromEffect(
+            Effect.gen(function* () {
+              yield* checkScanAbort(context.signal)
+              yield* closeCopilotDatabase(opened)
+              for (const key of sourceCoveredKeys) coveredStoreKeys.add(key)
+            }),
+          ).pipe(Stream.drain)
+          return Stream.concat(calls, finish)
+        }),
+      ),
+    )
+  return legacyCopilotParser(parseStream)
 }
 
 // ---------------------------------------------------------------------------
@@ -2176,245 +2324,247 @@ function createJetBrainsParser(
 // ---------------------------------------------------------------------------
 
 function createOtelParser(source: SessionSource, seenKeys: Set<string>, context: CopilotParserContext): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      throwIfScanAborted(context?.signal)
-      // Lazy-load the SQLite module (same pattern as Cursor/OpenCode providers)
-      const { openDatabase } = await import('../sqlite.js')
-      throwIfScanAborted(context?.signal)
+  const malformed = (onUnparsedCall?: Effect.Effect<void>) => onUnparsedCall ?? Effect.void
+  const reportInvalid = (onUnparsedCall?: Effect.Effect<void>) =>
+    Effect.as(malformed(onUnparsedCall), Result.fail(undefined))
+  const query = <A extends Record<string, unknown>>(db: SqliteDatabase, sql: string, params?: unknown[]) =>
+    Effect.try({ try: () => db.query<A>(sql, params), catch: cause => copilotDatabaseError('read', cause) })
 
-      // One DB open handles ALL conversations — avoids N opens for N conversations.
-      const db = openDatabase(source.path)
-
-      try {
-        throwIfScanAborted(context?.signal)
-        // ---------------------------------------------------------------
-        // Get all distinct conversations in the DB with their project names.
-        // ---------------------------------------------------------------
-        const conversationRows = db.query<{
-          conversation_id: string
-          project: string | null
-          min_start: number
-        }>(
-          `SELECT DISTINCT
-             sa_conv.value AS conversation_id,
-             COALESCE(sa_repo.value, 'copilot-chat') AS project,
-             MIN(s.start_time_ms) AS min_start
-           FROM spans s
-           LEFT JOIN span_attributes sa_conv
-             ON s.span_id = sa_conv.span_id AND sa_conv.key = 'gen_ai.conversation.id'
-           LEFT JOIN span_attributes sa_repo
-             ON s.span_id = sa_repo.span_id AND sa_repo.key = 'github.copilot.git.repository'
-           WHERE sa_conv.value IS NOT NULL
-           GROUP BY sa_conv.value
-           ORDER BY min_start DESC`,
-        )
-        throwIfScanAborted(context?.signal)
-
-        for (const convRow of conversationRows) {
-          throwIfScanAborted(context?.signal)
-          const conversationId = convRow.conversation_id
-          if (!conversationId) continue
-
-          let project = convRow.project ?? 'copilot-chat'
-          if (project.includes('/')) {
-            project = basename(project.replace(/\.git$/, ''))
-          }
-
-          // -----------------------------------------------------------
-          // Query all 'chat' spans for this conversation.
-          // -----------------------------------------------------------
-
-          const spanIdRows = db.query<{ span_id: string; trace_id: string }>(
-            `SELECT DISTINCT s.span_id, s.trace_id
-             FROM spans s
-             INNER JOIN span_attributes sa 
-               ON s.span_id = sa.span_id AND sa.key = 'gen_ai.conversation.id' AND sa.value = ?
-             ORDER BY s.start_time_ms ASC`,
-            [conversationId],
+  const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
+    Stream.scoped(
+      Stream.unwrap(
+        Effect.gen(function* () {
+          yield* checkScanAbort(context.signal)
+          const owned = yield* Effect.acquireRelease(openCopilotDatabase(source.path), db =>
+            closeCopilotDatabase(db).pipe(Effect.orDie),
           )
-          throwIfScanAborted(context?.signal)
-
-          // Collect trace IDs and span IDs belonging to this conversation
-          const traceIds = new Set<string>()
-          for (const row of spanIdRows) {
-            throwIfScanAborted(context?.signal)
-            traceIds.add(row.trace_id)
-          }
-
-          if (traceIds.size === 0) {
-            continue
-          }
-
-          // Now query all spans within those traces to find chat and tool spans.
-          // Pull the metadata columns in the same query so we don't re-query the
-          // spans table once per chat span below (avoids an N+1).
-          const traceIdArr = [...traceIds]
-          const tracePlaceholders = traceIdArr.map(() => '?').join(',')
-          const traceSpans = db.query<{
-            span_id: string
-            trace_id: string
-            operation_name: string | null
-            start_time_ms: number
-            response_model: string | null
-          }>(
-            `SELECT span_id, trace_id, operation_name, start_time_ms, response_model FROM spans WHERE trace_id IN (${tracePlaceholders})`,
-            traceIdArr,
+          const db = owned.db
+          const conversationRows = yield* query(
+            db,
+            `SELECT DISTINCT
+        CASE WHEN typeof(sa_conv.value) = 'text' THEN CAST(sa_conv.value AS BLOB) ELSE NULL END AS conversation_id,
+        typeof(sa_conv.value) AS conversation_id_type,
+        CASE
+          WHEN sa_repo.value IS NULL THEN CAST('copilot-chat' AS BLOB)
+          WHEN typeof(sa_repo.value) = 'text' THEN CAST(sa_repo.value AS BLOB)
+          ELSE NULL
+        END AS project,
+        CASE WHEN sa_repo.value IS NULL THEN 'text' ELSE typeof(sa_repo.value) END AS project_type,
+        MIN(s.start_time_ms) AS min_start
+      FROM spans s
+      LEFT JOIN span_attributes sa_conv
+        ON s.span_id = sa_conv.span_id AND sa_conv.key = 'gen_ai.conversation.id'
+      LEFT JOIN span_attributes sa_repo
+        ON s.span_id = sa_repo.span_id AND sa_repo.key = 'github.copilot.git.repository'
+      WHERE sa_conv.value IS NOT NULL
+      GROUP BY sa_conv.value
+      ORDER BY min_start DESC`,
           )
-          throwIfScanAborted(context?.signal)
 
-          // Collect tool names, shell commands and subagent names from the
-          // execute_tool / invoke_agent spans for each trace. These mirror the
-          // metadata the JSONL path captures, so the OTel source stays
-          // equivalent (tools + bashCommands + subagentTypes are all first-class
-          // call metadata per types.ts).
-          //
-          // Subagent attribution: VS Code records a subagent run as an
-          // invoke_agent span carrying copilot_chat.parent_chat_session_id. The
-          // root turn agent (gen_ai.agent.name = 'GitHub Copilot Chat') has NO
-          // parent session and is intentionally excluded, otherwise it would
-          // surface as a bogus 'GitHub Copilot Chat' entry in the agents view.
-          // A subagent's invoke_agent span lives in the same trace as that
-          // subagent's own chat spans, so attributing the agent name per-trace
-          // labels exactly the subagent's calls.
-          const toolsByTrace = new Map<string, string[]>()
-          const bashByTrace = new Map<string, string[]>()
-          const subagentsByTrace = new Map<string, string[]>()
-          const chatSpanIds: string[] = []
-          const spanMetaById = new Map<
-            string,
-            { trace_id: string; start_time_ms: number; response_model: string | null }
-          >()
+          const conversations = Stream.fromIterable(conversationRows).pipe(
+            Stream.flatMap(candidate => {
+              const decoded = decodeOtelConversationRow(candidate)
+              if (Result.isFailure(decoded)) return Stream.fromEffect(reportInvalid(onUnparsedCall)).pipe(Stream.drain)
+              const convRow = decoded.success
+              const conversationId = blobToText(convRow.conversation_id)
+              let project = blobToText(convRow.project)
+              if (project.includes('/')) project = basename(project.replace(/\.git$/, ''))
 
-          for (const span of traceSpans) {
-            throwIfScanAborted(context?.signal)
-            const opName = span.operation_name || ''
-            spanMetaById.set(span.span_id, span)
-
-            if (opName === 'chat') {
-              chatSpanIds.push(span.span_id)
-              continue
-            }
-
-            if (opName === 'execute_tool') {
-              // Load tool name from attributes and normalise to display form
-              const attrs = loadSpanAttributesFromTable(db, span.span_id, context?.signal)
-              const rawToolName = attrs['gen_ai.tool.name'] as string | undefined
-              if (rawToolName) {
-                const existing = toolsByTrace.get(span.trace_id) ?? []
-                existing.push(normalizeTool(rawToolName))
-                toolsByTrace.set(span.trace_id, existing)
-
-                // For shell tools, extract command names via the OTEL-specific
-                // normaliser (handles the full multi-line scripts the OTEL store
-                // records; see extractOtelBashCommands).
-                if (BASH_TOOL_NAMES.has(rawToolName)) {
-                  const command = parseToolCommand(attrs['gen_ai.tool.call.arguments'])
-                  if (command) {
-                    const bash = bashByTrace.get(span.trace_id) ?? []
-                    bash.push(...extractOtelBashCommands(command))
-                    bashByTrace.set(span.trace_id, bash)
+              const conversationCalls = Effect.gen(function* () {
+                yield* checkScanAbort(context.signal)
+                const rawSpanIds = yield* query(
+                  db,
+                  `SELECT DISTINCT
+              CASE WHEN typeof(s.span_id) = 'text' THEN CAST(s.span_id AS BLOB) ELSE NULL END AS span_id,
+              typeof(s.span_id) AS span_id_type,
+              CASE WHEN typeof(s.trace_id) = 'text' THEN CAST(s.trace_id AS BLOB) ELSE NULL END AS trace_id,
+              typeof(s.trace_id) AS trace_id_type
+              FROM spans s
+              INNER JOIN span_attributes sa
+                ON s.span_id = sa.span_id AND sa.key = 'gen_ai.conversation.id' AND sa.value = ?
+              ORDER BY s.start_time_ms ASC`,
+                  [conversationId],
+                )
+                const spanIds: Array<{ span_id: string; trace_id: string }> = []
+                for (const raw of rawSpanIds) {
+                  const parsed = decodeOtelSpanIdRow(raw)
+                  if (Result.isSuccess(parsed)) {
+                    spanIds.push({
+                      span_id: blobToText(parsed.success.span_id),
+                      trace_id: blobToText(parsed.success.trace_id),
+                    })
+                  } else if (onUnparsedCall) yield* onUnparsedCall
+                }
+                const traceIds = [...new Set(spanIds.map(row => row.trace_id))]
+                if (traceIds.length === 0) return Stream.empty
+                const placeholders = traceIds.map(() => '?').join(',')
+                const rawSpans = yield* query(
+                  db,
+                  `SELECT
+               CASE WHEN typeof(span_id) = 'text' THEN CAST(span_id AS BLOB) ELSE NULL END AS span_id,
+               typeof(span_id) AS span_id_type,
+               CASE WHEN typeof(trace_id) = 'text' THEN CAST(trace_id AS BLOB) ELSE NULL END AS trace_id,
+               typeof(trace_id) AS trace_id_type,
+               CASE WHEN typeof(operation_name) = 'text' THEN CAST(operation_name AS BLOB) ELSE NULL END AS operation_name,
+               typeof(operation_name) AS operation_name_type,
+               start_time_ms,
+               CASE WHEN typeof(response_model) = 'text' THEN CAST(response_model AS BLOB) ELSE NULL END AS response_model,
+               typeof(response_model) AS response_model_type
+               FROM spans WHERE trace_id IN (${placeholders})`,
+                  traceIds,
+                )
+                const spans: Array<{
+                  span_id: string
+                  trace_id: string
+                  operation_name: string | null
+                  start_time_ms: number
+                  response_model: string | null
+                }> = []
+                for (const raw of rawSpans) {
+                  const parsed = decodeOtelTraceSpanRow(raw)
+                  if (Result.isSuccess(parsed)) {
+                    spans.push({
+                      span_id: blobToText(parsed.success.span_id),
+                      trace_id: blobToText(parsed.success.trace_id),
+                      operation_name: blobToText(parsed.success.operation_name),
+                      start_time_ms: parsed.success.start_time_ms,
+                      response_model: blobToText(parsed.success.response_model),
+                    })
+                  } else if (onUnparsedCall) yield* onUnparsedCall
+                }
+                const toolSpans = spans.filter(
+                  span => span.operation_name === 'execute_tool' || span.operation_name === 'invoke_agent',
+                )
+                const toolMetadata = yield* Stream.fromIterable(toolSpans).pipe(
+                  Stream.mapEffect(span =>
+                    loadSpanAttributesFromTable(db, span.span_id, context.signal, onUnparsedCall),
+                  ),
+                  Stream.runCollect,
+                )
+                const toolsByTrace = new Map<string, string[]>()
+                const bashByTrace = new Map<string, string[]>()
+                const subagentsByTrace = new Map<string, string[]>()
+                for (const [index, span] of toolSpans.entries()) {
+                  const attrs = toolMetadata[index]
+                  if (!attrs) continue
+                  if (span.operation_name === 'execute_tool') {
+                    const rawToolName = attrs['gen_ai.tool.name'] as string | undefined
+                    if (!rawToolName) continue
+                    const tools = toolsByTrace.get(span.trace_id) ?? []
+                    tools.push(normalizeTool(rawToolName))
+                    toolsByTrace.set(span.trace_id, tools)
+                    if (BASH_TOOL_NAMES.has(rawToolName)) {
+                      const command = parseToolCommand(attrs['gen_ai.tool.call.arguments'])
+                      if (command) {
+                        const bash = bashByTrace.get(span.trace_id) ?? []
+                        bash.push(...extractOtelBashCommands(command))
+                        bashByTrace.set(span.trace_id, bash)
+                      }
+                    }
+                  } else {
+                    const parentSession = attrs['copilot_chat.parent_chat_session_id']
+                    const agentName = attrs['gen_ai.agent.name'] as string | undefined
+                    if (parentSession && agentName) {
+                      const subs = subagentsByTrace.get(span.trace_id) ?? []
+                      subs.push(agentName)
+                      subagentsByTrace.set(span.trace_id, subs)
+                    }
                   }
                 }
-              }
-              continue
-            }
-
-            // Genuine subagent invocation: an invoke_agent span with a parent
-            // chat session. The root turn agent ('GitHub Copilot Chat') has no
-            // parent session and is skipped to avoid a bogus agents-view entry.
-            if (opName === 'invoke_agent') {
-              const attrs = loadSpanAttributesFromTable(db, span.span_id, context?.signal)
-              const parentSession = attrs['copilot_chat.parent_chat_session_id']
-              const agentName = attrs['gen_ai.agent.name'] as string | undefined
-              if (parentSession && agentName) {
-                const subs = subagentsByTrace.get(span.trace_id) ?? []
-                subs.push(agentName)
-                subagentsByTrace.set(span.trace_id, subs)
-              }
-            }
-          }
-
-          // Yield one ParsedProviderCall per chat span
-          for (const spanId of chatSpanIds) {
-            throwIfScanAborted(context?.signal)
-            const attrs = loadSpanAttributesFromTable(db, spanId, context?.signal)
-
-            const spanMetadata = spanMetaById.get(spanId)
-            if (!spanMetadata) continue
-
-            const model =
-              (attrs['gen_ai.response.model'] as string | undefined) ??
-              (attrs['gen_ai.request.model'] as string | undefined) ??
-              spanMetadata.response_model ??
-              'unknown'
-
-            const inputTokens = Number(attrs['gen_ai.usage.input_tokens'] ?? 0)
-            const outputTokens = Number(attrs['gen_ai.usage.output_tokens'] ?? 0)
-            const cacheReadTokens = Number(attrs['gen_ai.usage.cache_read.input_tokens'] ?? 0)
-            const cacheCreationTokens = Number(attrs['gen_ai.usage.cache_creation.input_tokens'] ?? 0)
-
-            if (inputTokens === 0 && outputTokens === 0) {
-              continue
-            }
-
-            // Dedup key uses span_id which is globally unique
-            const dedupKey = `copilot-otel:${spanId}`
-            if (seenKeys.has(dedupKey)) continue
-            seenKeys.add(dedupKey)
-
-            // Also add a JSONL-style dedupKey pattern so that if the same
-            // interaction appears in both OTel and JSONL, we don't double-count.
-            // We use the turn ID from Copilot attributes if available.
-            const turnId = attrs['github.copilot.chat.turn.id'] as string | undefined
-            if (turnId) {
-              const jsonlDedupKey = `copilot:${conversationId}:${turnId}`
-              seenKeys.add(jsonlDedupKey)
-            }
-
-            const tools = toolsByTrace.get(spanMetadata.trace_id) ?? []
-            const bashCommands = bashByTrace.get(spanMetadata.trace_id) ?? []
-            const subagentTypes = subagentsByTrace.get(spanMetadata.trace_id)
-            const timestamp = epochToISO(spanMetadata.start_time_ms)
-
-            // calculateCost with FULL token data — this is the key improvement.
-            const costUSD = context.pricing.calculateCost(
-              model,
-              inputTokens,
-              outputTokens,
-              cacheCreationTokens,
-              cacheReadTokens,
-              0, // reasoningTokens — not exposed in current OTel schema
-            )
-
-            yield {
-              provider: 'copilot',
-              sessionId: conversationId,
-              project,
-              model,
-              inputTokens,
-              outputTokens,
-              cacheCreationInputTokens: cacheCreationTokens,
-              cacheReadInputTokens: cacheReadTokens,
-              cachedInputTokens: 0,
-              reasoningTokens: 0,
-              webSearchRequests: 0,
-              costUSD,
-              tools,
-              bashCommands,
-              subagentTypes: subagentTypes && subagentTypes.length > 0 ? subagentTypes : undefined,
-              timestamp,
-              speed: 'standard' as const,
-              deduplicationKey: dedupKey,
-              userMessage: '', // Not available in OTel spans by default
-            }
-          }
-        }
-      } finally {
-        db.close()
-      }
-    },
-  }
+                const chatSpans = spans.filter(span => span.operation_name === 'chat')
+                return Stream.fromIterable(chatSpans).pipe(
+                  Stream.mapEffect(span =>
+                    Effect.gen(function* () {
+                      yield* checkScanAbort(context.signal)
+                      const attrs = yield* loadSpanAttributesFromTable(db, span.span_id, context.signal, onUnparsedCall)
+                      const rawModel =
+                        (attrs['gen_ai.response.model'] as string | undefined) ??
+                        (attrs['gen_ai.request.model'] as string | undefined) ??
+                        span.response_model ??
+                        'unknown'
+                      const inputTokens = Number(attrs['gen_ai.usage.input_tokens'] ?? 0)
+                      const outputTokens = Number(attrs['gen_ai.usage.output_tokens'] ?? 0)
+                      const cacheReadTokens = Number(attrs['gen_ai.usage.cache_read.input_tokens'] ?? 0)
+                      const cacheCreationTokens = Number(attrs['gen_ai.usage.cache_creation.input_tokens'] ?? 0)
+                      if (inputTokens === 0 && outputTokens === 0) return Result.fail(undefined)
+                      const dedupKey = `copilot-otel:${span.span_id}`
+                      if (seenKeys.has(dedupKey)) return Result.fail(undefined)
+                      seenKeys.add(dedupKey)
+                      const turnId = attrs['github.copilot.chat.turn.id'] as string | undefined
+                      if (turnId) seenKeys.add(`copilot:${conversationId}:${turnId}`)
+                      // An absent or blank model keeps the established `unknown`
+                      // pricing fallback. A selected attribute with a non-string
+                      // value is malformed: retain seen admission, tally it, then
+                      // omit it before pricing instead of charging it as unknown.
+                      if (typeof rawModel !== 'string') {
+                        if (onUnparsedCall) yield* onUnparsedCall
+                        return Result.fail(undefined)
+                      }
+                      const model = rawModel.trim() ? rawModel : 'unknown'
+                      const usageResult = decodeOtelCallUsage({
+                        model,
+                        inputTokens,
+                        outputTokens,
+                        cacheReadTokens,
+                        cacheCreationTokens,
+                      })
+                      if (Result.isFailure(usageResult)) {
+                        if (onUnparsedCall) yield* onUnparsedCall
+                        return Result.fail(undefined)
+                      }
+                      const usage = usageResult.success
+                      const costUSD = yield* Effect.try({
+                        try: () =>
+                          context.pricing.calculateCost(
+                            usage.model,
+                            usage.inputTokens,
+                            usage.outputTokens,
+                            usage.cacheCreationTokens,
+                            usage.cacheReadTokens,
+                            0,
+                          ),
+                        catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+                      })
+                      return Result.succeed({
+                        provider: 'copilot' as const,
+                        sessionId: conversationId,
+                        project,
+                        model: usage.model,
+                        inputTokens: usage.inputTokens,
+                        outputTokens: usage.outputTokens,
+                        cacheCreationInputTokens: usage.cacheCreationTokens,
+                        cacheReadInputTokens: usage.cacheReadTokens,
+                        cachedInputTokens: 0,
+                        reasoningTokens: 0,
+                        webSearchRequests: 0,
+                        costUSD,
+                        tools: toolsByTrace.get(span.trace_id) ?? [],
+                        bashCommands: bashByTrace.get(span.trace_id) ?? [],
+                        subagentTypes: subagentsByTrace.get(span.trace_id)?.length
+                          ? subagentsByTrace.get(span.trace_id)
+                          : undefined,
+                        timestamp: epochToISO(span.start_time_ms),
+                        speed: 'standard' as const,
+                        deduplicationKey: dedupKey,
+                        userMessage: '',
+                      })
+                    }),
+                  ),
+                  Stream.filterMap(value => value),
+                )
+              })
+              return Stream.unwrap(conversationCalls)
+            }),
+          )
+          const finish = Effect.gen(function* () {
+            yield* checkScanAbort(context.signal)
+            yield* closeCopilotDatabase(owned)
+          })
+          return Stream.concat(conversations, Stream.fromEffectDrain(finish))
+        }),
+      ),
+    )
+  return legacyCopilotParser(parseStream)
 }
 
 // ---------------------------------------------------------------------------

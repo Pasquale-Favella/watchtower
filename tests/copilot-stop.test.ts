@@ -17,9 +17,13 @@ vi.mock('fs/promises', () => ({
   stat: (...args: unknown[]) => hooks.stat(...args),
 }))
 
-vi.mock('../src/main/pipeline/sqlite.js', () => ({
-  openDatabase: vi.fn(() => ({ query: (...args: unknown[]) => hooks.query(...args), close: () => hooks.close() })),
-}))
+vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/main/pipeline/sqlite.js')>()
+  return {
+    ...actual,
+    openDatabase: vi.fn(() => ({ query: (...args: unknown[]) => hooks.query(...args), close: () => hooks.close() })),
+  }
+})
 
 import { createCopilotProvider } from '../src/main/pipeline/providers/copilot.js'
 import type { SessionSource } from '../src/main/pipeline/providers/types.js'
