@@ -9,7 +9,18 @@ import { isScanAbortedError } from '../scan-control.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
 import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../sqlite.js'
-import { buildAssistantCall, type MessageData, parseTimestamp, type PartData, sanitize } from './session-message.js'
+import {
+  buildAssistantCallResult,
+  decodeMessageRole,
+  decodeMessageValue,
+  decodeOpenCodeJson,
+  decodePartValue,
+  decodeV2ModelReferenceValue,
+  type MessageData,
+  parseTimestamp,
+  type PartData,
+  sanitize,
+} from './session-message.js'
 import type { ParsedProviderCall, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,6 +60,10 @@ type MessageRow = {
   id: string
   time_created: number
   data: Uint8Array | string
+  /// The 2.x normalizer has already decoded this value from the same source row.
+  decodedData?: MessageData
+  /// The selected consumed fields failed while the 2.x raw row was decoded.
+  decodedFailure?: boolean
 }
 
 /// One OpenCode 2.x row of `session_message`. v2 has no `part` table: the
@@ -112,6 +127,7 @@ const decodeLegacyMessageRow = Schema.decodeUnknownResult(legacyMessageRowSchema
 const decodePartRow = Schema.decodeUnknownResult(partRowSchema)
 const decodeV2MessageRow = Schema.decodeUnknownResult(v2MessageRowSchema)
 const decodeObject = Schema.decodeUnknownResult(objectSchema)
+const decodeNumericCost = Schema.decodeUnknownResult(Schema.Number)
 
 /// The vendor's own per-session rollup — what the session row itself claims it
 /// spent, used only as a fallback for a session whose messages yielded nothing.
@@ -176,12 +192,6 @@ export type SqliteGeneration = {
   /// non-empty list is the `schema-drift` warning's evidence.
   missingTables: (db: SqliteDatabase) => string[]
 }
-
-/// `MessageData` plus the `providerID` sibling the OpenCode stores write next
-/// to `modelID` (1.x) and that the 2.x `model` ref carries. Kept local: nothing
-/// in `session-message.ts` reads it — the shared builder keys off `modelID` —
-/// but serializing it keeps a v2 message byte-comparable with a 1.x one.
-type MessageDataWithProvider = MessageData & { providerID?: string }
 
 /// Every declared generation whose tables ALL exist and are readable, in
 /// declaration order — most-preferred first. A generation missing ANY of its
@@ -411,7 +421,7 @@ function decodeRecord(value: unknown): Record<string, unknown> | null {
 
 /// Normalize OpenCode 2.x `session_message` rows into the 1.x `MessageRow` /
 /// `PartData` pair the parse loop already consumes, so v2 needs NO downstream
-/// change: cost and token math stay in the shared `buildAssistantCall`.
+/// change: cost and token math stay in the shared `buildAssistantCallResult`.
 ///
 /// Drops: `idle`, `synthetic`, `system` and the `*-switched` rows (none is a
 /// model call). Keeps `compaction` — a compaction request is a real completion
@@ -427,21 +437,15 @@ export function v2RowsToLegacyShape(rows: readonly V2MessageRow[]): {
   const partsByMsg = new Map<string, PartData[]>()
 
   for (const row of rows) {
-    let payload: Record<string, unknown>
-    try {
-      const parsed: unknown = JSON.parse(blobToText(row.data))
-      const decoded = decodeRecord(parsed)
-      if (decoded === null) continue
-      payload = decoded
-    } catch {
-      // skip corrupt message data
-      continue
-    }
+    const decodedPayload = decodeOpenCodeJson(blobToText(row.data))
+    if (Result.isFailure(decodedPayload)) continue
+    const payload = decodeRecord(decodedPayload.success)
+    if (payload === null) continue
 
     const base = { session_id: row.session_id, id: row.id, time_created: row.time_created }
 
     if (row.type === 'user') {
-      messages.push({ ...base, data: JSON.stringify({ role: 'user' }) })
+      messages.push({ ...base, data: JSON.stringify({ role: 'user' }), decodedData: { role: 'user' } })
       const text = payload['text']
       if (typeof text === 'string' && text.length > 0) {
         partsByMsg.set(row.id, [{ type: 'text', text }])
@@ -451,35 +455,41 @@ export function v2RowsToLegacyShape(rows: readonly V2MessageRow[]): {
 
     if (row.type !== 'assistant' && row.type !== 'compaction') continue
 
-    const data: MessageDataWithProvider = { role: 'assistant' }
+    const rawData: Record<string, unknown> = { role: 'assistant' }
 
     // 2.x nests the model as a `{ id, providerID }` ref where 1.x wrote a bare
-    // `modelID` string next to a sibling `providerID`. `buildAssistantCall`
+    // `modelID` string next to a sibling `providerID`. `buildAssistantCallResult`
     // keys off `modelID`, and the pricing resolver tries a provider-prefixed
     // id before the bare one, so the ref is rebuilt as `providerID/id`.
     const model = payload['model']
-    const modelRef = decodeRecord(model)
-    if (modelRef) {
-      const providerID = modelRef['providerID']
-      const modelID = modelRef['id']
-      if (typeof providerID === 'string' && providerID.length > 0) data.providerID = providerID
+    const modelRef = decodeV2ModelReferenceValue(model)
+    if (Result.isFailure(modelRef)) rawData['modelID'] = model
+    if (Result.isSuccess(modelRef) && modelRef.success) {
+      const providerID = modelRef.success.providerID
+      const modelID = modelRef.success.id
+      if (typeof providerID === 'string' && providerID.length > 0) rawData['providerID'] = providerID
       if (
         typeof providerID === 'string' &&
         providerID.length > 0 &&
         typeof modelID === 'string' &&
         modelID.length > 0
       ) {
-        data.modelID = `${providerID}/${modelID}`
+        rawData['modelID'] = `${providerID}/${modelID}`
       }
     }
 
-    const cost = payload['cost']
-    if (typeof cost === 'number') data.cost = cost
-    const tokens = payload['tokens']
-    const tokenRecord = decodeRecord(tokens)
-    if (tokenRecord) data.tokens = tokenRecord as MessageData['tokens']
-
-    messages.push({ ...base, data: JSON.stringify(data) })
+    const cost = decodeNumericCost(payload['cost'])
+    if (Result.isSuccess(cost)) rawData['cost'] = cost.success
+    rawData['tokens'] = payload['tokens']
+    const decodedData = decodeMessageValue(rawData, 'assistant')
+    // Keep the raw projection for the exported legacy-shape helper, but carry
+    // decoded data into the parser so it does not validate the same row twice.
+    messages.push({
+      ...base,
+      data: JSON.stringify(rawData),
+      ...(Result.isSuccess(decodedData) ? { decodedData: decodedData.success } : {}),
+      ...(Result.isFailure(decodedData) ? { decodedFailure: true } : {}),
+    })
 
     const parts: PartData[] = []
     const content = payload['content']
@@ -488,23 +498,27 @@ export function v2RowsToLegacyShape(rows: readonly V2MessageRow[]): {
         const contentRecord = decodeRecord(element)
         if (!contentRecord) continue
         const type = contentRecord['type']
-        if (type === 'text' || type === 'reasoning') {
-          const text = contentRecord['text']
-          if (typeof text === 'string' && text.length > 0) parts.push({ type, text })
-          continue
-        }
-        if (type === 'tool') {
-          const state = decodeRecord(contentRecord['state'])
-          const input = state?.['input']
-          const name = contentRecord['name']
-          parts.push({
-            type: 'tool',
-            tool: typeof name === 'string' ? name : '',
-            // The shared builder reads `state.input.command` for Bash and
-            // `state.input.name` / `.subagent_type` for skills and subagents,
-            // so a missing or non-object input must still be an object.
-            state: { input: decodeRecord(input) ?? {} },
-          })
+        const candidate =
+          type === 'tool'
+            ? { type, tool: contentRecord['name'], state: contentRecord['state'] }
+            : { type, text: contentRecord['text'] }
+        const decodedPart = decodePartValue(candidate)
+        if (
+          Result.isSuccess(decodedPart) &&
+          (decodedPart.success.type === 'text' ||
+            decodedPart.success.type === 'reasoning' ||
+            decodedPart.success.type === 'tool')
+        ) {
+          if (
+            decodedPart.success.type === 'tool' ||
+            (decodedPart.success.text && decodedPart.success.text.length > 0)
+          ) {
+            parts.push(
+              decodedPart.success.type === 'tool'
+                ? { ...decodedPart.success, state: { input: decodedPart.success.state?.input ?? {} } }
+                : decodedPart.success,
+            )
+          }
         }
       }
     }
@@ -539,15 +553,11 @@ export const OPENCODE_FAMILY_1X: SqliteGeneration = {
       if (Result.isFailure(decodedPart)) continue
       const part = decodedPart.success
       try {
-        const decodedData = decodeRecord(JSON.parse(blobToText(part.data)))
-        if (!decodedData || typeof decodedData['type'] !== 'string') continue
-        const input = decodeRecord(decodeRecord(decodedData['state'])?.['input'])
-        const parsed: PartData = {
-          type: decodedData['type'],
-          ...(typeof decodedData['text'] === 'string' ? { text: decodedData['text'] } : {}),
-          ...(typeof decodedData['tool'] === 'string' ? { tool: decodedData['tool'] } : {}),
-          ...(input ? { state: { input } } : {}),
-        }
+        const decodedData = decodeOpenCodeJson(blobToText(part.data))
+        if (Result.isFailure(decodedData)) continue
+        const decodedPart = decodePartValue(decodedData.success)
+        if (Result.isFailure(decodedPart)) continue
+        const parsed = decodedPart.success
         const list = partsByMsg.get(part.message_id) ?? []
         list.push(parsed)
         partsByMsg.set(part.message_id, list)
@@ -710,7 +720,7 @@ export function createSqliteSessionParser(
   const sessionId = segments[segments.length - 1]!
   const dbPath = segments.slice(0, -1).join(':')
 
-  const parseStream: NonNullable<SessionParser['parseStream']> = () =>
+  const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
     Stream.scoped(
       Stream.unwrap(
         Effect.gen(function* () {
@@ -766,15 +776,30 @@ export function createSqliteSessionParser(
               msg =>
                 Effect.gen(function* () {
                   yield* checkScanAbort(signal)
-                  let data: MessageData
-                  try {
-                    data = JSON.parse(blobToText(msg.data)) as MessageData
-                  } catch {
-                    parseFailCount++
-                    return null
+                  let decodedValue: unknown = undefined
+                  let role: string
+                  if (msg.decodedData) {
+                    role = msg.decodedData.role
+                  } else if (msg.decodedFailure) {
+                    role = 'assistant'
+                  } else {
+                    const json = decodeOpenCodeJson(blobToText(msg.data))
+                    if (Result.isFailure(json)) {
+                      parseFailCount++
+                      if (onUnparsedCall) yield* onUnparsedCall
+                      return null
+                    }
+                    decodedValue = json.success
+                    const roleResult = decodeMessageRole(decodedValue)
+                    if (Result.isFailure(roleResult)) {
+                      parseFailCount++
+                      if (onUnparsedCall) yield* onUnparsedCall
+                      return null
+                    }
+                    role = roleResult.success
                   }
 
-                  if (data.role === 'user') {
+                  if (role === 'user') {
                     const textParts = (initialized.partsByMsg.get(msg.id) ?? [])
                       .filter(part => part.type === 'text')
                       .map(part => part.text ?? '')
@@ -782,20 +807,37 @@ export function createSqliteSessionParser(
                     if (textParts.length > 0) currentUserMessageBySession.set(msg.session_id, textParts.join(' '))
                     return null
                   }
-                  if (data.role !== 'assistant' && data.role !== 'model') {
-                    if (data.role !== 'user') roleSkipCount++
+                  if (role !== 'assistant' && role !== 'model') {
+                    roleSkipCount++
                     return null
                   }
 
                   const dedupKey = `${config.providerName}:${msg.session_id}:${msg.id}`
                   if (seenKeys.has(dedupKey)) return null
-                  const call = yield* Effect.try({
+                  if (msg.decodedFailure) {
+                    parseFailCount++
+                    seenKeys.add(dedupKey)
+                    yieldCount++
+                    if (onUnparsedCall) yield* onUnparsedCall
+                    return null
+                  }
+                  const decoded = msg.decodedData
+                    ? Result.succeed(msg.decodedData)
+                    : decodeMessageValue(decodedValue, role)
+                  if (Result.isFailure(decoded)) {
+                    parseFailCount++
+                    seenKeys.add(dedupKey)
+                    yieldCount++
+                    if (onUnparsedCall) yield* onUnparsedCall
+                    return null
+                  }
+                  const callResult = yield* Effect.try({
                     try: () =>
-                      buildAssistantCall({
+                      buildAssistantCallResult({
                         providerName: config.providerName,
                         dedupKey,
                         sessionId,
-                        data,
+                        data: decoded.success,
                         parts: initialized.partsByMsg.get(msg.id) ?? [],
                         timeCreatedMs: msg.time_created,
                         userMessage: currentUserMessageBySession.get(msg.session_id) ?? '',
@@ -805,6 +847,14 @@ export function createSqliteSessionParser(
                     catch: toError,
                   })
                   yield* checkScanAbort(signal)
+                  if (Result.isFailure(callResult)) {
+                    parseFailCount++
+                    seenKeys.add(dedupKey)
+                    yieldCount++
+                    if (onUnparsedCall) yield* onUnparsedCall
+                    return null
+                  }
+                  const call = callResult.success
                   if (!call) return null
                   seenKeys.add(dedupKey)
                   yieldCount++

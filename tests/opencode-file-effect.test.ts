@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { Effect, Option, Result, Schema, Stream } from 'effect'
+import { Effect, Option, Result, Stream } from 'effect'
 import { mkdir, readdir, writeFile } from 'fs/promises'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -48,10 +48,10 @@ import {
   discoverOpenCodeFileSessions,
   discoverOpenCodeFileSessionsEffect,
 } from '../src/main/pipeline/providers/opencode-file-parser.js'
+import { decodeMessageJson } from '../src/main/pipeline/providers/session-message.js'
 import type { SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
-import { parsedProviderCallSchema } from '../src/shared/schemas/providers.js'
 
 let dataDir = ''
 
@@ -373,14 +373,30 @@ describe('OpenCode file helper native Effect path', () => {
       role: 'assistant',
       modelID: 'fixture-model',
       tokens: { input: 'bad-counter', output: 2 },
+      usage: { input_tokens: 9 },
       time: { created: 1 },
       foreignSibling: [null, false],
     })
-    const calls = await Effect.runPromise(Stream.runCollect(nativeStream(parser(sessionSource(session)))()))
+    await writeJson(partPath('assistant', 'valid-sibling.json'), { type: 'text', text: 'still consumed' })
+    const seen = new Set<string>()
+    const calculateCost = vi.fn(() => 2)
+    const unparsed = { count: 0 }
+    const calls = await Effect.runPromise(
+      Stream.runCollect(
+        nativeStream(parser(sessionSource(session), seen, { calculateCost, calculateLocalModelSavings: () => null }))(
+          Effect.sync(() => unparsed.count++),
+        ),
+      ),
+    )
 
-    expect(calls).toHaveLength(1)
-    expect(calls[0]?.inputTokens).toBe('bad-counter')
-    expect(Result.isFailure(Schema.decodeUnknownResult(parsedProviderCallSchema)(calls[0]))).toBe(true)
+    expect(calls).toHaveLength(0)
+    expect(unparsed.count).toBe(1)
+    expect(seen.has('opencode:session-one:assistant')).toBe(true)
+    expect(calculateCost).not.toHaveBeenCalled()
+    expect(nativeIo.reads).toContain(partPath('assistant', 'valid-sibling.json'))
+    expect(
+      Result.isFailure(decodeMessageJson(JSON.stringify({ role: 'assistant', tokens: { input: 'bad-counter' } }))),
+    ).toBe(true)
   })
 
   it('keeps builder timestamp failures in the typed Effect error channel', async () => {

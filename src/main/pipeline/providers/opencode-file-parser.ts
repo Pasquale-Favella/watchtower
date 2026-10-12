@@ -6,7 +6,15 @@ import { captureScanPricing } from '../models.js'
 import { isScanAbortedError } from '../scan-control.js'
 import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
-import { buildAssistantCall, type MessageData, type PartData, sanitize } from './session-message.js'
+import {
+  buildAssistantCallResult,
+  decodeMessageRole,
+  decodeMessageValue,
+  decodePartJson,
+  type MessageData,
+  type PartData,
+  sanitize,
+} from './session-message.js'
 import type { ParsedProviderCall, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 // OpenCode 1.1+ stores sessions as file-based JSON instead of a SQLite DB:
@@ -14,7 +22,7 @@ import type { ParsedProviderCall, ProviderScanContext, SessionParser, SessionSou
 //   storage/message/<sessionID>/<messageID>.json    one file per message
 //   storage/part/<messageID>/<partID>.json          one file per part
 // The message/part shape matches the SQLite layout, so the per-message build
-// logic is shared via buildAssistantCall.
+// logic is shared via buildAssistantCallResult.
 
 const createdAtSchema = Schema.optional(Schema.Union([Schema.Number, Schema.String]))
 const fileTimeSchema = Schema.Struct({ created: createdAtSchema })
@@ -40,16 +48,8 @@ const fileMessageSchema = Schema.Struct({
   usage: Schema.optional(Schema.Unknown),
 })
 
-const filePartSchema = Schema.Struct({
-  type: Schema.optional(Schema.Unknown),
-  text: Schema.optional(Schema.Unknown),
-  tool: Schema.optional(Schema.Unknown),
-  state: Schema.optional(Schema.Unknown),
-})
 const decodeSessionMetaJson = Schema.decodeUnknownResult(Schema.fromJsonString(sessionMetaSchema))
 const decodeFileMessageJson = Schema.decodeUnknownResult(Schema.fromJsonString(fileMessageSchema))
-const decodeFilePartJson = Schema.decodeUnknownResult(Schema.fromJsonString(filePartSchema))
-const decodeString = Schema.decodeUnknownResult(Schema.String)
 type SessionMeta = Schema.Schema.Type<typeof sessionMetaSchema>
 type FileMessageData = Schema.Schema.Type<typeof fileMessageSchema> & { readonly id: string }
 
@@ -65,11 +65,6 @@ const readJsonText = Effect.fnUntraced(function* (
     Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
   )
 })
-
-function stringOrEmpty(value: unknown): string {
-  const decoded = decodeString(value)
-  return Result.isSuccess(decoded) ? decoded.success : ''
-}
 
 function metaDirectory(meta: SessionMeta): string | undefined {
   return meta.directory || undefined
@@ -102,8 +97,8 @@ const readParts = Effect.fnUntraced(function* (
     if (!file.endsWith('.json')) continue
     const raw = yield* readJsonText(join(dir, file), signal)
     if (raw === null) continue
-    const decoded = decodeFilePartJson(raw)
-    if (Result.isSuccess(decoded)) parts.push(decoded.success as PartData)
+    const decoded = decodePartJson(raw)
+    if (Result.isSuccess(decoded)) parts.push(decoded.success)
   }
   return parts
 })
@@ -161,6 +156,7 @@ function parseOpenCodeFileStream(
   dataDir: string,
   providerName: string,
   pricing: ScanPricing,
+  onUnparsedCall?: Effect.Effect<void>,
   context?: ProviderScanContext,
 ): Stream.Stream<ParsedProviderCall, Error> {
   const signal = context?.signal
@@ -187,7 +183,10 @@ function parseOpenCodeFileStream(
       const raw = yield* readJsonText(join(messageDir, file), signal)
       if (raw === null) continue
       const decoded = decodeFileMessageJson(raw)
-      if (Result.isFailure(decoded)) continue
+      if (Result.isFailure(decoded)) {
+        if (onUnparsedCall) yield* onUnparsedCall
+        continue
+      }
       messages.push({ ...decoded.success, id: decoded.success.id ?? file.replace(/\.json$/, '') })
     }
     messages.sort(compareMessages)
@@ -198,7 +197,12 @@ function parseOpenCodeFileStream(
       Stream.mapEffect(message =>
         Effect.gen(function* () {
           yield* checkScanAbort(signal)
-          const role = stringOrEmpty(message.role)
+          const decodedRole = decodeMessageRole(message)
+          if (Result.isFailure(decodedRole)) {
+            if (onUnparsedCall) yield* onUnparsedCall
+            return Result.fail(undefined)
+          }
+          const role = decodedRole.success
           if (role === 'user') {
             const parts = yield* readParts(dataDir, message.id, signal)
             const text = parts
@@ -214,18 +218,21 @@ function parseOpenCodeFileStream(
           const dedupKey = `${providerName}:${sessionId}:${message.id}`
           if (seenKeys.has(dedupKey)) return Result.fail(undefined)
 
-          const parts = yield* readParts(dataDir, message.id, signal)
-          const data: MessageData = {
-            role,
-            ...(message.modelID !== undefined ? { modelID: message.modelID as string } : {}),
-            ...(message.model !== undefined ? { model: message.model as string } : {}),
-            ...(message.cost !== undefined ? { cost: message.cost as number } : {}),
-            ...(message.tokens !== undefined ? { tokens: message.tokens as MessageData['tokens'] } : {}),
-            ...(message.usage !== undefined ? { usage: message.usage as MessageData['usage'] } : {}),
+          const decodedData = decodeMessageValue(message, role)
+          if (Result.isFailure(decodedData)) {
+            // Preserve the former admission point: malformed calls consumed
+            // their parts and claimed the key after the builder produced a
+            // call, then the shared extraction schema omitted them.
+            yield* readParts(dataDir, message.id, signal)
+            seenKeys.add(dedupKey)
+            if (onUnparsedCall) yield* onUnparsedCall
+            return Result.fail(undefined)
           }
-          const call = yield* Effect.try({
+          const parts = yield* readParts(dataDir, message.id, signal)
+          const data: MessageData = decodedData.success
+          const callResult = yield* Effect.try({
             try: () =>
-              buildAssistantCall({
+              buildAssistantCallResult({
                 providerName,
                 dedupKey,
                 sessionId,
@@ -238,6 +245,12 @@ function parseOpenCodeFileStream(
               }),
             catch: toError,
           })
+          if (Result.isFailure(callResult)) {
+            seenKeys.add(dedupKey)
+            if (onUnparsedCall) yield* onUnparsedCall
+            return Result.fail(undefined)
+          }
+          const call = callResult.success
           if (!call) return Result.fail(undefined)
 
           // Keep parity: only non-null calls claim their key, after pricing and
@@ -262,10 +275,10 @@ export function createOpenCodeFileSessionParser(
   context?: ProviderScanContext,
 ): SessionParser {
   const activePricing = context?.pricing ?? pricing ?? captureScanPricing()
-  // This helper emits the builder's raw record; the shared extraction schema
-  // owns its skip-and-tally boundary after the stream yields the call.
-  const parseStream: NonNullable<SessionParser['parseStream']> = () =>
-    parseOpenCodeFileStream(source, seenKeys, dataDir, providerName, activePricing, context)
+  // Selected consumed-field failures are tallied before the parser emits a
+  // call; successful records still pass through the shared extraction schema.
+  const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
+    parseOpenCodeFileStream(source, seenKeys, dataDir, providerName, activePricing, onUnparsedCall, context)
 
   return {
     parseStream,

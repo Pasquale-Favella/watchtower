@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
@@ -18,7 +19,7 @@ import {
   groupIntoTurns,
 } from '../src/main/pipeline/parser.js'
 import { codex } from '../src/main/pipeline/providers/codex.js'
-import { buildAssistantCall } from '../src/main/pipeline/providers/session-message.js'
+import { buildAssistantCallResult } from '../src/main/pipeline/providers/session-message.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { sectionNeedsPrEvidenceReparse } from '../src/main/pipeline/session-cache.js'
 import { shortenPrUrl } from '../src/main/pipeline/sessions-report.js'
@@ -230,44 +231,50 @@ describe('end-to-end: pre-capture shaped sessions reach the PR section', () => {
 })
 
 describe('shared assistant-call seam (opencode / kilo-code)', () => {
-  it('buildAssistantCall keeps assistant text as PR evidence', () => {
-    const call = buildAssistantCall({
-      providerName: 'opencode',
-      dedupKey: 'opencode:sess-1:msg-1',
-      sessionId: 'sess-1',
-      data: { role: 'assistant', modelID: 'demo-model', tokens: { input: 10, output: 5 } },
-      parts: [{ type: 'text', text: `Opened ${GH} for review` }],
-      timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
-      userMessage: 'ship it',
-    })
+  it('keeps assistant text as PR evidence', () => {
+    const call = Result.getOrThrow(
+      buildAssistantCallResult({
+        providerName: 'opencode',
+        dedupKey: 'opencode:sess-1:msg-1',
+        sessionId: 'sess-1',
+        data: { role: 'assistant', modelID: 'demo-model', tokens: { input: 10, output: 5 } },
+        parts: [{ type: 'text', text: `Opened ${GH} for review` }],
+        timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
+        userMessage: 'ship it',
+      }),
+    )
     expect(extractPrUrlsFromProviderCall(call!)).toEqual([GH])
     expect(call).toHaveProperty('assistantText')
   })
 
-  it('buildAssistantCall keeps tool inputs as PR evidence', () => {
-    const call = buildAssistantCall({
-      providerName: 'opencode',
-      dedupKey: 'opencode:sess-1:msg-2',
-      sessionId: 'sess-1',
-      data: { role: 'assistant', modelID: 'demo-model', tokens: { input: 10, output: 5 } },
-      parts: [{ type: 'tool', tool: 'bash', state: { input: { command: `gh pr view ${GHE}` } } }],
-      timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
-      userMessage: 'check ci',
-    })
+  it('keeps tool inputs as PR evidence', () => {
+    const call = Result.getOrThrow(
+      buildAssistantCallResult({
+        providerName: 'opencode',
+        dedupKey: 'opencode:sess-1:msg-2',
+        sessionId: 'sess-1',
+        data: { role: 'assistant', modelID: 'demo-model', tokens: { input: 10, output: 5 } },
+        parts: [{ type: 'tool', tool: 'bash', state: { input: { command: `gh pr view ${GHE}` } } }],
+        timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
+        userMessage: 'check ci',
+      }),
+    )
     expect(extractPrUrlsFromProviderCall(call!)).toEqual([GHE])
     expect(call).toHaveProperty('assistantText')
   })
 
-  it('buildAssistantCall omits assistantText when there is no text', () => {
-    const call = buildAssistantCall({
-      providerName: 'opencode',
-      dedupKey: 'opencode:sess-1:msg-3',
-      sessionId: 'sess-1',
-      data: { role: 'assistant', modelID: 'demo-model', tokens: { input: 10, output: 5 } },
-      parts: [{ type: 'tool', tool: 'read', state: { input: {} } }],
-      timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
-      userMessage: 'read the file',
-    })
+  it('omits assistantText when there is no text', () => {
+    const call = Result.getOrThrow(
+      buildAssistantCallResult({
+        providerName: 'opencode',
+        dedupKey: 'opencode:sess-1:msg-3',
+        sessionId: 'sess-1',
+        data: { role: 'assistant', modelID: 'demo-model', tokens: { input: 10, output: 5 } },
+        parts: [{ type: 'tool', tool: 'read', state: { input: {} } }],
+        timeCreatedMs: Date.parse('2026-07-20T10:00:00.000Z'),
+        userMessage: 'read the file',
+      }),
+    )
     expect(call).not.toHaveProperty('assistantText')
     expect(extractPrUrlsFromProviderCall(call!)).toEqual([])
   })
