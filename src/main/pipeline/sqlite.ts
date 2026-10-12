@@ -1,5 +1,7 @@
 import { createRequire } from 'node:module'
 
+import { Predicate } from 'effect'
+
 /// Thin SQLite read-only wrapper over Node's built-in `node:sqlite` module (stable in
 /// Node 24, experimental in Node 22 / 23). Replaces the earlier `better-sqlite3` binding
 /// so the dependency graph no longer pulls in the deprecated `prebuild-install` package
@@ -102,20 +104,26 @@ export function getSqliteLoadError(): string {
 }
 
 export function isSqliteBusyError(err: unknown): boolean {
-  const e = err as { code?: unknown; errcode?: unknown; errstr?: unknown; message?: unknown } | null
-  const code = typeof e?.code === 'string' ? e.code : ''
-  const errcode = typeof e?.errcode === 'number' ? e.errcode : null
-  const message = [typeof e?.message === 'string' ? e.message : '', typeof e?.errstr === 'string' ? e.errstr : ''].join(
-    ' ',
-  )
+  const visited = new Set<object>()
+  for (let error = err; Predicate.isObject(error) && !visited.has(error); error = error.cause) {
+    visited.add(error)
+    const code = typeof error.code === 'string' ? error.code : ''
+    const errcode = typeof error.errcode === 'number' ? error.errcode : null
+    const message = [
+      typeof error.message === 'string' ? error.message : '',
+      typeof error.errstr === 'string' ? error.errstr : '',
+    ].join(' ')
 
-  return (
-    errcode === 5 ||
-    errcode === 6 ||
-    code === 'SQLITE_BUSY' ||
-    code === 'SQLITE_LOCKED' ||
-    /\bSQLITE_(BUSY|LOCKED)\b|database (?:is |table is )?locked/i.test(message)
-  )
+    if (
+      errcode === 5 ||
+      errcode === 6 ||
+      code === 'SQLITE_BUSY' ||
+      code === 'SQLITE_LOCKED' ||
+      /\bSQLITE_(BUSY|LOCKED)\b|database (?:is |table is )?locked/i.test(message)
+    )
+      return true
+  }
+  return false
 }
 
 export function openDatabase(path: string): SqliteDatabase {

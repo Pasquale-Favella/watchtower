@@ -488,6 +488,29 @@ describe('parser cooperative stop', () => {
     expect(cache.providers['test-provider']?.files[path]?.turns).toHaveLength(1)
   })
 
+  it.each(['SQLITE_BUSY', 'SQLITE_LOCKED'])('does not cache a wrapped native %s failure', async code => {
+    const path = '/test/native-contention.session'
+    const cache = makeCache('test-provider', [])
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('test-provider', path)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    const native = Object.assign(new Error('read unavailable'), { code })
+    const error = new Error('provider read failed', { cause: native })
+    const parse = vi.fn(async function* () {})
+    const parseStream = vi.fn(() => Stream.fail(error))
+    hooks.getProvider.mockResolvedValue({
+      network: false,
+      durableSources: false,
+      createSessionParser: () => ({ parse, parseStream }),
+    })
+
+    await Effect.runPromise(withParserServices(parseAllSessionsEffect()))
+
+    expect(parseStream).toHaveBeenCalledOnce()
+    expect(parse).not.toHaveBeenCalled()
+    expect(cache.providers['test-provider']?.files[path]).toBeUndefined()
+  })
+
   it('records a native stream failure as a fingerprinted per-file failure marker', async () => {
     const path = '/test/native-stream-failure.session'
     const cache = makeCache('test-provider', [path])
