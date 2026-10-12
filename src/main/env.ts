@@ -287,7 +287,6 @@ export const REMAINING_DIRECT_ENV_READS: Readonly<Record<string, readonly string
   'providers/lingtai-tui.ts': ['LINGTAI_HOME', 'LINGTAI_TUI_GLOBAL_DIR', 'LINGTAI_TUI_HOME'],
   'providers/quickdesk.ts': ['QUICKWORK_HOME'],
   'providers/qwen.ts': ['QWEN_DATA_DIR'],
-  'providers/warp.ts': ['WARP_DB_PATH'],
 }
 
 export type ProviderOverrides = Readonly<Partial<Record<ProviderEnvKey, string>>>
