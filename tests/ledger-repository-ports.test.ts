@@ -1,11 +1,9 @@
 /**
  * ADR 0032 §A3 / plan F12 — the ledger's three focused ports.
  *
- * The claim under test is NOT "the SQL still works": `tests/ledger.test.ts`
- * already locks that through the facade, unchanged. The claim is that the one
- * 23-member `LedgerRepository` became THREE independently providable,
- * independently fakeable services, and that the split did not cost a second
- * implementation. Three things a type annotation alone cannot show:
+ * The claim under test is that the three native worker ports remain
+ * independently providable and fakeable, and share one implementation and
+ * SQLite connection. Three things a type annotation alone cannot show:
  *
  *  1. **Isolation, provably.** A graph containing ONLY a `LedgerQueries` fake
  *     answers the four reads; reaching `LedgerIngest` or `LedgerConfig` from that
@@ -13,48 +11,27 @@
  *     happen to be absent" is evidence only if their absence is observable, and
  *     `tests/` is in neither tsconfig, so a `Layer.Layer<LedgerQueries>`
  *     annotation here would prove nothing at all. Repeated for all three tags.
- *  2. **One implementation, three tags.** All three LIVE ports, taken from one
- *     real `LedgerStore` connection, read and write ONE ledger: a row ported
- *     through `LedgerIngest.portIn` is visible to `LedgerQueries.getCalls` and
- *     writable by `LedgerConfig` in the same program. Triplicated SQL would mean
- *     triplicated connections and this could not hold.
+ *  2. **One implementation, three tags.** All three LIVE ports run in the
+ *     worker runtime over its one SQLite connection: a row ported through
+ *     `LedgerIngest.portIn` is visible to `LedgerQueries.getCalls` and writable
+ *     by `LedgerConfig` in the same program.
  *  3. **The rows are still schema-validated.** Every read still decodes with
  *     Effect Schema — the repository-boundary guarantee the split must not
  *     weaken — proven by asserting decoded values (numeric tokens, parsed JSON
  *     arrays) rather than raw driver rows.
  *
- * No `process.env` is mutated anywhere in this file.
+ * No `process.env` is mutated anywhere in this file. The fixture owns the
+ * worker runtime and disposes it before removing its temporary directory.
  */
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
 import type { PortInput } from '../src/main/store/port.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
-
-const tempDirs: string[] = []
-const open: Array<() => void> = []
-
-function makeStore(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-ledger-ports-'))
-  tempDirs.push(dir)
-  const store = new LedgerStore(join(dir, 'ledger.db'))
-  open.push(() => {
-    try {
-      store.close()
-    } catch {
-      /* already closed */
-    }
-  })
-  return store
-}
+import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 const baseInput = {
   provider: 'opencode',
@@ -66,11 +43,6 @@ const baseInput = {
 function newPortInput(): PortInput {
   return { ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() } as unknown as PortInput
 }
-
-afterEach(() => {
-  for (const close of open.splice(0)) close()
-  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
-})
 
 /**
  * Runs `program` against `layer` and reports whether it SUCCEEDED — the
@@ -247,9 +219,9 @@ describe('each port is providable in isolation, with the other two absent', () =
 
 describe('the three live ports share ONE implementation over the writer connection', () => {
   it('a row ported through LedgerIngest is readable through LedgerQueries and writable by LedgerConfig', async () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
 
-    const result = await Effect.runPromise(
+    const result = await runtime.runPromise(
       Effect.gen(function* () {
         const ingest = yield* LedgerIngest
         const queries = yield* LedgerQueries
@@ -271,7 +243,7 @@ describe('the three live ports share ONE implementation over the writer connecti
           aliases,
           requestDataAliases: requestData.aliases,
         }
-      }).pipe(Effect.provide(store.portsLayer)),
+      }),
     )
 
     expect(result.insertedCalls).toBeGreaterThan(0)
@@ -289,37 +261,34 @@ describe('the three live ports share ONE implementation over the writer connecti
     expect(result.aliases).toEqual([{ model: 'aliased-model', aliasOf: 'real-model' }])
     expect(result.requestDataAliases).toEqual(result.aliases)
 
-    // And the facade sees the same rows: its delegators were RE-POINTED at the
-    // ports, not reimplemented.
-    expect(store.getCalls().length).toBe(result.callCount)
-    expect(store.getModelAliases()).toEqual(result.aliases)
+    // Subsequent reads still use the same live worker port implementations.
+    expect(runtime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getCalls()))).toHaveLength(result.callCount)
+    expect(runtime.runSync(Effect.flatMap(LedgerConfig, config => config.getModelAliases()))).toEqual(result.aliases)
   })
 
   it('deleteSource removes one source; clear empties the fact tables and keeps the config tables', async () => {
-    const store = makeStore()
-    store.setModelAlias('keep-me', 'real-model')
-    store.setRefreshCadence('5m')
+    const { runtime } = openLedgerFixture()
+    runtime.runSync(Effect.flatMap(LedgerConfig, config => config.setModelAlias('keep-me', 'real-model')))
+    runtime.runSync(Effect.flatMap(LedgerConfig, config => config.setRefreshCadence('5m')))
 
-    const deleted = await Effect.runPromise(
-      Effect.flatMap(LedgerIngest, ingest => ingest.deleteSource('opencode', 'env-ports', FIXTURE_SOURCE_PATH)).pipe(
-        Effect.provide(store.portsLayer),
-      ),
+    const deleted = await runtime.runPromise(
+      Effect.flatMap(LedgerIngest, ingest => ingest.deleteSource('opencode', 'env-ports', FIXTURE_SOURCE_PATH)),
     )
     expect(deleted).toBeUndefined()
     // A source that was never ported is a no-op, not an error — unchanged.
-    expect(store.getSources()).toEqual([])
+    expect(runtime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getSources()))).toEqual([])
 
-    const after = await Effect.runPromise(
+    const after = await runtime.runPromise(
       Effect.gen(function* () {
         const ingest = yield* LedgerIngest
         const queries = yield* LedgerQueries
         yield* ingest.portIn(newPortInput())
         return { before: (yield* queries.getCalls()).length }
-      }).pipe(Effect.provide(store.portsLayer)),
+      }),
     )
     expect(after.before).toBeGreaterThan(0)
 
-    const cleared = await Effect.runPromise(
+    const cleared = await runtime.runPromise(
       Effect.gen(function* () {
         const ingest = yield* LedgerIngest
         const queries = yield* LedgerQueries
@@ -331,7 +300,7 @@ describe('the three live ports share ONE implementation over the writer connecti
           aliases: yield* config.getModelAliases(),
           cadence: yield* config.getRefreshCadence(),
         }
-      }).pipe(Effect.provide(store.portsLayer)),
+      }),
     )
 
     expect(cleared.sources).toEqual([])
