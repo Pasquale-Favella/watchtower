@@ -1,141 +1,20 @@
-import { readdir, stat } from 'fs/promises'
-import { basename, join } from 'path'
+import { Effect, Result, Schema, Stream } from 'effect'
+import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
+import { basename, join } from 'path'
 
+import { readSessionFileEffect } from '../fs-utils.js'
 import { getShortModelName } from '../models.js'
+import { isScanAbortedError } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
+import type { SqliteDatabase } from '../sqlite.js'
 import { openDatabase } from '../sqlite.js'
-import { readConfig } from '../config.js'
-import type { Provider, SessionParser, SessionSource, ParsedProviderCall } from './types.js'
-import { readSessionFile } from '../fs-utils.js'
-import { isPositiveNumber, safeNumber } from '../parser.js'
-
-type AgentTrajectory<StepType extends Step = Step, AgentExtra = unknown> = {
-  schema_version: string
-  session_id?: string
-  agent: Agent<AgentExtra>
-  steps: StepType[]
-  final_metrics?: FinalMetrics
-}
-
-type FinalMetrics = {
-  total_prompt_tokens?: number
-  total_completion_tokens?: number
-  total_cached_tokens?: number
-  total_steps?: number
-}
-
-type DevinAgentExtra = {
-  backend?: string
-  permission_mode?: string
-}
-
-type Agent<Extra = unknown> = {
-  name: string
-  version: string
-  model_name?: string
-  tool_definitions?: unknown
-  extra?: Extra
-}
-
-type ToolCall = {
-  tool_call_id: string
-  function_name: string
-  arguments: unknown
-}
-
-type DevinMetadata = {
-  created_at?: string
-  committed_acu_cost?: number
-  generation_model?: string
-  is_user_input?: boolean
-  num_tokens?: number
-  request_id?: string
-  finish_reason?: string
-  metrics?: {
-    input_tokens?: number
-    output_tokens?: number
-    cache_creation_tokens?: number
-    cache_read_tokens?: number
-    tokens_per_sec?: number
-    total_time_ms?: number
-    ttft_ms?: number
-    tpot_ms?: number
-  }
-}
-
-type ContentPart = ContentPartText | ContentPartImage
-
-type ContentPartText = {
-  type: 'text'
-  text: string
-}
-
-type ContentPartImage = {
-  type: 'image'
-  source: ImageSource
-}
-
-function isTextContentPart(contentPart: ContentPart): contentPart is ContentPartText {
-  return contentPart.type === 'text'
-}
-
-type ImageSource = {
-  media_type: string
-  path: string
-}
-
-type Step<StepExtra = unknown, MetricsExtra = unknown> = {
-  step_id: number
-  timestamp?: string
-  source: string
-  model_name?: string
-  message: string | Array<ContentPart>
-  tool_calls?: Array<ToolCall>
-  extra?: StepExtra
-  observation?: Observation
-  metrics?: Metrics<MetricsExtra>
-}
-
-type DevinTelemetry = {
-  source?: string
-  operation?: string
-}
-
-type DevinStepExtra = {
-  committed_acu_cost?: number
-  generation_model?: string
-  telemetry?: DevinTelemetry
-}
-
-type Observation = {
-  results: Array<ObservationResult>
-}
-
-type ObservationResult = {
-  source_call_id?: string
-  content?: string | Array<ContentPart>
-}
-
-type Metrics<Extra = unknown> = {
-  prompt_tokens?: number
-  completion_tokens?: number
-  cached_tokens?: number
-  extra?: Extra
-}
-
-type DevinMetricsExtra = {
-  cache_creation_input_tokens?: number
-}
-
-type DevinStep = Step<DevinStepExtra, DevinMetricsExtra> & {
-  metadata?: DevinMetadata
-}
-
-type DevinAgentTrajectory = AgentTrajectory<DevinStep, DevinAgentExtra>
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type DevinSessionMetadata = {
   id: string
-  workingDirectory: string
+  workingDirectory: string | null
   model: string
   title?: string
   createdAt: string
@@ -160,88 +39,165 @@ const DEVIN_TRANSCRIPTS_SUBDIR = 'transcripts'
 const DEVIN_SESSIONS_DB = 'sessions.db'
 const DEVIN_EFFORT_TIERS = new Set(['xhigh', 'high', 'medium', 'low'])
 
-function parseTranscript(raw: string): DevinAgentTrajectory | null {
-  try {
-    return JSON.parse(raw) as DevinAgentTrajectory
-  } catch {
-    return null
-  }
+const trajectorySchema = Schema.Struct({
+  session_id: Schema.optional(Schema.Unknown),
+  agent: Schema.optional(Schema.Unknown),
+  steps: Schema.Array(Schema.Unknown),
+})
+const recordSchema = Schema.Record(Schema.String, Schema.Unknown)
+const configSchema = Schema.Struct({
+  devin: Schema.optional(
+    Schema.Struct({
+      acuUsdRate: Schema.optional(Schema.Unknown),
+    }),
+  ),
+})
+const positiveRateSchema = Schema.Finite.check(Schema.isGreaterThan(0))
+const stepSchema = Schema.Struct({
+  step_id: Schema.optional(Schema.Unknown),
+  model_name: Schema.optional(Schema.Unknown),
+  message: Schema.optional(Schema.Unknown),
+  tool_calls: Schema.optional(Schema.Unknown),
+  extra: Schema.optional(Schema.Unknown),
+  metadata: Schema.optional(Schema.Unknown),
+  metrics: Schema.optional(Schema.Unknown),
+})
+const configJsonSchema = Schema.fromJsonString(configSchema)
+const trajectoryJsonSchema = Schema.fromJsonString(trajectorySchema)
+const decodeConfig = Schema.decodeUnknownResult(configJsonSchema)
+const decodePositiveRate = Schema.decodeUnknownResult(positiveRateSchema)
+const decodeTrajectory = Schema.decodeUnknownResult(trajectoryJsonSchema)
+const decodeRecord = Schema.decodeUnknownResult(recordSchema)
+const decodeStep = Schema.decodeUnknownResult(stepSchema)
+const decodeString = Schema.decodeUnknownResult(Schema.String)
+const decodeFinite = Schema.decodeUnknownResult(Schema.Finite)
+const decodeUnknownArray = Schema.decodeUnknownResult(Schema.Array(Schema.Unknown))
+const decodeToolCalls = Schema.decodeUnknownResult(Schema.Array(Schema.Struct({ function_name: Schema.String })))
+
+type JsonRecord = Schema.Schema.Type<typeof recordSchema>
+type DevinStep = Schema.Schema.Type<typeof stepSchema>
+type DevinAgentTrajectory = Schema.Schema.Type<typeof trajectorySchema>
+
+class DevinDatabaseError extends Schema.TaggedError<DevinDatabaseError>()('DevinDatabaseError', {
+  operation: Schema.Literals(['open', 'read', 'close']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause), { cause })
 }
 
-function parseNumericTimestamp(value: number): string {
-  const millis = value < 10_000_000_000 ? value * 1000 : value
+function databaseError(operation: DevinDatabaseError['operation'], cause: unknown): DevinDatabaseError {
+  const error = toError(cause)
+  return new DevinDatabaseError({ operation, cause: error, message: error.message })
+}
+
+function recordOf(value: unknown): JsonRecord | null {
+  const decoded = decodeRecord(value)
+  return Result.isSuccess(decoded) ? decoded.success : null
+}
+
+function stringValue(value: unknown): string | undefined {
+  const decoded = decodeString(value)
+  return Result.isSuccess(decoded) ? decoded.success : undefined
+}
+
+function finiteValue(value: unknown): number | undefined {
+  const decoded = decodeFinite(value)
+  return Result.isSuccess(decoded) ? decoded.success : undefined
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  const decoded = decodePositiveRate(value)
+  return Result.isSuccess(decoded) ? decoded.success : undefined
+}
+
+function readField(record: JsonRecord | null, key: string): unknown {
+  return record?.[key]
+}
+
+function parseNumericTimestamp(value: unknown): string {
+  if (value === null) return new Date(0).toISOString()
+  const numeric = finiteValue(value)
+  if (numeric === undefined) throw new Error('Invalid numeric timestamp')
+  const millis = numeric < 10_000_000_000 ? numeric * 1000 : numeric
   return new Date(millis).toISOString()
 }
 
-function getCommittedAcuCost(step: DevinStep): number {
-  const acuCost = [step.metadata?.committed_acu_cost, step.extra?.committed_acu_cost].filter(cost =>
-    isPositiveNumber(cost),
-  )
-
-  return acuCost.shift() || 0
+function parseTranscript(raw: string): DevinAgentTrajectory | null {
+  const decoded = decodeTrajectory(raw)
+  return Result.isSuccess(decoded) ? decoded.success : null
 }
 
-function hasAnyTokenField(metrics: Metrics<DevinMetricsExtra> | null | undefined): boolean {
+function getCommittedAcuCost(step: DevinStep): number {
+  const metadata = recordOf(step.metadata)
+  const extra = recordOf(step.extra)
+  return (
+    positiveNumber(readField(metadata, 'committed_acu_cost')) ??
+    positiveNumber(readField(extra, 'committed_acu_cost')) ??
+    0
+  )
+}
+
+function hasAnyTokenField(metrics: JsonRecord | null): boolean {
   if (!metrics) return false
+  const extra = recordOf(readField(metrics, 'extra'))
   return [
-    metrics.prompt_tokens,
-    metrics.completion_tokens,
-    metrics.cached_tokens,
-    metrics.extra?.cache_creation_input_tokens,
+    readField(metrics, 'prompt_tokens'),
+    readField(metrics, 'completion_tokens'),
+    readField(metrics, 'cached_tokens'),
+    readField(extra, 'cache_creation_input_tokens'),
   ].some(value => value != null)
 }
 
-function getMetricsFromStep(step: DevinStep): Metrics<DevinMetricsExtra> | null {
+function getMetricsFromStep(step: DevinStep): JsonRecord | null {
+  const metrics = recordOf(step.metrics)
   // Prefer step.metrics (standard ATIF v1.7) only when it actually carries
   // token fields; a present-but-empty metrics object must not shadow the
   // legacy metadata.metrics location.
-  if (hasAnyTokenField(step.metrics)) {
-    return step.metrics ?? null
+  if (hasAnyTokenField(metrics)) return metrics
+
+  const metadata = recordOf(step.metadata)
+  const legacy = recordOf(readField(metadata, 'metrics'))
+  if (metadata && legacy) {
+    return {
+      prompt_tokens: readField(legacy, 'input_tokens'),
+      completion_tokens: readField(legacy, 'output_tokens'),
+      cached_tokens: readField(legacy, 'cache_read_tokens'),
+      extra: { cache_creation_input_tokens: readField(legacy, 'cache_creation_tokens') },
+    }
   }
 
-  if (step.metadata) {
-    return getDevinMetricsFromMetadata(step.metadata)
-  }
-
-  return step.metrics ?? null
-}
-
-function getDevinMetricsFromMetadata(metadata: DevinMetadata): Metrics<DevinMetricsExtra> {
-  return {
-    prompt_tokens: metadata.metrics?.input_tokens,
-    completion_tokens: metadata.metrics?.output_tokens,
-    cached_tokens: metadata.metrics?.cache_read_tokens,
-    extra: {
-      cache_creation_input_tokens: metadata.metrics?.cache_creation_tokens,
-    },
-  }
+  return metrics
 }
 
 function getUsage(step: DevinStep): DevinUsage | null {
   const committedAcuCost = getCommittedAcuCost(step)
   const metrics = getMetricsFromStep(step)
+  const metricsExtra = recordOf(readField(metrics, 'extra'))
+  const input = readField(metrics, 'prompt_tokens')
+  const output = readField(metrics, 'completion_tokens')
+  const cacheCreate = readField(metricsExtra, 'cache_creation_input_tokens')
+  const cacheRead = readField(metrics, 'cached_tokens')
 
-  const hasAnyUsage = [
-    committedAcuCost,
-    metrics?.prompt_tokens,
-    metrics?.completion_tokens,
-    metrics?.extra?.cache_creation_input_tokens,
-    metrics?.cached_tokens,
-  ].some(x => isPositiveNumber(x))
+  const hasAnyUsage = [committedAcuCost, input, output, cacheCreate, cacheRead].some(
+    value => positiveNumber(value) !== undefined,
+  )
 
   if (!hasAnyUsage) return null
 
   return {
     committedAcuCost,
-    inputTokens: safeNumber(metrics?.prompt_tokens),
-    outputTokens: safeNumber(metrics?.completion_tokens),
-    cacheCreationInputTokens: safeNumber(metrics?.extra?.cache_creation_input_tokens),
-    cacheReadInputTokens: safeNumber(metrics?.cached_tokens),
+    inputTokens: Math.max(0, finiteValue(input) ?? 0),
+    outputTokens: Math.max(0, finiteValue(output) ?? 0),
+    cacheCreationInputTokens: Math.max(0, finiteValue(cacheCreate) ?? 0),
+    cacheReadInputTokens: Math.max(0, finiteValue(cacheRead) ?? 0),
   }
 }
 
 function getSessionId(source: SessionSource, transcript: DevinAgentTrajectory): string {
-  const fromTranscript = transcript.session_id?.trim()
+  const fromTranscript = stringValue(transcript.session_id)?.trim()
   return fromTranscript || basename(source.path, '.json')
 }
 
@@ -257,11 +213,14 @@ function getProjectName(source: SessionSource, session: DevinSessionMetadata | n
 }
 
 function getProjectPath(session: DevinSessionMetadata | null): string | undefined {
-  return session?.workingDirectory
+  return session?.workingDirectory ?? undefined
 }
 
-function getTimestamp(step: DevinStep, session: DevinSessionMetadata | null): string | undefined {
-  return [step.metadata?.created_at, session?.lastActivityAt, session?.createdAt].filter(Boolean).shift()
+function getTimestamp(step: DevinStep, session: DevinSessionMetadata | null): Result.Result<string, unknown> {
+  const metadata = recordOf(step.metadata)
+  const timestamp = readField(metadata, 'created_at')
+  if (timestamp) return decodeString(timestamp)
+  return Result.succeed(session?.lastActivityAt || session?.createdAt || '')
 }
 
 function firstPresentString(...values: Array<string | undefined>): string | undefined {
@@ -315,147 +274,231 @@ function getDevinDisplayModelName(generationModel: string | undefined, modelName
 }
 
 function getModelName(transcript: DevinAgentTrajectory, step: DevinStep, session: DevinSessionMetadata | null): string {
-  const generationModel = firstPresentString(step.metadata?.generation_model, step.extra?.generation_model)
+  const metadata = recordOf(step.metadata)
+  const extra = recordOf(step.extra)
+  const agent = recordOf(transcript.agent)
+  const generationModel = firstPresentString(
+    stringValue(readField(metadata, 'generation_model')),
+    stringValue(readField(extra, 'generation_model')),
+  )
   const modelName =
-    firstPresentString(step.model_name, transcript.agent?.model_name, session?.model) ?? DEFAULT_MODEL_NAME
+    firstPresentString(stringValue(step.model_name), stringValue(readField(agent, 'model_name')), session?.model) ??
+    DEFAULT_MODEL_NAME
 
   return getDevinDisplayModelName(generationModel, modelName)
 }
 
-function getToolNames(step: DevinStep): string[] {
-  return (step.tool_calls ?? []).map(call => call.function_name)
+function getToolNames(step: DevinStep): Result.Result<string[], unknown> {
+  return Result.map(decodeToolCalls(step.tool_calls ?? []), calls => calls.map(call => call.function_name))
 }
 
-function normalizeContentPartMessage(contentPart: ContentPart) {
-  if (isTextContentPart(contentPart)) {
-    return contentPart.text
-  } else {
-    return contentPart.source.path
+function normalizeContentPartMessage(value: unknown): string {
+  const contentPart = recordOf(value)
+  if (stringValue(readField(contentPart, 'type')) === 'text') {
+    return stringValue(readField(contentPart, 'text')) ?? ''
   }
+  const source = recordOf(readField(contentPart, 'source'))
+  return stringValue(readField(source, 'path')) ?? ''
 }
 
-function normalizeStepMessage(message: string | Array<ContentPart>): string {
-  if (Array.isArray(message)) {
-    return message.map(x => normalizeContentPartMessage(x).trim()).join(' ')
-  }
-  return message.trim()
+function normalizeStepMessage(message: unknown): string {
+  const decodedString = decodeString(message)
+  if (Result.isSuccess(decodedString)) return decodedString.success.trim()
+  const contentParts = decodeUnknownArray(message)
+  if (Result.isFailure(contentParts)) return ''
+  return contentParts.success
+    .map(normalizeContentPartMessage)
+    .map(part => part.trim())
+    .join(' ')
 }
 
-function getFirstUserMessageBeforeStep(steps: DevinStep[], index: number): string | null {
+function getFirstUserMessageBeforeStep(steps: readonly unknown[], index: number): string | null {
   for (let i = index - 1; i >= 0; i--) {
-    const step = steps[i]
-    if (!step?.metadata?.is_user_input) continue
+    const decoded = decodeStep(steps[i])
+    if (Result.isFailure(decoded)) continue
+    const step = decoded.success
+    const metadata = recordOf(step.metadata)
+    if (!readField(metadata, 'is_user_input')) continue
     const message = step.message ? normalizeStepMessage(step.message) : undefined
     if (message) return message
   }
   return null
 }
 
-function loadSessionMetadata(dbPath: string): Map<string, DevinSessionMetadata> {
-  const sessions = new Map<string, DevinSessionMetadata>()
-  let db: ReturnType<typeof openDatabase> | null = null
-  try {
-    db = openDatabase(dbPath)
-    const rows = db.query<{
-      id: string
-      working_directory: string
-      model: string
-      title: string | null
-      created_at: number
-      last_activity_at: number
-      hidden: number
-    }>(
-      `SELECT id, working_directory, model, title, created_at, last_activity_at, hidden
-       FROM sessions`,
-    )
-    for (const row of rows) {
-      if (!row.id) continue
-      sessions.set(row.id, {
-        id: row.id,
-        workingDirectory: row.working_directory,
-        model: row.model,
-        title: row.title ?? undefined,
-        createdAt: parseNumericTimestamp(row.created_at),
-        lastActivityAt: parseNumericTimestamp(row.last_activity_at),
-        hidden: !!row.hidden,
-      })
-    }
-  } catch {
-    return sessions
-  } finally {
-    db?.close()
+const sessionRowSchema = Schema.Struct({
+  id: Schema.optional(Schema.Unknown),
+  working_directory: Schema.optional(Schema.Unknown),
+  model: Schema.optional(Schema.Unknown),
+  title: Schema.optional(Schema.Unknown),
+  created_at: Schema.optional(Schema.Unknown),
+  last_activity_at: Schema.optional(Schema.Unknown),
+  hidden: Schema.optional(Schema.Unknown),
+})
+const decodeSessionRow = Schema.decodeUnknownResult(sessionRowSchema)
+
+function readSessionRows(db: SqliteDatabase, sessions: Map<string, DevinSessionMetadata>): void {
+  const rows = db.query<Record<string, unknown>>(
+    `SELECT id, working_directory, model, title, created_at, last_activity_at, hidden
+     FROM sessions`,
+  )
+  for (const rawRow of rows) {
+    const decoded = decodeSessionRow(rawRow)
+    if (Result.isFailure(decoded)) continue
+    const row = decoded.success
+    const id = stringValue(row.id)
+    if (!id) continue
+    const workingDirectory = row.working_directory === null ? null : (stringValue(row.working_directory) ?? '')
+    const model = stringValue(row.model) ?? ''
+    const title = stringValue(row.title)
+    sessions.set(id, {
+      id,
+      workingDirectory,
+      model,
+      ...(title !== undefined ? { title } : {}),
+      createdAt: parseNumericTimestamp(row.created_at),
+      lastActivityAt: parseNumericTimestamp(row.last_activity_at),
+      hidden: Boolean(row.hidden),
+    })
   }
-  return sessions
 }
 
-async function getCostFactor(): Promise<number | null> {
-  const configRate = (await readConfig()).devin?.acuUsdRate
-  return isPositiveNumber(configRate) ? configRate : null
-}
-
-class DevinSessionParser implements SessionParser {
-  constructor(
-    private source: SessionSource,
-    private seenKeys: Set<string>,
-    private sessionMetadata: Map<string, DevinSessionMetadata>,
-  ) {}
-
-  async *parse(): AsyncGenerator<ParsedProviderCall> {
-    const raw = await readSessionFile(this.source.path)
-    if (!raw) return
-
-    const transcript = parseTranscript(raw)
-    if (!transcript?.steps) return
-
-    const sessionId = getSessionId(this.source, transcript)
-    const session = this.sessionMetadata.get(sessionId) ?? null
-    if (session?.hidden) return
-
-    const project = getProjectName(this.source, session)
-    const projectPath = getProjectPath(session)
-    const costFactor = await getCostFactor()
-    if (costFactor === null) return
-
-    for (let index = 0; index < transcript.steps.length; index++) {
-      const step = transcript.steps[index]
-      if (step.metadata?.is_user_input) continue
-
-      const usage = getUsage(step)
-      if (!usage) continue
-
-      const timestamp = getTimestamp(step, session) ?? ''
-
-      const deduplicationKey = `devin:${sessionId}:${step.step_id}`
-
-      if (this.seenKeys.has(deduplicationKey)) continue
-      this.seenKeys.add(deduplicationKey)
-
-      const model = getModelName(transcript, step, session)
-      const tools = getToolNames(step)
-      const userMessage = getFirstUserMessageBeforeStep(transcript.steps, index) ?? ''
-
-      yield {
-        provider: DEVIN_PROVIDER_NAME,
-        model,
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        cacheCreationInputTokens: usage.cacheCreationInputTokens,
-        cacheReadInputTokens: usage.cacheReadInputTokens,
-        cachedInputTokens: usage.cacheReadInputTokens,
-        reasoningTokens: 0,
-        webSearchRequests: 0,
-        costUSD: usage.committedAcuCost * costFactor,
-        tools,
-        bashCommands: [],
-        timestamp,
-        speed: 'standard',
-        deduplicationKey,
-        userMessage,
-        sessionId,
-        project,
-        projectPath,
-      }
+const loadSessionMetadataEffect = Effect.fnUntraced(function* (
+  dbPath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<Map<string, DevinSessionMetadata>, Error> {
+  const sessions = new Map<string, DevinSessionMetadata>()
+  yield* checkScanAbort(signal)
+  const result = yield* Effect.result(
+    Effect.acquireUseRelease(
+      Effect.try({ try: () => openDatabase(dbPath), catch: cause => databaseError('open', cause) }),
+      db =>
+        Effect.result(
+          Effect.try({ try: () => readSessionRows(db, sessions), catch: cause => databaseError('read', cause) }),
+        ),
+      db => Effect.try({ try: () => db.close(), catch: cause => databaseError('close', cause) }),
+    ),
+  )
+  yield* checkScanAbort(signal)
+  if (Result.isFailure(result)) {
+    if (result.failure instanceof DevinDatabaseError && result.failure.operation === 'close') {
+      return yield* Effect.fail(toError(result.failure.cause))
     }
+    return sessions
+  }
+  if (Result.isFailure(result.success)) return sessions
+  return sessions
+})
+
+function configPath(): string {
+  return join(homedir(), '.config', 'watchtower', 'config.json')
+}
+
+const readCostFactor = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<number | null, Error> {
+  const raw = yield* scanIo(() => readFile(configPath(), 'utf-8'), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
+  if (raw === null) return null
+  const decoded = decodeConfig(raw)
+  if (Result.isFailure(decoded)) return null
+  return positiveNumber(decoded.success.devin?.acuUsdRate) ?? null
+})
+
+function createParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  getSessionMetadata: (signal?: AbortSignal) => Effect.Effect<Map<string, DevinSessionMetadata>, Error>,
+  context?: ProviderScanContext,
+): SessionParser {
+  const signal = context?.signal
+  const parseEffect = Effect.fn('parseDevinSession')(function* (
+    onUnparsedCall?: Effect.Effect<void>,
+  ): Effect.fn.Return<Stream.Stream<ParsedProviderCall, Error>, Error> {
+    yield* checkScanAbort(signal)
+    const raw = yield* readSessionFileEffect(source.path, 'utf-8', signal ? { signal } : {}).pipe(
+      Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+    )
+    if (!raw) return Stream.empty
+    const transcript = parseTranscript(raw)
+    if (!transcript) return Stream.empty
+
+    const sessionId = getSessionId(source, transcript)
+    const metadata = yield* getSessionMetadata(signal)
+    const session = metadata.get(sessionId) ?? null
+    if (session?.hidden) return Stream.empty
+
+    const costFactor = yield* readCostFactor(signal)
+    if (costFactor === null) return Stream.empty
+
+    const project = getProjectName(source, session)
+    const projectPath = getProjectPath(session)
+    const indexedSteps = transcript.steps.map((step, index) => ({ step, index }))
+    return Stream.fromIterable(indexedSteps).pipe(
+      Stream.mapEffect(({ step: rawStep, index }) =>
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          const decoded = decodeStep(rawStep)
+          if (Result.isFailure(decoded)) {
+            if (onUnparsedCall) yield* onUnparsedCall
+            return null
+          }
+          const step = decoded.success
+          const stepMetadata = recordOf(step.metadata)
+          if (readField(stepMetadata, 'is_user_input')) return null
+
+          const usage = getUsage(step)
+          if (!usage) return null
+          const timestamp = getTimestamp(step, session)
+          const deduplicationKey = `devin:${sessionId}:${step.step_id}`
+          if (seenKeys.has(deduplicationKey)) return null
+          seenKeys.add(deduplicationKey)
+          if (session?.workingDirectory === null || Result.isFailure(timestamp)) {
+            if (onUnparsedCall) yield* onUnparsedCall
+            return null
+          }
+
+          const model = getModelName(transcript, step, session)
+          const decodedTools = getToolNames(step)
+          if (Result.isFailure(decodedTools)) {
+            if (onUnparsedCall) yield* onUnparsedCall
+            return null
+          }
+          const tools = decodedTools.success
+          const userMessage = getFirstUserMessageBeforeStep(transcript.steps, index) ?? ''
+          const call: ParsedProviderCall = {
+            provider: DEVIN_PROVIDER_NAME,
+            model,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            cacheCreationInputTokens: usage.cacheCreationInputTokens,
+            cacheReadInputTokens: usage.cacheReadInputTokens,
+            cachedInputTokens: usage.cacheReadInputTokens,
+            reasoningTokens: 0,
+            webSearchRequests: 0,
+            costUSD: usage.committedAcuCost * costFactor,
+            tools,
+            bashCommands: [],
+            timestamp: timestamp.success,
+            speed: 'standard',
+            deduplicationKey,
+            userMessage,
+            sessionId,
+            project,
+            projectPath,
+          }
+          return call
+        }),
+      ),
+      Stream.filter((call): call is ParsedProviderCall => call !== null),
+    )
+  })
+
+  const parseStream = (onUnparsedCall?: Effect.Effect<void>) => Stream.unwrap(parseEffect(onUnparsedCall))
+  return {
+    parseStream,
+    // Remove this Promise edge once direct parser callers consume parseStream.
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      yield* Stream.toAsyncIterable(parseStream())
+    },
   }
 }
 
@@ -463,10 +506,46 @@ export function createDevinProvider(cliDir: string): Provider {
   const sessionsDbPath = join(cliDir, DEVIN_SESSIONS_DB)
   let sessionMetadata: Map<string, DevinSessionMetadata> | null = null
 
-  const getSessionMetadata = () => {
-    if (!sessionMetadata) sessionMetadata = loadSessionMetadata(sessionsDbPath)
-    return sessionMetadata
-  }
+  const getSessionMetadata = Effect.fnUntraced(function* (
+    signal?: AbortSignal,
+  ): Effect.fn.Return<Map<string, DevinSessionMetadata>, Error> {
+    if (sessionMetadata) return sessionMetadata
+    const loaded = yield* loadSessionMetadataEffect(sessionsDbPath, signal)
+    sessionMetadata = loaded
+    return loaded
+  })
+
+  const discoverEffect = Effect.fn('discoverDevinSessions')(function* (
+    context?: ProviderScanContext,
+  ): Effect.fn.Return<SessionSource[], Error> {
+    const signal = context?.signal
+    yield* checkScanAbort(signal)
+    if ((yield* readCostFactor(signal)) === null) return []
+
+    const transcriptsDir = join(cliDir, DEVIN_TRANSCRIPTS_SUBDIR)
+    const entries = yield* scanIo(() => readdir(transcriptsDir), signal).pipe(
+      Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed([] as string[]))),
+    )
+    const metadata = yield* getSessionMetadata(signal)
+    const sources: SessionSource[] = []
+    for (const entry of entries) {
+      yield* checkScanAbort(signal)
+      if (!entry.endsWith('.json')) continue
+
+      const filePath = join(transcriptsDir, entry)
+      const fileStats = yield* scanIo(() => stat(filePath), signal).pipe(
+        Effect.map(stats => (stats.isFile() ? stats : null)),
+        Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+      )
+      if (!fileStats) continue
+
+      const session = metadata.get(basename(filePath, '.json')) ?? null
+      if (session?.hidden) continue
+      const tmpSource: SessionSource = { path: filePath, project: DEVIN_PROVIDER_NAME, provider: DEVIN_PROVIDER_NAME }
+      sources.push({ path: filePath, project: getProjectName(tmpSource, session), provider: DEVIN_PROVIDER_NAME })
+    }
+    return sources
+  })
 
   return {
     name: DEVIN_PROVIDER_NAME,
@@ -480,45 +559,20 @@ export function createDevinProvider(cliDir: string): Provider {
       return rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      if ((await getCostFactor()) === null) return []
-
-      const transcriptsDir = join(cliDir, DEVIN_TRANSCRIPTS_SUBDIR)
-      const entries = await readdir(transcriptsDir).catch(() => [])
-      const metadata = getSessionMetadata()
-      const sources: SessionSource[] = []
-
-      for (const entry of entries) {
-        if (!entry.endsWith('.json')) continue
-
-        const filePath = join(transcriptsDir, entry)
-        const pathStats = await stat(filePath).catch(() => null)
-
-        if (!pathStats?.isFile()) continue
-
-        const session = metadata.get(basename(filePath, '.json')) ?? null
-        if (session?.hidden) continue
-
-        const tmpSource: SessionSource = {
-          path: filePath,
-          project: DEVIN_PROVIDER_NAME,
-          provider: DEVIN_PROVIDER_NAME,
-        }
-
-        const project = getProjectName(tmpSource, session)
-
-        sources.push({
-          path: filePath,
-          project,
-          provider: DEVIN_PROVIDER_NAME,
-        })
-      }
-
-      return sources
+    discoverSessionsEffect: discoverEffect,
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // Remove this Promise edge once direct discovery callers consume the native hook.
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discoverEffect(context))
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return new DevinSessionParser(source, seenKeys, getSessionMetadata())
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, getSessionMetadata, context)
     },
   }
 }
