@@ -1,5 +1,6 @@
 import { execFile } from 'child_process'
 import { randomBytes } from 'crypto'
+import { Effect, Schema } from 'effect'
 import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises'
 import https from 'https'
 import { homedir } from 'os'
@@ -9,6 +10,8 @@ import { fileURLToPath } from 'url'
 import { resolveCacheDir } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { captureScanPricing } from '../models.js'
+import { isScanAbortedError } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
 import { isSqliteAvailable, isSqliteBusyError, openDatabase } from '../sqlite.js'
 import type { DateRange } from '../types.js'
@@ -19,6 +22,12 @@ type AntigravityConversationRoot = {
   project: string
   extensions: readonly string[]
 }
+
+class ProviderOperationError extends Schema.TaggedError<ProviderOperationError>()('ProviderOperationError', {
+  operation: Schema.Literals(['readdir', 'stat']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
 
 // Computed on each call rather than frozen at module load so discovery honors
 // the current home directory (env overrides in tests, and any runtime change).
@@ -1003,27 +1012,42 @@ export function isAntigravityStatusLineEventsPath(path: string): boolean {
   return path === getAntigravityStatusLineEventsPath()
 }
 
-export async function discoverAntigravitySessionSources(
+const discoverIo = Effect.fnUntraced(function* <A>(
+  operation: ProviderOperationError['operation'],
+  run: () => Promise<A>,
+  signal?: AbortSignal,
+): Effect.fn.Return<A, Error> {
+  return yield* scanIo(run, signal).pipe(
+    Effect.mapError(cause =>
+      isScanAbortedError(cause) ? cause : new ProviderOperationError({ operation, cause, message: cause.message }),
+    ),
+  )
+})
+
+const discoverAntigravitySessionsEffect = Effect.fnUntraced(function* (
   roots?: readonly AntigravityConversationRoot[],
-): Promise<SessionSource[]> {
+  context?: ProviderScanContext,
+): Effect.fn.Return<SessionSource[], Error> {
   // The statusline JSONL is a synthetic source only appended for the real
   // default roots, not when a caller passes an explicit (test) root set.
   const includeStatusLineEvents = roots === undefined
   const effectiveRoots = roots ?? conversationRoots()
   const sources: SessionSource[] = []
+  const signal = context?.signal
   for (const root of effectiveRoots) {
-    let files: string[]
-    try {
-      files = await readdir(root.dir)
-    } catch {
+    const entries = yield* Effect.result(discoverIo('readdir', () => readdir(root.dir), signal))
+    yield* checkScanAbort(signal)
+    if (entries._tag === 'Failure') {
       continue
     }
 
-    for (const file of files.sort()) {
+    for (const file of entries.success.sort()) {
+      yield* checkScanAbort(signal)
       if (!isConversationFile(file, root.extensions)) continue
       const path = join(root.dir, file)
-      const s = await stat(path).catch(() => null)
-      if (!s?.isFile()) continue
+      const fileStat = yield* Effect.result(discoverIo('stat', () => stat(path), signal))
+      yield* checkScanAbort(signal)
+      if (fileStat._tag === 'Failure' || !fileStat.success.isFile()) continue
       sources.push({
         path,
         project: root.project,
@@ -1034,8 +1058,9 @@ export async function discoverAntigravitySessionSources(
 
   if (includeStatusLineEvents) {
     const statusLinePath = getAntigravityStatusLineEventsPath()
-    const statusLineStat = await stat(statusLinePath).catch(() => null)
-    if (statusLineStat?.isFile()) {
+    const statusLineStat = yield* Effect.result(discoverIo('stat', () => stat(statusLinePath), signal))
+    yield* checkScanAbort(signal)
+    if (statusLineStat._tag === 'Success' && statusLineStat.success.isFile()) {
       sources.push({
         path: statusLinePath,
         project: 'antigravity-cli',
@@ -1045,6 +1070,14 @@ export async function discoverAntigravitySessionSources(
   }
 
   return sources
+})
+
+// Remove after direct discovery callers consume the Effect-native path.
+export function discoverAntigravitySessionSources(
+  roots?: readonly AntigravityConversationRoot[],
+): Promise<SessionSource[]> {
+  // eslint-disable-next-line no-restricted-syntax
+  return Effect.runPromise(discoverAntigravitySessionsEffect(roots))
 }
 
 function parseStatusLinePayload(input: unknown): StatusLineEvent | null {
@@ -1510,6 +1543,7 @@ const modelDisplayNames: Record<string, string> = {
 }
 
 export function createAntigravityProvider(): Provider {
+  const discover = (context?: ProviderScanContext) => discoverAntigravitySessionsEffect(undefined, context)
   return {
     name: 'antigravity',
     displayName: 'Antigravity',
@@ -1522,8 +1556,11 @@ export function createAntigravityProvider(): Provider {
       return rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      return discoverAntigravitySessionSources()
+    discoverSessionsEffect: discover,
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // Remove this Promise edge once direct discovery callers consume the native hook.
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discover(context))
     },
 
     createSessionParser(
