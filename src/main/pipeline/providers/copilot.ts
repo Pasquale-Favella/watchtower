@@ -76,6 +76,7 @@
 // =============================================================================
 
 import { createHash } from 'crypto'
+import { Effect, Result, Schema } from 'effect'
 import { existsSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { homedir, platform } from 'os'
@@ -85,9 +86,10 @@ import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
-import { readSessionFile } from '../fs-utils.js'
+import { readSessionFile, readSessionFileEffect } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
 import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 import type { DateRange } from '../types.js'
@@ -340,13 +342,19 @@ export function getCopilotSessionStateDir(override?: string, paths?: AppPaths): 
  * reader cannot resolve it yet. Registering the key there (alphabetically,
  * after `WATCHTOWER_COPILOT_SESSION_STATE_DIR`) and prepending
  * `overrideFor(paths, 'WATCHTOWER_COPILOT_SESSION_STORE_DB')` is the follow-up;
- * the existsSync gate below is unchanged either way.
+ * the exported helper's existsSync gate is unchanged either way. Discovery
+ * checks this candidate with Effect-native stat.
  *
  * Returns null when the file is absent — the case on every machine that has
  * never run the Copilot CLI, and the case that must leave every other Copilot
  * source byte-for-byte unchanged.
  */
 export function getCopilotSessionStoreDbPath(sessionStateDir?: string, paths?: AppPaths): string | null {
+  const candidate = getCopilotSessionStoreDbCandidate(sessionStateDir, paths)
+  return existsSync(candidate) ? candidate : null
+}
+
+function getCopilotSessionStoreDbCandidate(sessionStateDir?: string, paths?: AppPaths): string {
   const override = overrideFor(paths, 'WATCHTOWER_COPILOT_SESSION_STORE_DB')
   // The store sits beside `session-state/` in the CLI home, so the registered
   // session-state override doubles as a way to move the whole CLI root. The
@@ -354,7 +362,7 @@ export function getCopilotSessionStoreDbPath(sessionStateDir?: string, paths?: A
   const candidate = override
     ? join(override, 'session-store.db')
     : join(dirname(getCopilotSessionStateDir(sessionStateDir, paths)), 'session-store.db')
-  return existsSync(candidate) ? candidate : null
+  return candidate
 }
 
 /**
@@ -366,10 +374,14 @@ export function getCopilotSessionStoreDbPath(sessionStateDir?: string, paths?: A
  *   3. VSCodium variant paths
  */
 export function getAgentTracesDbPath(paths?: AppPaths): string | null {
+  return getAgentTracesDbCandidates(paths).find(candidate => existsSync(candidate)) ?? null
+}
+
+function getAgentTracesDbCandidates(paths?: AppPaths): string[] {
   // Allow explicit override
   const envOverride = overrideFor(paths, 'WATCHTOWER_COPILOT_OTEL_DB')
   if (envOverride) {
-    return existsSync(envOverride) ? envOverride : null
+    return [envOverride]
   }
 
   const home = homedir()
@@ -427,10 +439,7 @@ export function getAgentTracesDbPath(paths?: AppPaths): string | null {
     )
   }
 
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate
-  }
-  return null
+  return candidates
 }
 
 /**
@@ -2485,46 +2494,90 @@ function isSessionStoreSource(source: SessionSource): source is SessionStoreSour
 // Session discovery: JSONL (original)
 // ---------------------------------------------------------------------------
 
-async function discoverJsonlSessions(
+class ProviderOperationError extends Schema.TaggedError<ProviderOperationError>()('ProviderOperationError', {
+  provider: Schema.Literal('copilot'),
+  operation: Schema.Literals(['read', 'readdir', 'stat']),
+  path: Schema.String,
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+function discoveryError(
+  operation: ProviderOperationError['operation'],
+  path: string,
+  cause: unknown,
+): ProviderOperationError {
+  const error = cause instanceof Error ? cause : new Error(String(cause), { cause })
+  return new ProviderOperationError({ provider: 'copilot', operation, path, cause: error, message: error.message })
+}
+
+function readDirectoryEffect(path: string, signal?: AbortSignal): Effect.Effect<string[], Error> {
+  return scanIo(() => readdir(path), signal).pipe(
+    Effect.mapError(cause => (isScanAbortedError(cause) ? cause : discoveryError('readdir', path, cause))),
+  )
+}
+
+function statEffect(path: string, signal?: AbortSignal): Effect.Effect<Awaited<ReturnType<typeof stat>>, Error> {
+  return scanIo(() => stat(path), signal).pipe(
+    Effect.mapError(cause => (isScanAbortedError(cause) ? cause : discoveryError('stat', path, cause))),
+  )
+}
+
+function readTextEffect(
+  path: string,
+  encoding: BufferEncoding,
+  signal?: AbortSignal,
+): Effect.Effect<string | null, Error> {
+  return readSessionFileEffect(path, encoding, { signal })
+}
+
+const findExistingFile = Effect.fnUntraced(function* (
+  candidates: readonly string[],
+  signal?: AbortSignal,
+): Effect.fn.Return<string | null, Error> {
+  for (const candidate of candidates) {
+    yield* checkScanAbort(signal)
+    const fileInfo = yield* optionalDiscovery(statEffect(candidate, signal), null)
+    if (fileInfo?.isFile()) return candidate
+  }
+  return null
+})
+
+function optionalDiscovery<A>(effect: Effect.Effect<A, Error>, fallback: A): Effect.Effect<A, Error> {
+  return effect.pipe(Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(fallback))))
+}
+
+const workspaceJsonSchema = Schema.fromJsonString(Schema.Struct({ folder: Schema.optional(Schema.String) }))
+const decodeWorkspaceJson = Schema.decodeUnknownResult(workspaceJsonSchema)
+
+function discoverSessionsFromEffect(effect: Effect.Effect<SessionSource[], Error>): Promise<SessionSource[]> {
+  // Remove this Promise edge when external callers use native discovery.
+  // eslint-disable-next-line no-restricted-syntax
+  return Effect.runPromise(effect)
+}
+
+const discoverJsonlSessions = Effect.fnUntraced(function* (
   sessionStateDir: string,
   context?: ProviderScanContext,
-): Promise<JsonlSessionSource[]> {
+): Effect.fn.Return<JsonlSessionSource[], Error> {
+  const signal = context?.signal
   const sources: JsonlSessionSource[] = []
-
-  let sessionDirs: string[]
-  try {
-    sessionDirs = await readdir(sessionStateDir)
-  } catch {
-    throwIfScanAborted(context?.signal)
-    return sources
-  }
+  const sessionDirs = yield* optionalDiscovery(readDirectoryEffect(sessionStateDir, signal), [])
 
   for (const sessionId of sessionDirs) {
-    throwIfScanAborted(context?.signal)
+    yield* checkScanAbort(signal)
     const eventsPath = join(sessionStateDir, sessionId, 'events.jsonl')
-    const s = await stat(eventsPath).catch(() => {
-      throwIfScanAborted(context?.signal)
-      return null
-    })
-    throwIfScanAborted(context?.signal)
-    if (!s?.isFile()) continue
+    const fileInfo = yield* optionalDiscovery(statEffect(eventsPath, signal), null)
+    if (!fileInfo?.isFile()) continue
 
     let project = sessionId
     let workingDirectory: string | undefined
-    try {
-      const yaml = await readSessionFile(join(sessionStateDir, sessionId, 'workspace.yaml'), 'utf8', {
-        signal: context?.signal,
-      })
-      const cwd = parseCwd(yaml ?? '')
-      if (cwd) {
-        project = basename(cwd)
-        workingDirectory = cwd
-      }
-    } catch {
-      throwIfScanAborted(context?.signal)
-      // workspace.yaml may not exist
+    const yaml = yield* readTextEffect(join(sessionStateDir, sessionId, 'workspace.yaml'), 'utf8', signal)
+    const cwd = parseCwd(yaml ?? '')
+    if (cwd) {
+      project = basename(cwd)
+      workingDirectory = cwd
     }
-
     sources.push({
       path: eventsPath,
       project,
@@ -2534,27 +2587,25 @@ async function discoverJsonlSessions(
       ...(workingDirectory ? { workingDirectory } : {}),
     })
   }
-
   return sources
-}
+})
 
 // ---------------------------------------------------------------------------
 // Session discovery: OTel SQLite
 // ---------------------------------------------------------------------------
 
-async function discoverOtelSessions(dbPath: string, context?: ProviderScanContext): Promise<OTelSessionSource[]> {
+const discoverOtelSessions = Effect.fnUntraced(function* (
+  dbPath: string,
+  context?: ProviderScanContext,
+): Effect.fn.Return<OTelSessionSource[], Error> {
   // Verify the DB file exists. Return one source per DB file; the parser
   // opens the DB once and iterates all conversations in a single DB open,
   // which is far more efficient than one source (and one DB open) per conversation.
-  try {
-    await stat(dbPath)
-  } catch {
-    throwIfScanAborted(context?.signal)
-    return []
-  }
-  throwIfScanAborted(context?.signal)
+  yield* checkScanAbort(context?.signal)
+  const dbInfo = yield* optionalDiscovery(statEffect(dbPath, context?.signal), null)
+  if (!dbInfo?.isFile()) return []
   return [{ path: dbPath, project: 'copilot-chat', provider: 'copilot', sourceType: 'otel' }]
-}
+})
 
 // ---------------------------------------------------------------------------
 // Session discovery: Copilot CLI session-store.db
@@ -2573,29 +2624,23 @@ async function discoverOtelSessions(dbPath: string, context?: ProviderScanContex
  * store records it. The placeholder only applies to a row whose session has
  * neither.
  */
-async function discoverSessionStoreSessions(
+const discoverSessionStoreSessions = Effect.fnUntraced(function* (
   dbPath: string,
   context?: ProviderScanContext,
-): Promise<SessionStoreSource[]> {
-  try {
-    throwIfScanAborted(context?.signal)
-    const dbStat = await stat(dbPath)
-    throwIfScanAborted(context?.signal)
-    if (!dbStat.isFile()) return []
-    return [
-      {
-        path: dbPath,
-        project: 'copilot-cli',
-        provider: 'copilot',
-        sourceType: 'sessionstore',
-        mtime: dbStat.mtime.toISOString(),
-      },
-    ]
-  } catch {
-    throwIfScanAborted(context?.signal)
-    return []
-  }
-}
+): Effect.fn.Return<SessionStoreSource[], Error> {
+  yield* checkScanAbort(context?.signal)
+  const dbInfo = yield* optionalDiscovery(statEffect(dbPath, context?.signal), null)
+  if (!dbInfo?.isFile()) return []
+  return [
+    {
+      path: dbPath,
+      project: 'copilot-cli',
+      provider: 'copilot',
+      sourceType: 'sessionstore',
+      mtime: dbInfo.mtime.toISOString(),
+    },
+  ]
+})
 
 // ---------------------------------------------------------------------------
 // Session discovery: JetBrains (IntelliJ IDEA, PyCharm, …)
@@ -2613,33 +2658,22 @@ const JETBRAINS_DB_NAMES: Record<string, string> = {
 }
 
 /** Locate the Nitrite .db in a store dir (known name, else any *-nitrite.db). */
-async function findNitriteDbPath(
+const findNitriteDbPath = Effect.fnUntraced(function* (
   storeDir: string,
   kind: string,
   context?: ProviderScanContext,
-): Promise<string | null> {
+): Effect.fn.Return<string | null, Error> {
+  const signal = context?.signal
   const known = JETBRAINS_DB_NAMES[kind]
   if (known) {
     const p = join(storeDir, known)
-    try {
-      throwIfScanAborted(context?.signal)
-      const fileStat = await stat(p)
-      throwIfScanAborted(context?.signal)
-      if (fileStat.isFile()) return p
-    } catch {
-      throwIfScanAborted(context?.signal)
-    }
+    const fileStat = yield* optionalDiscovery(statEffect(p, signal), null)
+    if (fileStat?.isFile()) return p
   }
-  let files: string[]
-  try {
-    files = await readdir(storeDir)
-  } catch {
-    throwIfScanAborted(context?.signal)
-    return null
-  }
+  const files = yield* optionalDiscovery(readDirectoryEffect(storeDir, signal), [])
   const db = files.find(f => f.endsWith('-nitrite.db'))
   return db ? join(storeDir, db) : null
-}
+})
 
 /**
  * Discover JetBrains Copilot sessions under the github-copilot config root.
@@ -2652,43 +2686,27 @@ async function findNitriteDbPath(
  * records no token counts, so the parser estimates output tokens from the
  * assistant reply text (see createJetBrainsParser).
  */
-async function discoverJetBrainsSessions(
+const discoverJetBrainsSessions = Effect.fnUntraced(function* (
   root: string,
   context?: ProviderScanContext,
-): Promise<JetBrainsSessionSource[]> {
+): Effect.fn.Return<JetBrainsSessionSource[], Error> {
+  const signal = context?.signal
   const sources: JetBrainsSessionSource[] = []
-
-  let ideDirs: string[]
-  try {
-    ideDirs = await readdir(root)
-  } catch {
-    throwIfScanAborted(context?.signal)
-    return sources
-  }
+  const ideDirs = yield* optionalDiscovery(readDirectoryEffect(root, signal), [])
 
   for (const ide of ideDirs) {
-    throwIfScanAborted(context?.signal)
+    yield* checkScanAbort(signal)
     for (const kind of JETBRAINS_SESSION_KINDS) {
       const kindDir = join(root, ide, kind)
-      let storeDirs: string[]
-      try {
-        storeDirs = await readdir(kindDir)
-      } catch {
-        throwIfScanAborted(context?.signal)
-        continue // this IDE doesn't have this session kind
-      }
+      const storeDirs = yield* optionalDiscovery(readDirectoryEffect(kindDir, signal), [])
 
       for (const storeId of storeDirs) {
-        throwIfScanAborted(context?.signal)
+        yield* checkScanAbort(signal)
         const storeDir = join(kindDir, storeId)
-        const dbPath = await findNitriteDbPath(storeDir, kind, context)
+        const dbPath = yield* findNitriteDbPath(storeDir, kind, context)
         if (!dbPath) continue
 
-        const dbStat = await stat(dbPath).catch(() => {
-          throwIfScanAborted(context?.signal)
-          return null
-        })
-        throwIfScanAborted(context?.signal)
+        const dbStat = yield* optionalDiscovery(statEffect(dbPath, signal), null)
         const mtime = (dbStat?.mtime ?? new Date(0)).toISOString()
 
         sources.push({
@@ -2710,10 +2728,10 @@ async function discoverJetBrainsSessions(
   // store — NOT the chat-agent-sessions store where the billable turns live.
   // Without this join, every current agent session falls to the generic bucket
   // even though its repo name is sitting one store dir over.
-  await resolveJetBrainsProjectNames(sources, context)
+  yield* resolveJetBrainsProjectNames(sources, context)
 
   return sources
-}
+})
 
 /**
  * Populate each source's `projectName` from whichever store dir (of the same
@@ -2721,33 +2739,27 @@ async function discoverJetBrainsSessions(
  * own .db lacks the field inherits it from a sibling-kind store with the same
  * id. Best-effort — read/parse failures leave projectName undefined.
  */
-async function resolveJetBrainsProjectNames(
+const resolveJetBrainsProjectNames = Effect.fnUntraced(function* (
   sources: JetBrainsSessionSource[],
   context?: ProviderScanContext,
-): Promise<void> {
+): Effect.fn.Return<void, Error> {
+  const signal = context?.signal
   const byStore = new Map<string, string>()
   for (const src of sources) {
-    throwIfScanAborted(context?.signal)
+    yield* checkScanAbort(signal)
     // Already found this store's name via a sibling-kind source — skip the read.
     if (!src.dbPath || byStore.has(src.storeId)) continue
-    let raw: string | null = null
-    try {
-      raw = await readSessionFile(src.dbPath, 'latin1', { signal: context?.signal })
-    } catch (error) {
-      if (isScanAbortedError(error)) throw error
-      raw = null
-    }
-    throwIfScanAborted(context?.signal)
+    const raw = yield* readTextEffect(src.dbPath, 'latin1', signal)
     if (!raw) continue
     const name = extractJetBrainsProjectName(raw)
     if (name) byStore.set(src.storeId, name)
   }
   for (const src of sources) {
-    throwIfScanAborted(context?.signal)
+    yield* checkScanAbort(signal)
     const name = byStore.get(src.storeId)
     if (name) src.projectName = name
   }
-}
+})
 
 // ---------------------------------------------------------------------------
 // Provider factory
@@ -2826,105 +2838,77 @@ function copilotWorkspaceFsPath(uri: string): string | undefined {
   return path.replace(/^\/([a-zA-Z]:\/)/, '$1')
 }
 
-async function resolveWorkspaceProject(
+const resolveWorkspaceProject = Effect.fnUntraced(function* (
   wsDir: string,
   hashDir: string,
   context?: ProviderScanContext,
-): Promise<{ project: string; workingDirectory?: string }> {
+): Effect.fn.Return<{ project: string; workingDirectory?: string }, Error> {
+  const signal = context?.signal
   let project = hashDir
   let workingDirectory: string | undefined
-  try {
-    const wsJson = await readSessionFile(join(wsDir, hashDir, 'workspace.json'), 'utf8', {
-      signal: context?.signal,
-    })
-    if (wsJson) {
-      const data = JSON.parse(wsJson) as { folder?: string }
-      if (typeof data.folder === 'string') {
-        // folder is a URI like 'file:///home/user/myapp' or 'file:///C:/Users/...'
-        const fsPath = copilotWorkspaceFsPath(data.folder)
-        if (fsPath) {
-          const clean = fsPath.replace(/\/+$/, '')
-          const name = basename(clean)
-          if (name) project = name
-          if (clean) workingDirectory = clean
-        } else {
-          // Remote URI (vscode-remote, wsl): no host-local checkout, but keep
-          // the basename as the grouping label rather than the storage hash.
-          const name = basename(data.folder.replace(/\/+$/, ''))
-          if (name) project = name
-        }
+  const wsJson = yield* readTextEffect(join(wsDir, hashDir, 'workspace.json'), 'utf8', signal)
+  if (wsJson) {
+    const decoded = decodeWorkspaceJson(wsJson)
+    if (Result.isSuccess(decoded) && decoded.success.folder !== undefined) {
+      // folder is a URI like 'file:///home/user/myapp' or 'file:///C:/Users/...'
+      const fsPath = copilotWorkspaceFsPath(decoded.success.folder)
+      if (fsPath) {
+        const clean = fsPath.replace(/\/+$/, '')
+        const name = basename(clean)
+        if (name) project = name
+        if (clean) workingDirectory = clean
+      } else {
+        // Remote URI (vscode-remote, wsl): keep a useful grouping label.
+        const name = basename(decoded.success.folder.replace(/\/+$/, ''))
+        if (name) project = name
       }
     }
-  } catch (error) {
-    if (isScanAbortedError(error)) throw error
-    // workspace.json may be absent or malformed
   }
   return workingDirectory ? { project, workingDirectory } : { project }
-}
+})
 
-async function hasChatSessionFiles(chatSessionsDir: string, context?: ProviderScanContext): Promise<boolean> {
-  let files: string[]
-  try {
-    files = await readdir(chatSessionsDir)
-  } catch {
-    throwIfScanAborted(context?.signal)
-    return false
-  }
+const hasChatSessionFiles = Effect.fnUntraced(function* (
+  chatSessionsDir: string,
+  context?: ProviderScanContext,
+): Effect.fn.Return<boolean, Error> {
+  const signal = context?.signal
+  const files = yield* optionalDiscovery(readDirectoryEffect(chatSessionsDir, signal), [])
 
   for (const file of files) {
-    throwIfScanAborted(context?.signal)
+    yield* checkScanAbort(signal)
     if (!file.endsWith('.jsonl')) continue
-    const s = await stat(join(chatSessionsDir, file)).catch(() => {
-      throwIfScanAborted(context?.signal)
-      return null
-    })
-    throwIfScanAborted(context?.signal)
+    const s = yield* optionalDiscovery(statEffect(join(chatSessionsDir, file), signal), null)
     if (s?.isFile()) return true
   }
   return false
-}
+})
 
 // ---------------------------------------------------------------------------
 // Session discovery: VS Code core chatSessions
 // ---------------------------------------------------------------------------
 
-async function discoverWorkspaceChatSessions(
+const discoverWorkspaceChatSessions = Effect.fnUntraced(function* (
   workspaceStorageDirs: string[],
   context?: ProviderScanContext,
-): Promise<ChatSessionSource[]> {
+): Effect.fn.Return<ChatSessionSource[], Error> {
+  const signal = context?.signal
   const sources: ChatSessionSource[] = []
 
   for (const wsDir of workspaceStorageDirs) {
-    throwIfScanAborted(context?.signal)
-    let hashDirs: string[]
-    try {
-      hashDirs = await readdir(wsDir)
-    } catch {
-      throwIfScanAborted(context?.signal)
-      continue
-    }
+    yield* checkScanAbort(signal)
+    const hashDirs = yield* optionalDiscovery(readDirectoryEffect(wsDir, signal), [])
 
     for (const hashDir of hashDirs) {
-      throwIfScanAborted(context?.signal)
+      yield* checkScanAbort(signal)
       const chatSessionsDir = join(wsDir, hashDir, 'chatSessions')
-      let files: string[]
-      try {
-        files = await readdir(chatSessionsDir)
-      } catch {
-        throwIfScanAborted(context?.signal)
-        continue
-      }
+      const files = yield* optionalDiscovery(readDirectoryEffect(chatSessionsDir, signal), [])
 
-      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir, context)
+      const { project, workingDirectory } = yield* resolveWorkspaceProject(wsDir, hashDir, context)
       for (const file of files) {
-        throwIfScanAborted(context?.signal)
+        yield* checkScanAbort(signal)
         if (!file.endsWith('.jsonl')) continue
         const path = join(chatSessionsDir, file)
-        const s = await stat(path).catch(() => {
-          throwIfScanAborted(context?.signal)
-          return null
-        })
-        throwIfScanAborted(context?.signal)
+        const s = yield* optionalDiscovery(statEffect(path, signal), null)
         if (!s?.isFile()) continue
         sources.push({
           path,
@@ -2938,34 +2922,25 @@ async function discoverWorkspaceChatSessions(
   }
 
   return sources
-}
+})
 
-async function discoverEmptyWindowChatSessions(
+const discoverEmptyWindowChatSessions = Effect.fnUntraced(function* (
   globalStorageDirs: string[],
   context?: ProviderScanContext,
-): Promise<ChatSessionSource[]> {
+): Effect.fn.Return<ChatSessionSource[], Error> {
+  const signal = context?.signal
   const sources: ChatSessionSource[] = []
 
   for (const globalDir of globalStorageDirs) {
-    throwIfScanAborted(context?.signal)
+    yield* checkScanAbort(signal)
     const chatSessionsDir = join(globalDir, 'emptyWindowChatSessions')
-    let files: string[]
-    try {
-      files = await readdir(chatSessionsDir)
-    } catch {
-      throwIfScanAborted(context?.signal)
-      continue
-    }
+    const files = yield* optionalDiscovery(readDirectoryEffect(chatSessionsDir, signal), [])
 
     for (const file of files) {
-      throwIfScanAborted(context?.signal)
+      yield* checkScanAbort(signal)
       if (!file.endsWith('.jsonl')) continue
       const path = join(chatSessionsDir, file)
-      const s = await stat(path).catch(() => {
-        throwIfScanAborted(context?.signal)
-        return null
-      })
-      throwIfScanAborted(context?.signal)
+      const s = yield* optionalDiscovery(statEffect(path, signal), null)
       if (!s?.isFile()) continue
       sources.push({
         path,
@@ -2977,7 +2952,7 @@ async function discoverEmptyWindowChatSessions(
   }
 
   return sources
-}
+})
 
 // ---------------------------------------------------------------------------
 // Session discovery: VS Code workspace transcripts
@@ -2988,46 +2963,30 @@ async function discoverEmptyWindowChatSessions(
  * Structure: {wsDir}/{hash}/GitHub.copilot-chat/transcripts/{session}.jsonl
  * Project is read from {wsDir}/{hash}/workspace.json (folder URI).
  */
-async function discoverTranscriptSessions(
+const discoverTranscriptSessions = Effect.fnUntraced(function* (
   workspaceStorageDirs: string[],
   context?: ProviderScanContext,
-): Promise<JsonlSessionSource[]> {
+): Effect.fn.Return<JsonlSessionSource[], Error> {
+  const signal = context?.signal
   const sources: JsonlSessionSource[] = []
 
   for (const wsDir of workspaceStorageDirs) {
-    throwIfScanAborted(context?.signal)
-    let hashDirs: string[]
-    try {
-      hashDirs = await readdir(wsDir)
-    } catch {
-      throwIfScanAborted(context?.signal)
-      continue
-    }
+    yield* checkScanAbort(signal)
+    const hashDirs = yield* optionalDiscovery(readDirectoryEffect(wsDir, signal), [])
 
     for (const hashDir of hashDirs) {
-      throwIfScanAborted(context?.signal)
+      yield* checkScanAbort(signal)
       const chatSessionsDir = join(wsDir, hashDir, 'chatSessions')
-      if (await hasChatSessionFiles(chatSessionsDir, context)) continue
+      if (yield* hasChatSessionFiles(chatSessionsDir, context)) continue
 
       const transcriptsDir = join(wsDir, hashDir, 'GitHub.copilot-chat', 'transcripts')
-      const { project, workingDirectory } = await resolveWorkspaceProject(wsDir, hashDir, context)
-
-      let transcriptFiles: string[]
-      try {
-        transcriptFiles = await readdir(transcriptsDir)
-      } catch {
-        throwIfScanAborted(context?.signal)
-        continue
-      }
+      const { project, workingDirectory } = yield* resolveWorkspaceProject(wsDir, hashDir, context)
+      const transcriptFiles = yield* optionalDiscovery(readDirectoryEffect(transcriptsDir, signal), [])
 
       for (const file of transcriptFiles) {
-        throwIfScanAborted(context?.signal)
+        yield* checkScanAbort(signal)
         if (!file.endsWith('.jsonl')) continue
-        const s = await stat(join(transcriptsDir, file)).catch(() => {
-          throwIfScanAborted(context?.signal)
-          return null
-        })
-        throwIfScanAborted(context?.signal)
+        const s = yield* optionalDiscovery(statEffect(join(transcriptsDir, file), signal), null)
         if (!s?.isFile()) continue
         sources.push({
           path: join(transcriptsDir, file),
@@ -3042,7 +3001,7 @@ async function discoverTranscriptSessions(
   }
 
   return sources
-}
+})
 
 export function createCopilotProvider(
   sessionStateDir?: string,
@@ -3094,15 +3053,50 @@ export function createCopilotProvider(
   }
 
   /**
-   * Locate the CLI store, or null when there is none.
+   * Resolve the CLI store candidate; Effect-native stat checks it during discovery.
    *
    * Resolved lazily inside discoverSessions (like the session-state dir) so an
    * override set after module load is respected, and derived from the CLI home
    * so the one session-state seam redirects both roots.
    */
-  function getSessionStorePath(): string | null {
-    return getCopilotSessionStoreDbPath(sessionStateDir, paths)
+  function getSessionStorePath(): string {
+    return getCopilotSessionStoreDbCandidate(sessionStateDir, paths)
   }
+
+  const discoverEffect = Effect.fn('discoverCopilotSessions')(function* (
+    context?: ProviderScanContext,
+  ): Effect.fn.Return<SessionSource[], Error> {
+    const signal = context?.signal
+    yield* checkScanAbort(signal)
+    const sources: SessionSource[] = []
+
+    // Store first: its parser populates covered session/model keys before events.jsonl rollups.
+    sources.push(...(yield* discoverSessionStoreSessions(getSessionStorePath(), context)))
+
+    // OTel carries richer token data and takes precedence over chat journals.
+    const disableOtel = overrideFor(paths, 'WATCHTOWER_COPILOT_DISABLE_OTEL') === '1'
+    let discoveredOtel = false
+    if (!disableOtel) {
+      const dbPath = yield* findExistingFile(getAgentTracesDbCandidates(paths), signal)
+      if (dbPath) {
+        const otelSources = yield* discoverOtelSessions(dbPath, context)
+        discoveredOtel = otelSources.length > 0
+        sources.push(...otelSources)
+      }
+    }
+
+    sources.push(...(yield* discoverJsonlSessions(getCopilotSessionStateDir(sessionStateDir, paths), context)))
+    if (!discoveredOtel) {
+      sources.push(...(yield* discoverWorkspaceChatSessions(getWsDirs(), context)))
+      sources.push(...(yield* discoverEmptyWindowChatSessions(getGlobalDirs(), context)))
+    }
+    sources.push(...(yield* discoverTranscriptSessions(getWsDirs(), context)))
+    sources.push(...(yield* discoverJetBrainsSessions(getJetBrainsCopilotRoot(jetbrainsDir, paths), context)))
+    yield* checkScanAbort(signal)
+    return sources
+  })
+
+  const discover = (context?: ProviderScanContext) => Effect.suspend(() => discoverEffect(context))
 
   return {
     name: 'copilot',
@@ -3120,105 +3114,10 @@ export function createCopilotProvider(
       return normalizeTool(rawTool)
     },
 
-    async discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      throwIfScanAborted(context?.signal)
-      const sources: SessionSource[] = []
-      let discoveredOtel = false
+    discoverSessionsEffect: discover,
 
-      // 1. Discover the Copilot CLI session store FIRST. ORDER IS LOAD-BEARING.
-      //
-      // The scan walks a provider's sources in exactly the order discovery
-      // returned them — `parseProviderSources` builds `changedSources` with
-      // `for (const source of sources)` and then parses that same array in
-      // sequence — so a source returned first is parsed first, always. The
-      // store must precede every events.jsonl source because the JSONL
-      // `session.shutdown` handler reads `coveredStoreKeys`, which only the
-      // store parser populates. If the order ever changed, the rollup would
-      // silently start double-counting again.
-      try {
-        const storePath = getSessionStorePath()
-        if (storePath) {
-          const storeSources = await discoverSessionStoreSessions(storePath, context)
-          sources.push(...storeSources)
-        }
-      } catch {
-        throwIfScanAborted(context?.signal)
-        // session-store discovery failed — the events.jsonl rollup stays the
-        // fallback, which is exactly the pre-store behaviour.
-      }
-
-      // 2. Discover OTel sessions (preferred — full token data)
-      // `=== '1'`, not a presence check: any other value (including `'0'` and
-      // `''`) leaves OTel enabled, exactly as before.
-      const disableOtel = overrideFor(paths, 'WATCHTOWER_COPILOT_DISABLE_OTEL') === '1'
-      if (!disableOtel) {
-        const dbPath = getAgentTracesDbPath(paths)
-        if (dbPath) {
-          try {
-            const otelSources = await discoverOtelSessions(dbPath, context)
-            discoveredOtel = otelSources.length > 0
-            sources.push(...otelSources)
-          } catch {
-            throwIfScanAborted(context?.signal)
-            // OTel discovery failed — fall through to JSONL
-          }
-        }
-      }
-
-      // 3. Discover JSONL sessions (fallback — output tokens only)
-      try {
-        const jsonlDir = getCopilotSessionStateDir(sessionStateDir, paths)
-        const jsonlSources = await discoverJsonlSessions(jsonlDir, context)
-        sources.push(...jsonlSources)
-      } catch {
-        throwIfScanAborted(context?.signal)
-        // JSONL discovery failed
-      }
-
-      // Prefer OTel over chatSessions: they can mirror the same turns under
-      // incompatible IDs, and OTel carries richer token/cache data.
-      if (!discoveredOtel) {
-        // 4. Discover VS Code core chatSessions journals
-        try {
-          const chatSessionSources = await discoverWorkspaceChatSessions(getWsDirs(), context)
-          sources.push(...chatSessionSources)
-        } catch {
-          throwIfScanAborted(context?.signal)
-          // Workspace chatSessions discovery failed
-        }
-
-        // 5. Discover VS Code empty-window chatSessions journals
-        try {
-          const emptyWindowSources = await discoverEmptyWindowChatSessions(getGlobalDirs(), context)
-          sources.push(...emptyWindowSources)
-        } catch {
-          throwIfScanAborted(context?.signal)
-          // Empty-window chatSessions discovery failed
-        }
-      }
-
-      // 6. Discover VS Code workspace transcript sessions
-      try {
-        const transcriptSources = await discoverTranscriptSessions(getWsDirs(), context)
-        sources.push(...transcriptSources)
-      } catch {
-        throwIfScanAborted(context?.signal)
-        // Transcript discovery failed
-      }
-
-      // 7. Discover JetBrains IDE sessions (IntelliJ, PyCharm, …). These live
-      // in a store none of the VS Code / CLI sources touch, so there is no
-      // overlap to dedupe against; the shared seenKeys set still guards it.
-      try {
-        const jetbrainsSources = await discoverJetBrainsSessions(getJetBrainsCopilotRoot(jetbrainsDir, paths), context)
-        sources.push(...jetbrainsSources)
-      } catch {
-        throwIfScanAborted(context?.signal)
-        // JetBrains discovery failed
-      }
-
-      throwIfScanAborted(context?.signal)
-      return sources
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      return discoverSessionsFromEffect(discover(context))
     },
 
     createSessionParser(
