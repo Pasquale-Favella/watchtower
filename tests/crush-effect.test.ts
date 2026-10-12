@@ -168,8 +168,8 @@ describe('Crush Effect provider', () => {
       ])
       const second = makeProject('second', [{ id: 'second-session', prompt_tokens: 1, cost: 1, created_at: 3 }])
       const entries = [
-        { path: first, data_dir: '.crush' },
-        { path: second, data_dir: '.crush' },
+        { path: '/workspace/first', data_dir: join(first, '.crush') },
+        { path: '/workspace/second', data_dir: join(second, '.crush') },
       ]
       // Each root form keeps valid siblings when other entries are malformed.
       const registryValue =
@@ -185,7 +185,7 @@ describe('Crush Effect provider', () => {
         join(first, '.crush', 'crush.db') + ':older',
         join(second, '.crush', 'crush.db') + ':second-session',
       ])
-      expect(found.map(source => source.project)).toEqual([first, first, second])
+      expect(found.map(source => source.project)).toEqual(['workspace-first', 'workspace-first', 'workspace-second'])
       expect(hooks.closed).toBe(2)
     },
   )
