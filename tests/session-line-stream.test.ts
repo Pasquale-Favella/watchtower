@@ -11,6 +11,7 @@ const native = vi.hoisted(() => ({
     once: (event: 'open' | 'close', listener: () => void) => unknown
   }>,
   delayStat: false,
+  statCalls: 0,
   onStatStarted: undefined as (() => void) | undefined,
   releaseStat: undefined as (() => void) | undefined,
 }))
@@ -32,6 +33,7 @@ vi.mock('fs/promises', async importOriginal => {
   return {
     ...actual,
     stat: (...args: Parameters<typeof actual.stat>) => {
+      native.statCalls++
       if (!native.delayStat) return actual.stat(...args)
       native.delayStat = false
       return new Promise<Awaited<ReturnType<typeof actual.stat>>>(resolve => {
@@ -55,6 +57,7 @@ afterEach(() => {
   root = ''
   native.streams.length = 0
   native.delayStat = false
+  native.statCalls = 0
   native.onStatStarted = undefined
   native.releaseStat = undefined
 })
@@ -65,6 +68,27 @@ async function setup(): Promise<string> {
 }
 
 describe('native session line stream', () => {
+  it('preserves empty lines without a preliminary stat for an explicitly uncapped source', async () => {
+    const path = await setup()
+    await writeFile(path, 'first\n\nlast')
+    const lines = await Effect.runPromise(
+      Stream.runCollect(readSessionLinesStream(path, undefined, { maxBytes: Infinity, preserveEmptyLines: true })),
+    )
+    expect([...lines]).toEqual(['first', '', 'last'])
+    expect(native.statCalls).toBe(0)
+    expect(native.streams).toHaveLength(1)
+    expect(native.streams[0]?.closed).toBe(true)
+  })
+
+  it('closes an uncapped source after an early consumer stop', async () => {
+    const path = await setup()
+    await writeFile(path, 'first\nsecond\n')
+    await Effect.runPromise(Stream.runHead(readSessionLinesStream(path, undefined, { maxBytes: Infinity })))
+    expect(native.statCalls).toBe(0)
+    expect(native.streams).toHaveLength(1)
+    expect(native.streams[0]?.closed).toBe(true)
+  })
+
   it('preserves byte offsets, blank-line skipping, and unterminated final lines', async () => {
     const path = await setup()
     const contents = Buffer.from('\nignored\nfirst\nlast')

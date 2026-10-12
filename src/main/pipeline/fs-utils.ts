@@ -128,6 +128,7 @@ type ReadSessionLinesOptions = {
   startByteOffset?: number
   byteOffsetTracker?: { lastCompleteLineOffset: number }
   maxBytes?: number
+  preserveEmptyLines?: boolean
   signal?: AbortSignal
 }
 
@@ -195,23 +196,25 @@ export function readSessionLinesStream(
   const scoped = Stream.unwrap(
     Effect.gen(function* () {
       yield* Effect.try({ try: () => throwIfScanAborted(options.signal), catch: toError })
-      const statResult = yield* Effect.uninterruptible(
-        Effect.result(Effect.tryPromise({ try: () => stat(filePath), catch: toError })),
-      )
-      if (Result.isFailure(statResult)) {
-        if (options.signal?.aborted) {
-          yield* Effect.try({ try: () => throwIfScanAborted(options.signal), catch: toError })
-        }
-        warn(`stat failed for ${shortPath(filePath)}: ${errorCode(statResult.failure)}`)
-        return Stream.empty
-      }
-      const size = statResult.success.size
-      yield* Effect.try({ try: () => throwIfScanAborted(options.signal), catch: toError })
-
       const maxBytes = options.maxBytes ?? MAX_STREAM_SESSION_FILE_BYTES
-      if (size > maxBytes) {
-        notice(filePath, 'oversize')
-        return Stream.empty
+      if (maxBytes !== Infinity) {
+        const statResult = yield* Effect.uninterruptible(
+          Effect.result(Effect.tryPromise({ try: () => stat(filePath), catch: toError })),
+        )
+        if (Result.isFailure(statResult)) {
+          if (options.signal?.aborted) {
+            yield* Effect.try({ try: () => throwIfScanAborted(options.signal), catch: toError })
+          }
+          warn(`stat failed for ${shortPath(filePath)}: ${errorCode(statResult.failure)}`)
+          return Stream.empty
+        }
+        const size = statResult.success.size
+        yield* Effect.try({ try: () => throwIfScanAborted(options.signal), catch: toError })
+
+        if (size > maxBytes) {
+          notice(filePath, 'oversize')
+          return Stream.empty
+        }
       }
 
       const owned = yield* Effect.acquireRelease(
@@ -305,6 +308,7 @@ async function* splitNativeSessionLines(
           if (len === 0) {
             parts = []
             headChecked = false
+            if (options.preserveEmptyLines) yield ''
             continue
           }
           const buf = parts.length === 1 ? parts[0]! : Buffer.concat(parts, len)
