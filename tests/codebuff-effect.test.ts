@@ -288,7 +288,7 @@ describe('Codebuff native Effect provider', () => {
         costUSD: 0,
         tools: [],
         bashCommands: [],
-        timestamp: '2026-01-02T02:04:05.000Z',
+        timestamp: new Date(2026, 0, 2, 3, 4, 5).toISOString(),
         speed: 'standard',
         deduplicationKey: `codebuff:${chatDir}:history-call`,
         userMessage: '',
