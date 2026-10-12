@@ -41,6 +41,8 @@ import {
 // (codex) answer with the snapshot's RESOLVED field, so they hash the effective
 // value instead of `''`. That re-parses exactly those two providers' cached
 // rows once on upgrade, and it is bug-prevention, not an accident.
+// Goose and Crush additionally invalidate once when their missing root inputs
+// enter the fingerprint, so a changed discovery root cannot reuse stale rows.
 
 /** Repo root, for the one case that reads a source file to check a claim. */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -85,6 +87,19 @@ const OVERRIDE_PLATFORM_PROVIDERS = Object.entries(PROVIDER_ENV_VARS)
 const plantedNeverOnThisMachine = '/watchtower-test/inert'
 
 describe('the two inventories cannot drift (PROVIDER_ENV_VARS vs ENV_VAR_SOURCES)', () => {
+  it('invalidates Goose and Crush when their discovery roots change', () => {
+    const baseline = pathsOf()
+    expect(computeEnvFingerprint('goose', pathsOf({ GOOSE_PATH_ROOT: '/other/goose' }))).not.toBe(
+      computeEnvFingerprint('goose', baseline),
+    )
+    expect(computeEnvFingerprint('crush', pathsOf({ CRUSH_GLOBAL_DATA: '/other/crush' }))).not.toBe(
+      computeEnvFingerprint('crush', baseline),
+    )
+    expect(
+      computeEnvFingerprint('crush', pathsOf({}, { platform: { ...NO_PLATFORM, localAppData: '/other/local' } })),
+    ).not.toBe(computeEnvFingerprint('crush', baseline))
+  })
+
   it('every var the fingerprint names is covered by the snapshot inventory', () => {
     // A var with no inventory row would resolve `undefined` and hash as `''`
     // forever — a cached row that survives any config change. This is the case
