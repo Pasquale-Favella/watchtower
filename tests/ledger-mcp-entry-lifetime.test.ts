@@ -10,14 +10,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { serveHttp, serveStdio } from '../src/main/agents/ledger-mcp/entry.js'
 import type { LedgerMcpQueries } from '../src/main/agents/ledger-mcp/query-api.js'
 import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
+import { openWorkerRuntime } from '../src/main/worker-runtime.js'
 
 const TOKEN = 'entry-lifetime-test-token'
 
-function makeDatabase(): { dbPath: string; cleanup: () => void } {
+async function makeDatabase(): Promise<{ dbPath: string; cleanup: () => void }> {
   const dir = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-entry-'))
   const dbPath = join(dir, 'ledger.db')
-  new LedgerStore(dbPath).close()
+  await openWorkerRuntime(dbPath).dispose()
   return { dbPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
@@ -57,7 +57,7 @@ describe('ledger MCP scoped process lifetime', () => {
   it.each(['connect failure', 'stdin EOF'] as const)(
     'closes the SDK and query owner when transport close rejects after %s',
     async shutdown => {
-      const database = makeDatabase()
+      const database = await makeDatabase()
       const stdinListeners = process.stdin.listeners('end')
       const signalListeners = process.listeners('SIGTERM')
       const cleanup: string[] = []
@@ -115,7 +115,7 @@ describe('ledger MCP scoped process lifetime', () => {
     let disposals = 0
     const dir = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-entry-'))
     const dbPath = join(dir, 'ledger.db')
-    new LedgerStore(dbPath).close()
+    await openWorkerRuntime(dbPath).dispose()
     let queryOwner: Awaited<ReturnType<typeof createLedgerMcpQueryRuntime>> | undefined
     const output = waitForReady()
     const serving = serveHttp({ dbPath, token: TOKEN }, async path => {
@@ -207,7 +207,7 @@ describe('ledger MCP scoped process lifetime', () => {
   })
 
   it('closes an HTTP client stalled on a partial authenticated request during SIGTERM', async () => {
-    const database = makeDatabase()
+    const database = await makeDatabase()
     let disposals = 0
     const output = waitForReady()
     const serving = serveHttp({ dbPath: database.dbPath, token: TOKEN }, async path => {
@@ -286,7 +286,7 @@ describe('ledger MCP scoped process lifetime', () => {
   })
 
   it('waits for stdio connect to settle after EOF before disposing the real query owner', async () => {
-    const database = makeDatabase()
+    const database = await makeDatabase()
     const signalListeners = {
       sigint: process.listeners('SIGINT'),
       sigterm: process.listeners('SIGTERM'),
@@ -357,7 +357,7 @@ describe('ledger MCP scoped process lifetime', () => {
   })
 
   it('releases the stdio owner after connect failure and removes process listeners', async () => {
-    const database = makeDatabase()
+    const database = await makeDatabase()
     const signalListeners = {
       sigint: process.listeners('SIGINT'),
       sigterm: process.listeners('SIGTERM'),

@@ -1,27 +1,27 @@
-import { createServer, type Server } from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
+
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { afterEach, describe, expect, it } from 'vitest'
 
-import { createLedgerMcpHttpHandler } from '../src/main/agents/ledger-mcp/http-server.js'
 import { bearerHeaderValue } from '../src/main/agents/ledger-mcp/auth.js'
 import { ledgerMcpTransportFor } from '../src/main/agents/ledger-mcp/config.js'
+import { createLedgerMcpHttpHandler } from '../src/main/agents/ledger-mcp/http-server.js'
 import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
+import { openWorkerRuntime } from '../src/main/worker-runtime.js'
 
 const TOKEN = 'test-bearer-token'
 
 /** Minimal seeded ledger: one source/session/turn, two calls — so the
  *  lifetime scope reports exactly 1 session / 2 calls. */
-function seedLedger(): { dbPath: string; cleanup: () => void } {
+async function seedLedger(): Promise<{ dbPath: string; cleanup: () => void }> {
   const dir = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-http-'))
   const dbPath = join(dir, 'ledger.db')
-  const store = new LedgerStore(dbPath)
-  store.close()
+  await openWorkerRuntime(dbPath).dispose()
 
   const db = new DatabaseSync(dbPath)
   db.exec('BEGIN')
@@ -63,7 +63,7 @@ afterEach(async () => {
 })
 
 async function serveLedger(): Promise<{ baseUrl: string }> {
-  const seeded = seedLedger()
+  const seeded = await seedLedger()
   dirs.push(seeded.cleanup)
   const runtime = await createLedgerMcpQueryRuntime(seeded.dbPath)
   disposals.push(runtime.dispose)

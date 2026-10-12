@@ -14,9 +14,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { DbWorkerData } from '../src/main/db-worker/protocol.js'
 import { workerProtocolError } from '../src/main/db-worker/protocol-errors.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
 import { UnsupportedLedgerSchemaVersion } from '../src/main/store/ledger-initialization.js'
-import { LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { openWorkerRuntime } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
 const directories: string[] = []
@@ -35,31 +35,36 @@ function tempDirectory(): string {
   return directory
 }
 
-function seedLedger(directory: string): string {
+async function seedLedger(directory: string): Promise<string> {
   const dbPath = join(directory, 'ledger.db')
-  const store = new LedgerStore(dbPath)
-  store.portIn({
-    provider: 'opencode',
-    envFingerprint: 'worker-protocol-errors',
-    filePath: FIXTURE_SOURCE_PATH,
-    verdict: 'new',
-    cachedFile: buildFixtureCachedFile(),
-  })
-  store.close()
+  const runtime = openWorkerRuntime(dbPath)
+  try {
+    await runtime.runPromise(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          provider: 'opencode',
+          envFingerprint: 'worker-protocol-errors',
+          filePath: FIXTURE_SOURCE_PATH,
+          verdict: 'new',
+          cachedFile: buildFixtureCachedFile(),
+        }),
+      ),
+    )
+  } finally {
+    await runtime.dispose()
+  }
   return dbPath
 }
 
 async function rejectedSnapshot(dbPath: string): Promise<unknown> {
-  const store = new LedgerStore(dbPath)
+  const runtime = openWorkerRuntime(dbPath)
   try {
-    return await Effect.runPromise(
-      Effect.flatMap(LedgerQueries, queries => queries.getRequestSnapshotData()).pipe(Effect.provide(store.portsLayer)),
-    ).then(
+    return await runtime.runPromise(Effect.flatMap(LedgerQueries, queries => queries.getRequestSnapshotData())).then(
       () => undefined,
       error => error,
     )
   } finally {
-    store.close()
+    await runtime.dispose()
   }
 }
 
@@ -140,7 +145,7 @@ afterEach(() => {
 describe('worker protocol error mapping', () => {
   it('maps actual Effect.runPromise SQL and Schema rejections to bounded categories', async () => {
     const schemaDirectory = tempDirectory()
-    const schemaPath = seedLedger(schemaDirectory)
+    const schemaPath = await seedLedger(schemaDirectory)
     const schemaWriter = new DatabaseSync(schemaPath)
     schemaWriter.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
     schemaWriter.close()
@@ -151,7 +156,7 @@ describe('worker protocol error mapping', () => {
     expect(workerProtocolError(schemaFailure)).not.toContain('hyperdrive')
 
     const sqlDirectory = tempDirectory()
-    const sqlPath = seedLedger(sqlDirectory)
+    const sqlPath = await seedLedger(sqlDirectory)
     const sqlWriter = new DatabaseSync(sqlPath)
     sqlWriter.exec('DROP TABLE ledger_turn')
     sqlWriter.close()
@@ -163,7 +168,7 @@ describe('worker protocol error mapping', () => {
 
   it('sends real SQLite and row-schema failures as failed worker responses', async () => {
     const schemaDirectory = tempDirectory()
-    const schemaPath = seedLedger(schemaDirectory)
+    const schemaPath = await seedLedger(schemaDirectory)
     const schemaWriter = new DatabaseSync(schemaPath)
     schemaWriter.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
     schemaWriter.close()
@@ -172,7 +177,7 @@ describe('worker protocol error mapping', () => {
     expect(schemaResponse).toEqual({ id: 1, ok: false, error: 'Stored ledger data is invalid.' })
 
     const sqlDirectory = tempDirectory()
-    const sqlPath = seedLedger(sqlDirectory)
+    const sqlPath = await seedLedger(sqlDirectory)
     const sqlWriter = new DatabaseSync(sqlPath)
     sqlWriter.exec('DROP TABLE ledger_turn')
     sqlWriter.close()

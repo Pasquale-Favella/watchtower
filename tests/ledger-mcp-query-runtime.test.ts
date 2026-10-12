@@ -8,17 +8,19 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
+import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 const directories: string[] = []
 const runtimes: Array<{ dispose: () => Promise<void> }> = []
 
-function makeLedger(): { store: LedgerStore; dbPath: string } {
+function makeLedger(): { writerRuntime: WorkerRuntime; dbPath: string } {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-runtime-'))
   directories.push(directory)
   const dbPath = join(directory, 'ledger.db')
-  const store = new LedgerStore(dbPath)
+  const writerRuntime = openWorkerRuntime(dbPath)
+  runtimes.push(writerRuntime)
   const call = {
     ...buildFixtureCachedCall(0),
     provider: 'claude',
@@ -32,21 +34,30 @@ function makeLedger(): { store: LedgerStore; dbPath: string } {
     timestamp: call.timestamp,
     calls: [call],
   })
-  store.portIn({
-    provider: 'claude',
-    envFingerprint: 'runtime-test',
-    filePath: '/cache/runtime.jsonl',
-    project: 'runtime-project',
-    verdict: 'new',
-    cachedFile: buildFixtureCachedFile({ canonicalProjectName: 'runtime-project', turns: [turn] }),
-  })
-  return { store, dbPath }
+  writerRuntime.runSync(
+    Effect.flatMap(LedgerIngest, ingest =>
+      ingest.portIn({
+        provider: 'claude',
+        envFingerprint: 'runtime-test',
+        filePath: '/cache/runtime.jsonl',
+        project: 'runtime-project',
+        verdict: 'new',
+        cachedFile: buildFixtureCachedFile({ canonicalProjectName: 'runtime-project', turns: [turn] }),
+      }),
+    ),
+  )
+  return { writerRuntime, dbPath }
 }
 
 async function openRuntime(dbPath: string) {
   const runtime = await createLedgerMcpQueryRuntime(dbPath)
   runtimes.push(runtime)
   return runtime
+}
+
+async function disposeRuntime(runtime: { dispose: () => Promise<void> }): Promise<void> {
+  await runtime.dispose()
+  runtimes.splice(runtimes.indexOf(runtime), 1)
 }
 
 afterEach(async () => {
@@ -57,7 +68,7 @@ afterEach(async () => {
 
 describe('Ledger MCP query runtime', () => {
   it('uses one read-only SQLite connection for all query calls and picks up external config edits', async () => {
-    const { store, dbPath } = makeLedger()
+    const { writerRuntime, dbPath } = makeLedger()
     const runtime = await openRuntime(dbPath)
     const writer = new DatabaseSync(dbPath)
     try {
@@ -85,15 +96,15 @@ describe('Ledger MCP query runtime', () => {
         ),
       ).rejects.toBeDefined()
 
-      expect(store.getSources()).toHaveLength(1)
+      expect(writerRuntime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getSources()))).toHaveLength(1)
     } finally {
       writer.close()
-      store.close()
+      await disposeRuntime(writerRuntime)
     }
   })
 
   it('executes six snapshot SELECTs for both cold and warm Models queries on one connection', async () => {
-    const { store, dbPath } = makeLedger()
+    const { writerRuntime, dbPath } = makeLedger()
     const runtime = await openRuntime(dbPath)
     const prepared: Array<{ database: DatabaseSync; sql: string }> = []
     const executedSelects: string[] = []
@@ -123,7 +134,7 @@ describe('Ledger MCP query runtime', () => {
       expect(prepared.filter(({ sql }) => /^\s*SELECT\b/i.test(sql))).toHaveLength(6)
       expect(new Set(prepared.map(({ database }) => database)).size).toBe(1)
     } finally {
-      store.close()
+      await disposeRuntime(writerRuntime)
     }
   })
 
@@ -142,12 +153,11 @@ describe('Ledger MCP query runtime', () => {
   })
 
   it('closes the native database handle when its owner disposes the runtime', async () => {
-    const { store, dbPath } = makeLedger()
-    store.close()
+    const { writerRuntime, dbPath } = makeLedger()
+    await disposeRuntime(writerRuntime)
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
     const runtime = await openRuntime(dbPath)
-    await runtime.dispose()
-    runtimes.splice(runtimes.indexOf(runtime), 1)
+    await disposeRuntime(runtime)
     expect(close).toHaveBeenCalledTimes(1)
   })
 })

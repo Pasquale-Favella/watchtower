@@ -3,54 +3,65 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { describe, expect, it, vi } from 'vitest'
 
-import { LedgerStore } from '../src/main/store/ledger.js'
 import { initializeLedger } from '../src/main/store/ledger-initialization.js'
-import { NodeSqliteDatabase } from '../src/main/store/node-sqlite-client.js'
+import { makeWorkerRuntime, openWorkerRuntime } from '../src/main/worker-runtime.js'
 
 describe('ledger initialization', () => {
-  it('applies the shared schema migration once and accepts a repeated initialization', () => {
-    const database = new NodeSqliteDatabase(':memory:')
+  it('applies the shared schema migration once and accepts a repeated initialization', async () => {
+    const runtime = makeWorkerRuntime(':memory:')
     try {
-      database.runSync(initializeLedger)
-      database.runSync(initializeLedger)
+      runtime.runSync(initializeLedger)
+      runtime.runSync(initializeLedger)
+      const sql = runtime.runSync(SqlClient.SqlClient)
 
-      expect(database.prepare('SELECT migration_id, name FROM watchtower_sql_migrations').all()).toEqual([
+      expect(runtime.runSync(sql.unsafe('SELECT migration_id, name FROM watchtower_sql_migrations'))).toEqual([
         { migration_id: 1, name: 'initial_ledger_schema' },
       ])
       expect(
-        database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_source'").get(),
-      ).toEqual({ name: 'ledger_source' })
+        runtime.runSync(sql.unsafe("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_source'")),
+      ).toEqual([{ name: 'ledger_source' }])
       expect(
-        database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_mcp_config'").get(),
-      ).toEqual({ name: 'ledger_mcp_config' })
+        runtime.runSync(
+          sql.unsafe("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_mcp_config'"),
+        ),
+      ).toEqual([{ name: 'ledger_mcp_config' }])
     } finally {
-      database.close()
+      await runtime.dispose()
     }
   })
 
-  it('rejects a future schema after the migrator leaves its history intact', () => {
-    const database = new NodeSqliteDatabase(':memory:')
+  it('rejects a future schema after the migrator leaves its history intact', async () => {
+    const runtime = makeWorkerRuntime(':memory:')
     try {
-      database.exec(
-        "CREATE TABLE watchtower_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL); INSERT INTO watchtower_sql_migrations (migration_id, name, created_at) VALUES (99, 'future', 'now')",
+      const sql = runtime.runSync(SqlClient.SqlClient)
+      runtime.runSync(
+        sql.unsafe(
+          'CREATE TABLE watchtower_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)',
+        ),
+      )
+      runtime.runSync(
+        sql.unsafe(
+          "INSERT INTO watchtower_sql_migrations (migration_id, name, created_at) VALUES (99, 'future', 'now')",
+        ),
       )
 
-      expect(() => database.runSync(initializeLedger)).toThrow(/newer than this application supports/)
-      expect(database.prepare('SELECT migration_id FROM watchtower_sql_migrations').all()).toEqual([
+      expect(() => runtime.runSync(initializeLedger)).toThrow(/newer than this application supports/)
+      expect(runtime.runSync(sql.unsafe('SELECT migration_id FROM watchtower_sql_migrations'))).toEqual([
         { migration_id: 99 },
       ])
     } finally {
-      database.close()
+      await runtime.dispose()
     }
   })
 
-  it('closes the standalone connection when constructor initialization rejects a future schema', () => {
+  it('closes the worker connection when initialization rejects a future schema', () => {
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-ledger-init-'))
     const dbPath = join(directory, 'nested', 'ledger.db')
     mkdirSync(dirname(dbPath), { recursive: true })
-    const setup = new NodeSqliteDatabase(dbPath)
+    const setup = new DatabaseSync(dbPath)
     setup.exec(
       "CREATE TABLE watchtower_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL); INSERT INTO watchtower_sql_migrations (migration_id, name, created_at) VALUES (99, 'future', 'now')",
     )
@@ -58,7 +69,7 @@ describe('ledger initialization', () => {
 
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
     try {
-      expect(() => new LedgerStore(dbPath)).toThrow(/newer than this application supports/)
+      expect(() => openWorkerRuntime(dbPath)).toThrow(/newer than this application supports/)
       expect(close).toHaveBeenCalledTimes(1)
     } finally {
       vi.restoreAllMocks()
