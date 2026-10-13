@@ -59,6 +59,12 @@ import { encodeResumeCursor } from './resume-cursor.js'
 /** The `createACPProvider` settings — the REAL type, not a local slice. */
 export type AcpProviderConfig = ACPProviderSettings
 
+type AcpSelectionProvider = {
+  setConfigOption?: (args: { sessionId: string; configId: string; value: string }) => Promise<unknown>
+  setModel?: (modelId: string) => Promise<unknown>
+  setMode?: (modeId: string) => Promise<unknown>
+}
+
 /** The provider surface the seam uses — a structural Pick of the real class,
  *  plus the optional session-config setter the seam adds in loadHarnessSdk
  *  (the real ACPProvider has setModel/setMode for the legacy handshake
@@ -67,7 +73,7 @@ export type AcpProviderConfig = ACPProviderSettings
  *  are optional so fakes may omit them;
  *  the real provider always exposes them. */
 export type AcpProvider = Pick<ACPProvider, 'languageModel' | 'tools' | 'initSession' | 'cleanup'> &
-  SelectionProvider & { forceCleanup?: () => void }
+  AcpSelectionProvider & { forceCleanup?: () => void }
 
 /** The SDK surface the seam depends on — a narrow slice of `ai` +
  *  `@mcpc-tech/acp-ai-provider`. Injected so tests use a fake. */
@@ -277,6 +283,13 @@ async function sdkPromise<T>(stage: CoachSdkFailureStage, operation: () => Promi
   }
 }
 
+function sdkPromiseEffect<T>(
+  stage: CoachSdkFailureStage,
+  operation: () => Promise<T>,
+): Effect.Effect<T, CoachSdkFailure> {
+  return Effect.tryPromise({ try: operation, catch: error => failureFromSdk(stage, error) })
+}
+
 /** Convert only a synchronous SDK call; surrounding local computations remain
  *  outside this boundary and therefore keep defect semantics. */
 function sdkSync<T>(stage: CoachSdkFailureStage, operation: () => T): T {
@@ -301,14 +314,14 @@ function selectionBoundary(provider: AcpProvider): SelectionProvider {
     ...(provider.setConfigOption
       ? {
           setConfigOption: (args: { sessionId: string; configId: string; value: string }) =>
-            sdkPromise('selection', () => provider.setConfigOption!(args)),
+            sdkPromiseEffect('selection', () => provider.setConfigOption!(args)),
         }
       : {}),
     ...(provider.setModel
-      ? { setModel: (modelId: string) => sdkPromise('selection', () => provider.setModel!(modelId)) }
+      ? { setModel: (modelId: string) => sdkPromiseEffect('selection', () => provider.setModel!(modelId)) }
       : {}),
     ...(provider.setMode
-      ? { setMode: (modeId: string) => sdkPromise('selection', () => provider.setMode!(modeId)) }
+      ? { setMode: (modeId: string) => sdkPromiseEffect('selection', () => provider.setMode!(modeId)) }
       : {}),
   }
 }
@@ -581,27 +594,36 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         // model. The model constructor takes the APPLIED id back from
         // model planner (a stale bracketed codex pick resolves to its
         // base), so the provider never validates a stale raw id here.
+        const controller = new AbortController()
+        activeController = controller
         let languageModelId = input.modelId
         if ((input.modelId || input.modeId) && sessionId) {
           try {
-            const catalog = warmCatalog ?? describeCatalog(undefined)
-            const policy = routingPolicyFor(input.harness.kind)
-            if (input.modelId) {
-              languageModelId = await executeSelectionPlan(
-                selectionBoundary(provider),
-                sessionId,
-                planModelSelection(policy, catalog, input.modelId),
-              )
-            }
-            if (input.modeId) {
-              await executeSelectionPlan(
-                selectionBoundary(provider),
-                sessionId,
-                planModeSelection(policy, catalog, input.modeId),
-              )
-            }
+            languageModelId = await Effect.runPromise(
+              Effect.gen(function* () {
+                const catalog = warmCatalog ?? describeCatalog(undefined)
+                const policy = routingPolicyFor(input.harness.kind)
+                if (input.modelId) {
+                  languageModelId = yield* executeSelectionPlan(
+                    selectionBoundary(provider),
+                    sessionId,
+                    planModelSelection(policy, catalog, input.modelId),
+                  )
+                }
+                if (input.modeId) {
+                  yield* executeSelectionPlan(
+                    selectionBoundary(provider),
+                    sessionId,
+                    planModeSelection(policy, catalog, input.modeId),
+                  )
+                }
+                return languageModelId
+              }),
+              { signal: controller.signal },
+            )
             if (stopped) return
           } catch (err) {
+            if (stopped) return
             if (err instanceof CoachSdkFailure) yield toHarnessError(input.harness, err)
             else if (err instanceof SelectionUnavailableError) yield { kind: 'error', message: err.message }
             else throw err
@@ -614,8 +636,6 @@ export function createHarnessRuntime(sdk: HarnessSdk, options: HarnessRuntimeOpt
         // provider cleanup is shared with the independent stop handle and is
         // bounded before forced teardown.
         const runScope = Scope.makeUnsafe()
-        const controller = new AbortController()
-        activeController = controller
         let iterator: AsyncIterator<CoachStreamPart> | undefined
         let endedNormally = false
         try {

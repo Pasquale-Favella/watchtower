@@ -995,6 +995,60 @@ describe('createHarnessRuntime — configOptions selects (opencode / claude-agen
     expect(events[0]).toEqual({ kind: 'status', state: 'starting' })
   })
 
+  it('stops pending selection before fallback, mode writes, or stream creation', async () => {
+    const { sdk, provider, sessionResponse, streamText } = fakeSdk([])
+    Object.assign(sessionResponse, {
+      ...configOptionsSession(),
+      models: {
+        availableModels: [{ modelId: 'haiku', name: 'Haiku' }],
+        currentModelId: 'sonnet',
+      },
+      modes: {
+        availableModes: [{ id: 'plan', name: 'Plan' }],
+        currentModeId: 'build',
+      },
+    })
+    let rejectConfigOption!: (reason: Error) => void
+    let markSelectionStarted!: () => void
+    const selectionStarted = new Promise<void>(resolve => {
+      markSelectionStarted = resolve
+    })
+    const setConfigOption = vi.fn(
+      () =>
+        new Promise<unknown>((_resolve, reject) => {
+          rejectConfigOption = reject
+          markSelectionStarted()
+        }),
+    )
+    const setModel = vi.fn(async () => ({}))
+    const setMode = vi.fn(async () => ({}))
+    Object.assign(provider, { setConfigOption, setModel, setMode })
+    const runtime = createHarnessRuntime(sdk, { platform: 'linux' })
+    const run = runtime.runControlled!({
+      harness: claudeHarness,
+      modelId: 'haiku',
+      modeId: 'plan',
+      workspacePath: realWorkspace(),
+      prompt: 'p',
+    })
+
+    await expect(run.events.next()).resolves.toMatchObject({ value: { kind: 'status', state: 'starting' } })
+    await expect(run.events.next()).resolves.toMatchObject({ value: { kind: 'session' } })
+    const pendingSelectionEvent = run.events.next()
+    await selectionStarted
+
+    const stopping = run.stop()
+    await stopping
+    rejectConfigOption(new Error('provider was closed'))
+    await expect(pendingSelectionEvent).resolves.toEqual({ value: undefined, done: true })
+
+    expect(provider.cleanup).toHaveBeenCalledOnce()
+    expect(setConfigOption).toHaveBeenCalledOnce()
+    expect(setModel).not.toHaveBeenCalled()
+    expect(setMode).not.toHaveBeenCalled()
+    expect(streamText).not.toHaveBeenCalled()
+  })
+
   it('surfaces a setConfigOption failure as an error event instead of running with the wrong model', async () => {
     const { sdk, provider, sessionResponse, streamText } = fakeSdk([{ type: 'text-delta', text: 'hi' }])
     Object.assign(sessionResponse, configOptionsSession())
