@@ -44,7 +44,7 @@ import {
 } from './providers/antigravity.js'
 import { getDesktopSessionsDirs } from './providers/claude.js'
 import { discoverAllSessionsEffect, getProviderEffect } from './providers/index.js'
-import { createQuickdeskScanData } from './providers/quickdesk.js'
+import { createQuickdeskScanData, QuickdeskScanReads } from './providers/quickdesk.js'
 import type { ParsedProviderCall, ProviderScanContext, ProviderScanServices, SessionSource } from './providers/types.js'
 import { fetchVercelGatewayReportEffect } from './providers/vercel-gateway.js'
 import { isScanAbortedError, type ScanAbortedError, scanAbortError } from './scan-control.js'
@@ -4374,105 +4374,120 @@ export function isSessionHydrationComplete(): boolean {
   return sessionHydrationComplete
 }
 
-export const parseAllSessionsEffect = Effect.fnUntraced(function* (
-  dateRange?: DateRange,
-  providerFilter?: string,
-  onDelta?: DeltaHandler,
-  onUnparsed?: (provider: string, count: number) => void,
-  signal?: AbortSignal,
-  services: ProviderScanServices = {},
-  stop?: () => void,
-): Effect.fn.Return<ProjectSummary[], Error, Env | HttpFetch> {
-  yield* checkScanAbort(signal)
-  const pricing = services.pricing ?? captureScanPricing()
-  const gatewayEnabled = services.gatewayEnabled ?? (yield* Env).vercelGatewayApiKey !== null
-  const fetchGatewayReport =
-    services.fetchGatewayReport ??
-    (yield* Effect.gen(function* () {
-      const env = yield* Env
-      const http = yield* HttpFetch
-      return (range: DateRange, requestSignal?: AbortSignal) =>
-        fetchVercelGatewayReportEffect(range, requestSignal).pipe(
-          Effect.provideService(Env, env),
-          Effect.provideService(HttpFetch, http),
-        )
-    }))
-  const context: ProviderScanContext & { stop?: () => void } = {
-    ...services,
-    gatewayEnabled,
-    fetchGatewayReport,
-    signal,
-    pricing,
-    stop,
-    quickdeskData: yield* createQuickdeskScanData(signal),
-  }
-  const pricedDelta: DeltaHandler | undefined = onDelta ? delta => onDelta(delta, pricing) : undefined
-  const key = cacheKey(dateRange, providerFilter)
-  const cached = sessionCache.get(key)
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data
+export const parseAllSessionsEffect = Effect.fnUntraced(
+  function* (
+    dateRange?: DateRange,
+    providerFilter?: string,
+    onDelta?: DeltaHandler,
+    onUnparsed?: (provider: string, count: number) => void,
+    signal?: AbortSignal,
+    services: ProviderScanServices = {},
+    stop?: () => void,
+  ): Effect.fn.Return<ProjectSummary[], Error, Env | HttpFetch> {
+    yield* checkScanAbort(signal)
+    const pricing = services.pricing ?? captureScanPricing()
+    const gatewayEnabled = services.gatewayEnabled ?? (yield* Env).vercelGatewayApiKey !== null
+    const fetchGatewayReport =
+      services.fetchGatewayReport ??
+      (yield* Effect.gen(function* () {
+        const env = yield* Env
+        const http = yield* HttpFetch
+        return (range: DateRange, requestSignal?: AbortSignal) =>
+          fetchVercelGatewayReportEffect(range, requestSignal).pipe(
+            Effect.provideService(Env, env),
+            Effect.provideService(HttpFetch, http),
+          )
+      }))
+    const context: ProviderScanContext & { stop?: () => void } = {
+      ...services,
+      gatewayEnabled,
+      fetchGatewayReport,
+      signal,
+      pricing,
+      stop,
+    }
+    const pricedDelta: DeltaHandler | undefined = onDelta ? delta => onDelta(delta, pricing) : undefined
+    const key = cacheKey(dateRange, providerFilter)
+    const cached = sessionCache.get(key)
+    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data
 
-  let diskCache = yield* loadCacheEffect()
-  yield* checkScanAbort(signal)
-  yield* cleanupOrphanedTempFilesEffect()
-  yield* checkScanAbort(signal)
+    let diskCache = yield* loadCacheEffect()
+    yield* checkScanAbort(signal)
+    yield* cleanupOrphanedTempFilesEffect()
+    yield* checkScanAbort(signal)
 
-  // Cold-hydration coordination (advisory, cross-process). Engages whenever the
-  // on-disk cache is not COMPLETE — an empty cache OR a partial one an interrupted
-  // cold start left behind. Keying on completeness (not mere non-emptiness) is
-  // what keeps a resumed partial hydration under the lock, so a concurrent menubar
-  // + desktop can't race their partial writes and freeze a partial daily history.
-  // If another live process is already hydrating, wait for it, then reload the
-  // now-warm cache instead of double-parsing. Never a correctness gate: on any
-  // doubt it proceeds unlocked.
-  if (!isCacheComplete(diskCache)) {
+    // Cold-hydration coordination (advisory, cross-process). Engages whenever the
+    // on-disk cache is not COMPLETE — an empty cache OR a partial one an interrupted
+    // cold start left behind. Keying on completeness (not mere non-emptiness) is
+    // what keeps a resumed partial hydration under the lock, so a concurrent menubar
+    // + desktop can't race their partial writes and freeze a partial daily history.
+    // If another live process is already hydrating, wait for it, then reload the
+    // now-warm cache instead of double-parsing. Never a correctness gate: on any
+    // doubt it proceeds unlocked.
+    if (!isCacheComplete(diskCache)) {
+      return yield* Effect.uninterruptibleMask(restore =>
+        restore(beginColdHydrationEffect(true)).pipe(
+          Effect.flatMap(hydration =>
+            restore(
+              Effect.gen(function* () {
+                yield* checkScanAbort(signal)
+                if (hydration.waited) diskCache = yield* loadCacheEffect()
+                yield* checkScanAbort(signal)
+                return yield* runParseEffect(
+                  key,
+                  diskCache,
+                  dateRange,
+                  providerFilter,
+                  { isCold: !isCacheComplete(diskCache) },
+                  pricedDelta,
+                  onUnparsed,
+                  context,
+                )
+              }),
+            ).pipe(Effect.onExit(() => hydration.release)),
+          ),
+        ),
+      )
+    }
+
+    // A complete cache refresh is a strict read/reconcile/parse/save transaction.
+    // Keep the snapshot loaded before acquisition: timeout/unavailable paths serve
+    // exactly this complete snapshot and never mutate or invalidate the holder.
+    const priorSnapshot = diskCache
     return yield* Effect.uninterruptibleMask(restore =>
-      restore(beginColdHydrationEffect(true)).pipe(
-        Effect.flatMap(hydration =>
+      restore(acquireCacheRefreshLockEffect()).pipe(
+        Effect.flatMap(owned =>
           restore(
             Effect.gen(function* () {
               yield* checkScanAbort(signal)
-              if (hydration.waited) diskCache = yield* loadCacheEffect()
-              yield* checkScanAbort(signal)
-              return yield* runParseEffect(
-                key,
-                diskCache,
-                dateRange,
-                providerFilter,
-                { isCold: !isCacheComplete(diskCache) },
-                pricedDelta,
-                onUnparsed,
-                context,
-              )
-            }),
-          ).pipe(Effect.onExit(() => hydration.release)),
-        ),
-      ),
-    )
-  }
-
-  // A complete cache refresh is a strict read/reconcile/parse/save transaction.
-  // Keep the snapshot loaded before acquisition: timeout/unavailable paths serve
-  // exactly this complete snapshot and never mutate or invalidate the holder.
-  const priorSnapshot = diskCache
-  return yield* Effect.uninterruptibleMask(restore =>
-    restore(acquireCacheRefreshLockEffect()).pipe(
-      Effect.flatMap(owned =>
-        restore(
-          Effect.gen(function* () {
-            yield* checkScanAbort(signal)
-            if (owned.outcome === 'timed-out' || owned.outcome === 'unavailable') {
-              return yield* runParseEffect(
-                key,
-                priorSnapshot,
-                dateRange,
-                providerFilter,
-                { readOnly: true },
-                pricedDelta,
-                onUnparsed,
-                context,
-              )
-            }
-            if (owned.outcome === 'completed-by-other') {
+              if (owned.outcome === 'timed-out' || owned.outcome === 'unavailable') {
+                return yield* runParseEffect(
+                  key,
+                  priorSnapshot,
+                  dateRange,
+                  providerFilter,
+                  { readOnly: true },
+                  pricedDelta,
+                  onUnparsed,
+                  context,
+                )
+              }
+              if (owned.outcome === 'completed-by-other') {
+                diskCache = yield* loadCacheEffect()
+                yield* checkScanAbort(signal)
+                return yield* runParseEffect(
+                  key,
+                  diskCache,
+                  dateRange,
+                  providerFilter,
+                  { readOnly: true },
+                  pricedDelta,
+                  onUnparsed,
+                  context,
+                )
+              }
+              // Reload only after ownership is canonical. This closes the lost-update
+              // window between the pre-gate read and the holder's completed publication.
               diskCache = yield* loadCacheEffect()
               yield* checkScanAbort(signal)
               return yield* runParseEffect(
@@ -4480,56 +4495,43 @@ export const parseAllSessionsEffect = Effect.fnUntraced(function* (
                 diskCache,
                 dateRange,
                 providerFilter,
-                { readOnly: true },
+                { refreshLock: owned.handle },
                 pricedDelta,
                 onUnparsed,
                 context,
+              ).pipe(
+                Effect.catch(error => {
+                  if (
+                    !(error instanceof RefreshFenceLostError) &&
+                    !(error instanceof RefreshPublicationUnavailableError)
+                  ) {
+                    return Effect.fail(error)
+                  }
+                  return Effect.gen(function* () {
+                    yield* checkScanAbort(signal)
+                    const latest = yield* loadCacheEffect()
+                    yield* checkScanAbort(signal)
+                    return yield* runParseEffect(
+                      key,
+                      latest,
+                      dateRange,
+                      providerFilter,
+                      { readOnly: true },
+                      pricedDelta,
+                      onUnparsed,
+                      context,
+                    )
+                  })
+                }),
               )
-            }
-            // Reload only after ownership is canonical. This closes the lost-update
-            // window between the pre-gate read and the holder's completed publication.
-            diskCache = yield* loadCacheEffect()
-            yield* checkScanAbort(signal)
-            return yield* runParseEffect(
-              key,
-              diskCache,
-              dateRange,
-              providerFilter,
-              { refreshLock: owned.handle },
-              pricedDelta,
-              onUnparsed,
-              context,
-            ).pipe(
-              Effect.catch(error => {
-                if (
-                  !(error instanceof RefreshFenceLostError) &&
-                  !(error instanceof RefreshPublicationUnavailableError)
-                ) {
-                  return Effect.fail(error)
-                }
-                return Effect.gen(function* () {
-                  yield* checkScanAbort(signal)
-                  const latest = yield* loadCacheEffect()
-                  yield* checkScanAbort(signal)
-                  return yield* runParseEffect(
-                    key,
-                    latest,
-                    dateRange,
-                    providerFilter,
-                    { readOnly: true },
-                    pricedDelta,
-                    onUnparsed,
-                    context,
-                  )
-                })
-              }),
-            )
-          }),
-        ).pipe(Effect.onExit(() => (owned.outcome === 'acquired' ? owned.handle.releaseEffect : Effect.void))),
+            }),
+          ).pipe(Effect.onExit(() => (owned.outcome === 'acquired' ? owned.handle.releaseEffect : Effect.void))),
+        ),
       ),
-    ),
-  )
-})
+    )
+  },
+  (effect, ...args) => Effect.provideServiceEffect(effect, QuickdeskScanReads, createQuickdeskScanData(args[4])),
+)
 
 /** Compatibility edge for direct tests and callers not migrated yet. */
 export function parseAllSessions(

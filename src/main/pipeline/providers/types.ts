@@ -7,7 +7,6 @@ import type { Env } from '../../env.js'
 import type { ScanPricing } from '../scan-pricing.js'
 import type { DateRange } from '../types.js'
 import type { GatewayReportRow } from './gateway-report.js'
-import type { QuickdeskScanData } from './quickdesk.js'
 
 /** Effect capabilities captured once by the scan's composition root. */
 export interface ProviderScanServices {
@@ -22,7 +21,6 @@ export interface ProviderScanServices {
 /** Each scan supplies its own stop signal to provider discovery and parsing. */
 export interface ProviderScanContext extends ProviderScanServices {
   readonly signal?: AbortSignal
-  readonly quickdeskData?: QuickdeskScanData
 }
 
 export type SessionParser = {

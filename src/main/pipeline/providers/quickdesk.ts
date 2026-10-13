@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 
-import { Cache, Effect, Result, Schema, Stream } from 'effect'
+import { Cache, Context, Effect, Option, Result, Schema, Stream } from 'effect'
 
 import { captureScanPricing } from '../models.js'
 import { isScanAbortedError } from '../scan-control.js'
@@ -75,6 +75,10 @@ export interface QuickdeskScanData {
   readonly readSnapshot: (basePath: string) => Effect.Effect<DatabaseSnapshot, Error>
   readonly readMeteredSessions: (root: string) => Effect.Effect<Set<string>, Error>
 }
+
+export class QuickdeskScanReads extends Context.Service<QuickdeskScanReads, QuickdeskScanData>()(
+  'watchtower/pipeline/QuickdeskScanReads',
+) {}
 
 type SqlRow = Record<string, unknown>
 
@@ -549,11 +553,11 @@ function createMetricsParser(
   seenKeys: Set<string>,
   pricing: ScanPricing,
   signal?: AbortSignal,
-  scanData?: QuickdeskScanData,
 ): SessionParser {
   const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
     Stream.unwrap(
       Effect.gen(function* () {
+        const scanData = Option.getOrUndefined(yield* Effect.serviceOption(QuickdeskScanReads))
         const records = yield* scanData?.readMetrics(source.path) ?? readMetricsRecords(source.path, signal)
         const basePath = basePathFor(source)
         const linkedTools = collectMetricTools(records)
@@ -629,11 +633,11 @@ function createDatabaseParser(
   pricing: ScanPricing,
   quickworkHomeOverride?: string,
   signal?: AbortSignal,
-  scanData?: QuickdeskScanData,
 ): SessionParser {
   const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
     Stream.unwrap(
       Effect.gen(function* () {
+        const scanData = Option.getOrUndefined(yield* Effect.serviceOption(QuickdeskScanReads))
         const basePath = basePathFor(source)
         const snapshot = yield* scanData?.readSnapshot(basePath) ?? loadDatabaseSnapshot(basePath, signal)
         if (!snapshot.canEstimate) return Stream.empty
@@ -742,15 +746,8 @@ export function createQuickdeskProvider(quickworkHomeOverride?: string): Provide
     ): SessionParser {
       const pricing = context?.pricing ?? captureScanPricing()
       return source.sourceId === 'sessions-db' || basename(source.path) === 'sessions.db'
-        ? createDatabaseParser(
-            source,
-            seenKeys,
-            pricing,
-            quickworkHomeOverride,
-            context?.signal,
-            context?.quickdeskData,
-          )
-        : createMetricsParser(source, seenKeys, pricing, context?.signal, context?.quickdeskData)
+        ? createDatabaseParser(source, seenKeys, pricing, quickworkHomeOverride, context?.signal)
+        : createMetricsParser(source, seenKeys, pricing, context?.signal)
     },
   }
 }

@@ -51,8 +51,13 @@ vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
   }
 })
 
-import { createQuickdeskProvider, createQuickdeskScanData } from '../src/main/pipeline/providers/quickdesk.js'
-import type { ParsedProviderCall, ProviderScanContext, SessionSource } from '../src/main/pipeline/providers/types.js'
+import {
+  createQuickdeskProvider,
+  createQuickdeskScanData,
+  type QuickdeskScanData,
+  QuickdeskScanReads,
+} from '../src/main/pipeline/providers/quickdesk.js'
+import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
 
 let root = ''
 
@@ -75,7 +80,7 @@ function metric(path: string, sessionId: string, cost: number): void {
   )
 }
 
-async function parse(path: string, context: ProviderScanContext): Promise<ParsedProviderCall[]> {
+async function parse(path: string, scanData: QuickdeskScanData): Promise<ParsedProviderCall[]> {
   const source: SessionSource = {
     path,
     project: 'fixture',
@@ -83,9 +88,11 @@ async function parse(path: string, context: ProviderScanContext): Promise<Parsed
     sourceId: path.endsWith('.db') ? 'sessions-db' : 'metrics',
     sourcePath: root,
   }
-  const parser = createQuickdeskProvider(root).createSessionParser(source, new Set(), undefined, context)
+  const parser = createQuickdeskProvider(root).createSessionParser(source, new Set())
   if (!parser.parseStream) throw new Error('Missing native parser')
-  return Effect.runPromise(Stream.runCollect(parser.parseStream()))
+  return Effect.runPromise(
+    Stream.runCollect(parser.parseStream()).pipe(Effect.provideService(QuickdeskScanReads, scanData)),
+  )
 }
 
 describe('QuickDesk scan-owned decoded data', () => {
@@ -113,7 +120,7 @@ describe('QuickDesk scan-owned decoded data', () => {
     } finally {
       db.close()
     }
-    const context = { quickdeskData: await Effect.runPromise(createQuickdeskScanData()) }
+    const context = await Effect.runPromise(createQuickdeskScanData())
 
     const firstCalls = await parse(first, context)
     const secondCalls = await parse(second, context)
@@ -132,11 +139,11 @@ describe('QuickDesk scan-owned decoded data', () => {
     mkdirSync(join(root, 'metrics'))
     const path = join(root, 'metrics', 'metrics-2026-10-01.jsonl')
     metric(path, 'one', 1)
-    const first = { quickdeskData: await Effect.runPromise(createQuickdeskScanData()) }
+    const first = await Effect.runPromise(createQuickdeskScanData())
     expect((await parse(path, first))[0]?.costUSD).toBe(1)
     metric(path, 'one', 3)
     expect((await parse(path, first))[0]?.costUSD).toBe(1)
-    const next = { quickdeskData: await Effect.runPromise(createQuickdeskScanData()) }
+    const next = await Effect.runPromise(createQuickdeskScanData())
     expect((await parse(path, next))[0]?.costUSD).toBe(3)
     expect(native.reads.get(path)).toBe(2)
   })
