@@ -12,8 +12,7 @@ import { resolveCacheDir } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLinesStream, SessionLineReadError } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
-import type { ScanAbortedError } from '../scan-control.js'
-import { isScanAbortedError, scanAbortError } from '../scan-control.js'
+import { isScanAbortedError, ScanAbortedError, scanAbortError } from '../scan-control.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
 import { isSqliteAvailable, isSqliteBusyError, openDatabase } from '../sqlite.js'
@@ -227,14 +226,94 @@ export function getAntigravityStatusLineEventsPath(): string {
   return join(getCacheDir(), 'antigravity-statusline.jsonl')
 }
 
-function execFileText(command: string, args: string[], timeout = 3000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, { encoding: 'utf-8', timeout, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-      if (err) reject(err)
-      else resolve(stdout)
+class AntigravityProcessError extends Schema.TaggedError<AntigravityProcessError>()('AntigravityProcessError', {
+  command: Schema.String,
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+class AntigravityRpcError extends Schema.TaggedError<AntigravityRpcError>()('AntigravityRpcError', {
+  method: Schema.String,
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause), { cause })
+}
+
+const execFileTextEffect = Effect.fnUntraced(function* (
+  command: string,
+  args: string[],
+  timeout = 3000,
+  signal?: AbortSignal,
+): Effect.fn.Return<string, Error | AntigravityProcessError | ScanAbortedError> {
+  yield* checkScanAbort(signal)
+  const output = yield* Effect.callback<string, AntigravityProcessError | ScanAbortedError>(resume => {
+    let child: ReturnType<typeof execFile> | undefined
+    let closed = false
+    let completed = false
+    const finish = (effect: Effect.Effect<string, AntigravityProcessError | ScanAbortedError>): void => {
+      if (completed) return
+      completed = true
+      signal?.removeEventListener('abort', abort)
+      resume(effect)
+    }
+    const abort = (): void => {
+      child?.kill()
+    }
+    try {
+      child = execFile(command, args, { encoding: 'utf-8', timeout, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        if (signal?.aborted) {
+          finish(Effect.fail(scanAbortError(signal)))
+        } else if (err) {
+          finish(
+            Effect.fail(
+              new AntigravityProcessError({
+                command,
+                cause: err,
+                message: 'Antigravity process inspection failed',
+              }),
+            ),
+          )
+        } else {
+          finish(Effect.succeed(stdout))
+        }
+      })
+    } catch (cause) {
+      finish(
+        Effect.fail(
+          new AntigravityProcessError({
+            command,
+            cause,
+            message: 'Antigravity process inspection failed',
+          }),
+        ),
+      )
+    }
+
+    if (child && !completed) {
+      child.once('close', () => {
+        closed = true
+        if (signal?.aborted) finish(Effect.fail(scanAbortError(signal)))
+      })
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted) abort()
+    }
+
+    return Effect.gen(function* () {
+      signal?.removeEventListener('abort', abort)
+      const activeChild = child
+      if (!activeChild || completed) return
+      activeChild.kill()
+      if (!closed) {
+        yield* Effect.promise(() => new Promise<void>(resolve => activeChild.once('close', () => resolve())))
+      }
     })
   })
-}
+  yield* checkScanAbort(signal)
+  return output
+})
 
 function getFlagValue(line: string, names: string[]): string | null {
   for (const name of names) {
@@ -506,138 +585,339 @@ async function flushCache(liveCascadeIds?: Set<string>): Promise<void> {
   await Effect.runPromise(flushAntigravityCacheEffect(liveCascadeIds))
 }
 
-async function readProcessCommandLines(): Promise<string[]> {
+const readProcessCommandLinesEffect = Effect.fnUntraced(function* (
+  signal?: AbortSignal,
+): Effect.fn.Return<string[], Error | AntigravityProcessError | ScanAbortedError> {
   if (process.platform === 'win32') {
     const script = [
       "$ErrorActionPreference = 'SilentlyContinue'",
       '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
       "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and $_.CommandLine -like '*antigravity*' } | ForEach-Object { $_.CommandLine }",
     ].join('; ')
-    const output = await execFileText(
+    const output = yield* execFileTextEffect(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
       5000,
+      signal,
     )
     return output.split(/\r?\n/)
   }
 
-  const output = await execFileText('ps', ['-ww', '-eo', 'args'])
+  const output = yield* execFileTextEffect('ps', ['-ww', '-eo', 'args'], 3000, signal)
   return output.split('\n')
-}
+})
 
-async function resolveEphemeralPort(
+const resolveEphemeralPortEffect = Effect.fnUntraced(function* (
   csrfToken: string,
   appDataDir?: 'antigravity' | 'antigravity-cli' | 'antigravity-ide',
-): Promise<ServerInfo | null> {
+  signal?: AbortSignal,
+): Effect.fn.Return<ServerInfo | null, Error | AntigravityProcessError | AntigravityRpcError | ScanAbortedError> {
   if (process.platform === 'win32') {
-    try {
-      const script = [
-        "$ErrorActionPreference = 'SilentlyContinue'",
-        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
-        "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and $_.CommandLine -like '*antigravity*' } | ForEach-Object { @{ PID = $_.ProcessId; Cmd = $_.CommandLine } | ConvertTo-Json -Compress }",
-      ].join('; ')
-      const output = await execFileText(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
-        5000,
-      )
+    const script = [
+      "$ErrorActionPreference = 'SilentlyContinue'",
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and $_.CommandLine -like '*antigravity*' } | ForEach-Object { @{ PID = $_.ProcessId; Cmd = $_.CommandLine } | ConvertTo-Json -Compress }",
+    ].join('; ')
+    const output = yield* execFileTextEffect(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      5000,
+      signal,
+    ).pipe(Effect.catchTag('AntigravityProcessError', () => Effect.succeed('')))
 
-      let targetPid = 0
-      for (const line of output.split(/\r?\n/)) {
-        if (!line.trim()) continue
-        try {
-          const proc = JSON.parse(line) as { PID: number; Cmd: string }
-          const candidate = parseAntigravityServerCandidateFromLine(proc.Cmd)
-          if (candidate && candidate.csrfToken === csrfToken) {
-            if (!appDataDir || !candidate.appDataDir || candidate.appDataDir === appDataDir) {
-              targetPid = proc.PID
-              break
-            }
+    let targetPid = 0
+    for (const line of output.split(/\r?\n/)) {
+      if (!line.trim()) continue
+      try {
+        const proc = JSON.parse(line) as { PID: number; Cmd: string }
+        const candidate = parseAntigravityServerCandidateFromLine(proc.Cmd)
+        if (candidate && candidate.csrfToken === csrfToken) {
+          if (!appDataDir || !candidate.appDataDir || candidate.appDataDir === appDataDir) {
+            targetPid = proc.PID
+            break
           }
-        } catch {
-          /* skip invalid parse */
         }
+      } catch {
+        /* skip invalid parse */
       }
+    }
 
-      if (targetPid === 0) return null
+    if (targetPid === 0) return null
 
-      const portScript = `Get-NetTCPConnection -State Listen -OwningProcess ${targetPid} | Select-Object -ExpandProperty LocalPort`
-      const portOutput = await execFileText(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', portScript],
-        5000,
+    const portScript = `Get-NetTCPConnection -State Listen -OwningProcess ${targetPid} | Select-Object -ExpandProperty LocalPort`
+    const portOutput = yield* execFileTextEffect(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', portScript],
+      5000,
+      signal,
+    ).pipe(Effect.catchTag('AntigravityProcessError', () => Effect.succeed('')))
+    const ports = portOutput
+      .split(/\r?\n/)
+      .map(p => Number(p.trim()))
+      .filter(p => Number.isInteger(p) && p > 0)
+
+    for (const port of ports) {
+      const probe = yield* probePortEffect({ port, csrfToken }, signal).pipe(
+        Effect.catchTag('AntigravityRpcError', () => Effect.succeed(false)),
       )
-      const ports = portOutput
-        .split(/\r?\n/)
-        .map(p => Number(p.trim()))
-        .filter(p => Number.isInteger(p) && p > 0)
-
-      for (const port of ports) {
-        try {
-          await new Promise((resolve, reject) => {
-            const req = https.request(
-              {
-                hostname: '127.0.0.1',
-                port: port,
-                path: '/exa.language_server_pb.LanguageServerService/GetAvailableModels',
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Connect-Protocol-Version': '1',
-                  'X-Codeium-Csrf-Token': csrfToken,
-                  'Content-Length': 2,
-                },
-                agent: getAgent(),
-                timeout: 1000,
-              },
-              res => {
-                if (res.statusCode === 200) resolve(true)
-                else reject(new Error())
-              },
-            )
-            req.on('error', reject)
-            req.write('{}')
-            req.end()
-          })
-          return { port, csrfToken }
-        } catch {
-          /* try next port */
-        }
-      }
-    } catch {
-      /* best-effort */
+      if (probe) return { port, csrfToken }
     }
     return null
   }
 
-  try {
-    const processOutput = await execFileText('ps', ['-ww', '-eo', 'pid=,args='])
-    let pid = ''
-    for (const line of processOutput.split('\n')) {
-      const match = line.trim().match(/^(\d+)\s+(.+)$/)
-      if (!match) continue
-      const candidate = parseAntigravityServerCandidateFromLine(match[2]!)
-      if (!candidate) continue
-      if (candidate.csrfToken !== csrfToken) continue
-      if (appDataDir && candidate.appDataDir && candidate.appDataDir !== appDataDir) continue
-      pid = match[1]!
-      break
-    }
-    if (!pid) return null
-    const lsofOutput = await execFileText('lsof', ['-a', '-i', '-P', '-n', '-p', pid])
-    for (const line of lsofOutput.split('\n')) {
-      if (!line.includes('LISTEN')) continue
-      const match = line.match(/:(\d+)\s+\(LISTEN\)/)
-      if (match) {
-        const port = Number(match[1])
-        if (port > 0) return { port, csrfToken }
-      }
-    }
-  } catch {
-    /* best-effort */
+  const processOutput = yield* execFileTextEffect('ps', ['-ww', '-eo', 'pid=,args='], 3000, signal).pipe(
+    Effect.catchTag('AntigravityProcessError', () => Effect.succeed('')),
+  )
+  let pid = ''
+  for (const line of processOutput.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(.+)$/)
+    if (!match) continue
+    const candidate = parseAntigravityServerCandidateFromLine(match[2]!)
+    if (!candidate) continue
+    if (candidate.csrfToken !== csrfToken) continue
+    if (appDataDir && candidate.appDataDir && candidate.appDataDir !== appDataDir) continue
+    pid = match[1]!
+    break
+  }
+  if (!pid) return null
+
+  const lsofOutput = yield* execFileTextEffect('lsof', ['-a', '-i', '-P', '-n', '-p', pid], 3000, signal).pipe(
+    Effect.catchTag('AntigravityProcessError', () => Effect.succeed('')),
+  )
+  for (const line of lsofOutput.split('\n')) {
+    if (!line.includes('LISTEN')) continue
+    const match = line.match(/:(\d+)\s+\(LISTEN\)/)
+    if (!match) continue
+    const port = Number(match[1])
+    if (port > 0) return { port, csrfToken }
   }
   return null
+})
+
+const detectServerEffect = Effect.fnUntraced(function* (
+  appDataDir: 'antigravity' | 'antigravity-cli' | 'antigravity-ide' = 'antigravity',
+  signal?: AbortSignal,
+): Effect.fn.Return<ServerInfo | null, Error | AntigravityProcessError | AntigravityRpcError | ScanAbortedError> {
+  yield* checkScanAbort(signal)
+  if (cachedServers.has(appDataDir)) return cachedServers.get(appDataDir)!
+  const candidates = yield* readProcessCommandLinesEffect(signal).pipe(
+    Effect.catchTag('AntigravityProcessError', () => Effect.succeed([])),
+  )
+  const parsedCandidates = parseAntigravityServerCandidates(candidates)
+  const info =
+    parsedCandidates.find(candidate => candidate.appDataDir === appDataDir) ??
+    (appDataDir === 'antigravity'
+      ? parsedCandidates.find(candidate => candidate.appDataDir === undefined)
+      : undefined) ??
+    null
+  let detected: ServerInfo | null = null
+  if (info && info.port > 0 && appDataDir !== 'antigravity-ide') {
+    detected = { port: info.port, csrfToken: info.csrfToken }
+  } else if (info) {
+    detected = yield* resolveEphemeralPortEffect(info.csrfToken, appDataDir, signal)
+  }
+  cachedServers.set(appDataDir, detected)
+  return detected
+})
+
+function detectServer(
+  appDataDir: 'antigravity' | 'antigravity-cli' | 'antigravity-ide' = 'antigravity',
+  signal?: AbortSignal,
+): Promise<ServerInfo | null> {
+  // Remove this Promise edge when conversation parsing moves into its own Effect slice.
+  // eslint-disable-next-line no-restricted-syntax
+  return Effect.runPromise(detectServerEffect(appDataDir, signal))
 }
+
+const rpcEffect = Effect.fnUntraced(function* (
+  server: ServerInfo,
+  method: string,
+  body: Record<string, unknown> = {},
+  signal?: AbortSignal,
+): Effect.fn.Return<unknown, Error | AntigravityRpcError | ScanAbortedError> {
+  yield* checkScanAbort(signal)
+  const data = JSON.stringify(body)
+  const response = yield* requestJsonEffect(server, method, data, RPC_TIMEOUT_MS, MAX_RESPONSE_BYTES, true, signal)
+  yield* checkScanAbort(signal)
+  return response
+})
+
+function rpc(
+  server: ServerInfo,
+  method: string,
+  body: Record<string, unknown> = {},
+  signal?: AbortSignal,
+): Promise<unknown> {
+  // Remove this Promise edge when conversation parsing moves into its own Effect slice.
+  // eslint-disable-next-line no-restricted-syntax
+  return Effect.runPromise(rpcEffect(server, method, body, signal))
+}
+
+const getModelMapEffect = Effect.fnUntraced(function* (
+  server: ServerInfo,
+  signal?: AbortSignal,
+): Effect.fn.Return<ModelMap, Error | AntigravityRpcError | ScanAbortedError> {
+  yield* checkScanAbort(signal)
+  const cacheKey = `${server.port}:${server.csrfToken}`
+  const cachedModelMap = cachedModelMaps.get(cacheKey)
+  if (cachedModelMap) return cachedModelMap
+  const modelMap = yield* rpcEffect(server, 'GetAvailableModels', {}, signal).pipe(
+    Effect.map(extractAntigravityModelMap),
+    Effect.catchTag('AntigravityRpcError', () => Effect.succeed({})),
+  )
+  cachedModelMaps.set(cacheKey, modelMap)
+  return modelMap
+})
+
+function getModelMap(server: ServerInfo, signal?: AbortSignal): Promise<ModelMap> {
+  // Remove this Promise edge when conversation parsing moves into its own Effect slice.
+  // eslint-disable-next-line no-restricted-syntax
+  return Effect.runPromise(getModelMapEffect(server, signal))
+}
+
+function requestJsonEffect(
+  server: ServerInfo,
+  method: string,
+  data: string,
+  timeout: number,
+  maxResponseBytes: number | undefined,
+  decodeJson: boolean,
+  signal?: AbortSignal,
+): Effect.Effect<unknown, Error | AntigravityRpcError | ScanAbortedError> {
+  return Effect.callback<unknown, Error | AntigravityRpcError | ScanAbortedError>(resume => {
+    let request: ReturnType<typeof https.request> | undefined
+    let response: import('http').IncomingMessage | undefined
+    let closed = false
+    let settled = false
+    let pendingFailure: Error | ScanAbortedError | undefined
+    const settle = (effect: Effect.Effect<unknown, AntigravityRpcError | ScanAbortedError>): void => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', abort)
+      resume(effect)
+    }
+    const settleFailure = (cause: unknown): void => {
+      const failure = signal?.aborted ? scanAbortError(signal) : cause instanceof ScanAbortedError ? cause : undefined
+      settle(
+        Effect.fail(
+          failure ??
+            new AntigravityRpcError({
+              method,
+              cause,
+              message: `Antigravity RPC ${method} failed`,
+            }),
+        ),
+      )
+    }
+    const settleSuccess = (value: unknown): void => {
+      settle(Effect.succeed(value))
+    }
+    const failAndClose = (cause: Error | ScanAbortedError): void => {
+      if (settled || pendingFailure) return
+      pendingFailure = cause
+      if (response && !response.destroyed) response.destroy()
+      if (request && !request.destroyed) request.destroy()
+      if (!request || closed) settleFailure(cause)
+    }
+    const abort = (): void => {
+      if (signal) failAndClose(scanAbortError(signal))
+    }
+    const onClose = (): void => {
+      closed = true
+      if (pendingFailure) settleFailure(pendingFailure)
+      else if (!decodeJson && response?.statusCode === 200) settleSuccess(undefined)
+    }
+
+    if (signal?.aborted) {
+      settleFailure(scanAbortError(signal))
+      return
+    }
+
+    try {
+      request = https.request(
+        {
+          hostname: '127.0.0.1',
+          port: server.port,
+          path: `/exa.language_server_pb.LanguageServerService/${method}`,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
+            'X-Codeium-Csrf-Token': server.csrfToken,
+            'Content-Length': Buffer.byteLength(data),
+          },
+          agent: getAgent(),
+          timeout,
+        },
+        res => {
+          response = res
+          res.on('error', failAndClose)
+          if (!decodeJson) {
+            if (res.statusCode !== 200) {
+              failAndClose(new Error(`RPC ${method}: HTTP ${res.statusCode}`))
+            } else {
+              res.destroy()
+              request?.destroy()
+            }
+            return
+          }
+          const chunks: Buffer[] = []
+          let totalBytes = 0
+          res.on('data', chunk => {
+            if (settled || pendingFailure) return
+            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+            totalBytes += bytes.length
+            if (maxResponseBytes !== undefined && totalBytes > maxResponseBytes) {
+              failAndClose(new Error(`RPC ${method}: response too large`))
+              return
+            }
+            chunks.push(bytes)
+          })
+          res.on('end', () => {
+            if (settled || pendingFailure) return
+            if (res.statusCode !== 200) {
+              failAndClose(new Error(`RPC ${method}: HTTP ${res.statusCode}`))
+              return
+            }
+            try {
+              settleSuccess(JSON.parse(Buffer.concat(chunks).toString('utf-8')))
+            } catch (cause) {
+              failAndClose(new Error(`RPC ${method}: invalid JSON`, { cause }))
+            }
+          })
+          res.on('aborted', () => failAndClose(new Error(`RPC ${method}: response aborted`)))
+        },
+      )
+      request.once('close', onClose)
+      request.on('error', failAndClose)
+      request.on('timeout', () => failAndClose(new Error(`RPC ${method}: timeout`)))
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted) abort()
+      request.write(data)
+      request.end()
+    } catch (cause) {
+      failAndClose(toError(cause))
+    }
+
+    return Effect.gen(function* () {
+      signal?.removeEventListener('abort', abort)
+      const activeRequest = request
+      if (!activeRequest || settled) return
+      if (!activeRequest.destroyed) activeRequest.destroy()
+      if (response && !response.destroyed) response.destroy()
+      if (!closed)
+        yield* Effect.promise(() => new Promise<void>(resolve => activeRequest.once('close', () => resolve())))
+    })
+  })
+}
+
+const probePortEffect = Effect.fnUntraced(function* (
+  server: ServerInfo,
+  signal?: AbortSignal,
+): Effect.fn.Return<boolean, Error | AntigravityRpcError | ScanAbortedError> {
+  yield* requestJsonEffect(server, 'GetAvailableModels', '{}', 1000, undefined, false, signal)
+  return true
+})
 
 export function antigravityAppDataDirFromSourcePath(
   path: string,
@@ -646,100 +926,6 @@ export function antigravityAppDataDirFromSourcePath(
   if (lower.includes('/.gemini/antigravity-ide/')) return 'antigravity-ide'
   if (lower.includes('/.gemini/antigravity-cli/')) return 'antigravity-cli'
   return 'antigravity'
-}
-
-async function detectServer(
-  appDataDir: 'antigravity' | 'antigravity-cli' | 'antigravity-ide' = 'antigravity',
-): Promise<ServerInfo | null> {
-  if (cachedServers.has(appDataDir)) return cachedServers.get(appDataDir)!
-  try {
-    const candidates = parseAntigravityServerCandidates(await readProcessCommandLines())
-    const info =
-      candidates.find(candidate => candidate.appDataDir === appDataDir) ??
-      (appDataDir === 'antigravity' ? candidates.find(candidate => candidate.appDataDir === undefined) : undefined) ??
-      null
-    if (info && info.port > 0 && appDataDir !== 'antigravity-ide') {
-      cachedServers.set(appDataDir, { port: info.port, csrfToken: info.csrfToken })
-    } else if (info) {
-      cachedServers.set(appDataDir, await resolveEphemeralPort(info.csrfToken, appDataDir))
-    } else {
-      cachedServers.set(appDataDir, null)
-    }
-    return cachedServers.get(appDataDir)!
-  } catch {
-    /* process discovery failed or timed out */
-  }
-  cachedServers.set(appDataDir, null)
-  return null
-}
-
-async function rpc(server: ServerInfo, method: string, body: Record<string, unknown> = {}): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const data = JSON.stringify(body)
-    const req = https.request(
-      {
-        hostname: '127.0.0.1',
-        port: server.port,
-        path: `/exa.language_server_pb.LanguageServerService/${method}`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Connect-Protocol-Version': '1',
-          'X-Codeium-Csrf-Token': server.csrfToken,
-          'Content-Length': Buffer.byteLength(data),
-        },
-        agent: getAgent(),
-        timeout: RPC_TIMEOUT_MS,
-      },
-      res => {
-        const chunks: Buffer[] = []
-        let totalBytes = 0
-        res.on('data', (chunk: Buffer) => {
-          totalBytes += chunk.length
-          if (totalBytes > MAX_RESPONSE_BYTES) {
-            res.destroy()
-            reject(new Error(`RPC ${method}: response too large`))
-            return
-          }
-          chunks.push(chunk)
-        })
-        res.on('end', () => {
-          if (res.statusCode !== 200) {
-            reject(new Error(`RPC ${method}: HTTP ${res.statusCode}`))
-            return
-          }
-          try {
-            resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')))
-          } catch {
-            reject(new Error(`RPC ${method}: invalid JSON`))
-          }
-        })
-        res.on('error', reject)
-      },
-    )
-    req.on('error', reject)
-    req.on('timeout', () => {
-      req.destroy()
-      reject(new Error(`RPC ${method}: timeout`))
-    })
-    req.write(data)
-    req.end()
-  })
-}
-
-async function getModelMap(server: ServerInfo): Promise<ModelMap> {
-  const cacheKey = `${server.port}:${server.csrfToken}`
-  const cachedModelMap = cachedModelMaps.get(cacheKey)
-  if (cachedModelMap) return cachedModelMap
-  try {
-    const modelMap = extractAntigravityModelMap(await rpc(server, 'GetAvailableModels'))
-    cachedModelMaps.set(cacheKey, modelMap)
-    return modelMap
-  } catch {
-    /* best-effort */
-  }
-  cachedModelMaps.set(cacheKey, {})
-  return {}
 }
 
 // Strip Antigravity-specific suffixes so the pricing DB can match
@@ -1470,8 +1656,9 @@ export async function snapshotAntigravityStatusLinePayload(input: unknown): Prom
     cacheDirty = true
     await flushCache()
     return cache.cascades[cascadeId]!.calls.length > 0
-  } catch {
-    return false
+  } catch (error) {
+    if (error instanceof AntigravityRpcError) return false
+    throw error
   }
 }
 
@@ -1626,7 +1813,7 @@ function createParser(
         return
       }
 
-      const server = await detectServer(antigravityAppDataDirFromSourcePath(source.path))
+      const server = await detectServer(antigravityAppDataDirFromSourcePath(source.path), signal)
       if (!server) {
         if (cached) {
           for (const call of cached.calls) {
@@ -1639,14 +1826,16 @@ function createParser(
         return
       }
 
-      const modelMap = await getModelMap(server)
+      const modelMap = await getModelMap(server, signal)
 
       let metadata: GeneratorMetadata[]
       try {
         metadata = extractAntigravityGeneratorMetadata(
-          await rpc(server, 'GetCascadeTrajectoryGeneratorMetadata', { cascadeId }),
+          await rpc(server, 'GetCascadeTrajectoryGeneratorMetadata', { cascadeId }, signal),
         )
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) throw scanAbortError(signal)
+        if (!(error instanceof AntigravityRpcError)) throw error
         if (cached) {
           for (const call of cached.calls) {
             applyAntigravityProject(call, source, projectPath)

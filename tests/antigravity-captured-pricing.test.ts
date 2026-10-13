@@ -61,23 +61,59 @@ vi.mock('https', async importOriginal => {
     options: { path: string },
     onResponse: (response: {
       statusCode: number
-      on: (event: string, listener: (chunk?: Buffer) => void) => void
+      on: (event: string, listener: (chunk?: Buffer) => void) => unknown
+      resume: () => void
+      destroy: () => void
+      destroyed: boolean
     }) => void,
   ) => {
     let body = ''
-    return {
-      on: () => undefined,
-      write: (value: string) => {
+    class TestEmitter {
+      private readonly listeners = new Map<string, Array<(value?: Buffer) => void>>()
+
+      destroyed = false
+
+      on(event: string, listener: (value?: Buffer) => void): this {
+        this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener])
+        return this
+      }
+
+      once(event: string, listener: (value?: Buffer) => void): this {
+        const wrapped = (value?: Buffer): void => {
+          this.listeners.set(
+            event,
+            (this.listeners.get(event) ?? []).filter(existing => existing !== wrapped),
+          )
+          listener(value)
+        }
+        return this.on(event, wrapped)
+      }
+
+      emit(event: string, value?: Buffer): void {
+        for (const listener of this.listeners.get(event) ?? []) listener(value)
+      }
+
+      destroy(): void {
+        this.destroyed = true
+        queueMicrotask(() => this.emit('close'))
+      }
+    }
+
+    class TestRequest extends TestEmitter {
+      write(value: string): void {
         body += value
-      },
-      end: () => {
-        const responseListeners = new Map<string, (chunk?: Buffer) => void>()
-        onResponse({
-          statusCode: 200,
-          on: (event, listener) => responseListeners.set(event, listener),
-        })
+      }
+
+      end(): void {
+        class TestResponse extends TestEmitter {
+          statusCode = 200
+
+          resume(): void {}
+        }
+        const response = new TestResponse()
+        onResponse(response)
         const reply = (): void => {
-          const response = options.path.endsWith('GetAvailableModels')
+          const payload = options.path.endsWith('GetAvailableModels')
             ? { models: { [MODEL]: { model: MODEL, displayName: MODEL } } }
             : {
                 generatorMetadata: [
@@ -97,8 +133,9 @@ vi.mock('https', async importOriginal => {
                   },
                 ],
               }
-          responseListeners.get('data')?.(Buffer.from(JSON.stringify(response)))
-          responseListeners.get('end')?.()
+          response.emit('data', Buffer.from(JSON.stringify(payload)))
+          response.emit('end')
+          this.emit('close')
         }
         if (hooks.pauseNextRpc && options.path.endsWith('GetAvailableModels')) {
           hooks.pauseNextRpc = false
@@ -107,9 +144,9 @@ vi.mock('https', async importOriginal => {
         } else {
           queueMicrotask(reply)
         }
-      },
-      destroy: () => undefined,
+      }
     }
+    return new TestRequest()
   }
   function TestAgent(): Record<string, never> {
     return {}
