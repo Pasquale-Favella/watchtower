@@ -2,6 +2,7 @@ import { lstat, mkdir, open, readdir, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 
 import { ExportFileError, type ExportFileErrorReason, ExportFiles } from './application/export-files.js'
@@ -13,10 +14,6 @@ function isMissing(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
 }
 
-function existingPath(path: string) {
-  return lstat(path).catch(error => (isMissing(error) ? null : Promise.reject(error)))
-}
-
 function fileError(reason: ExportFileErrorReason): ExportFileError {
   return new ExportFileError({ reason })
 }
@@ -25,76 +22,119 @@ function toFileError(error: unknown): ExportFileError {
   return error instanceof ExportFileError ? error : fileError('io-failure')
 }
 
-async function clearMarkedFolder(folder: string): Promise<void> {
-  const entries = await readdir(folder)
+function io<A>(run: () => Promise<A>): Effect.Effect<A, ExportFileError> {
+  // Drain one filesystem operation if interrupted; the next composed operation remains interruptible.
+  return Effect.uninterruptible(Effect.tryPromise({ try: run, catch: toFileError }))
+}
+
+function existingPath(path: string): Effect.Effect<Awaited<ReturnType<typeof lstat>> | null, ExportFileError> {
+  return Effect.tryPromise({ try: () => lstat(path), catch: error => error }).pipe(
+    Effect.catchIf(isMissing, () => Effect.succeed(null)),
+    Effect.mapError(toFileError),
+  )
+}
+
+const clearMarkedFolder = Effect.fnUntraced(function* (folder: string): Effect.fn.Return<void, ExportFileError> {
+  const entries = yield* io(() => readdir(folder))
   for (const entry of entries) {
     const child = resolve(folder, entry)
-    if (dirname(child) !== folder) return await Promise.reject(fileError('io-failure'))
-    await rm(child, { recursive: true, force: true })
+    if (dirname(child) !== folder) return yield* Effect.fail(fileError('io-failure'))
+    yield* io(() => rm(child, { recursive: true, force: true }))
   }
+})
+
+const writeCsvExportFilesEffect = Effect.fnUntraced(function* (
+  outputPath: string,
+  files: readonly ExportFileContent[],
+): Effect.fn.Return<string, ExportFileError> {
+  let folder = resolve(outputPath)
+  if (folder.toLowerCase().endsWith('.csv')) folder = folder.slice(0, -4)
+
+  const current = yield* existingPath(folder)
+  if (current?.isSymbolicLink()) return yield* Effect.fail(fileError('io-failure'))
+  if (current?.isFile()) return yield* Effect.fail(fileError('csv-file-target'))
+  if (current?.isDirectory()) {
+    const marker = yield* existingPath(resolve(folder, EXPORT_MARKER_FILE))
+    if (!marker?.isFile() || marker.isSymbolicLink()) return yield* Effect.fail(fileError('csv-unmarked-directory'))
+    yield* clearMarkedFolder(folder)
+  }
+
+  yield* io(() => mkdir(folder, { recursive: true }))
+  yield* io(() => writeFile(resolve(folder, EXPORT_MARKER_FILE), '', 'utf-8'))
+  for (const file of files) yield* io(() => writeFile(join(folder, file.name), file.contents, 'utf-8'))
+  return folder
+})
+
+interface OpenExportFile {
+  readonly handle: Awaited<ReturnType<typeof open>>
+  closed: boolean
 }
 
-export async function writeCsvExportFiles(outputPath: string, files: readonly ExportFileContent[]): Promise<string> {
-  try {
-    let folder = resolve(outputPath)
-    if (folder.toLowerCase().endsWith('.csv')) folder = folder.slice(0, -4)
-
-    const current = await existingPath(folder)
-    if (current?.isSymbolicLink()) return await Promise.reject(fileError('io-failure'))
-    if (current?.isFile()) return await Promise.reject(fileError('csv-file-target'))
-    if (current?.isDirectory()) {
-      const marker = await existingPath(join(folder, EXPORT_MARKER_FILE))
-      if (!marker?.isFile() || marker.isSymbolicLink()) return await Promise.reject(fileError('csv-unmarked-directory'))
-      await clearMarkedFolder(folder)
-    }
-
-    await mkdir(folder, { recursive: true })
-    await writeFile(join(folder, EXPORT_MARKER_FILE), '', 'utf-8')
-    for (const file of files) await writeFile(join(folder, file.name), file.contents, 'utf-8')
-    return folder
-  } catch (error) {
-    return await Promise.reject(toFileError(error))
-  }
+function closeHandle(resource: OpenExportFile): Effect.Effect<void, ExportFileError> {
+  return Effect.suspend(() => {
+    if (resource.closed) return Effect.void
+    resource.closed = true
+    return io(() => resource.handle.close())
+  })
 }
 
-export async function writeJsonExportFile(outputPath: string, contents: string): Promise<string> {
-  try {
-    const target = resolve(outputPath.toLowerCase().endsWith('.json') ? outputPath : `${outputPath}.json`)
-    const current = await existingPath(target)
-    if (current?.isSymbolicLink()) return await Promise.reject(fileError('io-failure'))
-    if (current?.isFile()) {
-      const handle = await open(target, 'r')
-      try {
-        const buffer = Buffer.alloc(4096)
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
-        if (!buffer.toString('utf-8', 0, bytesRead).includes('"schema": "watchtower.export.v')) {
-          return await Promise.reject(fileError('json-unmarked-file'))
-        }
-      } finally {
-        await handle.close()
-      }
-    }
-    if (current?.isDirectory()) return await Promise.reject(fileError('json-directory-target'))
-    await mkdir(dirname(target), { recursive: true })
-    await writeFile(target, contents, 'utf-8')
-    return target
-  } catch (error) {
-    return await Promise.reject(toFileError(error))
+function readExistingJsonHeader(target: string): Effect.Effect<void, ExportFileError> {
+  return Effect.scoped(
+    Effect.acquireRelease(
+      io(() => open(target, 'r')).pipe(Effect.map(handle => ({ handle, closed: false }))),
+      resource => closeHandle(resource).pipe(Effect.orDie),
+    ).pipe(
+      Effect.flatMap(resource =>
+        Effect.uninterruptibleMask(restore =>
+          Effect.gen(function* () {
+            const result = yield* Effect.exit(restore(readJsonHeaderEffect(resource)))
+            const closeResult = yield* Effect.exit(closeHandle(resource))
+            if (!Exit.isSuccess(closeResult)) return yield* Effect.failCause(closeResult.cause)
+            if (!Exit.isSuccess(result)) return yield* Effect.failCause(result.cause)
+          }),
+        ),
+      ),
+    ),
+  )
+}
+
+const readJsonHeaderEffect = Effect.fnUntraced(function* (
+  resource: OpenExportFile,
+): Effect.fn.Return<void, ExportFileError> {
+  const buffer = Buffer.alloc(4096)
+  const { bytesRead } = yield* io(() => resource.handle.read(buffer, 0, buffer.length, 0))
+  if (!buffer.toString('utf-8', 0, bytesRead).includes('"schema": "watchtower.export.v')) {
+    return yield* Effect.fail(fileError('json-unmarked-file'))
   }
+})
+
+const writeJsonExportFileEffect = Effect.fnUntraced(function* (
+  outputPath: string,
+  contents: string,
+): Effect.fn.Return<string, ExportFileError> {
+  const target = resolve(outputPath.toLowerCase().endsWith('.json') ? outputPath : `${outputPath}.json`)
+  const current = yield* existingPath(target)
+  if (current?.isSymbolicLink()) return yield* Effect.fail(fileError('io-failure'))
+  if (current?.isFile()) yield* readExistingJsonHeader(target)
+  if (current?.isDirectory()) return yield* Effect.fail(fileError('json-directory-target'))
+  yield* io(() => mkdir(dirname(target), { recursive: true }))
+  yield* io(() => writeFile(target, contents, 'utf-8'))
+  return target
+})
+
+// Remove these Promise edges after direct file-export callers and tests use the ExportFiles Effect port.
+export function writeCsvExportFiles(outputPath: string, files: readonly ExportFileContent[]): Promise<string> {
+  return Effect.runPromise(writeCsvExportFilesEffect(outputPath, files))
+}
+
+export function writeJsonExportFile(outputPath: string, contents: string): Promise<string> {
+  return Effect.runPromise(writeJsonExportFileEffect(outputPath, contents))
 }
 
 export const ExportFilesLive = Layer.succeed(
   ExportFiles,
   ExportFiles.of({
-    writeCsvFolder: (outputPath, files) =>
-      Effect.tryPromise({
-        try: () => writeCsvExportFiles(outputPath, files),
-        catch: toFileError,
-      }),
-    writeJsonFile: (outputPath, contents) =>
-      Effect.tryPromise({
-        try: () => writeJsonExportFile(outputPath, contents),
-        catch: toFileError,
-      }),
+    writeCsvFolder: writeCsvExportFilesEffect,
+    writeJsonFile: writeJsonExportFileEffect,
   }),
 )

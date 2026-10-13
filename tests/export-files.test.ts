@@ -1,10 +1,56 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { writeCsvExportFiles, writeJsonExportFile } from '../src/main/export-files-live.js'
+const fsControls = vi.hoisted(() => ({
+  interceptedPath: null as string | null,
+  readStarted: null as (() => void) | null,
+  readGate: null as Promise<void> | null,
+  readFailurePath: null as string | null,
+  closeFailurePath: null as string | null,
+  closeCalls: 0,
+}))
+
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args)
+      const path = args[0]
+      if (path !== fsControls.interceptedPath) return handle
+
+      return new Proxy(handle, {
+        get(target, property, receiver) {
+          if (property === 'read') {
+            return async (buffer: Buffer, offset: number, length: number, position: number) => {
+              fsControls.readStarted?.()
+              if (fsControls.readGate) await fsControls.readGate
+              if (path === fsControls.readFailurePath) throw new Error('test read failure')
+              return target.read(buffer, offset, length, position)
+            }
+          }
+          if (property === 'close') {
+            return async () => {
+              fsControls.closeCalls += 1
+              await target.close()
+              if (path === fsControls.closeFailurePath) throw new Error('test close failure')
+            }
+          }
+          const value = Reflect.get(target, property, receiver)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+    },
+  }
+})
+
+import { ExportFiles } from '../src/main/application/export-files.js'
+import { ExportFilesLive, writeCsvExportFiles, writeJsonExportFile } from '../src/main/export-files-live.js'
 
 const directories: string[] = []
 
@@ -15,8 +61,32 @@ function tempDirectory(): string {
 }
 
 afterEach(() => {
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
+  fsControls.interceptedPath = null
+  fsControls.readStarted = null
+  fsControls.readGate = null
+  fsControls.readFailurePath = null
+  fsControls.closeFailurePath = null
+  fsControls.closeCalls = 0
+  const expectedParent = resolve(tmpdir())
+  for (const directory of directories.splice(0)) {
+    const target = resolve(directory)
+    if (
+      dirname(target) !== expectedParent ||
+      !basename(target).startsWith('watchtower-export-files-') ||
+      target !== directory
+    ) {
+      throw new Error('Refusing to remove an unexpected export test directory')
+    }
+    rmSync(target, { recursive: true, force: true })
+  }
 })
+
+function writeJsonWithLivePort(target: string, contents: string): Effect.Effect<string, unknown> {
+  return Effect.gen(function* () {
+    const files = yield* ExportFiles
+    return yield* files.writeJsonFile(target, contents)
+  }).pipe(Effect.provide(ExportFilesLive))
+}
 
 describe('export file ownership and overwrite checks', () => {
   it('writes the marker, README and all nine CSV files into the resolved folder', async () => {
@@ -100,5 +170,69 @@ describe('export file ownership and overwrite checks', () => {
 
     await expect(writeJsonExportFile(target, '{"schema":"watchtower.export.v1"}')).resolves.toBe(`${target}.json`)
     expect(readFileSync(`${target}.json`, 'utf-8')).toBe('{"schema":"watchtower.export.v1"}')
+  })
+
+  it('closes a pending JSON header read before honoring interruption and skips overwrite', async () => {
+    const root = tempDirectory()
+    const target = join(root, 'report.json')
+    const original = '{"schema": "watchtower.export.v1", "old": true}'
+    writeFileSync(target, original)
+    fsControls.interceptedPath = target
+
+    let startRead!: () => void
+    const readStarted = new Promise<void>(resolve => {
+      startRead = resolve
+    })
+    let finishRead!: () => void
+    fsControls.readGate = new Promise<void>(resolve => {
+      finishRead = resolve
+    })
+    fsControls.readStarted = startRead
+
+    const fiber = Effect.runFork(writeJsonWithLivePort(target, '{"schema":"watchtower.export.v1","new":true}'))
+    await readStarted
+    const interrupted = Effect.runPromise(Fiber.interrupt(fiber))
+    finishRead()
+    await interrupted
+
+    expect(fsControls.closeCalls).toBe(1)
+    expect(readFileSync(target, 'utf-8')).toBe(original)
+  })
+
+  it('maps JSON close failure to io-failure and does not retry the close', async () => {
+    const root = tempDirectory()
+    const target = join(root, 'report.json')
+    const original = '{"schema": "watchtower.export.v1", "old": true}'
+    writeFileSync(target, original)
+    fsControls.interceptedPath = target
+    fsControls.closeFailurePath = target
+
+    await expect(
+      Effect.runPromise(writeJsonWithLivePort(target, '{"schema":"watchtower.export.v1"}')),
+    ).rejects.toMatchObject({
+      _tag: 'ExportFileError',
+      reason: 'io-failure',
+    })
+    expect(fsControls.closeCalls).toBe(1)
+    expect(readFileSync(target, 'utf-8')).toBe(original)
+  })
+
+  it('keeps JSON header read and close failures typed without a second close', async () => {
+    const root = tempDirectory()
+    const target = join(root, 'report.json')
+    const original = '{"schema": "watchtower.export.v1", "old": true}'
+    writeFileSync(target, original)
+    fsControls.interceptedPath = target
+    fsControls.readFailurePath = target
+    fsControls.closeFailurePath = target
+
+    await expect(
+      Effect.runPromise(writeJsonWithLivePort(target, '{"schema":"watchtower.export.v1"}')),
+    ).rejects.toMatchObject({
+      _tag: 'ExportFileError',
+      reason: 'io-failure',
+    })
+    expect(fsControls.closeCalls).toBe(1)
+    expect(readFileSync(target, 'utf-8')).toBe(original)
   })
 })
