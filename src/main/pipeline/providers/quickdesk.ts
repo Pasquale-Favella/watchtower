@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 
-import { Effect, Result, Schema, Stream } from 'effect'
+import { Cache, Effect, Result, Schema, Stream } from 'effect'
 
 import { captureScanPricing } from '../models.js'
 import { isScanAbortedError } from '../scan-control.js'
@@ -68,6 +68,12 @@ type SessionMetadata = {
 type DatabaseSnapshot = {
   sessions: Map<string, SessionMetadata>
   canEstimate: boolean
+}
+
+export interface QuickdeskScanData {
+  readonly readMetrics: (path: string) => Effect.Effect<MetricsRecord[], Error>
+  readonly readSnapshot: (basePath: string) => Effect.Effect<DatabaseSnapshot, Error>
+  readonly readMeteredSessions: (root: string) => Effect.Effect<Set<string>, Error>
 }
 
 type SqlRow = Record<string, unknown>
@@ -467,10 +473,11 @@ function metricsTimestamp(record: MetricRecord, path: string): string | null {
 const metricSessionIds = Effect.fnUntraced(function* (
   basePath: string,
   signal?: AbortSignal,
+  readRecords: (path: string) => Effect.Effect<MetricsRecord[], Error> = path => readMetricsRecords(path, signal),
 ): Effect.fn.Return<Set<string>, Error> {
   const ids = new Set<string>()
   for (const path of yield* metricsFiles(basePath, signal)) {
-    for (const { record } of yield* readMetricsRecords(path, signal)) {
+    for (const { record } of yield* readRecords(path)) {
       yield* checkScanAbort(signal)
       if (!usageRecord(record)) continue
       const id = sessionId(record)
@@ -483,12 +490,38 @@ const metricSessionIds = Effect.fnUntraced(function* (
 const allMetricSessionIds = Effect.fnUntraced(function* (
   quickworkHomeOverride: string | undefined,
   signal?: AbortSignal,
+  readRecords?: (path: string) => Effect.Effect<MetricsRecord[], Error>,
 ): Effect.fn.Return<Set<string>, Error> {
   const ids = new Set<string>()
   for (const base of yield* resolveProfileBases(quickworkHomeOverride, signal)) {
-    for (const id of yield* metricSessionIds(base.path, signal)) ids.add(id)
+    for (const id of yield* metricSessionIds(base.path, signal, readRecords)) ids.add(id)
   }
   return ids
+})
+
+/** Lazy decoded reads shared only by the current scan's parsers. */
+export const createQuickdeskScanData = Effect.fnUntraced(function* (
+  signal?: AbortSignal,
+): Effect.fn.Return<QuickdeskScanData> {
+  const metrics = yield* Cache.make({
+    capacity: Infinity,
+    lookup: (path: string) => readMetricsRecords(path, signal),
+  })
+  const snapshots = yield* Cache.make({
+    capacity: Infinity,
+    lookup: (basePath: string) => loadDatabaseSnapshot(basePath, signal),
+  })
+  const readMetrics = (path: string): Effect.Effect<MetricsRecord[], Error> =>
+    checkScanAbort(signal).pipe(Effect.andThen(Cache.get(metrics, path)))
+  const meteredSessions = yield* Cache.make({
+    capacity: Infinity,
+    lookup: (root: string) => allMetricSessionIds(root, signal, readMetrics),
+  })
+  return {
+    readMetrics,
+    readSnapshot: basePath => checkScanAbort(signal).pipe(Effect.andThen(Cache.get(snapshots, basePath))),
+    readMeteredSessions: root => checkScanAbort(signal).pipe(Effect.andThen(Cache.get(meteredSessions, root))),
+  }
 })
 
 function basePathFor(source: SessionSource): string {
@@ -516,14 +549,15 @@ function createMetricsParser(
   seenKeys: Set<string>,
   pricing: ScanPricing,
   signal?: AbortSignal,
+  scanData?: QuickdeskScanData,
 ): SessionParser {
   const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
     Stream.unwrap(
       Effect.gen(function* () {
-        const records = yield* readMetricsRecords(source.path, signal)
+        const records = yield* scanData?.readMetrics(source.path) ?? readMetricsRecords(source.path, signal)
         const basePath = basePathFor(source)
         const linkedTools = collectMetricTools(records)
-        const snapshot = yield* loadDatabaseSnapshot(basePath, signal)
+        const snapshot = yield* scanData?.readSnapshot(basePath) ?? loadDatabaseSnapshot(basePath, signal)
         const fileId = basename(source.path)
 
         return Stream.fromIterable(records).pipe(
@@ -595,14 +629,16 @@ function createDatabaseParser(
   pricing: ScanPricing,
   quickworkHomeOverride?: string,
   signal?: AbortSignal,
+  scanData?: QuickdeskScanData,
 ): SessionParser {
   const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
     Stream.unwrap(
       Effect.gen(function* () {
         const basePath = basePathFor(source)
-        const snapshot = yield* loadDatabaseSnapshot(basePath, signal)
+        const snapshot = yield* scanData?.readSnapshot(basePath) ?? loadDatabaseSnapshot(basePath, signal)
         if (!snapshot.canEstimate) return Stream.empty
-        const meteredSessions = yield* allMetricSessionIds(quickworkHomeOverride, signal)
+        const meteredSessions = yield* scanData?.readMeteredSessions(quickworkHome(quickworkHomeOverride)) ??
+          allMetricSessionIds(quickworkHomeOverride, signal)
 
         return Stream.fromIterable(snapshot.sessions.values()).pipe(
           Stream.mapEffect(
@@ -706,8 +742,15 @@ export function createQuickdeskProvider(quickworkHomeOverride?: string): Provide
     ): SessionParser {
       const pricing = context?.pricing ?? captureScanPricing()
       return source.sourceId === 'sessions-db' || basename(source.path) === 'sessions.db'
-        ? createDatabaseParser(source, seenKeys, pricing, quickworkHomeOverride, context?.signal)
-        : createMetricsParser(source, seenKeys, pricing, context?.signal)
+        ? createDatabaseParser(
+            source,
+            seenKeys,
+            pricing,
+            quickworkHomeOverride,
+            context?.signal,
+            context?.quickdeskData,
+          )
+        : createMetricsParser(source, seenKeys, pricing, context?.signal, context?.quickdeskData)
     },
   }
 }

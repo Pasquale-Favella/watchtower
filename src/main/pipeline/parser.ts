@@ -44,6 +44,7 @@ import {
 } from './providers/antigravity.js'
 import { getDesktopSessionsDirs } from './providers/claude.js'
 import { discoverAllSessionsEffect, getProviderEffect } from './providers/index.js'
+import { createQuickdeskScanData } from './providers/quickdesk.js'
 import type { ParsedProviderCall, ProviderScanContext, ProviderScanServices, SessionSource } from './providers/types.js'
 import { fetchVercelGatewayReportEffect } from './providers/vercel-gateway.js'
 import { isScanAbortedError, type ScanAbortedError, scanAbortError } from './scan-control.js'
@@ -4403,6 +4404,7 @@ export const parseAllSessionsEffect = Effect.fnUntraced(function* (
     signal,
     pricing,
     stop,
+    quickdeskData: yield* createQuickdeskScanData(signal),
   }
   const pricedDelta: DeltaHandler | undefined = onDelta ? delta => onDelta(delta, pricing) : undefined
   const key = cacheKey(dateRange, providerFilter)
