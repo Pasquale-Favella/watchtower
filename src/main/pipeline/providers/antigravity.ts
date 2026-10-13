@@ -1,6 +1,6 @@
 import { execFile } from 'child_process'
 import { randomBytes } from 'crypto'
-import { Effect, Schema } from 'effect'
+import { Effect, Result, Schema, Stream } from 'effect'
 import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises'
 import https from 'https'
 import { homedir } from 'os'
@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url'
 
 import { resolveCacheDir } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
+import { readSessionLinesStream, SessionLineReadError } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
 import { isScanAbortedError } from '../scan-control.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
@@ -145,6 +146,26 @@ type StatusLineEvent = {
     cacheReadInputTokens: number
   }
 }
+
+const statusLineEventInputSchema = Schema.Struct({
+  at: Schema.optional(Schema.Unknown),
+  conversationId: Schema.optional(Schema.Unknown),
+  sessionId: Schema.optional(Schema.Unknown),
+  model: Schema.optional(Schema.Unknown),
+  usage: Schema.optional(
+    Schema.Struct({
+      inputTokens: Schema.optional(Schema.Unknown),
+      outputTokens: Schema.optional(Schema.Unknown),
+      cacheCreationInputTokens: Schema.optional(Schema.Unknown),
+      cacheReadInputTokens: Schema.optional(Schema.Unknown),
+    }),
+  ),
+})
+const decodeStatusLineEventInput = Schema.decodeUnknownResult(statusLineEventInputSchema)
+const decodeStatusLineJson = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))
+
+type StatusLineRun = { event: StatusLineEvent; signature: string; count: number }
+type StatusLineRunsByConversation = Map<string, StatusLineRun[]>
 
 type CachedCascade = {
   mtimeMs: number
@@ -1127,12 +1148,13 @@ export async function recordAntigravityStatusLinePayload(input: unknown): Promis
 }
 
 function parseStatusLineEvent(input: unknown): StatusLineEvent | null {
-  if (!input || typeof input !== 'object') return null
-  const event = input as StatusLineEvent
+  const decoded = decodeStatusLineEventInput(input)
+  if (Result.isFailure(decoded)) return null
+  const event = decoded.success
   if (typeof event.at !== 'string' || Number.isNaN(new Date(event.at).getTime())) return null
   if (typeof event.conversationId !== 'string' || event.conversationId.length === 0) return null
   if (typeof event.model !== 'string' || event.model.length === 0) return null
-  if (!event.usage || typeof event.usage !== 'object') return null
+  if (!event.usage) return null
 
   const usage = {
     inputTokens: parseFiniteToken(event.usage.inputTokens),
@@ -1166,99 +1188,145 @@ function hasRpcCacheForConversation(seenKeys: Set<string>, conversationId: strin
   return false
 }
 
-async function parseStatusLineCalls(
-  source: SessionSource,
-  seenKeys: Set<string>,
-  pricing: ScanPricing,
-): Promise<ParsedProviderCall[]> {
-  const raw = await readFile(source.path, 'utf-8').catch(() => '')
-  const runsByConversation = new Map<string, Array<{ event: StatusLineEvent; signature: string; count: number }>>()
+type StatusLineCandidate = {
+  event: StatusLineEvent
+  usage: StatusLineEvent['usage']
+  deduplicationKey: string
+}
 
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) continue
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(line)
-    } catch {
-      continue
-    }
-
-    const event = parseStatusLineEvent(parsed)
-    if (!event) continue
-    if (hasRpcCacheForConversation(seenKeys, event.conversationId)) continue
-
-    const signature = usageSignature(event)
-    const runs = runsByConversation.get(event.conversationId) ?? []
-    const lastRun = runs.at(-1)
-    if (lastRun?.signature === signature) {
-      lastRun.count += 1
-      lastRun.event = event
-    } else {
-      runs.push({ event, signature, count: 1 })
-      runsByConversation.set(event.conversationId, runs)
-    }
-  }
-
-  const results: ParsedProviderCall[] = []
-
+function statusLineCandidates(runsByConversation: StatusLineRunsByConversation): StatusLineCandidate[] {
+  const candidates: StatusLineCandidate[] = []
   for (const runs of runsByConversation.values()) {
     let turnIndex = 0
     let previousSnapshotUsage: StatusLineEvent['usage'] | null = null
-    for (let i = 0; i < runs.length; i++) {
-      const run = runs[i]!
-      const isLastRun = i === runs.length - 1
+    for (let index = 0; index < runs.length; index++) {
+      const run = runs[index]!
+      const isLastRun = index === runs.length - 1
       if (run.count === 1 && !isLastRun) continue
 
       const event = run.event
-      const signature = run.signature
-      const billableUsage =
+      const usage =
         previousSnapshotUsage && usageIsMonotonic(event.usage, previousSnapshotUsage)
           ? usageDelta(event.usage, previousSnapshotUsage)
           : event.usage
       previousSnapshotUsage = event.usage
-      if (!usageHasTokens(billableUsage)) continue
+      if (!usageHasTokens(usage)) continue
 
-      const dedupKey = `antigravity-statusline:${event.conversationId}:${turnIndex}:${signature}`
-      turnIndex += 1
-      if (seenKeys.has(dedupKey)) continue
-
-      const u = billableUsage
-      const costUSD = pricing.calculateCost(
-        normalizePricingModel(event.model),
-        u.inputTokens,
-        u.outputTokens,
-        u.cacheCreationInputTokens,
-        u.cacheReadInputTokens,
-        0,
-      )
-
-      results.push({
-        provider: 'antigravity',
-        model: event.model,
-        inputTokens: u.inputTokens,
-        outputTokens: u.outputTokens,
-        cacheCreationInputTokens: u.cacheCreationInputTokens,
-        cacheReadInputTokens: u.cacheReadInputTokens,
-        cachedInputTokens: 0,
-        // StatusLine current_usage exposes aggregate output tokens, not a
-        // separate thinking/response split. Preserve the exact total instead
-        // of inventing a breakdown.
-        reasoningTokens: 0,
-        webSearchRequests: 0,
-        costUSD,
-        tools: [],
-        bashCommands: [],
-        timestamp: event.at,
-        speed: 'standard',
-        deduplicationKey: dedupKey,
-        userMessage: '',
-        sessionId: event.conversationId,
-        project: source.project,
+      candidates.push({
+        event,
+        usage,
+        deduplicationKey: `antigravity-statusline:${event.conversationId}:${turnIndex++}:${run.signature}`,
       })
     }
   }
+  return candidates
+}
 
-  return results
+function parseStatusLineCallsStream(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  pricing: ScanPricing,
+  signal?: AbortSignal,
+): (onUnparsedCall?: Effect.Effect<void>) => Stream.Stream<ParsedProviderCall, Error> {
+  return (onUnparsedCall = Effect.void) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
+        const runsByConversation: StatusLineRunsByConversation = new Map()
+        yield* Stream.runForEach(
+          readSessionLinesStream(source.path, undefined, { maxBytes: Infinity, readFailure: 'fail', signal }).pipe(
+            Stream.map(line => Result.succeed(line)),
+            Stream.catch(error =>
+              error instanceof SessionLineReadError ? Stream.fromIterable([Result.fail(error)]) : Stream.fail(error),
+            ),
+          ),
+          result =>
+            Effect.gen(function* () {
+              yield* checkScanAbort(signal)
+              if (Result.isFailure(result)) {
+                runsByConversation.clear()
+                return
+              }
+              const line = result.success
+              const raw = typeof line === 'string' ? line : line.toString('utf8')
+              if (!raw.trim()) return
+
+              const input = decodeStatusLineJson(raw)
+              if (Result.isFailure(input)) {
+                yield* onUnparsedCall
+                return
+              }
+
+              const event = parseStatusLineEvent(input.success)
+              if (!event) {
+                yield* onUnparsedCall
+                return
+              }
+              if (hasRpcCacheForConversation(seenKeys, event.conversationId)) return
+
+              const signature = usageSignature(event)
+              const runs = runsByConversation.get(event.conversationId) ?? []
+              const lastRun = runs.at(-1)
+              if (lastRun?.signature === signature) {
+                lastRun.count += 1
+                lastRun.event = event
+              } else {
+                runs.push({ event, signature, count: 1 })
+                runsByConversation.set(event.conversationId, runs)
+              }
+            }),
+        )
+        yield* checkScanAbort(signal)
+
+        // Grouping needs EOF to decide which singleton runs are final. Retain
+        // only the latest compact event and count for each adjacent run.
+        const candidates = statusLineCandidates(runsByConversation)
+        return Stream.fromIterable(candidates).pipe(
+          Stream.mapEffect(candidate =>
+            Effect.gen(function* () {
+              yield* checkScanAbort(signal)
+              if (hasRpcCacheForConversation(seenKeys, candidate.event.conversationId)) return Result.fail(undefined)
+              if (seenKeys.has(candidate.deduplicationKey)) return Result.fail(undefined)
+
+              const costUSD = yield* Effect.try({
+                try: () =>
+                  pricing.calculateCost(
+                    normalizePricingModel(candidate.event.model),
+                    candidate.usage.inputTokens,
+                    candidate.usage.outputTokens,
+                    candidate.usage.cacheCreationInputTokens,
+                    candidate.usage.cacheReadInputTokens,
+                    0,
+                  ),
+                catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+              })
+              seenKeys.add(candidate.deduplicationKey)
+              return Result.succeed({
+                provider: 'antigravity',
+                model: candidate.event.model,
+                inputTokens: candidate.usage.inputTokens,
+                outputTokens: candidate.usage.outputTokens,
+                cacheCreationInputTokens: candidate.usage.cacheCreationInputTokens,
+                cacheReadInputTokens: candidate.usage.cacheReadInputTokens,
+                cachedInputTokens: 0,
+                reasoningTokens: 0,
+                webSearchRequests: 0,
+                costUSD,
+                tools: [],
+                bashCommands: [],
+                timestamp: candidate.event.at,
+                speed: 'standard',
+                deduplicationKey: candidate.deduplicationKey,
+                userMessage: '',
+                sessionId: candidate.event.conversationId,
+                project: source.project,
+              } satisfies ParsedProviderCall)
+            }),
+          ),
+          Stream.filterMap(call => call),
+        )
+      }),
+    )
 }
 
 export function shouldReparseAntigravitySource(path: string, cachedTurnCount: number): boolean {
@@ -1415,14 +1483,18 @@ function withFallbackTimestamp(call: ParsedProviderCall, fallbackTimestamp: stri
   return call.timestamp ? call : { ...call, timestamp: fallbackTimestamp }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>, pricing = captureScanPricing()): SessionParser {
-  return {
+function createParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  pricing = captureScanPricing(),
+  signal?: AbortSignal,
+): SessionParser {
+  const statusLineSource = isAntigravityStatusLineEventsPath(source.path)
+  const parser: SessionParser = {
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      if (isAntigravityStatusLineEventsPath(source.path)) {
-        for (const call of await parseStatusLineCalls(source, seenKeys, pricing)) {
-          seenKeys.add(call.deduplicationKey)
-          yield call
-        }
+      if (statusLineSource) {
+        // Remove this iterator edge once direct callers consume parseStream.
+        yield* Stream.toAsyncIterable(parseStatusLineCallsStream(source, seenKeys, pricing, signal)())
         return
       }
 
@@ -1520,6 +1592,9 @@ function createParser(source: SessionSource, seenKeys: Set<string>, pricing = ca
       }
     },
   }
+
+  if (statusLineSource) parser.parseStream = parseStatusLineCallsStream(source, seenKeys, pricing, signal)
+  return parser
 }
 
 const modelDisplayNames: Record<string, string> = {
@@ -1569,7 +1644,7 @@ export function createAntigravityProvider(): Provider {
       _dateRange?: DateRange,
       context?: ProviderScanContext,
     ): SessionParser {
-      return createParser(source, seenKeys, context?.pricing ?? captureScanPricing())
+      return createParser(source, seenKeys, context?.pricing ?? captureScanPricing(), context?.signal)
     },
   }
 }

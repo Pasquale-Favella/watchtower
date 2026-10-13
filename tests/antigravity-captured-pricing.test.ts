@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import { Effect, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -114,6 +115,34 @@ vi.mock('https', async importOriginal => {
     return {}
   }
   return { ...actual, request, Agent: TestAgent, default: { Agent: TestAgent, request } } as unknown as typeof actual
+})
+
+vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
+  return {
+    ...actual,
+    readSessionLinesStream: (
+      path: string,
+      shouldSkipHead?: (head: string) => boolean,
+      options?: { maxBytes?: number; signal?: AbortSignal },
+    ) => {
+      if (!hooks.pauseNextRead || !String(path).endsWith(hooks.pauseSuffix)) {
+        return actual.readSessionLinesStream(path, shouldSkipHead, options)
+      }
+      hooks.pauseNextRead = false
+      return Stream.unwrap(
+        Effect.promise(
+          () =>
+            new Promise<ReturnType<typeof actual.readSessionLinesStream>>(resolve => {
+              hooks.releaseRead = () => {
+                resolve(actual.readSessionLinesStream(path, shouldSkipHead, options))
+              }
+              hooks.onReadStarted?.()
+            }),
+        ),
+      )
+    },
+  }
 })
 
 vi.mock('fs/promises', async importOriginal => {
