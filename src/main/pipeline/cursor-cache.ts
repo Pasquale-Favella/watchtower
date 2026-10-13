@@ -156,14 +156,18 @@ export const writeCachedResultsEffect = Effect.fn('writeCachedResultsEffect')(fu
   })
   yield* Effect.addFinalizer(() => cleanup)
   const stagedPath = tempPath
-  yield* nativeLeaf(
-    () => writeFile(stagedPath, JSON.stringify(encoded), { encoding: 'utf-8', mode: 0o600 }),
-    signal,
-  ).pipe(Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.void)))
-  yield* abortCheck(signal)
-  yield* nativeLeaf(() => rename(stagedPath, target), signal).pipe(
-    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.void)),
+  const staged = yield* Effect.result(
+    nativeLeaf(() => writeFile(stagedPath, JSON.stringify(encoded), { encoding: 'utf-8', mode: 0o600 }), signal),
   )
+  if (Result.isFailure(staged)) {
+    if (isScanAbortedError(staged.failure)) return yield* Effect.fail(staged.failure)
+    return
+  }
+  const committed = yield* Effect.result(nativeLeaf(() => rename(stagedPath, target), signal))
+  if (Result.isFailure(committed)) {
+    if (isScanAbortedError(committed.failure)) return yield* Effect.fail(committed.failure)
+    return
+  }
   tempPath = undefined
 })
 

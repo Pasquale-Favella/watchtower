@@ -8,6 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const hooks = vi.hoisted(() => ({
   root: '',
   failWrite: false,
+  failPartialWrite: false,
+  failRename: false,
+  renameCalls: 0,
   abortAfterWrite: undefined as (() => void) | undefined,
 }))
 
@@ -22,8 +25,17 @@ vi.mock('fs/promises', async importOriginal => {
     ...actual,
     writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
       if (hooks.failWrite) throw new Error('temporary write failed')
+      if (hooks.failPartialWrite) {
+        await actual.writeFile(args[0], 'partial cache')
+        throw new Error('partial write failed')
+      }
       await actual.writeFile(...args)
       hooks.abortAfterWrite?.()
+    },
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      hooks.renameCalls++
+      if (hooks.failRename) throw new Error('rename failed')
+      return actual.rename(...args)
     },
   }
 })
@@ -61,6 +73,9 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'watchtower-cursor-cache-effect-'))
   hooks.root = root
   hooks.failWrite = false
+  hooks.failPartialWrite = false
+  hooks.failRename = false
+  hooks.renameCalls = 0
   hooks.abortAfterWrite = undefined
   dbPath = join(root, 'state.vscdb')
   writeFileSync(dbPath, 'cursor database')
@@ -106,6 +121,29 @@ describe('Cursor cache native Effects', () => {
       ),
     ).rejects.toMatchObject({ _tag: 'ScanAbortedError' })
     expect(readdirSync(join(root, '.cache', 'watchtower'))).toEqual([])
+  })
+
+  it('retains the previous cache and removes a partially written temporary file', async () => {
+    const previous = [call()]
+    const floor = '2026-04-01T00:00:00.000Z'
+    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, previous, floor)))
+    hooks.failPartialWrite = true
+    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, [{ ...call(), costUSD: 1 }], floor)))
+
+    expect(hooks.renameCalls).toBe(1)
+    expect(await Effect.runPromise(readCachedResultsEffect(dbPath, floor))).toEqual(previous)
+    expect(readdirSync(join(root, '.cache', 'watchtower'))).toEqual(['cursor-results.json'])
+  })
+
+  it('retains the previous cache and removes the staged file after rename failure', async () => {
+    const previous = [call()]
+    const floor = '2026-04-01T00:00:00.000Z'
+    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, previous, floor)))
+    hooks.failRename = true
+    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, [{ ...call(), costUSD: 1 }], floor)))
+
+    expect(await Effect.runPromise(readCachedResultsEffect(dbPath, floor))).toEqual(previous)
+    expect(readdirSync(join(root, '.cache', 'watchtower'))).toEqual(['cursor-results.json'])
   })
 
   it('does not create cache files when writes are suppressed', async () => {
