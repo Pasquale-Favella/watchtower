@@ -43,10 +43,11 @@ export type Provider = {
   durableSources?: boolean
   modelDisplayName(model: string): string
   toolDisplayName(rawTool: string): string
+  /** Public Promise adapter for direct callers; remove after they migrate to
+   * discoverSessionsEffect. */
   discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]>
-  /** Native discovery consumed by the scan. Remove the Promise fallback once
-   * every provider and its external callers use this path. */
-  discoverSessionsEffect?: (context?: ProviderScanContext) => Effect.Effect<SessionSource[], Error, Env>
+  /** Native discovery used by the scan. */
+  discoverSessionsEffect: (context?: ProviderScanContext) => Effect.Effect<SessionSource[], Error, Env>
   createSessionParser(
     source: SessionSource,
     seenKeys: Set<string>,

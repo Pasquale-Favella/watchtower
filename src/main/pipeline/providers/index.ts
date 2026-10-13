@@ -100,7 +100,7 @@ function loadOptionalProviderEffect(
   entry: (typeof optionalProviders)[number],
   context: DiscoveryContext,
 ): Effect.Effect<Provider | null, Error> {
-  return runOwnedDiscoveryPromise(() => loadOptionalProvider(entry), context).pipe(
+  return runOwnedProviderImport(() => loadOptionalProvider(entry), context).pipe(
     Effect.mapError(cause => (cause instanceof Error ? cause : new Error(String(cause)))),
   )
 }
@@ -115,9 +115,8 @@ type OwnedPromise<A> = {
   readonly settled: () => boolean
 }
 
-/** Own one legacy discovery Promise until it settles, asking the scan owner to
- * stop it first when the surrounding Effect is interrupted. */
-function runOwnedDiscoveryPromise<A>(start: () => Promise<A>, context: DiscoveryContext): Effect.Effect<A, unknown> {
+/** Own an optional provider's dynamic import until it settles or is interrupted. */
+function runOwnedProviderImport<A>(start: () => Promise<A>, context: DiscoveryContext): Effect.Effect<A, unknown> {
   return Effect.acquireUseRelease(
     Effect.sync(() => {
       let settled = false
@@ -180,11 +179,7 @@ export const safeDiscoverSessionsEffect = Effect.fnUntraced(function* (
   context: DiscoveryContext = {},
 ): Effect.fn.Return<SessionSource[], ScanAbortedError, Env> {
   yield* checkDiscoveryAbort(context)
-  const discovered = yield* Effect.result(
-    provider.discoverSessionsEffect
-      ? provider.discoverSessionsEffect(context)
-      : runOwnedDiscoveryPromise(() => provider.discoverSessions(context), context),
-  )
+  const discovered = yield* Effect.result(provider.discoverSessionsEffect(context))
   yield* checkDiscoveryAbort(context)
   if (discovered._tag === 'Success') return discovered.success
   if (isScanAbortedError(discovered.failure)) return yield* Effect.fail(discovered.failure)

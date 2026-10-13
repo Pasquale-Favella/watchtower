@@ -413,7 +413,12 @@ describe('parser cooperative stop', () => {
         yield parsedCall()
       },
     }))
-    hooks.getProvider.mockResolvedValue({ network: false, durableSources: false, createSessionParser: factory })
+    hooks.getProvider.mockResolvedValue({
+      network: false,
+      durableSources: false,
+      discoverSessionsEffect: () => Effect.succeed([]),
+      createSessionParser: factory,
+    })
     const controller = new AbortController()
     const pricing = captureScanPricing()
     const services = { gatewayEnabled: true, fetchGatewayReport: vi.fn(() => Effect.succeed([])), pricing }
