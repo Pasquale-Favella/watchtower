@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { Effect, Stream } from 'effect'
@@ -58,7 +58,17 @@ afterEach(() => {
   reads.pendingPath = undefined
   reads.readStarted = undefined
   reads.releaseRead = undefined
-  rmSync(root, { recursive: true, force: true })
+  const directory = resolve(root)
+  const prefix = 'watchtower-scan-reads-'
+  if (
+    !root ||
+    dirname(directory) !== resolve(tmpdir()) ||
+    !basename(directory).startsWith(prefix) ||
+    basename(directory).length === prefix.length
+  ) {
+    throw new Error('Refusing to remove an unexpected scan-read fixture directory')
+  }
+  rmSync(directory, { recursive: true, force: true })
 })
 
 function collect(parser: SessionParser) {
