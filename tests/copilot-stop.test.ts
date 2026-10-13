@@ -1,16 +1,22 @@
+import { Effect, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
-  readSessionFile: vi.fn(),
+  readSessionLinesStream: vi.fn(),
+  sessionContent: '',
   readdir: vi.fn(),
   stat: vi.fn(),
   query: vi.fn(),
   close: vi.fn(),
 }))
 
-vi.mock('../src/main/pipeline/fs-utils.js', () => ({
-  readSessionFile: (...args: unknown[]) => hooks.readSessionFile(...args),
-}))
+vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
+  return {
+    ...actual,
+    readSessionLinesStream: (...args: unknown[]) => hooks.readSessionLinesStream(...args),
+  }
+})
 
 vi.mock('fs/promises', () => ({
   readdir: (...args: unknown[]) => hooks.readdir(...args),
@@ -31,7 +37,11 @@ import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 
 describe('Copilot cooperative stop', () => {
   beforeEach(() => {
-    hooks.readSessionFile.mockReset()
+    hooks.readSessionLinesStream.mockReset()
+    hooks.sessionContent = ''
+    hooks.readSessionLinesStream.mockImplementation(() =>
+      Stream.fromIterable(hooks.sessionContent ? hooks.sessionContent.split('\n') : []),
+    )
     hooks.readdir.mockReset()
     hooks.stat.mockReset()
     hooks.query.mockReset()
@@ -51,18 +61,24 @@ describe('Copilot cooperative stop', () => {
     const drained = new Promise<void>(resolve => {
       finishRead = resolve
     })
-    hooks.readSessionFile.mockImplementation(
-      (_path: string, _encoding: string, options: { signal?: AbortSignal }) =>
-        new Promise((_resolve, reject) => {
-          startRead()
-          options.signal?.addEventListener(
-            'abort',
-            () => {
-              void drained.then(() => reject(options.signal?.reason))
-            },
-            { once: true },
-          )
-        }),
+    hooks.readSessionLinesStream.mockImplementation(
+      (_path: string, _skip: unknown, options: { signal?: AbortSignal }) =>
+        Stream.unwrap(
+          Effect.tryPromise({
+            try: () =>
+              new Promise<void>((_resolve, reject) => {
+                startRead()
+                options.signal?.addEventListener(
+                  'abort',
+                  () => {
+                    void drained.then(() => reject(options.signal?.reason))
+                  },
+                  { once: true },
+                )
+              }),
+            catch: error => (error instanceof Error ? error : new Error(String(error))),
+          }).pipe(Effect.map(() => Stream.empty)),
+        ),
     )
     const parser = createCopilotProvider().createSessionParser(jsonlSource, new Set(), undefined, {
       signal: controller.signal,
@@ -78,8 +94,8 @@ describe('Copilot cooperative stop', () => {
     finishRead()
     await expect(pending).rejects.toBe(abort)
     expect(settled).toHaveBeenCalledOnce()
-    expect(hooks.readSessionFile).toHaveBeenCalledOnce()
-    expect(hooks.readSessionFile.mock.calls[0]?.[2]).toEqual({ signal: controller.signal })
+    expect(hooks.readSessionLinesStream).toHaveBeenCalledOnce()
+    expect(hooks.readSessionLinesStream.mock.calls[0]?.[2]).toMatchObject({ signal: controller.signal })
   })
 
   it('does no file or database IO when discovery starts pre-aborted', async () => {
@@ -90,7 +106,7 @@ describe('Copilot cooperative stop', () => {
     await expect(createCopilotProvider().discoverSessions({ signal: controller.signal })).rejects.toBe(abort)
     expect(hooks.readdir).not.toHaveBeenCalled()
     expect(hooks.stat).not.toHaveBeenCalled()
-    expect(hooks.readSessionFile).not.toHaveBeenCalled()
+    expect(hooks.readSessionLinesStream).not.toHaveBeenCalled()
     expect(hooks.query).not.toHaveBeenCalled()
   })
 
@@ -128,14 +144,14 @@ describe('Copilot cooperative stop', () => {
     await expect(store.next()).rejects.toBe(abort)
     expect(hooks.close).toHaveBeenCalledOnce()
 
-    hooks.readSessionFile.mockResolvedValue(
+    hooks.sessionContent =
       JSON.stringify({ type: 'session.start', data: { selectedModel: 'claude-sonnet-4-6' } }) +
-        '\n' +
-        JSON.stringify({
-          type: 'session.shutdown',
-          data: { modelMetrics: { 'claude-sonnet-4-6': { usage: { inputTokens: 100 } } } },
-        }),
-    )
+      '\n' +
+      JSON.stringify({
+        type: 'session.shutdown',
+        data: { modelMetrics: { 'claude-sonnet-4-6': { usage: { inputTokens: 100 } } } },
+      })
+
     const rollups = provider.createSessionParser(jsonlSource, new Set()).parse()
     expect((await rollups.next()).value?.deduplicationKey).toBe('copilot:sess-1:shutdown:claude-sonnet-4-6')
     await rollups.return(undefined)
@@ -175,14 +191,14 @@ describe('Copilot cooperative stop', () => {
     await expect(store.next()).rejects.toThrow('close failed')
     expect(hooks.close).toHaveBeenCalledOnce()
 
-    hooks.readSessionFile.mockResolvedValue(
+    hooks.sessionContent =
       JSON.stringify({ type: 'session.start', data: { selectedModel: 'claude-sonnet-4-6' } }) +
-        '\n' +
-        JSON.stringify({
-          type: 'session.shutdown',
-          data: { modelMetrics: { 'claude-sonnet-4-6': { usage: { inputTokens: 100 } } } },
-        }),
-    )
+      '\n' +
+      JSON.stringify({
+        type: 'session.shutdown',
+        data: { modelMetrics: { 'claude-sonnet-4-6': { usage: { inputTokens: 100 } } } },
+      })
+
     const rollups = provider.createSessionParser(jsonlSource, new Set()).parse()
     expect((await rollups.next()).value?.deduplicationKey).toBe('copilot:sess-1:shutdown:claude-sonnet-4-6')
     await rollups.return(undefined)

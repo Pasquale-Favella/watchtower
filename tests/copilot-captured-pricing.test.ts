@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { Effect, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -14,16 +15,19 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
   return {
     ...actual,
-    readSessionFile: async (...args: Parameters<typeof actual.readSessionFile>) => {
-      if (hooks.pauseNextRead) {
-        hooks.pauseNextRead = false
-        await new Promise<void>(resolve => {
-          hooks.releaseRead = resolve
-          hooks.onReadStarted?.()
-        })
-      }
-      return actual.readSessionFile(...args)
-    },
+    readSessionLinesStream: (...args: Parameters<typeof actual.readSessionLinesStream>) =>
+      Stream.unwrap(
+        Effect.promise(async () => {
+          if (hooks.pauseNextRead) {
+            hooks.pauseNextRead = false
+            await new Promise<void>(resolve => {
+              hooks.releaseRead = resolve
+              hooks.onReadStarted?.()
+            })
+          }
+          return actual.readSessionLinesStream(...args)
+        }),
+      ),
   }
 })
 

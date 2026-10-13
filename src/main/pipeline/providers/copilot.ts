@@ -86,7 +86,7 @@ import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
-import { MAX_SESSION_FILE_BYTES, readSessionFile, readSessionFileEffect, readSessionLinesStream } from '../fs-utils.js'
+import { MAX_SESSION_FILE_BYTES, readSessionFileEffect, readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
 import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
@@ -234,65 +234,19 @@ const modelDisplayEntries = Object.entries(modelDisplayNames).sort((a, b) => b[0
 // these, we extract the `arguments.command` string into bashCommands[].
 const BASH_TOOL_NAMES = new Set(['bash', 'run_in_terminal', 'runInTerminal', 'runCommand'])
 
-// ---------------------------------------------------------------------------
-// Types for JSONL session state events (unchanged from original)
-// ---------------------------------------------------------------------------
-type ToolRequest = {
-  toolName?: string // older format
-  name?: string // newer format (copilot-agent)
-  arguments?: Record<string, unknown>
+type CopilotJsonlEvent = {
+  readonly type: string
+  readonly timestamp: unknown
+  readonly data: Record<string, unknown>
 }
 
-type SessionStartData = {
-  selectedModel?: string
+type CopilotJsonlToolFacts = {
+  tools: string[]
+  skills: string[]
+  bashCommands: string[]
+  openaiToolIds: number
+  anthropicToolIds: number
 }
-
-type ModelChangeData = {
-  newModel: string
-  previousModel?: string
-}
-
-type UserMessageData = {
-  content: string
-  interactionId?: string
-}
-
-type AssistantMessageData = {
-  messageId: string
-  model?: string // present in newer copilot-agent format
-  outputTokens: number
-  interactionId?: string
-  toolRequests?: ToolRequest[]
-}
-
-type SubagentSelectedData = {
-  agentName: string
-  agentDisplayName?: string
-  tools?: string[]
-}
-
-// Per-model usage rollup the CLI writes into session.shutdown. inputTokens is
-// cache-INCLUSIVE (input + cache_read + cache_write); see the shutdown handler.
-type ShutdownModelUsage = {
-  inputTokens?: number
-  outputTokens?: number
-  cacheReadTokens?: number
-  cacheWriteTokens?: number
-  reasoningTokens?: number
-}
-
-type SessionShutdownData = {
-  modelMetrics?: Record<string, { usage?: ShutdownModelUsage }>
-  sessionStartTime?: number
-}
-
-type CopilotEvent =
-  | { type: 'session.start'; data: SessionStartData; timestamp?: string }
-  | { type: 'session.model_change'; data: ModelChangeData; timestamp?: string }
-  | { type: 'user.message'; data: UserMessageData; timestamp?: string }
-  | { type: 'assistant.message'; data: AssistantMessageData; timestamp?: string }
-  | { type: 'subagent.selected'; data: SubagentSelectedData; timestamp?: string }
-  | { type: 'session.shutdown'; data: SessionShutdownData; timestamp?: string }
 
 type ChatJournalPathSegment = string | number
 type ChatSessionRequest = Record<string, unknown>
@@ -687,10 +641,6 @@ function timestampToISO(raw: unknown): string {
   return Number.isNaN(parsed) ? '' : new Date(parsed).toISOString()
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 function isReplayContainer(value: unknown): value is object {
   return Predicate.isObject(value) || Array.isArray(value)
 }
@@ -958,13 +908,85 @@ function extractOtelBashCommands(command: string): string[] {
 // Helpers for JSONL / transcript parsing
 // ---------------------------------------------------------------------------
 
-/**
- * Safely coerce a raw toolRequests value to an array of ToolRequest.
- * Non-array values (string, null, undefined) are treated as empty arrays
- * so that a corrupt event.data doesn't abort the whole file parse loop.
- */
-function coerceToolRequests(raw: unknown): ToolRequest[] {
-  return Array.isArray(raw) ? (raw as ToolRequest[]) : []
+function decodeCopilotJsonlEvent(line: string): CopilotJsonlEvent | undefined {
+  const decodedJson = decodeCopilotJson(line)
+  if (Result.isFailure(decodedJson)) return undefined
+  const decodedEvent = decodeCopilotRecord(decodedJson.success)
+  if (Result.isFailure(decodedEvent)) return undefined
+  const event = decodedEvent.success
+  const decodedType = decodeCopilotString(event['type'])
+  if (Result.isFailure(decodedType)) return undefined
+  const decodedData = decodeCopilotRecord(event['data'])
+  const sourceData = Result.isSuccess(decodedData) ? decodedData.success : createReplayObject()
+  const type = decodedType.success
+  let fields: readonly string[]
+  switch (type) {
+    case 'session.start':
+      fields = ['selectedModel']
+      break
+    case 'session.model_change':
+      fields = ['newModel']
+      break
+    case 'user.message':
+      fields = ['content']
+      break
+    case 'subagent.selected':
+      fields = ['agentName']
+      break
+    case 'assistant.message':
+      fields = ['messageId', 'model', 'outputTokens', 'toolRequests']
+      break
+    case 'session.shutdown':
+      fields = ['modelMetrics', 'sessionStartTime']
+      break
+    default:
+      fields = []
+  }
+  const data = Object.fromEntries(fields.flatMap(key => (key in sourceData ? [[key, sourceData[key]]] : [])))
+  return { type, timestamp: event['timestamp'], data }
+}
+
+function extractCopilotJsonlToolFacts(rawRequests: unknown): CopilotJsonlToolFacts {
+  const requests = decodeCopilotArray(rawRequests)
+  if (Result.isFailure(requests)) {
+    return { tools: [], skills: [], bashCommands: [], openaiToolIds: 0, anthropicToolIds: 0 }
+  }
+
+  const facts: CopilotJsonlToolFacts = {
+    tools: [],
+    skills: [],
+    bashCommands: [],
+    openaiToolIds: 0,
+    anthropicToolIds: 0,
+  }
+  for (const rawRequest of requests.success) {
+    const decodedRequest = decodeCopilotRecord(rawRequest)
+    if (Result.isFailure(decodedRequest)) continue
+    const request = decodedRequest.success
+    const toolCallId = decodeCopilotString(request['toolCallId'])
+    if (Result.isSuccess(toolCallId)) {
+      if (toolCallId.success.startsWith('call_')) facts.openaiToolIds++
+      else if (/^tooluse_|^toolu_/.test(toolCallId.success)) facts.anthropicToolIds++
+    }
+
+    const nameResult = decodeCopilotString(request['name'] ?? request['toolName'])
+    const name = Result.isSuccess(nameResult) ? nameResult.success : ''
+    if (name) facts.tools.push(normalizeTool(name))
+
+    const argumentsResult = decodeCopilotRecord(request['arguments'])
+    if (Result.isFailure(argumentsResult)) continue
+    if (name === 'skill') {
+      const skillResult = decodeCopilotString(argumentsResult.success['skill'])
+      if (Result.isSuccess(skillResult) && skillResult.success.trim()) {
+        facts.skills.push(skillResult.success.trim())
+      }
+    }
+    if (BASH_TOOL_NAMES.has(name)) {
+      const commandResult = decodeCopilotString(argumentsResult.success['command'])
+      if (Result.isSuccess(commandResult)) facts.bashCommands.push(...extractBashCommands(commandResult.success))
+    }
+  }
+  return facts
 }
 
 /**
@@ -975,27 +997,7 @@ function coerceToolRequests(raw: unknown): ToolRequest[] {
  * The dominant prefix determines the model for the whole session.
  * Returns '' if no toolCallIds are present.
  */
-function inferTranscriptModel(lines: string[]): string {
-  let openaiCount = 0
-  let anthropicCount = 0
-
-  for (const line of lines) {
-    try {
-      const event = JSON.parse(line) as CopilotEvent
-      if (event.type !== 'assistant.message') continue
-      const data = event.data as AssistantMessageData & { toolRequests?: Array<{ toolCallId?: string }> }
-      const reqs = coerceToolRequests(data.toolRequests)
-      for (const req of reqs) {
-        const id = (req as { toolCallId?: unknown }).toolCallId
-        if (typeof id !== 'string') continue
-        if (id.startsWith('call_')) openaiCount++
-        else if (/^tooluse_|^toolu_/.test(id)) anthropicCount++
-      }
-    } catch {
-      continue
-    }
-  }
-
+function inferTranscriptModel(openaiCount: number, anthropicCount: number): string {
   if (openaiCount === 0 && anthropicCount === 0) return ''
   return openaiCount >= anthropicCount ? 'copilot-openai-auto' : 'copilot-anthropic-auto'
 }
@@ -1018,299 +1020,343 @@ function createJsonlParser(
   coveredStoreKeys: Set<string>,
   context: CopilotParserContext,
 ): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      throwIfScanAborted(context?.signal)
-      const content = await readSessionFile(source.path, 'utf8', { signal: context?.signal })
-      throwIfScanAborted(context?.signal)
-      if (!content) return
-      const sessionId = basename(dirname(source.path))
-      const lines = content.split('\n').filter(l => l.trim())
+  const sessionId = basename(dirname(source.path))
+  const isTranscript = (source as JsonlSessionSource).sessionKind === 'transcript'
+  const workingDirectory = source.workingDirectory
+  const shutdownKey = (model: string) => 'copilot:' + sessionId + ':shutdown:' + model
 
-      // Detect VS Code transcript format: the first session.start event has
-      // { producer: 'copilot-agent' } and no outputTokens in messages.
-      // VS Code transcript format, decided by DISCOVERY (see
-      // `JsonlSessionSource.sessionKind`), never by sniffing the producer
-      // field: the CLI and VS Code both write `copilot-agent`, and reading that
-      // as "this is a transcript" threw away every CLI session's
-      // `session.shutdown` input/cache rollup.
-      const isTranscript = (source as JsonlSessionSource).sessionKind === 'transcript'
-      let currentModel = ''
-      let pendingUserMessage = ''
-      // Track the active subagent for this session (from subagent.selected events).
-      // Resets when a new subagent is selected.
-      let currentSubagentType: string | undefined
-
-      // First pass: infer the transcript model when this is a transcript file.
-      if (isTranscript) {
-        currentModel = inferTranscriptModel(lines)
-        if (!currentModel) return // no toolCallIds to infer model from
-      }
-
-      // Shutdown rollups may lack their own timestamp; remember the last
-      // stamped event so the supplementary call is never left with an empty
-      // timestamp, which the date-range filters silently drop.
-      let lastEventTimestamp = ''
-
-      // One entry per model, summing every leg this session wrote; see the
-      // comment at the buffering site.
-      const rollupByModel = new Map<
-        string,
-        {
-          inputTokens: number
-          cacheWriteTokens: number
-          cacheReadTokens: number
-          reasoningTokens: number
-          timestamp: string
-        }
-      >()
-
-      for (const line of lines) {
-        throwIfScanAborted(context?.signal)
-        let event: CopilotEvent
-        try {
-          event = JSON.parse(line) as CopilotEvent
-        } catch {
-          continue
-        }
-        if (typeof event.timestamp === 'string' && event.timestamp) lastEventTimestamp = event.timestamp
-
-        if (event.type === 'session.start') {
-          if (!isTranscript) {
-            currentModel = (event.data as SessionStartData).selectedModel ?? currentModel
-          }
-          continue
-        }
-
-        if (event.type === 'session.model_change') {
-          currentModel = (event.data as ModelChangeData).newModel ?? currentModel
-          continue
-        }
-
-        if (event.type === 'subagent.selected') {
-          currentSubagentType = (event.data as SubagentSelectedData).agentName
-          continue
-        }
-
-        if (event.type === 'user.message') {
-          pendingUserMessage = (event.data as UserMessageData).content ?? ''
-          continue
-        }
-
-        if (event.type === 'session.shutdown') {
-          // The Copilot CLI writes a per-model token/cost rollup here at
-          // shutdown: the only place a CLI session records input, cache-read
-          // and cache-write tokens (assistant.message events carry output
-          // only). VS Code transcripts never carry this rollup, so this path
-          // is gated to the CLI (non-transcript) format, leaving VS Code,
-          // JetBrains and OTel sources untouched.
-          //
-          // We emit one supplementary call per model carrying ONLY the
-          // input/cache tokens the per-turn events lack; output is excluded so
-          // the assistant.message output (and its cost) is not double-counted.
-          // Combined with the per-turn output cost, this yields the full,
-          // CLI-measured session cost.
-          if (isTranscript) continue
-          const shutdownData = event.data as SessionShutdownData
-          const modelMetrics = shutdownData.modelMetrics
-          if (!isRecord(modelMetrics)) continue
-
-          const shutdownTimestamp =
-            (event.timestamp ?? '') || timestampToISO(shutdownData.sessionStartTime) || lastEventTimestamp
-
-          for (const [model, metrics] of Object.entries(modelMetrics)) {
-            if (!model || !isRecord(metrics)) continue
-            const usage = metrics['usage']
-            if (!isRecord(usage)) continue
-
-            // ── THE SHUTDOWN DOUBLE-COUNT, RESOLVED BY SUPPRESSION ──
-            //
-            // These are the SAME tokens the session-store's per-request rows
-            // describe, just lumped per model. Emitting both roughly doubles a
-            // CLI session's input and cache tokens. The store wins: it is
-            // written per REQUEST rather than only on a clean shutdown (a
-            // crash loses the rollup entirely), and it carries the per-request
-            // cache split the rollup does not.
-            //
-            // The set is populated by the store parser, which discoverSessions
-            // returns FIRST: the scan walks a provider's sources in discovery
-            // order (parser.ts `for (const source of sources)` builds
-            // `changedSources`, and the parse loop iterates that same array), so
-            // the store is always parsed before any events.jsonl source.
-            //
-            // WHAT THIS COSTS — stated plainly, not papered over: a session
-            // whose rollup carried MORE usage than the sum of its store rows
-            // (rows pruned by the CLI, or a crash that skipped the write) now
-            // reports the store's SMALLER figure. That under-reports. The
-            // reference implementation serves the excess as a residual via a
-            // serve-time two-pass reconciliation over the whole provider's
-            // sources, and this architecture has no such hook —
-            // createSessionParser is per-source with no cross-source pass.
-            // Under-reporting is the safe direction: it never invents spend.
-            if (coveredStoreKeys.has(`${sessionId}\n${model}`)) continue
-
-            const cacheReadTokens = numberOrZero(usage['cacheReadTokens'])
-            const cacheWriteTokens = numberOrZero(usage['cacheWriteTokens'])
-            const reasoningTokens = numberOrZero(usage['reasoningTokens'])
-            // usage.inputTokens is cache-INCLUSIVE (input + cache_read +
-            // cache_write). calculateCost expects the uncached input alone with
-            // cache tokens billed separately, so subtract the cache components.
-            // Clamp at 0 in case a future schema reports input non-inclusively.
-            const inputTokens = Math.max(0, numberOrZero(usage['inputTokens']) - cacheReadTokens - cacheWriteTokens)
-
-            // Nothing this call would add over the per-turn events, so skip it
-            // to avoid an empty $0 row (output is intentionally excluded).
-            if (inputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0) continue
-
-            // A resumed session writes one rollup PER LEG, and each leg reports
-            // what THAT leg consumed - verified against the rollups on disk,
-            // where a single session's `gpt-5.5` legs read in=1,010,433 then
-            // 497,389 then 3,326,890 then 3,670,377: not monotonic, so neither
-            // the first nor the last leg is the session total and a delta is
-            // meaningless. 14 of the 81 CLI sessions write more than one leg, up
-            // to eight. So SUM the legs per model, and emit once after the
-            // event loop - yielding inline under the per-(session, model) dedup
-            // key would bill one leg and discard the rest.
-            const prior = rollupByModel.get(model)
-            rollupByModel.set(model, {
-              inputTokens: (prior?.inputTokens ?? 0) + inputTokens,
-              cacheWriteTokens: (prior?.cacheWriteTokens ?? 0) + cacheWriteTokens,
-              cacheReadTokens: (prior?.cacheReadTokens ?? 0) + cacheReadTokens,
-              reasoningTokens: (prior?.reasoningTokens ?? 0) + reasoningTokens,
-              timestamp: shutdownTimestamp,
-            })
-          }
-          continue
-        }
-
-        if (event.type === 'assistant.message') {
-          const msgData = event.data as AssistantMessageData
-          const { messageId, model: msgModel, outputTokens = 0 } = msgData
-          const rawRequests = (msgData as { toolRequests?: unknown }).toolRequests
-          const toolRequests = coerceToolRequests(rawRequests)
-
-          // model may be carried per-message in newer copilot-agent format
-          if (msgModel) currentModel = msgModel
-          // Regular JSONL: skip zero-token messages; transcripts don't have tokens
-          if (!isTranscript && outputTokens === 0) continue
-          if (!currentModel) continue
-
-          const dedupKey = `copilot:${sessionId}:${messageId}`
-          if (seenKeys.has(dedupKey)) continue
-          seenKeys.add(dedupKey)
-
-          const tools = toolRequests
-            .map(t => {
-              const raw =
-                typeof t === 'object' && t !== null
-                  ? ((t as { name?: unknown; toolName?: unknown }).name ??
-                    (t as { name?: unknown; toolName?: unknown }).toolName)
-                  : null
-              return typeof raw === 'string' ? normalizeTool(raw) : null
-            })
-            .filter((t): t is string => t !== null)
-
-          const skills = toolRequests.flatMap(t => {
-            if (typeof t !== 'object' || t === null) return []
-            const name = t.name ?? t.toolName ?? ''
-            if (name !== 'skill') return []
-            const skill = t.arguments?.['skill']
-            return typeof skill === 'string' && skill.trim().length > 0 ? [skill.trim()] : []
-          })
-
-          // Extract base command names from bash-type tool requests, routing the
-          // raw command through the shared extractBashCommands helper so chained
-          // commands are normalised the same way as every other provider
-          // (see bash-utils.ts, parser.ts, forge.ts, grok.ts, etc.).
-          const bashCommands = toolRequests.flatMap(t => {
-            if (typeof t !== 'object' || t === null) return []
-            const name = t.name ?? t.toolName ?? ''
-            if (!BASH_TOOL_NAMES.has(name)) return []
-            const cmd = t.arguments?.['command']
-            return typeof cmd === 'string' ? extractBashCommands(cmd) : []
-          })
-
-          // Copilot JSONL only logs outputTokens; inputTokens are NOT available.
-          // Cost will be lower than actual API cost. This is the original
-          // behaviour — OTel data (below) replaces it when available.
-          const costUSD = context.pricing.calculateCost(currentModel, 0, outputTokens, 0, 0, 0)
-
-          yield {
-            provider: 'copilot',
-            sessionId,
-            model: currentModel,
-            inputTokens: 0,
-            outputTokens,
-            cacheCreationInputTokens: 0,
-            cacheReadInputTokens: 0,
-            cachedInputTokens: 0,
-            reasoningTokens: 0,
-            webSearchRequests: 0,
-            costUSD,
-            tools,
-            bashCommands,
-            skills: skills.length > 0 ? skills : undefined,
-            subagentTypes: currentSubagentType ? [currentSubagentType] : undefined,
-            timestamp: event.timestamp ?? '',
-            speed: 'standard' as const,
-            deduplicationKey: dedupKey,
-            userMessage: pendingUserMessage,
-            ...(source.workingDirectory
-              ? { projectPath: source.workingDirectory, workingDirectory: source.workingDirectory }
-              : {}),
-          }
-          pendingUserMessage = ''
-        }
-      }
-
-      // The CLI shutdown rollups, one per model, each the session's final
-      // cumulative figure. Output is excluded on purpose: the per-turn
-      // `assistant.message` events above already carry it.
-      for (const [model, rollup] of rollupByModel) {
-        throwIfScanAborted(context?.signal)
-        const dedupKey = `copilot:${sessionId}:shutdown:${model}`
-        if (seenKeys.has(dedupKey)) continue
-        seenKeys.add(dedupKey)
-
-        // Tokens are real counts written by the CLI, so this cost is measured,
-        // not char-estimated.
-        const costUSD = context.pricing.calculateCost(
-          model,
-          rollup.inputTokens,
-          0,
-          rollup.cacheWriteTokens,
-          rollup.cacheReadTokens,
-          0,
-        )
-
-        yield {
-          provider: 'copilot',
-          sessionId,
-          model,
-          inputTokens: rollup.inputTokens,
-          outputTokens: 0,
-          cacheCreationInputTokens: rollup.cacheWriteTokens,
-          cacheReadInputTokens: rollup.cacheReadTokens,
-          cachedInputTokens: 0,
-          reasoningTokens: rollup.reasoningTokens,
-          webSearchRequests: 0,
-          costUSD,
-          costIsEstimated: false,
-          tools: [],
-          bashCommands: [],
-          timestamp: rollup.timestamp,
-          speed: 'standard' as const,
-          deduplicationKey: dedupKey,
-          userMessage: '',
-          ...(source.workingDirectory
-            ? { projectPath: source.workingDirectory, workingDirectory: source.workingDirectory }
-            : {}),
-        }
-      }
-    },
+  type Rollup = {
+    inputTokens: number
+    cacheWriteTokens: number
+    cacheReadTokens: number
+    reasoningTokens: number
+    timestamp: string
   }
-}
+  type AssistantCandidate = {
+    kind: 'assistant'
+    deduplicationKey: string
+    model: string | undefined
+    modelInvalid: boolean
+    transcriptFallback: boolean
+    outputTokens: number
+    tokensInvalid: boolean
+    tools: string[]
+    bashCommands: string[]
+    skills: string[]
+    subagentType: string | undefined
+    subagentInvalid: boolean
+    timestamp: string
+    timestampInvalid: boolean
+    userMessage: string
+    userMessageInvalid: boolean
+    userMessageVersion: number
+  }
+  type Candidate =
+    | AssistantCandidate
+    | { kind: 'invalid-rollup'; deduplicationKey: string }
+    | { kind: 'rollup'; model: string; value: Rollup }
+  type FoldState = {
+    model: string | undefined
+    modelInvalid: boolean
+    pendingUserMessage: string
+    pendingUserMessageInvalid: boolean
+    userMessageVersion: number
+    currentSubagentType: string | undefined
+    currentSubagentInvalid: boolean
+    lastEventTimestamp: string
+    openaiToolIds: number
+    anthropicToolIds: number
+    candidates: Candidate[]
+    rollups: Map<string, Rollup>
+    rollupOrder: string[]
+    invalidRollups: Set<string>
+  }
 
+  const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        yield* checkScanAbort(context.signal)
+        const readResult = yield* Effect.result(
+          Stream.runFold(
+            readSessionLinesStream(source.path, undefined, {
+              maxBytes: MAX_SESSION_FILE_BYTES,
+              readFailure: 'fail',
+              ...(context.signal ? { signal: context.signal } : {}),
+            }),
+            (): FoldState => ({
+              model: undefined,
+              modelInvalid: false,
+              pendingUserMessage: '',
+              pendingUserMessageInvalid: false,
+              userMessageVersion: 0,
+              currentSubagentType: undefined,
+              currentSubagentInvalid: false,
+              lastEventTimestamp: '',
+              openaiToolIds: 0,
+              anthropicToolIds: 0,
+              candidates: [],
+              rollups: new Map(),
+              rollupOrder: [],
+              invalidRollups: new Set(),
+            }),
+            (state, rawLine) => {
+              const line = typeof rawLine === 'string' ? rawLine : rawLine.toString('utf8')
+              if (!line.trim()) return state
+              const event = decodeCopilotJsonlEvent(line)
+              if (event) foldEvent(event, state)
+              return state
+            },
+          ),
+        )
+        yield* checkScanAbort(context.signal)
+        if (Result.isFailure(readResult)) return Stream.empty
+
+        const state = readResult.success
+        const transcriptModel = isTranscript ? inferTranscriptModel(state.openaiToolIds, state.anthropicToolIds) : ''
+        if (isTranscript && !transcriptModel) return Stream.empty
+        for (const model of state.rollupOrder) {
+          if (state.invalidRollups.has(model)) {
+            state.candidates.push({ kind: 'invalid-rollup', deduplicationKey: shutdownKey(model) })
+          } else {
+            const value = state.rollups.get(model)
+            if (value) state.candidates.push({ kind: 'rollup', model, value })
+          }
+        }
+
+        let emittedUserMessageVersion = 0
+        return Stream.fromIterable(state.candidates).pipe(
+          Stream.mapEffect(candidate =>
+            Effect.gen(function* () {
+              yield* checkScanAbort(context.signal)
+              const deduplicationKey =
+                candidate.kind === 'rollup' ? shutdownKey(candidate.model) : candidate.deduplicationKey
+              if (seenKeys.has(deduplicationKey)) return Result.fail(undefined)
+              seenKeys.add(deduplicationKey)
+
+              const hasNewUserMessage =
+                candidate.kind === 'assistant' && candidate.userMessageVersion > emittedUserMessageVersion
+              if (hasNewUserMessage) emittedUserMessageVersion = candidate.userMessageVersion
+
+              if (candidate.kind === 'invalid-rollup') {
+                if (onUnparsedCall) yield* onUnparsedCall
+                return Result.fail(undefined)
+              }
+              if (candidate.kind === 'assistant') {
+                if (
+                  candidate.modelInvalid ||
+                  candidate.tokensInvalid ||
+                  candidate.timestampInvalid ||
+                  candidate.subagentInvalid ||
+                  (hasNewUserMessage && candidate.userMessageInvalid)
+                ) {
+                  if (onUnparsedCall) yield* onUnparsedCall
+                  return Result.fail(undefined)
+                }
+                const model = candidate.model ?? (candidate.transcriptFallback ? transcriptModel : '')
+                if (!model) return Result.fail(undefined)
+                const costUSD = context.pricing.calculateCost(model, 0, candidate.outputTokens, 0, 0, 0)
+                const userMessage = hasNewUserMessage ? candidate.userMessage : ''
+                const call: ParsedProviderCall = {
+                  provider: 'copilot' as const,
+                  sessionId,
+                  model,
+                  inputTokens: 0,
+                  outputTokens: candidate.outputTokens,
+                  cacheCreationInputTokens: 0,
+                  cacheReadInputTokens: 0,
+                  cachedInputTokens: 0,
+                  reasoningTokens: 0,
+                  webSearchRequests: 0,
+                  costUSD,
+                  tools: candidate.tools,
+                  bashCommands: candidate.bashCommands,
+                  skills: candidate.skills.length > 0 ? candidate.skills : undefined,
+                  subagentTypes: candidate.subagentType ? [candidate.subagentType] : undefined,
+                  timestamp: candidate.timestamp,
+                  speed: 'standard' as const,
+                  deduplicationKey,
+                  userMessage,
+                  ...(workingDirectory ? { projectPath: workingDirectory, workingDirectory } : {}),
+                }
+                return Result.succeed(call)
+              }
+
+              const rollup = candidate.value
+              const costUSD = context.pricing.calculateCost(
+                candidate.model,
+                rollup.inputTokens,
+                0,
+                rollup.cacheWriteTokens,
+                rollup.cacheReadTokens,
+                0,
+              )
+              const call: ParsedProviderCall = {
+                provider: 'copilot' as const,
+                sessionId,
+                model: candidate.model,
+                inputTokens: rollup.inputTokens,
+                outputTokens: 0,
+                cacheCreationInputTokens: rollup.cacheWriteTokens,
+                cacheReadInputTokens: rollup.cacheReadTokens,
+                cachedInputTokens: 0,
+                reasoningTokens: rollup.reasoningTokens,
+                webSearchRequests: 0,
+                costUSD,
+                costIsEstimated: false,
+                tools: [],
+                bashCommands: [],
+                timestamp: rollup.timestamp,
+                speed: 'standard' as const,
+                deduplicationKey,
+                userMessage: '',
+                ...(workingDirectory ? { projectPath: workingDirectory, workingDirectory } : {}),
+              }
+              return Result.succeed(call)
+            }),
+          ),
+          Stream.filterMap(result => result),
+        )
+      }),
+    )
+
+  function foldEvent(event: CopilotJsonlEvent, state: FoldState): void {
+    const timestampResult = decodeCopilotString(event.timestamp)
+    const timestamp = Result.isSuccess(timestampResult) ? timestampResult.success : ''
+    if (timestamp) state.lastEventTimestamp = timestamp
+    const data = event.data
+
+    if (event.type === 'session.start') {
+      if (!isTranscript) updateModel(data['selectedModel'], state)
+      return
+    }
+    if (event.type === 'session.model_change') {
+      updateModel(data['newModel'], state)
+      return
+    }
+    if (event.type === 'subagent.selected') {
+      const rawAgent = data['agentName']
+      const agent = decodeCopilotString(rawAgent)
+      state.currentSubagentType = Result.isSuccess(agent) ? agent.success : undefined
+      state.currentSubagentInvalid = Boolean(rawAgent) && Result.isFailure(agent)
+      return
+    }
+    if (event.type === 'user.message') {
+      const rawMessage = data['content']
+      const message = decodeCopilotString(rawMessage)
+      state.pendingUserMessage = Result.isSuccess(message) ? message.success : ''
+      state.pendingUserMessageInvalid = rawMessage !== undefined && rawMessage !== null && Result.isFailure(message)
+      state.userMessageVersion++
+      return
+    }
+    if (event.type === 'session.shutdown') {
+      if (!isTranscript) foldShutdown(data, timestamp, state)
+      return
+    }
+    if (event.type !== 'assistant.message') return
+
+    const toolFacts = extractCopilotJsonlToolFacts(data['toolRequests'])
+    state.openaiToolIds += toolFacts.openaiToolIds
+    state.anthropicToolIds += toolFacts.anthropicToolIds
+
+    let selectedModelInvalid = false
+    const rawModel = data['model']
+    if (rawModel) {
+      const modelResult = decodeCopilotString(rawModel)
+      if (Result.isSuccess(modelResult)) updateModel(modelResult.success, state)
+      else selectedModelInvalid = true
+    }
+
+    const modelInvalid = selectedModelInvalid || state.modelInvalid
+    const model = modelInvalid ? undefined : state.model
+    const transcriptFallback = isTranscript && !modelInvalid && !model
+    if (!model && !modelInvalid && !transcriptFallback) return
+
+    const rawOutput = data['outputTokens']
+    const outputResult = rawOutput === undefined ? Result.succeed(0) : decodeCopilotFinite(rawOutput)
+    if (!isTranscript && !modelInvalid && Result.isSuccess(outputResult) && outputResult.success === 0) return
+
+    state.candidates.push({
+      kind: 'assistant',
+      deduplicationKey: 'copilot:' + sessionId + ':' + String(data['messageId']),
+      model,
+      modelInvalid,
+      transcriptFallback,
+      outputTokens: Result.isSuccess(outputResult) ? outputResult.success : 0,
+      tokensInvalid: Result.isFailure(outputResult),
+      tools: toolFacts.tools,
+      bashCommands: toolFacts.bashCommands,
+      skills: toolFacts.skills,
+      subagentType: state.currentSubagentType,
+      subagentInvalid: state.currentSubagentInvalid,
+      timestamp,
+      timestampInvalid: event.timestamp !== undefined && event.timestamp !== null && Result.isFailure(timestampResult),
+      userMessage: state.pendingUserMessage,
+      userMessageInvalid: state.pendingUserMessageInvalid,
+      userMessageVersion: state.userMessageVersion,
+    })
+  }
+
+  function updateModel(raw: unknown, state: FoldState): void {
+    if (raw === undefined || raw === null) return
+    const result = decodeCopilotString(raw)
+    if (Result.isSuccess(result)) {
+      state.model = result.success
+      state.modelInvalid = false
+    } else {
+      state.model = undefined
+      state.modelInvalid = true
+    }
+  }
+
+  function foldShutdown(data: Record<string, unknown>, timestamp: string, state: FoldState): void {
+    const metrics = decodeCopilotRecord(data['modelMetrics'])
+    if (Result.isFailure(metrics)) return
+    const shutdownTimestamp = timestamp || timestampToISO(data['sessionStartTime']) || state.lastEventTimestamp
+    for (const [model, rawMetrics] of Object.entries(metrics.success)) {
+      if (!model || coveredStoreKeys.has(sessionId + '\n' + model)) continue
+      const modelMetrics = decodeCopilotRecord(rawMetrics)
+      if (Result.isFailure(modelMetrics)) continue
+      const usage = decodeCopilotRecord(modelMetrics.success['usage'])
+      if (Result.isFailure(usage)) continue
+
+      if (!state.rollupOrder.includes(model)) state.rollupOrder.push(model)
+      let invalid = false
+      const counters = new Map<string, number>()
+      for (const key of ['inputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens'] as const) {
+        const raw = usage.success[key]
+        if (raw === undefined) {
+          counters.set(key, 0)
+          continue
+        }
+        const result = decodeCopilotFinite(raw)
+        if (Result.isFailure(result)) invalid = true
+        else counters.set(key, Math.max(0, result.success))
+      }
+      if (invalid) {
+        state.invalidRollups.add(model)
+        state.rollups.delete(model)
+        continue
+      }
+      if (state.invalidRollups.has(model)) continue
+
+      const cacheReadTokens = counters.get('cacheReadTokens') ?? 0
+      const cacheWriteTokens = counters.get('cacheWriteTokens') ?? 0
+      const inputTokens = Math.max(0, (counters.get('inputTokens') ?? 0) - cacheReadTokens - cacheWriteTokens)
+      if (inputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0) continue
+
+      const prior = state.rollups.get(model)
+      state.rollups.set(model, {
+        inputTokens: (prior?.inputTokens ?? 0) + inputTokens,
+        cacheWriteTokens: (prior?.cacheWriteTokens ?? 0) + cacheWriteTokens,
+        cacheReadTokens: (prior?.cacheReadTokens ?? 0) + cacheReadTokens,
+        reasoningTokens: (prior?.reasoningTokens ?? 0) + (counters.get('reasoningTokens') ?? 0),
+        timestamp: shutdownTimestamp,
+      })
+    }
+  }
+
+  return legacyCopilotParser(parseStream)
+}
 function createChatSessionParser(
   source: SessionSource,
   seenKeys: Set<string>,
@@ -1321,16 +1367,21 @@ function createChatSessionParser(
       Effect.gen(function* () {
         yield* checkScanAbort(context.signal)
         let root: unknown = createReplayObject()
-        yield* Stream.runForEach(
-          readSessionLinesStream(source.path, undefined, {
-            maxBytes: MAX_SESSION_FILE_BYTES,
-            ...(context.signal ? { signal: context.signal } : {}),
-          }),
-          line =>
-            Effect.sync(() => {
-              root = replayChatSessionJournalLine(root, typeof line === 'string' ? line : line.toString('utf8'))
+        const readResult = yield* Effect.result(
+          Stream.runForEach(
+            readSessionLinesStream(source.path, undefined, {
+              maxBytes: MAX_SESSION_FILE_BYTES,
+              readFailure: 'fail',
+              ...(context.signal ? { signal: context.signal } : {}),
             }),
+            line =>
+              Effect.sync(() => {
+                root = replayChatSessionJournalLine(root, typeof line === 'string' ? line : line.toString('utf8'))
+              }),
+          ),
         )
+        yield* checkScanAbort(context.signal)
+        if (Result.isFailure(readResult)) return Stream.empty
         const decodedRoot = decodeCopilotRecord(root)
         if (Result.isFailure(decodedRoot)) return Stream.empty
         const session = decodedRoot.success

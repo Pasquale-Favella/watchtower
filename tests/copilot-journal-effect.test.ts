@@ -3,7 +3,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { Effect, Stream } from 'effect'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+const reader = vi.hoisted(() => ({ failAfterPrefix: false }))
+
+vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
+  return {
+    ...actual,
+    readSessionLinesStream: (...args: Parameters<typeof actual.readSessionLinesStream>) => {
+      const stream = actual.readSessionLinesStream(...args)
+      return reader.failAfterPrefix
+        ? Stream.concat(stream, Stream.fail(new actual.SessionLineReadError({ cause: new Error('read failed') })))
+        : stream
+    },
+  }
+})
 
 import { createCopilotProvider } from '../src/main/pipeline/providers/copilot.js'
 import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
@@ -13,6 +28,7 @@ let root = ''
 afterEach(() => {
   if (root) rmSync(root, { recursive: true, force: true })
   root = ''
+  reader.failAfterPrefix = false
 })
 
 function makeSource(): SessionSource {
@@ -34,6 +50,32 @@ async function collect(
 }
 
 describe('Copilot chat journal Effect parser', () => {
+  it('discards a read prefix before pricing or admitting any reconstructed request', async () => {
+    const source = makeSource()
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(
+      source.path,
+      JSON.stringify({
+        kind: 0,
+        v: {
+          sessionId: 'chat-session',
+          requests: [
+            { requestId: 'one', modelId: 'gpt-4.1', result: { metadata: { promptTokens: 1, outputTokens: 2 } } },
+          ],
+        },
+      }),
+    )
+    reader.failAfterPrefix = true
+    const calculateCost = vi.fn(() => 1)
+    const seen = new Set<string>()
+    const parser = createCopilotProvider().createSessionParser(source, seen, undefined, {
+      pricing: { calculateCost, calculateLocalModelSavings: () => null },
+    })
+
+    expect(await collect(parser)).toEqual([])
+    expect(calculateCost).not.toHaveBeenCalled()
+    expect(seen.size).toBe(0)
+  })
   it('replays append and nested array set operations and prices decoded requests', async () => {
     const source = makeSource()
     const request = {
