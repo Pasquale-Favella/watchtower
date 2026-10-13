@@ -1,14 +1,15 @@
-import { mkdtempSync, statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { statSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 
 import * as Effect from 'effect/Effect'
 import * as SchemaAST from 'effect/SchemaAST'
-import { afterEach, describe, expect, it } from 'vitest'
+import * as SqlError from 'effect/unstable/sql/SqlError'
+import { describe, expect, it } from 'vitest'
 
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
+import { clearLedger } from '../src/main/application/clear-ledger.js'
+import { LedgerMaintenance } from '../src/main/application/ledger-maintenance.js'
+import { initializeLedger } from '../src/main/store/ledger-initialization.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
 import {
   currencyRateRowSchema,
   ledgerCallRowSchema,
@@ -26,28 +27,14 @@ import {
 } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
-const tempDirs: string[] = []
-
-function makeStore(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-ledger-'))
-  tempDirs.push(dir)
-  return new LedgerStore(join(dir, 'data.db'))
-}
-
-/** Parity introspection seam: a temp store plus a direct read-only handle
- * onto its database file, both closed afterwards. The #97/#98 gates share
- * this two-handle shape instead of repeating the open/close. */
+/** Parity introspection seam: a worker fixture plus a direct read-only handle. */
 function withTempLedgerReadOnly(fn: (ro: DatabaseSync) => void): void {
-  const store = makeStore()
+  const fixture = openLedgerFixture()
+  const ro = new DatabaseSync(fixture.dbPath, { readOnly: true })
   try {
-    const ro = new DatabaseSync(store.dbPath, { readOnly: true })
-    try {
-      fn(ro)
-    } finally {
-      ro.close()
-    }
+    fn(ro)
   } finally {
-    store.close()
+    ro.close()
   }
 }
 
@@ -106,13 +93,6 @@ function jsonIsNonEmpty(raw: string): boolean {
   return true
 }
 
-afterEach(() => {
-  // The temp dirs themselves are left to the OS (only the store handle is
-  // closed by the tests); the list just has to be emptied so the next case
-  // does not inherit a stale entry.
-  tempDirs.length = 0
-})
-
 const baseInput = {
   provider: 'opencode',
   envFingerprint: 'env-demo',
@@ -120,71 +100,94 @@ const baseInput = {
   repoUrl: 'https://github.com/acme/demo-project',
 }
 
-describe('LedgerStore (the store seam: port-in → read back)', () => {
+describe('ledger repository ports (port-in → read back)', () => {
   it('opens green field: four ledger tables + five call indexes, no report/metrics tables', () => {
-    const store = makeStore()
+    const fixture = openLedgerFixture()
 
-    const tables = store.getTableNames()
-    expect(tables).toEqual(expect.arrayContaining(['ledger_source', 'ledger_session', 'ledger_turn', 'ledger_call']))
-    expect(tables).not.toContain('report')
-    expect(tables).not.toContain('per_call_cost')
-    expect(tables).not.toContain('daily_spend')
-    expect(tables).not.toContain('tally')
-    expect(tables).not.toContain('task_breakdown')
-    expect(tables).not.toContain('agent_breakdown')
-    expect(tables).not.toContain('ratio_metrics')
-
-    const indexes = store.getIndexNames('ledger_call')
-    expect(indexes.sort()).toEqual(
-      [
-        'idx_ledger_call_timestamp',
-        'idx_ledger_call_session',
-        'idx_ledger_call_model',
-        'idx_ledger_call_project',
-        'idx_ledger_call_provider',
-      ].sort(),
-    )
-    const version = new DatabaseSync(store.dbPath, { readOnly: true })
-    expect(version.prepare('SELECT migration_id FROM watchtower_sql_migrations').get()).toEqual({ migration_id: 1 })
-    version.close()
-
-    store.close()
-  })
-
-  it('upgrades a pre-version ledger without losing ledger rows or user config', () => {
-    const original = makeStore()
-    const dbPath = original.dbPath
-    original.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    original.setModelAlias('old-model', 'new-model')
-    original.close()
-
-    const legacy = new DatabaseSync(dbPath)
-    legacy.exec('DROP TABLE watchtower_sql_migrations')
-    legacy.close()
-
-    const upgraded = new LedgerStore(dbPath)
+    const tableRows = new DatabaseSync(fixture.dbPath, { readOnly: true })
     try {
-      expect(upgraded.getCalls()).toHaveLength(1)
-      expect(upgraded.getModelAliases()).toEqual([{ model: 'old-model', aliasOf: 'new-model' }])
-      const version = new DatabaseSync(dbPath, { readOnly: true })
+      const tables = (
+        tableRows
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'watchtower_sql_migrations' ORDER BY name ASC",
+          )
+          .all() as Array<{ name: string }>
+      ).map(row => row.name)
+      expect(tables).toEqual(expect.arrayContaining(['ledger_source', 'ledger_session', 'ledger_turn', 'ledger_call']))
+      expect(tables).not.toContain('report')
+      expect(tables).not.toContain('per_call_cost')
+      expect(tables).not.toContain('daily_spend')
+      expect(tables).not.toContain('tally')
+      expect(tables).not.toContain('task_breakdown')
+      expect(tables).not.toContain('agent_breakdown')
+      expect(tables).not.toContain('ratio_metrics')
+
+      const indexes = (
+        tableRows
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ledger_call' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC",
+          )
+          .all() as Array<{ name: string }>
+      ).map(row => row.name)
+      expect(indexes.sort()).toEqual(
+        [
+          'idx_ledger_call_timestamp',
+          'idx_ledger_call_session',
+          'idx_ledger_call_model',
+          'idx_ledger_call_project',
+          'idx_ledger_call_provider',
+        ].sort(),
+      )
+      const version = new DatabaseSync(fixture.dbPath, { readOnly: true })
       try {
         expect(version.prepare('SELECT migration_id FROM watchtower_sql_migrations').get()).toEqual({ migration_id: 1 })
       } finally {
         version.close()
       }
     } finally {
-      upgraded.close()
+      tableRows.close()
+    }
+  })
+
+  it('upgrades a pre-version ledger without losing ledger rows or user config', () => {
+    const fixture = openLedgerFixture()
+    const dbPath = fixture.dbPath
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
+    fixture.runtime.runSync(Effect.flatMap(LedgerConfig, port => port.setModelAlias('old-model', 'new-model')))
+
+    const legacy = new DatabaseSync(dbPath)
+    legacy.exec('DROP TABLE watchtower_sql_migrations')
+    legacy.close()
+
+    fixture.runtime.runSync(initializeLedger)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerConfig, port => port.getModelAliases()))).toEqual([
+      { model: 'old-model', aliasOf: 'new-model' },
+    ])
+    const version = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      expect(version.prepare('SELECT migration_id FROM watchtower_sql_migrations').get()).toEqual({ migration_id: 1 })
+    } finally {
+      version.close()
     }
   })
 
   it('ports a new file: source/session/turn/call rows land and read back faithfully', () => {
-    const store = makeStore()
-    const result = store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const fixture = openLedgerFixture()
+    const result = fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
 
     expect(result.verdict).toBe('new')
     expect(result.inserted).toEqual({ sessions: 1, turns: 1, calls: 1 })
 
-    const sources = store.getSources()
+    const sources = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))
     expect(sources).toHaveLength(1)
     expect(sources[0]).toMatchObject({
       provider: 'opencode',
@@ -193,7 +196,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       repoUrl: 'https://github.com/acme/demo-project',
     })
 
-    const sessions = store.getSessions()
+    const sessions = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))
     expect(sessions).toHaveLength(1)
     expect(sessions[0]).toMatchObject({
       sessionId: 'sess-0',
@@ -206,7 +209,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       everHadBranch: 0,
     })
 
-    const turns = store.getTurns()
+    const turns = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getTurns()))
     expect(turns).toHaveLength(1)
     expect(turns[0]).toMatchObject({
       sessionId: 'sess-0',
@@ -217,7 +220,7 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       hasEdits: 1,
     })
 
-    const calls = store.getCalls()
+    const calls = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({
       sessionId: 'sess-0',
@@ -236,121 +239,147 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       reasoningTokens: 5,
       tools: ['Edit'],
     })
-
-    store.close()
   })
 
   it('ports through the Effect runtime at the synchronous db-worker boundary', () => {
-    const store = makeStore()
-    const result = store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const fixture = openLedgerFixture()
+    const result = fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
 
     expect(result.inserted).toEqual({ sessions: 1, turns: 1, calls: 1 })
-    expect(store.getCalls()).toHaveLength(1)
-    store.close()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(1)
   })
 
   it('rolls back earlier inserts when an Effect-managed port-in fails mid-transaction', () => {
-    const store = makeStore()
-    const triggerDb = new DatabaseSync(store.dbPath)
+    const fixture = openLedgerFixture()
+    const triggerDb = new DatabaseSync(fixture.dbPath)
     triggerDb.exec(`
       CREATE TRIGGER fail_ledger_turn BEFORE INSERT ON ledger_turn
       BEGIN SELECT RAISE(ABORT, 'injected port-in failure'); END;
     `)
     triggerDb.close()
 
-    expect(() => store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })).toThrow(
-      'Failed to execute statement',
-    )
-    expect(store.getSources()).toEqual([])
-    expect(store.getSessions()).toEqual([])
-    expect(store.getCalls()).toEqual([])
-    store.close()
+    expect(() =>
+      fixture.runtime.runSync(
+        Effect.flatMap(LedgerIngest, port =>
+          port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+        ),
+      ),
+    ).toThrow('Failed to execute statement')
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toEqual([])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))).toEqual([])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toEqual([])
   })
 
   it('re-inserting the same file is idempotent: the call_key constraint rejects duplicates', () => {
-    const store = makeStore()
+    const fixture = openLedgerFixture()
     const file = buildFixtureCachedFile()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port => port.portIn({ ...baseInput, verdict: 'new', cachedFile: file })),
+    )
 
-    const again = store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    const again = fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port => port.portIn({ ...baseInput, verdict: 'new', cachedFile: file })),
+    )
 
     expect(again.inserted).toEqual({ sessions: 0, turns: 0, calls: 0 })
-    expect(store.getCalls()).toHaveLength(1)
-    expect(store.getTurns()).toHaveLength(1)
-    expect(store.getSessions()).toHaveLength(1)
-
-    store.close()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getTurns()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))).toHaveLength(1)
   })
 
   it('an appended file inserts only its new rows', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const fixture = openLedgerFixture()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
 
     const appended = buildFixtureCachedFile()
     appended.turns.push(buildFixtureCachedTurn(1, 'Add the new endpoint'))
-    const result = store.portIn({ ...baseInput, verdict: 'appended', cachedFile: appended })
+    const result = fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port => port.portIn({ ...baseInput, verdict: 'appended', cachedFile: appended })),
+    )
 
     expect(result.inserted).toEqual({ sessions: 0, turns: 1, calls: 1 })
-    expect(store.getTurns()).toHaveLength(2)
-    expect(store.getCalls()).toHaveLength(2)
-
-    store.close()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getTurns()))).toHaveLength(2)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(2)
   })
 
   it('a modified file replaces its rows atomically', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const fixture = openLedgerFixture()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
 
     const modified = buildFixtureCachedFile()
     const call = modified.turns[0]!.calls[0]!
     call.costUSD = 0.99
     call.usage = { ...call.usage, inputTokens: 500 }
-    const result = store.portIn({ ...baseInput, verdict: 'modified', cachedFile: modified })
+    const result = fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port => port.portIn({ ...baseInput, verdict: 'modified', cachedFile: modified })),
+    )
 
     expect(result.inserted).toEqual({ sessions: 1, turns: 1, calls: 1 })
-    const calls = store.getCalls()
+    const calls = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))
     expect(calls).toHaveLength(1)
     expect(calls[0]!.baseCostUSD).toBeCloseTo(0.99, 6)
     expect(calls[0]!.inputTokens).toBe(500)
-
-    store.close()
   })
 
   it('an unchanged file touches nothing', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const fixture = openLedgerFixture()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
 
-    const result = store.portIn({ ...baseInput, verdict: 'unchanged', cachedFile: buildFixtureCachedFile() })
+    const result = fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'unchanged', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
 
     expect(result.inserted).toEqual({ sessions: 0, turns: 0, calls: 0 })
-    expect(store.getCalls()).toHaveLength(1)
-
-    store.close()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(1)
   })
 
   it('an unchanged file whose source was never ported (warm cache met by an empty ledger) ports its rows', () => {
-    const store = makeStore()
+    const fixture = openLedgerFixture()
     // The post-migration case: the on-disk session cache is warm (fingerprints
     // match) but the ledger has never seen this source — e.g. an existing
     // install whose cache predates the ledger. The `unchanged` verdict must be
     // a first port, not a no-op, or those providers vanish from the app.
-    const result = store.portIn({ ...baseInput, verdict: 'unchanged', cachedFile: buildFixtureCachedFile() })
+    const result = fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'unchanged', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
 
     expect(result.inserted).toEqual({ sessions: 1, turns: 1, calls: 1 })
-    expect(store.getSources()).toHaveLength(1)
-    expect(store.getCalls()).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(1)
 
     // A later warm scan now finds the source present: `unchanged` is a no-op
     // again — the ledger is its own resume marker, nothing double-counts.
-    const again = store.portIn({ ...baseInput, verdict: 'unchanged', cachedFile: buildFixtureCachedFile() })
+    const again = fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'unchanged', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
     expect(again.inserted).toEqual({ sessions: 0, turns: 0, calls: 0 })
-    expect(store.getCalls()).toHaveLength(1)
-
-    store.close()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(1)
   })
 
   it('uses the cached turn’s sessionId and the discovery-time project when the cache carries no project metadata', () => {
-    const store = makeStore()
+    const fixture = openLedgerFixture()
     // The real Copilot case: `events.jsonl` under a session-UUID directory with
     // NO canonicalProjectName/canonicalCwd/workingDirectory on the cached file
     // (only Claude worktrees populate those). The discovery-time `project`
@@ -363,17 +392,21 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
     delete (file as { workingDirectory?: string }).workingDirectory
     file.turns[0]!.sessionId = '9b702997-3777-4470-8cbb-961e462d9f29'
 
-    store.portIn({
-      provider: 'copilot',
-      envFingerprint: 'env-demo',
-      filePath: 'C:\\Users\\demo\\.copilot\\session-state\\9b702997-3777-4470-8cbb-961e462d9f29\\events.jsonl',
-      verdict: 'new',
-      cachedFile: file,
-      project: 'my-repo',
-      workingDirectory: 'C:\\Users\\demo\\work\\my-repo',
-    })
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({
+          provider: 'copilot',
+          envFingerprint: 'env-demo',
+          filePath: 'C:\\Users\\demo\\.copilot\\session-state\\9b702997-3777-4470-8cbb-961e462d9f29\\events.jsonl',
+          verdict: 'new',
+          cachedFile: file,
+          project: 'my-repo',
+          workingDirectory: 'C:\\Users\\demo\\work\\my-repo',
+        }),
+      ),
+    )
 
-    const sessions = store.getSessions()
+    const sessions = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))
     expect(sessions).toHaveLength(1)
     expect(sessions[0]).toMatchObject({
       sessionId: '9b702997-3777-4470-8cbb-961e462d9f29',
@@ -383,203 +416,243 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       canonicalProject: null,
       canonicalCwd: null,
     })
-    expect(store.getSources()[0]).toMatchObject({ provider: 'copilot', project: 'my-repo' })
-    expect(store.getCalls()[0]!.project).toBe('my-repo')
-
-    store.close()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))[0]).toMatchObject({
+      provider: 'copilot',
+      project: 'my-repo',
+    })
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))[0]!.project).toBe('my-repo')
   })
 
   it('reads back a source whose fingerprint dev/ino exceed Number.MAX_SAFE_INTEGER (NTFS inode) without throwing', () => {
-    const store = makeStore()
+    const fixture = openLedgerFixture()
     // Windows NTFS inode numbers routinely exceed 2^53. node:sqlite throws
     // ERR_OUT_OF_RANGE when a stored INTEGER can't be represented as a JS
     // number, so getSources() must read them back as digit-exact text.
     const file = buildFixtureCachedFile()
     file.fingerprint = { ...file.fingerprint, dev: 2 ** 53, ino: 2 ** 53 + 2 }
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port => port.portIn({ ...baseInput, verdict: 'new', cachedFile: file })),
+    )
 
-    const sources = store.getSources()
+    const sources = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))
     expect(sources).toHaveLength(1)
     expect(sources[0]!.fingerprint.dev).toBe(String(2 ** 53))
     expect(sources[0]!.fingerprint.ino).toBe(String(2 ** 53 + 2))
     expect(sources[0]!.fingerprint.mtimeMs).toBe(1_751_300_000_000)
     expect(sources[0]!.fingerprint.sizeBytes).toBe(4096)
-
-    store.close()
   })
 
   it('keeps an evicted source’s rows; deleteSource removes only that source; clear() drops all ledger data', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    store.portIn({
-      ...baseInput,
-      provider: 'codex',
-      envFingerprint: 'env-demo',
-      filePath: '/Users/demo/.codex/other/sess-1.jsonl',
-      verdict: 'new',
-      cachedFile: buildFixtureCachedFile(),
-    })
+    const fixture = openLedgerFixture()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({
+          ...baseInput,
+          provider: 'codex',
+          envFingerprint: 'env-demo',
+          filePath: '/Users/demo/.codex/other/sess-1.jsonl',
+          verdict: 'new',
+          cachedFile: buildFixtureCachedFile(),
+        }),
+      ),
+    )
 
-    expect(store.getCalls()).toHaveLength(2)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(2)
 
-    store.deleteSource('codex', 'env-demo', '/Users/demo/.codex/other/sess-1.jsonl')
-    expect(store.getSources()).toHaveLength(1)
-    expect(store.getCalls()).toHaveLength(1)
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.deleteSource('codex', 'env-demo', '/Users/demo/.codex/other/sess-1.jsonl'),
+      ),
+    )
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(1)
 
-    store.clear()
-    expect(store.getSources()).toEqual([])
-    expect(store.getSessions()).toEqual([])
-    expect(store.getTurns()).toEqual([])
-    expect(store.getCalls()).toEqual([])
-
-    store.close()
+    fixture.runtime.runSync(clearLedger())
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toEqual([])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))).toEqual([])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getTurns()))).toEqual([])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toEqual([])
   })
 
   it('deleteSource() rolls back child-row deletes when one table delete fails', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const fixture = openLedgerFixture()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
 
-    const triggerDb = new DatabaseSync(store.dbPath)
+    const triggerDb = new DatabaseSync(fixture.dbPath)
     triggerDb.exec(`
       CREATE TRIGGER fail_source_delete BEFORE DELETE ON ledger_session
       BEGIN SELECT RAISE(ABORT, 'injected source deletion failure'); END;
     `)
     triggerDb.close()
 
-    expect(() => store.deleteSource(baseInput.provider, baseInput.envFingerprint, baseInput.filePath)).toThrow()
-    expect(store.getSources()).toHaveLength(1)
-    expect(store.getSessions()).toHaveLength(1)
-    expect(store.getTurns()).toHaveLength(1)
-    expect(store.getCalls()).toHaveLength(1)
-
-    store.close()
+    expect(() =>
+      fixture.runtime.runSync(
+        Effect.flatMap(LedgerIngest, port =>
+          port.deleteSource(baseInput.provider, baseInput.envFingerprint, baseInput.filePath),
+        ),
+      ),
+    ).toThrow()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getTurns()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(1)
   })
 
   it('clear() rolls back all deletes when one table delete fails', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const fixture = openLedgerFixture()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
 
-    const triggerDb = new DatabaseSync(store.dbPath)
+    const triggerDb = new DatabaseSync(fixture.dbPath)
     triggerDb.exec(`
       CREATE TRIGGER fail_clear_session BEFORE DELETE ON ledger_session
       BEGIN SELECT RAISE(ABORT, 'injected clear failure'); END;
     `)
     triggerDb.close()
 
-    expect(() => store.clear()).toThrow()
-    expect(store.getSources()).toHaveLength(1)
-    expect(store.getSessions()).toHaveLength(1)
-    expect(store.getTurns()).toHaveLength(1)
-    expect(store.getCalls()).toHaveLength(1)
-
-    store.close()
+    expect(() => fixture.runtime.runSync(Effect.flatMap(LedgerIngest, port => port.clear()))).toThrow()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getTurns()))).toHaveLength(1)
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toHaveLength(1)
   })
 
   it('clear() reclaims disk space, so the Settings sizes visibly drop', () => {
-    const store = makeStore()
+    const fixture = openLedgerFixture()
     for (let i = 0; i < 200; i++) {
-      store.portIn({
-        ...baseInput,
-        filePath: `/Users/demo/.local/share/opencode/demo-project/sess-${i}.jsonl`,
-        verdict: 'new',
-        cachedFile: buildFixtureCachedFile(),
-      })
+      fixture.runtime.runSync(
+        Effect.flatMap(LedgerIngest, port =>
+          port.portIn({
+            ...baseInput,
+            filePath: `/Users/demo/.local/share/opencode/demo-project/sess-${i}.jsonl`,
+            verdict: 'new',
+            cachedFile: buildFixtureCachedFile(),
+          }),
+        ),
+      )
     }
-    expect(store.getSources()).toHaveLength(200)
-    const before = statSync(store.dbPath).size
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toHaveLength(200)
+    const before = statSync(fixture.dbPath).size
 
-    store.clear()
+    fixture.runtime.runSync(clearLedger())
 
-    expect(store.getSources()).toEqual([])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toEqual([])
     // Without VACUUM + WAL checkpoint the file keeps its freelist pages and
     // statSync reports the same size — the Privacy & data pane then looks
     // untouched after a clear.
-    expect(statSync(store.dbPath).size).toBeLessThan(before)
+    expect(statSync(fixture.dbPath).size).toBeLessThan(before)
 
     // The store stays usable after the reclaim.
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    expect(store.getSources()).toHaveLength(1)
-
-    store.close()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toHaveLength(1)
   })
 
   it('clear() still deletes when the reclaim step fails (locked VACUUM)', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    expect(store.getSources()).toHaveLength(1)
+    const fixture = openLedgerFixture()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toHaveLength(1)
 
     // Force the best-effort reclaim path: a VACUUM that cannot take its
     // exclusive lock (transient file lock, I/O error) must not fail the
     // clear — the DELETEs are already committed.
-    const db = (store as unknown as { db: { exec: (sql: string) => void } }).db
-    const realExec = db.exec.bind(db)
-    db.exec = (sql: string): void => {
-      if (/VACUUM/.test(sql)) throw new Error('SQLITE_LOCKED: database table is locked')
-      realExec(sql)
-    }
-    try {
-      store.clear()
-    } finally {
-      db.exec = realExec
-    }
+    const maintenanceFailure = Effect.provideService(
+      clearLedger(),
+      LedgerMaintenance,
+      LedgerMaintenance.of({
+        reclaim: () =>
+          Effect.fail(
+            new SqlError.SqlError({
+              reason: new SqlError.SqlSyntaxError({
+                cause: new Error('injected maintenance failure'),
+                message: 'injected maintenance failure',
+              }),
+            }),
+          ),
+      }),
+    )
+    fixture.runtime.runSync(maintenanceFailure)
 
-    expect(store.getSources()).toEqual([])
-    expect(store.getCalls()).toEqual([])
-
-    store.close()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toEqual([])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toEqual([])
   })
 
   it('repoUrl is captured per source at port-in and read back without a rescan', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const fixture = openLedgerFixture()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
 
-    expect(store.getSources()[0]!.repoUrl).toBe('https://github.com/acme/demo-project')
-
-    store.close()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))[0]!.repoUrl).toBe(
+      'https://github.com/acme/demo-project',
+    )
   })
 
   it('carries the git branch forward and persists classification + PR refs per turn', () => {
-    const store = makeStore()
+    const fixture = openLedgerFixture()
     const file = buildFixtureCachedFile()
     file.turns[0]!.prRefs = ['https://github.com/acme/demo-project/pull/7']
     file.turns.push({ ...buildFixtureCachedTurn(1, 'Add the new endpoint'), gitBranch: 'feature/auth' })
 
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port => port.portIn({ ...baseInput, verdict: 'new', cachedFile: file })),
+    )
 
-    const turns = store.getTurns()
+    const turns = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getTurns()))
     expect(turns).toHaveLength(2)
     expect(turns[0]!.gitBranch).toBeNull()
     expect(turns[1]!.gitBranch).toBe('feature/auth')
     expect(turns[0]!.prRefs).toEqual(['https://github.com/acme/demo-project/pull/7'])
     expect(turns[1]!.category).toBe('feature')
-    expect(store.getSessions()[0]!.prLinks).toEqual(['https://github.com/acme/demo-project/pull/7'])
-    expect(store.getSessions()[0]!.everHadBranch).toBe(1)
-
-    store.close()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))[0]!.prLinks).toEqual([
+      'https://github.com/acme/demo-project/pull/7',
+    ])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))[0]!.everHadBranch).toBe(1)
   })
 
   it('round-trips bash commands per call and ambiguous spawn ids per session', () => {
-    const store = makeStore()
+    const fixture = openLedgerFixture()
     const file = buildFixtureCachedFile({
       ambiguousSpawnAgentIds: ['spawn-ambiguous-1'],
     })
     file.turns[0]!.calls[0]!.bashCommands = ['npm test', 'git status']
 
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port => port.portIn({ ...baseInput, verdict: 'new', cachedFile: file })),
+    )
 
-    const calls = store.getCalls()
+    const calls = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))
     expect(calls).toHaveLength(1)
     expect(calls[0]!.bashCommands).toEqual(['npm test', 'git status'])
 
-    const sessions = store.getSessions()
+    const sessions = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))
     expect(sessions).toHaveLength(1)
     expect(sessions[0]!.ambiguousSpawnAgentIds).toEqual(['spawn-ambiguous-1'])
-
-    store.close()
   })
 
   it('round-trips per-call tool sequence bytes (overview/optimize need it)', () => {
-    const store = makeStore()
+    const fixture = openLedgerFixture()
     const file = buildFixtureCachedFile()
     file.turns[0]!.calls[0]!.toolSequence = [
       [
@@ -589,9 +662,11 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       [{ tool: 'Read', file: 'src/auth.ts' }],
     ]
 
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port => port.portIn({ ...baseInput, verdict: 'new', cachedFile: file })),
+    )
 
-    const calls = store.getCalls()
+    const calls = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))
     expect(calls).toHaveLength(1)
     expect(calls[0]!.toolSequence).toEqual([
       [
@@ -600,8 +675,6 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
       ],
       [{ tool: 'Read', file: 'src/auth.ts' }],
     ])
-
-    store.close()
   })
 
   it('config writes are pure upserts and survive clear()', async () => {
@@ -672,30 +745,48 @@ describe('LedgerStore (the store seam: port-in → read back)', () => {
   })
 
   it('skill dismissals upsert per pattern and are a pure upsert', () => {
-    const store = makeStore()
-    expect(store.getSkillDismissals()).toEqual([])
+    const fixture = openLedgerFixture()
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerConfig, port => port.getSkillDismissals()))).toEqual([])
 
-    store.dismissSkill('skill', 'data-fetch', 'too-specific')
-    store.dismissSkill('bash', 'git commit', 'one-off')
-    expect(store.getSkillDismissals().map(d => [d.source, d.name, d.reason])).toEqual([
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerConfig, port =>
+        port.dismissSkill('skill', 'data-fetch', 'too-specific', '2026-07-01T00:00:00.000Z'),
+      ),
+    )
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerConfig, port =>
+        port.dismissSkill('bash', 'git commit', 'one-off', '2026-07-01T00:00:00.000Z'),
+      ),
+    )
+    expect(
+      fixture.runtime
+        .runSync(Effect.flatMap(LedgerConfig, port => port.getSkillDismissals()))
+        .map(d => [d.source, d.name, d.reason]),
+    ).toEqual([
       ['skill', 'data-fetch', 'too-specific'],
       ['bash', 'git commit', 'one-off'],
     ])
 
     // Re-dismissing the same pattern overwrites the reason, never appends.
-    store.dismissSkill('skill', 'data-fetch', 'not-a-skill')
-    expect(store.getSkillDismissals().map(d => [d.source, d.name, d.reason])).toEqual([
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerConfig, port =>
+        port.dismissSkill('skill', 'data-fetch', 'not-a-skill', '2026-07-01T00:00:00.000Z'),
+      ),
+    )
+    expect(
+      fixture.runtime
+        .runSync(Effect.flatMap(LedgerConfig, port => port.getSkillDismissals()))
+        .map(d => [d.source, d.name, d.reason]),
+    ).toEqual([
       ['skill', 'data-fetch', 'not-a-skill'],
       ['bash', 'git commit', 'one-off'],
     ])
-
-    store.close()
   })
 })
 
 describe('DDL-schema parity: table and column shape (#97)', () => {
   // The ledger's database shape is defined twice by hand: the DDL in
-  // LedgerStore and the validation schemas in shared/schemas/ledger. This
+  // Ledger DDL and the validation schemas in shared/schemas/ledger. This
   // gate locks the two together at the observable seam — a temporary store's
   // live shape read back through a direct read-only handle — so any column
   // added, renamed, retyped, or re-defaulted fails naming the table+column.
@@ -959,7 +1050,7 @@ describe('DDL-schema parity: indexes and constraints (#98)', () => {
   // indexes are distinguished from implicit constraint auto-indexes
   // (`origin = 'u'`/`'pk'`); full-definition text is used ONLY where
   // introspection is blind (generated-column expression, singleton CHECKs).
-  // Test-only, same seam as #97: temp store + direct read-only handle.
+  // Test-only, same seam as #97: worker fixture + direct read-only handle.
   type IndexListRow = {
     seq: number
     name: string
@@ -1085,279 +1176,285 @@ describe('DDL-schema parity: adversarial round-trip (#99)', () => {
   // — so a broken data-format helper, name remapping, or default-shaping rule
   // fails on the wire contract, not silently. Call/session INTEGER and NULL
   // passthrough is asserted exactly as the schemas define it.
-  // Test-only, same seam: temp store port-in → typed getters.
+  // Test-only, same seam: worker fixture port-in → typed port reads.
   it('round-trips adversarial payloads through every JSON column with exact API shaping', () => {
-    const store = makeStore()
-    try {
-      const file = buildFixtureCachedFile({
-        title: 'Parity adversarial round trip',
-        agentType: 'parity-harness',
-        workingDirectory: '/workspace/demo-project',
-        mcpInventory: ['parity-mcp-server'],
-        agentSpawnLinks: { 'spawn-parity-1': 'sess-side-parity' },
-        ambiguousSpawnAgentIds: ['spawn-ambiguous-parity'],
-        prLinks: ['https://github.com/acme/demo-project/pull/8'],
-        isSidechain: true,
-        parentSessionId: 'sess-parent-parity',
-      })
-      file.turns[0] = {
-        ...buildFixtureCachedTurn(0, 'Refactor the auth module'),
-        prRefs: ['https://github.com/acme/demo-project/pull/7'],
-        spawnToolUseIds: ['tooluse-parity-1'],
-        calls: [
-          {
-            ...buildFixtureCachedCall(0),
-            tools: ['Edit', 'Bash', 'mcp__parity__query'],
-            bashCommands: ['npm run parity', 'git status --porcelain'],
-            skills: ['parity-skill'],
-            subagentTypes: ['parity-subagent'],
-            toolSequence: [
-              [
-                { tool: 'Edit', file: 'src/parity.ts' },
-                { tool: 'Bash', command: 'npm run parity' },
-              ],
-              [{ tool: 'Read', file: 'src/parity.ts' }],
+    const fixture = openLedgerFixture()
+    const file = buildFixtureCachedFile({
+      title: 'Parity adversarial round trip',
+      agentType: 'parity-harness',
+      workingDirectory: '/workspace/demo-project',
+      mcpInventory: ['parity-mcp-server'],
+      agentSpawnLinks: { 'spawn-parity-1': 'sess-side-parity' },
+      ambiguousSpawnAgentIds: ['spawn-ambiguous-parity'],
+      prLinks: ['https://github.com/acme/demo-project/pull/8'],
+      isSidechain: true,
+      parentSessionId: 'sess-parent-parity',
+    })
+    file.turns[0] = {
+      ...buildFixtureCachedTurn(0, 'Refactor the auth module'),
+      prRefs: ['https://github.com/acme/demo-project/pull/7'],
+      spawnToolUseIds: ['tooluse-parity-1'],
+      calls: [
+        {
+          ...buildFixtureCachedCall(0),
+          tools: ['Edit', 'Bash', 'mcp__parity__query'],
+          bashCommands: ['npm run parity', 'git status --porcelain'],
+          skills: ['parity-skill'],
+          subagentTypes: ['parity-subagent'],
+          toolSequence: [
+            [
+              { tool: 'Edit', file: 'src/parity.ts' },
+              { tool: 'Bash', command: 'npm run parity' },
             ],
-            usage: {
-              inputTokens: 111,
-              outputTokens: 22,
-              cacheCreationInputTokens: 33,
-              cacheReadInputTokens: 44,
-              cachedInputTokens: 55,
-              reasoningTokens: 66,
-              webSearchRequests: 7,
-              cacheCreationOneHourTokens: 8,
-            },
-            costUSD: 1.23,
-            isEstimated: true,
-            locAdded: 12,
-            locRemoved: 3,
-            interrupted: true,
-            toolErrors: 2,
-            editFailed: 1,
-          },
-        ],
-      }
-      file.turns.push({
-        ...buildFixtureCachedTurn(1, 'Add the new endpoint'),
-        gitBranch: 'parity/branch',
-        calls: [
-          {
-            ...buildFixtureCachedCall(1),
-            speed: 'fast',
-            workingDirectory: '/tmp/parity-other',
-            costUSD: 0.07,
-          },
-        ],
-      })
-
-      const result = store.portIn({ ...baseInput, verdict: 'new', cachedFile: file, project: 'demo-project' })
-      expect(result.inserted).toEqual({ sessions: 1, turns: 2, calls: 2 })
-
-      const sourceId = store.getSources()[0]!.id
-      expect(store.getSources()).toMatchObject([
-        {
-          provider: 'opencode',
-          envFingerprint: 'env-demo',
-          filePath: FIXTURE_SOURCE_PATH,
-          repoUrl: 'https://github.com/acme/demo-project',
-          project: 'demo-project',
-          fingerprint: { dev: '42', ino: '4242', mtimeMs: 1_751_300_000_000, sizeBytes: 4096 },
-          lastPortedAt: expect.any(String),
-        },
-      ])
-
-      // Session: all four JSON columns non-default, nullable set, remapped.
-      expect(store.getSessions()).toEqual([
-        {
-          sourceId,
-          sessionId: 'sess-0',
-          project: 'demo-project',
-          projectPath: '/workspace/demo-project',
-          workingDirectory: '/workspace/demo-project',
-          canonicalProject: 'demo-project',
-          canonicalCwd: '/workspace/demo-project',
-          agentType: 'parity-harness',
-          title: 'Parity adversarial round trip',
-          prLinks: ['https://github.com/acme/demo-project/pull/7', 'https://github.com/acme/demo-project/pull/8'],
-          isSidechain: 1,
-          parentSessionId: 'sess-parent-parity',
-          agentSpawnLinks: { 'spawn-parity-1': 'sess-side-parity' },
-          mcpInventory: ['parity-mcp-server'],
-          ambiguousSpawnAgentIds: ['spawn-ambiguous-parity'],
-          everHadBranch: 1,
-        },
-      ])
-
-      // Turns: nullable git_branch/pr_refs/spawn ids empty on turn 0 side and
-      // set on turn 1 side (branch carry-forward needs the null first).
-      const turns = store.getTurns()
-      expect(turns).toHaveLength(2)
-      expect(turns[0]).toEqual({
-        sourceId,
-        sessionId: 'sess-0',
-        turnIndex: 0,
-        timestamp: '2026-07-01T09:00:00.000Z',
-        userMessage: 'Refactor the auth module',
-        gitBranch: null,
-        prRefs: ['https://github.com/acme/demo-project/pull/7'],
-        spawnToolUseIds: ['tooluse-parity-1'],
-        category: 'refactoring',
-        // The classifier derives the turn's sub-category from the invoked
-        // skill: the parity skill invocation above reclassifies the turn.
-        subCategory: 'parity-skill',
-        retries: 0,
-        hasEdits: 1,
-      })
-      expect(turns[1]).toEqual({
-        sourceId,
-        sessionId: 'sess-0',
-        turnIndex: 1,
-        timestamp: '2026-07-01T09:11:00.000Z',
-        userMessage: 'Add the new endpoint',
-        gitBranch: 'parity/branch',
-        prRefs: [],
-        spawnToolUseIds: [],
-        category: 'feature',
-        subCategory: null,
-        retries: 0,
-        hasEdits: 1,
-      })
-
-      // Calls: all six JSON columns non-default on call 0, default-shaped on
-      // call 1; both speeds; nullable loc set/null; remapped + shaped.
-      const calls = store.getCalls()
-      expect(calls).toHaveLength(2)
-      expect(calls[0]).toEqual({
-        sourceId,
-        sessionId: 'sess-0',
-        turnIndex: 0,
-        callIndex: 0,
-        callKey: 'call-1',
-        dedupKey: 'call-1',
-        provider: 'opencode',
-        model: 'demo-model',
-        timestamp: '2026-07-01T09:00:00.000Z',
-        speed: 'standard',
-        project: 'demo-project',
-        projectPath: '/workspace/demo-project',
-        workingDirectory: '/workspace/demo-project',
-        baseCostUSD: 1.23,
-        isEstimated: 1,
-        savingsUSD: 0,
-        savingsBaselineModel: null,
-        inputTokens: 111,
-        outputTokens: 22,
-        cacheCreationInputTokens: 33,
-        cacheReadInputTokens: 44,
-        cachedInputTokens: 55,
-        reasoningTokens: 66,
-        webSearchRequests: 7,
-        cacheCreationOneHourTokens: 8,
-        agentType: 'parity-harness',
-        tools: ['Edit', 'Bash', 'mcp__parity__query'],
-        mcpTools: ['mcp__parity__query'],
-        skills: ['parity-skill'],
-        subagentTypes: ['parity-subagent'],
-        bashCommands: ['npm run parity', 'git status --porcelain'],
-        toolSequence: [
-          [
-            { tool: 'Edit', file: 'src/parity.ts' },
-            { tool: 'Bash', command: 'npm run parity' },
+            [{ tool: 'Read', file: 'src/parity.ts' }],
           ],
-          [{ tool: 'Read', file: 'src/parity.ts' }],
-        ],
-        locAdded: 12,
-        locRemoved: 3,
-        interrupted: 1,
-        userModified: 0,
-        toolErrors: 2,
-        editFailed: 1,
-      })
-      expect(calls[1]).toEqual({
-        sourceId,
-        sessionId: 'sess-0',
-        turnIndex: 1,
-        callIndex: 0,
-        callKey: 'call-2',
-        dedupKey: 'call-2',
-        provider: 'opencode',
-        model: 'demo-model',
-        timestamp: '2026-07-01T09:11:00.000Z',
-        speed: 'fast',
-        project: 'demo-project',
-        projectPath: '/workspace/demo-project',
-        workingDirectory: '/tmp/parity-other',
-        agentType: 'parity-harness',
-        baseCostUSD: 0.07,
-        isEstimated: 0,
-        savingsUSD: 0,
-        savingsBaselineModel: null,
-        inputTokens: 100,
-        outputTokens: 50,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 20,
-        cachedInputTokens: 0,
-        reasoningTokens: 5,
-        webSearchRequests: 0,
-        cacheCreationOneHourTokens: 0,
-        tools: ['Edit'],
-        mcpTools: [],
-        skills: [],
-        subagentTypes: [],
-        bashCommands: [],
-        toolSequence: [],
-        locAdded: null,
-        locRemoved: null,
-        interrupted: 0,
-        userModified: 0,
-        toolErrors: 0,
-        editFailed: 0,
-      })
+          usage: {
+            inputTokens: 111,
+            outputTokens: 22,
+            cacheCreationInputTokens: 33,
+            cacheReadInputTokens: 44,
+            cachedInputTokens: 55,
+            reasoningTokens: 66,
+            webSearchRequests: 7,
+            cacheCreationOneHourTokens: 8,
+          },
+          costUSD: 1.23,
+          isEstimated: true,
+          locAdded: 12,
+          locRemoved: 3,
+          interrupted: true,
+          toolErrors: 2,
+          editFailed: 1,
+        },
+      ],
+    }
+    file.turns.push({
+      ...buildFixtureCachedTurn(1, 'Add the new endpoint'),
+      gitBranch: 'parity/branch',
+      calls: [
+        {
+          ...buildFixtureCachedCall(1),
+          speed: 'fast',
+          workingDirectory: '/tmp/parity-other',
+          costUSD: 0.07,
+        },
+      ],
+    })
 
-      // S8 forcing: every `*_json` column derived from the Zod shapes must
-      // carry a non-default payload in this fixture — a future JSON column
-      // wired through DDL + schemas but never exercised here fails naming
-      // the table+column instead of shipping unproven.
-      const jsonTables = {
-        ledger_session: ledgerSessionRowSchema,
-        ledger_turn: ledgerTurnRowSchema,
-        ledger_call: ledgerCallRowSchema,
-      }
-      const probe = new DatabaseSync(store.dbPath, { readOnly: true })
-      try {
-        for (const [table, schema] of Object.entries(jsonTables)) {
-          for (const column of rowJsonKeys(schema)) {
-            // Identifiers come from the fixed table map above plus the encoded shape
-            // keys — never from fixture input.
-            const values = probe.prepare(`SELECT "${column}" AS v FROM "${table}"`).all() as Array<{ v: string }>
-            expect(values.length, `[${table}.${column}] rows probed`).toBeGreaterThan(0)
-            expect(
-              values.some(r => jsonIsNonEmpty(r.v)),
-              `[${table}.${column}] non-default JSON payload ported`,
-            ).toBe(true)
-          }
-        }
-      } finally {
-        probe.close()
-      }
+    const result = fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: file, project: 'demo-project' }),
+      ),
+    )
+    expect(result.inserted).toEqual({ sessions: 1, turns: 2, calls: 2 })
 
-      // Null→undefined shaping: a source ported without discovery metadata
-      // (no repoUrl/project) reads its nullable columns back shaped to
-      // undefined — never null — so a broken default-shaping rule fails here.
-      store.portIn({
+    const sourceId = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))[0]!.id
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toMatchObject([
+      {
         provider: 'opencode',
         envFingerprint: 'env-demo',
-        filePath: '/Users/demo/.local/share/opencode/demo-project/sess-unshaped.jsonl',
-        verdict: 'new',
-        cachedFile: buildFixtureCachedFile(),
-      })
-      const unshaped = store.getSources().find(s => s.filePath.endsWith('sess-unshaped.jsonl'))!
-      expect(unshaped.repoUrl).toBeUndefined()
-      expect(unshaped.project).toBeUndefined()
-    } finally {
-      store.close()
+        filePath: FIXTURE_SOURCE_PATH,
+        repoUrl: 'https://github.com/acme/demo-project',
+        project: 'demo-project',
+        fingerprint: { dev: '42', ino: '4242', mtimeMs: 1_751_300_000_000, sizeBytes: 4096 },
+        lastPortedAt: expect.any(String),
+      },
+    ])
+
+    // Session: all four JSON columns non-default, nullable set, remapped.
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))).toEqual([
+      {
+        sourceId,
+        sessionId: 'sess-0',
+        project: 'demo-project',
+        projectPath: '/workspace/demo-project',
+        workingDirectory: '/workspace/demo-project',
+        canonicalProject: 'demo-project',
+        canonicalCwd: '/workspace/demo-project',
+        agentType: 'parity-harness',
+        title: 'Parity adversarial round trip',
+        prLinks: ['https://github.com/acme/demo-project/pull/7', 'https://github.com/acme/demo-project/pull/8'],
+        isSidechain: 1,
+        parentSessionId: 'sess-parent-parity',
+        agentSpawnLinks: { 'spawn-parity-1': 'sess-side-parity' },
+        mcpInventory: ['parity-mcp-server'],
+        ambiguousSpawnAgentIds: ['spawn-ambiguous-parity'],
+        everHadBranch: 1,
+      },
+    ])
+
+    // Turns: nullable git_branch/pr_refs/spawn ids empty on turn 0 side and
+    // set on turn 1 side (branch carry-forward needs the null first).
+    const turns = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getTurns()))
+    expect(turns).toHaveLength(2)
+    expect(turns[0]).toEqual({
+      sourceId,
+      sessionId: 'sess-0',
+      turnIndex: 0,
+      timestamp: '2026-07-01T09:00:00.000Z',
+      userMessage: 'Refactor the auth module',
+      gitBranch: null,
+      prRefs: ['https://github.com/acme/demo-project/pull/7'],
+      spawnToolUseIds: ['tooluse-parity-1'],
+      category: 'refactoring',
+      // The classifier derives the turn's sub-category from the invoked
+      // skill: the parity skill invocation above reclassifies the turn.
+      subCategory: 'parity-skill',
+      retries: 0,
+      hasEdits: 1,
+    })
+    expect(turns[1]).toEqual({
+      sourceId,
+      sessionId: 'sess-0',
+      turnIndex: 1,
+      timestamp: '2026-07-01T09:11:00.000Z',
+      userMessage: 'Add the new endpoint',
+      gitBranch: 'parity/branch',
+      prRefs: [],
+      spawnToolUseIds: [],
+      category: 'feature',
+      subCategory: null,
+      retries: 0,
+      hasEdits: 1,
+    })
+
+    // Calls: all six JSON columns non-default on call 0, default-shaped on
+    // call 1; both speeds; nullable loc set/null; remapped + shaped.
+    const calls = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))
+    expect(calls).toHaveLength(2)
+    expect(calls[0]).toEqual({
+      sourceId,
+      sessionId: 'sess-0',
+      turnIndex: 0,
+      callIndex: 0,
+      callKey: 'call-1',
+      dedupKey: 'call-1',
+      provider: 'opencode',
+      model: 'demo-model',
+      timestamp: '2026-07-01T09:00:00.000Z',
+      speed: 'standard',
+      project: 'demo-project',
+      projectPath: '/workspace/demo-project',
+      workingDirectory: '/workspace/demo-project',
+      baseCostUSD: 1.23,
+      isEstimated: 1,
+      savingsUSD: 0,
+      savingsBaselineModel: null,
+      inputTokens: 111,
+      outputTokens: 22,
+      cacheCreationInputTokens: 33,
+      cacheReadInputTokens: 44,
+      cachedInputTokens: 55,
+      reasoningTokens: 66,
+      webSearchRequests: 7,
+      cacheCreationOneHourTokens: 8,
+      agentType: 'parity-harness',
+      tools: ['Edit', 'Bash', 'mcp__parity__query'],
+      mcpTools: ['mcp__parity__query'],
+      skills: ['parity-skill'],
+      subagentTypes: ['parity-subagent'],
+      bashCommands: ['npm run parity', 'git status --porcelain'],
+      toolSequence: [
+        [
+          { tool: 'Edit', file: 'src/parity.ts' },
+          { tool: 'Bash', command: 'npm run parity' },
+        ],
+        [{ tool: 'Read', file: 'src/parity.ts' }],
+      ],
+      locAdded: 12,
+      locRemoved: 3,
+      interrupted: 1,
+      userModified: 0,
+      toolErrors: 2,
+      editFailed: 1,
+    })
+    expect(calls[1]).toEqual({
+      sourceId,
+      sessionId: 'sess-0',
+      turnIndex: 1,
+      callIndex: 0,
+      callKey: 'call-2',
+      dedupKey: 'call-2',
+      provider: 'opencode',
+      model: 'demo-model',
+      timestamp: '2026-07-01T09:11:00.000Z',
+      speed: 'fast',
+      project: 'demo-project',
+      projectPath: '/workspace/demo-project',
+      workingDirectory: '/tmp/parity-other',
+      agentType: 'parity-harness',
+      baseCostUSD: 0.07,
+      isEstimated: 0,
+      savingsUSD: 0,
+      savingsBaselineModel: null,
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 20,
+      cachedInputTokens: 0,
+      reasoningTokens: 5,
+      webSearchRequests: 0,
+      cacheCreationOneHourTokens: 0,
+      tools: ['Edit'],
+      mcpTools: [],
+      skills: [],
+      subagentTypes: [],
+      bashCommands: [],
+      toolSequence: [],
+      locAdded: null,
+      locRemoved: null,
+      interrupted: 0,
+      userModified: 0,
+      toolErrors: 0,
+      editFailed: 0,
+    })
+
+    // S8 forcing: every `*_json` column derived from the Zod shapes must
+    // carry a non-default payload in this fixture — a future JSON column
+    // wired through DDL + schemas but never exercised here fails naming
+    // the table+column instead of shipping unproven.
+    const jsonTables = {
+      ledger_session: ledgerSessionRowSchema,
+      ledger_turn: ledgerTurnRowSchema,
+      ledger_call: ledgerCallRowSchema,
     }
+    const probe = new DatabaseSync(fixture.dbPath, { readOnly: true })
+    try {
+      for (const [table, schema] of Object.entries(jsonTables)) {
+        for (const column of rowJsonKeys(schema)) {
+          // Identifiers come from the fixed table map above plus the encoded shape
+          // keys — never from fixture input.
+          const values = probe.prepare(`SELECT "${column}" AS v FROM "${table}"`).all() as Array<{ v: string }>
+          expect(values.length, `[${table}.${column}] rows probed`).toBeGreaterThan(0)
+          expect(
+            values.some(r => jsonIsNonEmpty(r.v)),
+            `[${table}.${column}] non-default JSON payload ported`,
+          ).toBe(true)
+        }
+      }
+    } finally {
+      probe.close()
+    }
+
+    // Null→undefined shaping: a source ported without discovery metadata
+    // (no repoUrl/project) reads its nullable columns back shaped to
+    // undefined — never null — so a broken default-shaping rule fails here.
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({
+          provider: 'opencode',
+          envFingerprint: 'env-demo',
+          filePath: '/Users/demo/.local/share/opencode/demo-project/sess-unshaped.jsonl',
+          verdict: 'new',
+          cachedFile: buildFixtureCachedFile(),
+        }),
+      ),
+    )
+    const unshaped = fixture.runtime
+      .runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))
+      .find(s => s.filePath.endsWith('sess-unshaped.jsonl'))!
+    expect(unshaped.repoUrl).toBeUndefined()
+    expect(unshaped.project).toBeUndefined()
   })
 })
 
@@ -1371,59 +1468,61 @@ describe('DDL-schema parity: targeted edge tests (#100)', () => {
     // small identifiers come back as strings, while mtime/size stay numeric —
     // and re-anchors one oversized round trip so this gate owns the criterion
     // directly instead of by reference.
-    const store = makeStore()
-    try {
-      store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-      const sources = store.getSources()
-      expect(sources).toHaveLength(1)
-      expect(typeof sources[0]!.fingerprint.dev).toBe('string')
-      expect(typeof sources[0]!.fingerprint.ino).toBe('string')
-      expect(sources[0]!.fingerprint).toEqual({
-        dev: '42',
-        ino: '4242',
-        mtimeMs: 1_751_300_000_000,
-        sizeBytes: 4096,
-      })
+    const fixture = openLedgerFixture()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
+    const sources = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))
+    expect(sources).toHaveLength(1)
+    expect(typeof sources[0]!.fingerprint.dev).toBe('string')
+    expect(typeof sources[0]!.fingerprint.ino).toBe('string')
+    expect(sources[0]!.fingerprint).toEqual({
+      dev: '42',
+      ino: '4242',
+      mtimeMs: 1_751_300_000_000,
+      sizeBytes: 4096,
+    })
 
-      const oversized = buildFixtureCachedFile()
-      oversized.fingerprint = { dev: 2 ** 53, ino: 2 ** 53 + 100, mtimeMs: 1_751_300_000_000, sizeBytes: 4096 }
-      store.portIn({
-        ...baseInput,
-        filePath: '/Users/demo/.local/share/opencode/demo-project/sess-oversized.jsonl',
-        verdict: 'new',
-        cachedFile: oversized,
-      })
-      const anchor = store.getSources().find(s => s.filePath.endsWith('sess-oversized.jsonl'))!
-      expect(anchor.fingerprint.dev).toBe(String(2 ** 53))
-      expect(anchor.fingerprint.ino).toBe(String(2 ** 53 + 100))
-    } finally {
-      store.close()
-    }
+    const oversized = buildFixtureCachedFile()
+    oversized.fingerprint = { dev: 2 ** 53, ino: 2 ** 53 + 100, mtimeMs: 1_751_300_000_000, sizeBytes: 4096 }
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({
+          ...baseInput,
+          filePath: '/Users/demo/.local/share/opencode/demo-project/sess-oversized.jsonl',
+          verdict: 'new',
+          cachedFile: oversized,
+        }),
+      ),
+    )
+    const anchor = fixture.runtime
+      .runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))
+      .find(s => s.filePath.endsWith('sess-oversized.jsonl'))!
+    expect(anchor.fingerprint.dev).toBe(String(2 ** 53))
+    expect(anchor.fingerprint.ino).toBe(String(2 ** 53 + 100))
   })
 
   it('rejects an unknown speed value at the schema boundary', () => {
     // The database cannot anchor the enum (speed is plain TEXT with a
     // 'standard' default and no CHECK), so the schema is the only closed
     // gate: a value smuggled past port-in must fail the read-back parse.
-    // Public surface only: seed through the store, close it, smuggle the
-    // value through a plain database handle, and read back with a fresh
-    // store — no production internals touched.
-    const seeding = makeStore()
-    seeding.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    const dbPath = seeding.dbPath
-    seeding.close()
-    const writer = new DatabaseSync(dbPath)
+    // A raw second handle injects the invalid value while the worker runtime
+    // remains the owner of the query connection.
+    const fixture = openLedgerFixture()
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() }),
+      ),
+    )
+    const writer = new DatabaseSync(fixture.dbPath)
     try {
       writer.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
     } finally {
       writer.close()
     }
-    const reopened = new LedgerStore(dbPath)
-    try {
-      expect(() => reopened.getCalls()).toThrow(/speed/i)
-    } finally {
-      reopened.close()
-    }
+    expect(() => fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toThrow(/speed/i)
   })
 
   it('covers every mapped field in the read-back queries (no forgotten column)', () => {
@@ -1433,173 +1532,173 @@ describe('DDL-schema parity: targeted edge tests (#100)', () => {
     // default/undefined instead of the populated value) plus a recursive
     // undefined scan that names the path. Any dropped selected column fails
     // one of the two with its field named.
-    const store = makeStore()
-    try {
-      const file = buildFixtureCachedFile({
-        title: 'Coverage probe',
-        agentType: 'coverage-harness',
-        workingDirectory: '/wrk/coverage',
-        mcpInventory: ['cov-mcp'],
-        agentSpawnLinks: { 'spawn-cov-1': 'sess-cov-side' },
-        ambiguousSpawnAgentIds: ['spawn-ambiguous-cov'],
-        prLinks: ['https://github.com/acme/demo-project/pull/9'],
-        isSidechain: true,
-        parentSessionId: 'sess-parent-cov',
-      })
-      file.turns[0] = {
-        ...buildFixtureCachedTurn(0, 'Add the new endpoint'),
-        gitBranch: 'coverage/branch',
-        prRefs: ['https://github.com/acme/demo-project/pull/10'],
-        spawnToolUseIds: ['tooluse-cov-1'],
-        calls: [
-          {
-            ...buildFixtureCachedCall(0),
-            tools: ['Edit', 'mcp__cov__tool'],
-            bashCommands: ['make coverage'],
-            skills: ['cov-skill'],
-            subagentTypes: ['cov-subagent'],
-            toolSequence: [[{ tool: 'Edit', file: 'src/cov.ts' }]],
-            usage: {
-              inputTokens: 7,
-              outputTokens: 8,
-              cacheCreationInputTokens: 9,
-              cacheReadInputTokens: 10,
-              cachedInputTokens: 11,
-              reasoningTokens: 12,
-              webSearchRequests: 1,
-              cacheCreationOneHourTokens: 2,
-            },
-            costUSD: 2.5,
-            isEstimated: true,
-            locAdded: 1,
-            locRemoved: 2,
-            interrupted: true,
-            userModified: true,
-            toolErrors: 3,
-            editFailed: 4,
-          },
-        ],
-      }
-      store.portIn({ ...baseInput, verdict: 'new', cachedFile: file, project: 'demo-project' })
-
-      const sourceId = store.getSources()[0]!.id
-      expect(store.getSources()).toMatchObject([
+    const fixture = openLedgerFixture()
+    const file = buildFixtureCachedFile({
+      title: 'Coverage probe',
+      agentType: 'coverage-harness',
+      workingDirectory: '/wrk/coverage',
+      mcpInventory: ['cov-mcp'],
+      agentSpawnLinks: { 'spawn-cov-1': 'sess-cov-side' },
+      ambiguousSpawnAgentIds: ['spawn-ambiguous-cov'],
+      prLinks: ['https://github.com/acme/demo-project/pull/9'],
+      isSidechain: true,
+      parentSessionId: 'sess-parent-cov',
+    })
+    file.turns[0] = {
+      ...buildFixtureCachedTurn(0, 'Add the new endpoint'),
+      gitBranch: 'coverage/branch',
+      prRefs: ['https://github.com/acme/demo-project/pull/10'],
+      spawnToolUseIds: ['tooluse-cov-1'],
+      calls: [
         {
-          id: expect.any(Number),
-          provider: 'opencode',
-          envFingerprint: 'env-demo',
-          filePath: FIXTURE_SOURCE_PATH,
-          repoUrl: 'https://github.com/acme/demo-project',
-          project: 'demo-project',
-          fingerprint: { dev: '42', ino: '4242', mtimeMs: 1_751_300_000_000, sizeBytes: 4096 },
-          lastPortedAt: expect.any(String),
-        },
-      ])
-      expect(store.getSessions()).toEqual([
-        {
-          sourceId,
-          sessionId: 'sess-0',
-          project: 'demo-project',
-          projectPath: '/workspace/demo-project',
-          workingDirectory: '/wrk/coverage',
-          canonicalProject: 'demo-project',
-          canonicalCwd: '/workspace/demo-project',
-          agentType: 'coverage-harness',
-          title: 'Coverage probe',
-          prLinks: ['https://github.com/acme/demo-project/pull/10', 'https://github.com/acme/demo-project/pull/9'],
-          isSidechain: 1,
-          parentSessionId: 'sess-parent-cov',
-          agentSpawnLinks: { 'spawn-cov-1': 'sess-cov-side' },
-          mcpInventory: ['cov-mcp'],
-          ambiguousSpawnAgentIds: ['spawn-ambiguous-cov'],
-          everHadBranch: 1,
-        },
-      ])
-      expect(store.getTurns()).toEqual([
-        {
-          sourceId,
-          sessionId: 'sess-0',
-          turnIndex: 0,
-          timestamp: '2026-07-01T09:00:00.000Z',
-          userMessage: 'Add the new endpoint',
-          gitBranch: 'coverage/branch',
-          prRefs: ['https://github.com/acme/demo-project/pull/10'],
-          spawnToolUseIds: ['tooluse-cov-1'],
-          category: 'feature',
-          subCategory: 'cov-skill',
-          retries: 0,
-          hasEdits: 1,
-        },
-      ])
-      expect(store.getCalls()).toEqual([
-        {
-          sourceId,
-          sessionId: 'sess-0',
-          turnIndex: 0,
-          callIndex: 0,
-          callKey: 'call-1',
-          dedupKey: 'call-1',
-          provider: 'opencode',
-          model: 'demo-model',
-          timestamp: '2026-07-01T09:00:00.000Z',
-          speed: 'standard',
-          project: 'demo-project',
-          projectPath: '/workspace/demo-project',
-          workingDirectory: '/wrk/coverage',
-          baseCostUSD: 2.5,
-          isEstimated: 1,
-          savingsUSD: 0,
-          savingsBaselineModel: null,
-          inputTokens: 7,
-          outputTokens: 8,
-          cacheCreationInputTokens: 9,
-          cacheReadInputTokens: 10,
-          cachedInputTokens: 11,
-          reasoningTokens: 12,
-          webSearchRequests: 1,
-          cacheCreationOneHourTokens: 2,
-          agentType: 'coverage-harness',
+          ...buildFixtureCachedCall(0),
           tools: ['Edit', 'mcp__cov__tool'],
-          mcpTools: ['mcp__cov__tool'],
+          bashCommands: ['make coverage'],
           skills: ['cov-skill'],
           subagentTypes: ['cov-subagent'],
-          bashCommands: ['make coverage'],
           toolSequence: [[{ tool: 'Edit', file: 'src/cov.ts' }]],
+          usage: {
+            inputTokens: 7,
+            outputTokens: 8,
+            cacheCreationInputTokens: 9,
+            cacheReadInputTokens: 10,
+            cachedInputTokens: 11,
+            reasoningTokens: 12,
+            webSearchRequests: 1,
+            cacheCreationOneHourTokens: 2,
+          },
+          costUSD: 2.5,
+          isEstimated: true,
           locAdded: 1,
           locRemoved: 2,
-          interrupted: 1,
-          userModified: 1,
+          interrupted: true,
+          userModified: true,
           toolErrors: 3,
           editFailed: 4,
         },
-      ])
+      ],
+    }
+    fixture.runtime.runSync(
+      Effect.flatMap(LedgerIngest, port =>
+        port.portIn({ ...baseInput, verdict: 'new', cachedFile: file, project: 'demo-project' }),
+      ),
+    )
 
-      function undefinedPaths(value: unknown, prefix = ''): string[] {
-        if (typeof value !== 'object' || value === null) return []
-        if (Array.isArray(value)) {
-          return value.flatMap((item, i) => undefinedPaths(item, `${prefix}[${i}]`))
-        }
-        const out: string[] = []
-        for (const [key, nested] of Object.entries(value)) {
-          if (nested === undefined) out.push(prefix + key)
-          else out.push(...undefinedPaths(nested, `${prefix}${key}.`))
-        }
-        return out
+    const sourceId = fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))[0]!.id
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources()))).toMatchObject([
+      {
+        id: expect.any(Number),
+        provider: 'opencode',
+        envFingerprint: 'env-demo',
+        filePath: FIXTURE_SOURCE_PATH,
+        repoUrl: 'https://github.com/acme/demo-project',
+        project: 'demo-project',
+        fingerprint: { dev: '42', ino: '4242', mtimeMs: 1_751_300_000_000, sizeBytes: 4096 },
+        lastPortedAt: expect.any(String),
+      },
+    ])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions()))).toEqual([
+      {
+        sourceId,
+        sessionId: 'sess-0',
+        project: 'demo-project',
+        projectPath: '/workspace/demo-project',
+        workingDirectory: '/wrk/coverage',
+        canonicalProject: 'demo-project',
+        canonicalCwd: '/workspace/demo-project',
+        agentType: 'coverage-harness',
+        title: 'Coverage probe',
+        prLinks: ['https://github.com/acme/demo-project/pull/10', 'https://github.com/acme/demo-project/pull/9'],
+        isSidechain: 1,
+        parentSessionId: 'sess-parent-cov',
+        agentSpawnLinks: { 'spawn-cov-1': 'sess-cov-side' },
+        mcpInventory: ['cov-mcp'],
+        ambiguousSpawnAgentIds: ['spawn-ambiguous-cov'],
+        everHadBranch: 1,
+      },
+    ])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getTurns()))).toEqual([
+      {
+        sourceId,
+        sessionId: 'sess-0',
+        turnIndex: 0,
+        timestamp: '2026-07-01T09:00:00.000Z',
+        userMessage: 'Add the new endpoint',
+        gitBranch: 'coverage/branch',
+        prRefs: ['https://github.com/acme/demo-project/pull/10'],
+        spawnToolUseIds: ['tooluse-cov-1'],
+        category: 'feature',
+        subCategory: 'cov-skill',
+        retries: 0,
+        hasEdits: 1,
+      },
+    ])
+    expect(fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls()))).toEqual([
+      {
+        sourceId,
+        sessionId: 'sess-0',
+        turnIndex: 0,
+        callIndex: 0,
+        callKey: 'call-1',
+        dedupKey: 'call-1',
+        provider: 'opencode',
+        model: 'demo-model',
+        timestamp: '2026-07-01T09:00:00.000Z',
+        speed: 'standard',
+        project: 'demo-project',
+        projectPath: '/workspace/demo-project',
+        workingDirectory: '/wrk/coverage',
+        baseCostUSD: 2.5,
+        isEstimated: 1,
+        savingsUSD: 0,
+        savingsBaselineModel: null,
+        inputTokens: 7,
+        outputTokens: 8,
+        cacheCreationInputTokens: 9,
+        cacheReadInputTokens: 10,
+        cachedInputTokens: 11,
+        reasoningTokens: 12,
+        webSearchRequests: 1,
+        cacheCreationOneHourTokens: 2,
+        agentType: 'coverage-harness',
+        tools: ['Edit', 'mcp__cov__tool'],
+        mcpTools: ['mcp__cov__tool'],
+        skills: ['cov-skill'],
+        subagentTypes: ['cov-subagent'],
+        bashCommands: ['make coverage'],
+        toolSequence: [[{ tool: 'Edit', file: 'src/cov.ts' }]],
+        locAdded: 1,
+        locRemoved: 2,
+        interrupted: 1,
+        userModified: 1,
+        toolErrors: 3,
+        editFailed: 4,
+      },
+    ])
+
+    function undefinedPaths(value: unknown, prefix = ''): string[] {
+      if (typeof value !== 'object' || value === null) return []
+      if (Array.isArray(value)) {
+        return value.flatMap((item, i) => undefinedPaths(item, `${prefix}[${i}]`))
       }
-      const tables = {
-        source: store.getSources(),
-        session: store.getSessions(),
-        turn: store.getTurns(),
-        call: store.getCalls(),
-      } as const
-      for (const [table, rows] of Object.entries(tables)) {
-        expect(rows.length, `[${table}] rows read back`).toBeGreaterThan(0)
-        for (const row of rows) {
-          expect(undefinedPaths(row), `[${table}] fully-populated row has no undefined fields`).toEqual([])
-        }
+      const out: string[] = []
+      for (const [key, nested] of Object.entries(value)) {
+        if (nested === undefined) out.push(prefix + key)
+        else out.push(...undefinedPaths(nested, `${prefix}${key}.`))
       }
-    } finally {
-      store.close()
+      return out
+    }
+    const tables = {
+      source: fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSources())),
+      session: fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getSessions())),
+      turn: fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getTurns())),
+      call: fixture.runtime.runSync(Effect.flatMap(LedgerQueries, port => port.getCalls())),
+    } as const
+    for (const [table, rows] of Object.entries(tables)) {
+      expect(rows.length, `[${table}] rows read back`).toBeGreaterThan(0)
+      for (const row of rows) {
+        expect(undefinedPaths(row), `[${table}] fully-populated row has no undefined fields`).toEqual([])
+      }
     }
   })
 })

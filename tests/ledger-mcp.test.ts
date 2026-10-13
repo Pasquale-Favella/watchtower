@@ -1,7 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer, type Server as HttpServer } from 'node:http'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { PassThrough } from 'node:stream'
 
@@ -18,7 +15,9 @@ import {
   type JSONRPCMessage,
   JSONRPCMessageSchema,
 } from '@modelcontextprotocol/sdk/types.js'
+import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
+import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { bearerHeaderValue } from '../src/main/agents/ledger-mcp/auth.js'
@@ -28,81 +27,76 @@ import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query
 import { buildLedgerResources } from '../src/main/agents/ledger-mcp/resources.js'
 import { createLedgerMcpServer } from '../src/main/agents/ledger-mcp/server.js'
 import { buildLedgerTools } from '../src/main/agents/ledger-mcp/tools.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
+import { LedgerQueries } from '../src/main/store/ledger-ports.js'
 import { modelsPayloadSchema } from '../src/shared/schemas/models.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { overviewPayloadSchema } from '../src/shared/schemas/overview.js'
 import { skillsPayloadSchema } from '../src/shared/schemas/skills.js'
 import { sessionRowSchema } from '../src/shared/schemas/views.js'
+import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
-/** Builds a real ledger DB (LedgerStore creates the schema) and seeds fixture
+/** Seeds the real migrated ledger DB and fixture
  *  rows across two providers/sessions plus one call OUTSIDE any windowed
  *  scope (January) — so a scope-filtered query sees 2 sessions / 3 calls and
  *  the lifetime view sees all 3 sessions / 4 calls. */
-function seedLedger(): { dbPath: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-'))
-  const dbPath = join(dir, 'ledger.db')
-
-  // Create the real schema (WAL), then close the app-side connection.
-  const store = new LedgerStore(dbPath)
-  store.close()
-
+function seedLedger(dbPath: string): void {
   const db = new DatabaseSync(dbPath)
-  db.exec('BEGIN')
-  const sourceClaude = Number(
-    db
-      .prepare(
-        "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('claude', 'fp1', 'C:\\work\\.claude\\sessions.json')",
-      )
-      .run().lastInsertRowid,
-  )
-  const sourceOpencode = Number(
-    db
-      .prepare(
-        "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('opencode', 'fp2', 'C:\\work\\.opencode\\sessions.json')",
-      )
-      .run().lastInsertRowid,
-  )
-  db.prepare(
-    "INSERT INTO ledger_session (source_id, session_id, project, working_directory, agent_type, title) VALUES (?, 'sess-a', 'watchtower', 'C:\\work', 'claude', 'Fix bug')",
-  ).run(sourceClaude)
-  db.prepare(
-    "INSERT INTO ledger_session (source_id, session_id, project, working_directory, agent_type, title) VALUES (?, 'sess-b', 'watchtower', 'C:\\work', 'opencode', 'Add tests')",
-  ).run(sourceOpencode)
-  db.prepare(
-    "INSERT INTO ledger_session (source_id, session_id, project, working_directory, agent_type, title) VALUES (?, 'sess-c', 'other', 'C:\\other', 'opencode', 'Old work')",
-  ).run(sourceOpencode)
-  db.prepare(
-    "INSERT INTO ledger_turn (source_id, session_id, turn_index, timestamp, user_message, category, sub_category) VALUES (?, 'sess-a', 0, '2026-07-01T10:00:00.000Z', 'fix this', 'debugging', 'git-commit')",
-  ).run(sourceClaude)
-  db.prepare(
-    "INSERT INTO ledger_turn (source_id, session_id, turn_index, timestamp, user_message, category) VALUES (?, 'sess-b', 0, '2026-07-02T10:00:00.000Z', 'add tests', 'testing')",
-  ).run(sourceOpencode)
-  db.prepare(
-    "INSERT INTO ledger_turn (source_id, session_id, turn_index, timestamp, user_message, category) VALUES (?, 'sess-c', 0, '2026-01-01T10:00:00.000Z', 'old stuff', 'planning')",
-  ).run(sourceOpencode)
-  db.prepare(
-    `INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd, savings_usd,
+  try {
+    db.exec('BEGIN')
+    const sourceClaude = Number(
+      db
+        .prepare(
+          "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('claude', 'fp1', 'C:\\work\\.claude\\sessions.json')",
+        )
+        .run().lastInsertRowid,
+    )
+    const sourceOpencode = Number(
+      db
+        .prepare(
+          "INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('opencode', 'fp2', 'C:\\work\\.opencode\\sessions.json')",
+        )
+        .run().lastInsertRowid,
+    )
+    db.prepare(
+      "INSERT INTO ledger_session (source_id, session_id, project, working_directory, agent_type, title) VALUES (?, 'sess-a', 'watchtower', 'C:\\work', 'claude', 'Fix bug')",
+    ).run(sourceClaude)
+    db.prepare(
+      "INSERT INTO ledger_session (source_id, session_id, project, working_directory, agent_type, title) VALUES (?, 'sess-b', 'watchtower', 'C:\\work', 'opencode', 'Add tests')",
+    ).run(sourceOpencode)
+    db.prepare(
+      "INSERT INTO ledger_session (source_id, session_id, project, working_directory, agent_type, title) VALUES (?, 'sess-c', 'other', 'C:\\other', 'opencode', 'Old work')",
+    ).run(sourceOpencode)
+    db.prepare(
+      "INSERT INTO ledger_turn (source_id, session_id, turn_index, timestamp, user_message, category, sub_category) VALUES (?, 'sess-a', 0, '2026-07-01T10:00:00.000Z', 'fix this', 'debugging', 'git-commit')",
+    ).run(sourceClaude)
+    db.prepare(
+      "INSERT INTO ledger_turn (source_id, session_id, turn_index, timestamp, user_message, category) VALUES (?, 'sess-b', 0, '2026-07-02T10:00:00.000Z', 'add tests', 'testing')",
+    ).run(sourceOpencode)
+    db.prepare(
+      "INSERT INTO ledger_turn (source_id, session_id, turn_index, timestamp, user_message, category) VALUES (?, 'sess-c', 0, '2026-01-01T10:00:00.000Z', 'old stuff', 'planning')",
+    ).run(sourceOpencode)
+    db.prepare(
+      `INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd, savings_usd,
        input_tokens, output_tokens, tools_json, skills_json, bash_commands_json, subagent_types_json)
      VALUES (?, 'sess-a', 0, 0, 'claude', 'claude-sonnet', '2026-07-01T10:00:00.000Z', 0.5, 0.2,
        1000, 500, '["Read","Bash"]', '["git-commit"]', '["git commit"]', '[]')`,
-  ).run(sourceClaude)
-  db.prepare(
-    "INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd, input_tokens, output_tokens, tools_json) VALUES (?, 'sess-a', 0, 1, 'claude', 'claude-sonnet', '2026-07-01T10:01:00.000Z', 0.3, 100, 50, '[\"Read\"]')",
-  ).run(sourceClaude)
-  db.prepare(
-    "INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd, input_tokens, output_tokens, tools_json) VALUES (?, 'sess-b', 0, 0, 'opencode', 'opencode-default', '2026-07-02T10:00:00.000Z', 0.7, 2000, 1000, '[\"Edit\"]')",
-  ).run(sourceOpencode)
-  // sess-c is OUTSIDE any windowed scope (January): its own session, so the
-  // scope boundary is clean across all the UI views' semantics — and the
-  // LIFETIME view proves the server really serves everything.
-  db.prepare(
-    "INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd, input_tokens, output_tokens, tools_json) VALUES (?, 'sess-c', 0, 0, 'opencode', 'opencode-default', '2026-01-01T10:00:00.000Z', 9.0, 1, 1, '[]')",
-  ).run(sourceOpencode)
-  db.exec('COMMIT')
-  db.close()
-
-  return { dbPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+    ).run(sourceClaude)
+    db.prepare(
+      "INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd, input_tokens, output_tokens, tools_json) VALUES (?, 'sess-a', 0, 1, 'claude', 'claude-sonnet', '2026-07-01T10:01:00.000Z', 0.3, 100, 50, '[\"Read\"]')",
+    ).run(sourceClaude)
+    db.prepare(
+      "INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd, input_tokens, output_tokens, tools_json) VALUES (?, 'sess-b', 0, 0, 'opencode', 'opencode-default', '2026-07-02T10:00:00.000Z', 0.7, 2000, 1000, '[\"Edit\"]')",
+    ).run(sourceOpencode)
+    // sess-c is OUTSIDE any windowed scope (January): its own session, so the
+    // scope boundary is clean across all the UI views' semantics — and the
+    // LIFETIME view proves the server really serves everything.
+    db.prepare(
+      "INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd, input_tokens, output_tokens, tools_json) VALUES (?, 'sess-c', 0, 0, 'opencode', 'opencode-default', '2026-01-01T10:00:00.000Z', 9.0, 1, 1, '[]')",
+    ).run(sourceOpencode)
+    db.exec('COMMIT')
+  } finally {
+    db.close()
+  }
 }
 
 const cleanups: Array<() => void | Promise<void>> = []
@@ -112,15 +106,12 @@ const httpServers: HttpServer[] = []
 const scope: OverviewScope = { period: '30days', range: { since: '2026-07-01', until: '2026-07-31' } }
 
 async function openStore() {
-  const seeded = seedLedger()
-  const store = new LedgerStore(seeded.dbPath, { readOnly: true })
-  const runtime = await createLedgerMcpQueryRuntime(seeded.dbPath)
-  // Close the read-only connection BEFORE removing the fixture dir (Windows
-  // holds an open-file lock on the DB while the connection is alive).
+  const fixture = openLedgerFixture()
+  seedLedger(fixture.dbPath)
+  const runtime = await createLedgerMcpQueryRuntime(fixture.dbPath)
+  // afterEach runs before the fixture's guarded directory cleanup.
   cleanups.push(runtime.dispose)
-  cleanups.push(() => store.close())
-  cleanups.push(seeded.cleanup)
-  return { queries: runtime.queries, store, dbPath: seeded.dbPath }
+  return { queries: runtime.queries, runtime, worker: fixture.runtime, dbPath: fixture.dbPath }
 }
 
 function decode<S extends Schema.ConstraintDecoder<unknown>>(schema: S, input: unknown): S['Type'] {
@@ -215,12 +206,7 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
 
   it('reads ledger changes on the next tool call instead of keeping a request cache', async () => {
     const { queries, dbPath } = await openStore()
-    const facadeReads = [
-      vi.spyOn(LedgerStore.prototype, 'getSessions'),
-      vi.spyOn(LedgerStore.prototype, 'getTurns'),
-      vi.spyOn(LedgerStore.prototype, 'getCalls'),
-      vi.spyOn(LedgerStore.prototype, 'getCallFacts'),
-    ]
+    const preparedSelections = vi.spyOn(DatabaseSync.prototype, 'prepare')
     const writer = new DatabaseSync(dbPath)
     // Close the writer before the fixture cleanup removes the SQLite directory.
     cleanups.splice(cleanups.length - 1, 0, () => writer.close())
@@ -236,7 +222,16 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
     expect(out).toMatchObject({ sessions: 3, calls: 5 })
     const scopeResource = buildLedgerResources(queries).find(resource => resource.uri === 'ledger://scope')!
     expect(await scopeResource.read()).toContain('Calls: 5')
-    expect(facadeReads.every(read => read.mock.calls.length === 0)).toBe(true)
+    const callSelections = preparedSelections.mock.calls
+      .map(([statement]) => String(statement))
+      .filter(statement => /FROM ledger_call\b/.test(statement))
+    expect(callSelections.length).toBeGreaterThan(0)
+    expect(callSelections.join('\n')).toContain('tool_sequence_json')
+    expect(callSelections.join('\n')).not.toContain('call_key')
+    expect(callSelections.join('\n')).not.toContain('edit_failed')
+    for (const statement of callSelections) {
+      expect(statement).not.toMatch(/\bSELECT\s*(?:[\w"]+\s*\.\s*)?\*/i)
+    }
   })
 
   it('rejects a malformed scope argument through the tool contract', async () => {
@@ -333,15 +328,18 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
     expect(bashCall.skills).toEqual(['git-commit'])
   })
 
-  it('is strictly read-only — a write through the read-only connection throws', async () => {
-    const { store } = await openStore()
-    expect(() => {
-      store.getSources() // reads fine
-    }).not.toThrow()
-    const db = (store as unknown as { db: DatabaseSync }).db
-    expect(() => {
-      db.prepare("INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('x', 'y', 'z')").run()
-    }).toThrow()
+  it('is strictly read-only — a write through the read-only SQL client throws', async () => {
+    const { runtime } = await openStore()
+    const sources = await runtime.run(Effect.flatMap(LedgerQueries, queries => queries.getSources()))
+    expect(sources).toHaveLength(2)
+    await expect(
+      runtime.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql.unsafe("INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('x', 'y', 'z')")
+        }),
+      ),
+    ).rejects.toThrow()
   })
 })
 
@@ -400,7 +398,7 @@ describe('Ledger MCP server (ADR 0020) — official SDK over an in-memory transp
   })
 
   it('advertises input metadata from the Effect tool contracts and preserves call error categories', async () => {
-    const { queries, store } = await openStore()
+    const { queries, worker } = await openStore()
     const server = createLedgerMcpServer(queries)
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     const client = new Client({ name: 'ledger-mcp-test', version: '1.0.0' }, { capabilities: {} })
@@ -476,7 +474,7 @@ describe('Ledger MCP server (ADR 0020) — official SDK over an in-memory transp
 
     await client.close()
     await server.close()
-    expect(store.getSources()).toHaveLength(2)
+    expect(worker.runSync(Effect.flatMap(LedgerQueries, queries => queries.getSources()))).toHaveLength(2)
   })
 })
 
