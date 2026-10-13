@@ -76,7 +76,7 @@
 // =============================================================================
 
 import { createHash } from 'crypto'
-import { Effect, Result, Schema, Stream } from 'effect'
+import { Effect, Predicate, Result, Schema, Stream } from 'effect'
 import { existsSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { homedir, platform } from 'os'
@@ -86,7 +86,7 @@ import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
-import { readSessionFile, readSessionFileEffect } from '../fs-utils.js'
+import { MAX_SESSION_FILE_BYTES, readSessionFile, readSessionFileEffect, readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
 import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
@@ -296,6 +296,16 @@ type CopilotEvent =
 
 type ChatJournalPathSegment = string | number
 type ChatSessionRequest = Record<string, unknown>
+
+const copilotJsonSchema = Schema.fromJsonString(Schema.Unknown)
+const copilotRecordSchema = Schema.Record(Schema.String, Schema.Unknown)
+const copilotArraySchema = Schema.Array(Schema.Unknown)
+const copilotFiniteSchema = Schema.Finite
+const decodeCopilotString = Schema.decodeUnknownResult(Schema.String)
+const decodeCopilotJson = Schema.decodeUnknownResult(copilotJsonSchema)
+const decodeCopilotRecord = Schema.decodeUnknownResult(copilotRecordSchema)
+const decodeCopilotArray = Schema.decodeUnknownResult(copilotArraySchema)
+const decodeCopilotFinite = Schema.decodeUnknownResult(copilotFiniteSchema)
 
 // ---------------------------------------------------------------------------
 // Types for OTel span rows from agent-traces.db
@@ -682,7 +692,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isReplayContainer(value: unknown): value is object {
-  return typeof value === 'object' && value !== null
+  return Predicate.isObject(value) || Array.isArray(value)
 }
 
 function createReplayObject(): Record<string, unknown> {
@@ -690,26 +700,26 @@ function createReplayObject(): Record<string, unknown> {
 }
 
 const FORBIDDEN_CHAT_JOURNAL_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
+const chatJournalPathSchema = Schema.Array(
+  Schema.Union([
+    Schema.String.check(
+      Schema.makeFilter(segment =>
+        FORBIDDEN_CHAT_JOURNAL_KEYS.has(segment) ? 'reserved journal path segment' : undefined,
+      ),
+    ),
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  ]),
+)
+const decodeChatJournalPath = Schema.decodeUnknownResult(chatJournalPathSchema)
 
-function parseChatJournalPath(rawPath: unknown, fallback?: ChatJournalPathSegment[]): ChatJournalPathSegment[] | null {
+function parseChatJournalPath(
+  rawPath: unknown,
+  fallback?: readonly ChatJournalPathSegment[],
+): ChatJournalPathSegment[] | null {
   const value = rawPath === undefined ? fallback : rawPath
-  if (!Array.isArray(value)) return null
-
-  const path: ChatJournalPathSegment[] = []
-  for (const segment of value) {
-    if (typeof segment === 'number') {
-      if (!Number.isInteger(segment) || segment < 0) return null
-      path.push(segment)
-      continue
-    }
-    if (typeof segment === 'string') {
-      if (FORBIDDEN_CHAT_JOURNAL_KEYS.has(segment)) return null
-      path.push(segment)
-      continue
-    }
-    return null
-  }
-  return path
+  const decodedPath = decodeChatJournalPath(value)
+  if (Result.isFailure(decodedPath)) return null
+  return [...decodedPath.success]
 }
 
 function getReplayValue(container: object, segment: ChatJournalPathSegment): unknown {
@@ -751,7 +761,7 @@ function applyChatJournalSet(root: unknown, path: ChatJournalPathSegment[], valu
   return workingRoot
 }
 
-function applyChatJournalAppend(root: unknown, path: ChatJournalPathSegment[], items: unknown[]): unknown {
+function applyChatJournalAppend(root: unknown, path: ChatJournalPathSegment[], items: readonly unknown[]): unknown {
   const workingRoot = isReplayContainer(root) ? root : createReplayObject()
 
   if (path.length === 0) {
@@ -774,41 +784,31 @@ function applyChatJournalAppend(root: unknown, path: ChatJournalPathSegment[], i
   return workingRoot
 }
 
-function replayChatSessionJournal(content: string): unknown {
-  let root: unknown = createReplayObject()
-  const lines = content.split('\n').filter(l => l.trim())
-
-  for (const line of lines) {
-    let entry: unknown
-    try {
-      entry = JSON.parse(line) as unknown
-    } catch {
-      continue
-    }
-    if (!isRecord(entry)) continue
-
-    const kind = entry['kind']
-    if (kind === 0) {
-      root = entry['v']
-      continue
-    }
-
-    if (kind === 1) {
-      const path = parseChatJournalPath(entry['k'])
-      if (!path) continue
-      root = applyChatJournalSet(root, path, entry['v'])
-      continue
-    }
-
-    if (kind === 2) {
-      const hasPath = Object.prototype.hasOwnProperty.call(entry, 'k')
-      const path = parseChatJournalPath(hasPath ? entry['k'] : undefined, ['requests'])
-      const items = Array.isArray(entry['v']) ? entry['v'] : []
-      if (!path) continue
-      root = applyChatJournalAppend(root, path, items)
-    }
+function replayChatSessionJournalLine(root: unknown, line: string): unknown {
+  const decodedJson = decodeCopilotJson(line)
+  if (Result.isFailure(decodedJson)) return root
+  const decodedEntry = decodeCopilotRecord(decodedJson.success)
+  if (Result.isFailure(decodedEntry)) return root
+  const entry = decodedEntry.success
+  const kind = entry['kind']
+  if (kind === 0) {
+    return entry['v']
   }
 
+  if (kind === 1) {
+    const path = parseChatJournalPath(entry['k'])
+    if (!path) return root
+    return applyChatJournalSet(root, path, entry['v'])
+  }
+
+  if (kind === 2) {
+    const hasPath = Object.prototype.hasOwnProperty.call(entry, 'k')
+    const path = parseChatJournalPath(hasPath ? entry['k'] : undefined, ['requests'])
+    const decodedItems = decodeCopilotArray(entry['v'])
+    const items = Result.isSuccess(decodedItems) ? decodedItems.success : []
+    if (!path) return root
+    return applyChatJournalAppend(root, path, items)
+  }
   return root
 }
 
@@ -836,17 +836,19 @@ function modelFromChatSessionRequest(req: ChatSessionRequest, metadata: Record<s
  */
 function extractChatSessionUserMessage(rawReq: Record<string, unknown>): string {
   const message = rawReq['message']
-  if (!isRecord(message)) return ''
+  const decodedMessage = decodeCopilotRecord(message)
+  if (Result.isFailure(decodedMessage)) return ''
 
-  const direct = message['text']
+  const direct = decodedMessage.success['text']
   if (typeof direct === 'string' && direct.trim()) return direct
 
-  const parts = message['parts']
-  if (Array.isArray(parts)) {
+  const decodedParts = decodeCopilotArray(decodedMessage.success['parts'])
+  if (Result.isSuccess(decodedParts)) {
     const chunks: string[] = []
-    for (const part of parts) {
-      if (!isRecord(part)) continue
-      const text = part['text']
+    for (const part of decodedParts.success) {
+      const decodedPart = decodeCopilotRecord(part)
+      if (Result.isFailure(decodedPart)) continue
+      const text = decodedPart.success['text']
       if (typeof text === 'string' && text.trim()) chunks.push(text)
     }
     if (chunks.length > 0) return chunks.join('')
@@ -857,7 +859,8 @@ function extractChatSessionUserMessage(rawReq: Record<string, unknown>): string 
 
 function extractChatSessionTools(metadata: Record<string, unknown>): string[] {
   const rounds = metadata['toolCallRounds']
-  if (!Array.isArray(rounds)) return []
+  const decodedRounds = decodeCopilotArray(rounds)
+  if (Result.isFailure(decodedRounds)) return []
 
   const names = new Set<string>()
   const addName = (raw: unknown): void => {
@@ -869,18 +872,21 @@ function extractChatSessionTools(metadata: Record<string, unknown>): string[] {
     addName(record['tool'])
   }
 
-  for (const round of rounds) {
-    if (!isRecord(round)) continue
+  for (const rawRound of decodedRounds.success) {
+    const decodedRound = decodeCopilotRecord(rawRound)
+    if (Result.isFailure(decodedRound)) continue
+    const round = decodedRound.success
     addFromRecord(round)
 
     for (const key of ['tools', 'toolCalls', 'toolRequests']) {
-      const entries = round[key]
-      if (!Array.isArray(entries)) continue
-      for (const entry of entries) {
+      const decodedEntries = decodeCopilotArray(round[key])
+      if (Result.isFailure(decodedEntries)) continue
+      for (const entry of decodedEntries.success) {
         if (typeof entry === 'string') {
           addName(entry)
-        } else if (isRecord(entry)) {
-          addFromRecord(entry)
+        } else {
+          const decodedEntry = decodeCopilotRecord(entry)
+          if (Result.isSuccess(decodedEntry)) addFromRecord(decodedEntry.success)
         }
       }
     }
@@ -1310,71 +1316,115 @@ function createChatSessionParser(
   seenKeys: Set<string>,
   context: CopilotParserContext,
 ): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      throwIfScanAborted(context?.signal)
-      const content = await readSessionFile(source.path, 'utf8', { signal: context?.signal })
-      throwIfScanAborted(context?.signal)
-      if (!content) return
+  const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        yield* checkScanAbort(context.signal)
+        let root: unknown = createReplayObject()
+        yield* Stream.runForEach(
+          readSessionLinesStream(source.path, undefined, {
+            maxBytes: MAX_SESSION_FILE_BYTES,
+            ...(context.signal ? { signal: context.signal } : {}),
+          }),
+          line =>
+            Effect.sync(() => {
+              root = replayChatSessionJournalLine(root, typeof line === 'string' ? line : line.toString('utf8'))
+            }),
+        )
+        const decodedRoot = decodeCopilotRecord(root)
+        if (Result.isFailure(decodedRoot)) return Stream.empty
+        const session = decodedRoot.success
+        const sessionId = readString(session['sessionId']) || basename(source.path, '.jsonl')
+        const sessionCreatedAt = timestampToISO(session['creationDate'])
+        const decodedRequests = decodeCopilotArray(session['requests'])
+        if (Result.isFailure(decodedRequests)) return Stream.empty
 
-      const root = replayChatSessionJournal(content)
-      if (!isRecord(root)) return
+        return Stream.fromIterable(decodedRequests.success).pipe(
+          Stream.mapEffect((rawReq, index) =>
+            Effect.gen(function* () {
+              yield* checkScanAbort(context.signal)
+              const decodedRequest = decodeCopilotRecord(rawReq)
+              if (Result.isFailure(decodedRequest)) return Result.fail(undefined)
+              const request = decodedRequest.success
+              const decodedResult = decodeCopilotRecord(request['result'])
+              const decodedMetadata = Result.isSuccess(decodedResult)
+                ? decodeCopilotRecord(decodedResult.success['metadata'])
+                : Result.fail(undefined)
+              const metadata = Result.isSuccess(decodedMetadata) ? decodedMetadata.success : createReplayObject()
 
-      const sessionId = readString(root['sessionId']) || basename(source.path, '.jsonl')
-      const sessionCreatedAt = timestampToISO(root['creationDate'])
-      const requests = Array.isArray(root['requests']) ? root['requests'] : []
+              const requestId = readString(request['requestId']) || `request-${index}`
+              const dedupKey = `copilot-chatsession:${sessionId}:${requestId}`
+              if (seenKeys.has(dedupKey)) return Result.fail(undefined)
+              seenKeys.add(dedupKey)
 
-      for (let index = 0; index < requests.length; index++) {
-        throwIfScanAborted(context?.signal)
-        const rawReq = requests[index]
-        if (!isRecord(rawReq)) continue
+              const resolvedModel = metadata['resolvedModel']
+              const modelId = request['modelId']
+              const selectedModel = typeof resolvedModel === 'string' && resolvedModel ? resolvedModel : modelId
+              if (selectedModel !== undefined && Result.isFailure(decodeCopilotString(selectedModel))) {
+                if (onUnparsedCall) yield* onUnparsedCall
+                return Result.fail(undefined)
+              }
+              const model = modelFromChatSessionRequest(request, metadata)
+              const inputResult =
+                metadata['promptTokens'] === undefined
+                  ? Result.succeed(0)
+                  : decodeCopilotFinite(metadata['promptTokens'])
+              const metadataOutputResult =
+                metadata['outputTokens'] === undefined
+                  ? Result.succeed(0)
+                  : decodeCopilotFinite(metadata['outputTokens'])
+              if (Result.isFailure(inputResult) || Result.isFailure(metadataOutputResult)) {
+                if (onUnparsedCall) yield* onUnparsedCall
+                return Result.fail(undefined)
+              }
+              const inputTokens = Math.max(0, inputResult.success)
+              const metadataOutputTokens = Math.max(0, metadataOutputResult.success)
+              let outputTokens = metadataOutputTokens
+              if (outputTokens === 0) {
+                const completionTokens = request['completionTokens']
+                const completionResult =
+                  completionTokens === undefined ? Result.succeed(0) : decodeCopilotFinite(completionTokens)
+                if (Result.isFailure(completionResult)) {
+                  if (onUnparsedCall) yield* onUnparsedCall
+                  return Result.fail(undefined)
+                }
+                outputTokens = Math.max(0, completionResult.success)
+              }
+              if (inputTokens === 0 && outputTokens === 0) return Result.fail(undefined)
 
-        const result = rawReq['result']
-        const resultRecord = isRecord(result) ? result : null
-        const rawMetadata = resultRecord?.['metadata']
-        const metadata = isRecord(rawMetadata) ? rawMetadata : createReplayObject()
+              const costUSD = context.pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
+              const timestamp = timestampToISO(request['timestamp']) || sessionCreatedAt
+              return Result.succeed({
+                provider: 'copilot' as const,
+                sessionId,
+                project: source.project,
+                model,
+                inputTokens,
+                outputTokens,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: 0,
+                cachedInputTokens: 0,
+                reasoningTokens: 0,
+                webSearchRequests: 0,
+                costUSD,
+                tools: extractChatSessionTools(metadata),
+                bashCommands: [],
+                timestamp,
+                speed: 'standard' as const,
+                deduplicationKey: dedupKey,
+                userMessage: extractChatSessionUserMessage(request),
+                ...(source.workingDirectory
+                  ? { projectPath: source.workingDirectory, workingDirectory: source.workingDirectory }
+                  : {}),
+              })
+            }),
+          ),
+          Stream.filterMap(result => result),
+        )
+      }),
+    )
 
-        const inputTokens = numberOrZero(metadata['promptTokens'])
-        const metadataOutputTokens = numberOrZero(metadata['outputTokens'])
-        const outputTokens = metadataOutputTokens || numberOrZero(rawReq['completionTokens'])
-
-        if (inputTokens === 0 && outputTokens === 0) continue
-
-        const requestId = readString(rawReq['requestId']) || `request-${index}`
-        const dedupKey = `copilot-chatsession:${sessionId}:${requestId}`
-        if (seenKeys.has(dedupKey)) continue
-        seenKeys.add(dedupKey)
-
-        const model = modelFromChatSessionRequest(rawReq, metadata)
-        const costUSD = context.pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
-        const timestamp = timestampToISO(rawReq['timestamp']) || sessionCreatedAt
-
-        yield {
-          provider: 'copilot',
-          sessionId,
-          project: source.project,
-          model,
-          inputTokens,
-          outputTokens,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: 0,
-          cachedInputTokens: 0,
-          reasoningTokens: 0,
-          webSearchRequests: 0,
-          costUSD,
-          tools: extractChatSessionTools(metadata),
-          bashCommands: [],
-          timestamp,
-          speed: 'standard' as const,
-          deduplicationKey: dedupKey,
-          userMessage: extractChatSessionUserMessage(rawReq),
-          ...(source.workingDirectory
-            ? { projectPath: source.workingDirectory, workingDirectory: source.workingDirectory }
-            : {}),
-        }
-      }
-    },
-  }
+  return legacyCopilotParser(parseStream)
 }
 
 // ---------------------------------------------------------------------------
@@ -2232,91 +2282,69 @@ function createJetBrainsParser(
   seenKeys: Set<string>,
   context: CopilotParserContext,
 ): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      throwIfScanAborted(context?.signal)
-      const sessionId = source.sessionId
-
-      // Nitrite .db (the store's authoritative session content). Read as latin1
-      // so byte offsets are stable through the binary MVStore framing.
-      if (source.dbPath) {
-        let dbRaw: string | null = null
-        try {
-          dbRaw = await readSessionFile(source.dbPath, 'latin1', { signal: context?.signal })
-        } catch (error) {
-          if (isScanAbortedError(error)) throw error
-          dbRaw = null
+  const parseStream: NonNullable<SessionParser['parseStream']> = _onUnparsedCall =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        yield* checkScanAbort(context.signal)
+        if (!source.dbPath) return Stream.empty
+        const read = yield* Effect.result(readSessionFileEffect(source.dbPath, 'latin1', { signal: context.signal }))
+        if (Result.isFailure(read)) {
+          if (isScanAbortedError(read.failure)) return yield* Effect.fail(read.failure)
+          return Stream.empty
         }
-        throwIfScanAborted(context?.signal)
-        if (dbRaw) {
-          const storeModel = inferJetBrainsModel(dbRaw)
-          const turns = extractJetBrainsDbTurns(dbRaw)
-          // Dedup keys derive from the reply CONTENT, not the scan position:
-          // copilot is a durable provider (cached turns are never deleted and a
-          // re-parse appends any key it hasn't seen), while MVStore compaction
-          // can rewrite the file with blobs in a different byte order. With
-          // positional keys, a rewrite that puts a new blob ahead of an old one
-          // hands the new turn the old turn's key (skipped as seen) and re-emits
-          // the old turn under a fresh index — double-billing it. The per-hash
-          // counter keeps genuinely repeated replies and errored turns (which
-          // share replyText '') distinct within a conversation.
-          const perContentIndex = new Map<string, number>()
-          for (const turn of turns) {
-            throwIfScanAborted(context?.signal)
-            // One .db holds many chat tabs; group each turn under its own
-            // conversation so the user sees one session per tab, not per file.
-            const convId = turn.conversationId || sessionId
-            const contentHash = createHash('sha256').update(turn.replyText).digest('hex').slice(0, 12)
-            const nth = (perContentIndex.get(`${convId}:${contentHash}`) ?? 0) + 1
-            perContentIndex.set(`${convId}:${contentHash}`, nth)
-            const dedupKey = `copilot:jb:${convId}:${contentHash}:${nth}`
-            if (seenKeys.has(dedupKey)) continue
-            seenKeys.add(dedupKey)
+        const dbRaw = read.success
+        if (!dbRaw) return Stream.empty
 
-            // Prefer the per-turn model, else the store default, else a generic
-            // Copilot bucket so a real reply is never mis-priced as free.
-            const model = turn.model || storeModel || 'copilot-anthropic-auto'
-            // Errored turns (failed generation) contribute no billable output.
-            const outputTokens = turn.errored ? 0 : estimateTokens(turn.replyText)
-            const costUSD = outputTokens > 0 ? context.pricing.calculateCost(model, 0, outputTokens, 0, 0, 0) : 0
-            // Project resolution precedence:
-            //   1. projectName — the plugin's own recorded label (1.12+),
-            //      joined across kind dirs by store id. Authoritative.
-            //   2. the git repo root of a file:// path the chat referenced
-            //      (older plugins / when projectName is absent).
-            //   3. one honest bucket when neither signal exists.
-            // The conversation TITLE is a chat-thread name, NOT a project, and is
-            // kept out of `project` (it would otherwise pollute By-Project).
-            const project = source.projectName || turn.conversationProject || 'copilot-jetbrains'
+        const sessionId = source.sessionId
+        const storeModel = inferJetBrainsModel(dbRaw)
+        const turns = extractJetBrainsDbTurns(dbRaw)
+        const perContentIndex = new Map<string, number>()
+        return Stream.fromIterable(turns).pipe(
+          Stream.mapEffect(turn =>
+            Effect.gen(function* () {
+              yield* checkScanAbort(context.signal)
+              const convId = turn.conversationId || sessionId
+              const contentHash = createHash('sha256').update(turn.replyText).digest('hex').slice(0, 12)
+              const contentKey = `${convId}:${contentHash}`
+              const nth = (perContentIndex.get(contentKey) ?? 0) + 1
+              perContentIndex.set(contentKey, nth)
+              const dedupKey = `copilot:jb:${convId}:${contentHash}:${nth}`
+              if (seenKeys.has(dedupKey)) return Result.fail(undefined)
+              seenKeys.add(dedupKey)
 
-            yield {
-              provider: 'copilot',
-              sessionId: convId,
-              project,
-              model,
-              inputTokens: 0,
-              outputTokens,
-              cacheCreationInputTokens: 0,
-              cacheReadInputTokens: 0,
-              cachedInputTokens: 0,
-              reasoningTokens: 0,
-              webSearchRequests: 0,
-              costUSD,
-              costIsEstimated: true,
-              tools: [],
-              bashCommands: [],
-              timestamp: source.mtime,
-              speed: 'standard' as const,
-              deduplicationKey: dedupKey,
-              // Surface the chat-thread name here (it is the session's label, not
-              // a project) so it remains visible in session-level views.
-              userMessage: turn.conversationTitle,
-            }
-          }
-        }
-      }
-    },
-  }
+              const model = turn.model || storeModel || 'copilot-anthropic-auto'
+              const outputTokens = turn.errored ? 0 : estimateTokens(turn.replyText)
+              const costUSD = outputTokens > 0 ? context.pricing.calculateCost(model, 0, outputTokens, 0, 0, 0) : 0
+              const project = source.projectName || turn.conversationProject || 'copilot-jetbrains'
+              return Result.succeed({
+                provider: 'copilot' as const,
+                sessionId: convId,
+                project,
+                model,
+                inputTokens: 0,
+                outputTokens,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: 0,
+                cachedInputTokens: 0,
+                reasoningTokens: 0,
+                webSearchRequests: 0,
+                costUSD,
+                costIsEstimated: true,
+                tools: [],
+                bashCommands: [],
+                timestamp: source.mtime,
+                speed: 'standard' as const,
+                deduplicationKey: dedupKey,
+                userMessage: turn.conversationTitle,
+              })
+            }),
+          ),
+          Stream.filterMap(result => result),
+        )
+      }),
+    )
+
+  return legacyCopilotParser(parseStream)
 }
 
 // ---------------------------------------------------------------------------
