@@ -190,7 +190,7 @@ export class DbWorkerClient {
     worker.on('message', (raw: unknown) => this.onMessage(raw, worker, handshake))
     worker.on('error', (raw: unknown) => {
       if (this.worker !== worker || this.retiringWorker === worker) return
-      const err = raw instanceof Error ? raw : new Error(String(raw))
+      const err = raw instanceof Error ? raw : new Error('The database worker failed.')
       for (const { reject } of this.pending.values()) reject(err)
       this.pending.clear()
       this.inflightReads.clear()

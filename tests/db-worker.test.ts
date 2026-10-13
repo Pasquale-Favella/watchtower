@@ -675,6 +675,27 @@ describe('DbWorkerClient request/response correlation', () => {
     await client.terminate()
   })
 
+  it.each([false, true])('settles opaque thread errors safely when ready is %s', async becameReady => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    try {
+      if (becameReady) {
+        worker.emit('message', { event: 'ready' })
+        await client.ready
+      }
+      const ready = becameReady
+        ? Promise.resolve()
+        : expect(client.ready).rejects.toThrow('The database worker failed.')
+      const pending = expect(client.request('overview:query', {})).rejects.toThrow('The database worker failed.')
+      expect(() => worker.emit('error', Object.create(null))).not.toThrow()
+      await Promise.all([ready, pending])
+      worker.emit('exit', 1)
+      if (!becameReady) expect(fakes).toHaveLength(1)
+    } finally {
+      await client.terminate()
+    }
+  })
+
   it('coalesces identical concurrent reads into one execution', async () => {
     const { client, fakes } = makeClient()
     const [a, b] = await Promise.all([
