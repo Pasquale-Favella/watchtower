@@ -117,27 +117,6 @@ type GeneratorMetadataResponse = {
   }
 }
 
-type StatusLineCurrentUsage = {
-  input_tokens?: number
-  output_tokens?: number
-  cache_creation_input_tokens?: number
-  cache_read_input_tokens?: number
-}
-
-type StatusLinePayload = {
-  conversation_id?: string
-  session_id?: string
-  model?:
-    | string
-    | {
-        id?: string
-        display_name?: string
-      }
-  context_window?: {
-    current_usage?: StatusLineCurrentUsage | null
-  }
-}
-
 type StatusLineEvent = {
   at: string
   conversationId: string
@@ -497,12 +476,6 @@ const loadCacheEffect = Effect.fnUntraced(function* (signal?: AbortSignal): Effe
   return memCache
 })
 
-function loadCache(): Promise<AntigravityCache> {
-  // Remove this Promise edge once all Antigravity parser and snapshot callers use the native cache effect.
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(loadCacheEffect())
-}
-
 export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffect')(function* (
   liveCascadeIds?: Set<string>,
   signal?: AbortSignal,
@@ -731,15 +704,6 @@ const detectServerEffect = Effect.fnUntraced(function* (
   return detected
 })
 
-function detectServer(
-  appDataDir: 'antigravity' | 'antigravity-cli' | 'antigravity-ide' = 'antigravity',
-  signal?: AbortSignal,
-): Promise<ServerInfo | null> {
-  // Remove this Promise edge when conversation parsing moves into its own Effect slice.
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(detectServerEffect(appDataDir, signal))
-}
-
 const rpcEffect = Effect.fnUntraced(function* (
   server: ServerInfo,
   method: string,
@@ -752,17 +716,6 @@ const rpcEffect = Effect.fnUntraced(function* (
   yield* checkScanAbort(signal)
   return response
 })
-
-function rpc(
-  server: ServerInfo,
-  method: string,
-  body: Record<string, unknown> = {},
-  signal?: AbortSignal,
-): Promise<unknown> {
-  // Remove this Promise edge when conversation parsing moves into its own Effect slice.
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(rpcEffect(server, method, body, signal))
-}
 
 const getModelMapEffect = Effect.fnUntraced(function* (
   server: ServerInfo,
@@ -779,12 +732,6 @@ const getModelMapEffect = Effect.fnUntraced(function* (
   cachedModelMaps.set(cacheKey, modelMap)
   return modelMap
 })
-
-function getModelMap(server: ServerInfo, signal?: AbortSignal): Promise<ModelMap> {
-  // Remove this Promise edge when conversation parsing moves into its own Effect slice.
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(getModelMapEffect(server, signal))
-}
 
 function requestJsonEffect(
   server: ServerInfo,
@@ -1303,30 +1250,6 @@ function decodeGeneratorMetadataCandidate(
   }
 }
 
-function buildCandidateFromGeneratorMetadata(
-  cascadeId: string,
-  input: unknown,
-  index: number,
-  modelMap: ModelMap,
-): AntigravityCallCandidate | null {
-  return decodeGeneratorMetadataCandidate(cascadeId, input, index, modelMap).candidate
-}
-
-function buildCandidatesFromGeneratorMetadata(
-  cascadeId: string,
-  metadata: readonly unknown[],
-  modelMap: ModelMap,
-): AntigravityCallCandidate[] {
-  const candidates: AntigravityCallCandidate[] = []
-
-  for (let i = 0; i < metadata.length; i++) {
-    const candidate = buildCandidateFromGeneratorMetadata(cascadeId, metadata[i], i, modelMap)
-    if (candidate) candidates.push(candidate)
-  }
-
-  return candidates
-}
-
 function priceAntigravityCandidate(candidate: AntigravityCallCandidate, pricing: ScanPricing): ParsedProviderCall {
   const { pricingModel, ...call } = candidate
   return {
@@ -1340,17 +1263,6 @@ function priceAntigravityCandidate(candidate: AntigravityCallCandidate, pricing:
       0,
     ),
   }
-}
-
-function buildCallsFromGeneratorMetadata(
-  cascadeId: string,
-  metadata: GeneratorMetadata[],
-  modelMap: ModelMap,
-  pricing: ScanPricing,
-): ParsedProviderCall[] {
-  return buildCandidatesFromGeneratorMetadata(cascadeId, metadata, modelMap).map(candidate =>
-    priceAntigravityCandidate(candidate, pricing),
-  )
 }
 
 function isConversationFile(file: string, extensions: readonly string[]): boolean {
@@ -1428,52 +1340,6 @@ export function discoverAntigravitySessionSources(
 ): Promise<SessionSource[]> {
   // eslint-disable-next-line no-restricted-syntax
   return Effect.runPromise(discoverAntigravitySessionsEffect(roots))
-}
-
-function parseStatusLinePayload(input: unknown): StatusLineEvent | null {
-  if (!input || typeof input !== 'object') return null
-  const payload = input as StatusLinePayload
-  if (typeof payload.conversation_id !== 'string' || payload.conversation_id.length === 0) return null
-  const usage = payload.context_window?.current_usage
-  if (!usage) return null
-
-  const event: StatusLineEvent = {
-    at: new Date().toISOString(),
-    conversationId: payload.conversation_id,
-    sessionId: typeof payload.session_id === 'string' ? payload.session_id : undefined,
-    model:
-      typeof payload.model === 'string'
-        ? payload.model
-        : (payload.model?.id ?? payload.model?.display_name ?? 'unknown'),
-    usage: {
-      inputTokens: parseFiniteToken(usage.input_tokens),
-      outputTokens: parseFiniteToken(usage.output_tokens),
-      cacheCreationInputTokens: parseFiniteToken(usage.cache_creation_input_tokens),
-      cacheReadInputTokens: parseFiniteToken(usage.cache_read_input_tokens),
-    },
-  }
-
-  const u = event.usage
-  if (u.inputTokens === 0 && u.outputTokens === 0 && u.cacheCreationInputTokens === 0 && u.cacheReadInputTokens === 0) {
-    return null
-  }
-  if (event.model === 'unknown') return null
-  return event
-}
-
-export async function recordAntigravityStatusLinePayload(input: unknown): Promise<boolean> {
-  const event = parseStatusLinePayload(input)
-  if (!event) return false
-
-  const path = getAntigravityStatusLineEventsPath()
-  await mkdir(getCacheDir(), { recursive: true, mode: 0o700 })
-  const fd = await open(path, 'a', 0o600)
-  try {
-    await fd.appendFile(`${JSON.stringify(event)}\n`, { encoding: 'utf-8' })
-  } finally {
-    await fd.close()
-  }
-  return true
 }
 
 function parseStatusLineEvent(input: unknown): StatusLineEvent | null {
@@ -1663,62 +1529,6 @@ export function shouldReparseAntigravitySource(path: string, cachedTurnCount: nu
   return isAntigravityStatusLineEventsPath(path)
 }
 
-async function findCascadeSource(cascadeId: string): Promise<SessionSource | null> {
-  const sources = await discoverAntigravitySessionSources()
-  return (
-    sources.find(source => {
-      const lower = source.path.replace(/\\/g, '/').toLowerCase()
-      return (
-        (lower.includes('/.gemini/antigravity-cli/') || lower.includes('/.gemini/antigravity-ide/')) &&
-        antigravityCascadeIdFromPath(source.path) === cascadeId
-      )
-    }) ?? null
-  )
-}
-
-export async function snapshotAntigravityStatusLinePayload(input: unknown): Promise<boolean> {
-  const pricing = captureScanPricing()
-  const event = parseStatusLinePayload(input)
-  if (!event) return false
-
-  const cascadeId = event.conversationId
-  const source = await findCascadeSource(cascadeId)
-  if (!source) return false
-
-  const s = await stat(source.path).catch(() => null)
-  if (!s) return false
-
-  const cache = await loadCache()
-  const cached = cache.cascades[cascadeId]
-  if (cached && cached.mtimeMs === s.mtimeMs && cached.sizeBytes === s.size && cached.calls.length > 0) {
-    return true
-  }
-
-  const server = await detectServer(antigravityAppDataDirFromSourcePath(source.path))
-  if (!server) return false
-
-  let metadata: GeneratorMetadata[]
-  try {
-    const modelMap = await getModelMap(server)
-    metadata = extractAntigravityGeneratorMetadata(
-      await rpc(server, 'GetCascadeTrajectoryGeneratorMetadata', { cascadeId }),
-    )
-    const snapshotCalls = buildCallsFromGeneratorMetadata(cascadeId, metadata, modelMap, pricing)
-    assignStableTimestamps(snapshotCalls, cached?.calls, new Date(s.mtimeMs).toISOString())
-    cache.cascades[cascadeId] = {
-      mtimeMs: s.mtimeMs,
-      sizeBytes: s.size,
-      calls: snapshotCalls,
-    }
-    cacheDirty = true
-    await flushCache()
-    return cache.cascades[cascadeId]!.calls.length > 0
-  } catch (error) {
-    if (error instanceof AntigravityRpcError) return false
-    throw error
-  }
-}
-
 function sanitizeProject(path: string): string {
   return basename(path.replace(/\\/g, '/'))
 }
@@ -1741,34 +1551,6 @@ function applyAntigravityProject(
   }
 
   call.project = source.project
-}
-
-// gen_metadata rows and RPC entries without a real ChatStartMetadata.created_at
-// carry no per-call timestamp. Left empty, those calls are dropped by the
-// date-range filters in parser.ts (`if (!callTs) continue`), so each needs a
-// fallback. The fallback must be *stable* across file rewrites: the generic
-// session-cache persists whatever timestamp is emitted, and a non-durable
-// source is cleared and reparsed whenever its mtime changes, so stamping the
-// current mtime on every reparse would retro-date the whole session forward.
-//
-// assignStableTimestamps carries forward the timestamp already recorded for a
-// dedup key (its first-seen time, held in the durable Antigravity cache) and
-// only falls back to the current file mtime for genuinely new calls. Real
-// timestamps (created_at) are preserved untouched. This runs on the fresh-parse
-// paths whose result is written back to the cache.
-function assignStableTimestamps(
-  calls: ParsedProviderCall[],
-  priorCalls: readonly ParsedProviderCall[] | undefined,
-  firstSeenTimestamp: string,
-): void {
-  const priorByKey = new Map<string, string>()
-  for (const prior of priorCalls ?? []) {
-    if (prior.timestamp) priorByKey.set(prior.deduplicationKey, prior.timestamp)
-  }
-  for (const call of calls) {
-    if (call.timestamp) continue
-    call.timestamp = priorByKey.get(call.deduplicationKey) ?? firstSeenTimestamp
-  }
 }
 
 // Emit-time safety net for cache-hit / cached-fallback paths, where the calls
