@@ -1,6 +1,7 @@
+import { strict as assert } from 'node:assert'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
@@ -25,11 +26,17 @@ import { Env } from '../src/main/env.js'
 import { OperationalLog, type OperationalLogSink, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { runScan, ScanAbortedError, type ScanMetadata } from '../src/main/pipeline/scan.js'
-import { type WorkerOverrides } from '../src/main/worker-runtime.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
+import { openWorkerRuntime, type WorkerOverrides, type WorkerRuntime } from '../src/main/worker-runtime.js'
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'watchtower-dbworker-'))
+}
+
+function removeTempDir(directory: string, prefix: string): void {
+  const target = resolve(directory)
+  assert.equal(dirname(target), resolve(tmpdir()))
+  assert.ok(basename(target).startsWith(prefix))
+  rmSync(target, { recursive: true, force: true })
 }
 
 function okFetch(body: unknown): typeof fetch {
@@ -49,14 +56,15 @@ function throwingFetch(message = 'offline'): typeof fetch {
 describe('DbWorkerContext ops (ADR 0023)', () => {
   let dir = ''
   let ctx: DbWorkerContext | null = null
+  let runtime: WorkerRuntime | null = null
   const events: DbWorkerEvent[] = []
 
-  /** Uses the same runtime, client, migrations and facade owner as worker boot. */
+  /** Uses the same runtime, client and migrations as worker boot. */
   function openWith<Overrides extends WorkerOverrides = never>(runtimeLayer?: Layer.Layer<Overrides>): DbWorkerContext {
     dir = tempDataDir()
     const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
-    const owner = openWorkerOwner(init.dbPath, undefined, runtimeLayer)
-    ctx = new DbWorkerContext(init, event => events.push(event), owner)
+    runtime = openWorkerRuntime(init.dbPath, undefined, runtimeLayer)
+    ctx = new DbWorkerContext(init, event => events.push(event), { runtime })
     return ctx
   }
 
@@ -68,12 +76,16 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     events.length = 0
     try {
       await ctx?.close()
-    } catch {
-      /* already closed */
+    } finally {
+      try {
+        await runtime?.dispose()
+      } finally {
+        ctx = null
+        runtime = null
+        if (dir) removeTempDir(dir, 'watchtower-dbworker-')
+        dir = ''
+      }
     }
-    ctx = null
-    if (dir) rmSync(dir, { recursive: true, force: true })
-    dir = ''
   })
 
   it('reports an unscanned status on a fresh ledger', async () => {
@@ -373,9 +385,12 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
       expect(typeof failed.error).toBe('string')
       expect(failed.error).toContain('offline')
     } finally {
-      vi.stubGlobal('fetch', originalFetch)
-      delete process.env['WATCHTOWER_CACHE_DIR']
-      rmSync(pricingCacheDir, { recursive: true, force: true })
+      try {
+        vi.stubGlobal('fetch', originalFetch)
+        delete process.env['WATCHTOWER_CACHE_DIR']
+      } finally {
+        removeTempDir(pricingCacheDir, 'watchtower-pricing-wiring-')
+      }
     }
   })
 
@@ -840,16 +855,18 @@ describe('DbWorkerContext cadence jitter (Wave 7 §4.4)', () => {
     vi.useFakeTimers()
     const dir = tempDataDir()
     const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
-    const owner = openWorkerOwner(init.dbPath)
-    const ctx = new DbWorkerContext(init, () => {}, owner)
+    let runtime: WorkerRuntime | null = null
+    let workerContext: DbWorkerContext | null = null
     const tickTimes: number[] = []
-    const triggerScan = vi
-      .spyOn(ctx as unknown as { triggerBackgroundScan: () => Promise<void> }, 'triggerBackgroundScan')
-      .mockImplementation(async () => {
-        tickTimes.push(Date.now())
-      })
     try {
-      await ctx.dispatch('cadence:set', ['30s'])
+      runtime = openWorkerRuntime(init.dbPath)
+      workerContext = new DbWorkerContext(init, () => {}, { runtime })
+      const triggerScan = vi
+        .spyOn(workerContext as unknown as { triggerBackgroundScan: () => Promise<void> }, 'triggerBackgroundScan')
+        .mockImplementation(async () => {
+          tickTimes.push(Date.now())
+        })
+      await workerContext.dispatch('cadence:set', ['30s'])
       await vi.advanceTimersByTimeAsync(300_000)
       // Every repeat gap is one independent jittered draw in [24s, 36s]
       // (`Date` is real-walled under these fake timers, so gaps only —
@@ -867,9 +884,19 @@ describe('DbWorkerContext cadence jitter (Wave 7 §4.4)', () => {
       expect(tickTimes.length).toBeLessThanOrEqual(12)
       expect(triggerScan.mock.calls.length).toBe(tickTimes.length)
     } finally {
-      await ctx.close()
-      vi.useRealTimers()
-      rmSync(dir, { recursive: true, force: true })
+      try {
+        await workerContext?.close()
+      } finally {
+        try {
+          await runtime?.dispose()
+        } finally {
+          try {
+            removeTempDir(dir, 'watchtower-dbworker-')
+          } finally {
+            vi.useRealTimers()
+          }
+        }
+      }
     }
   })
 

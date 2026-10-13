@@ -1,24 +1,29 @@
+import { strict as assert } from 'node:assert'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
+import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
+import { querySessionSearch } from '../src/main/application/session-search-query.js'
+import { queryProjectRows, querySessionRows } from '../src/main/application/store-row-queries.js'
 import { captureModelPricingCatalogue } from '../src/main/pipeline/models.js'
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
 import { searchSessionsFromData } from '../src/main/session-search-calculation.js'
+import type { LedgerStore } from '../src/main/store/ledger.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
 import { LedgerSessionReads } from '../src/main/store/ledger-session-reads.js'
 import type { SessionSummaryData } from '../src/main/store/session-read-projections.js'
 import { buildProjectRowsFromSessionData, querySessionRowsFromSessionData } from '../src/main/store-rows-calculation.js'
+import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import {
   legacyBuildProjectRowsFromLedger,
   legacyQuerySessionRowsFromLedger,
   legacySearchSessionsFromLedger,
 } from './fixtures/pre-wave17-store-views.js'
-import { projectRows, sessionRows, sessionSearch } from './fixtures/store-view-queries.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 const catalogue = capturePricingCatalogue({
   prices: new Map(),
@@ -28,6 +33,13 @@ const catalogue = capturePricingCatalogue({
   tiers: [],
   routedSegments: new Set(),
 })
+
+function removeFixture(directory: string): void {
+  const target = resolve(directory)
+  assert.equal(dirname(target), resolve(tmpdir()))
+  assert.ok(basename(target).startsWith('watchtower-row-calculation-'))
+  rmSync(target, { recursive: true, force: true })
+}
 
 function data(): SessionSummaryData {
   return {
@@ -238,34 +250,64 @@ describe('store row calculations', () => {
 
   it('matches the legacy view builders on a real ledger session-read projection', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-row-calculation-'))
-    const owner = openWorkerOwner(join(directory, 'ledger.db'))
+    const dbPath = join(directory, 'ledger.db')
+    let runtime: WorkerRuntime
     try {
-      owner.ledger.portIn({
-        provider: 'opencode',
-        envFingerprint: 'rows-parity',
-        filePath: FIXTURE_SOURCE_PATH,
-        verdict: 'new',
-        cachedFile: buildFixtureCachedFile(),
-      })
-      const data = await owner.runtime.runPromise(
-        Effect.flatMap(LedgerSessionReads, reads => reads.getSessionSummaryData()),
+      runtime = openWorkerRuntime(dbPath)
+    } catch (error) {
+      removeFixture(directory)
+      throw error
+    }
+    try {
+      await runtime.runPromise(
+        Effect.flatMap(LedgerIngest, ingest =>
+          ingest.portIn({
+            provider: 'opencode',
+            envFingerprint: 'rows-parity',
+            filePath: FIXTURE_SOURCE_PATH,
+            verdict: 'new',
+            cachedFile: buildFixtureCachedFile(),
+          }),
+        ),
       )
-      const searchData = await owner.runtime.runPromise(
+      const data = await runtime.runPromise(Effect.flatMap(LedgerSessionReads, reads => reads.getSessionSummaryData()))
+      const searchData = await runtime.runPromise(
         Effect.flatMap(LedgerSessionReads, reads => reads.getSessionSearchData()),
       )
       const catalogue = captureModelPricingCatalogue()
       const projectResult = buildProjectRowsFromSessionData(data, catalogue).rows
       const sessionResult = querySessionRowsFromSessionData(data, catalogue, {}).rows
       const searchResult = searchSessionsFromData(searchData, 'auth', catalogue)
-      expect(projectResult).toStrictEqual(legacyBuildProjectRowsFromLedger(owner.ledger))
-      expect(sessionResult).toStrictEqual(legacyQuerySessionRowsFromLedger(owner.ledger, {}))
-      expect(searchResult).toStrictEqual(legacySearchSessionsFromLedger(owner.ledger, 'auth'))
-      expect(await projectRows(owner.ledger)).toStrictEqual(projectResult)
-      expect(await sessionRows(owner.ledger)).toStrictEqual(sessionResult)
-      expect(await sessionSearch(owner.ledger, 'auth')).toStrictEqual(searchResult)
+      const legacyOracleStore = {
+        runQueriesSync: <A>(operation: (queries: LedgerQueries['Service']) => Effect.Effect<A, unknown>) =>
+          runtime.runSync(Effect.flatMap(LedgerQueries, operation)),
+        runRepositorySync: <A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, unknown>) =>
+          runtime.runSync(Effect.flatMap(LedgerConfig, operation)),
+      } as unknown as LedgerStore
+      expect(projectResult).toStrictEqual(legacyBuildProjectRowsFromLedger(legacyOracleStore))
+      expect(sessionResult).toStrictEqual(legacyQuerySessionRowsFromLedger(legacyOracleStore, {}))
+      expect(searchResult).toStrictEqual(legacySearchSessionsFromLedger(legacyOracleStore, 'auth'))
+
+      const diagnostics = PricingDiagnostics.of({ reportUnpricedModels: () => Effect.void })
+      await expect(
+        runtime.runPromise(
+          queryProjectRows({ catalogue }).pipe(Effect.provideService(PricingDiagnostics, diagnostics)),
+        ),
+      ).resolves.toStrictEqual(projectResult)
+      await expect(
+        runtime.runPromise(
+          querySessionRows({ catalogue, filter: {} }).pipe(Effect.provideService(PricingDiagnostics, diagnostics)),
+        ),
+      ).resolves.toStrictEqual(sessionResult)
+      await expect(runtime.runPromise(querySessionSearch({ catalogue, query: 'auth' }))).resolves.toStrictEqual(
+        searchResult,
+      )
     } finally {
-      await Effect.runPromise(owner.runtime.disposeEffect)
-      rmSync(directory, { recursive: true, force: true })
+      try {
+        await runtime.dispose()
+      } finally {
+        removeFixture(directory)
+      }
     }
   })
 })

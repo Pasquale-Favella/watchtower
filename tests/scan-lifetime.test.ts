@@ -1,6 +1,7 @@
+import { strict as assert } from 'node:assert'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import * as Effect from 'effect/Effect'
@@ -30,10 +31,10 @@ import {
 import type { DeltaHandler } from '../src/main/pipeline/parser.js'
 import type { ProviderScanServices } from '../src/main/pipeline/providers/types.js'
 import { runOwnedScanPromise } from '../src/main/pipeline/scan.js'
-import { LedgerIngest } from '../src/main/store/ledger-ports.js'
+import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
 import type { ScanDelta } from '../src/shared/schemas/scan.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
 
 function deferred<A>(): { promise: Promise<A>; resolve(value: A): void } {
   let resolve!: (value: A) => void
@@ -58,21 +59,27 @@ function defaultCommandLayer(): Layer.Layer<CommandRunner> {
   return makeRecordingCommandRunner(() => Effect.succeed({ stdout: 'https://example.test/project', exitCode: 0 })).layer
 }
 
+function removeFixture(directory: string): void {
+  const target = resolve(directory)
+  assert.equal(dirname(target), resolve(tmpdir()))
+  assert.ok(basename(target).startsWith('watchtower-scan-lifetime-'))
+  rmSync(target, { recursive: true, force: true })
+}
+
 describe('scan lifetime ownership', () => {
   let dir = ''
   let context: DbWorkerContext | null = null
+  let runtime: WorkerRuntime | null = null
   const events: DbWorkerEvent[] = []
 
   function open(commandLayer: Layer.Layer<CommandRunner> = defaultCommandLayer()) {
     dir = mkdtempSync(join(tmpdir(), 'watchtower-scan-lifetime-'))
     const dbPath = join(dir, 'ledger.db')
-    const owner = openWorkerOwner(dbPath, undefined, commandLayer)
-    context = new DbWorkerContext(
-      { dbPath, dataDir: dir, cacheDir: join(dir, 'cache') },
-      event => events.push(event),
-      owner,
-    )
-    return { context, ...owner }
+    runtime = openWorkerRuntime(dbPath, undefined, commandLayer)
+    context = new DbWorkerContext({ dbPath, dataDir: dir, cacheDir: join(dir, 'cache') }, event => events.push(event), {
+      runtime,
+    })
+    return { context, runtime }
   }
 
   afterEach(async () => {
@@ -81,11 +88,19 @@ describe('scan lifetime ownership', () => {
     setPriceOverrides({})
     setModelAliases({})
     setLocalModelSavings({})
-    await context?.close()
-    context = null
-    events.length = 0
-    if (dir) rmSync(dir, { recursive: true, force: true })
-    dir = ''
+    try {
+      await context?.close()
+    } finally {
+      try {
+        await runtime?.dispose()
+      } finally {
+        context = null
+        runtime = null
+        events.length = 0
+        if (dir) removeFixture(dir)
+        dir = ''
+      }
+    }
   })
 
   it.each(['https://example.test/project', ''])('memoizes repository answers per scan, including %j', async url => {
@@ -117,7 +132,7 @@ describe('scan lifetime ownership', () => {
         ),
       ),
     )
-    const { context: c, ledger, runtime } = open(commandLayer)
+    const { context: c, runtime } = open(commandLayer)
     const portIn = vi.spyOn(runtime.runSync(LedgerIngest), 'portIn')
     const model = 'scan-owned-model'
     const baseline = 'scan-owned-baseline'
@@ -158,7 +173,7 @@ describe('scan lifetime ownership', () => {
     await expect(firstScan).resolves.toEqual({ ok: true })
     const firstPricing = hooks.parseEffect.mock.calls[0][5].pricing
     expect(portIn.mock.calls[0][1]).toBe(firstPricing)
-    expect(ledger.getCalls()).toEqual(
+    expect(runtime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getCalls()))).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ model, baseCostUSD: firstExpected, savingsUSD: 0 }),
         expect.objectContaining({
@@ -182,15 +197,15 @@ describe('scan lifetime ownership', () => {
     expect(nextPricing).not.toBe(firstPricing)
     expect(portIn.mock.calls[1][1]).toBe(nextPricing)
     expect(
-      ledger
-        .getCalls()
+      runtime
+        .runSync(Effect.flatMap(LedgerQueries, queries => queries.getCalls()))
         .filter(call => call.model === model)
         .map(call => call.baseCostUSD)
         .sort((a, b) => a - b),
     ).toEqual([firstExpected, firstExpected * 100])
     expect(
-      ledger
-        .getCalls()
+      runtime
+        .runSync(Effect.flatMap(LedgerQueries, queries => queries.getCalls()))
         .filter(call => call.model === 'local-scan-model')
         .map(call => call.savingsUSD)
         .sort((a, b) => a - b),
