@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Fiber, Stream } from 'effect'
+import { Effect, Fiber, Result, Stream } from 'effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const native = vi.hoisted(() => ({
@@ -12,6 +12,7 @@ const native = vi.hoisted(() => ({
   }>,
   delayStat: false,
   statCalls: 0,
+  failRead: false,
   onStatStarted: undefined as (() => void) | undefined,
   releaseStat: undefined as (() => void) | undefined,
 }))
@@ -22,6 +23,9 @@ vi.mock('fs', async importOriginal => {
     ...actual,
     createReadStream: (...args: Parameters<typeof actual.createReadStream>) => {
       const stream = actual.createReadStream(...args)
+      if (native.failRead) {
+        stream.once('data', () => setImmediate(() => stream.destroy(new Error('injected read failure'))))
+      }
       native.streams.push(stream)
       return stream
     },
@@ -48,7 +52,7 @@ vi.mock('fs/promises', async importOriginal => {
 
 import { writeFile } from 'node:fs/promises'
 
-import { readSessionLinesStream } from '../src/main/pipeline/fs-utils.js'
+import { readSessionLinesStream, SessionLineReadError } from '../src/main/pipeline/fs-utils.js'
 
 let root = ''
 
@@ -58,6 +62,7 @@ afterEach(() => {
   native.streams.length = 0
   native.delayStat = false
   native.statCalls = 0
+  native.failRead = false
   native.onStatStarted = undefined
   native.releaseStat = undefined
 })
@@ -68,6 +73,36 @@ async function setup(): Promise<string> {
 }
 
 describe('native session line stream', () => {
+  it('propagates an opted-in missing-file failure', async () => {
+    const path = await setup()
+    const result = await Effect.runPromise(
+      Effect.result(Stream.runCollect(readSessionLinesStream(path, undefined, { readFailure: 'fail' }))),
+    )
+    if (Result.isSuccess(result)) throw new Error('Expected a missing-file failure')
+    expect(result.failure).toBeInstanceOf(SessionLineReadError)
+    expect(result.failure).toHaveProperty('cause.code', 'ENOENT')
+    expect(native.streams).toHaveLength(0)
+  })
+
+  it('propagates an opted-in read failure after a prefix and closes the stream', async () => {
+    const path = await setup()
+    await writeFile(path, 'line\n'.repeat(100_000))
+    native.failRead = true
+    const lines: Array<string | Buffer> = []
+    const result = await Effect.runPromise(
+      Effect.result(
+        Stream.runForEach(readSessionLinesStream(path, undefined, { readFailure: 'fail' }), line =>
+          Effect.sync(() => lines.push(line)),
+        ),
+      ),
+    )
+    if (Result.isSuccess(result)) throw new Error('Expected a read failure')
+    expect(result.failure).toBeInstanceOf(SessionLineReadError)
+    expect(result.failure).toHaveProperty('cause.message', 'injected read failure')
+    expect(lines.length).toBeGreaterThan(0)
+    expect(native.streams[0]?.closed).toBe(true)
+  })
+
   it('preserves empty lines without a preliminary stat for an explicitly uncapped source', async () => {
     const path = await setup()
     await writeFile(path, 'first\n\nlast')

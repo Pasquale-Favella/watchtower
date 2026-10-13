@@ -1,6 +1,6 @@
 import { basename } from 'node:path'
 
-import { Effect, Result, Stream } from 'effect'
+import { Effect, Result, Schema, Stream } from 'effect'
 import { createReadStream, readFileSync, statSync } from 'fs'
 import { readFile, stat } from 'fs/promises'
 
@@ -122,6 +122,10 @@ export function readSessionFileSync(filePath: string): string | null {
 
 export type SessionLine = string | Buffer
 
+export class SessionLineReadError extends Schema.TaggedError<SessionLineReadError>()('SessionLineReadError', {
+  cause: Schema.Defect(),
+}) {}
+
 type ReadSessionLinesOptions = {
   largeLineAsBuffer?: boolean
   largeLineThresholdBytes?: number
@@ -129,6 +133,7 @@ type ReadSessionLinesOptions = {
   byteOffsetTracker?: { lastCompleteLineOffset: number }
   maxBytes?: number
   preserveEmptyLines?: boolean
+  readFailure?: 'fail'
   signal?: AbortSignal
 }
 
@@ -206,6 +211,7 @@ export function readSessionLinesStream(
             yield* Effect.try({ try: () => throwIfScanAborted(options.signal), catch: toError })
           }
           warn(`stat failed for ${shortPath(filePath)}: ${errorCode(statResult.failure)}`)
+          if (options.readFailure === 'fail') return yield* new SessionLineReadError({ cause: statResult.failure })
           return Stream.empty
         }
         const size = statResult.success.size
@@ -230,7 +236,7 @@ export function readSessionLinesStream(
               ]()
               return { stream, iterator }
             })(),
-          catch: toError,
+          catch: cause => (options.readFailure === 'fail' ? new SessionLineReadError({ cause }) : toError(cause)),
         }),
         resource =>
           Effect.promise(async () => {
@@ -352,5 +358,6 @@ async function* splitNativeSessionLines(
   } catch (error) {
     throwIfScanAborted(options.signal)
     warn(`stream read failed for ${shortPath(filePath)}: ${errorCode(error)}`)
+    if (options.readFailure === 'fail') throw new SessionLineReadError({ cause: error })
   }
 }
