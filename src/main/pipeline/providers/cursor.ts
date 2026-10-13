@@ -8,11 +8,10 @@ import { join } from 'path'
 import { parsedProviderCallSchema } from '../../../shared/schemas/providers.js'
 import type { AppPaths } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
-import { readCachedResults, writeCachedResults } from '../cursor-cache.js'
+import { readCachedResultsEffect, writeCachedResultsEffect } from '../cursor-cache.js'
 import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../file-errors.js'
 import { captureScanPricing } from '../models.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
-import type { ScanPricing } from '../scan-pricing.js'
 import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
 import type { DateRange } from '../types.js'
@@ -874,6 +873,8 @@ const readCursorFacts = Effect.fnUntraced(function* (
   }
 })
 
+type CursorCandidate = Omit<ParsedProviderCall, 'costUSD'> & { pricingModel: string }
+
 function parseBubbles(
   rows: BubbleRow[],
   composerMetaRows: ReadonlyArray<unknown>,
@@ -883,9 +884,8 @@ function parseBubbles(
   truncatedCount: number | null,
   seenKeys: Set<string>,
   agentKvTimestamp: string,
-  pricing: ScanPricing,
-): { calls: ParsedProviderCall[] } {
-  const results: ParsedProviderCall[] = []
+): { calls: CursorCandidate[] } {
+  const results: CursorCandidate[] = []
   const composerMetaResult = loadComposerMeta(composerMetaRows)
   const composerMeta = composerMetaResult.meta
   let skipped = skippedRows + composerMetaResult.skipped
@@ -934,6 +934,7 @@ function parseBubbles(
   const emit = (
     call: Omit<
       ParsedProviderCall,
+      | 'costUSD'
       | 'provider'
       | 'speed'
       | 'cacheCreationInputTokens'
@@ -942,7 +943,7 @@ function parseBubbles(
       | 'reasoningTokens'
       | 'webSearchRequests'
       | 'costIsEstimated'
-    >,
+    > & { pricingModel: string },
   ): void => {
     results.push({
       provider: 'cursor',
@@ -1012,8 +1013,6 @@ function parseBubbles(
       const effectiveModel =
         row.model ?? scans.get(conversationId)?.model ?? agentStreams.get(conversationId)?.model ?? null
       const pricingModel = resolveModel(effectiveModel)
-      const costUSD = pricing.calculateCost(pricingModel, inputTokens, outputTokens, 0, 0, 0)
-
       const userQuestion = lastUserMsg.get(conversationId) ?? ''
       const assistantText = blobToText(row.user_text)
       const userText = (userQuestion + ' ' + assistantText).trim()
@@ -1035,7 +1034,7 @@ function parseBubbles(
         model: modelForDisplay(effectiveModel),
         inputTokens,
         outputTokens,
-        costUSD,
+        pricingModel,
         tools: [...(hasCode ? ['cursor:edit', ...languages.map(l => `lang:${l}`)] : []), ...(agentTurn?.tools ?? [])],
         bashCommands: agentTurn?.bash ?? [],
         timestamp: createdAt,
@@ -1083,7 +1082,7 @@ function parseBubbles(
       model: modelForDisplay(effectiveModel),
       inputTokens,
       outputTokens,
-      costUSD: pricing.calculateCost(resolveModel(effectiveModel), inputTokens, outputTokens, 0, 0, 0),
+      pricingModel: resolveModel(effectiveModel),
       tools: stream?.tools ?? [],
       bashCommands: stream?.bash ?? [],
       timestamp,
@@ -1109,7 +1108,7 @@ function parseBubbles(
       model: modelForDisplay(stream.model),
       inputTokens,
       outputTokens,
-      costUSD: pricing.calculateCost(resolveModel(stream.model), inputTokens, outputTokens, 0, 0, 0),
+      pricingModel: resolveModel(stream.model),
       tools: stream.tools,
       bashCommands: stream.bash,
       timestamp: agentKvTimestamp,
@@ -1152,16 +1151,22 @@ function closeCursorDatabase(owned: OwnedDatabase): Effect.Effect<void, CursorDa
 
 const decodeCachedCalls = Schema.decodeUnknownResult(Schema.Array(parsedProviderCallSchema))
 
-function filterWorkspaceCalls(
-  calls: ReadonlyArray<ParsedProviderCall>,
+function matchesWorkspaceFilter(
+  sessionId: string,
   composers: Set<string> | null,
   mode: 'include' | 'exclude',
-): ParsedProviderCall[] {
-  if (composers === null) return [...calls]
-  return calls.filter(call => {
-    const included = composers.has(call.sessionId)
-    return mode === 'include' ? included : !included
-  })
+): boolean {
+  if (composers === null) return true
+  const included = composers.has(sessionId)
+  return mode === 'include' ? included : !included
+}
+
+function filterWorkspaceCalls<T extends Pick<ParsedProviderCall, 'sessionId'>>(
+  calls: ReadonlyArray<T>,
+  composers: Set<string> | null,
+  mode: 'include' | 'exclude',
+): T[] {
+  return calls.filter(call => matchesWorkspaceFilter(call.sessionId, composers, mode))
 }
 
 function emitCursorCalls(
@@ -1211,7 +1216,7 @@ function createParser(
               : yield* loadWorkspaceMapEffect(getCursorWorkspaceStorageDir(dbPath), signal)
           const { composers: composerFilter, mode: filterMode } = getComposerFilter(workspaceTag, workspaceMap)
 
-          const cachedUnknown = yield* scanIo(() => readCachedResults(dbPath, timeFloor), signal)
+          const cachedUnknown = yield* readCachedResultsEffect(dbPath, timeFloor, signal)
           const cached = cachedUnknown === null ? null : decodeCachedCalls(cachedUnknown)
           if (cached !== null && Result.isSuccess(cached)) {
             return emitCursorCalls(
@@ -1262,17 +1267,45 @@ function createParser(
             facts.truncatedCount,
             localSeen,
             agentKvTimestamp,
-            pricing,
           ).calls
           yield* checkScanAbort(signal)
-          yield* scanIo(() => writeCachedResults(dbPath, extracted, timeFloor, paths?.suppressCacheWrites), signal)
+          // The SQLite snapshot is complete. Close it before per-call pricing,
+          // which remains lazy and follows downstream stream demand.
+          yield* closeCursorDatabase(acquired)
 
-          return emitCursorCalls(
-            filterWorkspaceCalls(extracted, composerFilter, filterMode),
-            seenKeys,
-            workspacePath,
-            signal,
-          ).pipe(Stream.concat(Stream.fromEffectDrain(closeCursorDatabase(acquired))))
+          const cacheCalls: ParsedProviderCall[] = []
+          const neutralCalls = Stream.fromIterable(extracted).pipe(
+            Stream.mapEffect(candidate =>
+              Effect.gen(function* () {
+                yield* checkScanAbort(signal)
+                const { pricingModel, ...call } = candidate
+                const pricedCall: ParsedProviderCall = {
+                  ...call,
+                  costUSD: pricing.calculateCost(pricingModel, call.inputTokens, call.outputTokens, 0, 0, 0),
+                }
+                cacheCalls.push(pricedCall)
+                return pricedCall
+              }),
+            ),
+          )
+          const publicCalls = neutralCalls.pipe(
+            Stream.filter(call => matchesWorkspaceFilter(call.sessionId, composerFilter, filterMode)),
+            Stream.mapEffect(call =>
+              Effect.gen(function* () {
+                yield* checkScanAbort(signal)
+                if (seenKeys.has(call.deduplicationKey)) return Result.fail(undefined)
+                seenKeys.add(call.deduplicationKey)
+                return Result.succeed(attachWorkspacePaths(call, workspacePath))
+              }),
+            ),
+            Stream.filterMap(value => value),
+          )
+          return Stream.concat(
+            publicCalls,
+            Stream.fromEffectDrain(
+              writeCachedResultsEffect(dbPath, cacheCalls, timeFloor, paths?.suppressCacheWrites, signal),
+            ),
+          )
         }),
       ),
     )

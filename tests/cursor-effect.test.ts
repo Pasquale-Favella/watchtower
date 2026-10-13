@@ -13,6 +13,8 @@ const hooks = vi.hoisted(() => ({
   includeNullTimestampPrompt: false,
   onOpen: undefined as (() => void) | undefined,
   cached: null as unknown,
+  cacheWrites: 0,
+  cachedWrites: [] as unknown[][],
   busyError: new Error('SQLITE_BUSY: database is locked'),
 }))
 
@@ -103,25 +105,33 @@ vi.mock('../src/main/pipeline/sqlite.js', () => ({
   },
 }))
 
-vi.mock('../src/main/pipeline/cursor-cache.js', () => ({
-  readCachedResults: async () => hooks.cached,
-  writeCachedResults: async () => undefined,
-}))
+vi.mock('../src/main/pipeline/cursor-cache.js', async () => {
+  const { Effect } = await import('effect')
+  return {
+    readCachedResultsEffect: () => Effect.succeed(hooks.cached),
+    writeCachedResultsEffect: (_dbPath: string, calls: unknown[]) =>
+      Effect.sync(() => {
+        hooks.cacheWrites++
+        hooks.cachedWrites.push(calls)
+      }),
+  }
+})
 
 import { Env } from '../src/main/env.js'
 import { clearCursorWorkspaceMapCache, createCursorProvider } from '../src/main/pipeline/providers/cursor.js'
 import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
 
 function source(): SessionSource {
   return { path: 'cursor-test-db', project: 'cursor', provider: 'cursor' }
 }
 
-function parser(signal?: AbortSignal) {
-  return createCursorProvider().createSessionParser(source(), new Set(), undefined, { signal })
+function parser(signal?: AbortSignal, pricing?: ScanPricing) {
+  return createCursorProvider().createSessionParser(source(), new Set(), undefined, { signal, pricing })
 }
 
-function nativeStream(signal?: AbortSignal): Stream.Stream<ParsedProviderCall, Error> {
-  const stream = parser(signal).parseStream
+function nativeStream(signal?: AbortSignal, pricing?: ScanPricing): Stream.Stream<ParsedProviderCall, Error> {
+  const stream = parser(signal, pricing).parseStream
   if (!stream) throw new Error('Cursor parser did not expose its native stream')
   return stream()
 }
@@ -134,6 +144,8 @@ beforeEach(() => {
   hooks.includeNullTimestampPrompt = false
   hooks.onOpen = undefined
   hooks.cached = null
+  hooks.cacheWrites = 0
+  hooks.cachedWrites = []
   clearCursorWorkspaceMapCache()
 })
 
@@ -148,12 +160,41 @@ describe('Cursor native Effect stream', () => {
     expect(calls).toHaveLength(2)
     expect(hooks.openCount).toBe(1)
     expect(hooks.closeCount).toBe(1)
+    expect(hooks.cacheWrites).toBe(1)
+    expect(hooks.cachedWrites[0]).toHaveLength(2)
   })
 
   it('closes its database when a consumer stops early', async () => {
     const calls = await Effect.runPromise(Stream.runCollect(nativeStream().pipe(Stream.take(1))))
     expect(calls).toHaveLength(1)
     expect(hooks.closeCount).toBe(1)
+    expect(hooks.cacheWrites).toBe(0)
+  })
+
+  it('prices and admits only pulled cold calls and leaves no partial cache', async () => {
+    const calculateCost = vi.fn(() => 1)
+    const pricing = { calculateCost, calculateLocalModelSavings: () => null }
+    const calls = await Effect.runPromise(Stream.runCollect(nativeStream(undefined, pricing).pipe(Stream.take(1))))
+    expect(calls).toHaveLength(1)
+    expect(calculateCost).toHaveBeenCalledTimes(1)
+    expect(hooks.cacheWrites).toBe(0)
+  })
+
+  it('reuses validated warm calls without repricing', async () => {
+    const coldPricing: ScanPricing = { calculateCost: () => 7, calculateLocalModelSavings: () => null }
+    const coldCalls = await Effect.runPromise(Stream.runCollect(nativeStream(undefined, coldPricing)))
+    hooks.cached = hooks.cachedWrites[0]
+    hooks.openCount = 0
+    hooks.cacheWrites = 0
+    const warmCalculate = vi.fn(() => 99)
+    const warmPricing: ScanPricing = { calculateCost: warmCalculate, calculateLocalModelSavings: () => null }
+
+    const warmCalls = await Effect.runPromise(Stream.runCollect(nativeStream(undefined, warmPricing)))
+
+    expect(warmCalls).toEqual(coldCalls)
+    expect(warmCalculate).not.toHaveBeenCalled()
+    expect(hooks.openCount).toBe(0)
+    expect(hooks.cacheWrites).toBe(0)
   })
 
   it('closes its database and preserves the SQLite busy cause on failure', async () => {

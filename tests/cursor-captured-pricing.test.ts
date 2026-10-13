@@ -14,21 +14,25 @@ const hooks = vi.hoisted(() => ({
 
 vi.mock('../src/main/pipeline/cursor-cache.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/main/pipeline/cursor-cache.js')>()
+  const { Effect } = await import('effect')
+  const readCachedResults = async (dbPath: string) => {
+    if (hooks.pauseNextRead) {
+      hooks.pauseNextRead = false
+      await new Promise<void>(resolve => {
+        hooks.releaseRead = resolve
+        hooks.onReadStarted?.()
+      })
+    }
+    return (hooks.cache.get(dbPath) as Awaited<ReturnType<typeof actual.readCachedResults>>) ?? null
+  }
   return {
     ...actual,
-    readCachedResults: async (dbPath: string) => {
-      if (hooks.pauseNextRead) {
-        hooks.pauseNextRead = false
-        await new Promise<void>(resolve => {
-          hooks.releaseRead = resolve
-          hooks.onReadStarted?.()
-        })
-      }
-      return (hooks.cache.get(dbPath) as Awaited<ReturnType<typeof actual.readCachedResults>>) ?? null
-    },
-    writeCachedResults: async (dbPath: string, calls: unknown[]) => {
-      hooks.cache.set(dbPath, calls)
-    },
+    readCachedResultsEffect: (dbPath: string) =>
+      Effect.tryPromise({
+        try: () => readCachedResults(dbPath),
+        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      }),
+    writeCachedResultsEffect: (dbPath: string, calls: unknown[]) => Effect.sync(() => hooks.cache.set(dbPath, calls)),
   }
 })
 

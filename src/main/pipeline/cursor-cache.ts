@@ -1,10 +1,12 @@
-import { readFile, writeFile, mkdir, rename, stat, unlink } from 'fs/promises'
-import { join } from 'path'
-import { homedir } from 'os'
 import { randomBytes } from 'crypto'
+import { Effect, Result, Schema } from 'effect'
+import { mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
+import { homedir } from 'os'
+import { join } from 'path'
 
+import { type ParsedProviderCall, parsedProviderCallSchema } from '../../shared/schemas/providers.js'
 import { resolveCursorCacheSuppressWrites } from '../env.js'
-import type { ParsedProviderCall } from './providers/types.js'
+import { isScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
 
 // Bumped to 3 for the workspace-aware breakdown change: the cursor parser
 // now derives `sessionId` from the bubble row key (the real composer id)
@@ -21,16 +23,18 @@ import type { ParsedProviderCall } from './providers/types.js'
 // agent stream regained tool/system context and stream-only sessions, and
 // tool names are canonicalized. v5 results mix crediting regimes.
 const CURSOR_CACHE_VERSION = 6
-
-type ResultCache = {
-  version?: number
-  dbMtimeMs: number
-  dbSizeBytes: number
-  lookbackFloor: string
-  calls: ParsedProviderCall[]
-}
-
 const CACHE_FILE = 'cursor-results.json'
+
+const finiteNumber = Schema.Number.pipe(Schema.check(Schema.isFinite()))
+const resultCacheSchema = Schema.Struct({
+  version: Schema.Literal(CURSOR_CACHE_VERSION),
+  dbMtimeMs: finiteNumber,
+  dbSizeBytes: finiteNumber,
+  lookbackFloor: Schema.String,
+  calls: Schema.mutable(Schema.Array(parsedProviderCallSchema)),
+})
+const resultCacheJsonSchema = Schema.fromJsonString(resultCacheSchema)
+const decodeResultCache = Schema.decodeUnknownResult(resultCacheJsonSchema)
 
 function getCacheDir(): string {
   return join(homedir(), '.cache', 'watchtower')
@@ -40,36 +44,133 @@ function getCachePath(): string {
   return join(getCacheDir(), CACHE_FILE)
 }
 
-async function getDbFingerprint(dbPath: string): Promise<{ mtimeMs: number; size: number } | null> {
-  try {
-    const s = await stat(dbPath)
-    return { mtimeMs: s.mtimeMs, size: s.size }
-  } catch {
-    return null
-  }
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause), { cause })
 }
 
-export async function readCachedResults(dbPath: string, requestedFloor: string): Promise<ParsedProviderCall[] | null> {
-  try {
-    const fp = await getDbFingerprint(dbPath)
-    if (!fp) return null
+function abortCheck(signal?: AbortSignal): Effect.Effect<void, Error> {
+  return Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+}
 
-    const raw = await readFile(getCachePath(), 'utf-8')
-    const cache = JSON.parse(raw) as ResultCache
+/** Owns an uninterruptible Node promise until its native leaf has settled. */
+function nativeLeaf<A>(operation: () => Promise<A>, signal?: AbortSignal): Effect.Effect<A, Error> {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const owned = yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          let settled = false
+          const promise = Promise.resolve()
+            .then(() => {
+              throwIfScanAborted(signal)
+              return operation()
+            })
+            .finally(() => {
+              settled = true
+            })
+          const drained = promise.then(
+            () => undefined,
+            () => undefined,
+          )
+          return { promise, drained, isSettled: () => settled }
+        }),
+        resource => Effect.promise(() => (resource.isSettled() ? Promise.resolve() : resource.drained)),
+      )
+      return yield* Effect.tryPromise({
+        try: () => owned.promise,
+        catch: cause => (signal?.aborted ? scanAbortError(signal) : toError(cause)),
+      })
+    }),
+  )
+}
 
-    if (
-      cache.version === CURSOR_CACHE_VERSION &&
-      cache.dbMtimeMs === fp.mtimeMs &&
-      cache.dbSizeBytes === fp.size &&
-      typeof cache.lookbackFloor === 'string' &&
-      cache.lookbackFloor <= requestedFloor
-    ) {
-      return cache.calls
-    }
-    return null
-  } catch {
+function getDbFingerprint(
+  dbPath: string,
+  signal?: AbortSignal,
+): Effect.Effect<{ mtimeMs: number; size: number } | null, Error> {
+  return nativeLeaf(() => stat(dbPath).then(file => ({ mtimeMs: file.mtimeMs, size: file.size })), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
+}
+
+export const readCachedResultsEffect = Effect.fn('readCachedResultsEffect')(function* (
+  dbPath: string,
+  requestedFloor: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<ParsedProviderCall[] | null, Error> {
+  yield* abortCheck(signal)
+  const fingerprint = yield* getDbFingerprint(dbPath, signal)
+  if (!fingerprint) return null
+  const raw = yield* nativeLeaf(() => readFile(getCachePath(), 'utf-8'), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
+  yield* abortCheck(signal)
+  if (raw === null) return null
+  const decoded = decodeResultCache(raw)
+  if (Result.isFailure(decoded)) return null
+  const cache = decoded.success
+  if (
+    cache.dbMtimeMs !== fingerprint.mtimeMs ||
+    cache.dbSizeBytes !== fingerprint.size ||
+    cache.lookbackFloor > requestedFloor
+  ) {
     return null
   }
+  return cache.calls
+})
+
+export const writeCachedResultsEffect = Effect.fn('writeCachedResultsEffect')(function* (
+  dbPath: string,
+  calls: ParsedProviderCall[],
+  lookbackFloor: string,
+  suppressWrites?: boolean,
+  signal?: AbortSignal,
+): Effect.fn.Return<void, Error, import('effect/Scope').Scope> {
+  yield* abortCheck(signal)
+  if (suppressWrites ?? resolveCursorCacheSuppressWrites(process.env['WATCHTOWER_SUPPRESS_CACHE_WRITES'])) return
+  const fingerprint = yield* getDbFingerprint(dbPath, signal)
+  if (!fingerprint) return
+
+  const dir = getCacheDir()
+  yield* nativeLeaf(() => mkdir(dir, { recursive: true }), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.void)),
+  )
+  yield* abortCheck(signal)
+  const cache = {
+    version: CURSOR_CACHE_VERSION,
+    dbMtimeMs: fingerprint.mtimeMs,
+    dbSizeBytes: fingerprint.size,
+    lookbackFloor,
+    calls,
+  }
+  const encoded = yield* Schema.encodeUnknownEffect(resultCacheSchema)(cache).pipe(
+    Effect.catch(() => Effect.succeed(null)),
+  )
+  if (encoded === null) return
+  const target = getCachePath()
+  let tempPath: string | undefined = `${target}.${randomBytes(8).toString('hex')}.tmp`
+  const cleanup = Effect.gen(function* () {
+    if (!tempPath) return
+    const ownedPath = tempPath
+    tempPath = undefined
+    yield* nativeLeaf(() => unlink(ownedPath)).pipe(Effect.catch(() => Effect.void))
+  })
+  yield* Effect.addFinalizer(() => cleanup)
+  const stagedPath = tempPath
+  yield* nativeLeaf(
+    () => writeFile(stagedPath, JSON.stringify(encoded), { encoding: 'utf-8', mode: 0o600 }),
+    signal,
+  ).pipe(Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.void)))
+  yield* abortCheck(signal)
+  yield* nativeLeaf(() => rename(stagedPath, target), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.void)),
+  )
+  tempPath = undefined
+})
+
+// Promise adapters remain for callers that have not migrated to the native
+// Effect hook yet. Cursor parsing itself composes the effects above directly.
+export async function readCachedResults(dbPath: string, requestedFloor: string): Promise<ParsedProviderCall[] | null> {
+  return Effect.runPromise(readCachedResultsEffect(dbPath, requestedFloor))
 }
 
 export async function writeCachedResults(
@@ -78,38 +179,5 @@ export async function writeCachedResults(
   lookbackFloor: string,
   suppressWrites?: boolean,
 ): Promise<void> {
-  // Diagnostic contexts sample-parse providers under a
-  // strictly read-only promise; this is the one parse path that writes to
-  // disk before its first yield, so it honors the suppression flag. The flag
-  // arrives as `AppPaths.suppressCacheWrites`, threaded from the call-site
-  // root (`createCursorProvider`); the `process.env` fallback stays until every
-  // reader is snapshot-initialized AND the env-mutating tests migrate.
-  if (suppressWrites ?? resolveCursorCacheSuppressWrites(process.env['WATCHTOWER_SUPPRESS_CACHE_WRITES'])) return
-  const fp = await getDbFingerprint(dbPath)
-  if (!fp) return
-
-  const dir = getCacheDir()
-  await mkdir(dir, { recursive: true }).catch(() => {})
-  const cache: ResultCache = {
-    version: CURSOR_CACHE_VERSION,
-    dbMtimeMs: fp.mtimeMs,
-    dbSizeBytes: fp.size,
-    lookbackFloor,
-    calls,
-  }
-
-  // Atomic write: stage to a randomized temp file in the same directory,
-  // then rename onto the final path. rename() is atomic on POSIX, so a
-  // crash mid-write never leaves a half-written cache, and concurrent
-  // CLI invocations using their own random temp names cannot interleave
-  // bytes in the destination file (they only race on the final rename,
-  // last-writer-wins, both with valid content).
-  const target = getCachePath()
-  const tempPath = `${target}.${randomBytes(8).toString('hex')}.tmp`
-  try {
-    await writeFile(tempPath, JSON.stringify(cache), 'utf-8')
-    await rename(tempPath, target)
-  } catch {
-    await unlink(tempPath).catch(() => {})
-  }
+  return Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, calls, lookbackFloor, suppressWrites)))
 }
