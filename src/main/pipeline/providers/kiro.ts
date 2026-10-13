@@ -1,4 +1,4 @@
-import { Effect, Result, Schema, Stream } from 'effect'
+import { Cache, Context, Effect, Option, Result, Schema, Stream } from 'effect'
 import type { Dirent } from 'fs'
 import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
@@ -81,6 +81,14 @@ const toolNameMap: Record<string, string> = {
 }
 
 type KiroModernExecution = Record<string, unknown>
+
+export interface KiroScanReadData {
+  readonly readCompanionRecord: (path: string) => Effect.Effect<Record<string, unknown> | null, Error>
+}
+
+export class KiroScanReads extends Context.Service<KiroScanReads, KiroScanReadData>()(
+  'watchtower/pipeline/KiroScanReads',
+) {}
 
 type KiroCost =
   | {
@@ -973,8 +981,7 @@ function createParser(
                 const record = decodeKiroJsonRecord(line)
                 if (!record) return []
                 if (!parser) {
-                  const metaContent = yield* readCompanionFile(metaPath, signal)
-                  const decodedMeta = metaContent === null ? null : decodeKiroJsonRecord(metaContent)
+                  const decodedMeta = yield* readCompanionRecord(metaPath, signal)
                   if (isV2) {
                     parser = createV2CandidateParser(source, decodedMeta)
                   } else {
@@ -1043,16 +1050,34 @@ function createParser(
   }
 }
 
-const readCompanionFile = Effect.fnUntraced(function* (
+const loadCompanionRecord = Effect.fnUntraced(function* (
   path: string,
   signal?: AbortSignal,
-): Effect.fn.Return<string | null, Error> {
-  yield* checkScanAbort(signal)
-  const result = yield* Effect.uninterruptible(
-    Effect.result(Effect.tryPromise({ try: () => readFile(path, 'utf-8'), catch: toError })),
+): Effect.fn.Return<Record<string, unknown> | null, Error> {
+  const raw = yield* scanIo(() => readFile(path, 'utf-8'), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
   )
-  yield* checkScanAbort(signal)
-  return Result.isSuccess(result) ? result.success : null
+  return raw === null ? null : decodeKiroJsonRecord(raw)
+})
+
+export const createKiroScanReads = Effect.fnUntraced(function* (
+  signal?: AbortSignal,
+): Effect.fn.Return<KiroScanReadData> {
+  const companions = yield* Cache.make({
+    capacity: Infinity,
+    lookup: (path: string) => loadCompanionRecord(path, signal),
+  })
+  return {
+    readCompanionRecord: path => checkScanAbort(signal).pipe(Effect.andThen(Cache.get(companions, path))),
+  }
+})
+
+const readCompanionRecord = Effect.fnUntraced(function* (
+  path: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<Record<string, unknown> | null, Error> {
+  const scanReads = Option.getOrUndefined(yield* Effect.serviceOption(KiroScanReads))
+  return yield* scanReads ? scanReads.readCompanionRecord(path) : loadCompanionRecord(path, signal)
 })
 
 function toError(cause: unknown): Error {
@@ -1105,17 +1130,14 @@ const isDirectory = Effect.fnUntraced(function* (path: string, signal?: AbortSig
   )
 })
 
-function readWorkspaceProject(workspaceDir: string, raw: string | null): string {
-  if (raw !== null) {
-    const data = decodeKiroJsonRecord(raw)
-    const folder = data?.['folder']
-    if (typeof folder === 'string' && folder) {
-      const url = folder.replace(/^file:\/\//, '')
-      try {
-        return basename(decodeURIComponent(url))
-      } catch {
-        return basename(workspaceDir)
-      }
+function readWorkspaceProject(workspaceDir: string, data: Record<string, unknown> | null): string {
+  const folder = data?.['folder']
+  if (typeof folder === 'string' && folder) {
+    const url = folder.replace(/^file:\/\//, '')
+    try {
+      return basename(decodeURIComponent(url))
+    } catch {
+      return basename(workspaceDir)
     }
   }
   return basename(workspaceDir)
@@ -1128,7 +1150,7 @@ const resolveWorkspaceProject = Effect.fnUntraced(function* (
   signal?: AbortSignal,
 ): Effect.fn.Return<string, Error> {
   const wsDir = join(workspaceStorageDir, workspaceHash)
-  const workspaceJson = yield* readCompanionFile(join(wsDir, 'workspace.json'), signal)
+  const workspaceJson = yield* readCompanionRecord(join(wsDir, 'workspace.json'), signal)
   const project = readWorkspaceProject(wsDir, workspaceJson)
   if (project !== workspaceHash) return project
 
@@ -1156,8 +1178,7 @@ const discoverSessions = Effect.fnUntraced(function* (
     if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue
     const jsonlPath = join(cliSessionsDir, entry.name)
     const metaPath = jsonlPath.replace(/\.jsonl$/, '.json')
-    const raw = yield* readCompanionFile(metaPath, signal)
-    const meta = raw === null ? null : decodeKiroJsonRecord(raw)
+    const meta = yield* readCompanionRecord(metaPath, signal)
     const cwd = meta?.['cwd']
     const project = typeof cwd === 'string' && cwd ? basename(cwd) : 'kiro-cli'
     sources.push({ path: jsonlPath, project, provider: 'kiro' })
@@ -1243,8 +1264,7 @@ const discoverV2Sessions = Effect.fnUntraced(function* (
 
       // Project from session.json workspacePaths; fall back to a generic label.
       let project = 'kiro-ide'
-      const raw = yield* readCompanionFile(join(sessDir, 'session.json'), signal)
-      const sessionMeta = raw === null ? null : decodeKiroJsonRecord(raw)
+      const sessionMeta = yield* readCompanionRecord(join(sessDir, 'session.json'), signal)
       const workspacePaths = sessionMeta?.['workspacePaths']
       const wp = Array.isArray(workspacePaths) && typeof workspacePaths[0] === 'string' ? workspacePaths[0] : undefined
       if (wp) project = basename(wp)

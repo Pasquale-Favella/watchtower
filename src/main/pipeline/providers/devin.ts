@@ -1,4 +1,4 @@
-import { Effect, Result, Schema, Stream } from 'effect'
+import { Cache, Context, Effect, Option, Result, Schema, Stream } from 'effect'
 import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
@@ -83,6 +83,14 @@ class DevinDatabaseError extends Schema.TaggedError<DevinDatabaseError>()('Devin
   cause: Schema.Defect(),
   message: Schema.String,
 }) {}
+
+export interface DevinScanReadData {
+  readonly readCostFactor: (path: string) => Effect.Effect<number | null, Error>
+}
+
+export class DevinScanReads extends Context.Service<DevinScanReads, DevinScanReadData>()(
+  'watchtower/pipeline/DevinScanReads',
+) {}
 
 function toError(cause: unknown): Error {
   return cause instanceof Error ? cause : new Error(String(cause), { cause })
@@ -393,14 +401,35 @@ function configPath(): string {
   return join(homedir(), '.config', 'watchtower', 'config.json')
 }
 
-const readCostFactor = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<number | null, Error> {
-  const raw = yield* scanIo(() => readFile(configPath(), 'utf-8'), signal).pipe(
+const loadCostFactor = Effect.fnUntraced(function* (
+  path: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<number | null, Error> {
+  const raw = yield* scanIo(() => readFile(path, 'utf-8'), signal).pipe(
     Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
   )
   if (raw === null) return null
   const decoded = decodeConfig(raw)
   if (Result.isFailure(decoded)) return null
   return positiveNumber(decoded.success.devin?.acuUsdRate) ?? null
+})
+
+export const createDevinScanReads = Effect.fnUntraced(function* (
+  signal?: AbortSignal,
+): Effect.fn.Return<DevinScanReadData> {
+  const costFactors = yield* Cache.make({
+    capacity: Infinity,
+    lookup: (path: string) => loadCostFactor(path, signal),
+  })
+  return {
+    readCostFactor: path => checkScanAbort(signal).pipe(Effect.andThen(Cache.get(costFactors, path))),
+  }
+})
+
+const readCostFactor = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<number | null, Error> {
+  const path = configPath()
+  const scanReads = Option.getOrUndefined(yield* Effect.serviceOption(DevinScanReads))
+  return yield* scanReads ? scanReads.readCostFactor(path) : loadCostFactor(path, signal)
 })
 
 function createParser(

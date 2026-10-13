@@ -43,7 +43,9 @@ import {
   shouldReparseAntigravitySource,
 } from './providers/antigravity.js'
 import { getDesktopSessionsDirs } from './providers/claude.js'
+import { createDevinScanReads, DevinScanReads } from './providers/devin.js'
 import { discoverAllSessionsEffect, getProviderEffect } from './providers/index.js'
+import { createKiroScanReads, KiroScanReads } from './providers/kiro.js'
 import { createQuickdeskScanData, QuickdeskScanReads } from './providers/quickdesk.js'
 import type { ParsedProviderCall, ProviderScanContext, ProviderScanServices, SessionSource } from './providers/types.js'
 import { fetchVercelGatewayReportEffect } from './providers/vercel-gateway.js'
@@ -4530,7 +4532,18 @@ export const parseAllSessionsEffect = Effect.fnUntraced(
       ),
     )
   },
-  (effect, ...args) => Effect.provideServiceEffect(effect, QuickdeskScanReads, createQuickdeskScanData(args[4])),
+  (effect, ...args) =>
+    Effect.gen(function* () {
+      const signal = args[4]
+      const quickdeskReads = yield* createQuickdeskScanData(signal)
+      const devinReads = yield* createDevinScanReads(signal)
+      const kiroReads = yield* createKiroScanReads(signal)
+      return yield* effect.pipe(
+        Effect.provideService(QuickdeskScanReads, quickdeskReads),
+        Effect.provideService(DevinScanReads, devinReads),
+        Effect.provideService(KiroScanReads, kiroReads),
+      )
+    }),
 )
 
 /** Compatibility edge for direct tests and callers not migrated yet. */
