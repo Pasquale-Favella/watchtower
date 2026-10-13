@@ -29,52 +29,37 @@
  * The dedicated test TypeScript config checks the fixtures and casts. No
  * `process.env` is mutated anywhere in this file.
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import * as Effect from 'effect/Effect'
-import { afterEach, describe, expect, it } from 'vitest'
+import * as Schema from 'effect/Schema'
+import { describe, expect, it } from 'vitest'
 
 import { queryOverview } from '../src/main/application/overview-query.js'
+import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
+import { querySessionDetail } from '../src/main/application/session-detail-query.js'
 import { queryDashboardViews } from '../src/main/application/view-queries.js'
-import { captureLocalModelSavings } from '../src/main/pipeline/models.js'
 import {
+  captureLocalModelSavings,
+  captureModelPricingCatalogue,
+  captureProxyPaths,
+} from '../src/main/pipeline/models.js'
+import { sessionRowFromSummary } from '../src/main/pipeline/sessions-report.js'
+import { CATEGORY_LABELS, type SessionSummary } from '../src/main/pipeline/types.js'
+import {
+  buildSessionSummariesFromSnapshot,
   buildSessionSummariesFromSnapshotResult,
   queryScopeFromSnapshotResult,
 } from '../src/main/store/aggregate-calculation.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
-import { LedgerQueries } from '../src/main/store/ledger-repository.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { loadLedgerQuerySnapshotEffect, makeLedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
 import type { LedgerCallFactsRow } from '../src/main/store/read-projections.js'
-import { openWorkerRuntime, type WorkerServices } from '../src/main/worker-runtime.js'
+import type { WorkerRuntime, WorkerServices } from '../src/main/worker-runtime.js'
+import { sessionDetailSchema } from '../src/shared/schemas/views.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
-import { viewInputs } from './fixtures/ledger-runtime.js'
-import { legacyGetSessionDetailFromLedger } from './fixtures/pre-wave17-store-views.js'
-import { sessionDetail } from './fixtures/store-view-queries.js'
-
-const tempDirs: string[] = []
-const closers: Array<() => void> = []
-
-function makeStore(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-narrow-reads-'))
-  tempDirs.push(dir)
-  const store = new LedgerStore(join(dir, 'ledger.db'))
-  closers.push(() => {
-    try {
-      store.close()
-    } catch {
-      /* already closed */
-    }
-  })
-  return store
-}
-
-afterEach(() => {
-  for (const close of closers.splice(0)) close()
-  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
-})
+import { openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 /** The nine `ledger_call` columns `getCallFacts` does not select. */
 const DROPPED_CALL_FIELDS = [
@@ -182,48 +167,146 @@ function richFixture() {
   return file
 }
 
-function portRich(store: LedgerStore): void {
-  store.portIn({
-    provider: 'opencode',
-    envFingerprint: 'env-narrow',
-    filePath: FIXTURE_SOURCE_PATH,
-    verdict: 'new',
-    cachedFile: richFixture(),
-  })
+function portRich(runtime: WorkerRuntime): void {
+  runtime.runSync(
+    Effect.flatMap(LedgerIngest, ingest =>
+      ingest.portIn({
+        provider: 'opencode',
+        envFingerprint: 'env-narrow',
+        filePath: FIXTURE_SOURCE_PATH,
+        verdict: 'new',
+        cachedFile: richFixture(),
+      }),
+    ),
+  )
 }
 
 /** The narrow read through the REAL port — repository, SqlClient, node:sqlite
- *  and the row schema — over the store's own writer connection, not through a
- *  hand-made array (the same `portsLayer` path `tests/ledger-repository-ports.test.ts`
- *  uses, so the read is proven live rather than faked). */
-function readCallFacts(store: LedgerStore): Promise<LedgerCallFactsRow[]> {
-  return Effect.runPromise(
-    Effect.flatMap(LedgerQueries, queries => queries.getCallFacts()).pipe(Effect.provide(store.portsLayer)),
+ *  and the row schema — over the fixture runtime's writer connection, not
+ *  through a hand-made array (the same native runtime used by
+ *  `tests/ledger-repository-ports.test.ts`). */
+function readCallFacts(runtime: WorkerRuntime): Promise<LedgerCallFactsRow[]> {
+  return runtime.runPromise(Effect.flatMap(LedgerQueries, queries => queries.getCallFacts()))
+}
+
+function snapshotFor(runtime: WorkerRuntime) {
+  return runtime.runSync(loadLedgerQuerySnapshotEffect(viewInputs({ period: 'lifetime' })))
+}
+
+function readCalls(runtime: WorkerRuntime) {
+  return runtime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getCalls()))
+}
+
+function sessionDetail(runtime: WorkerRuntime, sessionId: string) {
+  return runtime.runPromise(
+    querySessionDetail({ catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths(), sessionId }).pipe(
+      Effect.provideService(PricingDiagnostics, PricingDiagnostics.of({ reportUnpricedModels: () => Effect.void })),
+    ),
   )
 }
 
-function snapshotFor(store: LedgerStore) {
-  return Effect.runSync(
-    loadLedgerQuerySnapshotEffect(viewInputs({ period: 'lifetime' })).pipe(Effect.provide(store.portsLayer)),
+/** Independent pre-slice detail oracle, rebuilt from the native decoded ports. */
+function legacySessionDetail(runtime: WorkerRuntime, sessionId: string) {
+  const { catalogue, proxyPaths } = viewInputs({ period: 'lifetime' })
+  const snapshot = runtime.runSync(
+    Effect.gen(function* () {
+      const queries = yield* LedgerQueries
+      const config = yield* LedgerConfig
+      const [sources, sessions, turns, calls, aliases, overrides] = yield* Effect.all([
+        queries.getSources(),
+        queries.getSessions(),
+        queries.getTurns(),
+        queries.getCallFacts(),
+        config.getModelAliases(),
+        config.getPriceOverrides(),
+      ])
+      return makeLedgerQuerySnapshot({
+        sources,
+        sessions,
+        turns,
+        calls,
+        aliases,
+        overrides,
+        catalogue,
+        proxyPaths,
+      })
+    }),
   )
+  const session = buildSessionSummariesFromSnapshot(snapshot, {
+    range: { start: new Date(-8640000000000000), end: new Date(8640000000000000) },
+  }).find(summary => summary.sessionId === sessionId)
+  return session ? Schema.decodeUnknownSync(sessionDetailSchema)(legacyDetailFromSummary(session)) : null
 }
 
-async function runWorkerQuery<A, E, R>(store: LedgerStore, effect: Effect.Effect<A, E, R>): Promise<A> {
-  const runtime = openWorkerRuntime(store.dbPath)
-  try {
-    return await runtime.runPromise(effect as Effect.Effect<A, E, WorkerServices>)
-  } finally {
-    await runtime.dispose()
+function legacyDetailFromSummary(session: SessionSummary) {
+  const provider = sessionRowFromSummary(session, session.project).provider
+  return {
+    sessionId: session.sessionId,
+    project: session.project,
+    provider,
+    title: session.title ?? '',
+    workingDirectory: session.workingDirectory,
+    firstTimestamp: session.firstTimestamp,
+    lastTimestamp: session.lastTimestamp,
+    totalCostUSD: session.totalCostUSD,
+    totalEstimatedCostUSD: session.totalEstimatedCostUSD ?? 0,
+    totalSavingsUSD: session.totalSavingsUSD,
+    totalInputTokens: session.totalInputTokens,
+    totalOutputTokens: session.totalOutputTokens,
+    totalCacheReadTokens: session.totalCacheReadTokens,
+    totalCacheWriteTokens: session.totalCacheWriteTokens,
+    totalReasoningTokens: session.totalReasoningTokens,
+    apiCalls: session.apiCalls,
+    prLinks: session.prLinks ?? [],
+    modelBreakdown: Object.fromEntries(
+      Object.entries(session.modelBreakdown).map(([model, breakdown]) => [
+        model,
+        { calls: breakdown.calls, costUSD: breakdown.costUSD },
+      ]),
+    ),
+    turns: session.turns.map(turn => ({
+      timestamp: turn.timestamp,
+      userMessage: turn.userMessage,
+      category: CATEGORY_LABELS[turn.category] ?? turn.category,
+      gitBranch: turn.gitBranch,
+      prRefs: turn.prRefs ?? [],
+      retries: turn.retries,
+      hasEdits: turn.hasEdits,
+      assistantCalls: turn.assistantCalls.map(call => ({
+        provider: call.provider,
+        model: call.model,
+        costUSD: call.costUSD,
+        isEstimated: call.isEstimated,
+        savingsUSD: call.savingsUSD,
+        speed: call.speed,
+        hasPlanMode: call.hasPlanMode,
+        tools: call.tools,
+        mcpTools: call.mcpTools,
+        skills: call.skills,
+        subagentTypes: call.subagentTypes,
+        usage: {
+          inputTokens: call.usage.inputTokens,
+          outputTokens: call.usage.outputTokens,
+          reasoningTokens: call.usage.reasoningTokens,
+          cacheReadInputTokens: call.usage.cacheReadInputTokens,
+          cacheCreationInputTokens: call.usage.cacheCreationInputTokens,
+        },
+      })),
+    })),
   }
+}
+
+function runWorkerQuery<A, E, R>(runtime: WorkerRuntime, effect: Effect.Effect<A, E, R>): Promise<A> {
+  return runtime.runPromise(effect as Effect.Effect<A, E, WorkerServices>)
 }
 
 describe("the purpose-shaped call read selects exactly the aggregation seam's columns", () => {
   it('returns the 29 kept fields and none of the 9 dropped ones', async () => {
-    const store = makeStore()
-    portRich(store)
+    const { runtime } = openLedgerFixture()
+    portRich(runtime)
 
-    const narrow = await readCallFacts(store)
-    const wide = store.getCalls()
+    const narrow = await readCallFacts(runtime)
+    const wide = readCalls(runtime)
 
     expect(narrow.length).toBe(wide.length)
     expect(narrow.length).toBeGreaterThan(0)
@@ -234,10 +317,10 @@ describe("the purpose-shaped call read selects exactly the aggregation seam's co
   })
 
   it('the wide read still carries every dropped column with the ported value', () => {
-    const store = makeStore()
-    portRich(store)
+    const { runtime } = openLedgerFixture()
+    portRich(runtime)
 
-    const wide = store.getCalls()
+    const wide = readCalls(runtime)
     const first = wide.find(call => call.callIndex === 0)!
     expect(wide.length).toBeGreaterThan(0)
     // 38 columns, machine-checked rather than remembered: the split's whole
@@ -255,11 +338,11 @@ describe("the purpose-shaped call read selects exactly the aggregation seam's co
   })
 
   it('every kept field is value-identical to the wide read (no silent reshaping)', async () => {
-    const store = makeStore()
-    portRich(store)
+    const { runtime } = openLedgerFixture()
+    portRich(runtime)
 
-    const narrow = await readCallFacts(store)
-    const wide = store.getCalls()
+    const narrow = await readCallFacts(runtime)
+    const wide = readCalls(runtime)
     const keyOf = (row: { sourceId: number; sessionId: string; turnIndex: number; callIndex: number }) =>
       `${row.sourceId}\0${row.sessionId}\0${row.turnIndex}\0${row.callIndex}`
     const wideByKey = new Map(wide.map(row => [keyOf(row), row]))
@@ -327,12 +410,12 @@ describe('no consumer of the seam reads a dropped column', () => {
   })
 
   it('the behavioural backstop: the dropped values are IN the ledger and appear nowhere downstream', async () => {
-    const store = makeStore()
-    portRich(store)
+    const { runtime } = openLedgerFixture()
+    portRich(runtime)
 
     // The fixture gives every dropped column a non-default value, and the wide
     // read returns all nine of them...
-    const wide = store.getCalls()
+    const wide = readCalls(runtime)
     expect(wide[0]!.projectPath).toBe('/call/level/path')
     expect(wide[0]!.locAdded).toBe(12)
     expect(wide[0]!.locRemoved).toBe(3)
@@ -342,9 +425,9 @@ describe('no consumer of the seam reads a dropped column', () => {
     // ...while nothing the consumers see carries the one value that could only
     // have come from a dropped column. If any of them read one, this trips.
     const downstream = JSON.stringify([
-      buildSessionSummariesFromSnapshotResult(snapshotFor(store), { range: RANGE }).summaries,
-      await runWorkerQuery(store, queryDashboardViews(viewInputs({ period: 'lifetime' }))),
-      await sessionDetail(store, 'sess-0'),
+      buildSessionSummariesFromSnapshotResult(snapshotFor(runtime), { range: RANGE }).summaries,
+      await runWorkerQuery(runtime, queryDashboardViews(viewInputs({ period: 'lifetime' }))),
+      await sessionDetail(runtime, 'sess-0'),
     ])
     expect(downstream).not.toContain('/call/level/path')
   })
@@ -352,50 +435,50 @@ describe('no consumer of the seam reads a dropped column', () => {
 
 describe('the wire is unchanged: payloads deep-equal their pre-slice shape', () => {
   it('querySessionDetail — the Session detail wire payload', async () => {
-    const store = makeStore()
-    portRich(store)
-    const actual = await sessionDetail(store, 'sess-0')
+    const { runtime } = openLedgerFixture()
+    portRich(runtime)
+    const actual = await sessionDetail(runtime, 'sess-0')
     expect(actual).toEqual(SESSION_DETAIL)
-    expect(actual).toStrictEqual(legacyGetSessionDetailFromLedger(store, 'sess-0'))
+    expect(actual).toStrictEqual(legacySessionDetail(runtime, 'sess-0'))
   })
 
   it('queryDashboardViews — the store:views wire payload', async () => {
-    const store = makeStore()
-    portRich(store)
-    await expect(runWorkerQuery(store, queryDashboardViews(viewInputs({ period: 'lifetime' })))).resolves.toEqual(
+    const { runtime } = openLedgerFixture()
+    portRich(runtime)
+    await expect(runWorkerQuery(runtime, queryDashboardViews(viewInputs({ period: 'lifetime' })))).resolves.toEqual(
       DASHBOARD_VIEWS,
     )
   })
 
   it('queryOverview, on a custom range so no local-date dependency', async () => {
-    const store = makeStore()
-    portRich(store)
+    const { runtime } = openLedgerFixture()
+    portRich(runtime)
     const scope = { period: 'all' as const, range: { since: '2026-07-01', until: '2026-07-02' } }
     const inputs = {
       ...viewInputs(scope),
       localSavings: captureLocalModelSavings(),
     }
-    await expect(runWorkerQuery(store, queryOverview(inputs))).resolves.toEqual(OVERVIEW_PAYLOAD)
+    await expect(runWorkerQuery(runtime, queryOverview(inputs))).resolves.toEqual(OVERVIEW_PAYLOAD)
   })
 
   it('buildSessionSummariesFromSnapshotResult — every Section payload is a projection of this', () => {
-    const store = makeStore()
-    portRich(store)
-    expect(buildSessionSummariesFromSnapshotResult(snapshotFor(store), { range: RANGE }).summaries).toEqual(SUMMARIES)
+    const { runtime } = openLedgerFixture()
+    portRich(runtime)
+    expect(buildSessionSummariesFromSnapshotResult(snapshotFor(runtime), { range: RANGE }).summaries).toEqual(SUMMARIES)
   })
 
   it('queryScope: sessions and turns unchanged, calls narrowed by exactly the nine', () => {
-    const store = makeStore()
-    portRich(store)
+    const { runtime } = openLedgerFixture()
+    portRich(runtime)
 
-    const scope = queryScopeFromSnapshotResult(snapshotFor(store), { range: RANGE }).scope
+    const scope = queryScopeFromSnapshotResult(snapshotFor(runtime), { range: RANGE }).scope
     expect(scope.sessions).toEqual(SCOPE_SESSIONS)
     expect(scope.turns).toEqual(SCOPE_TURNS)
 
     // The call rows are the slice's subject, so they are pinned to the wide
     // read MINUS the declared drop set: every kept value identical, every
     // dropped key gone, and the two query-time fields the seam adds unchanged.
-    const wide = store.getCalls()
+    const wide = readCalls(runtime)
     expect(scope.calls).toHaveLength(wide.length)
     for (const [index, call] of scope.calls.entries()) {
       const reference = wide[index]!
