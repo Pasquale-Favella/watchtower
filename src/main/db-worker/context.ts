@@ -5,19 +5,17 @@ import * as Schedule from 'effect/Schedule'
 import type { SchemaError } from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import type { SqlError } from 'effect/unstable/sql/SqlError'
-import { readdirSync, statSync } from 'fs'
-import { join } from 'path'
 
 import { clearLedger } from '../application/clear-ledger.js'
 import { queryActiveCurrency, selectDisplayCurrency } from '../application/currency-commands.js'
 import { setRefreshCadence } from '../application/ledger-config-commands.js'
 import { scanLedger } from '../application/scan-ledger.js'
+import { settingsInfoEffect } from '../application/settings-info.js'
 import { resolveCadenceMs } from '../cadence.js'
 import { type CurrencyOption, FxRates, isValidCurrencyCode, listCurrencies, refreshFxRateWithRates } from '../fx.js'
 import type { HttpFetch } from '../pipeline/fetch-utils.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
 import { refreshPricingNowEffect } from '../pipeline/models.js'
-import { getClaudeConfigDirs } from '../pipeline/providers/claude.js'
 import { buildScanSummaryRecords, ScanAbortedError, type ScanMetadata, type ScanProgress } from '../pipeline/scan.js'
 import { LedgerConfig, LedgerQueries } from '../store/ledger-ports.js'
 import type { WorkerRuntime } from '../worker-runtime.js'
@@ -26,20 +24,6 @@ import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 import { ledgerQueryRequest } from './query-dispatch.js'
 
 export type DbWorkerEmit = (event: DbWorkerEvent) => void
-
-function dirSize(path: string): number {
-  let total = 0
-  try {
-    for (const entry of readdirSync(path, { withFileTypes: true })) {
-      const full = join(path, entry.name)
-      if (entry.isDirectory()) total += dirSize(full)
-      else if (entry.isFile()) total += statSync(full).size
-    }
-  } catch {
-    // missing or unreadable dir counts as zero
-  }
-  return total
-}
 
 function abortedScanError(): ScanAbortedError {
   return new ScanAbortedError({ message: 'scan aborted' })
@@ -300,48 +284,6 @@ export class DbWorkerContext {
 
   // ── Settings helpers ────────────────────────────────────────────────
 
-  private userDataPaths(): {
-    dataDir: string
-    dbSize: number
-    dataDirSize: number
-    cacheDir: string
-    cacheSize: number
-  } {
-    const dbPath = join(this.dataDir, 'ledger.db')
-    let dbSize = 0
-    try {
-      dbSize = statSync(dbPath).size
-    } catch {
-      /* no db yet */
-    }
-    return {
-      dataDir: this.dataDir,
-      dbSize,
-      dataDirSize: dirSize(this.dataDir),
-      cacheDir: this.cacheDir,
-      cacheSize: dirSize(this.cacheDir),
-    }
-  }
-
-  private async settingsInfo(): Promise<{
-    dataDir: string
-    dbSize: number
-    dataDirSize: number
-    cacheDir: string
-    cacheSize: number
-    claudeConfigDirs?: string[]
-  }> {
-    // The Claude-config row in General is nullable: when the config dirs cannot
-    // be resolved we omit the field entirely so the renderer just hides the row.
-    let claudeConfigDirs: string[] | undefined
-    try {
-      claudeConfigDirs = await getClaudeConfigDirs()
-    } catch {
-      /* absent */
-    }
-    return { ...this.userDataPaths(), claudeConfigDirs }
-  }
-
   // ── Op dispatch (one arm per renderer IPC channel that touches data) ──
 
   async dispatch(op: string, args: unknown[]): Promise<unknown> {
@@ -439,12 +381,12 @@ export class DbWorkerContext {
       }
 
       case 'settings:info':
-        return this.settingsInfo()
+        return this.runtime.runPromise(settingsInfoEffect(this.dataDir, this.cacheDir))
 
       case 'settings:clear': {
         await this.runtime.runPromise(clearLedger())
         this.lastScanMetadata = null
-        return this.settingsInfo()
+        return this.runtime.runPromise(settingsInfoEffect(this.dataDir, this.cacheDir))
       }
 
       /** Pricing-table live refresh. NOTE: the pricing table is module-level

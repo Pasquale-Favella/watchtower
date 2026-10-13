@@ -101,7 +101,7 @@ function readClaudeFile(path: string, context?: ProviderScanContext): Effect.Eff
   )
 }
 
-const getClaudeConfigDirsEffect = Effect.fnUntraced(function* (
+export const getClaudeConfigDirsEffect = Effect.fnUntraced(function* (
   context?: ProviderScanContext,
   paths?: AppPaths,
 ): Effect.fn.Return<string[], Error> {
