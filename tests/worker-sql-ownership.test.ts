@@ -1,6 +1,7 @@
+import { strict as assert } from 'node:assert'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import * as Sqlite from '@effect/sql-sqlite-node'
@@ -8,10 +9,14 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { LedgerConfig } from '../src/main/store/ledger-repository.js'
+import { LedgerConfig, LedgerQueries } from '../src/main/store/ledger-repository.js'
 import { NodeSqliteDatabase } from '../src/main/store/node-sqlite-client.js'
-import { makeWorkerRuntime, type WorkerRuntime, type WorkerSqlLayer } from '../src/main/worker-runtime.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
+import {
+  makeWorkerRuntime,
+  openWorkerRuntime,
+  type WorkerRuntime,
+  type WorkerSqlLayer,
+} from '../src/main/worker-runtime.js'
 
 function observedDriver(
   filename: string,
@@ -58,35 +63,48 @@ describe('db-worker SQL ownership', () => {
     return join(dir, 'ledger.db')
   }
 
+  function removeFixture(directory: string): void {
+    const target = resolve(directory)
+    assert.equal(dirname(target), resolve(tmpdir()))
+    assert.ok(basename(target).startsWith('watchtower-worker-sql-owner-'))
+    rmSync(target, { recursive: true, force: true })
+  }
+
   afterEach(() => {
     vi.restoreAllMocks()
-    while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true })
+    while (directories.length > 0) {
+      const directory = directories.pop()
+      if (directory) removeFixture(directory)
+    }
   })
 
-  it('constructs one runtime and closes the real driver once after the worker lifetime', () => {
+  it('constructs one runtime and closes the real driver once after the worker lifetime', async () => {
     const path = join(dirname(databasePath()), 'nested', 'db', 'ledger.db')
     const driver = observedDriver(path)
     const runtimes: WorkerRuntime[] = []
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
     const prepare = vi.spyOn(DatabaseSync.prototype, 'prepare')
-    const owner = openWorkerOwner(path, undefined, undefined, {
+    const runtime = openWorkerRuntime(path, undefined, undefined, {
       sqliteLayer: driver.layer,
       makeRuntime: recordRuntime(runtimes),
     })
+    const fixtureRuntime = runtimes.at(-1)
+    if (!fixtureRuntime) throw new Error('runtime factory was not called')
     try {
       expect(runtimes).toHaveLength(1)
       expect(driver.counts).toEqual({ acquisitions: 1, finalizers: 0 })
       expect(close).not.toHaveBeenCalled()
-      expect(owner.ledger.getTableNames()).toContain('ledger_source')
+      await expect(runtime.runPromise(Effect.flatMap(LedgerQueries, queries => queries.getSources()))).resolves.toEqual(
+        [],
+      )
       expect(
         prepare.mock.calls.filter(([query]) => query.includes('COALESCE(MAX(migration_id), 0) AS version')),
       ).toHaveLength(1)
-      // The facade borrows the root; closing it cannot retire the client.
-      owner.ledger.close()
-      expect(owner.runtime.runSync(Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()))).toBe('1m')
+      expect(runtime.runSync(Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()))).toBe('1m')
       expect(close).not.toHaveBeenCalled()
     } finally {
-      Effect.runSync(owner.runtime.disposeEffect)
+      await runtime.dispose()
+      runtimes.splice(runtimes.indexOf(fixtureRuntime), 1)
     }
     expect(driver.counts).toEqual({ acquisitions: 1, finalizers: 1 })
     expect(close).toHaveBeenCalledTimes(1)
@@ -106,7 +124,7 @@ describe('db-worker SQL ownership', () => {
     const runtimes: WorkerRuntime[] = []
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
     expect(() =>
-      openWorkerOwner(path, undefined, undefined, {
+      openWorkerRuntime(path, undefined, undefined, {
         sqliteLayer: driver.layer,
         makeRuntime: recordRuntime(runtimes),
       }),
@@ -114,7 +132,9 @@ describe('db-worker SQL ownership', () => {
     expect(runtimes).toHaveLength(1)
     expect(driver.counts).toEqual({ acquisitions: 1, finalizers: 1 })
     expect(close).toHaveBeenCalledTimes(1)
-    expect(() => runtimes[0].runSync(Effect.void)).toThrow(/ManagedRuntime disposed/)
+    const failedRuntime = runtimes[0]
+    expect(failedRuntime).toBeDefined()
+    expect(() => failedRuntime?.runSync(Effect.void)).toThrow(/ManagedRuntime disposed/)
 
     const reopened = new NodeSqliteDatabase(path)
     try {
@@ -130,7 +150,7 @@ describe('db-worker SQL ownership', () => {
     const runtimes: WorkerRuntime[] = []
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
     expect(() =>
-      openWorkerOwner(path, undefined, undefined, {
+      openWorkerRuntime(path, undefined, undefined, {
         sqliteLayer: driver.layer,
         makeRuntime: recordRuntime(runtimes),
       }),
@@ -138,6 +158,8 @@ describe('db-worker SQL ownership', () => {
     expect(runtimes).toHaveLength(1)
     expect(driver.counts).toEqual({ acquisitions: 1, finalizers: 1 })
     expect(close).toHaveBeenCalledTimes(1)
-    expect(() => runtimes[0].runSync(Effect.void)).toThrow(/ManagedRuntime disposed/)
+    const failedRuntime = runtimes[0]
+    expect(failedRuntime).toBeDefined()
+    expect(() => failedRuntime?.runSync(Effect.void)).toThrow(/ManagedRuntime disposed/)
   })
 })

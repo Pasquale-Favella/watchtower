@@ -27,7 +27,7 @@
  */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import * as Effect from 'effect/Effect'
@@ -41,13 +41,39 @@ import { FxRates } from '../src/main/fx.js'
 import { OperationalLog, type OperationalLogSink } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
-import { makeWorkerLive, type WorkerOverrides, type WorkerServices } from '../src/main/worker-runtime.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
+import {
+  makeWorkerLive,
+  openWorkerRuntime,
+  type WorkerOverrides,
+  type WorkerRuntime,
+  type WorkerServices,
+} from '../src/main/worker-runtime.js'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'watchtower-worker-runtime-'))
+}
+
+function removeTempDir(directory: string): void {
+  const target = resolve(directory)
+  if (dirname(target) !== resolve(tmpdir()) || !basename(target).startsWith('watchtower-worker-runtime-')) {
+    throw new Error('unexpected worker runtime fixture directory')
+  }
+  rmSync(target, { recursive: true, force: true })
+}
+
+function openRuntimeFixture<Overrides extends WorkerOverrides = never>(
+  directory: string,
+  dbPath: string,
+  overrides?: Layer.Layer<Overrides>,
+): WorkerRuntime {
+  try {
+    return openWorkerRuntime(dbPath, undefined, overrides)
+  } catch (error) {
+    removeTempDir(directory)
+    throw error
+  }
 }
 
 function okFetch(body: unknown): typeof fetch {
@@ -69,24 +95,38 @@ function recordingSink(): { sink: OperationalLogSink; records: string[] } {
 const open: Array<() => Promise<void>> = []
 
 afterEach(async () => {
-  while (open.length > 0) await open.pop()!()
+  while (open.length > 0) {
+    const cleanup = open.pop()
+    if (cleanup) await cleanup()
+  }
 })
 
-/** Same canonical owner factory used by db-worker boot, with optional service overrides. */
+/** Boots the worker root and context with optional service overrides. */
 function worker<Overrides extends WorkerOverrides = never>(layerFor?: () => Layer.Layer<Overrides>) {
   const dir = tempDir()
-  const { ledger, runtime } = openWorkerOwner(join(dir, 'ledger.db'), undefined, layerFor?.())
-  const ctx = new DbWorkerContext({ dbPath: ledger.dbPath, dataDir: dir, cacheDir: join(dir, 'cache') }, () => {}, {
-    runtime,
-  })
+  const dbPath = join(dir, 'ledger.db')
+  const runtime = openRuntimeFixture(dir, dbPath, layerFor?.())
+  let ctx: DbWorkerContext
+  try {
+    ctx = new DbWorkerContext({ dbPath, dataDir: dir, cacheDir: join(dir, 'cache') }, () => {}, { runtime })
+  } catch (error) {
+    try {
+      Effect.runSync(runtime.disposeEffect)
+    } finally {
+      removeTempDir(dir)
+    }
+    throw error
+  }
   open.push(async () => {
-    // The context owns runtime disposal; fixtures must not dispose it again.
     try {
       await ctx.close()
-    } catch {
-      /* already closed */
+    } finally {
+      try {
+        await runtime.dispose()
+      } finally {
+        removeTempDir(dir)
+      }
     }
-    rmSync(dir, { recursive: true, force: true })
   })
   return ctx
 }
@@ -110,13 +150,13 @@ describe('WorkerLive: Env is constructed once per worker lifetime', () => {
         return new Response(JSON.stringify({ results }))
       }) as typeof fetch),
     )
-    const owner = openWorkerOwner(join(dir, 'ledger.db'), undefined, overrides)
+    const runtime = openRuntimeFixture(dir, join(dir, 'ledger.db'), overrides)
     const range = { start: new Date('2026-01-01T00:00:00Z'), end: new Date('2026-01-31T00:00:00Z') }
     try {
-      const reports = owner.runtime.runSync(GatewayReports)
+      const reports = runtime.runSync(GatewayReports)
       expect(reports.enabled).toBe(true)
-      await expect(owner.runtime.runPromise(reports.getReport(range))).resolves.toEqual(results)
-      await expect(owner.runtime.runPromise(reports.getReport(range))).resolves.toEqual(results)
+      await expect(runtime.runPromise(reports.getReport(range))).resolves.toEqual(results)
+      await expect(runtime.runPromise(reports.getReport(range))).resolves.toEqual(results)
       expect(builds).toEqual(['env'])
       expect(requests).toHaveLength(2)
       expect(requests.map(request => new Headers(request.headers).get('Authorization'))).toEqual([
@@ -124,8 +164,11 @@ describe('WorkerLive: Env is constructed once per worker lifetime', () => {
         'Bearer root-test-key',
       ])
     } finally {
-      await owner.runtime.dispose()
-      rmSync(dir, { recursive: true, force: true })
+      try {
+        await runtime.dispose()
+      } finally {
+        removeTempDir(dir)
+      }
     }
   })
 
@@ -186,7 +229,7 @@ describe('WorkerLive: Env is constructed once per worker lifetime', () => {
         }
       }).pipe(Effect.provide(services)),
     )
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
     // `Env`'s two live values are env-derived, so assert their TYPES and the
     // real parser default rather than a value this test cannot control without
     // mutating `process.env` (which no test here may do).
@@ -291,60 +334,66 @@ describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
 describe('F12/ADR 0032 §A3: WorkerLive supplies the three ledger ports', () => {
   it("the live graph provides LedgerIngest, LedgerQueries and LedgerConfig over the store's own connection", async () => {
     const dir = tempDir()
-    const { ledger, runtime } = openWorkerOwner(join(dir, 'ledger.db'))
+    const dbPath = join(dir, 'ledger.db')
+    const runtime = openRuntimeFixture(dir, dbPath)
 
     // If any of the three were missing from the merge, the `yield*` below DIES
     // with `Service not found: watchtower/store/<Name>` — so reaching all three
     // is the proof, not a comment claiming they are there.
-    const resolved = await runtime.runPromise(
-      Effect.gen(function* () {
-        const ingest = yield* LedgerIngest
-        const queries = yield* LedgerQueries
-        const config = yield* LedgerConfig
-        yield* config.setModelAlias('worker-live-model', 'real-model')
-        return {
-          cadence: yield* config.getRefreshCadence(),
-          aliases: yield* config.getModelAliases(),
-          sources: yield* queries.getSources(),
-          calls: yield* queries.getCalls(),
-          // `LedgerIngest` is reached too — a live no-op delete on an absent
-          // source, which must not throw.
-          cleared: yield* ingest.deleteSource('opencode', 'env-none', 'never-ported.jsonl'),
-        }
-      }),
-    )
+    try {
+      const resolved = await runtime.runPromise(
+        Effect.gen(function* () {
+          const ingest = yield* LedgerIngest
+          const queries = yield* LedgerQueries
+          const config = yield* LedgerConfig
+          yield* config.setModelAlias('worker-live-model', 'real-model')
+          return {
+            cadence: yield* config.getRefreshCadence(),
+            aliases: yield* config.getModelAliases(),
+            sources: yield* queries.getSources(),
+            calls: yield* queries.getCalls(),
+            // `LedgerIngest` is reached too — a live no-op delete on an absent
+            // source, which must not throw.
+            cleared: yield* ingest.deleteSource('opencode', 'env-none', 'never-ported.jsonl'),
+          }
+        }),
+      )
 
-    // Same connection: the write through `LedgerConfig` is visible to the
-    // store's own sync facade, which is a different `R` slot on the SAME
-    // writer. A second `SqliteClient` here would be a second writer (ADR 0023).
-    expect(ledger.getModelAliases()).toEqual(resolved.aliases)
-    expect(resolved.aliases).toEqual([{ model: 'worker-live-model', aliasOf: 'real-model' }])
-    expect(resolved.cadence).toBe('1m')
-    expect(resolved.sources).toEqual([])
-    expect(resolved.calls).toEqual([])
-    expect(resolved.cleared).toBeUndefined()
+      // Same connection: the config write is visible through the same native
+      // worker graph. A second `SqliteClient` here would be a second writer.
+      expect(await runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getModelAliases()))).toEqual(
+        resolved.aliases,
+      )
+      expect(resolved.aliases).toEqual([{ model: 'worker-live-model', aliasOf: 'real-model' }])
+      expect(resolved.cadence).toBe('1m')
+      expect(resolved.sources).toEqual([])
+      expect(resolved.calls).toEqual([])
+      expect(resolved.cleared).toBeUndefined()
 
-    // The exported `R` union names all seven capabilities; the counted set is
-    // asserted through the graph, since `tests/` is in neither tsconfig.
-    const ports = await runtime.runPromise(
-      Effect.gen(function* () {
-        const [env, log, http, rates, ing, qry, cfg] = yield* Effect.all([
-          Env,
-          OperationalLog,
-          HttpFetch,
-          FxRates,
-          LedgerIngest,
-          LedgerQueries,
-          LedgerConfig,
-        ])
-        return [env, log, http, rates, ing, qry, cfg].length
-      }),
-    )
-    expect(ports).toBe(7)
-
-    await runtime.dispose()
-    ledger.close()
-    rmSync(dir, { recursive: true, force: true })
+      // The exported `R` union names all seven capabilities; the counted set is
+      // asserted through the graph, since `tests/` is in neither tsconfig.
+      const ports = await runtime.runPromise(
+        Effect.gen(function* () {
+          const [env, log, http, rates, ing, qry, cfg] = yield* Effect.all([
+            Env,
+            OperationalLog,
+            HttpFetch,
+            FxRates,
+            LedgerIngest,
+            LedgerQueries,
+            LedgerConfig,
+          ])
+          return [env, log, http, rates, ing, qry, cfg].length
+        }),
+      )
+      expect(ports).toBe(7)
+    } finally {
+      try {
+        await runtime.dispose()
+      } finally {
+        removeTempDir(dir)
+      }
+    }
   })
 
   it('builds a substituted LedgerConfig once and uses it through the canonical FX dispatch', async () => {
@@ -430,7 +479,7 @@ describe('F14: the operational Effect logger is installed in a production root',
     // list and the `R` type can.
     const live: Layer.Layer<WorkerServices, never, never> = makeWorkerLive(join(dir, 'ledger.db'))
     const source = readFileSync(join(repoRoot, 'src', 'main', 'worker-runtime.ts'), 'utf8')
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
 
     // The bridge is composed, not merely re-exported: it is inside `mergeAll`.
     // Scoped to the merge body, because the import line also names it (and a
@@ -489,7 +538,7 @@ function stripCommentsAndStrings(source: string): string {
   let out = ''
   let i = 0
   while (i < source.length) {
-    const c = source[i]!
+    const c = source.charAt(i)
     const next = source[i + 1]
     if (c === '/' && next === '/') {
       while (i < source.length && source[i] !== '\n') i++

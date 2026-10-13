@@ -1,6 +1,7 @@
+import { strict as assert } from 'node:assert'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import * as Effect from 'effect/Effect'
@@ -10,12 +11,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { LedgerIngest } from '../src/main/store/ledger-repository.js'
+import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
 import type { ScanMetadata } from '../src/shared/schemas/scan.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
+
+function removeFixture(directory: string): void {
+  const target = resolve(directory)
+  assert.equal(dirname(target), resolve(tmpdir()))
+  assert.ok(basename(target).startsWith('watchtower-worker-source-status-'))
+  rmSync(target, { recursive: true, force: true })
+}
 
 async function withWorker(
-  run: (context: DbWorkerContext, owner: ReturnType<typeof openWorkerOwner>) => Promise<void>,
+  run: (context: DbWorkerContext, owner: { runtime: WorkerRuntime; dbPath: string }) => Promise<void>,
   hasSources?: LedgerQueries['Service']['hasSources'],
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-source-status-'))
@@ -35,17 +44,37 @@ async function withWorker(
         }),
       )
     : undefined
-  const owner = openWorkerOwner(dbPath, undefined, overrides)
-  const context = new DbWorkerContext(
-    { dbPath, dataDir: directory, cacheDir: join(directory, 'cache') },
-    () => {},
-    owner,
-  )
+  let runtime: WorkerRuntime
+  try {
+    runtime = openWorkerRuntime(dbPath, undefined, overrides)
+  } catch (error) {
+    removeFixture(directory)
+    throw error
+  }
+  const owner = { runtime, dbPath }
+  let context: DbWorkerContext
+  try {
+    context = new DbWorkerContext({ dbPath, dataDir: directory, cacheDir: join(directory, 'cache') }, () => {}, owner)
+  } catch (error) {
+    try {
+      await runtime.dispose()
+    } finally {
+      removeFixture(directory)
+    }
+    throw error
+  }
   try {
     await run(context, owner)
   } finally {
-    await context.close()
-    rmSync(directory, { recursive: true, force: true })
+    try {
+      await context.close()
+    } finally {
+      try {
+        await runtime.dispose()
+      } finally {
+        removeFixture(directory)
+      }
+    }
   }
 }
 
@@ -54,27 +83,44 @@ afterEach(() => vi.restoreAllMocks())
 describe('worker scan status uses source existence', () => {
   it('observes native ingest and clear without hydrating the sources', async () => {
     await withWorker(async (context, owner) => {
-      const facade = vi.spyOn(owner.ledger, 'getSources').mockImplementation(() => {
-        throw new Error('facade read')
-      })
+      const queries = owner.runtime.runSync(LedgerQueries)
+      const hasSources = vi.spyOn(queries, 'hasSources')
+      const getSources = vi.spyOn(queries, 'getSources')
+      const getSessions = vi.spyOn(queries, 'getSessions')
+      const getTurns = vi.spyOn(queries, 'getTurns')
+      const getCalls = vi.spyOn(queries, 'getCalls')
+      const getCallFacts = vi.spyOn(queries, 'getCallFacts')
+      const getSnapshot = vi.spyOn(queries, 'getRequestSnapshotData')
       expect(await context.dispatch('store:status', [])).toEqual({ scanned: false })
-      owner.ledger.portIn({
-        provider: 'opencode',
-        envFingerprint: 'status',
-        filePath: FIXTURE_SOURCE_PATH,
-        verdict: 'new',
-        cachedFile: buildFixtureCachedFile(),
-      })
-      const writer = new DatabaseSync(owner.ledger.dbPath)
+      expect(hasSources).toHaveBeenCalledOnce()
+      expect(getSources).not.toHaveBeenCalled()
+      expect(getSessions).not.toHaveBeenCalled()
+      expect(getTurns).not.toHaveBeenCalled()
+      expect(getCalls).not.toHaveBeenCalled()
+      expect(getCallFacts).not.toHaveBeenCalled()
+      expect(getSnapshot).not.toHaveBeenCalled()
+      await owner.runtime.runPromise(
+        Effect.flatMap(LedgerIngest, ingest =>
+          ingest.portIn({
+            provider: 'opencode',
+            envFingerprint: 'status',
+            filePath: FIXTURE_SOURCE_PATH,
+            verdict: 'new',
+            cachedFile: buildFixtureCachedFile(),
+          }),
+        ),
+      )
+      const writer = new DatabaseSync(owner.dbPath)
       try {
         writer.prepare("UPDATE ledger_source SET fingerprint_size_bytes = 'invalid'").run()
       } finally {
         writer.close()
       }
       expect(await context.dispatch('store:status', [])).toEqual({ scanned: true })
+      expect(hasSources).toHaveBeenCalledTimes(2)
       await context.dispatch('settings:clear', [])
       expect(await context.dispatch('store:status', [])).toEqual({ scanned: false })
-      expect(facade).not.toHaveBeenCalled()
+      expect(hasSources).toHaveBeenCalledTimes(3)
     })
   })
 
