@@ -7,11 +7,13 @@ import { homedir } from 'os'
 import { basename, join } from 'path'
 import { fileURLToPath } from 'url'
 
+import { parsedProviderCallSchema } from '../../../shared/schemas/providers.js'
 import { resolveCacheDir } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLinesStream, SessionLineReadError } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
-import { isScanAbortedError } from '../scan-control.js'
+import type { ScanAbortedError } from '../scan-control.js'
+import { isScanAbortedError, scanAbortError } from '../scan-control.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
 import { isSqliteAvailable, isSqliteBusyError, openDatabase } from '../sqlite.js'
@@ -167,16 +169,18 @@ const decodeStatusLineJson = Schema.decodeUnknownResult(Schema.fromJsonString(Sc
 type StatusLineRun = { event: StatusLineEvent; signature: string; count: number }
 type StatusLineRunsByConversation = Map<string, StatusLineRun[]>
 
-type CachedCascade = {
-  mtimeMs: number
-  sizeBytes: number
-  calls: ParsedProviderCall[]
-}
-
-type AntigravityCache = {
-  version: number
-  cascades: Record<string, CachedCascade>
-}
+const finiteNumber = Schema.Number.pipe(Schema.check(Schema.isFinite()))
+const cachedCascadeSchema = Schema.Struct({
+  mtimeMs: finiteNumber,
+  sizeBytes: finiteNumber,
+  calls: Schema.mutable(Schema.Array(parsedProviderCallSchema)),
+})
+const antigravityCacheSchema = Schema.Struct({
+  version: Schema.Literal(CACHE_VERSION),
+  cascades: Schema.mutableKey(Schema.Record(Schema.String, Schema.mutableKey(cachedCascadeSchema))),
+})
+const antigravityCacheJsonSchema = Schema.fromJsonString(antigravityCacheSchema)
+type AntigravityCache = typeof antigravityCacheSchema.Type
 
 type ProtoField = {
   number: number
@@ -361,63 +365,145 @@ export function extractAntigravityGeneratorMetadata(resp: unknown): GeneratorMet
   return Array.isArray(metadata) ? metadata : []
 }
 
-async function loadCache(): Promise<AntigravityCache> {
+class AntigravityCacheIoError extends Schema.TaggedError<AntigravityCacheIoError>()('AntigravityCacheIoError', {
+  operation: Schema.Literals(['read', 'mkdir', 'open', 'write', 'sync', 'close', 'rename', 'unlink']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+type CacheIoOperation = 'read' | 'mkdir' | 'open' | 'write' | 'sync' | 'close' | 'rename' | 'unlink'
+
+const checkCacheAbort = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<void, ScanAbortedError> {
+  if (signal?.aborted) return yield* Effect.fail(scanAbortError(signal))
+})
+
+const cacheIo = Effect.fnUntraced(function* <A>(
+  operation: CacheIoOperation,
+  run: () => Promise<A>,
+): Effect.fn.Return<A, AntigravityCacheIoError> {
+  return yield* scanIo(run).pipe(
+    Effect.mapError(
+      cause => new AntigravityCacheIoError({ operation, cause, message: `Antigravity cache ${operation} failed` }),
+    ),
+  )
+})
+
+const loadCacheEffect = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<AntigravityCache, Error> {
+  yield* checkCacheAbort(signal)
   if (memCache) return memCache
-  try {
-    const raw = await readFile(getCachePath(), 'utf-8')
-    const cache = JSON.parse(raw) as AntigravityCache
-    if (cache.version === CACHE_VERSION && cache.cascades && typeof cache.cascades === 'object') {
-      memCache = cache
-      return cache
-    }
-  } catch {
-    /* no cache or invalid */
-  }
-  memCache = { version: CACHE_VERSION, cascades: {} }
+
+  const raw = yield* cacheIo('read', () => readFile(getCachePath(), 'utf-8')).pipe(
+    Effect.catchTag('AntigravityCacheIoError', () => Effect.succeed(null)),
+  )
+  yield* checkCacheAbort(signal)
+  const decoded =
+    raw === null
+      ? null
+      : yield* Schema.decodeUnknownEffect(antigravityCacheJsonSchema)(raw).pipe(
+          Effect.matchEffect({ onFailure: () => Effect.succeed(null), onSuccess: Effect.succeed }),
+        )
+  yield* checkCacheAbort(signal)
+  memCache = decoded ?? { version: CACHE_VERSION, cascades: {} }
   return memCache
+})
+
+function loadCache(): Promise<AntigravityCache> {
+  // Remove this Promise edge once all Antigravity parser and snapshot callers use the native cache effect.
+  // eslint-disable-next-line no-restricted-syntax
+  return Effect.runPromise(loadCacheEffect())
 }
 
+export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffect')(function* (
+  liveCascadeIds?: Set<string>,
+  signal?: AbortSignal,
+): Effect.fn.Return<void, AntigravityCacheIoError | ScanAbortedError | Schema.SchemaError> {
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      yield* checkCacheAbort(signal)
+      if (!memCache) return
+      // If the caller supplied liveCascadeIds, we must run the eviction step
+      // even when no cascade was added or updated this run; otherwise deleted
+      // .pb files would persist in the cache forever once it stops getting
+      // dirty writes. Mark the cache dirty when an eviction happens so the
+      // file write below proceeds.
+      if (liveCascadeIds) {
+        for (const id of Object.keys(memCache.cascades)) {
+          if (!liveCascadeIds.has(id)) {
+            delete memCache.cascades[id]
+            cacheDirty = true
+          }
+        }
+      }
+      if (!cacheDirty) return
+
+      const dir = getCacheDir()
+      yield* checkCacheAbort(signal)
+      yield* cacheIo('mkdir', () => mkdir(dir, { recursive: true }))
+      yield* checkCacheAbort(signal)
+      const finalPath = getCachePath()
+      const tempPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
+      let ownedTempPath: string | undefined = tempPath
+      yield* Effect.addFinalizer(() => {
+        if (!ownedTempPath) return Effect.void
+        const path = ownedTempPath
+        ownedTempPath = undefined
+        return cacheIo('unlink', () => unlink(path)).pipe(Effect.catchTag('AntigravityCacheIoError', () => Effect.void))
+      })
+
+      // Invalid in-memory data is a schema failure, not a recoverable filesystem
+      // outcome. Let it escape after the scoped temp cleanup and keep dirty set.
+      const encoded = yield* Schema.encodeUnknownEffect(antigravityCacheSchema)(memCache)
+      const payload = JSON.stringify(encoded)
+      yield* checkCacheAbort(signal)
+
+      const file = yield* Effect.acquireRelease(
+        Effect.uninterruptible(
+          cacheIo('open', () => open(tempPath, 'w', 0o600)).pipe(Effect.map(handle => ({ handle, closed: false }))),
+        ),
+        owned => {
+          if (owned.closed) return Effect.void
+          owned.closed = true
+          return cacheIo('close', () => owned.handle.close()).pipe(
+            Effect.catchTag('AntigravityCacheIoError', () => Effect.void),
+          )
+        },
+      )
+
+      yield* checkCacheAbort(signal)
+      yield* cacheIo('write', () => file.handle.writeFile(payload, { encoding: 'utf-8' }))
+      yield* checkCacheAbort(signal)
+      yield* cacheIo('sync', () => file.handle.sync())
+      yield* checkCacheAbort(signal)
+      file.closed = true
+      yield* cacheIo('close', () => file.handle.close())
+      yield* checkCacheAbort(signal)
+
+      // Check cancellation before beginning the commit attempt. The leaf itself
+      // drains uninterruptibly, then dirty-state follows whether rename worked.
+      yield* checkCacheAbort(signal)
+      yield* Effect.uninterruptible(
+        cacheIo('rename', () => rename(tempPath, finalPath)).pipe(
+          Effect.map(() => true),
+          Effect.catchTag('AntigravityCacheIoError', () => Effect.succeed(false)),
+          Effect.tap(renamed =>
+            Effect.sync(() => {
+              if (renamed) ownedTempPath = undefined
+              // Match the previous attempt policy: a completed rename attempt
+              // clears dirty even on rejected rename. Earlier failures stay dirty.
+              cacheDirty = false
+            }),
+          ),
+        ),
+      )
+      yield* checkCacheAbort(signal)
+    }),
+  ).pipe(Effect.catchTag('AntigravityCacheIoError', () => Effect.void))
+})
+
 async function flushCache(liveCascadeIds?: Set<string>): Promise<void> {
-  if (!memCache) return
-  // If the caller supplied liveCascadeIds, we must run the eviction step
-  // even when no cascade was added or updated this run; otherwise deleted
-  // .pb files would persist in the cache forever once it stops getting
-  // dirty writes. Mark the cache dirty when an eviction happens so the
-  // file write below proceeds.
-  if (liveCascadeIds) {
-    for (const id of Object.keys(memCache.cascades)) {
-      if (!liveCascadeIds.has(id)) {
-        delete memCache.cascades[id]
-        cacheDirty = true
-      }
-    }
-  }
-  if (!cacheDirty) return
-  try {
-    const dir = getCacheDir()
-    await mkdir(dir, { recursive: true })
-    const finalPath = getCachePath()
-    const tempPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
-    const handle = await open(tempPath, 'w', 0o600)
-    try {
-      await handle.writeFile(JSON.stringify(memCache), { encoding: 'utf-8' })
-      await handle.sync()
-    } finally {
-      await handle.close()
-    }
-    try {
-      await rename(tempPath, finalPath)
-    } catch {
-      try {
-        await unlink(tempPath)
-      } catch {
-        /* cleanup */
-      }
-    }
-    cacheDirty = false
-  } catch {
-    /* best-effort */
-  }
+  // Remove this Promise edge once the remaining Antigravity cache writers use the native cache effect.
+  // eslint-disable-next-line no-restricted-syntax
+  await Effect.runPromise(flushAntigravityCacheEffect(liveCascadeIds))
 }
 
 async function readProcessCommandLines(): Promise<string[]> {

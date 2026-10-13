@@ -39,7 +39,7 @@ import { readSessionLinesStream } from './fs-utils.js'
 import { captureScanPricing, getProxyPathsConfigHash, getShortModelName, isProxiedPath } from './models.js'
 import {
   antigravityCascadeIdFromPath,
-  flushAntigravityCache,
+  flushAntigravityCacheEffect,
   shouldReparseAntigravitySource,
 } from './providers/antigravity.js'
 import { getDesktopSessionsDirs } from './providers/claude.js'
@@ -3693,7 +3693,7 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
         if (providerName === 'codex') yield* Effect.scoped(flushCodexCacheEffect(signal))
         if (providerName === 'antigravity') {
           const liveIds = new Set(sources.map(s => antigravityCascadeIdFromPath(s.path)))
-          yield* runOwnedParserPromise(signal, context.stop, () => flushAntigravityCache(liveIds))
+          yield* flushAntigravityCacheEffect(liveIds, signal)
         }
       }),
   )
