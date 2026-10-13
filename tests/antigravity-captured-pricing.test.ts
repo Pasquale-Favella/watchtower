@@ -366,9 +366,9 @@ describe('Antigravity captured scan pricing', () => {
     const calls = await pending
     expect(calls).toHaveLength(1)
     expect(calls[0]?.costUSD).toBe(firstPricing.calculateCost(MODEL, 10, 5, 0, 0, 0))
-    // This fixture lacks the optional trajectory_metadata_blob table. Its
-    // failed workspace lookup must close the real DB before falling back.
-    expect(hooks.openedDatabase).toHaveBeenCalledTimes(2)
+    // This fixture lacks the optional trajectory_metadata_blob table. Both
+    // projections still share one read-only snapshot before falling back.
+    expect(hooks.openedDatabase).toHaveBeenCalledTimes(1)
     expect(hooks.closedDatabase.mock.calls).toEqual(hooks.openedDatabase.mock.calls)
   })
 

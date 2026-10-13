@@ -249,11 +249,11 @@ describe('Antigravity statusline Effect parser', () => {
     expect(hooks.released).toBe(1)
   })
 
-  it('does not attach the native statusline parser to conversation sources', () => {
+  it('attaches the native conversation parser without using statusline parsing', () => {
     const parser = createAntigravityProvider().createSessionParser(
       { path: join(root, 'conversation.pb'), project: 'antigravity-cli', provider: 'antigravity' },
       new Set(),
     )
-    expect(parser.parseStream).toBeUndefined()
+    expect(parser.parseStream).toBeTypeOf('function')
   })
 })
