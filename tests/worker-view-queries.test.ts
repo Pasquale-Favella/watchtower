@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -29,10 +29,16 @@ import {
   buildSessionSummariesFromSnapshotResult,
   groupSummariesIntoProjects,
 } from '../src/main/store/aggregate-calculation.js'
-import { LedgerConfig, LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
 import { type LedgerQuerySnapshot, loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
+import {
+  LedgerConfig,
+  LedgerIngest,
+  LedgerQueries,
+  type LedgerRequestSnapshotData,
+} from '../src/main/store/ledger-repository.js'
 import { LedgerViewReads } from '../src/main/store/ledger-view-reads.js'
 import { buildAnalyticalViewsFromSnapshot, buildDashboardViewsFromSnapshot } from '../src/main/views-calculation.js'
+import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
 import { calculateYieldPayload } from '../src/main/yield-calculation.js'
 import { sessionRowSchema } from '../src/shared/schemas/views.js'
 import { DEFAULT_SKILLS_THRESHOLDS } from '../src/shared/skills-defaults.js'
@@ -44,11 +50,29 @@ import {
 } from './fixtures/cached-file.js'
 import { viewInputs } from './fixtures/ledger-runtime.js'
 import { calculateOverviewFromSnapshot } from './fixtures/pre-native-overview-calculation.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
 
-async function withWorker(
-  run: (context: DbWorkerContext, owner: ReturnType<typeof openWorkerOwner>) => Promise<void>,
-): Promise<void> {
+interface WorkerOwner {
+  dbPath: string
+  runtime: WorkerRuntime
+}
+
+function removeTemporaryDirectory(directory: string): void {
+  const resolvedDirectory = resolve(directory)
+  const resolvedParent = dirname(resolvedDirectory)
+  const resolvedTempDirectory = resolve(tmpdir())
+  const directoryName = basename(resolvedDirectory)
+  const prefix = 'watchtower-view-query-'
+  if (
+    resolvedParent !== resolvedTempDirectory ||
+    !directoryName.startsWith(prefix) ||
+    directoryName.length <= prefix.length
+  ) {
+    throw new Error(`Refusing to remove unexpected temporary directory: ${resolvedDirectory}`)
+  }
+  rmSync(resolvedDirectory, { recursive: true, force: true })
+}
+
+async function withWorker(run: (context: DbWorkerContext, owner: WorkerOwner) => Promise<void>): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-view-query-'))
   const setup = Layer.succeed(
     AssistantSetup,
@@ -74,18 +98,27 @@ async function withWorker(
       getCommitFacts: () => Effect.succeed([]),
     }),
   )
-  const owner = openWorkerOwner(join(directory, 'ledger.db'), undefined, Layer.mergeAll(setup, repositories))
-  const context = new DbWorkerContext(
-    { dbPath: owner.ledger.dbPath, dataDir: directory, cacheDir: join(directory, 'cache') },
-    () => {},
-    owner,
-  )
+  const dbPath = join(directory, 'ledger.db')
+  let runtime: WorkerRuntime | undefined
+  let context: DbWorkerContext | undefined
   try {
+    runtime = openWorkerRuntime(dbPath, undefined, Layer.mergeAll(setup, repositories))
+    const owner = { dbPath, runtime }
+    context = new DbWorkerContext({ dbPath, dataDir: directory, cacheDir: join(directory, 'cache') }, () => {}, {
+      runtime,
+    })
     await run(context, owner)
   } finally {
     vi.restoreAllMocks()
-    await context.close()
-    rmSync(directory, { recursive: true, force: true })
+    try {
+      if (context) await context.close()
+    } finally {
+      try {
+        if (runtime) await runtime.dispose()
+      } finally {
+        removeTemporaryDirectory(directory)
+      }
+    }
   }
 }
 
@@ -107,13 +140,13 @@ const projectedOperations = new Set<ViewOperation>(['store:views', 'store:analyt
 const overviewOperations = new Set<ViewOperation>(['overview:query'])
 const scope = { period: 'lifetime', range: { since: '2026-07-01', until: '2026-07-02' } } as const
 
-function expectedQueryInputs(owner: ReturnType<typeof openWorkerOwner>): { snapshot: LedgerQuerySnapshot; now: Date } {
+function expectedQueryInputs(owner: WorkerOwner): { snapshot: LedgerQuerySnapshot; now: Date } {
   const { catalogue, proxyPaths } = viewInputs(scope)
   const snapshot = owner.runtime.runSync(loadLedgerQuerySnapshotEffect({ catalogue, proxyPaths }))
   return { snapshot, now: new Date() }
 }
 
-async function expectedPayload(operation: ViewOperation, owner: ReturnType<typeof openWorkerOwner>) {
+async function expectedPayload(operation: ViewOperation, owner: WorkerOwner) {
   const { snapshot, now } = expectedQueryInputs(owner)
   const summaries = buildSessionSummariesFromSnapshotResult(snapshot, {
     range: overviewDateRange(scope, now),
@@ -148,7 +181,7 @@ async function expectedPayload(operation: ViewOperation, owner: ReturnType<typeo
         ...new Set(summaries.flatMap(summary => (summary.workingDirectory ? [summary.workingDirectory] : []))),
       ]
       const inventory = await owner.runtime.runPromise(
-        assistantSetup.getSkillInventory(workingDirectories, dirname(owner.ledger.dbPath)),
+        assistantSetup.getSkillInventory(workingDirectories, dirname(owner.dbPath)),
       )
       const config = owner.runtime.runSync(LedgerConfig)
       const dismissals = await owner.runtime.runPromise(config.getSkillDismissals())
@@ -165,7 +198,7 @@ async function expectedPayload(operation: ViewOperation, owner: ReturnType<typeo
       const setup =
         projects.length === 0
           ? {
-              home: dirname(owner.ledger.dbPath),
+              home: dirname(owner.dbPath),
               mcpConfigs: new Map(),
               envSettings: new Map(),
               agents: [],
@@ -175,7 +208,7 @@ async function expectedPayload(operation: ViewOperation, owner: ReturnType<typeo
           : await owner.runtime.runPromise(
               assistantSetup.getOptimizeSetup(
                 [...new Set(projects.map(project => project.projectPath || project.project))],
-                dirname(owner.ledger.dbPath),
+                dirname(owner.dbPath),
               ),
             )
       return calculateOptimizePayload(projects, scope, setup, now)
@@ -188,7 +221,7 @@ async function expectedPayload(operation: ViewOperation, owner: ReturnType<typeo
   }
 }
 
-function seedLedger(owner: ReturnType<typeof openWorkerOwner>): void {
+function seedLedger(owner: WorkerOwner): void {
   const cachedFile = buildFixtureCachedFile({
     turns: [
       buildFixtureCachedTurn(0, 'Refactor the auth module', {
@@ -200,13 +233,17 @@ function seedLedger(owner: ReturnType<typeof openWorkerOwner>): void {
       }),
     ],
   })
-  owner.ledger.portIn({
-    provider: 'opencode',
-    envFingerprint: 'worker-view-query',
-    filePath: FIXTURE_SOURCE_PATH,
-    verdict: 'new',
-    cachedFile,
-  })
+  owner.runtime.runSync(
+    Effect.flatMap(LedgerIngest, ingest =>
+      ingest.portIn({
+        provider: 'opencode',
+        envFingerprint: 'worker-view-query',
+        filePath: FIXTURE_SOURCE_PATH,
+        verdict: 'new',
+        cachedFile,
+      }),
+    ),
+  )
 }
 
 describe('worker view queries', () => {
@@ -218,7 +255,8 @@ describe('worker view queries', () => {
       await expect(context.dispatch('skills:view', [scope, thresholds])).resolves.toMatchObject({
         drafts: [{ name: 'demo-skill' }],
       })
-      owner.ledger.dismissSkill('skill', 'demo-skill', 'Already covered')
+      const config = owner.runtime.runSync(LedgerConfig)
+      owner.runtime.runSync(config.dismissSkill('skill', 'demo-skill', 'Already covered', '2026-07-01T00:00:00.000Z'))
       await expect(context.dispatch('skills:view', [scope, thresholds])).resolves.toMatchObject({
         drafts: [],
         opportunities: [],
@@ -239,20 +277,24 @@ describe('worker view queries', () => {
 
   it('passes the requested Compare pair through to the application query', async () => {
     await withWorker(async (context, owner) => {
-      owner.ledger.portIn({
-        provider: 'opencode',
-        envFingerprint: 'worker-compare-pair',
-        filePath: FIXTURE_SOURCE_PATH,
-        verdict: 'new',
-        cachedFile: buildFixtureCachedFile({
-          turns: [
-            buildFixtureCachedTurn(0, 'First model'),
-            buildFixtureCachedTurn(1, 'Second model', {
-              calls: [{ ...buildFixtureCachedCall(1), model: 'second-model' }],
+      owner.runtime.runSync(
+        Effect.flatMap(LedgerIngest, ingest =>
+          ingest.portIn({
+            provider: 'opencode',
+            envFingerprint: 'worker-compare-pair',
+            filePath: FIXTURE_SOURCE_PATH,
+            verdict: 'new',
+            cachedFile: buildFixtureCachedFile({
+              turns: [
+                buildFixtureCachedTurn(0, 'First model'),
+                buildFixtureCachedTurn(1, 'Second model', {
+                  calls: [{ ...buildFixtureCachedCall(1), model: 'second-model' }],
+                }),
+              ],
             }),
-          ],
-        }),
-      })
+          }),
+        ),
+      )
       const pair = { modelA: 'second-model', modelB: 'demo-model' }
       const { snapshot: querySnapshot, now } = expectedQueryInputs(owner)
       const summaries = buildSessionSummariesFromSnapshotResult(querySnapshot, {
@@ -272,7 +314,8 @@ describe('worker view queries', () => {
   it.each(operations)('reports unpriced models through the runtime port for %s', async operation => {
     await withWorker(async (context, owner) => {
       seedLedger(owner)
-      owner.ledger.setModelAlias('demo-model', 'test-unpriced-target-model')
+      const config = owner.runtime.runSync(LedgerConfig)
+      owner.runtime.runSync(config.setModelAlias('demo-model', 'test-unpriced-target-model'))
       const diagnostics = owner.runtime.runSync(PricingDiagnostics)
       const report = vi.spyOn(diagnostics, 'reportUnpricedModels').mockReturnValue(Effect.void)
 
@@ -284,7 +327,7 @@ describe('worker view queries', () => {
     })
   })
 
-  it.each(operations)('loads one port read for %s without running the synchronous facade', async operation => {
+  it.each(operations)('loads one port read for %s with the expected query shape', async operation => {
     await withWorker(async (context, owner) => {
       seedLedger(owner)
       const expected = await expectedPayload(operation, owner)
@@ -293,22 +336,9 @@ describe('worker view queries', () => {
       const reads = owner.runtime.runSync(LedgerViewReads)
       const projection = vi.spyOn(reads, 'getViewData')
       const overviewProjection = vi.spyOn(reads, 'getOverviewData')
-      const facade = vi.spyOn(owner.ledger, 'runQueriesSync').mockImplementation(() => {
-        throw new Error('legacy query facade must not run')
-      })
-      const repository = vi.spyOn(owner.ledger, 'runRepositorySync').mockImplementation(() => {
-        throw new Error('legacy repository facade must not run')
-      })
-      const aliases = vi.spyOn(owner.ledger, 'getModelAliases').mockImplementation(() => {
-        throw new Error('separate alias read must not run')
-      })
-      const overrides = vi.spyOn(owner.ledger, 'getPriceOverrides').mockImplementation(() => {
-        throw new Error('separate override read must not run')
-      })
-      const dismissals = vi.spyOn(owner.ledger, 'getSkillDismissals').mockImplementation(() => {
-        throw new Error('legacy dismissal read must not run')
-      })
       const config = owner.runtime.runSync(LedgerConfig)
+      const aliases = vi.spyOn(config, 'getModelAliases')
+      const overrides = vi.spyOn(config, 'getPriceOverrides')
       const dismissalRead = vi.spyOn(config, 'getSkillDismissals')
 
       await expect(context.dispatch(operation, [scope])).resolves.toEqual(expected)
@@ -317,11 +347,8 @@ describe('worker view queries', () => {
       )
       expect(projection).toHaveBeenCalledTimes(projectedOperations.has(operation) ? 1 : 0)
       expect(overviewProjection).toHaveBeenCalledTimes(overviewOperations.has(operation) ? 1 : 0)
-      expect(facade).not.toHaveBeenCalled()
-      expect(repository).not.toHaveBeenCalled()
       expect(aliases).not.toHaveBeenCalled()
       expect(overrides).not.toHaveBeenCalled()
-      expect(dismissals).not.toHaveBeenCalled()
       expect(dismissalRead).toHaveBeenCalledTimes(operation === 'skills:view' ? 1 : 0)
     })
   })
@@ -329,12 +356,17 @@ describe('worker view queries', () => {
   it.each(operations)('reflects alias and override changes on the next %s request without a scan', async operation => {
     await withWorker(async (context, owner) => {
       seedLedger(owner)
-      owner.ledger.setModelAlias('demo-model', 'first-effective-model')
-      owner.ledger.setPriceOverride('first-effective-model', { inputPricePerMillion: 2, outputPricePerMillion: 4 })
+      const config = owner.runtime.runSync(LedgerConfig)
+      owner.runtime.runSync(config.setModelAlias('demo-model', 'first-effective-model'))
+      owner.runtime.runSync(
+        config.setPriceOverride('first-effective-model', { inputPricePerMillion: 2, outputPricePerMillion: 4 }),
+      )
       const first = await context.dispatch(operation, [scope])
 
-      owner.ledger.setModelAlias('demo-model', 'second-effective-model')
-      owner.ledger.setPriceOverride('second-effective-model', { inputPricePerMillion: 7, outputPricePerMillion: 14 })
+      owner.runtime.runSync(config.setModelAlias('demo-model', 'second-effective-model'))
+      owner.runtime.runSync(
+        config.setPriceOverride('second-effective-model', { inputPricePerMillion: 7, outputPricePerMillion: 14 }),
+      )
       const expected = await expectedPayload(operation, owner)
 
       const next = await context.dispatch(operation, [scope])

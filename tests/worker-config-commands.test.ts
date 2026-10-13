@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import * as Cause from 'effect/Cause'
 import * as DateTime from 'effect/DateTime'
@@ -20,7 +20,28 @@ import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { workerProtocolError } from '../src/main/db-worker/protocol-errors.js'
 import { LedgerConfig } from '../src/main/store/ledger-ports.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
+import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
+
+interface WorkerOwner {
+  dbPath: string
+  runtime: WorkerRuntime
+}
+
+function removeTemporaryDirectory(directory: string): void {
+  const resolvedDirectory = resolve(directory)
+  const resolvedParent = dirname(resolvedDirectory)
+  const resolvedTempDirectory = resolve(tmpdir())
+  const directoryName = basename(resolvedDirectory)
+  const prefix = 'watchtower-config-commands-'
+  if (
+    resolvedParent !== resolvedTempDirectory ||
+    !directoryName.startsWith(prefix) ||
+    directoryName.length <= prefix.length
+  ) {
+    throw new Error(`Refusing to remove unexpected temporary directory: ${resolvedDirectory}`)
+  }
+  rmSync(resolvedDirectory, { recursive: true, force: true })
+}
 
 function fakeConfig(overrides: Partial<LedgerConfig['Service']> = {}): LedgerConfig['Service'] {
   return LedgerConfig.of({
@@ -45,23 +66,33 @@ function fakeConfig(overrides: Partial<LedgerConfig['Service']> = {}): LedgerCon
 }
 
 async function withWorker(
-  run: (context: DbWorkerContext, owner: ReturnType<typeof openWorkerOwner>, events: DbWorkerEvent[]) => Promise<void>,
+  run: (context: DbWorkerContext, owner: WorkerOwner, events: DbWorkerEvent[]) => Promise<void>,
   config?: LedgerConfig['Service'],
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-config-commands-'))
   const dbPath = join(directory, 'ledger.db')
-  const owner = openWorkerOwner(dbPath, undefined, config ? Layer.succeed(LedgerConfig, config) : undefined)
-  const events: DbWorkerEvent[] = []
-  const context = new DbWorkerContext(
-    { dbPath, dataDir: directory, cacheDir: join(directory, 'cache') },
-    event => events.push(event),
-    owner,
-  )
+  let runtime: WorkerRuntime | undefined
+  let context: DbWorkerContext | undefined
   try {
+    runtime = openWorkerRuntime(dbPath, undefined, config ? Layer.succeed(LedgerConfig, config) : undefined)
+    const owner = { dbPath, runtime }
+    const events: DbWorkerEvent[] = []
+    context = new DbWorkerContext(
+      { dbPath, dataDir: directory, cacheDir: join(directory, 'cache') },
+      event => events.push(event),
+      { runtime },
+    )
     await run(context, owner, events)
   } finally {
-    await context.close()
-    rmSync(directory, { recursive: true, force: true })
+    try {
+      if (context) await context.close()
+    } finally {
+      try {
+        if (runtime) await runtime.dispose()
+      } finally {
+        removeTemporaryDirectory(directory)
+      }
+    }
   }
 }
 
@@ -103,26 +134,23 @@ describe('worker configuration commands use the owned ports', () => {
     expect(changed).not.toHaveBeenCalled()
   })
 
-  it('persists configuration through the native root without using facade methods', async () => {
+  it('persists configuration and reads it through the native worker ports', async () => {
     await withWorker(async (context, owner, events) => {
-      const facadeMethods = [
-        'getRefreshCadence',
-        'setRefreshCadence',
-        'getModelAliases',
-        'setModelAlias',
-        'removeModelAlias',
-        'getPriceOverrides',
-        'setPriceOverride',
-        'removePriceOverride',
-        'getLedgerMcpStartupMode',
-        'setLedgerMcpStartupMode',
-        'dismissSkill',
-      ] as const
-      const spies = facadeMethods.map(method =>
-        vi.spyOn(owner.ledger, method).mockImplementation(() => {
-          throw new Error(`facade ${method} must not be used`)
-        }),
-      )
+      const config = owner.runtime.runSync(LedgerConfig)
+      const nativePortCalls = [
+        vi.spyOn(config, 'getRefreshCadence'),
+        vi.spyOn(config, 'setRefreshCadence'),
+        vi.spyOn(config, 'getModelAliases'),
+        vi.spyOn(config, 'setModelAlias'),
+        vi.spyOn(config, 'removeModelAlias'),
+        vi.spyOn(config, 'getPriceOverrides'),
+        vi.spyOn(config, 'setPriceOverride'),
+        vi.spyOn(config, 'removePriceOverride'),
+        vi.spyOn(config, 'getLedgerMcpStartupMode'),
+        vi.spyOn(config, 'setLedgerMcpStartupMode'),
+        vi.spyOn(config, 'dismissSkill'),
+        vi.spyOn(config, 'getSkillDismissals'),
+      ]
 
       expect(await context.dispatch('cadence:set', ['manual'])).toBe('manual')
       expect(await context.dispatch('cadence:get', [])).toBe('manual')
@@ -143,9 +171,7 @@ describe('worker configuration commands use the owned ports', () => {
       expect(
         await context.dispatch('skills:dismiss', [{ source: 'bash', name: 'git status', reason: 'routine' }]),
       ).toEqual({ ok: true })
-      const dismissals = await owner.runtime.runPromise(
-        Effect.flatMap(LedgerConfig, config => config.getSkillDismissals()),
-      )
+      const dismissals = await owner.runtime.runPromise(config.getSkillDismissals())
       expect(dismissals).toEqual([
         {
           source: 'bash',
@@ -155,7 +181,7 @@ describe('worker configuration commands use the owned ports', () => {
         },
       ])
       expect(events.filter(event => event.event === 'config:changed')).toHaveLength(4)
-      for (const spy of spies) expect(spy).not.toHaveBeenCalled()
+      for (const spy of nativePortCalls) expect(spy).toHaveBeenCalled()
     })
   })
 

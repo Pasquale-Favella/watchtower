@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -13,7 +13,22 @@ import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { OperationalLog, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerConfig } from '../src/main/store/ledger-repository.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
+import { openWorkerRuntime } from '../src/main/worker-runtime.js'
+
+function removeTemporaryDirectory(directory: string, prefix: string): void {
+  const resolvedDirectory = resolve(directory)
+  const resolvedParent = dirname(resolvedDirectory)
+  const resolvedTempDirectory = resolve(tmpdir())
+  const directoryName = basename(resolvedDirectory)
+  if (
+    resolvedParent !== resolvedTempDirectory ||
+    !directoryName.startsWith(prefix) ||
+    directoryName.length <= prefix.length
+  ) {
+    throw new Error(`Refusing to remove unexpected temporary directory: ${resolvedDirectory}`)
+  }
+  rmSync(resolvedDirectory, { recursive: true, force: true })
+}
 
 describe('worker operational log forwarding', () => {
   it('logs a malformed FX cache once without fetching or publishing a successful currency', async () => {
@@ -28,19 +43,23 @@ describe('worker operational log forwarding', () => {
     }
     const fetch = vi.fn<typeof globalThis.fetch>()
     const dbPath = join(directory, 'ledger.db')
-    const owner = openWorkerOwner(dbPath, makeWorkerOperationalLogSink(emit), HttpFetch.layerWithFetch(fetch))
-    owner.runtime.runSync(
-      Effect.gen(function* () {
-        const config = yield* LedgerConfig
-        const sql = yield* SqlClient.SqlClient
-        yield* config.setDisplayCurrency('EUR')
-        yield* sql.unsafe(
-          "INSERT INTO currency_rate (code, symbol, rate, updated_at) VALUES ('EUR', '€', 'malformed', 'old')",
-        )
-      }),
-    )
-    const context = new DbWorkerContext({ dbPath, dataDir: directory, cacheDir: join(directory, 'cache') }, emit, owner)
+    let runtime: ReturnType<typeof openWorkerRuntime> | undefined
+    let context: DbWorkerContext | undefined
     try {
+      runtime = openWorkerRuntime(dbPath, makeWorkerOperationalLogSink(emit), HttpFetch.layerWithFetch(fetch))
+      runtime.runSync(
+        Effect.gen(function* () {
+          const config = yield* LedgerConfig
+          const sql = yield* SqlClient.SqlClient
+          yield* config.setDisplayCurrency('EUR')
+          yield* sql.unsafe(
+            "INSERT INTO currency_rate (code, symbol, rate, updated_at) VALUES ('EUR', '€', 'malformed', 'old')",
+          )
+        }),
+      )
+      context = new DbWorkerContext({ dbPath, dataDir: directory, cacheDir: join(directory, 'cache') }, emit, {
+        runtime,
+      })
       expect(await Effect.runPromise(Deferred.await(failure))).toMatchObject({
         event: 'oplog',
         level: 'error',
@@ -53,8 +72,15 @@ describe('worker operational log forwarding', () => {
         events.filter(event => event.event === 'oplog' && event.logEvent === 'currency.refresh.error'),
       ).toHaveLength(1)
     } finally {
-      await context.close()
-      rmSync(directory, { recursive: true, force: true })
+      try {
+        if (context) await context.close()
+      } finally {
+        try {
+          if (runtime) await runtime.dispose()
+        } finally {
+          removeTemporaryDirectory(directory, 'watchtower-worker-fx-error-')
+        }
+      }
     }
   })
 
@@ -62,8 +88,9 @@ describe('worker operational log forwarding', () => {
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-log-'))
     const events: DbWorkerEvent[] = []
     const sink = makeWorkerOperationalLogSink(event => events.push(event))
-    const { runtime } = openWorkerOwner(join(directory, 'ledger.db'), sink)
+    let runtime: ReturnType<typeof openWorkerRuntime> | undefined
     try {
+      runtime = openWorkerRuntime(join(directory, 'ledger.db'), sink)
       await runtime.runPromise(
         Effect.gen(function* () {
           yield* Effect.logInfo('worker.test').pipe(
@@ -123,8 +150,11 @@ describe('worker operational log forwarding', () => {
         events.slice(sqlTraceStart).filter(event => event.event === 'oplog' && event.fields.op === 'sql.execute'),
       ).toEqual([])
     } finally {
-      await runtime.dispose()
-      rmSync(directory, { recursive: true, force: true })
+      try {
+        if (runtime) await runtime.dispose()
+      } finally {
+        removeTemporaryDirectory(directory, 'watchtower-worker-log-')
+      }
     }
   })
 
@@ -133,8 +163,9 @@ describe('worker operational log forwarding', () => {
     const sink = makeWorkerOperationalLogSink(() => {
       throw new Error('closed port')
     })
-    const { runtime } = openWorkerOwner(join(directory, 'ledger.db'), sink)
+    let runtime: ReturnType<typeof openWorkerRuntime> | undefined
     try {
+      runtime = openWorkerRuntime(join(directory, 'ledger.db'), sink)
       await expect(
         runtime.runPromise(
           Effect.gen(function* () {
@@ -145,8 +176,11 @@ describe('worker operational log forwarding', () => {
         ),
       ).resolves.toBeUndefined()
     } finally {
-      await runtime.dispose()
-      rmSync(directory, { recursive: true, force: true })
+      try {
+        if (runtime) await runtime.dispose()
+      } finally {
+        removeTemporaryDirectory(directory, 'watchtower-worker-log-')
+      }
     }
   })
 })

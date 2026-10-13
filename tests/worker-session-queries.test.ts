@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync, StatementSync } from 'node:sqlite'
 
 import * as Cause from 'effect/Cause'
@@ -15,32 +15,61 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { querySessionSearch } from '../src/main/application/session-search-query.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { captureModelPricingCatalogue } from '../src/main/pipeline/models.js'
-import { LedgerSessionReads } from '../src/main/store/ledger-session-reads.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries, LedgerSessionReads } from '../src/main/store/ledger-repository.js'
+import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
-import { openWorkerOwner } from './fixtures/worker-owner.js'
 
-const directories: string[] = []
+interface WorkerOwner {
+  dbPath: string
+  runtime: WorkerRuntime
+}
 
-function withWorker(
-  run: (context: DbWorkerContext, owner: ReturnType<typeof openWorkerOwner>) => Promise<void>,
+function removeTemporaryDirectory(directory: string): void {
+  const resolvedDirectory = resolve(directory)
+  const resolvedParent = dirname(resolvedDirectory)
+  const resolvedTempDirectory = resolve(tmpdir())
+  const directoryName = basename(resolvedDirectory)
+  const prefix = 'watchtower-worker-session-query-'
+  if (
+    resolvedParent !== resolvedTempDirectory ||
+    !directoryName.startsWith(prefix) ||
+    directoryName.length <= prefix.length
+  ) {
+    throw new Error(`Refusing to remove unexpected temporary directory: ${resolvedDirectory}`)
+  }
+  rmSync(resolvedDirectory, { recursive: true, force: true })
+}
+
+async function withWorker(
+  run: (context: DbWorkerContext, owner: WorkerOwner) => Promise<void>,
   overrides?: Layer.Layer<LedgerSessionReads>,
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-session-query-'))
-  directories.push(directory)
   const dbPath = join(directory, 'ledger.db')
-  const owner = openWorkerOwner(dbPath, undefined, overrides)
-  const context = new DbWorkerContext(
-    { dbPath, dataDir: directory, cacheDir: join(directory, 'cache') },
-    () => {},
-    owner,
-  )
-  return run(context, owner).finally(async () => {
-    await context.close()
-  })
+  let runtime: WorkerRuntime | undefined
+  let context: DbWorkerContext | undefined
+  try {
+    runtime = openWorkerRuntime(dbPath, undefined, overrides)
+    const owner = { dbPath, runtime }
+    context = new DbWorkerContext({ dbPath, dataDir: directory, cacheDir: join(directory, 'cache') }, () => {}, {
+      runtime,
+    })
+    await run(context, owner)
+  } finally {
+    try {
+      if (context) await context.close()
+    } finally {
+      try {
+        if (runtime) await runtime.dispose()
+      } finally {
+        removeTemporaryDirectory(directory)
+      }
+    }
+  }
 }
 
 function portSession(
-  owner: ReturnType<typeof openWorkerOwner>,
+  owner: WorkerOwner,
   input: {
     env: string
     sessionId: string
@@ -74,32 +103,36 @@ function portSession(
     tools: ['Read', 'Edit'],
     deduplicationKey: `${input.env}-call`,
   }
-  owner.ledger.portIn({
-    provider: 'opencode',
-    envFingerprint: input.env,
-    filePath: `/fixture/${input.env}.jsonl`,
-    project: input.project,
-    workingDirectory: input.workingDirectory,
-    repoUrl: input.repoUrl,
-    verdict: 'new',
-    cachedFile: buildFixtureCachedFile({
-      canonicalCwd: input.workingDirectory,
-      canonicalProjectName: input.project,
-      title: input.title,
-      turns: [
-        buildFixtureCachedTurn(0, input.userMessage, {
-          sessionId: input.sessionId,
-          timestamp: input.timestamp,
-          gitBranch: 'main',
-          prRefs: ['https://github.com/acme/watchtower/pull/17'],
-          calls: [call],
+  owner.runtime.runSync(
+    Effect.flatMap(LedgerIngest, ingest =>
+      ingest.portIn({
+        provider: 'opencode',
+        envFingerprint: input.env,
+        filePath: `/fixture/${input.env}.jsonl`,
+        project: input.project,
+        workingDirectory: input.workingDirectory,
+        repoUrl: input.repoUrl,
+        verdict: 'new',
+        cachedFile: buildFixtureCachedFile({
+          canonicalCwd: input.workingDirectory,
+          canonicalProjectName: input.project,
+          title: input.title,
+          turns: [
+            buildFixtureCachedTurn(0, input.userMessage, {
+              sessionId: input.sessionId,
+              timestamp: input.timestamp,
+              gitBranch: 'main',
+              prRefs: ['https://github.com/acme/watchtower/pull/17'],
+              calls: [call],
+            }),
+          ],
         }),
-      ],
-    }),
-  })
+      }),
+    ),
+  )
 }
 
-function seedSessions(owner: ReturnType<typeof openWorkerOwner>): void {
+function seedSessions(owner: WorkerOwner): void {
   portSession(owner, {
     env: 'alpha',
     sessionId: 'duplicate-session',
@@ -139,27 +172,20 @@ function seedSessions(owner: ReturnType<typeof openWorkerOwner>): void {
     outputTokens: 150,
     title: 'Gamma title',
   })
-  owner.ledger.setPriceOverride('session-query-model', { inputPricePerMillion: 2, outputPricePerMillion: 4 })
+  owner.runtime.runSync(
+    Effect.flatMap(LedgerConfig, config =>
+      config.setPriceOverride('session-query-model', { inputPricePerMillion: 2, outputPricePerMillion: 4 }),
+    ),
+  )
 }
 
-function corruptOtherSessionTools(owner: ReturnType<typeof openWorkerOwner>): void {
-  const writer = new DatabaseSync(owner.ledger.dbPath)
+function corruptOtherSessionTools(owner: WorkerOwner): void {
+  const writer = new DatabaseSync(owner.dbPath)
   try {
     writer.prepare("UPDATE ledger_call SET tools_json = 'not-json' WHERE session_id = ?").run('z-command-session')
   } finally {
     writer.close()
   }
-}
-
-function spyLegacyFacades(owner: ReturnType<typeof openWorkerOwner>) {
-  return [
-    vi.spyOn(owner.ledger, 'getSources'),
-    vi.spyOn(owner.ledger, 'getSessions'),
-    vi.spyOn(owner.ledger, 'getTurns'),
-    vi.spyOn(owner.ledger, 'getCallFacts'),
-    vi.spyOn(owner.ledger, 'getModelAliases'),
-    vi.spyOn(owner.ledger, 'getPriceOverrides'),
-  ]
 }
 
 const routes = [
@@ -195,11 +221,10 @@ function watchSelects() {
 
 afterEach(() => {
   vi.restoreAllMocks()
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
 
 describe('worker project and session queries', () => {
-  it.each(routes)('$op dispatches one focused read and never calls the ledger facade', async route => {
+  it.each(routes)('$op dispatches one focused read through LedgerSessionReads', async route => {
     await withWorker(async (context, owner) => {
       seedSessions(owner)
       corruptOtherSessionTools(owner)
@@ -207,13 +232,27 @@ describe('worker project and session queries', () => {
       const summary = vi.spyOn(reads, 'getSessionSummaryData')
       const detail = vi.spyOn(reads, 'getSessionDetailData')
       const search = vi.spyOn(reads, 'getSessionSearchData')
-      const legacy = spyLegacyFacades(owner)
+      const queries = owner.runtime.runSync(LedgerQueries)
+      const generalReads = [
+        vi.spyOn(queries, 'hasSources'),
+        vi.spyOn(queries, 'getSources'),
+        vi.spyOn(queries, 'getSessions'),
+        vi.spyOn(queries, 'getTurns'),
+        vi.spyOn(queries, 'getCalls'),
+        vi.spyOn(queries, 'getCallFacts'),
+        vi.spyOn(queries, 'getRequestSnapshotData'),
+      ]
+      const config = owner.runtime.runSync(LedgerConfig)
+      const aliases = vi.spyOn(config, 'getModelAliases')
+      const overrides = vi.spyOn(config, 'getPriceOverrides')
 
       const result = await context.dispatch(route.op, [...route.args])
       expect(summary).toHaveBeenCalledTimes(route.portMethod === 'getSessionSummaryData' ? 1 : 0)
       expect(detail).toHaveBeenCalledTimes(route.portMethod === 'getSessionDetailData' ? 1 : 0)
       expect(search).toHaveBeenCalledTimes(route.portMethod === 'getSessionSearchData' ? 1 : 0)
-      expect(legacy.every(spy => spy.mock.calls.length === 0)).toBe(true)
+      for (const read of generalReads) expect(read).not.toHaveBeenCalled()
+      expect(aliases).not.toHaveBeenCalled()
+      expect(overrides).not.toHaveBeenCalled()
 
       if (route.op === 'store:projects') {
         expect(result).toMatchObject([
@@ -335,8 +374,11 @@ describe('worker project and session queries', () => {
   it('uses edited aliases and price overrides on the next summary route request without a scan', async () => {
     await withWorker(async (context, owner) => {
       seedSessions(owner)
-      owner.ledger.setModelAlias('session-query-model', 'first-priced-model')
-      owner.ledger.setPriceOverride('first-priced-model', { inputPricePerMillion: 2, outputPricePerMillion: 4 })
+      const config = owner.runtime.runSync(LedgerConfig)
+      owner.runtime.runSync(config.setModelAlias('session-query-model', 'first-priced-model'))
+      owner.runtime.runSync(
+        config.setPriceOverride('first-priced-model', { inputPricePerMillion: 2, outputPricePerMillion: 4 }),
+      )
 
       const firstProjects = (await context.dispatch('store:projects', [])) as Array<{ project: string; cost: number }>
       const firstSessions = (await context.dispatch('store:sessions', [{}])) as Array<{
@@ -350,8 +392,10 @@ describe('worker project and session queries', () => {
       })
       expect(firstSessions.find(row => row.project === 'alpha')?.cost).toBeCloseTo(0.0004, 12)
 
-      owner.ledger.setModelAlias('session-query-model', 'second-priced-model')
-      owner.ledger.setPriceOverride('second-priced-model', { inputPricePerMillion: 7, outputPricePerMillion: 14 })
+      owner.runtime.runSync(config.setModelAlias('session-query-model', 'second-priced-model'))
+      owner.runtime.runSync(
+        config.setPriceOverride('second-priced-model', { inputPricePerMillion: 7, outputPricePerMillion: 14 }),
+      )
       const nextProjects = (await context.dispatch('store:projects', [])) as Array<{ project: string; cost: number }>
       const nextSessions = (await context.dispatch('store:sessions', [{}])) as Array<{
         project: string
