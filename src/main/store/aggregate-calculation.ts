@@ -37,7 +37,7 @@ export const DEFAULT_RANGE_DAYS = 30
  *  table's 38 columns) rather than the maximal `LedgerCallRow`: the nine
  *  omitted columns have no reader in `src/main`, and the per-column map with a
  *  `file:line` for every kept one is on `ledgerCallFactsRowSchema`
- *  (`./read-projections.ts`). `LedgerStore.getCalls` remains the wide read — the
+ *  (`./read-projections.ts`). `LedgerQueries.getCalls` remains the wide read — the
  *  fallback, and the measurement harness's baseline. */
 export type ScopedCall = LedgerCallFactsRow & {
   /** `model` after a configured `model_alias` rewrite (identity for display/grouping). */

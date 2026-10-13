@@ -12,13 +12,13 @@ import { queryProjectRows, querySessionRows } from '../src/main/application/stor
 import { captureModelPricingCatalogue } from '../src/main/pipeline/models.js'
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
 import { searchSessionsFromData } from '../src/main/session-search-calculation.js'
-import type { LedgerStore } from '../src/main/store/ledger.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
 import { LedgerSessionReads } from '../src/main/store/ledger-session-reads.js'
 import type { SessionSummaryData } from '../src/main/store/session-read-projections.js'
 import { buildProjectRowsFromSessionData, querySessionRowsFromSessionData } from '../src/main/store-rows-calculation.js'
 import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import type { LegacyLedgerReader } from './fixtures/pre-wave17-query-snapshot.js'
 import {
   legacyBuildProjectRowsFromLedger,
   legacyQuerySessionRowsFromLedger,
@@ -278,12 +278,12 @@ describe('store row calculations', () => {
       const projectResult = buildProjectRowsFromSessionData(data, catalogue).rows
       const sessionResult = querySessionRowsFromSessionData(data, catalogue, {}).rows
       const searchResult = searchSessionsFromData(searchData, 'auth', catalogue)
-      const legacyOracleStore = {
+      const legacyOracleStore: LegacyLedgerReader = {
         runQueriesSync: <A>(operation: (queries: LedgerQueries['Service']) => Effect.Effect<A, unknown>) =>
           runtime.runSync(Effect.flatMap(LedgerQueries, operation)),
         runRepositorySync: <A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, unknown>) =>
           runtime.runSync(Effect.flatMap(LedgerConfig, operation)),
-      } as unknown as LedgerStore
+      }
       expect(projectResult).toStrictEqual(legacyBuildProjectRowsFromLedger(legacyOracleStore))
       expect(sessionResult).toStrictEqual(legacyQuerySessionRowsFromLedger(legacyOracleStore, {}))
       expect(searchResult).toStrictEqual(legacySearchSessionsFromLedger(legacyOracleStore, 'auth'))

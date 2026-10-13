@@ -148,7 +148,7 @@ export type LedgerCallFactsRow = Omit<
  *
  * DROPPED, with no reader anywhere in `src/main`:
  *   call_key          a STORED generated column whose only job is the UNIQUE
- *                     constraint (store/ledger.ts:125-126). `tests/ledger.test.ts`
+ *                     constraint (store/ledger-initialization.ts). `tests/ledger.test.ts`
  *                     pins it on `getCalls()`, which is why the wide read stays.
  *   project_path      nothing reads the call's path; the seam's project path
  *                     comes from `ledger_session.project_path` (aggregate.ts:483).

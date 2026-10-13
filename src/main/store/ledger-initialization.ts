@@ -1,15 +1,6 @@
-import * as SqliteMigrator from '@effect/sql-sqlite-node/SqliteMigrator'
-import * as Effect from 'effect/Effect'
-import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
-import type { SqlError } from 'effect/unstable/sql/SqlError'
+import { executeSqliteScript, runSqliteMigrations } from './sqlite-migrations.js'
 
-import { executeSqliteScript, makeSqliteMigrationLoader } from './sqlite-migrations.js'
-
-export class UnsupportedLedgerSchemaVersion extends Schema.TaggedError<UnsupportedLedgerSchemaVersion>()(
-  'UnsupportedLedgerSchemaVersion',
-  { version: Schema.Number, latestSupported: Schema.Number, message: Schema.String },
-) {}
+export { UnsupportedLedgerSchemaVersion } from './sqlite-migrations.js'
 
 const migrations = [
   {
@@ -159,28 +150,4 @@ const migrations = [
   },
 ] as const
 
-const latestSupportedVersion = migrations.at(-1)?.version ?? 0
-const loader = makeSqliteMigrationLoader(migrations)
-
-export const initializeLedger: Effect.Effect<
-  void,
-  SqliteMigrator.MigrationError | SqlError | UnsupportedLedgerSchemaVersion,
-  SqlClient.SqlClient
-> = Effect.gen(function* () {
-  yield* SqliteMigrator.run({ loader, table: 'watchtower_sql_migrations' })
-
-  const sql = yield* SqlClient.SqlClient
-  const rows = (yield* sql.unsafe(
-    'SELECT COALESCE(MAX(migration_id), 0) AS version FROM watchtower_sql_migrations',
-  )) as {
-    readonly version: number
-  }[]
-  const version = Number(rows[0]?.version ?? 0)
-  if (version > latestSupportedVersion) {
-    return yield* new UnsupportedLedgerSchemaVersion({
-      version,
-      latestSupported: latestSupportedVersion,
-      message: `Database schema version ${version} is newer than this application supports (${latestSupportedVersion})`,
-    })
-  }
-})
+export const initializeLedger = runSqliteMigrations(migrations)

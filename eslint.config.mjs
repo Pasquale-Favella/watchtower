@@ -82,14 +82,6 @@ const EFFECT_COMPOSITION_ROOTS = [
   // The ONE runtime the db-worker isolate owns: `ManagedRuntime.make(WorkerLive)`
   // (plan A2, landed). Same shape and same reason as the entry above.
   'src/main/worker-runtime.ts',
-  // Owns a `ManagedRuntime` per database instance; `this.runtime.runSync` in
-  // `migrate`/`close`/`execute` is the synchronous store contract ADR 0032
-  // explicitly keeps ("retain the synchronous runtime edge"), and the two
-  // `throw`s here are inside that imperative edge, not inside a workflow.
-  // EXPECTED TO SHRINK: the Effect SQL client wants one runtime per isolate
-  // (A2/F11) rather than one per `LedgerStore`, and `LedgerStore`'s 21
-  // `runRepositorySync` hops (F12/A3) collapse with it.
-  'src/main/store/node-sqlite-client.ts',
   // Process-internal Effect roots: these modules own an EXTERNAL PROCESS and
   // the Promise seam its callers already hold, so the `run*` sits at the point
   // where that process enters/leaves Effect.
@@ -109,15 +101,8 @@ const EFFECT_COMPOSITION_ROOTS = [
   // composition root"). Both entries below are therefore legitimate TODAY and
   // are allowlisted for that reason alone.
   //
-  // NOT yet tightened, on purpose. A2 landed and did route the dispatch arms
-  // through one `WorkerLive` runtime, so `context.ts` now has 4 `run*` calls
-  // rather than ~10 — but the survivors are `Fiber.join` / `Effect.runFork` on
-  // fibers that own no runtime, plus the two `runSync` fork sites that must stay
-  // synchronous for `startImmediately`. So the entry is still EARNED, and
-  // deleting it now would fail the build rather than tighten a gate. The entry
-  // is due when the worker's remaining `run*` calls can become
-  // `runtime.run*`, which is slice 3/6 territory (one runtime per isolate, and
-  // the `LedgerStore` facade retired) — not this wave's.
+  // Application operations run through WorkerLive. Context bridges scan fibers
+  // and shutdown to the message transport; client owns the worker lifecycle.
   'src/main/db-worker/context.ts',
   'src/main/db-worker/client.ts',
 ]
@@ -198,8 +183,7 @@ const RUN_AT_ROOT = {
 
 // False-positive surface, stated rather than hidden: this fires on a deliberate
 // re-throw of a caught value (`catch (e) { throw e }`) exactly like on a
-// constructed defect. Three such sites exist today (node-sqlite-client.ts:66,
-// snapshot.ts:243, sidecar.ts:317). They are flagged rather than carved out
+// constructed defect. Re-throws are flagged rather than carved out
 // because a `throw <identifier>` can equally well be an unmodelled cached
 // error, and a silent hole defeats the point of the rule; the follow-up that
 // promotes to `error` narrows the selector if the re-throws are the only noise.

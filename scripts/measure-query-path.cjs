@@ -534,7 +534,7 @@ function assertSchemaMatchesSource(dbPath) {
       const expected = EXPECTED_COLUMNS[table]
       if (live.join(',') !== expected.join(',')) {
         throw new Error(
-          `schema drift in '${table}'.\n  expected (src/main/store/ledger.ts): ${expected.join(',')}\n  live (PRAGMA table_xinfo): ${live.join(',')}`,
+          `schema drift in '${table}'.\n  expected (src/main/store/ledger-initialization.ts): ${expected.join(',')}\n  live (PRAGMA table_xinfo): ${live.join(',')}`,
         )
       }
     }
@@ -1757,7 +1757,6 @@ const MEASURED_SOURCES = [
   'src/main/store/aggregate-calculation.ts',
   'src/main/store/ledger-query-snapshot.ts',
   'src/main/store/port.ts',
-  'src/main/store/node-sqlite-client.ts',
   'src/main/store-rows-calculation.ts',
   'src/main/canonical-session-project.ts',
   'src/main/session-detail-calculation.ts',

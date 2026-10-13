@@ -991,10 +991,8 @@ const ledgerExportReadsLayer = Layer.effect(
  * All ledger ports from ONE `LedgerImplementation`, with the implementation kept
  * private (ADR 0032 §A3) and the `SqlClient` left as the layer's requirement —
  * the connection is the caller's to own, so this composes over whatever single
- * writer the owning runtime already has. `NodeSqliteDatabase` builds it over the
- * ledger's writer connection and re-projects the resulting instances through
- * `portsLayer` for a second composition root, rather than opening another
- * connection.
+ * writer the owning runtime already has. The worker and read-only MCP isolate
+ * each provide their own client and own its lifetime.
  */
 export const LedgerPortsLayer: Layer.Layer<
   LedgerIngest | LedgerQueries | LedgerConfig | LedgerSessionReads | LedgerViewReads | LedgerExportReads,

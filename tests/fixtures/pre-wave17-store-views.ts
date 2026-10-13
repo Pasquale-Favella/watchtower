@@ -15,7 +15,6 @@ import {
   buildSessionSummariesFromSnapshot,
   sessionProjectKey,
 } from '../../src/main/store/aggregate-calculation.js'
-import type { LedgerStore } from '../../src/main/store/ledger.js'
 import {
   type ProjectRow,
   projectRowSchema,
@@ -26,18 +25,19 @@ import {
   type SessionRow,
   sessionRowSchema,
 } from '../../src/shared/schemas/views.js'
+import type { LegacyLedgerReader } from './pre-wave17-query-snapshot.js'
 import { type LedgerQuerySnapshot, loadLedgerQuerySnapshot } from './pre-wave17-query-snapshot.js'
 
 /** All-time window used by the baseline builders. */
 const ALL_TIME_RANGE = { start: new Date(-8640000000000000), end: new Date(8640000000000000) } as const
 
-export function legacySearchSessionsFromLedger(store: LedgerStore, query: string): SearchHit[] {
+export function legacySearchSessionsFromLedger(store: LegacyLedgerReader, query: string): SearchHit[] {
   const term = query.trim().toLowerCase()
   if (!term) return []
   return Schema.decodeUnknownSync(Schema.mutable(Schema.Array(searchHitSchema)))(legacySearchSessionsCore(store, term))
 }
 
-function legacySearchSessionsCore(store: LedgerStore, term: string): SearchHit[] {
+function legacySearchSessionsCore(store: LegacyLedgerReader, term: string): SearchHit[] {
   const hits: SearchHit[] = []
   const seen = new Set<string>()
   const summaries = buildSessionSummariesFromSnapshot(loadLedgerQuerySnapshot(store), { range: ALL_TIME_RANGE })
@@ -61,7 +61,7 @@ function legacySearchSessionsCore(store: LedgerStore, term: string): SearchHit[]
   return hits
 }
 
-export function legacyBuildProjectRowsFromLedger(store: LedgerStore): ProjectRow[] {
+export function legacyBuildProjectRowsFromLedger(store: LegacyLedgerReader): ProjectRow[] {
   const snapshot = loadLedgerQuerySnapshot(store)
   return Schema.decodeUnknownSync(Schema.mutable(Schema.Array(projectRowSchema)))(legacyBuildProjectRowsCore(snapshot))
 }
@@ -99,7 +99,7 @@ function legacyBuildProjectRowsCore(snapshot: LedgerQuerySnapshot): ProjectRow[]
 }
 
 export function legacyQuerySessionRowsFromLedger(
-  store: LedgerStore,
+  store: LegacyLedgerReader,
   filter: { project?: string; since?: string; until?: string },
 ): SessionRow[] {
   const sinceMs = filter.since ? new Date(filter.since).getTime() : Number.NEGATIVE_INFINITY
@@ -171,7 +171,7 @@ function legacySessionDetailFromSummary(session: SessionSummary): SessionDetail 
   }
 }
 
-export function legacyGetSessionDetailFromLedger(store: LedgerStore, sessionId: string): SessionDetail | null {
+export function legacyGetSessionDetailFromLedger(store: LegacyLedgerReader, sessionId: string): SessionDetail | null {
   const summaries = buildSessionSummariesFromSnapshot(loadLedgerQuerySnapshot(store), { range: ALL_TIME_RANGE })
   const session = summaries.find(s => s.sessionId === sessionId)
   return session ? Schema.decodeUnknownSync(sessionDetailSchema)(legacySessionDetailFromSummary(session)) : null

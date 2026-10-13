@@ -7,16 +7,17 @@ import { DatabaseSync } from 'node:sqlite'
 import * as Sqlite from '@effect/sql-sqlite-node'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LedgerConfig, LedgerQueries } from '../src/main/store/ledger-repository.js'
-import { NodeSqliteDatabase } from '../src/main/store/node-sqlite-client.js'
 import {
   makeWorkerRuntime,
   openWorkerRuntime,
   type WorkerRuntime,
   type WorkerSqlLayer,
 } from '../src/main/worker-runtime.js'
+import { withNativeSqliteRuntime } from './fixtures/native-sqlite-runtime.js'
 
 function observedDriver(
   filename: string,
@@ -110,16 +111,21 @@ describe('db-worker SQL ownership', () => {
     expect(close).toHaveBeenCalledTimes(1)
   })
 
-  it('closes the real driver when a future schema version rejects boot', () => {
+  it('closes the real driver when a future schema version rejects boot', async () => {
     const path = databasePath()
-    const setup = new NodeSqliteDatabase(path)
-    try {
-      setup.exec(
-        "CREATE TABLE watchtower_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL); INSERT INTO watchtower_sql_migrations (migration_id, name, created_at) VALUES (99, 'future', 'now')",
+    await withNativeSqliteRuntime(path, runtime => {
+      const sql = runtime.runSync(SqlClient.SqlClient)
+      runtime.runSync(
+        Effect.gen(function* () {
+          yield* sql.unsafe(
+            'CREATE TABLE watchtower_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)',
+          )
+          yield* sql.unsafe(
+            "INSERT INTO watchtower_sql_migrations (migration_id, name, created_at) VALUES (99, 'future', 'now')",
+          )
+        }),
       )
-    } finally {
-      setup.close()
-    }
+    })
     const driver = observedDriver(path)
     const runtimes: WorkerRuntime[] = []
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
@@ -136,12 +142,12 @@ describe('db-worker SQL ownership', () => {
     expect(failedRuntime).toBeDefined()
     expect(() => failedRuntime?.runSync(Effect.void)).toThrow(/ManagedRuntime disposed/)
 
-    const reopened = new NodeSqliteDatabase(path)
-    try {
-      expect(reopened.prepare('SELECT migration_id FROM watchtower_sql_migrations').get()).toEqual({ migration_id: 99 })
-    } finally {
-      reopened.close()
-    }
+    await withNativeSqliteRuntime(path, runtime => {
+      const sql = runtime.runSync(SqlClient.SqlClient)
+      expect(runtime.runSync(sql.unsafe('SELECT migration_id FROM watchtower_sql_migrations'))[0]).toEqual({
+        migration_id: 99,
+      })
+    })
   })
 
   it('closes the real driver and runtime when graph construction fails after acquisition', () => {

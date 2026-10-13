@@ -2,12 +2,18 @@
 import * as Effect from 'effect/Effect'
 
 import { captureModelPricingCatalogue, captureProxyPaths } from '../../src/main/pipeline/models.js'
-import type { LedgerStore } from '../../src/main/store/ledger.js'
+import type { LedgerConfigPort, LedgerQueriesPort } from '../../src/main/store/ledger-ports.js'
 import { type LedgerQuerySnapshot, makeLedgerQuerySnapshot } from '../../src/main/store/ledger-query-snapshot.js'
 
 export type { LedgerQuerySnapshot }
 
-export function loadLedgerQuerySnapshot(store: LedgerStore): LedgerQuerySnapshot {
+/** Only the native reads consumed by the frozen calculation oracle. */
+export interface LegacyLedgerReader {
+  runQueriesSync<A, E>(operation: (queries: LedgerQueriesPort) => Effect.Effect<A, E>): A
+  runRepositorySync<A, E>(operation: (config: LedgerConfigPort) => Effect.Effect<A, E>): A
+}
+
+export function loadLedgerQuerySnapshot(store: LegacyLedgerReader): LedgerQuerySnapshot {
   const inputs = {
     catalogue: captureModelPricingCatalogue(),
     proxyPaths: captureProxyPaths(),
