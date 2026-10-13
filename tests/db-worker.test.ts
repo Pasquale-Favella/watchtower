@@ -104,8 +104,8 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     vi.useFakeTimers()
     const c = open()
     const triggerScan = vi
-      .spyOn(c as unknown as { triggerBackgroundScan: () => Promise<void> }, 'triggerBackgroundScan')
-      .mockResolvedValue(undefined)
+      .spyOn(c as unknown as { triggerBackgroundScanEffect: () => Effect.Effect<void> }, 'triggerBackgroundScanEffect')
+      .mockReturnValue(Effect.void)
 
     try {
       await c.dispatch('cadence:set', ['30s'])
@@ -270,6 +270,66 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     await expect(request).resolves.toEqual({ ok: true })
     await closing
     expect(closed).toBe(true)
+  })
+
+  it('emits background scan completion before closing the scan scope', async () => {
+    const c = open()
+    let resolveScan!: (metadata: ScanMetadata) => void
+    const scanResult = new Promise<ScanMetadata>(resolve => {
+      resolveScan = resolve
+    })
+    vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    ).mockReturnValue(Effect.tryPromise({ try: () => scanResult, catch: cause => cause }))
+
+    const worker = c as unknown as { triggerBackgroundScanEffect(): Effect.Effect<void> }
+    const activeRuntime = runtime
+    if (!activeRuntime) throw new Error('DbWorker runtime was not initialized')
+    await activeRuntime.runPromise(worker.triggerBackgroundScanEffect())
+    await vi.waitFor(() => expect((c as unknown as { activeScan: unknown }).activeScan).not.toBeNull())
+
+    let eventsAtClose: DbWorkerEvent[] | undefined
+    const closing = c.close().then(() => {
+      eventsAtClose = [...events]
+    })
+    await Promise.resolve()
+    expect(eventsAtClose).toBeUndefined()
+
+    resolveScan({
+      scanId: 'background-test',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      portedFiles: 1,
+      unchangedFiles: 0,
+      failedFiles: 0,
+      perProvider: [],
+      aborted: false,
+    })
+    await closing
+
+    expect(eventsAtClose).toContainEqual(expect.objectContaining({ event: 'store:changed' }))
+    expect(eventsAtClose).toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.finish' }))
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
+  })
+
+  it('clears a background scan owner when startup event emission defects', async () => {
+    const c = open()
+    const worker = c as unknown as { triggerBackgroundScanEffect(): Effect.Effect<void> }
+    const startFailure = new Error('scan start event failed')
+    vi.spyOn(c as unknown as { emitScanStart: () => void }, 'emitScanStart').mockImplementation(() => {
+      throw startFailure
+    })
+    const performScan = vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    )
+    const activeRuntime = runtime
+    if (!activeRuntime) throw new Error('DbWorker runtime was not initialized')
+
+    await expect(activeRuntime.runPromise(worker.triggerBackgroundScanEffect())).rejects.toThrow(startFailure)
+    expect(performScan).not.toHaveBeenCalled()
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
   })
 
   it('scan:abort interrupts the running scan fiber and maps to {ok:false, aborted:true}', async () => {
@@ -883,9 +943,13 @@ describe('DbWorkerContext cadence jitter (Wave 7 §4.4)', () => {
       runtime = openWorkerRuntime(init.dbPath)
       workerContext = new DbWorkerContext(init, () => {}, { runtime })
       const triggerScan = vi
-        .spyOn(workerContext as unknown as { triggerBackgroundScan: () => Promise<void> }, 'triggerBackgroundScan')
-        .mockImplementation(async () => {
+        .spyOn(
+          workerContext as unknown as { triggerBackgroundScanEffect: () => Effect.Effect<void> },
+          'triggerBackgroundScanEffect',
+        )
+        .mockImplementation(() => {
           tickTimes.push(Date.now())
+          return Effect.void
         })
       await workerContext.dispatch('cadence:set', ['30s'])
       await vi.advanceTimersByTimeAsync(300_000)

@@ -1,3 +1,4 @@
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
@@ -40,8 +41,10 @@ export interface DbWorkerDeps {
 interface ActiveScan {
   readonly manual: boolean
   aborted: boolean
-  fiber: Fiber.Fiber<ScanMetadata, unknown> | null
+  fiber: Fiber.Fiber<unknown, unknown> | null
 }
+
+type ScanRequirements = ReturnType<typeof scanLedger> extends Effect.Effect<unknown, unknown, infer R> ? R : never
 
 /**
  * Everything the old main process owned around the ledger, now running on the
@@ -172,38 +175,68 @@ export class DbWorkerContext {
     }
   }
 
-  /** Fires on the configured cadence (ADR 0004). Silent on failure — the
-   * user's last-known data stays visible (stale-while-revalidate) and they can
-   * still trigger a manual scan via ⌘R; background scans don't surface errors
-   * as intrusively as a user-initiated one would. Coalesces with any
-   * already-running scan rather than overlapping it. */
-  private async triggerBackgroundScan(): Promise<void> {
-    if (this.closed || this.activeScan !== null) return
-    const owner: ActiveScan = { manual: false, aborted: false, fiber: null }
-    this.activeScan = owner
-    this.emitScanStart()
-    try {
-      const metadata = await this.runTrackedScan(owner, undefined, progress =>
-        this.emit({ event: 'scan:progress', manual: owner.manual, progress }),
-      )
-      this.lastScanMetadata = metadata
-      this.emit({ event: 'store:changed', metadata })
-      this.emitScanFinish(metadata)
-    } catch (err) {
-      // background scans fail silently; manual ⌘R remains available.
-      // Fiber interruption (abort/close) rides the abort flag so the oplog
-      // stays `scan.abort` (warn), not `scan.error`. Promise-boundary
-      // Typed failures arrive from the application workflow; this Promise
-      // boundary also accounts for interruption through the owner flag.
-      this.emit({ event: 'scan:idle' })
-      this.emitScanFailure(owner.aborted ? abortedScanError() : err)
-    }
+  /** Fires on the configured cadence (ADR 0004). The scan fiber owns both the
+   * work and its completion events, so shutdown joins the whole lifecycle. */
+  private triggerBackgroundScanEffect(): Effect.Effect<void, never, ScanRequirements> {
+    return Effect.uninterruptible(
+      Effect.suspend(() => {
+        if (this.closed || this.activeScan !== null) return Effect.void
+
+        const owner: ActiveScan = { manual: false, aborted: false, fiber: null }
+        const emit = (progress: ScanProgress): void =>
+          this.emit({ event: 'scan:progress', manual: owner.manual, progress })
+        const complete = Effect.uninterruptibleMask(restore =>
+          Effect.gen({ self: this }, function* () {
+            const exit = yield* Effect.exit(
+              restore(
+                Effect.gen({ self: this }, function* () {
+                  const metadata = yield* this.performScan(undefined, emit, owner)
+                  yield* Effect.sync(() => {
+                    this.lastScanMetadata = metadata
+                    this.emit({ event: 'store:changed', metadata })
+                    this.emitScanFinish(metadata)
+                  })
+                  return metadata
+                }),
+              ),
+            )
+            if (Exit.isSuccess(exit)) return
+
+            const error = owner.aborted ? abortedScanError() : Cause.squash(exit.cause)
+            this.emit({ event: 'scan:idle' })
+            this.emitScanFailure(error)
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (this.activeScan === owner) this.activeScan = null
+              }),
+            ),
+          ),
+        )
+
+        const admit = Effect.gen({ self: this }, function* () {
+          this.activeScan = owner
+          this.emitScanStart()
+          const fiber = yield* Effect.forkIn(complete, this.scanScope, { startImmediately: false })
+          owner.fiber = fiber
+        })
+        return admit.pipe(
+          Effect.onExit(exit =>
+            Effect.sync(() => {
+              if (Exit.isFailure(exit) && owner.fiber === null && this.activeScan === owner) {
+                this.activeScan = null
+              }
+            }),
+          ),
+        )
+      }),
+    )
   }
 
   /** (Re)schedules the background scan in the worker scope from the persisted
    * cadence. Ticks remain delayed and fixed-rate; scan coalescing stays in
-   * triggerBackgroundScan. */
-  private scheduleCadenceEffect(): Effect.Effect<void, SqlError, LedgerConfig> {
+   * triggerBackgroundScanEffect. */
+  private scheduleCadenceEffect(): Effect.Effect<void, SqlError, LedgerConfig | ScanRequirements> {
     const backgroundScope = this.backgroundScope
     const nextGeneration = (): { generation: number; previous: Fiber.Fiber<unknown, never> | null } => {
       const generation = ++this.cadenceGeneration
@@ -215,11 +248,11 @@ export class DbWorkerContext {
     const install = (fiber: Fiber.Fiber<unknown, never>): void => {
       this.cadenceFiber = fiber
     }
-    const runTick = (): void => {
+    const runTick = (): Effect.Effect<void, never, LedgerConfig | ScanRequirements> => {
       this.startBackgroundFx(this.refreshFxOnCadence())
-      void this.triggerBackgroundScan()
+      return this.triggerBackgroundScanEffect()
     }
-    const tick = Effect.sync(runTick)
+    const tick = Effect.suspend(runTick)
     return Effect.gen(function* () {
       const { generation, previous } = yield* Effect.sync(nextGeneration)
       if (previous) yield* Fiber.interrupt(previous)
@@ -447,7 +480,7 @@ export class DbWorkerContext {
     if (activeScan) activeScan.aborted = true
     const backgroundScope = this.backgroundScope
     const scanScope = this.scanScope
-    const currentScan = (): Fiber.Fiber<ScanMetadata, unknown> | null => activeScan?.fiber ?? null
+    const currentScan = (): Fiber.Fiber<unknown, unknown> | null => activeScan?.fiber ?? null
     const disposeRuntime = this.runtime.disposeEffect
     const shutdown = Effect.gen(function* () {
       yield* Scope.close(backgroundScope, Exit.void)
