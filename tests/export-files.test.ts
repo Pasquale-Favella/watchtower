@@ -50,7 +50,7 @@ vi.mock('node:fs/promises', async importOriginal => {
 })
 
 import { ExportFiles } from '../src/main/application/export-files.js'
-import { ExportFilesLive, writeCsvExportFiles, writeJsonExportFile } from '../src/main/export-files-live.js'
+import { ExportFilesLive } from '../src/main/export-files-live.js'
 
 const directories: string[] = []
 
@@ -88,6 +88,22 @@ function writeJsonWithLivePort(target: string, contents: string): Effect.Effect<
   }).pipe(Effect.provide(ExportFilesLive))
 }
 
+function writeCsvWithLivePort(
+  outputPath: string,
+  files: readonly { readonly name: string; readonly contents: string }[],
+): Promise<string> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const exportFiles = yield* ExportFiles
+      return yield* exportFiles.writeCsvFolder(outputPath, files)
+    }).pipe(Effect.provide(ExportFilesLive)),
+  )
+}
+
+function writeJsonFileWithLivePort(target: string, contents: string): Promise<string> {
+  return Effect.runPromise(writeJsonWithLivePort(target, contents))
+}
+
 describe('export file ownership and overwrite checks', () => {
   it('writes the marker, README and all nine CSV files into the resolved folder', async () => {
     const root = tempDirectory()
@@ -97,7 +113,7 @@ describe('export file ownership and overwrite checks', () => {
       ...Array.from({ length: 9 }, (_, index) => ({ name: `table-${index}.csv`, contents: `row-${index}` })),
     ]
 
-    await expect(writeCsvExportFiles(target, files)).resolves.toBe(resolve(root, 'usage'))
+    await expect(writeCsvWithLivePort(target, files)).resolves.toBe(resolve(root, 'usage'))
     expect(readdirSync(join(root, 'usage')).sort()).toEqual(
       ['.watchtower-export', ...files.map(file => file.name)].sort(),
     )
@@ -110,7 +126,7 @@ describe('export file ownership and overwrite checks', () => {
     mkdirSync(folder)
     writeFileSync(join(folder, 'keep.txt'), 'user data')
 
-    await expect(writeCsvExportFiles(folder, [])).rejects.toMatchObject({
+    await expect(writeCsvWithLivePort(folder, [])).rejects.toMatchObject({
       _tag: 'ExportFileError',
       reason: 'csv-unmarked-directory',
     })
@@ -125,7 +141,7 @@ describe('export file ownership and overwrite checks', () => {
     writeFileSync(join(folder, 'old', 'table.csv'), 'old')
     writeFileSync(join(folder, 'README.txt'), 'old readme')
 
-    await writeCsvExportFiles(folder, [{ name: 'README.txt', contents: 'new readme' }])
+    await writeCsvWithLivePort(folder, [{ name: 'README.txt', contents: 'new readme' }])
     expect(readdirSync(folder).sort()).toEqual(['.watchtower-export', 'README.txt'])
     expect(readFileSync(join(folder, 'README.txt'), 'utf-8')).toBe('new readme')
   })
@@ -135,7 +151,7 @@ describe('export file ownership and overwrite checks', () => {
     const target = join(root, 'report')
     writeFileSync(target, 'keep')
 
-    await expect(writeCsvExportFiles(target, [])).rejects.toMatchObject({ reason: 'csv-file-target' })
+    await expect(writeCsvWithLivePort(target, [])).rejects.toMatchObject({ reason: 'csv-file-target' })
     expect(readFileSync(target, 'utf-8')).toBe('keep')
   })
 
@@ -144,7 +160,7 @@ describe('export file ownership and overwrite checks', () => {
     const blocker = join(root, 'file')
     writeFileSync(blocker, 'not a directory')
 
-    await expect(writeCsvExportFiles(join(blocker, 'child'), [])).rejects.toMatchObject({
+    await expect(writeCsvWithLivePort(join(blocker, 'child'), [])).rejects.toMatchObject({
       _tag: 'ExportFileError',
       reason: 'io-failure',
     })
@@ -157,8 +173,8 @@ describe('export file ownership and overwrite checks', () => {
     const folder = join(root, 'folder.json')
     mkdirSync(folder)
 
-    await expect(writeJsonExportFile(target, '{}')).rejects.toMatchObject({ reason: 'json-unmarked-file' })
-    await expect(writeJsonExportFile(folder, '{}')).rejects.toMatchObject({ reason: 'json-directory-target' })
+    await expect(writeJsonFileWithLivePort(target, '{}')).rejects.toMatchObject({ reason: 'json-unmarked-file' })
+    await expect(writeJsonFileWithLivePort(folder, '{}')).rejects.toMatchObject({ reason: 'json-directory-target' })
     expect(readFileSync(target, 'utf-8')).toBe('{"user":"data"}')
     expect(readdirSync(folder)).toEqual([])
   })
@@ -168,7 +184,7 @@ describe('export file ownership and overwrite checks', () => {
     const target = join(root, 'report')
     writeFileSync(`${target}.json`, '{"schema": "watchtower.export.v1", "old": true}')
 
-    await expect(writeJsonExportFile(target, '{"schema":"watchtower.export.v1"}')).resolves.toBe(`${target}.json`)
+    await expect(writeJsonFileWithLivePort(target, '{"schema":"watchtower.export.v1"}')).resolves.toBe(`${target}.json`)
     expect(readFileSync(`${target}.json`, 'utf-8')).toBe('{"schema":"watchtower.export.v1"}')
   })
 

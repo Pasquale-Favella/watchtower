@@ -122,15 +122,6 @@ const writeJsonExportFileEffect = Effect.fnUntraced(function* (
   return target
 })
 
-// Remove these Promise edges after direct file-export callers and tests use the ExportFiles Effect port.
-export function writeCsvExportFiles(outputPath: string, files: readonly ExportFileContent[]): Promise<string> {
-  return Effect.runPromise(writeCsvExportFilesEffect(outputPath, files))
-}
-
-export function writeJsonExportFile(outputPath: string, contents: string): Promise<string> {
-  return Effect.runPromise(writeJsonExportFileEffect(outputPath, contents))
-}
-
 export const ExportFilesLive = Layer.succeed(
   ExportFiles,
   ExportFiles.of({
