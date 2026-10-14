@@ -439,9 +439,17 @@ export class DbWorkerContext {
         return this.runtime.runPromise(settingsInfoEffect(this.dataDir, this.cacheDir))
 
       case 'settings:clear': {
-        await this.runtime.runPromise(clearLedger())
-        this.lastScanMetadata = null
-        return this.runtime.runPromise(settingsInfoEffect(this.dataDir, this.cacheDir))
+        const resetMetadata = Effect.sync(() => {
+          this.lastScanMetadata = null
+        })
+        const settingsInfo = settingsInfoEffect(this.dataDir, this.cacheDir)
+        return this.runtime.runPromise(
+          Effect.gen(function* () {
+            yield* clearLedger()
+            yield* resetMetadata
+            return yield* settingsInfo
+          }),
+        )
       }
 
       /** Pricing-table live refresh. NOTE: the pricing table is module-level

@@ -118,7 +118,9 @@ describe('worker scan status uses source existence', () => {
       }
       expect(await context.dispatch('store:status', [])).toEqual({ scanned: true })
       expect(hasSources).toHaveBeenCalledTimes(2)
+      const runPromise = vi.spyOn(owner.runtime, 'runPromise')
       await context.dispatch('settings:clear', [])
+      expect(runPromise).toHaveBeenCalledOnce()
       expect(await context.dispatch('store:status', [])).toEqual({ scanned: false })
       expect(hasSources).toHaveBeenCalledTimes(3)
     })
