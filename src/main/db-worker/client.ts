@@ -273,11 +273,13 @@ export class DbWorkerClient {
 
   private send(op: string, args: unknown[] = []): Promise<unknown> {
     const isShutdown = op === 'shutdown'
-    if (this.intentionalTeardown && !isShutdown) return Promise.reject(new Error('data worker shut down'))
+    if (this.intentionalTeardown && !isShutdown && this.worker)
+      return Promise.reject(new Error('data worker shut down'))
     const recovery = this.recovery
     if (recovery)
       return recovery.then(() => {
-        if (this.intentionalTeardown && !isShutdown) return Promise.reject(new Error('data worker shut down'))
+        if (this.intentionalTeardown && !isShutdown && this.worker)
+          return Promise.reject(new Error('data worker shut down'))
         return this.sendTo(this.worker, op, args)
       })
     return this.sendTo(this.worker, op, args)
