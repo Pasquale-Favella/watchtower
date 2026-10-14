@@ -12,7 +12,7 @@ Owned Zod removal is complete across the 23-module baseline. Twenty-two modules 
 
 The latest fully accepted source is `48b06d4`. Scan orchestration, delta/progress callbacks, ingest, Git lookup and Gateway parsing compose in the existing scan fiber. Claude/Codex discovery and session-cache internals compose native Effects. All thirty-eight providers expose native discovery and thirty-seven have completed native parser streams; Claude parsing has its own native scan path. OpenCode's file and both declared SQLite generations are native, as are both Kilo branches. Open Design, LingTai, QuickDesk, Codebuff, CodeWhale, Mux, Devin, Forge, Zed, Goose, Crush, Warp, Cursor Agent and Kiro compose native IO. QuickDesk closes source snapshots before pricing/emission and removes two unused columns. Its metrics and snapshots are reused through a lazy scan-owned Effect capability. Shared scan IO drains narrowly masked filesystem leaves before interruption finishes. Both journal readers consume the owned session-line Stream. Compatibility adapters remain for actual direct callers. Query and nine config-command routes are separated from supervision. The scan application uses existing ingest, command and gateway capabilities; the worker retains fiber/event ownership. Overview uses five sufficient transactional reads and direct facts calculations. Legacy snapshot and Overview calculations are confined to independent test oracles. Obsolete exports, synchronous section adapters and FX facade adapters have been removed after migrating their callers.
 
-The programme remains incomplete. Pure calculations and React stores stay simple TypeScript. The Git content of data-store.ts and scan-store.ts still matches `ce81593`, preserving their original scope guard and direct applyChange flow.
+The latest fully accepted source is now `29463f4`, including native Coach execution, Skills save and actual Linux/macOS directory-package proof. The programme remains incomplete. Pure calculations and React stores stay simple TypeScript. The Git content of data-store.ts and scan-store.ts still matches `ce81593`, preserving their original scope guard and direct applyChange flow.
 
 ### Accepted native foundation, 2026-10-13
 
@@ -78,11 +78,25 @@ The independent Spec review found the initial import ownership gap; the correcte
 
 ### Next implementation slices
 
-1. Product-verify `b13ba92` and the preceding manual scan/MCP/process corrections in an immutable checkout; inspect actual source-matched CI steps.
-2. Move owned Coach coordinator workflows in `ipc.ts` into Effect: probe queuing, run admission, event pumping, cancellation and conversation/attachment cleanup. The native execution engine is implemented; coordinator orchestration remains.
-3. Migrate the MCP pool's owned Promise orchestration while preserving its synchronous admission/release ABI and same-flight identity. Retire compatibility adapters when actual callers migrate.
-4. Move the Skills save destination filesystem workflow into the existing MainRuntime. Keep the Electron dialog at its boundary.
-5. Finish installer and actual macOS/Linux packaged acceptance. Keep pure calculations and React in TypeScript, one runtime per isolate and no global cache. Profiling is stopped.
+1. Integrate and product-verify the native Coach coordinator and MCP pool in an immutable checkout, then inspect actual source-matched CI steps.
+2. Preserve probe queuing, immediate supersession, run admission, event pumping, cancellation and conversation/attachment cleanup. Keep the original synchronous pool test ABI and flight identity.
+3. Retire compatibility adapters when actual callers migrate; keep one native implementation behind their temporary boundaries.
+4. Audit the original completion criteria against current production ownership and actual product proofs.
+5. Finish installer acceptance and maintain actual macOS/Linux packaged gates for later slices. Keep pure calculations and React in TypeScript, one runtime per isolate and no global cache. Profiling is stopped.
+
+### Skills save and actual cross-platform directory acceptance, 2026-10-14
+
+`29463f4` composes Skills parent-directory creation and UTF-8 writing as named native Effects with a typed filesystem failure. The existing MainRuntime runs the application function after the unchanged Electron dialog chooses a destination. Schema validation, slug-based default path, cancellation and result messages remain. Both reviews pass. Two real-filesystem tests cover nested writing and the original failure-message conversion. Scoped formatting and lint pass with zero errors and six existing root warnings. Root-checkout typechecks initially encounter the parallel Coach coordinator's unfinished code; all three typechecks pass on the immutable `29463f4` checkout, along with full formatting, lint and build. Its remaining local product gates are running.
+
+Source-matched [CI types/tests/lint](https://github.com/Pasquale-Favella/watchtower/actions/runs/38538613926) passes 249 unit files with 3,020 passed and seven platform skips. Actual [Windows/Linux Electron and Linux/macOS packaged steps](https://github.com/Pasquale-Favella/watchtower/actions/runs/38538614032) pass. Both packaged apps execute the positive scan/detail/search, configuration, protected export, currency and clear-retaining-config checks. Official SDK stdio and HTTP verify six tools, three resources, the prompt, bearer rejection and stateless reuse. Coach inspection settles without a billed prompt; renderer errors are absent and app/SDK children close before profile cleanup.
+
+The first macOS gate at `13b3e65` exposes `/var` versus `/private/var` temporary aliases after its positive scan checks. `27a29e4` canonicalizes the temporary root before creating the profile, retaining the exact path and guarded cleanup assertions. The successful `29463f4` run includes this correction. Its first local attempt stops before types because dependencies are absent; `npm ci` restores them before the new immutable run. This is directory-package execution proof, not installer acceptance or overall completion.
+
+### Accepted Coach execution and Skills product verification, 2026-10-14
+
+Immutable `29463f4` passes all ten local gates. Full units pass 249 files with 3,025 tests and two platform skips in 330.03 seconds. All four original Electron checks pass in 8.1 minutes. Node/web/test types, formatting, build and lint pass, with zero errors and 1,090 advisory warnings. Fresh Windows directory packaging and the source-owned actual-package IPC/MCP gate pass. The actual Linux/macOS directory-package CI gates and ordinary CI above also pass for this exact source. All platforms exercise deterministic positive session data, official SDK stdio/HTTP and cleanup; no billed Coach prompt occurs.
+
+This accepts the native parser requirement, MCP request and main-side lifetimes, manual scan completion, process guard correction, native Coach execution and Skills destination writing through `29463f4`. The later native Coach coordinator and pooled service integration remain outside this frozen proof. No profiling runs, no docs JSON files exist, and both renderer stores match `ce81593`.
 
 The Overview read extends `LedgerViewReads` with `getOverviewData`. Five SELECTs load minimal session identity/source provider, turn classification/workflow fields, consumed call billing/tool fields, aliases and overrides in one transaction. Rows decode after commit. Pure calculations group and sort facts once by composite source/session/turn identity and reuse them for lifetime metadata before scope filtering. The query captures its clock before reading. Whole-turn admission, local-date lifetime metadata, pricing precedence and source-provider filtering remain. Diagnostics cover all ledger calls; the payload's unpriced-model list remains scoped. The independent test oracle retains the unchanged legacy calculation body.
 
