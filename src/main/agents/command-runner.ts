@@ -303,10 +303,10 @@ function nodeSpawn(
 const END_OF_STREAM: unique symbol = Symbol('watchtower/CommandRunner/endOfStream')
 
 function holdReadable(readable: Readable | null): void {
-  if (readable !== null) readable.on('readable', noopReadable)
+  readable?.on('readable', noopReadable)
 }
 function releaseReadable(readable: Readable | null): void {
-  if (readable !== null) readable.off('readable', noopReadable)
+  readable?.off('readable', noopReadable)
 }
 function noopReadable(): void {}
 
