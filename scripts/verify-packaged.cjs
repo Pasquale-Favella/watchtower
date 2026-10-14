@@ -376,6 +376,8 @@ async function main() {
       const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))
       assert.equal(path.resolve(userData), path.resolve(profile))
       const resourcesPath = await app.evaluate(() => process.resourcesPath)
+      const runtimeExecutablePath = await app.evaluate(() => process.execPath)
+      assert.ok(fs.statSync(runtimeExecutablePath).isFile(), 'Electron runtime executable is missing')
       const entryPath = ledgerMcpEntry(resourcesPath)
       const exportFolder = path.join(profile, 'exports', 'usage')
       const jsonPath = path.join(profile, 'exports', 'usage.json')
@@ -480,8 +482,8 @@ async function main() {
       console.log(
         'Packaged export CSV/JSON, marker/schema/currency coherence, protected destination and main-owned harness IPC passed.',
       )
-      await checkMcp(executablePath, entryPath, path.join(userData, 'ledger.db'))
-      await checkMcpHttp(executablePath, entryPath, path.join(userData, 'ledger.db'))
+      await checkMcp(runtimeExecutablePath, entryPath, path.join(userData, 'ledger.db'))
+      await checkMcpHttp(runtimeExecutablePath, entryPath, path.join(userData, 'ledger.db'))
       const cleared = await window.evaluate(async () => {
         const api = window.api
         await api.setCadence('manual')
