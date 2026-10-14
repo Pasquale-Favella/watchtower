@@ -6,6 +6,7 @@ import type { CoachHarnessRow } from '../shared/schemas/agents.js'
 import { CommandRunner } from './agents/command-runner.js'
 import { detectHarnesses, type HarnessInfo } from './agents/detect.js'
 import { resolveBundledEntry } from './agents/harnesses/bundled.js'
+import { LedgerMcpSidecar, ledgerMcpSidecarLayer, type LedgerMcpSidecarOptions } from './agents/ledger-mcp/sidecar.js'
 import type { ProbeResult } from './agents/probe.js'
 import { HarnessProbe, HarnessSnapshot, harnessSnapshotLayer } from './agents/snapshot.js'
 import { Env } from './env.js'
@@ -13,7 +14,7 @@ import { OperationalLogLoggerLayer, OperationalLogTracerLayer } from './operatio
 import { HttpFetch } from './pipeline/fetch-utils.js'
 
 /** Stable services available through the Electron main isolate's one runtime. */
-export type MainServices = HttpFetch | Env | CommandRunner | HarnessProbe | HarnessSnapshot
+export type MainServices = HttpFetch | Env | CommandRunner | HarnessProbe | HarnessSnapshot | LedgerMcpSidecar
 export type MainRuntime = ManagedRuntime.ManagedRuntime<MainServices, never>
 
 export interface MainRuntimeOptions {
@@ -27,6 +28,7 @@ export interface MainRuntimeOverrides {
   readonly detect?: () => Promise<HarnessInfo[]>
   readonly probe?: (info: HarnessInfo, clientVersion: string) => Effect.Effect<ProbeResult>
   readonly readPath?: () => string | undefined
+  readonly sidecar?: LedgerMcpSidecarOptions
 }
 
 /** Shared main-process dependencies with no Electron or harness state. */
@@ -57,7 +59,7 @@ export function makeMainLive(
     ...(overrides.readPath ? { readPath: overrides.readPath } : {}),
   }).pipe(Layer.provideMerge(probeAndRunner))
 
-  return Layer.merge(MainLive, snapshot)
+  return Layer.mergeAll(MainLive, snapshot, ledgerMcpSidecarLayer(overrides.sidecar))
 }
 
 /** The only runtime constructor for this isolate; the root disposes its scope on quit. */

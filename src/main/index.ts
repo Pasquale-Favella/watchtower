@@ -1,6 +1,7 @@
 import { writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 
+import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron'
 import { existsSync, mkdirSync } from 'fs'
@@ -22,7 +23,7 @@ import type { AcpMcpServer } from './agents/harnesses/types.js'
 import { type LedgerMcpAttachment, registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { createSidecarPool } from './agents/ledger-mcp/pool.js'
-import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
+import { LedgerMcpSidecar } from './agents/ledger-mcp/sidecar.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths } from './env.js'
 import { makeMainRuntime } from './main-runtime.js'
@@ -58,7 +59,22 @@ const mainRuntime = makeMainRuntime({
  * MCP clients, and any future harness that rejects stdio. It remains lazy by
  * default and is prewarmed after the data worker is ready when the persisted
  * startup setting requests it. */
-const sidecarPool = createSidecarPool({ spawn: ctx => startLedgerMcpHttp(ctx) })
+const sidecarPool = createSidecarPool({
+  spawn: async ctx => {
+    const started = await mainRuntime.runPromise(Effect.flatMap(LedgerMcpSidecar, sidecar => sidecar.start(ctx)))
+    return {
+      server: started.server,
+      release: () => {
+        try {
+          mainRuntime.runSync(started.release)
+        } catch {
+          /* the runtime's app-scope finalizer still owns child cleanup */
+        }
+      },
+      checkHealth: () => mainRuntime.runPromise(started.checkHealth),
+    }
+  },
+})
 /** The requesting window of the in-flight manual scan (progress/error routing). */
 let scanRequester: WebContents | null = null
 
