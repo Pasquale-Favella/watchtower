@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as Metric from 'effect/Metric'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -91,8 +92,9 @@ describe('worker operational log forwarding', () => {
     let runtime: ReturnType<typeof openWorkerRuntime> | undefined
     try {
       runtime = openWorkerRuntime(join(directory, 'ledger.db'), sink)
-      await runtime.runPromise(
+      const metrics = await runtime.runPromise(
         Effect.gen(function* () {
+          const before = yield* Metric.value(Metric.counter(SCAN_DURATION_COUNTER))
           yield* Effect.logInfo('worker.test').pipe(
             Effect.annotateLogs({
               event: 'worker.test',
@@ -105,8 +107,11 @@ describe('worker operational log forwarding', () => {
           const log = yield* OperationalLog
           yield* log.incrementCounter(SCAN_DURATION_COUNTER, 2, { outcome: 'success', token: 'secret' })
           yield* Effect.void.pipe(Effect.withSpan('worker.test.span', { attributes: { prompt: 'secret' } }))
+          const after = yield* Metric.value(Metric.counter(SCAN_DURATION_COUNTER))
+          return { before: before.count, after: after.count }
         }),
       )
+      expect(metrics).toEqual({ before: 0, after: 2 })
       const sqlTraceStart = events.length
       runtime.runSync(Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()))
       const records = events

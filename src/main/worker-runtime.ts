@@ -24,6 +24,7 @@ import {
   OperationalLog,
   OperationalLogLoggerLayer,
   operationalLogLoggerLayerWithSink,
+  OperationalLogMetricLayer,
   type OperationalLogSink,
   OperationalLogTracerLayer,
 } from './operational-log.js'
@@ -106,6 +107,7 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
   const maintenance = LedgerMaintenanceLive.pipe(Layer.provide(dependencies))
 
   const live = Layer.mergeAll(
+    OperationalLogMetricLayer,
     sink ? operationalLogLoggerLayerWithSink(sink, 'worker') : OperationalLogLoggerLayer,
     OperationalLogTracerLayer('worker', sink),
     sink ? OperationalLog.layerWithSink(sink, 'worker') : OperationalLog.layer,

@@ -18,6 +18,7 @@ import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as EffectLogger from 'effect/Logger'
 import type * as EffectLogLevel from 'effect/LogLevel'
+import * as Metric from 'effect/Metric'
 import * as Option from 'effect/Option'
 import * as References from 'effect/References'
 import * as Tracer from 'effect/Tracer'
@@ -313,9 +314,8 @@ export interface OperationalLogSink {
   emit(level: LogLevel, event: string, fields: Record<string, unknown>, context: LogContext): void
 }
 
-/** Counter KEYS for the later call-site wiring slice (events, not values).
- * Each key files one record per increment through the allowlisted seam
- * (`count` field); no OTLP, no separate exporter. */
+/** Native metric names also identify their sanitized operational records.
+ * Records carry deltas, preserving the existing append-only log contract. */
 export const SCAN_DURATION_COUNTER = 'scan.duration' as const
 export const FETCH_TIMEOUT_COUNTER = 'fetch.timeout' as const
 export const PROBE_OUTCOME_COUNTER = 'probe.outcome' as const
@@ -356,10 +356,12 @@ function makeOperationalLogImpl(sink: OperationalLogSink, defaultContext: LogCon
     amount = 1,
     fields: Record<string, unknown> = {},
   ) {
+    yield* Metric.update(Metric.counter(name), amount)
     yield* emitSafely('info', name, { ...fields, count: amount }, defaultContext)
   })
 
   const recordGauge = Effect.fnUntraced(function* (name: string, value: number, fields: Record<string, unknown> = {}) {
+    yield* Metric.update(Metric.gauge(name), value)
     yield* emitSafely('info', name, { ...fields, count: value }, defaultContext)
   })
 
@@ -402,6 +404,9 @@ export class OperationalLog extends Context.Service<
 }
 
 export type OperationalLogService = OperationalLog['Service']
+
+/** Each isolate runtime owns metric state; records still use the sole log sink. */
+export const OperationalLogMetricLayer = Layer.sync(Metric.MetricRegistry, () => new Map())
 
 function mapEffectLogLevel(level: EffectLogLevel.LogLevel): LogLevel | null {
   switch (level) {

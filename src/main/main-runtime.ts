@@ -18,7 +18,7 @@ import {
 } from './agents/runtime.js'
 import { HarnessProbe, HarnessSnapshot, harnessSnapshotLayer } from './agents/snapshot.js'
 import { Env } from './env.js'
-import { OperationalLogLoggerLayer, OperationalLogTracerLayer } from './operational-log.js'
+import { OperationalLogLoggerLayer, OperationalLogMetricLayer, OperationalLogTracerLayer } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 
 /** Stable services available through the Electron main isolate's one runtime. */
@@ -55,6 +55,7 @@ export const MainLive: Layer.Layer<HttpFetch | Env> = Layer.mergeAll(
   Env.layer,
   // The main isolate owns these references; child work inherits this context.
   OperationalLogLoggerLayer,
+  OperationalLogMetricLayer,
   OperationalLogTracerLayer('main'),
 )
 
