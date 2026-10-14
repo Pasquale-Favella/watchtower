@@ -1,5 +1,6 @@
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import * as Stream from 'effect/Stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Provider } from '../src/main/pipeline/providers/types.js'
@@ -35,7 +36,7 @@ function provider(name: string): Provider {
     toolDisplayName: tool => tool,
     discoverSessions: async () => [],
     discoverSessionsEffect: () => Effect.succeed([]),
-    createSessionParser: () => ({ parse: async function* () {} }),
+    createSessionParser: () => ({ parse: async function* () {}, parseStream: () => Stream.empty }),
   }
 }
 

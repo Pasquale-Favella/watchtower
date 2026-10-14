@@ -207,6 +207,13 @@ describe('parser cooperative stop', () => {
           hooks.parserCreated()
           yield parsedCall()
         },
+        parseStream: () =>
+          Stream.fromEffect(
+            Effect.sync(() => {
+              hooks.parserCreated()
+              return parsedCall()
+            }),
+          ),
       }),
     })
     const controller = new AbortController()
@@ -412,6 +419,7 @@ describe('parser cooperative stop', () => {
       parse: async function* () {
         yield parsedCall()
       },
+      parseStream: () => Stream.make(parsedCall()),
     }))
     hooks.getProvider.mockResolvedValue({
       network: false,
@@ -586,6 +594,7 @@ describe('parser cooperative stop', () => {
         parse: async function* () {
           yield parsedCall()
         },
+        parseStream: () => Stream.make(parsedCall()),
       }),
     })
     const onDelta = vi.fn(() => Effect.void)
@@ -646,41 +655,66 @@ describe('parser cooperative stop', () => {
     expect(hooks.saveCache).not.toHaveBeenCalled()
   })
 
-  it('drains a pending legacy next before iterator return when interrupted', async () => {
-    const path = '/test/pending-legacy.session'
+  it('drains pending native parser IO before releasing its stream when interrupted', async () => {
+    const path = '/test/pending-native.session'
     const cache = makeCache('test-provider', [path])
     hooks.cache = cache
     hooks.discovered.mockResolvedValue([source('test-provider', path)])
     hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
     const events: string[] = []
-    let finishNext!: () => void
+    let finishRead!: (call: ReturnType<typeof parsedCall>) => void
     let signalStarted!: () => void
     const started = new Promise<void>(resolve => (signalStarted = resolve))
-    const parser = {
-      parse: async function* () {
-        try {
-          events.push('next-start')
-          signalStarted()
-          await new Promise<void>(resolve => (finishNext = resolve))
-          events.push('next-settled')
-          yield parsedCall()
-        } finally {
-          events.push('iterator-return')
-        }
-      },
-    }
-    hooks.getProvider.mockResolvedValue({
-      network: false,
-      durableSources: false,
-      createSessionParser: () => parser,
+    const pendingRead = new Promise<ReturnType<typeof parsedCall>>(resolve => {
+      finishRead = resolve
     })
-    const controller = new AbortController()
     const stopError = new Error('stop callback failed')
     const stop = vi.fn(() => {
       events.push('stop')
-      finishNext()
+      finishRead(parsedCall())
       throw stopError
     })
+    const parseStream = () =>
+      Stream.fromEffect(
+        Effect.acquireUseRelease(
+          Effect.sync(() => {
+            events.push('next-start')
+            signalStarted()
+            return pendingRead
+          }),
+          pending =>
+            Effect.tryPromise({
+              try: () => pending,
+              catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+            }),
+          pending =>
+            Effect.sync(() => stop()).pipe(
+              Effect.ensuring(
+                Effect.promise(() =>
+                  pending.then(
+                    () => {
+                      events.push('next-settled')
+                    },
+                    () => {
+                      events.push('next-settled')
+                    },
+                  ),
+                ).pipe(Effect.andThen(Effect.sync(() => events.push('stream-release')))),
+              ),
+            ),
+        ),
+      )
+    hooks.getProvider.mockResolvedValue({
+      network: false,
+      durableSources: false,
+      createSessionParser: () => ({
+        parse: async function* () {
+          yield parsedCall()
+        },
+        parseStream,
+      }),
+    })
+    const controller = new AbortController()
     let interruptedExit!: import('effect/Exit').Exit<unknown, unknown>
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -695,7 +729,7 @@ describe('parser cooperative stop', () => {
       }),
     )
 
-    expect(events).toEqual(['next-start', 'stop', 'next-settled', 'iterator-return'])
+    expect(events).toEqual(['next-start', 'stop', 'next-settled', 'stream-release'])
     expect(cache.providers['test-provider']?.files[path]).toEqual(priorFile)
     expect(interruptedExit._tag).toBe('Failure')
     expect(interruptedExit._tag === 'Failure' ? Cause.findDefect(interruptedExit.cause) : undefined).toMatchObject({

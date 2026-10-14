@@ -9,7 +9,7 @@ import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { reportProviderIssue } from '../file-errors.js'
 import { getShortModelName } from '../models.js'
 import { scanAbortError } from '../scan-control.js'
-import type { ProbeRoot, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import type { DiscoverableProvider, ProbeRoot, ProviderScanContext, SessionSource } from './types.js'
 
 export type ClaudeConfigSource = {
   id: string
@@ -461,7 +461,7 @@ const discoverClaudeSessionsEffect = Effect.fnUntraced(function* (
   return sources
 })
 
-export const claude: Provider = {
+export const claude: DiscoverableProvider = {
   name: 'claude',
   displayName: 'Claude',
 
@@ -489,11 +489,5 @@ export const claude: Provider = {
     // Compatibility edge for callers that have not moved to Effect.
     // eslint-disable-next-line no-restricted-syntax
     return Effect.runPromise(discoverClaudeSessionsEffect(context))
-  },
-
-  createSessionParser(): SessionParser {
-    return {
-      async *parse() {},
-    }
   },
 }

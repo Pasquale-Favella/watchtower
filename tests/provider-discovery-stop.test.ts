@@ -2,6 +2,7 @@ import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as Stream from 'effect/Stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Env } from '../src/main/env.js'
@@ -26,7 +27,7 @@ function provider(name: string, discoverSessionsEffect: Provider['discoverSessio
       return Effect.runPromise(discoverSessionsEffect(context).pipe(Effect.provide(discoveryEnv)))
     },
     discoverSessionsEffect,
-    createSessionParser: () => ({ parse: async function* () {} }),
+    createSessionParser: () => ({ parse: async function* () {}, parseStream: () => Stream.empty }),
   }
 }
 

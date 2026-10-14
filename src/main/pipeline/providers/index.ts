@@ -28,7 +28,7 @@ import { omp, pi } from './pi.js'
 import { quickdesk } from './quickdesk.js'
 import { qwen } from './qwen.js'
 import { rooCode } from './roo-code.js'
-import type { Provider, ProviderScanContext, SessionSource } from './types.js'
+import type { DiscoverableProvider, Provider, ProviderScanContext, SessionSource } from './types.js'
 import { zerostack } from './zerostack.js'
 
 type OptionalProvider = { readonly name: string; readonly load: () => Promise<Provider> }
@@ -50,7 +50,7 @@ const optionalProviders: ReadonlyArray<OptionalProvider & { promise?: Promise<Pr
   { name: 'zed', load: async () => (await import('./zed.js')).zed },
 ]
 
-const coreProviders: Provider[] = [
+const coreProviders: DiscoverableProvider[] = [
   claude,
   cline,
   codewhale,
@@ -150,7 +150,7 @@ function checkDiscoveryAbort(context: DiscoveryContext): Effect.Effect<void, Sca
 /** Compose the lazy module imports in the scan's native Effect workflow. */
 export const getAllProvidersEffect = Effect.fnUntraced(function* (
   context: DiscoveryContext = {},
-): Effect.fn.Return<Provider[], Error> {
+): Effect.fn.Return<DiscoverableProvider[], Error> {
   yield* checkDiscoveryAbort(context)
   const optional = yield* Effect.all(
     optionalProviders.map(entry => loadOptionalProviderEffect(entry, context)),
@@ -163,7 +163,7 @@ export const getAllProvidersEffect = Effect.fnUntraced(function* (
 })
 
 /** Promise edge for callers that have not moved to Effect yet. */
-export function getAllProviders(): Promise<Provider[]> {
+export function getAllProviders(): Promise<DiscoverableProvider[]> {
   // eslint-disable-next-line no-restricted-syntax
   return Effect.runPromise(getAllProvidersEffect())
 }
@@ -175,7 +175,7 @@ export function getAllProviders(): Promise<Provider[]> {
 // per-file in parser.ts.
 const warnedDiscoveryFailures = new Set<string>()
 export const safeDiscoverSessionsEffect = Effect.fnUntraced(function* (
-  provider: Provider,
+  provider: DiscoverableProvider,
   context: DiscoveryContext = {},
 ): Effect.fn.Return<SessionSource[], ScanAbortedError, Env> {
   yield* checkDiscoveryAbort(context)
@@ -191,7 +191,10 @@ export const safeDiscoverSessionsEffect = Effect.fnUntraced(function* (
 })
 
 /** Promise edge for provider callers that have not moved to Effect yet. */
-export function safeDiscoverSessions(provider: Provider, context: DiscoveryContext = {}): Promise<SessionSource[]> {
+export function safeDiscoverSessions(
+  provider: DiscoverableProvider,
+  context: DiscoveryContext = {},
+): Promise<SessionSource[]> {
   // Compatibility edge for discovery callers that still expose Promise APIs.
   // eslint-disable-next-line no-restricted-syntax
   return Effect.runPromise(safeDiscoverSessionsEffect(provider, context).pipe(Effect.provide(Env.layer)))
@@ -201,7 +204,7 @@ export const discoverAllSessionsEffect = Effect.fnUntraced(function* (
   providerFilter?: string,
   // Injectable for tests so the isolation loop itself is exercised, not just
   // the helper. Defaults to the real registry.
-  providerList?: Provider[],
+  providerList?: DiscoverableProvider[],
   context: DiscoveryContext = {},
 ): Effect.fn.Return<SessionSource[], Error, Env> {
   yield* checkDiscoveryAbort(context)
@@ -221,7 +224,7 @@ export const discoverAllSessionsEffect = Effect.fnUntraced(function* (
 /** Promise edge for callers that have not moved to Effect yet. */
 export function discoverAllSessions(
   providerFilter?: string,
-  providerList?: Provider[],
+  providerList?: DiscoverableProvider[],
   context: DiscoveryContext = {},
 ): Promise<SessionSource[]> {
   // Compatibility edge for discovery callers that still expose Promise APIs.
@@ -234,7 +237,7 @@ export function discoverAllSessions(
 export const getProviderEffect = Effect.fnUntraced(function* (
   name: string,
   context: DiscoveryContext = {},
-): Effect.fn.Return<Provider | undefined, Error> {
+): Effect.fn.Return<DiscoverableProvider | undefined, Error> {
   yield* checkDiscoveryAbort(context)
   const optional = optionalProviders.find(provider => provider.name === name)
   if (optional) {
@@ -246,7 +249,7 @@ export const getProviderEffect = Effect.fnUntraced(function* (
 })
 
 /** Promise edge for provider callers not migrated to Effect yet. */
-export function getProvider(name: string): Promise<Provider | undefined> {
+export function getProvider(name: string): Promise<DiscoverableProvider | undefined> {
   // eslint-disable-next-line no-restricted-syntax
   return Effect.runPromise(getProviderEffect(name))
 }

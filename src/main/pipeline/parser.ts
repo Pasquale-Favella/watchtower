@@ -47,7 +47,14 @@ import { createDevinScanReads, DevinScanReads } from './providers/devin.js'
 import { discoverAllSessionsEffect, getProviderEffect } from './providers/index.js'
 import { createKiroScanReads, KiroScanReads } from './providers/kiro.js'
 import { createQuickdeskScanData, QuickdeskScanReads } from './providers/quickdesk.js'
-import type { ParsedProviderCall, ProviderScanContext, ProviderScanServices, SessionSource } from './providers/types.js'
+import type {
+  DiscoverableProvider,
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  ProviderScanServices,
+  SessionSource,
+} from './providers/types.js'
 import { fetchVercelGatewayReportEffect } from './providers/vercel-gateway.js'
 import { isScanAbortedError, type ScanAbortedError, scanAbortError } from './scan-control.js'
 import type { ScanPricing } from './scan-pricing.js'
@@ -130,63 +137,8 @@ function runOwnedParserPromise<A>(
   )
 }
 
-/** Legacy parser bridge. The iterator's next() Promise cannot be interrupted;
- * on interruption ask the scan owner to stop, drain the in-flight next(), then
- * return the iterator so provider resources are released in order. Remove once
- * every provider implements parseStream. */
-function consumeLegacyParser(
-  createParser: () => AsyncGenerator<ParsedProviderCall>,
-  onCall: (call: ParsedProviderCall) => void,
-  stop?: () => void,
-): Effect.Effect<void, Error> {
-  return Effect.suspend(() => {
-    let pending: Promise<IteratorResult<ParsedProviderCall>> | undefined
-    return Effect.acquireUseRelease(
-      Effect.sync(createParser),
-      iterator =>
-        Effect.gen(function* () {
-          while (true) {
-            const next = yield* Effect.tryPromise({
-              try: () => {
-                pending = iterator.next()
-                return pending
-              },
-              catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
-            })
-            pending = undefined
-            if (next.done) return
-            yield* Effect.sync(() => onCall(next.value))
-          }
-        }),
-      iterator =>
-        Effect.gen(function* () {
-          if (pending) {
-            const drain = Effect.promise(() =>
-              pending!.then(
-                () => undefined,
-                () => undefined,
-              ),
-            ).pipe(
-              Effect.andThen(
-                iterator.return
-                  ? Effect.tryPromise({
-                      try: () => iterator.return!(undefined),
-                      catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
-                    }).pipe(Effect.catch(() => Effect.void))
-                  : Effect.void,
-              ),
-            )
-            yield* Effect.sync(() => stop?.()).pipe(Effect.ensuring(drain))
-            pending = undefined
-          } else if (iterator.return) {
-            yield* Effect.tryPromise({
-              try: () => iterator.return!(undefined),
-              catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
-            }).pipe(Effect.catch(() => Effect.void))
-          }
-        }),
-    )
-  })
+function isSessionProvider(provider: DiscoverableProvider): provider is Provider {
+  return 'createSessionParser' in provider
 }
 
 function checkScanAbort(signal?: AbortSignal): Effect.Effect<void, ScanAbortedError> {
@@ -3421,9 +3373,10 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
   const { signal } = context
   const pricing = context.pricing ?? captureScanPricing()
   yield* checkScanAbort(signal)
-  const provider = yield* getProviderEffect(providerName, context)
+  const discoveredProvider = yield* getProviderEffect(providerName, context)
   yield* checkScanAbort(signal)
-  if (!provider) return []
+  if (!discoveredProvider || !isSessionProvider(discoveredProvider)) return []
+  const provider = discoveredProvider
 
   const section = getOrCreateProviderSection(diskCache, providerName)
   const allDiscoveredFiles = new Set<string>()
@@ -3586,20 +3539,18 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
               if (parsed) providerCalls.push(parsed)
             }
             const streamResult = yield* Effect.result(
-              parser.parseStream
-                ? Stream.runForEach(
-                    parser.parseStream(
-                      Effect.sync(() => {
-                        tally.count++
-                      }),
-                    ),
-                    call =>
-                      Effect.gen(function* () {
-                        yield* checkScanAbort(signal)
-                        yield* Effect.sync(() => collectCall(call))
-                      }),
-                  )
-                : consumeLegacyParser(() => parser.parse(), collectCall, context.stop),
+              Stream.runForEach(
+                parser.parseStream(
+                  Effect.sync(() => {
+                    tally.count++
+                  }),
+                ),
+                call =>
+                  Effect.gen(function* () {
+                    yield* checkScanAbort(signal)
+                    yield* Effect.sync(() => collectCall(call))
+                  }),
+              ),
             )
             if (streamResult._tag === 'Failure') throw streamResult.failure
             yield* checkScanAbort(signal)

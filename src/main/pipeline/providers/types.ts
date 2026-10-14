@@ -27,10 +27,11 @@ export type SessionParser = {
   parse(): AsyncGenerator<ParsedProviderCall>
   /** Effect-native parser path. The per-file collector supplies an Effect to
    * count rejected calls before canonical emission, without exposing raw data. */
-  parseStream?: (onUnparsedCall?: Effect.Effect<void>) => Stream.Stream<ParsedProviderCall, Error>
+  parseStream: (onUnparsedCall?: Effect.Effect<void>) => Stream.Stream<ParsedProviderCall, Error>
 }
 
-export type Provider = {
+/** Provider metadata and discovery are also used by aggregate parsers such as Claude. */
+export type DiscoverableProvider = {
   name: string
   displayName: string
   // Data comes from a live API fetch (no on-disk file). Such sources can't be
@@ -48,16 +49,19 @@ export type Provider = {
   discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]>
   /** Native discovery used by the scan. */
   discoverSessionsEffect: (context?: ProviderScanContext) => Effect.Effect<SessionSource[], Error, Env>
+  // The exact directories/dbs discoverSessions() scans, resolved the same way.
+  // Optional: providers that implement it let the diagnostic probe show and
+  // existence-check the probed paths even when zero sessions are found (so
+  // "tool not installed" vs "wrong override" is distinguishable).
+  probeRoots?(): Promise<ProbeRoot[]>
+}
+
+/** Providers with per-source session parsing expose a native Effect stream. */
+export type Provider = DiscoverableProvider & {
   createSessionParser(
     source: SessionSource,
     seenKeys: Set<string>,
     dateRange?: DateRange,
     context?: ProviderScanContext,
   ): SessionParser
-  // The exact directories/dbs discoverSessions() scans, resolved the same way.
-  // Optional: providers that implement it let the diagnostic probe show and
-  // existence-check the probed paths even when zero sessions are found (so
-  // "tool not installed" vs "wrong override" is distinguishable). Providers
-  // without it fall back to the paths of whatever sessions were discovered.
-  probeRoots?(): Promise<ProbeRoot[]>
 }
