@@ -46,13 +46,28 @@ Later `1f9db3d` removes the production CSV/JSON Promise helpers after migrating 
 
 Both review axes have no remaining blockers. Root integration passes 19 suites with 165 tests and one platform skip, all three typechecks, scoped formatting and lint with zero errors and 82 advisory warnings. These later changes are outside frozen `48b06d4` product proof and require a new complete run.
 
+### Main-side MCP product verification, 2026-10-14
+
+Frozen `8f2a304` passes all ten local isolated product gates. Full units pass 245 files with 3,009 tests and two skips in 690.43 seconds. All four original Electron checks pass in 10.3 minutes. Types, format, lint and build pass; fresh Windows directory packaging and actual packaged IPC/MCP also pass. No renderer errors or billed Coach prompt occur; app/SDK children close and the isolated profile is removed.
+
+Published-source CI passes types, lint, formatting and the actual [Windows/Linux Electron steps](https://github.com/Pasquale-Favella/watchtower/actions/runs/38526542310). The [CI unit job](https://github.com/Pasquale-Favella/watchtower/actions/runs/38526542523) fails one existing Yield working-directory classification assertion, with 3,003 passed and seven platform skips. This failure is retained as evidence; no assertion or timeout is relaxed. `48b06d4` remains the latest source accepted by both local product gates and all CI steps.
+
+### Native MCP requests and manual scan completion, 2026-10-14
+
+`c622150` owns manual scan completion, result/error events and owner cleanup in the scan-scope lifecycle fiber. An interruptible child owns parser work; abort targets that work while completion remains owned. An abort before child registration now prevents scan work from starting. Startup emission and registration failures roll back admission. Shutdown joins completion and owner release before disposing the existing SQL runtime. Four regressions cover the actual dispatch abort gap, startup rollback, finish failure/replacement blocking and real SQL release ordering.
+
+`6b247e8` composes MCP body reads, Schema JSON decoding, native listen/close and stateless SDK request work in Effects. The existing process runtime tracks request fibers, closes HTTP connections, then drains requests before query-runtime disposal. Listener cleanup covers completion, disconnect and interruption. Authentication, body caps and destroy policy remain. SDK calls start synchronously during acquisition; the cancellation regression uses the actual SDK server/transport and proves connect precedes one transport close, with no later request handling or query calls. The old handler Promise adapter is removed after its sole remaining test caller migrates to the native handler at its Node boundary.
+
+`422c08b` installs a readable-mode guard during native child spawn acquisition. Node's exit-time stdio flush can otherwise discard output before the Effect pump attaches. A controlled fast-exit regression captures empty output on the old source and the expected bytes after the fix. Both pipes release their guard through the existing scope. This proves the transport race, not the specific cause of the CI Yield failure.
+
+Standards and Spec reviews have no remaining blockers. Root integration passes 15 suites with 194 tests and one platform skip. The final MCP run passes four suites with 40 tests after the SDK admission correction. Node/web/test types, formatting and scoped lint pass with zero errors; the final MCP lint has 22 existing advisory warnings. These later slices are outside frozen `8f2a304` product proof and await a new complete run.
+
 ### Next implementation slices
 
-1. Product-verify `3972047` and the preceding export/parser adapter retirement in an immutable checkout.
-2. Move remaining owned MCP HTTP request/body and native listener workflows into Effects within the existing process runtime. The official SDK retains protocol ownership and native Promise leaves. Preserve authentication, body caps, errors, stateless request cleanup and read-only query ownership.
-3. Finish worker manual-scan completion ownership. Background completion is native at `2ba8892`; manual completion events and failure mapping still execute after the joined parser fiber at the dispatch Promise boundary. Include that completion in the scan lifetime before releasing ownership or SQL.
-4. Audit remaining Coach workflow adapters and compatibility callers against actual production ownership. Keep services for IO, pure calculations in TypeScript, and one runtime per isolate.
-5. Finish installer and actual macOS/Linux packaged acceptance. Profiling is no longer an active workstream.
+1. Product-verify `6b247e8` and the preceding manual scan/process transport slices in an immutable checkout; inspect actual source-matched CI steps, including Yield.
+2. Move remaining owned Coach run/inspection orchestration into the existing MainRuntime. SDK calls remain native Promise leaves; the current controlled async-generator workflow still executes repeated Effect boundaries internally. Preserve lazy loading, resume fallback, independent stop, bounded cleanup policy and attachment/workspace ownership.
+3. Retire compatibility adapters when their actual callers migrate. Keep pure calculations and React in TypeScript, one runtime per isolate and no global cache.
+4. Finish installer and actual macOS/Linux packaged acceptance. Profiling is no longer an active workstream.
 
 The Overview read extends `LedgerViewReads` with `getOverviewData`. Five SELECTs load minimal session identity/source provider, turn classification/workflow fields, consumed call billing/tool fields, aliases and overrides in one transaction. Rows decode after commit. Pure calculations group and sort facts once by composite source/session/turn identity and reuse them for lifetime metadata before scope filtering. The query captures its clock before reading. Whole-turn admission, local-date lifetime metadata, pricing precedence and source-provider filtering remain. Diagnostics cover all ledger calls; the payload's unpriced-model list remains scoped. The independent test oracle retains the unchanged legacy calculation body.
 
