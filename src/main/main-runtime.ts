@@ -6,6 +6,7 @@ import type { CoachHarnessRow } from '../shared/schemas/agents.js'
 import { CommandRunner } from './agents/command-runner.js'
 import { detectHarnesses, type HarnessInfo } from './agents/detect.js'
 import { resolveBundledEntry } from './agents/harnesses/bundled.js'
+import { LedgerMcpPool, ledgerMcpPoolLayer } from './agents/ledger-mcp/pool.js'
 import { LedgerMcpSidecar, ledgerMcpSidecarLayer, type LedgerMcpSidecarOptions } from './agents/ledger-mcp/sidecar.js'
 import type { ProbeResult } from './agents/probe.js'
 import {
@@ -22,7 +23,14 @@ import { HttpFetch } from './pipeline/fetch-utils.js'
 
 /** Stable services available through the Electron main isolate's one runtime. */
 export type MainServices =
-  HttpFetch | Env | CommandRunner | HarnessProbe | HarnessSnapshot | LedgerMcpSidecar | CoachHarnessExecution
+  | HttpFetch
+  | Env
+  | CommandRunner
+  | HarnessProbe
+  | HarnessSnapshot
+  | LedgerMcpSidecar
+  | LedgerMcpPool
+  | CoachHarnessExecution
 export type MainRuntime = ManagedRuntime.ManagedRuntime<MainServices, never>
 
 export interface MainRuntimeOptions {
@@ -69,10 +77,12 @@ export function makeMainLive(
     ...(overrides.readPath ? { readPath: overrides.readPath } : {}),
   }).pipe(Layer.provideMerge(probeAndRunner))
 
+  const sidecar = ledgerMcpSidecarLayer(overrides.sidecar)
+  const pool = ledgerMcpPoolLayer.pipe(Layer.provideMerge(sidecar))
   return Layer.mergeAll(
     MainLive,
     snapshot,
-    ledgerMcpSidecarLayer(overrides.sidecar),
+    pool,
     coachHarnessExecutionLayer(overrides.coachRuntime, overrides.coachSdk ?? loadHarnessSdk),
   )
 }
