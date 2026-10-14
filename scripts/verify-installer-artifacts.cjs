@@ -288,8 +288,8 @@ function installedDebExecutable(packageName) {
 
 function verifyLinuxArtifacts(root) {
   assert.equal(process.platform, 'linux', 'Linux installer verification must run on Linux')
-  const appImage = findArtifact(artifactPattern('linux', 'x64', 'AppImage'), 'Linux AppImage')
-  const deb = findArtifact(artifactPattern('linux', 'x64', 'deb'), 'Linux deb package')
+  const appImage = findArtifact(artifactPattern('linux', 'x86_64', 'AppImage'), 'Linux AppImage')
+  const deb = findArtifact(artifactPattern('linux', 'amd64', 'deb'), 'Linux deb package')
   const appImageRoot = path.join(root, 'appimage')
   fs.mkdirSync(appImageRoot)
   run(appImage, ['--appimage-extract'], { cwd: appImageRoot })
