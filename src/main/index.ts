@@ -1,11 +1,10 @@
-import { writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron'
-import { existsSync, mkdirSync } from 'fs'
-import { dirname, join } from 'path'
+import { existsSync } from 'fs'
+import { join } from 'path'
 
 import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
 import type { ComparePair } from '../shared/schemas/compare.js'
@@ -24,6 +23,7 @@ import { type LedgerMcpAttachment, registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { createSidecarPool } from './agents/ledger-mcp/pool.js'
 import { LedgerMcpSidecar } from './agents/ledger-mcp/sidecar.js'
+import { saveSkill } from './application/save-skill.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths } from './env.js'
 import { makeMainRuntime } from './main-runtime.js'
@@ -254,15 +254,12 @@ function registerIpc(db: DbWorkerClient): void {
       filters: [{ name: 'SKILL.md', extensions: ['md'] }],
     })
     if (picked.canceled || !picked.filePath) return { ok: false, error: 'cancelled' }
-    try {
-      // The dialog confirmed the target — create its parent dir so the write
-      // succeeds even when the nested .agents/skills/<slug>/ is brand new.
-      mkdirSync(dirname(picked.filePath), { recursive: true })
-      await writeFile(picked.filePath, parsed.success.content, 'utf8')
-      return { ok: true, path: picked.filePath }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
+    return mainRuntime.runPromise(
+      saveSkill(picked.filePath, parsed.success.content).pipe(
+        Effect.map(path => ({ ok: true as const, path })),
+        Effect.catchTag('SaveSkillError', error => Effect.succeed({ ok: false as const, error: error.message })),
+      ),
+    )
   })
 
   handleLogged('optimize:yield', (_event, scope: OverviewScope) => db.request('optimize:yield', scope))
