@@ -269,7 +269,8 @@ async function main() {
   }
   const executablePath = resolveExecutablePath(options)
   const profilePrefix = 'watchtower-packaged-'
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), profilePrefix))
+  const tempRoot = fs.realpathSync(os.tmpdir())
+  const profile = fs.mkdtempSync(path.join(tempRoot, profilePrefix))
   try {
     const providerFixture = prepareProviderFixture(profile)
     const args = [`--user-data-dir=${profile}`]
@@ -538,7 +539,7 @@ async function main() {
   } finally {
     const resolvedProfile = path.resolve(profile)
     assert.ok(path.basename(resolvedProfile).startsWith(profilePrefix))
-    assert.equal(path.dirname(resolvedProfile), path.resolve(os.tmpdir()))
+    assert.equal(path.dirname(resolvedProfile), tempRoot)
     assert.notEqual(resolvedProfile, path.parse(resolvedProfile).root)
     fs.rmSync(profile, { recursive: true, force: true })
   }
