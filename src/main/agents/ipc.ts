@@ -35,13 +35,12 @@ import { openLoginTerminal } from './login-terminal.js'
 import { buildCoachPrompt, buildLedgerBriefing, buildScopeUpdate } from './prompts.js'
 import { decodeResumeCursor } from './resume-cursor.js'
 import {
+  CoachHarnessExecution,
   type ControlledHarnessInspection,
   type ControlledHarnessRun,
-  createHarnessRuntime,
   type HarnessInspectResult,
   type HarnessRuntime,
   isAuthFailureMessage,
-  loadHarnessSdk,
 } from './runtime.js'
 import { type HarnessInstance, HarnessSnapshot } from './snapshot.js'
 
@@ -636,6 +635,61 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
 } {
   const { dismissals, runtime: mainRuntime, ledgerMcpServer } = sources
   let runtimePromise: Promise<HarnessRuntime> | null = null
+  function mainOwnedHarnessRuntime(): Promise<HarnessRuntime> {
+    runtimePromise ??= mainRuntime.runPromise(
+      Effect.map(CoachHarnessExecution, execution => {
+        function runControlled(
+          input: Parameters<NonNullable<HarnessRuntime['runControlled']>>[0],
+        ): ControlledHarnessRun {
+          let stopped = false
+          const started = mainRuntime.runPromise(execution.startRun(input))
+          const events = (async function* (): AsyncGenerator<CoachEvent> {
+            const run = await started
+            if (stopped) {
+              await mainRuntime.runPromise(run.stop)
+              return
+            }
+            for await (const event of run.events) {
+              if (stopped) return
+              yield event
+            }
+          })()
+          return {
+            events,
+            stop: async () => {
+              stopped = true
+              const run = await started.catch(() => undefined)
+              if (run) await mainRuntime.runPromise(run.stop)
+            },
+          }
+        }
+        function inspectControlled(
+          input: Parameters<NonNullable<HarnessRuntime['inspectControlled']>>[0],
+        ): ControlledHarnessInspection {
+          let stopped = false
+          const started = mainRuntime.runPromise(execution.startInspection(input))
+          return {
+            result: started.then(async inspection => {
+              if (stopped) await mainRuntime.runPromise(inspection.stop)
+              return mainRuntime.runPromise(inspection.result)
+            }),
+            stop: async () => {
+              stopped = true
+              const inspection = await started.catch(() => undefined)
+              if (inspection) await mainRuntime.runPromise(inspection.stop)
+            },
+          }
+        }
+        return {
+          run: input => runControlled(input).events,
+          runControlled,
+          inspect: input => inspectControlled(input).result,
+          inspectControlled,
+        }
+      }),
+    )
+    return runtimePromise
+  }
   const harnesses: HarnessSource = {
     list: () => mainRuntime.runPromise(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.list())),
     refresh: () => mainRuntime.runPromise(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.refresh())),
@@ -649,10 +703,7 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
   const runner = createCoachRunner({
     // The SDK is ESM and heavy; boot stays independent of it (the seam's
     // lazy-wire design). First run pays the load once.
-    getRuntime: () => {
-      runtimePromise ??= loadHarnessSdk().then(createHarnessRuntime)
-      return runtimePromise
-    },
+    getRuntime: mainOwnedHarnessRuntime,
     harnesses,
     ledgerMcpServer,
   })
