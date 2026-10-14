@@ -19,10 +19,9 @@ import {
 import type { OverviewScope } from '../shared/schemas/overview.js'
 import { skillsSaveRequestSchema, type SkillsSaveResult, type SkillsThresholds } from '../shared/schemas/skills.js'
 import type { AcpMcpServer } from './agents/harnesses/types.js'
-import { type LedgerMcpAttachment, registerAgentsIpc } from './agents/ipc.js'
+import { registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
-import { createSidecarPool } from './agents/ledger-mcp/pool.js'
-import { LedgerMcpSidecar } from './agents/ledger-mcp/sidecar.js'
+import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
 import { saveSkill } from './application/save-skill.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths } from './env.js'
@@ -59,22 +58,13 @@ const mainRuntime = makeMainRuntime({
  * MCP clients, and any future harness that rejects stdio. It remains lazy by
  * default and is prewarmed after the data worker is ready when the persisted
  * startup setting requests it. */
-const sidecarPool = createSidecarPool({
-  spawn: async ctx => {
-    const started = await mainRuntime.runPromise(Effect.flatMap(LedgerMcpSidecar, sidecar => sidecar.start(ctx)))
-    return {
-      server: started.server,
-      release: () => {
-        try {
-          mainRuntime.runSync(started.release)
-        } catch {
-          /* the runtime's app-scope finalizer still owns child cleanup */
-        }
-      },
-      checkHealth: () => mainRuntime.runPromise(started.checkHealth),
-    }
-  },
-})
+const sidecarPool = {
+  connection: (context: ReturnType<typeof ledgerMcpContext>) =>
+    mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.connection(context))),
+  regenerate: (context: ReturnType<typeof ledgerMcpContext>) =>
+    mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.regenerate(context))),
+  status: () => mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.status())),
+}
 /** The requesting window of the in-flight manual scan (progress/error routing). */
 let scanRequester: WebContents | null = null
 
@@ -419,30 +409,27 @@ function registerIpc(db: DbWorkerClient): void {
     // filters through each tool's optional `scope` argument). Paths:
     // `process.execPath` (dev + packaged), the bundled entry under appPath,
     // and the ledger DB beside the cache.
-    ledgerMcpServer: async (harnessKind: string): Promise<LedgerMcpAttachment | null> => {
-      await db.ready
-      // Fresh install: no ledger.db yet → no data to serve, so no MCP server
-      // (its read-only open would throw on a missing file). Once the first
-      // scan lands, the next run injects it.
-      const context = ledgerMcpContext()
-      const dbPath = context.dbPath
-      if (!existsSync(dbPath)) return null
-      // Harnesses that reject client-provided stdio servers (Copilot) get
-      // the same ledger over the app-level loopback-HTTP sidecar instead. A null
-      // (spawn failure, reset raced the spawn) degrades to no-tools (the
-      // turn still runs) rather than failing the turn.
-      if (ledgerMcpTransportFor(harnessKind) === 'http') {
-        try {
-          return await sidecarPool.acquire(context)
-        } catch {
-          return null
+    ledgerMcpServer: harnessKind =>
+      Effect.gen(function* () {
+        yield* Effect.tryPromise({ try: () => db.ready, catch: error => error })
+        // Fresh install: no ledger.db yet → no data to serve, so no MCP server
+        // (its read-only open would throw on a missing file). Once the first
+        // scan lands, the next run injects it.
+        const context = ledgerMcpContext()
+        const dbPath = context.dbPath
+        if (!existsSync(dbPath)) return null
+        // Harnesses that reject client-provided stdio servers (Copilot) get
+        // the same ledger over the app-level loopback-HTTP sidecar instead. A null
+        // (spawn failure, reset raced the spawn) degrades to no-tools (the
+        // turn still runs) rather than failing the turn.
+        if (ledgerMcpTransportFor(harnessKind) === 'http') {
+          return yield* Effect.flatMap(LedgerMcpPool, pool => pool.acquire(context))
         }
-      }
-      return {
-        server: buildLedgerMcpServer(context),
-        release: () => {},
-      }
-    },
+        return {
+          server: buildLedgerMcpServer(context),
+          release: () => {},
+        }
+      }),
   })
 }
 
@@ -553,9 +540,9 @@ app.on('before-quit', event => {
   event.preventDefault()
   if (quitState === 'closing') return
   quitState = 'closing'
-  sidecarPool.releaseAll()
-  const coachShutdown = Promise.resolve()
-    .then(() => agentsCleanup?.dispose())
+  const coachShutdown = mainRuntime
+    .runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.releaseAll()))
+    .finally(() => agentsCleanup?.dispose())
     .finally(() => mainRuntime.dispose())
   void Promise.allSettled([coachShutdown, dbClient?.shutdown()]).then(() => {
     try {

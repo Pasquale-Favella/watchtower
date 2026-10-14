@@ -32,7 +32,7 @@ describe('Coach renderer protocol boundary', () => {
     const ipc = registerAgentsIpc({
       runtime,
       dismissals: { dismiss: () => {} },
-      ledgerMcpServer: async () => null,
+      ledgerMcpServer: () => Effect.succeed(null),
     })
     try {
       expect(await handlers.get('coach:inspect')!(undefined, 'claude')).toEqual({
