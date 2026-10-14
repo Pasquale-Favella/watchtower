@@ -3,8 +3,9 @@ import { createServer, type Server } from 'node:http'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as FiberSet from 'effect/FiberSet'
 
-import { createLedgerMcpHttpHandler } from './http-server.js'
+import { handleLedgerMcpHttpRequest } from './http-server.js'
 import type { LedgerMcpQueries } from './query-api.js'
 import { createLedgerMcpQueryRuntime } from './query-runtime.js'
 import { createLedgerMcpServer } from './server.js'
@@ -55,29 +56,50 @@ function installProcessStopHandlers(onStop: () => void): () => void {
   }
 }
 
-function closeHttpServer(server: Server): Promise<void> {
-  if (!server.listening) return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    server.close(error => (error ? reject(error) : resolve()))
-    server.closeAllConnections()
+function closeHttpServer(server: Server): Effect.Effect<void, Error> {
+  return Effect.callback<undefined, Error>(resume => {
+    if (!server.listening) {
+      resume(Effect.succeed(undefined))
+      return
+    }
+    try {
+      server.close(error => resume(error ? Effect.fail(error) : Effect.succeed(undefined)))
+      server.closeAllConnections()
+    } catch (error) {
+      resume(Effect.fail(error instanceof Error ? error : new Error(String(error))))
+    }
   })
 }
 
-function listenLoopback(server: Server): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const onError = (error: Error): void => {
+function listenLoopback(server: Server): Effect.Effect<number, Error> {
+  return Effect.callback<number, Error>(resume => {
+    let settled = false
+    const cleanup = (): void => {
       server.off('listening', onListening)
-      reject(error)
+      server.off('error', onError)
+    }
+    const complete = (effect: Effect.Effect<number, Error>): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resume(effect)
+    }
+    const onError = (error: Error): void => {
+      complete(Effect.fail(error))
     }
     const onListening = (): void => {
-      server.off('error', onError)
       const address = server.address()
-      if (typeof address === 'object' && address) resolve(address.port)
-      else reject(new Error('no loopback address'))
+      if (typeof address === 'object' && address) complete(Effect.succeed(address.port))
+      else complete(Effect.fail(new Error('no loopback address')))
     }
     server.once('error', onError)
     server.once('listening', onListening)
-    server.listen(0, '127.0.0.1')
+    try {
+      server.listen(0, '127.0.0.1')
+    } catch (error) {
+      complete(Effect.fail(error instanceof Error ? error : new Error(String(error))))
+    }
+    return Effect.sync(cleanup)
   })
 }
 
@@ -95,12 +117,16 @@ export async function serveHttp(
     await runtime.run(
       Effect.scoped(
         Effect.gen(function* () {
-          const handler = createLedgerMcpHttpHandler(runtime.queries, ctx.token)
+          const requestJobs = yield* FiberSet.make<unknown, never>()
           const server = yield* Effect.acquireRelease(
             Effect.sync(() =>
               createServer((req, res) => {
-                void handler(req, res).catch(error => {
-                  reportSidecarRequestFailure(req.method, new URL(req.url ?? '/', 'http://127.0.0.1').pathname, error)
+                const request = FiberSet.run(
+                  requestJobs,
+                  handleLedgerMcpHttpRequest(req, res, runtime.queries, ctx.token),
+                )
+                void runtime.run(request).catch(error => {
+                  reportSidecarRequestFailure(req.method, '', error)
                   if (!res.headersSent) {
                     res.writeHead(500, { 'content-type': 'application/json' })
                     res.end('{"error":"internal error"}')
@@ -110,7 +136,11 @@ export async function serveHttp(
                 })
               }),
             ),
-            server => Effect.promise(() => closeHttpServer(server)),
+            server =>
+              closeHttpServer(server).pipe(
+                Effect.catch(() => Effect.void),
+                Effect.andThen(FiberSet.awaitEmpty(requestJobs)),
+              ),
           )
           yield* Effect.acquireRelease(
             Effect.sync(() => installProcessStopHandlers(stop)),
@@ -119,7 +149,7 @@ export async function serveHttp(
 
           // The native listen operation is allowed to settle before the scope can
           // release the server or its borrowed runtime.
-          const port = yield* Effect.tryPromise({ try: () => listenLoopback(server), catch: error => error })
+          const port = yield* listenLoopback(server)
           if (!Deferred.isDoneUnsafe(stopped)) process.stdout.write(`READY ${JSON.stringify({ port })}\n`)
           yield* Deferred.await(stopped)
         }),

@@ -21,7 +21,7 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { bearerHeaderValue } from '../src/main/agents/ledger-mcp/auth.js'
-import { createLedgerMcpHttpHandler } from '../src/main/agents/ledger-mcp/http-server.js'
+import { handleLedgerMcpHttpRequest } from '../src/main/agents/ledger-mcp/http-server.js'
 import { buildLedgerPrompts } from '../src/main/agents/ledger-mcp/prompts.js'
 import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'
 import { buildLedgerResources } from '../src/main/agents/ledger-mcp/resources.js'
@@ -505,9 +505,8 @@ describe('Ledger MCP server (ADR 0020) — stateless Streamable HTTP transport',
     const { queries } = await openStore()
     const closeTransport = vi.spyOn(StreamableHTTPServerTransport.prototype, 'close')
     const token = 'ledger-mcp-http-test-token'
-    const handler = createLedgerMcpHttpHandler(queries, token)
     const httpServer = createServer((request, response) => {
-      void handler(request, response)
+      void Effect.runPromise(handleLedgerMcpHttpRequest(request, response, queries, token))
     })
     await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve))
     const address = httpServer.address()
