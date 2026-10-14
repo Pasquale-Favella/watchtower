@@ -62,12 +62,27 @@ Published-source CI passes types, lint, formatting and the actual [Windows/Linux
 
 Standards and Spec reviews have no remaining blockers. Root integration passes 15 suites with 194 tests and one platform skip. The final MCP run passes four suites with 40 tests after the SDK admission correction. Node/web/test types, formatting and scoped lint pass with zero errors; the final MCP lint has 22 existing advisory warnings. These later slices are outside frozen `8f2a304` product proof and await a new complete run.
 
+### Process guard correction and product verification, 2026-10-14
+
+Frozen `3e01bc1` passes local node/web/test types, formatting, lint and build, but full units fail the original pending-spawn-error regression at `tests/command-runner-start.test.ts:451`. The run has 3,016 passed, two skips and one failure across 247 files. Source-matched CI fails the same test, with 3,011 passed and seven platform skips. Actual [Windows/Linux Electron steps](https://github.com/Pasquale-Favella/watchtower/actions/runs/38532398928) pass. This source is not accepted by all gates.
+
+`ef96774` makes the readable guard tolerate the absent stdio fields in the existing partial process mock. Error observation is installed again before startup waits. The original fixture, assertions and timeout remain unchanged. Both review axes pass; four focused process/Yield suites pass 48 tests with one platform skip. Formatting and scoped lint pass, with zero errors and two existing warnings. New complete product and CI verification remains required. No cause is claimed for the earlier CI Yield failure.
+
+### Main-owned native Coach execution, 2026-10-14
+
+`b13ba92` moves Coach run and inspection workflows into the existing MainRuntime. Native Effects compose provider acquisition, handshake/resume fallback, selection, stream pulls and scoped teardown. Only external SDK calls remain Promise leaves. A scoped FiberSet owns admission before the lazy SDK import starts. Stop and app disposal interrupt an unresolved import; late resolution cannot acquire a provider. Sticky load failures, workspace validation before import, one iterator, event ordering and the existing bounded cleanup policy remain. The direct runtime facade retains a removal condition for its actual test callers.
+
+The independent Spec review found the initial import ownership gap; the corrected implementation and six actual MainRuntime regressions close it. Standards review has no blockers. Root integration passes 165 distinct tests across eight suites, including the original 63 runtime tests, 58 IPC tests and seven attachment lifetime tests. Node/web/test types, formatting and scoped lint pass, with zero errors and 18 existing warnings. Complete product verification is pending.
+
+`6fde04d` places the existing actual-package verification in `scripts/verify-packaged.cjs`, retaining its positive scan/detail/search, configuration, export, clear and official MCP SDK assertions. A deterministic Codex fixture supplies isolated provider data. The actual app supplies `process.resourcesPath`; Electron executes the MCP entry inside its ASAR. Linux and macOS universal directory-package jobs are blocking and publish nothing. Syntax, CLI help, formatting, lint and both reviews pass. Actual execution on these platforms and installer acceptance remain open.
+
 ### Next implementation slices
 
-1. Product-verify `6b247e8` and the preceding manual scan/process transport slices in an immutable checkout; inspect actual source-matched CI steps, including Yield.
-2. Move remaining owned Coach run/inspection orchestration into the existing MainRuntime. SDK calls remain native Promise leaves; the current controlled async-generator workflow still executes repeated Effect boundaries internally. Preserve lazy loading, resume fallback, independent stop, bounded cleanup policy and attachment/workspace ownership.
-3. Retire compatibility adapters when their actual callers migrate. Keep pure calculations and React in TypeScript, one runtime per isolate and no global cache.
-4. Finish installer and actual macOS/Linux packaged acceptance. Profiling is no longer an active workstream.
+1. Product-verify `b13ba92` and the preceding manual scan/MCP/process corrections in an immutable checkout; inspect actual source-matched CI steps.
+2. Move owned Coach coordinator workflows in `ipc.ts` into Effect: probe queuing, run admission, event pumping, cancellation and conversation/attachment cleanup. The native execution engine is implemented; coordinator orchestration remains.
+3. Migrate the MCP pool's owned Promise orchestration while preserving its synchronous admission/release ABI and same-flight identity. Retire compatibility adapters when actual callers migrate.
+4. Move the Skills save destination filesystem workflow into the existing MainRuntime. Keep the Electron dialog at its boundary.
+5. Finish installer and actual macOS/Linux packaged acceptance. Keep pure calculations and React in TypeScript, one runtime per isolate and no global cache. Profiling is stopped.
 
 The Overview read extends `LedgerViewReads` with `getOverviewData`. Five SELECTs load minimal session identity/source provider, turn classification/workflow fields, consumed call billing/tool fields, aliases and overrides in one transaction. Rows decode after commit. Pure calculations group and sort facts once by composite source/session/turn identity and reuse them for lifetime metadata before scope filtering. The query captures its clock before reading. Whole-turn admission, local-date lifetime metadata, pricing precedence and source-provider filtering remain. Diagnostics cover all ledger calls; the payload's unpriced-model list remains scoped. The independent test oracle retains the unchanged legacy calculation body.
 
