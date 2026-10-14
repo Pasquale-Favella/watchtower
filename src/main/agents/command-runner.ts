@@ -263,12 +263,21 @@ function nodeSpawn(
       Effect.try({
         try: () => {
           const spawned = spawnProcess(command.command, [...command.args], toSpawnOptions(command.options))
+          // Node resumes piped stdio after child exit. Keep each stream in
+          // readable mode until its Effect pump gets a fiber turn to attach.
+          holdReadable(spawned.stdout)
+          holdReadable(spawned.stderr)
           observeProcess(spawned, started, exit, executable)
           return spawned
         },
         catch: cause => spawnFailure(command.command, cause),
       }),
-      spawned => Effect.sync(() => killQuietly(spawned, command.options)),
+      spawned =>
+        Effect.sync(() => {
+          releaseReadable(spawned.stdout)
+          releaseReadable(spawned.stderr)
+          killQuietly(spawned, command.options)
+        }),
     )
     // Node returns a ChildProcess before the OS spawn result is known. Waiting
     // for `spawn` keeps an asynchronous `error` in the start failure channel.
@@ -292,6 +301,14 @@ function nodeSpawn(
 
 /** Sentinel for a clean end-of-stream in the chunk pump. */
 const END_OF_STREAM: unique symbol = Symbol('watchtower/CommandRunner/endOfStream')
+
+function holdReadable(readable: Readable | null): void {
+  if (readable !== null) readable.on('readable', noopReadable)
+}
+function releaseReadable(readable: Readable | null): void {
+  if (readable !== null) readable.off('readable', noopReadable)
+}
+function noopReadable(): void {}
 
 /** The queue behind one reader of one pipe. The `Cause.Done` in its error
  *  channel is the end-of-stream sentinel `Queue.end` writes; `Stream.fromQueue`
