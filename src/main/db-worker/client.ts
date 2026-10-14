@@ -146,6 +146,8 @@ export class DbWorkerClient {
   private nextId = 1
   private pending = new Map<number, { resolve: (data: unknown) => void; reject: (err: Error) => void }>()
   private inflightReads = new Map<string, Promise<unknown>>()
+  /** Advances when a broadcast means an in-flight read may have gone stale. */
+  private dataRevision = 0
   private eventListeners = new Set<(event: DbWorkerEvent) => void>()
   private intentionalTeardown = false
   /** Non-null while a stuck abort is terminating the old worker and booting
@@ -264,14 +266,39 @@ export class DbWorkerClient {
         handshake.reject(new Error(raw.error))
         return
       }
+      if (raw.event === 'store:changed' || raw.event === 'config:changed') this.dataRevision++
       for (const listener of this.eventListeners) listener(raw)
     }
   }
 
   private send(op: string, args: unknown[] = []): Promise<unknown> {
+    const isShutdown = op === 'shutdown'
+    if (this.intentionalTeardown && !isShutdown) return Promise.reject(new Error('data worker shut down'))
     const recovery = this.recovery
-    if (recovery) return recovery.then(() => this.sendTo(this.worker, op, args))
+    if (recovery)
+      return recovery.then(() => {
+        if (this.intentionalTeardown && !isShutdown) return Promise.reject(new Error('data worker shut down'))
+        return this.sendTo(this.worker, op, args)
+      })
     return this.sendTo(this.worker, op, args)
+  }
+
+  /** Repeat a read if a mutation broadcast overtook its worker response. */
+  private stableReadEffect(op: string, args: unknown[]): Effect.Effect<unknown, unknown> {
+    const isShuttingDown = (): boolean => this.intentionalTeardown
+    const revision = (): number => this.dataRevision
+    const send = (): Promise<unknown> => this.send(op, args)
+    return Effect.gen(function* () {
+      while (true) {
+        if (isShuttingDown()) return yield* Effect.fail(new Error('data worker shut down'))
+        const requestedRevision = revision()
+        const value = yield* Effect.tryPromise({
+          try: send,
+          catch: cause => cause,
+        })
+        if (requestedRevision === revision()) return value
+      }
+    })
   }
 
   private sendTo(worker: DbWorkerPort | null, op: string, args: unknown[] = []): Promise<unknown> {
@@ -283,21 +310,22 @@ export class DbWorkerClient {
     })
   }
 
-  /** Invoke one worker op. Identical pure-read ops already in flight share a
-   * single execution; everything else always runs. Fire-and-forget callers
-   * pass no args and ignore the (null) resolution. */
+  /** Invoke one worker op. Identical pure-read ops share one flight; if a
+   * mutation overtakes its response, that flight re-reads before resolving. */
   request(op: string, ...args: unknown[]): Promise<unknown> {
     if (op === 'scan:abort') return this.abortScan(args)
     if (!DEDUPABLE_OPS.has(op)) return this.send(op, args)
-    let key: string | null = null
+    let flightArgs: unknown[]
+    let key: string
     try {
-      key = `${op}\n${JSON.stringify(args)}`
+      flightArgs = structuredClone(args)
+      key = `${op}\n${JSON.stringify(flightArgs)}`
     } catch {
       return this.send(op, args)
     }
     const hit = this.inflightReads.get(key)
     if (hit) return hit
-    const flight = this.send(op, args)
+    const flight = Effect.runPromise(this.stableReadEffect(op, flightArgs))
     this.inflightReads.set(key, flight)
     const forget = (): void => {
       if (this.inflightReads.get(key) === flight) this.inflightReads.delete(key)

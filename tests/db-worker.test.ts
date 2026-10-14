@@ -840,13 +840,111 @@ describe('DbWorkerClient request/response correlation', () => {
 
   it('coalesces identical concurrent reads into one execution', async () => {
     const { client, fakes } = makeClient()
-    const [a, b] = await Promise.all([
-      client.request('overview:query', { period: 'today' }),
-      client.request('overview:query', { period: 'today' }),
-    ])
+    const first = client.request('overview:query', { period: 'today' })
+    const second = client.request('overview:query', { period: 'today' })
+    expect(second).toBe(first)
+    const [a, b] = await Promise.all([first, second])
     expect(fakes[0]!.posted).toHaveLength(1)
     expect(a).toEqual(b)
     await client.terminate()
+  })
+
+  it('keeps one coalesced flight while retrying reads overtaken by multiple mutations', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const args = { period: 'today' }
+    const first = client.request('overview:query', args)
+    expect(client.request('overview:query', args)).toBe(first)
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+
+    const firstId = (worker.posted[0] as { id: number }).id
+    worker.emit('message', { event: 'config:changed' })
+    worker.emit('message', { event: 'store:changed', metadata: {} })
+    worker.emit('message', { id: firstId, ok: true, data: 'stale snapshot' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
+    expect(client.request('overview:query', args)).toBe(first)
+
+    const secondId = (worker.posted[1] as { id: number }).id
+    worker.emit('message', { event: 'config:changed' })
+    worker.emit('message', { id: secondId, ok: true, data: 'also stale' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(3))
+    expect(client.request('overview:query', args)).toBe(first)
+
+    const thirdId = (worker.posted[2] as { id: number }).id
+    worker.emit('message', { id: thirdId, ok: true, data: 'current snapshot' })
+    await expect(first).resolves.toBe('current snapshot')
+    expect(worker.posted.map(message => (message as { op: string }).op)).toEqual([
+      'overview:query',
+      'overview:query',
+      'overview:query',
+    ])
+    await client.terminate()
+  })
+
+  it('retries with the original cloned query args after the caller mutates them', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const args = { period: 'today' }
+    const pending = client.request('overview:query', args)
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+    args.period = 'week'
+    worker.emit('message', { event: 'config:changed' })
+    worker.emit('message', { id: (worker.posted[0] as { id: number }).id, ok: true, data: 'stale' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
+
+    expect((worker.posted[1] as { args: unknown[] }).args).toEqual([{ period: 'today' }])
+    worker.emit('message', { id: (worker.posted[1] as { id: number }).id, ok: true, data: 'current' })
+    await expect(pending).resolves.toBe('current')
+    await client.terminate()
+  })
+
+  it('does not retry a failed read after a mutation event', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const pending = client.request('overview:query', { period: 'today' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+    worker.emit('message', { event: 'config:changed' })
+    worker.emit('message', { id: (worker.posted[0] as { id: number }).id, ok: false, error: 'read failed' })
+    await expect(pending).rejects.toThrow('read failed')
+    expect(worker.posted).toHaveLength(1)
+    await client.terminate()
+  })
+
+  it('does not send an invalidated retry after shutdown starts', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const pending = client.request('overview:query', { period: 'today' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+    worker.emit('message', { event: 'config:changed' })
+
+    const closing = client.shutdown()
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
+    const [readRequest, closeRequest] = worker.posted as { id: number; op: string }[]
+    worker.emit('message', { id: readRequest!.id, ok: true, data: 'stale snapshot' })
+    await expect(pending).rejects.toThrow('data worker shut down')
+    expect(worker.posted.map(message => (message as { op: string }).op)).toEqual(['overview:query', 'shutdown'])
+    worker.emit('message', { id: closeRequest!.id, ok: true, data: null })
+    await closing
+  })
+
+  it('does not resume a request queued behind recovery after shutdown, but still sends shutdown', async () => {
+    const { client, fakes } = makeClient(() => {})
+    fakes[0]!.emit('message', { event: 'ready' })
+    await client.ready
+    const abort = Effect.runPromise(client.scanAbortEffect([], 1, 5_000)).catch(() => undefined)
+    await vi.waitFor(() => expect(fakes).toHaveLength(2))
+
+    const queuedRead = client.request('overview:query', { period: 'today' })
+    const closing = client.shutdown()
+    fakes[1]!.emit('message', { event: 'ready' })
+    await abort
+    await vi.waitFor(() => expect(fakes[1]!.posted).toHaveLength(1))
+    expect(fakes[1]!.posted).toMatchObject([{ op: 'shutdown', args: [] }])
+    const shutdownId = (fakes[1]!.posted[0] as { id: number }).id
+    fakes[1]!.emit('message', { id: shutdownId, ok: true, data: null })
+
+    await expect(queuedRead).rejects.toThrow('data worker shut down')
+    await closing
   })
 
   it('does not coalesce distinct args or writes', async () => {
