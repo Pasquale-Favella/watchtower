@@ -332,6 +332,58 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
   })
 
+  it('rolls back manual scan admission when the start event defects', async () => {
+    const c = open()
+    const startFailure = new Error('manual scan start event failed')
+    vi.spyOn(c as unknown as { emitScanStart: (provider?: string) => void }, 'emitScanStart').mockImplementation(() => {
+      throw startFailure
+    })
+    const performScan = vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    )
+
+    await expect(c.dispatch('scan:start', [])).rejects.toBe(startFailure)
+    expect(performScan).not.toHaveBeenCalled()
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
+  })
+
+  it('owns manual finish failures and blocks replacement until failure events finish', async () => {
+    const c = open()
+    const finishFailure = new Error('scan finish event failed')
+    const metadata: ScanMetadata = {
+      scanId: 'manual-finish-failure',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      portedFiles: 0,
+      unchangedFiles: 0,
+      failedFiles: 0,
+      perProvider: [],
+      aborted: false,
+    }
+    vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    ).mockReturnValue(Effect.succeed(metadata))
+    let replacement: Promise<unknown> | undefined
+    vi.spyOn(c as unknown as { emitScanFinish: (result: ScanMetadata) => void }, 'emitScanFinish').mockImplementation(
+      () => {
+        replacement = c.dispatch('scan:start', [])
+        throw finishFailure
+      },
+    )
+
+    await expect(c.dispatch('scan:start', [])).resolves.toEqual({
+      ok: false,
+      aborted: false,
+      error: finishFailure.message,
+    })
+    await expect(replacement).resolves.toEqual({ ok: false, alreadyRunning: true })
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
+    expect(events).toContainEqual({ event: 'scan:error', manual: true, message: finishFailure.message })
+    expect(events).toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.error', level: 'error' }))
+  })
+
   it('scan:abort interrupts the running scan fiber and maps to {ok:false, aborted:true}', async () => {
     const c = open()
     const scanResult = new Promise<ScanMetadata>(() => {})
@@ -346,6 +398,36 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     await expect(c.dispatch('scan:abort', [])).resolves.toBeNull()
     await expect(request).resolves.toMatchObject({ ok: false, aborted: true })
     expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
+  })
+
+  it('reports an abort before manual work registration without starting the scan', async () => {
+    const c = open()
+    const activeRuntime = runtime
+    if (!activeRuntime) throw new Error('DbWorker runtime was not initialized')
+    const performScan = vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    )
+    const runSync = activeRuntime.runSync.bind(activeRuntime)
+    const runSyncSpy = vi.spyOn(activeRuntime, 'runSync')
+    let abortRequest: Promise<unknown> | undefined
+    let stopAtFork = true
+    runSyncSpy.mockImplementation(effect => {
+      // Dispatch stop at the external fork boundary: admission and start event
+      // have happened, but the owned lifecycle fiber has not started yet.
+      if (stopAtFork) {
+        stopAtFork = false
+        abortRequest = c.dispatch('scan:abort', [])
+      }
+      return runSync(effect)
+    })
+
+    await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: false, aborted: true, error: 'scan aborted' })
+    await expect(abortRequest).resolves.toBeNull()
+    expect(performScan).not.toHaveBeenCalled()
+    expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
+    expect(events).toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.abort', level: 'warn' }))
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
   })
 
   it('ScanAbortedError TaggedError preserves instanceof, name, message, _tag (parser name-check)', () => {

@@ -41,6 +41,7 @@ export interface DbWorkerDeps {
 interface ActiveScan {
   readonly manual: boolean
   aborted: boolean
+  workFiber: Fiber.Fiber<ScanMetadata, unknown> | null
   fiber: Fiber.Fiber<unknown, unknown> | null
 }
 
@@ -98,22 +99,54 @@ export class DbWorkerContext {
     return scanLedger(options, emit, { isAborted: () => owner.aborted })
   }
 
-  /** Forks into scanScope using the worker's services, then joins at the
-   * Promise dispatch boundary. Parser callbacks drain before the scan exits. */
-  private async runTrackedScan(
+  /** Manual scan work and its result events share one shutdown-owned fiber. */
+  private manualScanEffect(
     owner: ActiveScan,
     options: { provider?: string } | undefined,
-    emit: (progress: ScanProgress) => void,
-  ): Promise<ScanMetadata> {
-    const fiber = this.runtime.runSync(
-      Effect.forkIn(this.performScan(options, emit, owner), this.scanScope, { startImmediately: true }),
-    )
-    owner.fiber = fiber
-    try {
-      return await Effect.runPromise(Fiber.join(fiber))
-    } finally {
-      if (this.activeScan === owner) this.activeScan = null
+  ): Effect.Effect<{ ok: boolean; aborted?: boolean; error?: string }, never, ScanRequirements> {
+    const emit = (progress: ScanProgress): void => this.emit({ event: 'scan:progress', manual: owner.manual, progress })
+    const reportFailure = (error: unknown) => {
+      const aborted = error instanceof ScanAbortedError || owner.aborted
+      const normalized = aborted && !(error instanceof ScanAbortedError) ? abortedScanError() : error
+      const message = aborted ? 'scan aborted' : error instanceof Error ? error.message : String(error)
+      return Effect.sync(() => {
+        this.emit({ event: 'scan:error', manual: true, message })
+        this.emitScanFailure(normalized)
+        return {
+          ok: false,
+          aborted,
+          error: normalized instanceof Error ? normalized.message : String(normalized),
+        }
+      })
     }
+
+    return Effect.uninterruptibleMask(restore =>
+      Effect.gen({ self: this }, function* () {
+        // Abort can win after admission but before this owned fiber starts.
+        if (owner.aborted) return yield* reportFailure(abortedScanError())
+        const workFiber = yield* Effect.forkChild(restore(this.performScan(options, emit, owner)))
+        owner.workFiber = workFiber
+        const scanExit = yield* Fiber.await(workFiber)
+        owner.workFiber = null
+        if (Exit.isFailure(scanExit)) return yield* reportFailure(Cause.squash(scanExit.cause))
+
+        const completionExit = yield* Effect.exit(
+          Effect.sync(() => {
+            this.lastScanMetadata = scanExit.value
+            this.emit({ event: 'store:changed', metadata: scanExit.value })
+            this.emitScanFinish(scanExit.value)
+          }),
+        )
+        if (Exit.isFailure(completionExit)) return yield* reportFailure(Cause.squash(completionExit.cause))
+        return { ok: true }
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (this.activeScan === owner) this.activeScan = null
+          }),
+        ),
+      ),
+    )
   }
 
   /** Startup, cadence and selection refreshes share the worker's HttpFetch
@@ -150,10 +183,8 @@ export class DbWorkerContext {
   }
 
   private emitScanFailure(err: unknown): void {
-    // Promise-boundary seam (NOT Effect-native): called from `await`
-    // `runTrackedScan` catches with `unknown`, so this stays `instanceof`
-    // (NOT `catchTag` — no Effect here). Works with the TaggedError because
-    // the class NAME is preserved.
+    // Native scan lifecycles pass their normalized failure to this synchronous
+    // event emitter. TaggedError class identity preserves the abort record.
     if (err instanceof ScanAbortedError) {
       this.emit({ event: 'oplog', level: 'warn', logEvent: 'scan.abort', fields: { op: 'scan', code: 'aborted' } })
     } else {
@@ -182,7 +213,7 @@ export class DbWorkerContext {
       Effect.suspend(() => {
         if (this.closed || this.activeScan !== null) return Effect.void
 
-        const owner: ActiveScan = { manual: false, aborted: false, fiber: null }
+        const owner: ActiveScan = { manual: false, aborted: false, workFiber: null, fiber: null }
         const emit = (progress: ScanProgress): void =>
           this.emit({ event: 'scan:progress', manual: owner.manual, progress })
         const complete = Effect.uninterruptibleMask(restore =>
@@ -338,37 +369,28 @@ export class DbWorkerContext {
         // button for it — hence the explicit flag instead of an error string.
         // Coalescing retains ownership through parser Promise drainage.
         if (this.activeScan !== null) return { ok: false, alreadyRunning: true }
-        const owner: ActiveScan = { manual: true, aborted: false, fiber: null }
+        const owner: ActiveScan = { manual: true, aborted: false, workFiber: null, fiber: null }
         this.activeScan = owner
-        this.emitScanStart(options?.provider)
         try {
-          const metadata = await this.runTrackedScan(owner, options, progress =>
-            this.emit({ event: 'scan:progress', manual: owner.manual, progress }),
-          )
-          this.lastScanMetadata = metadata
-          this.emit({ event: 'store:changed', metadata })
-          this.emitScanFinish(metadata)
-          // The `metadata` lands on `store:changed`; the scan-result envelope
-          // itself carries only the flags scanResultSchema declares, so the
-          // wire stays byte-faithful to the shared schema.
-          return { ok: true }
-        } catch (err) {
-          // Fiber interruption (abort/close) rides the abort flag so the wire
-          // stays `{ok:false, aborted:true}` + `scan:error` even when the
-          // failure is an interruption cause rather than `ScanAbortedError`.
-          // This Promise boundary maps application failures and the owner
-          // flag. Only a successful scan emits `store:changed`.
-          const aborted = err instanceof ScanAbortedError || owner.aborted
-          const normalized = aborted && !(err instanceof ScanAbortedError) ? abortedScanError() : err
-          const message = aborted ? 'scan aborted' : err instanceof Error ? err.message : String(err)
-          this.emit({ event: 'scan:error', manual: true, message })
-          this.emitScanFailure(normalized)
-          return {
-            ok: false,
-            aborted,
-            error: normalized instanceof Error ? normalized.message : String(normalized),
-          }
+          this.emitScanStart(options?.provider)
+        } catch (error) {
+          if (this.activeScan === owner) this.activeScan = null
+          throw error
         }
+        let fiber: Fiber.Fiber<unknown, unknown>
+        try {
+          fiber = this.runtime.runSync(
+            Effect.forkIn(this.manualScanEffect(owner, options), this.scanScope, { startImmediately: false }),
+          )
+        } catch (error) {
+          // Startup admission happens synchronously before the dispatch
+          // boundary can await the owned fiber. If registration fails, roll
+          // back the owner here and leave the failure at the Promise edge.
+          if (this.activeScan === owner) this.activeScan = null
+          throw error
+        }
+        owner.fiber = fiber
+        return this.runtime.runPromise(Fiber.join(fiber))
       }
 
       case 'scan:abort': {
@@ -376,7 +398,7 @@ export class DbWorkerContext {
         // remains active until the underlying parser Promise has drained.
         const owner = this.activeScan
         if (owner) owner.aborted = true
-        const fiber = owner?.fiber
+        const fiber = owner?.workFiber ?? (owner?.manual ? null : owner?.fiber)
         if (fiber) await Effect.runPromise(Fiber.interrupt(fiber))
         return null
       }

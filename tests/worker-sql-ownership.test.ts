@@ -10,6 +10,9 @@ import * as Layer from 'effect/Layer'
 import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { DbWorkerContext } from '../src/main/db-worker/context.js'
+import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
+import type { ScanMetadata } from '../src/main/pipeline/scan.js'
 import { LedgerConfig, LedgerQueries } from '../src/main/store/ledger-repository.js'
 import {
   makeWorkerRuntime,
@@ -22,6 +25,7 @@ import { withNativeSqliteRuntime } from './fixtures/native-sqlite-runtime.js'
 function observedDriver(
   filename: string,
   failure?: Error,
+  onFinalize?: () => void,
 ): {
   layer: WorkerSqlLayer
   counts: { acquisitions: number; finalizers: number }
@@ -38,6 +42,7 @@ function observedDriver(
         () =>
           Effect.sync(() => {
             counts.finalizers += 1
+            onFinalize?.()
           }),
       )
       if (failure) return yield* Effect.die(failure)
@@ -109,6 +114,76 @@ describe('db-worker SQL ownership', () => {
     }
     expect(driver.counts).toEqual({ acquisitions: 1, finalizers: 1 })
     expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('finishes manual scan events and owner cleanup before releasing the real SQL client', async () => {
+    const path = databasePath()
+    const order: string[] = []
+    const activeOwner = { read: () => undefined as unknown }
+    const driver = observedDriver(path, undefined, () => {
+      expect(activeOwner.read()).toBeNull()
+      order.push('sql-release')
+    })
+    const runtimes: WorkerRuntime[] = []
+    const runtime = openWorkerRuntime(path, undefined, undefined, {
+      sqliteLayer: driver.layer,
+      makeRuntime: recordRuntime(runtimes),
+    })
+    let resolveScan!: (metadata: ScanMetadata) => void
+    let scanResolved = false
+    const metadata: ScanMetadata = {
+      scanId: 'manual-shutdown-barrier',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      portedFiles: 0,
+      unchangedFiles: 0,
+      failedFiles: 0,
+      perProvider: [],
+      aborted: false,
+    }
+    const scanResult = new Promise<ScanMetadata>(resolve => {
+      resolveScan = resolve
+    })
+    const finishScan = (): void => {
+      if (scanResolved) return
+      scanResolved = true
+      resolveScan(metadata)
+    }
+    const events: DbWorkerEvent[] = []
+    const worker = new DbWorkerContext(
+      { dbPath: path, dataDir: dirname(path), cacheDir: join(dirname(path), 'cache') },
+      event => {
+        events.push(event)
+        if (event.event === 'oplog' && event.logEvent === 'scan.finish') order.push('scan-finish')
+      },
+      { runtime },
+    )
+    activeOwner.read = () => (worker as unknown as { activeScan: unknown }).activeScan
+    vi.spyOn(
+      worker as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    ).mockReturnValue(Effect.tryPromise({ try: () => scanResult, catch: cause => cause }))
+
+    try {
+      const request = worker.dispatch('scan:start', [])
+      await vi.waitFor(() => expect((worker as unknown as { activeScan: unknown }).activeScan).not.toBeNull())
+      const closing = worker.close()
+      await Promise.resolve()
+      expect(driver.counts.finalizers).toBe(0)
+
+      finishScan()
+      await expect(request).resolves.toEqual({ ok: true })
+      await closing
+
+      expect(order).toEqual(['scan-finish', 'sql-release'])
+      expect(events).toContainEqual(expect.objectContaining({ event: 'store:changed' }))
+    } finally {
+      finishScan()
+      await worker.close()
+      await runtime.dispose()
+      const fixtureRuntime = runtimes.at(-1)
+      if (fixtureRuntime) runtimes.splice(runtimes.indexOf(fixtureRuntime), 1)
+    }
   })
 
   it('closes the real driver when a future schema version rejects boot', async () => {
