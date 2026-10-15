@@ -4,7 +4,7 @@ This extends [the September 30 assessment](../research/effect-adoption-assessmen
 
 Full Effect adoption is complete when contracts have one Schema authority, application workflows compose ports, each isolate owns its resources, and product operations avoid redundant work. A library substitution alone does not establish those properties.
 
-## Current priority, 2026-10-14
+## Current priority, 2026-10-15
 
 The user stopped profiling work and requested deletion of all profiling JSON files from docs. This instruction supersedes profiling and measurement follow-ups in the historical execution records below. Continue the overall Effect migration.
 
@@ -13,6 +13,16 @@ Owned Zod removal is complete across the 23-module baseline. Twenty-two modules 
 The accepted native foundation at `48b06d4` establishes the provider and worker ownership below. Scan orchestration, delta/progress callbacks, ingest, Git lookup and Gateway parsing compose in the existing scan fiber. Claude/Codex discovery and session-cache internals compose native Effects. All thirty-eight providers expose native discovery and thirty-seven have completed native parser streams; Claude parsing has its own native scan path. OpenCode's file and both declared SQLite generations are native, as are both Kilo branches. Open Design, LingTai, QuickDesk, Codebuff, CodeWhale, Mux, Devin, Forge, Zed, Goose, Crush, Warp, Cursor Agent and Kiro compose native IO. QuickDesk closes source snapshots before pricing/emission and removes two unused columns. Its metrics and snapshots are reused through a lazy scan-owned Effect capability. Shared scan IO drains narrowly masked filesystem leaves before interruption finishes. Both journal readers consume the owned session-line Stream. Compatibility adapters remain for actual direct callers. Query and nine config-command routes are separated from supervision. The scan application uses existing ingest, command and gateway capabilities; the worker retains fiber/event ownership. Overview uses five sufficient transactional reads and direct facts calculations. Legacy snapshot and Overview calculations are confined to independent test oracles. Obsolete exports, synchronous section adapters and FX facade adapters have been removed after migrating their callers.
 
 The latest fully accepted source is now `4e03e68`, including native Coach execution/coordination, pooled MCP composition, Skills save and actual Linux/macOS directory-package proof. The programme remains incomplete. Pure calculations and React stores stay simple TypeScript. The Git content of data-store.ts and scan-store.ts still matches `ce81593`, preserving their original scope guard and direct applyChange flow.
+
+### Final Config, Clock and lifetime integration, 2026-10-15
+
+The current source completes the original Config/Clock/Metrics audit. Production main and worker roots capture full AppPaths through Effect Config. All provider environment readers use snapshot seams or operation-time scalar Config; an AST regression scans every provider and finds no direct `process.env` access. Probe cache identity and detection use the same captured PATH. Env startup receives the runtime's ConfigProvider during Layer construction, without Layer casts.
+
+Native counters/gauges use separate main/worker registries while preserving the original operational-log deltas. The actual default probe and HTTP-timeout producers update native metrics. No exporter, sampling timer or extra runtime is introduced. Effect Clock governs pricing/parser cache policy, refresh-lock wall/monotonic deadlines, crash-streak reset, Cursor lookback and Goose fallback timestamps. Main startup and MCP parent polling have owned fibers; worker shutdown interrupts and joins native exit-callback backoff, including when shutdown itself is interrupted.
+
+Independent Standards, Spec and simplicity reviews have no remaining blockers. Root integration passes 417 tests across 30 files before the last Cursor/Goose and shutdown-interruption regressions; the final seven-suite run passes 161 tests. Complete verification of the integrated source remains required. Both renderer stores still match `ce81593`.
+
+At frozen `bfc4429`, all ten local gates have now passed: 3,036 unit tests and two skips, all four Electron checks in 10.7 minutes, all three typechecks, format/lint/build, fresh Windows directory packaging and actual packaged IPC/MCP. Its [ordinary CI](https://github.com/Pasquale-Favella/watchtower/actions/runs/38568836424) and actual [Windows/Linux Electron plus Linux/macOS directory-package checks](https://github.com/Pasquale-Favella/watchtower/actions/runs/38568836481) pass. NSIS install/uninstall and DMG/ZIP payloads pass. Linux AppImage UI/IPC passes but MCP stdio closes before completion. `391d171` uses the running app's `process.execPath` for SDK children, preserving AppRun for UI launch. Actual AppImage/deb execution must validate that correction. The exact cause of the earlier failure is unproven. No local installer execution occurs.
 
 ### Accepted native foundation, 2026-10-13
 
@@ -96,7 +106,7 @@ Installer CI at `86da38d` executes actual NSIS install/uninstall and both macOS 
 
 1. Verify the final integrated source with the full local gates and actual source-matched CI steps.
 2. Complete actual Linux AppImage/deb acceptance and retain successful NSIS/DMG/ZIP verification on that source.
-3. Reconcile the original criteria with the final source and proof. Current production audits find no further owned provider or schema/runtime composition gap after the clear-dispatch correction. Thin Promise facades remain only for actual framework, SDK or test callers of the same native implementation, with their removal conditions documented.
+3. Reconcile the original criteria with the final source and proof. The scoped provider/schema audits find no further gap after the clear correction. A subsequent audit of the original configuration, clock and observation decisions identifies remaining path capture, six direct provider environment readers, two owned raw timers, wall-clock policy reads and a native Metric bridge. Those slices are now in progress; full migration acceptance remains open. Thin Promise facades remain only for actual framework, SDK or test callers of the same native implementation, with their removal conditions documented.
 
 Keep pure calculations and React in TypeScript, one runtime per isolate and no global cache. Both renderer stores remain identical to `ce81593`. Profiling is stopped and docs contains zero JSON files.
 
