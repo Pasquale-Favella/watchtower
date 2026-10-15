@@ -72,7 +72,8 @@ function mainLive(configProvider: ConfigProvider.ConfigProvider): Layer.Layer<Ht
   )
 }
 
-const processConfigProvider = ConfigProvider.fromEnv({
+// Preserve Node's case-insensitive environment lookup on Windows, including Path/PATH.
+const processConfigProvider = ConfigProvider.fromEnvRecord(process.env, {
   preserveEmptyStrings: true,
 })
 

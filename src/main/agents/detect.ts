@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { delimiter as pathDelimiter, join } from 'node:path'
+
 import { harnessSpecs } from './harnesses/index.js'
 import type { HarnessSpec } from './harnesses/types.js'
 
@@ -46,7 +47,8 @@ export function which(
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   const dirs = pathEnv.split(pathDelimiter).filter(Boolean)
-  const exts = platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : ['']
+  // npm's extensionless shims are POSIX shell scripts; prefer Windows launchers.
+  const exts = platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : ['']
   for (const dir of dirs) {
     for (const ext of exts) {
       const candidate = join(dir, cmd + ext)
