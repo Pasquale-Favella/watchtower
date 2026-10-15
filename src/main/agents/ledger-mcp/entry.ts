@@ -2,8 +2,10 @@ import { createServer, type Server } from 'node:http'
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as Deferred from 'effect/Deferred'
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as FiberSet from 'effect/FiberSet'
+import type * as Scope from 'effect/Scope'
 
 import { handleLedgerMcpHttpRequest } from './http-server.js'
 import type { LedgerMcpQueries } from './query-api.js'
@@ -38,22 +40,33 @@ function installProcessStopHandlers(onStop: () => void): () => void {
   }
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
-  const parentPid = process.ppid
-  const timer = parentPid
-    ? setInterval(() => {
-        try {
-          process.kill(parentPid, 0)
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException)?.code === 'ESRCH') stop()
-        }
-      }, 5_000)
-    : undefined
-  timer?.unref()
   return () => {
     process.off('SIGTERM', stop)
     process.off('SIGINT', stop)
-    if (timer) clearInterval(timer)
   }
+}
+
+function watchParent(parentPid: number, onStop: () => void): Effect.Effect<never> {
+  return Effect.forever(
+    Effect.sleep(Duration.millis(5_000)).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          try {
+            process.kill(parentPid, 0)
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code === 'ESRCH') onStop()
+          }
+        }),
+      ),
+    ),
+  )
+}
+
+function forkParentWatcher(onStop: () => void): Effect.Effect<void, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    const parentPid = process.ppid
+    if (parentPid) yield* Effect.forkScoped(watchParent(parentPid, onStop))
+  })
 }
 
 function closeHttpServer(server: Server): Effect.Effect<void, Error> {
@@ -146,6 +159,7 @@ export async function serveHttp(
             Effect.sync(() => installProcessStopHandlers(stop)),
             removeHandlers => Effect.sync(removeHandlers),
           )
+          yield* forkParentWatcher(stop)
 
           // The native listen operation is allowed to settle before the scope can
           // release the server or its borrowed runtime.
@@ -198,10 +212,11 @@ export async function serveStdio(
                 closeTransport()
               }
               process.stdin.once('end', onInputEnd)
-              const removeProcessHandlers = installProcessStopHandlers(() => {
+              const onProcessStop = (): void => {
                 stop()
                 closeTransport()
-              })
+              }
+              const removeProcessHandlers = installProcessStopHandlers(onProcessStop)
               return () => {
                 process.stdin.off('end', onInputEnd)
                 removeProcessHandlers()
@@ -209,6 +224,10 @@ export async function serveStdio(
             }),
             removeHandlers => Effect.sync(removeHandlers),
           )
+          yield* forkParentWatcher(() => {
+            stop()
+            closeTransport()
+          })
 
           // Connect is awaited to completion before scope release. If shutdown
           // arrives first, closing transport unblocks the SDK connection path.

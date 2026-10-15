@@ -5,6 +5,8 @@ import { join } from 'node:path'
 
 import type { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as Effect from 'effect/Effect'
+import * as ManagedRuntime from 'effect/ManagedRuntime'
+import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { serveHttp, serveStdio } from '../src/main/agents/ledger-mcp/entry.js'
@@ -21,10 +23,13 @@ async function makeDatabase(): Promise<{ dbPath: string; cleanup: () => void }> 
   return { dbPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
-function fakeRuntime(dispose: () => Promise<void>) {
+function fakeRuntime(
+  dispose: () => Promise<void>,
+  run: <A, E>(effect: Effect.Effect<A, E>) => Promise<A> = effect => Effect.runPromise(effect),
+) {
   return {
     queries: {} as LedgerMcpQueries,
-    run: <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect),
+    run,
     dispose,
   }
 }
@@ -252,36 +257,36 @@ describe('ledger MCP scoped process lifetime', () => {
     }
   })
 
-  it('stops when the parent disappears and removes its process handlers and poll timer', async () => {
+  it('stops when the parent disappears and removes its process handlers and owned poll fiber', async () => {
     let disposals = 0
     const output = waitForReady()
+    const clock = ManagedRuntime.make(TestClock.layer())
     const signalListeners = {
       sigint: process.listeners('SIGINT'),
       sigterm: process.listeners('SIGTERM'),
     }
-    const interval = vi.spyOn(globalThis, 'setInterval')
-    const clearTimer = vi.spyOn(globalThis, 'clearInterval')
     vi.spyOn(process, 'kill').mockImplementation(() => {
       throw Object.assign(new Error('parent is gone'), { code: 'ESRCH' })
     })
     const serving = serveHttp({ dbPath: 'unused', token: TOKEN }, async () =>
-      fakeRuntime(async () => void (disposals += 1)),
+      fakeRuntime(
+        async () => void (disposals += 1),
+        effect => clock.runPromise(effect),
+      ),
     )
 
     try {
       await output.ready
-      const checkParent = interval.mock.calls.at(-1)?.[0] as (() => void) | undefined
-      expect(checkParent).toBeDefined()
-      checkParent?.()
+      await clock.runPromise(TestClock.adjust(5_000))
       await serving
       expect(disposals).toBe(1)
       expect(process.listeners('SIGINT')).toEqual(signalListeners.sigint)
       expect(process.listeners('SIGTERM')).toEqual(signalListeners.sigterm)
-      expect(clearTimer).toHaveBeenCalledWith(interval.mock.results.at(-1)?.value)
     } finally {
       output.restore()
       if (disposals === 0) process.emit('SIGTERM')
       await serving
+      await clock.dispose()
     }
   })
 

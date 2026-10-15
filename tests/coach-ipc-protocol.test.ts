@@ -16,9 +16,56 @@ vi.mock('electron', () => ({
   },
 }))
 
-afterEach(() => handlers.clear())
+afterEach(() => {
+  handlers.clear()
+  vi.useRealTimers()
+})
 
 describe('Coach renderer protocol boundary', () => {
+  it('starts harness detection after the preserved startup delay', async () => {
+    vi.useFakeTimers()
+    const detect = vi.fn(async () => [])
+    const runtime = makeMainRuntime({ clientVersion: '4.2.1', appPath: '/app', onHarnessChange: () => {} }, { detect })
+    const ipc = registerAgentsIpc({
+      runtime,
+      dismissals: { dismiss: () => {} },
+      ledgerMcpServer: () => Effect.succeed(null),
+    })
+
+    try {
+      await vi.advanceTimersByTimeAsync(1499)
+      expect(detect).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(detect).toHaveBeenCalledOnce()
+    } finally {
+      await ipc.dispose()
+      await Effect.runPromise(runtime.disposeEffect)
+      vi.useRealTimers()
+    }
+  })
+
+  it('interrupts delayed harness startup when IPC is disposed before the app runtime', async () => {
+    vi.useFakeTimers()
+    const detect = vi.fn(async () => [])
+    const runtime = makeMainRuntime({ clientVersion: '4.2.1', appPath: '/app', onHarnessChange: () => {} }, { detect })
+    const ipc = registerAgentsIpc({
+      runtime,
+      dismissals: { dismiss: () => {} },
+      ledgerMcpServer: () => Effect.succeed(null),
+    })
+
+    try {
+      await vi.advanceTimersByTimeAsync(1499)
+      expect(detect).not.toHaveBeenCalled()
+      await ipc.dispose()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(detect).not.toHaveBeenCalled()
+    } finally {
+      await Effect.runPromise(runtime.disposeEffect)
+      vi.useRealTimers()
+    }
+  })
+
   it('bounds unexpected main-controller rejections in the real registered handlers', async () => {
     const privateError = new Error('private native details C:\\Users\\person\\config token=secret')
     const runtime = makeMainRuntime(

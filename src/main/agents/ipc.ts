@@ -1,4 +1,6 @@
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
 import { BrowserWindow, ipcMain } from 'electron'
 
@@ -272,16 +274,21 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
     return { ok: true }
   })
 
-  const startup = setTimeout(() => {
-    void mainRuntime.runPromise(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.start())).catch(() => {})
-  }, 1500)
-  startup.unref?.()
+  const startup = mainRuntime.runFork(
+    Effect.sleep(Duration.millis(1500)).pipe(
+      Effect.andThen(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.start())),
+      Effect.catchCause(() => Effect.void),
+    ),
+  )
   return {
     reset: async () => {
       await runner.reset()
     },
     dispose: async () => {
-      clearTimeout(startup)
+      // This boundary can run after MainRuntime has started closing, so the
+      // service-free fiber interrupt must not depend on that runtime.
+      // eslint-disable-next-line no-restricted-syntax
+      await Effect.runPromise(Fiber.interrupt(startup))
       await runner.dispose()
     },
   }
