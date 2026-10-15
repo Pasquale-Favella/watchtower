@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 
 import { Effect, Result, Schema, Stream } from 'effect'
 
-import type { Env } from '../../env.js'
+import { type AppPaths, type Env, overrideFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { captureScanPricing } from '../models.js'
 import { isScanAbortedError } from '../scan-control.js'
@@ -142,8 +142,8 @@ function timestampIso(value: unknown): string {
   return Number.isNaN(date.getTime()) ? '' : date.toISOString()
 }
 
-function kimicodeHomes(override?: string): string[] {
-  const explicit = override || process.env['KIMI_CODE_HOME']
+function kimicodeHomes(override?: string, paths?: AppPaths): string[] {
+  const explicit = override || overrideFor(paths, 'KIMI_CODE_HOME')
   if (explicit) return [resolve(explicit)]
   // Default stores. Beyond the CLI's own ~/.kimi-code, embedded runtimes keep
   // the same wire layout under their own home (Kimi desktop app, Kimi Code
@@ -460,13 +460,13 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
   }
 }
 
-export function createKimicodeProvider(homeOverride?: string): Provider {
+export function createKimicodeProvider(homeOverride?: string, paths?: AppPaths): Provider {
   const discoverEffect = Effect.fn('discoverKimicodeSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
     yield* checkScanAbort(context?.signal)
     const all: SessionSource[] = []
-    for (const home of kimicodeHomes(homeOverride)) {
+    for (const home of kimicodeHomes(homeOverride, paths)) {
       yield* checkScanAbort(context?.signal)
       all.push(...(yield* discoverSourcesEffect(home, context?.signal)))
     }
@@ -486,7 +486,7 @@ export function createKimicodeProvider(homeOverride?: string): Provider {
     },
 
     async probeRoots(): Promise<ProbeRoot[]> {
-      return kimicodeHomes(homeOverride).map(path => ({ path, label: 'Kimi Code home' }))
+      return kimicodeHomes(homeOverride, paths).map(path => ({ path, label: 'Kimi Code home' }))
     },
 
     discoverSessionsEffect(context?: ProviderScanContext): Effect.Effect<SessionSource[], Error, Env> {

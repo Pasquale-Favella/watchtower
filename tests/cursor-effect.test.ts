@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Stream } from 'effect'
+import { ConfigProvider, Effect, Stream } from 'effect'
+import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -15,6 +16,8 @@ const hooks = vi.hoisted(() => ({
   cached: null as unknown,
   cacheWrites: 0,
   cachedWrites: [] as unknown[][],
+  queries: [] as string[],
+  cacheTimeFloors: [] as string[],
   busyError: new Error('SQLITE_BUSY: database is locked'),
 }))
 
@@ -28,6 +31,7 @@ vi.mock('../src/main/pipeline/sqlite.js', () => ({
     hooks.onOpen?.()
     return {
       query: (sql: string) => {
+        hooks.queries.push(sql)
         if (sql.includes('COUNT(*)')) return [{ cnt: 2 }]
         if (sql.includes('composerData:')) return []
         if (sql.includes('agentKv:blob:')) return []
@@ -108,7 +112,10 @@ vi.mock('../src/main/pipeline/sqlite.js', () => ({
 vi.mock('../src/main/pipeline/cursor-cache.js', async () => {
   const { Effect } = await import('effect')
   return {
-    readCachedResultsEffect: () => Effect.succeed(hooks.cached),
+    readCachedResultsEffect: (_dbPath: string, timeFloor: string) => {
+      hooks.cacheTimeFloors.push(timeFloor)
+      return Effect.succeed(hooks.cached)
+    },
     writeCachedResultsEffect: (_dbPath: string, calls: unknown[]) =>
       Effect.sync(() => {
         hooks.cacheWrites++
@@ -118,7 +125,11 @@ vi.mock('../src/main/pipeline/cursor-cache.js', async () => {
 })
 
 import { Env } from '../src/main/env.js'
-import { clearCursorWorkspaceMapCache, createCursorProvider } from '../src/main/pipeline/providers/cursor.js'
+import {
+  clearCursorWorkspaceMapCache,
+  createCursorProvider,
+  getCursorTimeFloor,
+} from '../src/main/pipeline/providers/cursor.js'
 import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
 import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
 
@@ -146,11 +157,14 @@ beforeEach(() => {
   hooks.cached = null
   hooks.cacheWrites = 0
   hooks.cachedWrites = []
+  hooks.queries = []
+  hooks.cacheTimeFloors = []
   clearCursorWorkspaceMapCache()
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   clearCursorWorkspaceMapCache()
 })
 
@@ -162,6 +176,36 @@ describe('Cursor native Effect stream', () => {
     expect(hooks.closeCount).toBe(1)
     expect(hooks.cacheWrites).toBe(1)
     expect(hooks.cachedWrites[0]).toHaveLength(2)
+  })
+
+  it('reads WATCHTOWER_CURSOR_MAX_BUBBLES when the owned read runs', async () => {
+    const stream = nativeStream()
+
+    await Effect.runPromise(
+      Stream.runCollect(stream).pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromEnvRecord({ WATCHTOWER_CURSOR_MAX_BUBBLES: '1' }, { preserveEmptyStrings: true }),
+        ),
+      ),
+    )
+
+    expect(hooks.queries.some(sql => sql.includes('ROWID < ?'))).toBe(true)
+  })
+
+  it('captures the six-month SQL window from the Effect Clock when parsing starts', async () => {
+    const stream = nativeStream()
+    const nowMs = Date.parse('2020-10-15T12:30:00.000Z')
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(nowMs)
+        return yield* Stream.runCollect(stream)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+
+    expect(hooks.cacheTimeFloors).toEqual([getCursorTimeFloor(undefined, new Date(nowMs))])
+    expect(hooks.cacheTimeFloors[0]).toContain('2020-04')
   })
 
   it('closes its database when a consumer stops early', async () => {

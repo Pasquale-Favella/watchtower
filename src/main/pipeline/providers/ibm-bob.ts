@@ -2,6 +2,7 @@ import { Effect } from 'effect'
 import { homedir } from 'os'
 import { join } from 'path'
 
+import { type AppPaths, platformFor } from '../../env.js'
 import { getShortModelName } from '../models.js'
 import { captureScanPricing } from '../models.js'
 import type { DateRange } from '../types.js'
@@ -13,7 +14,7 @@ const DISPLAY_NAME = 'IBM Bob'
 const EXTENSION_ID = 'ibm.bob-code'
 const FALLBACK_MODEL = 'ibm-bob-auto'
 
-export function getIBMBobGlobalStorageDirs(): string[] {
+export function getIBMBobGlobalStorageDirs(paths?: AppPaths): string[] {
   const home = homedir()
   if (process.platform === 'darwin') {
     return [
@@ -22,22 +23,22 @@ export function getIBMBobGlobalStorageDirs(): string[] {
     ]
   }
   if (process.platform === 'win32') {
-    const appData = process.env['APPDATA'] ?? join(home, 'AppData', 'Roaming')
+    const appData = platformFor(paths).appData ?? join(home, 'AppData', 'Roaming')
     return [
       join(appData, 'IBM Bob', 'User', 'globalStorage', EXTENSION_ID),
       join(appData, 'Bob-IDE', 'User', 'globalStorage', EXTENSION_ID),
     ]
   }
-  const configHome = process.env['XDG_CONFIG_HOME'] ?? join(home, '.config')
+  const configHome = platformFor(paths).xdgConfigHome ?? join(home, '.config')
   return [
     join(configHome, 'IBM Bob', 'User', 'globalStorage', EXTENSION_ID),
     join(configHome, 'Bob-IDE', 'User', 'globalStorage', EXTENSION_ID),
   ]
 }
 
-export function createIBMBobProvider(overrideDir?: string): Provider {
+export function createIBMBobProvider(overrideDir?: string, paths?: AppPaths): Provider {
   const discoverEffect = (context?: ProviderScanContext) => {
-    const dirs = overrideDir ? [overrideDir] : getIBMBobGlobalStorageDirs()
+    const dirs = overrideDir ? [overrideDir] : getIBMBobGlobalStorageDirs(paths)
     return discoverClineTaskCandidatesInBaseDirsEffect(dirs, PROVIDER_NAME, DISPLAY_NAME, context?.signal).pipe(
       Effect.map(candidates => candidates.map(candidate => candidate.source)),
     )

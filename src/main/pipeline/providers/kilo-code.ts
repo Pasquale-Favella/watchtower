@@ -2,6 +2,7 @@ import { Effect } from 'effect'
 import { homedir } from 'os'
 import { join } from 'path'
 
+import { type AppPaths, platformFor } from '../../env.js'
 import { captureScanPricing } from '../models.js'
 import type { DateRange } from '../types.js'
 import {
@@ -19,8 +20,8 @@ const PROVIDER_NAME = 'kilo-code'
 /// Exported as kilo-code's own declaration of which schema generations it may
 /// be read as. Deliberately 1.x only: naming no 2.x table here is the opt-out
 /// that keeps kilo-code outside OpenCode's migration (ADR 0006).
-export function getSqliteConfig(): SqliteProviderConfig {
-  const base = process.env['XDG_DATA_HOME'] ?? join(homedir(), '.local', 'share')
+export function getSqliteConfig(paths?: AppPaths): SqliteProviderConfig {
+  const base = platformFor(paths).xdgDataHome ?? join(homedir(), '.local', 'share')
   return {
     providerName: PROVIDER_NAME,
     displayName: 'KiloCode',
@@ -35,14 +36,14 @@ export function getSqliteConfig(): SqliteProviderConfig {
   }
 }
 
-export function createKiloCodeProvider(overrideDir?: string | string[]): Provider {
-  const sqliteConfig = getSqliteConfig()
+export function createKiloCodeProvider(overrideDir?: string | string[], paths?: AppPaths): Provider {
+  const sqliteConfig = () => getSqliteConfig(paths)
   const discoverEffect = (context?: ProviderScanContext) =>
     Effect.gen(function* () {
       const [candidates, dbSessions] = yield* Effect.all(
         [
           discoverClineTaskCandidatesEffect(EXTENSION_ID, PROVIDER_NAME, 'KiloCode', overrideDir, context?.signal),
-          discoverSqliteSessionsEffect(sqliteConfig, context),
+          discoverSqliteSessionsEffect(sqliteConfig(), context),
         ],
         { concurrency: 'unbounded' },
       )
@@ -78,7 +79,7 @@ export function createKiloCodeProvider(overrideDir?: string | string[]): Provide
     ): SessionParser {
       const pricing = context?.pricing ?? captureScanPricing()
       if (source.path.includes('.db:')) {
-        return createSqliteSessionParser(source, seenKeys, sqliteConfig, undefined, pricing, context)
+        return createSqliteSessionParser(source, seenKeys, sqliteConfig(), undefined, pricing, context)
       }
       return createClineParser(source, seenKeys, PROVIDER_NAME, 'cline-auto', pricing, context)
     },

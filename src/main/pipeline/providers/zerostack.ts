@@ -2,6 +2,7 @@ import { Effect, Result, Schema, Stream } from 'effect'
 import { homedir, platform } from 'os'
 import { basename, join } from 'path'
 
+import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { readSessionFileEffect } from '../fs-utils.js'
 import { captureScanPricing, getShortModelName } from '../models.js'
 import { checkScanAbort, readDirectoryOrEmpty } from '../scan-io.js'
@@ -66,13 +67,13 @@ type ZerostackDiscovery = Schema.Schema.Type<typeof zerostackDiscoverySchema>
 // ~/Library/Application Support, everything else to $XDG_DATA_HOME or
 // ~/.local/share, then a `zerostack` subdir. ZS_DATA_DIR overrides the whole
 // data dir (sessions live directly under it). Matches src/session/storage.rs.
-function defaultSessionsDir(): string {
-  const override = process.env['ZS_DATA_DIR']
+function defaultSessionsDir(paths?: AppPaths): string {
+  const override = overrideFor(paths, 'ZS_DATA_DIR')
   if (override) return join(override, 'sessions')
   const base =
     platform() === 'darwin'
       ? join(homedir(), 'Library', 'Application Support')
-      : (process.env['XDG_DATA_HOME'] ?? join(homedir(), '.local', 'share'))
+      : (platformFor(paths).xdgDataHome ?? join(homedir(), '.local', 'share'))
   return join(base, 'zerostack', 'sessions')
 }
 
@@ -179,12 +180,12 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
   }
 }
 
-export function createZerostackProvider(sessionsDir?: string): Provider {
-  const dir = sessionsDir ?? defaultSessionsDir()
+export function createZerostackProvider(sessionsDir?: string, paths?: AppPaths): Provider {
   const discoverEffect = Effect.fn('discoverZerostackSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
     yield* checkScanAbort(context?.signal)
+    const dir = sessionsDir ?? defaultSessionsDir(paths)
     const files = yield* readDirectoryOrEmpty(dir, context?.signal)
     const sources: SessionSource[] = []
     for (const file of files) {

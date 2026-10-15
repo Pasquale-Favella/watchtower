@@ -5,6 +5,7 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, join } from 'path'
 
+import { type AppPaths, overrideFor, readOptionalEnv } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing, getShortModelName } from '../models.js'
@@ -64,8 +65,8 @@ const toolNameMap: Record<string, string> = {
   SendDMail: 'DMail',
 }
 
-function getShareDir(overrideDir?: string): string {
-  return overrideDir ?? process.env['KIMI_SHARE_DIR'] ?? join(homedir(), '.kimi')
+function getShareDir(overrideDir?: string, paths?: AppPaths): string {
+  return overrideDir ?? overrideFor(paths, 'KIMI_SHARE_DIR') ?? join(homedir(), '.kimi')
 }
 
 function md5(text: string): string {
@@ -166,9 +167,10 @@ function parseModelIdForKey(configToml: string, modelKey: string): string | null
 
 const getConfiguredModel = Effect.fnUntraced(function* (
   shareDir: string,
+  envModelValue: string | undefined,
   signal?: AbortSignal,
 ): Effect.fn.Return<string, Error> {
-  const envModel = process.env['KIMI_MODEL_NAME']?.trim()
+  const envModel = envModelValue?.trim()
   if (envModel) return envModel
 
   const raw = yield* scanIo(() => readFile(join(shareDir, 'config.toml'), 'utf-8'), signal).pipe(
@@ -379,7 +381,8 @@ function createParser(
     Error
   > {
     yield* checkScanAbort(signal)
-    const configuredModel = yield* getConfiguredModel(shareDir, signal)
+    const envModel = yield* readOptionalEnv('KIMI_MODEL_NAME')
+    const configuredModel = yield* getConfiguredModel(shareDir, envModel, signal)
     let currentUserMessage = ''
     let index = 0
     const tools = new Set<string>()
@@ -483,14 +486,14 @@ const readDirectories = Effect.fnUntraced(function* (
   )
 })
 
-export function createKimiProvider(overrideDir?: string): Provider {
-  const shareDir = getShareDir(overrideDir)
-  const sessionsDir = join(shareDir, 'sessions')
+export function createKimiProvider(overrideDir?: string, paths?: AppPaths): Provider {
   const discoverEffect = Effect.fn('discoverKimiSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
     const signal = context?.signal
     yield* checkScanAbort(signal)
+    const shareDir = getShareDir(overrideDir, paths)
+    const sessionsDir = join(shareDir, 'sessions')
     const sources: SessionSource[] = []
     const projectNames = yield* loadProjectNames(shareDir, signal)
     const workDirs = yield* readDirectories(sessionsDir, signal)
@@ -542,7 +545,7 @@ export function createKimiProvider(overrideDir?: string): Provider {
       _dateRange?: DateRange,
       context?: ProviderScanContext,
     ) {
-      return createParser(source, shareDir, seenKeys, context)
+      return createParser(source, getShareDir(overrideDir, paths), seenKeys, context)
     },
   }
 }

@@ -3,6 +3,7 @@ import { stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
+import { type AppPaths, overrideFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { MAX_SESSION_FILE_BYTES, readSessionLinesStream } from '../fs-utils.js'
@@ -75,8 +76,8 @@ const toolNameMap: Record<string, string> = {
   attempt_completion: 'Complete',
 }
 
-function getQwenProjectsDir(): string {
-  return process.env['QWEN_DATA_DIR'] ?? join(homedir(), '.qwen', 'projects')
+function getQwenProjectsDir(paths?: AppPaths): string {
+  return overrideFor(paths, 'QWEN_DATA_DIR') ?? join(homedir(), '.qwen', 'projects')
 }
 
 function projectNameFromDirName(dirName: string): string {
@@ -227,12 +228,12 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
   }
 }
 
-export function createQwenProvider(overrideDir?: string): Provider {
-  const projectsDir = overrideDir ?? getQwenProjectsDir()
+export function createQwenProvider(overrideDir?: string, paths?: AppPaths): Provider {
   const discoverEffect = Effect.fn('discoverQwenSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
     yield* checkScanAbort(context?.signal)
+    const projectsDir = overrideDir ?? getQwenProjectsDir(paths)
     const sources: SessionSource[] = []
     const projectDirs = yield* readDirectoryOrEmpty(projectsDir, context?.signal)
 

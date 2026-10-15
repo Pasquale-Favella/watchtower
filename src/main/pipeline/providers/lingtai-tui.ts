@@ -5,6 +5,7 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, delimiter, dirname, join, resolve } from 'path'
 
+import { type AppPaths, overrideFor } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing, getShortModelName } from '../models.js'
@@ -97,8 +98,8 @@ function getDefaultLingTaiHome(options: LingTaiProviderOptions): string {
   return options.defaultHomeOverride ?? join(homedir(), '.lingtai')
 }
 
-function getLingTaiGlobalDir(options: LingTaiProviderOptions): string {
-  return options.globalDirOverride ?? process.env['LINGTAI_TUI_GLOBAL_DIR'] ?? join(homedir(), '.lingtai-tui')
+function getLingTaiGlobalDir(options: LingTaiProviderOptions, paths?: AppPaths): string {
+  return options.globalDirOverride ?? overrideFor(paths, 'LINGTAI_TUI_GLOBAL_DIR') ?? join(homedir(), '.lingtai-tui')
 }
 
 function projectPrefixFromHome(lingtaiHome: string, defaultLingTaiHome: string): string | undefined {
@@ -229,18 +230,19 @@ function existingDirEffect(path: string, signal?: AbortSignal): Effect.Effect<st
 const getLingTaiHomesEffect = Effect.fnUntraced(function* (
   options: LingTaiProviderOptions,
   context?: ProviderScanContext,
+  paths?: AppPaths,
 ): Effect.fn.Return<LingTaiHome[], Error> {
   const signal = context?.signal
   yield* checkScanAbort(signal)
   const explicit = splitPathList(
-    options.lingtaiHomeOverride ?? process.env['LINGTAI_HOME'] ?? process.env['LINGTAI_TUI_HOME'],
+    options.lingtaiHomeOverride ?? overrideFor(paths, 'LINGTAI_HOME') ?? overrideFor(paths, 'LINGTAI_TUI_HOME'),
   )
   const defaultHome = getDefaultLingTaiHome(options)
   let candidates: string[]
   if (explicit.length > 0) {
     candidates = explicit
   } else {
-    const registeredPaths = yield* readRegisteredProjectPathsEffect(getLingTaiGlobalDir(options), signal)
+    const registeredPaths = yield* readRegisteredProjectPathsEffect(getLingTaiGlobalDir(options, paths), signal)
     candidates = [
       defaultHome,
       ...registeredPaths.map(project => join(project, '.lingtai')),
@@ -476,11 +478,11 @@ function createParser(source: SessionSource, context?: ProviderScanContext): Ses
   }
 }
 
-export function createLingTaiTuiProvider(options?: string | LingTaiProviderOptions): Provider {
+export function createLingTaiTuiProvider(options?: string | LingTaiProviderOptions, paths?: AppPaths): Provider {
   const providerOptions = normalizeOptions(options)
   const discoverEffect = (context?: ProviderScanContext) =>
     Effect.gen(function* () {
-      const homes = yield* getLingTaiHomesEffect(providerOptions, context)
+      const homes = yield* getLingTaiHomesEffect(providerOptions, context, paths)
       return yield* discoverLedgersEffect(homes, context?.signal)
     })
 

@@ -3,6 +3,7 @@ import { readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
+import { type AppPaths, overrideFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { MAX_SESSION_FILE_BYTES, MAX_STREAM_SESSION_FILE_BYTES, readSessionLinesStream } from '../fs-utils.js'
@@ -78,8 +79,8 @@ const decodeString = Schema.decodeUnknownResult(Schema.String)
 const decodeUnknownArray = Schema.decodeUnknownResult(Schema.Array(Schema.Unknown))
 const decodeContentBlock = Schema.decodeUnknownResult(contentBlockSchema)
 
-function getFactoryDir(): string {
-  return process.env['FACTORY_DIR'] ?? join(homedir(), '.factory')
+function getFactoryDir(paths?: AppPaths): string {
+  return overrideFor(paths, 'FACTORY_DIR') ?? join(homedir(), '.factory')
 }
 
 // Strip Droid-specific wrapper to get the model's display name.
@@ -373,13 +374,13 @@ function createParser(
   }
 }
 
-export function createDroidProvider(factoryDir?: string): Provider {
-  const base = factoryDir ?? getFactoryDir()
-  const sessionsDir = join(base, 'sessions')
+export function createDroidProvider(factoryDir?: string, paths?: AppPaths): Provider {
   const discoverEffect = Effect.fn('discoverDroidSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
     yield* checkScanAbort(context?.signal)
+    const base = factoryDir ?? getFactoryDir(paths)
+    const sessionsDir = join(base, 'sessions')
     return yield* discoverSessionsInDir(sessionsDir, base, context?.signal)
   })
 

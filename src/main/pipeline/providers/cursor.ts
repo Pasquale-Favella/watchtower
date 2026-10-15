@@ -1,12 +1,12 @@
 import * as fsPromises from 'node:fs/promises'
 
-import { Effect, Result, Schema, Stream } from 'effect'
+import { Clock, Effect, Result, Schema, Stream } from 'effect'
 import { existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
 import { parsedProviderCallSchema } from '../../../shared/schemas/providers.js'
-import type { AppPaths } from '../../env.js'
+import { type AppPaths, readOptionalEnv } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { readCachedResultsEffect, writeCachedResultsEffect } from '../cursor-cache.js'
 import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../file-errors.js'
@@ -20,8 +20,7 @@ import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, 
 /** Matches cli-date.ts "all" period cap (6 months). */
 const CURSOR_MAX_LOOKBACK_MONTHS = 6
 
-export function getCursorTimeFloor(dateRange?: DateRange): string {
-  const now = new Date()
+export function getCursorTimeFloor(dateRange?: DateRange, now = new Date()): string {
   const maxStart = new Date(now.getFullYear(), now.getMonth() - CURSOR_MAX_LOOKBACK_MONTHS, now.getDate())
   const start = dateRange?.start ?? maxStart
   const effective = start < maxStart ? maxStart : start
@@ -830,7 +829,8 @@ const readCursorFacts = Effect.fnUntraced(function* (
     if (count && Result.isSuccess(count)) total = count.success.cnt
   }
 
-  const maxBubbles = Number(process.env['WATCHTOWER_CURSOR_MAX_BUBBLES']) || 250_000
+  const maxBubblesRaw = yield* readOptionalEnv('WATCHTOWER_CURSOR_MAX_BUBBLES')
+  const maxBubbles = Number(maxBubblesRaw) || 250_000
   let bubbles: BubbleRow[]
   let skippedRows = 0
   let truncatedCount: number | null = null
@@ -1196,7 +1196,6 @@ function createParser(
   pricing = captureScanPricing(),
   signal?: AbortSignal,
 ): SessionParser {
-  const timeFloor = getCursorTimeFloor(dateRange)
   const { dbPath, workspaceTag } = decodeSourcePath(source.path)
   const workspacePath = workspaceFsPath(workspaceTag)
 
@@ -1205,6 +1204,7 @@ function createParser(
       Stream.unwrap(
         Effect.gen(function* () {
           yield* checkScanAbort(signal)
+          const timeFloor = getCursorTimeFloor(dateRange, new Date(yield* Clock.currentTimeMillis))
           if (!isSqliteAvailable()) {
             reportProviderIssue('cursor', 'sqlite-unavailable')
             return Stream.empty

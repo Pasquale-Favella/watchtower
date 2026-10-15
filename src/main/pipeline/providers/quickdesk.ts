@@ -4,6 +4,7 @@ import { basename, isAbsolute, join, resolve } from 'node:path'
 
 import { Cache, Context, Effect, Option, Result, Schema, Stream } from 'effect'
 
+import { type AppPaths, overrideFor } from '../../env.js'
 import { captureScanPricing } from '../models.js'
 import { isScanAbortedError } from '../scan-control.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
@@ -130,8 +131,8 @@ function databaseError(operation: QuickdeskDatabaseError['operation'], cause: un
   return new QuickdeskDatabaseError({ operation, cause: error, message: error.message })
 }
 
-function quickworkHome(override?: string): string {
-  return resolve(override || process.env['QUICKWORK_HOME'] || join(homedir(), '.quickwork'))
+function quickworkHome(override?: string, paths?: AppPaths): string {
+  return resolve(override || overrideFor(paths, 'QUICKWORK_HOME') || join(homedir(), '.quickwork'))
 }
 
 function recordOf(value: unknown): Record<string, unknown> | null {
@@ -159,8 +160,9 @@ function ordinaryFailureOr<A>(error: Error, fallback: A): Effect.Effect<A, Error
 const resolveProfileBases = Effect.fnUntraced(function* (
   quickworkHomeOverride?: string,
   signal?: AbortSignal,
+  paths?: AppPaths,
 ): Effect.fn.Return<ProfileBase[], Error> {
-  const root = quickworkHome(quickworkHomeOverride)
+  const root = quickworkHome(quickworkHomeOverride, paths)
   const profilesPath = join(root, 'profiles.json')
   const profilesContents = yield* scanIo(() => readFile(profilesPath, 'utf8'), signal).pipe(
     Effect.catch(error => ordinaryFailureOr(error, null as string | null)),
@@ -216,9 +218,10 @@ const metricsFiles = Effect.fnUntraced(function* (
 const discoverSources = Effect.fnUntraced(function* (
   quickworkHomeOverride?: string,
   signal?: AbortSignal,
+  paths?: AppPaths,
 ): Effect.fn.Return<SessionSource[], Error> {
   const sources: SessionSource[] = []
-  for (const base of yield* resolveProfileBases(quickworkHomeOverride, signal)) {
+  for (const base of yield* resolveProfileBases(quickworkHomeOverride, signal, paths)) {
     yield* checkScanAbort(signal)
     for (const metricsPath of yield* metricsFiles(base.path, signal)) {
       sources.push({
@@ -495,9 +498,10 @@ const allMetricSessionIds = Effect.fnUntraced(function* (
   quickworkHomeOverride: string | undefined,
   signal?: AbortSignal,
   readRecords?: (path: string) => Effect.Effect<MetricsRecord[], Error>,
+  paths?: AppPaths,
 ): Effect.fn.Return<Set<string>, Error> {
   const ids = new Set<string>()
-  for (const base of yield* resolveProfileBases(quickworkHomeOverride, signal)) {
+  for (const base of yield* resolveProfileBases(quickworkHomeOverride, signal, paths)) {
     for (const id of yield* metricSessionIds(base.path, signal, readRecords)) ids.add(id)
   }
   return ids
@@ -633,6 +637,7 @@ function createDatabaseParser(
   pricing: ScanPricing,
   quickworkHomeOverride?: string,
   signal?: AbortSignal,
+  paths?: AppPaths,
 ): SessionParser {
   const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
     Stream.unwrap(
@@ -641,8 +646,8 @@ function createDatabaseParser(
         const basePath = basePathFor(source)
         const snapshot = yield* scanData?.readSnapshot(basePath) ?? loadDatabaseSnapshot(basePath, signal)
         if (!snapshot.canEstimate) return Stream.empty
-        const meteredSessions = yield* scanData?.readMeteredSessions(quickworkHome(quickworkHomeOverride)) ??
-          allMetricSessionIds(quickworkHomeOverride, signal)
+        const meteredSessions = yield* scanData?.readMeteredSessions(quickworkHome(quickworkHomeOverride, paths)) ??
+          allMetricSessionIds(quickworkHomeOverride, signal, undefined, paths)
 
         return Stream.fromIterable(snapshot.sessions.values()).pipe(
           Stream.mapEffect(
@@ -698,12 +703,12 @@ function createDatabaseParser(
   }
 }
 
-export function createQuickdeskProvider(quickworkHomeOverride?: string): Provider {
+export function createQuickdeskProvider(quickworkHomeOverride?: string, paths?: AppPaths): Provider {
   const discoverEffect = Effect.fn('discoverQuickdeskSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
     yield* checkScanAbort(context?.signal)
-    const sources = yield* discoverSources(quickworkHomeOverride, context?.signal)
+    const sources = yield* discoverSources(quickworkHomeOverride, context?.signal, paths)
     yield* checkScanAbort(context?.signal)
     return sources
   })
@@ -725,7 +730,7 @@ export function createQuickdeskProvider(quickworkHomeOverride?: string): Provide
     async probeRoots(): Promise<ProbeRoot[]> {
       // Remove after Provider exposes an Effect-native probe-root hook.
       // eslint-disable-next-line no-restricted-syntax
-      return (await Effect.runPromise(resolveProfileBases(quickworkHomeOverride))).map(base => ({
+      return (await Effect.runPromise(resolveProfileBases(quickworkHomeOverride, undefined, paths))).map(base => ({
         path: base.path,
         label: base.profile,
       }))
@@ -746,7 +751,7 @@ export function createQuickdeskProvider(quickworkHomeOverride?: string): Provide
     ): SessionParser {
       const pricing = context?.pricing ?? captureScanPricing()
       return source.sourceId === 'sessions-db' || basename(source.path) === 'sessions.db'
-        ? createDatabaseParser(source, seenKeys, pricing, quickworkHomeOverride, context?.signal)
+        ? createDatabaseParser(source, seenKeys, pricing, quickworkHomeOverride, context?.signal, paths)
         : createMetricsParser(source, seenKeys, pricing, context?.signal)
     },
   }

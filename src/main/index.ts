@@ -1,5 +1,6 @@
 import { homedir } from 'node:os'
 
+import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron'
@@ -24,7 +25,7 @@ import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp
 import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
 import { saveSkill } from './application/save-skill.js'
 import { DbWorkerClient } from './db-worker/client.js'
-import { initAppPaths } from './env.js'
+import { initAppPaths, readAppPathsEffect } from './env.js'
 import { makeMainRuntime } from './main-runtime.js'
 import {
   closeOperationalLog,
@@ -471,15 +472,17 @@ app.whenReady().then(async () => {
   // The data plane boots first: the worker owns the ledger from here on —
   // requests simply queue on its port until its synchronous init finishes.
   const cacheDir = join(dataDir, 'cache')
-  // This isolate's own copy of the `AppPaths` startup snapshot, from the same
-  // value the worker gets below — so a sync discovery path reached from main
-  // resolves the same cache dir as the one reached from the worker. The env
-  // override still wins, exactly as it did before the snapshot existed: the
-  // snapshot is initialized with the value the reader would have resolved
-  // anyway, never with a value that shadows the documented override.
-  initAppPaths({ cacheDir: process.env['WATCHTOWER_CACHE_DIR'] ?? cacheDir })
+  // Capture the full sync-path snapshot once through this isolate's existing
+  // application runtime. Pass its resolved cache directory to the worker so
+  // both isolates use the same cache root.
+  const appPathSnapshot = await mainRuntime.runPromise(
+    readAppPathsEffect(cacheDir).pipe(
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ preserveEmptyStrings: true })),
+    ),
+  )
+  initAppPaths(appPathSnapshot)
   const db = new DbWorkerClient(
-    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir },
+    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir: appPathSnapshot.cacheDir },
     join(__dirname, 'db-worker.js'),
   )
   relayWorkerEvents(db)

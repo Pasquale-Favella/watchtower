@@ -3,6 +3,7 @@ import { readdir, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 
+import { type AppPaths, overrideFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { readSessionFileEffect, readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
@@ -131,9 +132,9 @@ type MetadataInput = Schema.Schema.Type<typeof metadataInputSchema>
 type ModelConfigInput = Schema.Schema.Type<typeof modelConfigInputSchema>
 type MessageInput = Schema.Schema.Type<typeof messageInputSchema>
 
-function getMistralVibeSessionsDir(override?: string): string {
+function getMistralVibeSessionsDir(override?: string, paths?: AppPaths): string {
   if (override) return override
-  const configuredHome = process.env['VIBE_HOME']
+  const configuredHome = overrideFor(paths, 'VIBE_HOME')
   const vibeHome = configuredHome ? expandHome(configuredHome) : join(homedir(), '.vibe')
   return join(vibeHome, 'logs', 'session')
 }
@@ -567,12 +568,12 @@ function createParser(
   }
 }
 
-export function createMistralVibeProvider(sessionsDir?: string): Provider {
-  const dir = getMistralVibeSessionsDir(sessionsDir)
+export function createMistralVibeProvider(sessionsDir?: string, paths?: AppPaths): Provider {
   const discoverEffect = Effect.fn('discoverMistralVibeSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
     yield* checkScanAbort(context?.signal)
+    const dir = getMistralVibeSessionsDir(sessionsDir, paths)
     const dirs = yield* discoverSessionDirsEffect(dir, context?.signal)
     const sources: SessionSource[] = []
     for (const sessionDir of dirs) {

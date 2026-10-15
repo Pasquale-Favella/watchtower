@@ -3,6 +3,7 @@ import { stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, join } from 'path'
 
+import { type AppPaths, overrideFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
 import { MAX_SESSION_FILE_BYTES, readSessionFileEffect, readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing, getShortModelName } from '../models.js'
@@ -45,8 +46,8 @@ const toolNameMap: Record<string, string> = {
   spawn_subagent: 'Agent',
 }
 
-function defaultSessionsDir(): string {
-  const home = process.env['GROK_HOME'] ?? join(homedir(), '.grok')
+function defaultSessionsDir(paths?: AppPaths): string {
+  const home = overrideFor(paths, 'GROK_HOME') ?? join(homedir(), '.grok')
   return join(home, 'sessions')
 }
 
@@ -367,12 +368,12 @@ const isDirectory = Effect.fnUntraced(function* (path: string, signal?: AbortSig
   )
 })
 
-export function createGrokProvider(sessionsDir?: string): Provider {
-  const dir = sessionsDir ?? defaultSessionsDir()
+export function createGrokProvider(sessionsDir?: string, paths?: AppPaths): Provider {
   const discoverEffect = Effect.fn('discoverGrokSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
     yield* checkScanAbort(context?.signal)
+    const dir = sessionsDir ?? defaultSessionsDir(paths)
     const sources: SessionSource[] = []
     const cwdDirs = yield* readDirectoryOrEmpty(dir, context?.signal)
     for (const cwdName of cwdDirs) {

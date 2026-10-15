@@ -3,6 +3,7 @@ import { readdir, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, join } from 'path'
 
+import { type AppPaths, overrideFor } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import { captureScanPricing, getShortModelName } from '../models.js'
@@ -176,8 +177,8 @@ const toolNameMap: Record<string, string> = {
   session_search: 'SessionSearch',
 }
 
-function getHermesHome(override?: string): string {
-  return override ?? process.env['HERMES_HOME'] ?? join(homedir(), '.hermes')
+function getHermesHome(override?: string, paths?: AppPaths): string {
+  return override ?? overrideFor(paths, 'HERMES_HOME') ?? join(homedir(), '.hermes')
 }
 
 function sanitizeProject(raw: string): string {
@@ -633,13 +634,13 @@ function createParser(
   }
 }
 
-export function createHermesProvider(hermesHomeOverride?: string): Provider {
-  const hermesHome = getHermesHome(hermesHomeOverride)
+export function createHermesProvider(hermesHomeOverride?: string, paths?: AppPaths): Provider {
   const discoverEffect = Effect.fn('discoverHermesSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
     yield* checkScanAbort(context?.signal)
     if (!isSqliteAvailable()) return []
+    const hermesHome = getHermesHome(hermesHomeOverride, paths)
     const dbs = yield* findStateDbs(hermesHome, context?.signal)
     const sessions: SessionSource[] = []
     for (const { dbPath, profile } of dbs) {
@@ -675,7 +676,7 @@ export function createHermesProvider(hermesHomeOverride?: string): Provider {
       _dateRange?: DateRange,
       context?: ProviderScanContext,
     ): SessionParser {
-      return createParser(source, seenKeys, hermesHome, context)
+      return createParser(source, seenKeys, getHermesHome(hermesHomeOverride, paths), context)
     },
   }
 }

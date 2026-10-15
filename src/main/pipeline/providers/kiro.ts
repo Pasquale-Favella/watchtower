@@ -4,6 +4,7 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, extname, join } from 'path'
 
+import { type AppPaths, overrideFor } from '../../env.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { MAX_SESSION_FILE_BYTES, readSessionFileEffect, readSessionLinesStream } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
@@ -1289,28 +1290,26 @@ export function createKiroProvider(
   workspaceStorageDirOverride?: string,
   cliSessionsDirOverride?: string,
   v2SessionsRootOverride?: string,
+  paths?: AppPaths,
 ): Provider {
   const configuredAgentDirs = getKiroAgentDir(agentDirOverride)
   const wsDir = getKiroWorkspaceStorageDir(workspaceStorageDirOverride)
-  // When overrides are provided (tests), don't scan real CLI sessions unless explicitly given
-  const cliDir =
+  const getCliDir = (): string =>
     cliSessionsDirOverride ??
     (agentDirOverride
       ? join(agentDirOverride, '..', 'cli-sessions')
-      : join(process.env['KIRO_HOME'] || join(homedir(), '.kiro'), 'sessions', 'cli'))
-  // v2 IDE sessions live under ~/.kiro/sessions/<hash>/sess_*/, a sibling of the
-  // CLI store (.../sessions/cli). Derive the root from cliDir ONLY when cliDir was
-  // itself explicit (default path or cliSessionsDirOverride). When only
-  // agentDirOverride is set (tests), the derived cliDir parent would point at an
-  // arbitrary directory (e.g. the system tmpdir) — scan nothing in that case.
-  const v2Root =
-    v2SessionsRootOverride ??
-    (cliSessionsDirOverride ? dirname(cliSessionsDirOverride) : agentDirOverride ? undefined : dirname(cliDir))
+      : join(overrideFor(paths, 'KIRO_HOME') || join(homedir(), '.kiro'), 'sessions', 'cli'))
 
   const discoverEffect = Effect.fn('discoverKiroSessions')(function* (
     context?: ProviderScanContext,
   ): Effect.fn.Return<SessionSource[], Error> {
     yield* checkScanAbort(context?.signal)
+    const cliDir = getCliDir()
+    // v2 IDE sessions live beside the CLI store. When only agentDirOverride is
+    // set (tests), its derived CLI path must not imply a v2 root.
+    const v2Root =
+      v2SessionsRootOverride ??
+      (cliSessionsDirOverride ? dirname(cliSessionsDirOverride) : agentDirOverride ? undefined : dirname(cliDir))
     let agentDirs = configuredAgentDirs
     if (!agentDirOverride && process.platform === 'linux') {
       const existing: string[] = []

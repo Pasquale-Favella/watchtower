@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Cause, Effect, Exit, Option, Stream } from 'effect'
+import { Cause, ConfigProvider, Effect, Exit, Option, Stream } from 'effect'
 import { mkdir, writeFile } from 'fs/promises'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -152,6 +152,23 @@ describe('Kimi Effect provider', () => {
 
     const result = await Effect.runPromise(discovery(createKimiProvider(root)))
     expect(result).toEqual([{ path: wirePath, project: 'unmapped-work-dir', provider: 'kimi' }])
+  })
+
+  it('reads KIMI_MODEL_NAME when the owned parser runs and trims its value', async () => {
+    const path = join(root, 'sessions', 'session-env-model', 'wire.jsonl')
+    await writeLines(path, [status({ message_id: 'env-model', usage: { input: 4, output: 2 } })])
+    const value = parser(path)
+
+    const calls = await Effect.runPromise(
+      Stream.runCollect(parserStream(value)).pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromEnvRecord({ KIMI_MODEL_NAME: '  kimi-from-env  ' }, { preserveEmptyStrings: true }),
+        ),
+      ),
+    )
+
+    expect([...calls].map(call => call.model)).toEqual(['kimi-from-env'])
   })
 
   it('parses legacy nested and flat wire records with hardcoded usage, tool, message, model, and timestamp output', async () => {

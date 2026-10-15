@@ -39,9 +39,10 @@ import { join } from 'path'
  *    parse paths (`createCodexProvider`, `getAgentTracesDbPath`,
  *    `getRegistryPath`, …) that Effect `Config` cannot reach without wrapping
  *    each in an Effect, so they read a module-global snapshot instead:
- *    `initAppPaths` captures it once at boot (db-worker entry from
- *    `init.cacheDir`; the main isolate from the same `join(dataDir, 'cache')`
- *    it hands the worker) and `appPaths()` is the single sync reader.
+ *    `initAppPaths` captures it once at boot through Effect Config (db-worker
+ *    entry from `init.cacheDir`; the main isolate from the same
+ *    `join(dataDir, 'cache')` it hands the worker) and `appPaths()` is the
+ *    single sync reader.
  *
  * Persisted settings stay in the ledger's `LedgerConfig` port — this file is
  * env-only by design (locked: #148 §5.2, restated in `docs/architecture.md`).
@@ -195,16 +196,9 @@ export interface AppPaths {
  * `resolveProviderOverrides` reads, sorted so a new var is added in one place
  * (and the sort is pinned by a test, so the list stays reviewable).
  *
- * A registered key is not a promise that its reader is threaded yet. Several
- * entries here (`CODEWHALE_HOME`, `HERMES_HOME`, `FACTORY_DIR`, `WARP_DB_PATH`,
- * `QWEN_DATA_DIR`, `QUICKWORK_HOME`, `KIMI_CODE_HOME`, the three `LINGTAI_*`)
- * were added because the session-cache env fingerprint names them, and each one
- * still has a live direct `process.env` read in its provider
- * (`providers/codewhale.ts`, `hermes.ts`, `droid.ts`, `warp.ts`, `qwen.ts`,
- * `quickdesk.ts`, `kimicode.ts`, `lingtai-tui.ts`). Those readers migrate one
- * slice at a time, so an unthreaded key is a MIGRATION IN PROGRESS, not a
- * mistake: registering the var is what lets the fingerprint answer from the
- * snapshot instead of from a second inventory.
+ * Registered keys are read through snapshot-backed provider seams. Keeping the
+ * exhaustive list here lets the fingerprint and provider readers share one
+ * source of truth.
  *
  * The list is per-provider DISCOVERY overrides, so it carries override-shaped
  * vars only. `APPDATA` / `LOCALAPPDATA` / `XDG_CONFIG_HOME` / `XDG_DATA_HOME`
@@ -222,8 +216,11 @@ export const PROVIDER_ENV_KEYS = [
   'CRUSH_GLOBAL_DATA',
   'FACTORY_DIR',
   'GOOSE_PATH_ROOT',
+  'GROK_HOME',
   'HERMES_HOME',
   'KIMI_CODE_HOME',
+  'KIMI_SHARE_DIR',
+  'KIRO_HOME',
   'LINGTAI_HOME',
   'LINGTAI_TUI_GLOBAL_DIR',
   'LINGTAI_TUI_HOME',
@@ -232,6 +229,7 @@ export const PROVIDER_ENV_KEYS = [
   'OPENCODE_DB_PREFIX',
   'QUICKWORK_HOME',
   'QWEN_DATA_DIR',
+  'VIBE_HOME',
   'WARP_DB_PATH',
   'WATCHTOWER_COPILOT_DISABLE_OTEL',
   'WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR',
@@ -245,6 +243,7 @@ export const PROVIDER_ENV_KEYS = [
   'WATCHTOWER_OPEN_DESIGN_DIR',
   'WATCHTOWER_PROGRESS',
   'WATCHTOWER_VERBOSE',
+  'ZS_DATA_DIR',
 ] as const
 
 /**
@@ -269,25 +268,16 @@ export type ProviderEnvKey = (typeof PROVIDER_ENV_KEYS)[number]
  * comment. Anything listed here must resolve through `overrideFor` /
  * `platformFor` / a snapshot FIELD, never a bare read.
  *
- * An entry is therefore a REGISTERED key whose reader is not threaded YET: the
- * value the seam reads is the ambient one (identical to what the snapshot would
- * report), so the list is the work-order for the seam rollout and not a defect.
- * `tests/env.test.ts` walks it and fails if a listed site is no longer a direct
- * read, so a migrated seam cannot leave a stale entry behind.
+ * This inventory is intentionally empty after the provider-home migration.
+ * `tests/env.test.ts` asserts it stays empty and scans provider sources for
+ * direct reads of registered keys.
  *
  * `providers/opencode-family-sqlite.ts`'s `WATCHTOWER_VERBOSE` read left this
  * list when its notice moved onto the `paths` seam (the last of the
  * `models.ts`-family verbose gates to migrate). `WATCHTOWER_VERBOSE` itself stays
  * a key — the gate is read, so it is threaded; the direct read is what left.
  */
-export const REMAINING_DIRECT_ENV_READS: Readonly<Record<string, readonly string[]>> = {
-  'providers/droid.ts': ['FACTORY_DIR'],
-  'providers/hermes.ts': ['HERMES_HOME'],
-  'providers/kimicode.ts': ['KIMI_CODE_HOME'],
-  'providers/lingtai-tui.ts': ['LINGTAI_HOME', 'LINGTAI_TUI_GLOBAL_DIR', 'LINGTAI_TUI_HOME'],
-  'providers/quickdesk.ts': ['QUICKWORK_HOME'],
-  'providers/qwen.ts': ['QWEN_DATA_DIR'],
-}
+export const REMAINING_DIRECT_ENV_READS: Readonly<Record<string, readonly string[]>> = {}
 
 export type ProviderOverrides = Readonly<Partial<Record<ProviderEnvKey, string>>>
 
@@ -404,8 +394,11 @@ export const ENV_VAR_SOURCES = {
   CRUSH_GLOBAL_DATA: { kind: 'override' },
   FACTORY_DIR: { kind: 'override' },
   GOOSE_PATH_ROOT: { kind: 'override' },
+  GROK_HOME: { kind: 'override' },
   HERMES_HOME: { kind: 'override' },
   KIMI_CODE_HOME: { kind: 'override' },
+  KIMI_SHARE_DIR: { kind: 'override' },
+  KIRO_HOME: { kind: 'override' },
   LINGTAI_HOME: { kind: 'override' },
   LINGTAI_TUI_GLOBAL_DIR: { kind: 'override' },
   LINGTAI_TUI_HOME: { kind: 'override' },
@@ -415,6 +408,7 @@ export const ENV_VAR_SOURCES = {
   OPENCODE_DB_PREFIX: { kind: 'override' },
   QUICKWORK_HOME: { kind: 'override' },
   QWEN_DATA_DIR: { kind: 'override' },
+  VIBE_HOME: { kind: 'override' },
   WARP_DB_PATH: { kind: 'override' },
   WATCHTOWER_CACHE_DIR: { kind: 'field', field: 'cacheDir' },
   WATCHTOWER_COPILOT_DISABLE_OTEL: { kind: 'override' },
@@ -431,6 +425,7 @@ export const ENV_VAR_SOURCES = {
   WATCHTOWER_VERBOSE: { kind: 'override' },
   XDG_CONFIG_HOME: { kind: 'platform', field: 'xdgConfigHome' },
   XDG_DATA_HOME: { kind: 'platform', field: 'xdgDataHome' },
+  ZS_DATA_DIR: { kind: 'override' },
 } as const satisfies Readonly<Record<ProviderEnvKey, EnvVarSource>> &
   Readonly<Record<PlatformEnvVar, { kind: 'platform'; field: PlatformPathsField }>> &
   Readonly<Record<FieldEnvVar, { kind: 'field'; field: SnapshotFieldName }>>
@@ -515,19 +510,9 @@ export function resolvePlatformPaths(read: EnvReader): PlatformPaths {
 
 // ── App-paths startup snapshot (§5.2 env-only Config, sync discovery seams) ──
 //
-// The ~25 sync provider-home / platform-path readers (session-cache,
-// codex-cache, cache-refresh-lock, models pricing cache, antigravity, and the
-// per-provider `create*Provider` / `get*Dir` paths) sit on sync discovery paths
-// Effect Config cannot reach, so their values travel as a startup-immutable
-// snapshot rather than `Env` service fields: `initAppPaths` captures them once
-// at boot and `appPaths()` reads the whole record.
-//
-// `appPaths()` is the SEAM the per-provider readers migrate onto one slice at a
-// time — it is not yet the single sync reader: `resolveCacheDir()` still serves
-// the five `cacheDir` callers, and the per-provider `?? process.env` lines are
-// untouched until their own slice lands (see the named removal condition
-// below). Each migration replaces one `process.env` read with the snapshot
-// value it would have read anyway.
+// The sync provider-home / platform-path readers sit on discovery paths, so
+// Effect Config captures their inputs once at each composition root and
+// `appPaths()` exposes that startup-immutable snapshot to synchronous seams.
 //
 // Precedence, per field: (1) the explicitly initialized snapshot, (2) the
 // `process.env` value the seam would have read anyway — kept so every existing
@@ -542,33 +527,39 @@ export function resolvePlatformPaths(read: EnvReader): PlatformPaths {
 // override, else `join(dataDir, 'cache')`), the worker initializes from
 // `init.cacheDir`.
 //
-// Named removal condition: the `process.env` fallbacks below delete when every
-// reader in every isolate is snapshot-initialized AND the env-mutating tests
-// migrate to `initAppPaths` (later slice).
-//
-// `platform` and `overrides` are read from the ambient env through their pure
-// resolvers rather than threaded from boot: in one process the ambient env at
-// read time IS what the reader saw before, so copying it at boot would add a
-// second copy to keep in sync for no behavioral difference. The snapshot field
-// is what lets a TEST inject a value (`initAppPaths({ overrides })`) instead of
-// mutating `process.env`, and it is the slot a future boot-time pin would use.
+// Tests may still initialize partial records to exercise compatibility
+// fallback behavior; both production roots initialize all fields. Remove the
+// fallback once env-mutating direct-provider tests initialize full snapshots.
 let appPathsSnapshot: Partial<AppPaths> | null = null
 
 /**
- * Boot-time snapshot init. REPLACES the record wholesale, so a field this call
- * omits falls back to its `process.env` value (that is how a test re-inits with
- * one field and keeps the rest honest).
+ * Boot-time snapshot init. REPLACES the record wholesale. Partial records are
+ * retained as a test seam; production roots provide every field.
  *
- * ORDERING CONSTRAINT: module bodies evaluate before any importer's body, so a
- * MODULE-LEVEL singleton that captured `appPaths()` at import time
- * (`providers/codex.ts:codex`) holds the value from BEFORE this call. Every
- * other seam resolves lazily inside the call, so it sees the record. A new
- * pinned field that a module-level singleton reads must therefore either make
- * that singleton lazy or be initialized before the provider registry loads.
+ * Provider singletons resolve this snapshot lazily when discovery runs, so the
+ * registry can be imported before startup without freezing pre-boot values.
  */
 export function initAppPaths(input: { cacheDir: string } & Partial<Omit<AppPaths, 'cacheDir'>>): void {
   appPathsSnapshot = { ...input }
 }
+
+/** Capture all path-related env inputs through Effect Config at a composition
+ * root. The root supplies its resolved cache fallback; an explicit
+ * WATCHTOWER_CACHE_DIR keeps its existing `??` precedence. */
+export const readAppPathsEffect = Effect.fnUntraced(function* (defaultCacheDir: string): Effect.fn.Return<AppPaths> {
+  const values: Partial<Record<SnapshotEnvVar, string>> = {}
+  for (const name of SNAPSHOT_ENV_VARS) values[name] = yield* readOptionalEnv(name)
+  const suppressCacheWrites = yield* readOptionalEnv('WATCHTOWER_SUPPRESS_CACHE_WRITES')
+
+  const read: EnvReader = name => values[name as SnapshotEnvVar]
+  return {
+    cacheDir: values['WATCHTOWER_CACHE_DIR'] ?? defaultCacheDir,
+    codexHome: resolveCodexHome(values['CODEX_HOME']),
+    suppressCacheWrites: resolveCursorCacheSuppressWrites(suppressCacheWrites),
+    platform: resolvePlatformPaths(read),
+    overrides: resolveProviderOverrides(read),
+  }
+})
 
 const readProcessEnv: EnvReader = name => process.env[name]
 
@@ -594,7 +585,8 @@ export function appPaths(): AppPaths {
   }
 }
 
-function readOptionalEnv(name: string): Effect.Effect<string | undefined, never> {
+/** Read a scalar env value at the point an owned Effect operation runs. */
+export function readOptionalEnv(name: string): Effect.Effect<string | undefined, never> {
   return Config.option(Config.String(name)).pipe(
     Effect.map(Option.getOrUndefined),
     Effect.orElseSucceed(() => undefined),
