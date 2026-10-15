@@ -1,4 +1,5 @@
 import { Effect, Fiber } from 'effect'
+import * as TestClock from 'effect/testing/TestClock'
 import { mkdtemp, readFile, rm, stat, unlink, utimes, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -80,6 +81,57 @@ describe('cache refresh lock Effect', () => {
     if (result.outcome !== 'acquired') return
     expect((await stat(lockPath)).mtimeMs).toBeGreaterThan(staleTime.getTime())
     await Effect.runPromise(result.handle.releaseEffect)
+  })
+
+  it('uses the Effect Clock for default wall and monotonic lock decisions', async () => {
+    const lockPath = join(cacheDir, 'session-refresh.lock')
+    const actualNow = Date.now()
+    const staleTime = new Date(actualNow)
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid + 1, token: 'stale', at: actualNow }))
+    await utimes(lockPath, staleTime, staleTime)
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(actualNow + 2 * 60 * 60 * 1000)
+        const waiter = yield* Effect.forkChild(
+          acquireCacheRefreshLockEffect({ cacheDir, staleMs: 60 * 60 * 1000, waitMs: 20, pollMs: 5 }),
+        )
+        yield* Effect.yieldNow
+        yield* TestClock.adjust('20 millis')
+        return yield* Fiber.join(waiter)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+
+    expect(result.outcome).toBe('acquired')
+    if (result.outcome === 'acquired') await Effect.runPromise(result.handle.releaseEffect)
+  })
+
+  it('times out on the native monotonic deadline without changing a fresh lock', async () => {
+    const lockPath = join(cacheDir, 'session-refresh.lock')
+    const token = 'other'
+    const actualNow = Date.now()
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid + 1, token, at: actualNow }))
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        // Move wall time behind the lock record. The fresh lock must remain
+        // fresh while the wait deadline advances on the monotonic clock.
+        yield* TestClock.setTime(actualNow - 60_000)
+        const waiter = yield* Effect.forkChild(
+          acquireCacheRefreshLockEffect({ cacheDir, staleMs: 60_000, waitMs: 20, pollMs: 5 }),
+        )
+        // Let async filesystem observations settle between clock advances so
+        // each poll's native Effect.sleep is registered before its next tick.
+        for (let tick = 0; tick < 8; tick++) {
+          yield* Effect.promise(() => new Promise(resolve => setTimeout(resolve, 10)))
+          yield* TestClock.adjust('5 millis')
+        }
+        return yield* Fiber.join(waiter)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+
+    expect(result.outcome).toBe('timed-out')
+    expect(JSON.parse(await readFile(lockPath, 'utf-8')).token).toBe(token)
   })
 
   it('times out without changing a fresh lock', async () => {

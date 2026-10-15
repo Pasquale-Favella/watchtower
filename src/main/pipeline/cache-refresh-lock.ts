@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto'
-import { Effect, Fiber, Schema, Semaphore } from 'effect'
+import { Clock, Effect, Fiber, Schema, Semaphore } from 'effect'
 import { mkdir, open, readFile, stat, unlink, utimes, writeFile } from 'fs/promises'
 import { join } from 'path'
 
@@ -46,11 +46,6 @@ export type RefreshLockOutcome =
   | { outcome: 'unavailable' }
 
 export type RefreshLockResult = RefreshLockOutcome
-
-const defaultClock: RefreshLockClock = {
-  monotonicNow: () => Number(process.hrtime.bigint()) / 1_000_000,
-  wallNow: () => Date.now(),
-}
 
 const singleFlight = Semaphore.makeUnsafe(1)
 
@@ -173,7 +168,13 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
   let acquiredHandle: RefreshLockHandle | undefined
   const acquire: Effect.Effect<RefreshLockOutcome, Error> = Effect.gen(function* () {
     const cacheDir = options.cacheDir ?? resolveCacheDir()
-    const clock = options.clock ?? defaultClock
+    const injectedClock = options.clock
+    const wallNow = (): Effect.Effect<number> =>
+      injectedClock ? Effect.sync(() => injectedClock.wallNow()) : Clock.currentTimeMillis
+    const monotonicNow = (): Effect.Effect<number> =>
+      injectedClock
+        ? Effect.sync(() => injectedClock.monotonicNow())
+        : Clock.monotonicTimeNanos.pipe(Effect.map(now => Number(now) / 1_000_000))
     const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
     const staleMs = options.staleMs ?? DEFAULT_STALE_MS
     const waitMs = options.waitMs ?? DEFAULT_WAIT_MS
@@ -181,24 +182,27 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
     const lockPath = join(cacheDir, LOCK_FILE)
     const takeoverPath = join(cacheDir, TAKEOVER_FILE)
     const token = randomBytes(16).toString('hex')
-    const body = (): string => JSON.stringify({ pid: process.pid, token, at: clock.wallNow() })
+    const body = (): Effect.Effect<string> =>
+      wallNow().pipe(Effect.map(at => JSON.stringify({ pid: process.pid, token, at })))
+    const createLock = (path: string): Effect.Effect<MutationResult, Error> =>
+      body().pipe(Effect.flatMap(value => createExclusive(path, value)))
 
     const acquireTakeoverGuard = (): Effect.Effect<MutationResult, Error> =>
       Effect.gen(function* () {
-        const created = yield* createExclusive(takeoverPath, body())
+        const created = yield* createLock(takeoverPath)
         if (created !== 'exists') return created
         const staleGuard = yield* observe(takeoverPath, options)
-        if (staleGuard === 'missing') return yield* createExclusive(takeoverPath, body())
+        if (staleGuard === 'missing') return yield* createLock(takeoverPath)
         if (staleGuard === 'changing') return 'exists'
         if (staleGuard === 'unavailable') return 'unavailable'
-        if (Math.max(0, clock.wallNow() - staleGuard.mtimeMs) <= staleMs) return 'exists'
+        if (Math.max(0, (yield* wallNow()) - staleGuard.mtimeMs) <= staleMs) return 'exists'
         const reverified = yield* observe(takeoverPath, options)
-        if (reverified === 'missing') return yield* createExclusive(takeoverPath, body())
+        if (reverified === 'missing') return yield* createLock(takeoverPath)
         if (reverified === 'changing') return 'exists'
         if (reverified === 'unavailable') return 'unavailable'
         if (!sameObservation(staleGuard, reverified)) return 'exists'
         if (!(yield* retryWindowsMutation(() => unlink(takeoverPath), options))) return 'unavailable'
-        return yield* createExclusive(takeoverPath, body())
+        return yield* createLock(takeoverPath)
       })
 
     const withTakeoverGuard = <A>(operation: () => Effect.Effect<A, Error>): Effect.Effect<GuardedResult<A>, Error> =>
@@ -280,8 +284,9 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
               current.record.token !== token
             )
               return
-            yield* io(() => writeFile(lockPath, body(), { encoding: 'utf-8' }))
-            const now = new Date(clock.wallNow())
+            const lockBody = yield* body()
+            yield* io(() => writeFile(lockPath, lockBody, { encoding: 'utf-8' }))
+            const now = new Date(yield* wallNow())
             yield* io(() => utimes(lockPath, now, now))
           }),
         ),
@@ -309,7 +314,7 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
 
     const tryCreateOwner = (): Effect.Effect<RefreshLockOutcome | null, Error> =>
       Effect.uninterruptible(
-        createExclusive(lockPath, body()).pipe(
+        createLock(lockPath).pipe(
           Effect.flatMap((result): Effect.Effect<RefreshLockOutcome | null, Error> => {
             if (result === 'created')
               return handle().pipe(Effect.map(handle => ({ outcome: 'acquired' as const, handle })))
@@ -328,10 +333,10 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
             const current = yield* observe(lockPath, options)
             if (current === 'unavailable') return { outcome: 'unavailable' as const }
             if (current === 'changing' || current === 'missing' || !sameObservation(stale, current)) return null
-            if (Math.max(0, clock.wallNow() - current.mtimeMs) <= staleMs) return null
+            if (Math.max(0, (yield* wallNow()) - current.mtimeMs) <= staleMs) return null
             if (!(yield* retryWindowsMutation(() => unlink(lockPath), options)))
               return { outcome: 'unavailable' as const }
-            const successor = yield* createExclusive(lockPath, body())
+            const successor = yield* createLock(lockPath)
             if (successor === 'created') {
               const owned = yield* handle()
               return { outcome: 'acquired' as const, handle: owned }
@@ -346,8 +351,8 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
     const immediate = yield* tryCreateOwner()
     if (immediate) return immediate
 
-    const deadline = clock.monotonicNow() + waitMs
-    while (clock.monotonicNow() < deadline) {
+    const deadline = (yield* monotonicNow()) + waitMs
+    while ((yield* monotonicNow()) < deadline) {
       const observation = yield* observe(lockPath, options)
       if (observation === 'unavailable') return { outcome: 'unavailable' as const }
       if (observation === 'changing') {
@@ -365,7 +370,7 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
         yield* sleepFor(options, pollMs)
         continue
       }
-      const age = Math.max(0, clock.wallNow() - observation.mtimeMs)
+      const age = Math.max(0, (yield* wallNow()) - observation.mtimeMs)
       if (age > staleMs) {
         const takeover = yield* tryTakeover(observation)
         if (takeover) return takeover
