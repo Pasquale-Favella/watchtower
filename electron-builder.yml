@@ -45,11 +45,15 @@ mac:
   # config validation for every target.
   x64ArchFiles: "**/node_modules/{@openai/codex-darwin-*,@anthropic-ai/claude-agent-sdk-darwin-*}/**"
   category: public.app-category.developer-tools
-  # Sign-ready (ADR 0015): electron-builder signs with CSC_LINK/
-  # CSC_KEY_PASSWORD when present and skips signing when absent.
-  # Notarization is NOT wired: electron-builder requires `notarize: true`
-  # (plus APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID secrets) to
-  # notarize — env vars alone are ignored. Flip it on when Apple creds exist.
+  # Free ad-hoc signing (ADR 0015): no paid Apple Developer ID, so no
+  # notarization. Packaging edits the Electron bundle and breaks its original
+  # signature, which Apple Silicon reports as "damaged and can't be opened".
+  # Ad-hoc ("-") re-seals the bundle so Gatekeeper shows the bypassable
+  # "unidentified developer" prompt instead. Hardened runtime only matters for
+  # notarization and trips library validation on ad-hoc builds, so it is off.
+  identity: "-"
+  hardenedRuntime: false
+  notarize: false
 linux:
   target:
     - AppImage
