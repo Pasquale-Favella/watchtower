@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -62,6 +62,19 @@ function runLoadPricing(fetchImpl: typeof fetch, timeoutMs?: number, ttlMs: numb
   )
 }
 
+function runLoadPricingAt(fetchImpl: typeof fetch, ttlMs: number, nowMs: number): Promise<void> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs)
+      yield* loadPricingEffect()
+    }).pipe(
+      Effect.provide(TestClock.layer()),
+      Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+      Effect.provide(pricingEnv(ttlMs)),
+    ),
+  )
+}
+
 function expectSnapshotMerged(): void {
   expect(getModelCosts('gpt-4o')).not.toBeNull()
 }
@@ -118,6 +131,36 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
       inputCostPerToken: 0.000005,
     })
     expectSnapshotMerged()
+  })
+
+  it('uses the Effect Clock for pricing cache expiry and write timestamps', async () => {
+    const dir = freshCacheDir()
+    const nowMs = Date.parse('2026-10-14T12:00:00.000Z')
+    const cachedCosts = {
+      inputCostPerToken: 0.000005,
+      outputCostPerToken: 0.00001,
+      cacheWriteCostPerToken: 0,
+      cacheReadCostPerToken: 0,
+      fastMultiplier: 1,
+    }
+    const cachePath = join(dir, 'litellm-pricing.json')
+    writeFileSync(cachePath, JSON.stringify({ timestamp: nowMs - 50, data: { 'clock-cached-model': cachedCosts } }))
+    let calls = 0
+    const fetchImpl = (async () => {
+      calls += 1
+      return okResponse({
+        'clock-fetched-model': { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+      })
+    }) as unknown as typeof fetch
+
+    await runLoadPricingAt(fetchImpl, 100, nowMs)
+    expect(calls).toBe(0)
+    expect(getModelCosts('clock-cached-model')).not.toBeNull()
+
+    writeFileSync(cachePath, JSON.stringify({ timestamp: nowMs - 101, data: { 'clock-cached-model': cachedCosts } }))
+    await runLoadPricingAt(fetchImpl, 100, nowMs)
+    expect(calls).toBe(1)
+    expect(JSON.parse(readFileSync(cachePath, 'utf8'))).toMatchObject({ timestamp: nowMs })
   })
 
   it('fetch failure falls back to the snapshot and never fails', async () => {

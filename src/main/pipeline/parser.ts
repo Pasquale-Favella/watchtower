@@ -1,4 +1,5 @@
 import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
@@ -3341,13 +3342,13 @@ export function createScanProgress(
   finish(): Effect.Effect<void>
 } {
   const show = !interactiveScanUI && total > 20 && process.stderr.isTTY === true
-  let lastWrite = 0
+  let lastWrite: number | null = null
   return {
     tick: Effect.fnUntraced(function* (done: number) {
       if (done % YIELD_EVERY === 0) yield* yieldToEventLoopEffect
       if (!show) return
-      const now = Date.now()
-      if (done !== total && now - lastWrite < 100) return
+      const now = yield* Clock.currentTimeMillis
+      if (done !== total && lastWrite !== null && now - lastWrite < 100) return
       lastWrite = now
       process.stderr.write(`\rwatchtower: ${label} ${done}/${total}…`)
     }),
@@ -3427,7 +3428,8 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
     // fingerprint or incrementally cache, so re-fetch every run with a synthetic
     // fingerprint (mtime=now so the date-range filter below never excludes it).
     if (provider.network && !readOnly) {
-      changedSources.push({ source, fp: { dev: 0, ino: 0, mtimeMs: Date.now(), sizeBytes: 0 }, verdict: 'modified' })
+      const nowMs = yield* Clock.currentTimeMillis
+      changedSources.push({ source, fp: { dev: 0, ino: 0, mtimeMs: nowMs, sizeBytes: 0 }, verdict: 'modified' })
       continue
     }
 
@@ -3670,7 +3672,8 @@ const parseProviderSourcesEffect = Effect.fnUntraced(function* (
   // 90-day age-out for durable providers: remove entries whose newest call is
   // older than 90 days so the cache doesn't grow unboundedly over time.
   if (!readOnly && provider.durableSources) {
-    const cutoffMs = Date.now() - 90 * 24 * 60 * 60 * 1000
+    const nowMs = yield* Clock.currentTimeMillis
+    const cutoffMs = nowMs - 90 * 24 * 60 * 60 * 1000
     for (const [cachedPath, cachedFile] of Object.entries(section.files)) {
       const newestTs = cachedFile.turns
         .flatMap(t => t.calls)
@@ -3898,8 +3901,7 @@ export function clearSessionCache(): void {
   sessionCache.clear()
 }
 
-function cachePut(key: string, data: ProjectSummary[]) {
-  const now = Date.now()
+function cachePut(key: string, data: ProjectSummary[], now: number): void {
   for (const [k, v] of sessionCache) {
     if (now - v.ts > CACHE_TTL_MS) sessionCache.delete(k)
   }
@@ -4362,7 +4364,10 @@ export const parseAllSessionsEffect = Effect.fnUntraced(
     const pricedDelta: DeltaHandler | undefined = onDelta ? delta => onDelta(delta, pricing) : undefined
     const key = cacheKey(dateRange, providerFilter)
     const cached = sessionCache.get(key)
-    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data
+    if (cached) {
+      const nowMs = yield* Clock.currentTimeMillis
+      if (nowMs - cached.ts < CACHE_TTL_MS) return cached.data
+    }
 
     let diskCache = yield* loadCacheEffect()
     yield* checkScanAbort(signal)
@@ -4562,13 +4567,14 @@ const runParseEffect = Effect.fnUntraced(function* (
   // so a run interrupted before the single end-of-parse save still leaves a warm
   // cache behind. saveCacheEffect is atomic (temp + rename) and clears `_dirty`, so this
   // never races the final save below.
-  let lastSaveAt = Date.now()
+  let lastSaveAt = yield* Clock.currentTimeMillis
   const saveProgress = Effect.fnUntraced(function* (): Effect.fn.Return<void, Error> {
     yield* checkScanAbort(signal)
     if (!isCold || readOnly) return
     if (!(diskCache as { _dirty?: boolean })._dirty) return
-    if (Date.now() - lastSaveAt < PROGRESS_SAVE_THROTTLE_MS) return
-    lastSaveAt = Date.now()
+    const nowMs = yield* Clock.currentTimeMillis
+    if (nowMs - lastSaveAt < PROGRESS_SAVE_THROTTLE_MS) return
+    lastSaveAt = nowMs
     yield* saveCacheEffect(diskCache).pipe(Effect.catch(() => checkScanAbort(signal)))
     yield* checkScanAbort(signal)
   })
@@ -4758,7 +4764,8 @@ const runParseEffect = Effect.fnUntraced(function* (
   yield* checkScanAbort(signal)
   correlateCrossProviderPrSessions(result)
   yield* checkScanAbort(signal)
-  cachePut(key, result)
+  const cachedAtMs = yield* Clock.currentTimeMillis
+  cachePut(key, result, cachedAtMs)
   sessionHydrationComplete = true
   return result
 })

@@ -1,8 +1,10 @@
+import { join } from 'node:path'
+
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Stream from 'effect/Stream'
-import { join } from 'node:path'
+import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -85,12 +87,12 @@ vi.mock('../src/main/pipeline/cache-refresh-lock.js', async () => {
   }
 })
 
+import { Env } from '../src/main/env.js'
+import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { captureScanPricing } from '../src/main/pipeline/models.js'
 import { clearSessionCache, parseAllSessions, parseAllSessionsEffect } from '../src/main/pipeline/parser.js'
 import type { Provider } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import { Env } from '../src/main/env.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import type { CachedFile, SessionCache } from '../src/shared/schemas/session-cache.js'
 
 const source = (provider: string, path: string) => ({ provider, path, project: 'test-project' })
@@ -190,6 +192,23 @@ describe('parser cooperative stop', () => {
   afterEach(() => {
     clearSessionCache()
     vi.unstubAllEnvs()
+  })
+
+  it('expires the in-memory session result from the Effect Clock', async () => {
+    hooks.cache = makeCache('test-provider', [])
+    hooks.discovered.mockResolvedValue([])
+    const program = Effect.gen(function* () {
+      yield* TestClock.setTime(1_000_000)
+      yield* parseAllSessionsEffect()
+      yield* TestClock.adjust(179_999)
+      yield* parseAllSessionsEffect()
+      yield* TestClock.adjust(1)
+      yield* parseAllSessionsEffect()
+    }).pipe(Effect.provide(TestClock.layer()))
+
+    await Effect.runPromise(withParserServices(program))
+
+    expect(hooks.discovered).toHaveBeenCalledTimes(2)
   })
 
   it('rethrows provider delta abort without turning the file into a failed cache result or starting the next file', async () => {
@@ -607,6 +626,79 @@ describe('parser cooperative stop', () => {
     ])
     expect(onDelta).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'test-provider', filePath: orphanPath, verdict: 'appended', durable: true }),
+      expect.anything(),
+    )
+  })
+
+  it('ages out durable cache entries using the Effect Clock before orphan re-emission', async () => {
+    const nowMs = Date.parse('2026-10-14T12:00:00.000Z')
+    const oldTimestamp = new Date(nowMs - 91 * 24 * 60 * 60 * 1000).toISOString()
+    const freshTimestamp = new Date(nowMs - 1_000).toISOString()
+    const path = '/test/durable-current.session'
+    const orphanPath = '/test/durable-aged-orphan.session'
+    const cache = makeCache('test-provider', [path, orphanPath])
+    const section = cache.providers['test-provider']
+    if (!section) throw new Error('test provider cache section was not created')
+    section.durable = true
+    const orphan = section.files[orphanPath]
+    if (!orphan) throw new Error('durable orphan cache entry was not created')
+    orphan.turns = [
+      {
+        timestamp: oldTimestamp,
+        sessionId: 'session-1',
+        userMessage: 'old cached usage',
+        calls: [
+          {
+            provider: 'test-provider',
+            model: 'test-model',
+            usage: {
+              inputTokens: 1,
+              outputTokens: 1,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens: 0,
+              cachedInputTokens: 0,
+              reasoningTokens: 0,
+              webSearchRequests: 0,
+              cacheCreationOneHourTokens: 0,
+            },
+            speed: 'standard',
+            timestamp: oldTimestamp,
+            tools: [],
+            bashCommands: [],
+            skills: [],
+            deduplicationKey: 'aged-orphan-call',
+            project: 'test-project',
+          },
+        ],
+      },
+    ]
+    hooks.cache = cache
+    hooks.discovered.mockResolvedValue([source('test-provider', path)])
+    hooks.fingerprint.mockResolvedValue({ dev: 2, ino: 2, mtimeMs: 2, sizeBytes: 2 })
+    hooks.getProvider.mockResolvedValue({
+      network: false,
+      durableSources: true,
+      createSessionParser: () => ({
+        parse: async function* () {
+          yield { ...parsedCall(), timestamp: freshTimestamp }
+        },
+        parseStream: () => Stream.make({ ...parsedCall(), timestamp: freshTimestamp }),
+      }),
+    })
+    const onDelta = vi.fn(() => Effect.void)
+
+    await Effect.runPromise(
+      withParserServices(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(nowMs)
+          return yield* parseAllSessionsEffect(undefined, undefined, onDelta)
+        }).pipe(Effect.provide(TestClock.layer())),
+      ),
+    )
+
+    expect(section.files[orphanPath]).toBeUndefined()
+    expect(onDelta).not.toHaveBeenCalledWith(
+      expect.objectContaining({ filePath: orphanPath, durable: true }),
       expect.anything(),
     )
   })
