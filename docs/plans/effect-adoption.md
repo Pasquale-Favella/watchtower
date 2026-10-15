@@ -769,31 +769,15 @@ surface unchanged — which is the correct shape for this product.
 
 ## 6. Current execution order
 
-The latest source correction is `5a8afc4`, following accepted checkpoint `bf3aa91`. The [target architecture](./effect-target-architecture.md)
-records structural gates, source evidence, and remaining product verification.
+The agreed backend Effect and owned Schema port is complete at frozen product source `210da5b`, including query operational-code correction `5a8afc4`. The [completion audit](../research/effect-adoption-assessment-2026-09-30.md#completion-audit-of-the-implemented-source-2026-10-15) maps original requirements to source and actual assertions. The [target architecture](./effect-target-architecture.md) retains the full execution record.
 
-- The main process owns the control plane; the db-worker owns the scan pipeline,
-  cadence, and single-writer SQLite connection. MCP queries use a separate,
-  read-only runtime.
-- Of the 23 owned-schema modules, 22 use Effect Schema and one UI-only module
-  uses plain TypeScript. No Watchtower-owned Zod contracts remain. Renderer
-  decoding is synchronous Schema validation; it has no Effect runtime, and the
-  existing renderer stores remain unchanged.
-- Backend composition and lifecycle use Effect. Native Logger, Metric, and
-  Tracer APIs write through the existing sanitized operational-log sink; the
-  worker forwards records through its existing event channel. Node's
-  synchronous SQLite and external Node, Electron, SDK, and Promise APIs remain
-  explicit leaves.
-- Windows runs in the e2e and release workflows. The default unit, lint, and
-  typecheck workflow remains Linux-only.
-- At `bf3aa91`, all ten local product gates pass with an explicit packaging
-  retry using the installed, version-matched Electron distribution after a
-  download EACCES. All CI jobs pass, including actual NSIS, DMG/ZIP, AppImage
-  and deb verification. The final query operational-code correction at
-  `5a8afc4` passes both reviews and 85 root regressions. Source-matched CI at
-  `210da5b` passes all jobs and artifact checks; the local run passes full units
-  but fails smoke and worker teardown timeouts. An unchanged diagnostic
-  reproduction is running; final local acceptance remains unproven.
+- Main owns the control plane; the worker owns one initialized scan/SQL graph and writer connection; MCP queries own a separate read-only runtime. Named application workflows compose ports, and pure calculations receive explicit inputs.
+- All 23 baseline modules have left owned Zod: 22 use Effect Schema and one UI-only module uses TypeScript. Renderer decoding is synchronous Schema validation without an Effect runtime; both stores still match `ce81593`.
+- Config, Clock, Logger, native Metric and Tracer have actual producers and explicit isolate/resource ownership. External Node, Electron, SDK and synchronous SQLite APIs retain their documented leaves.
+- All ten local gates pass across the retained initial run and unchanged complete product retry: 3,057 units with two skips, four Electron checks in 6.9 minutes, types/format/build/lint with zero errors, fresh Windows directory package and actual IPC/MCP. Source-matched CI passes every actual step, including NSIS, DMG/ZIP, AppImage and deb.
+- The first local smoke/worker teardown timeout remains recorded; the unchanged diagnostic and complete retry pass, without a cause or product fix claimed. Packaging uses the installed matching Electron distribution after download EACCES. Profiling remains stopped.
+
+Windows runs in e2e and artifact/release workflows; the default unit/lint/typecheck workflow remains Linux-only. Native boundaries do not promise bounded drainage of uncooperative Promises. Later documentation commits leave accepted product code unchanged. Issue #148 remains open; PR #147 retains Closes #146.
 
 ### Historical execution queue (superseded)
 
