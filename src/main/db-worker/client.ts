@@ -1,9 +1,11 @@
 import { Worker } from 'node:worker_threads'
 
 import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 
@@ -156,6 +158,9 @@ export class DbWorkerClient {
   /** The incarnation being forcibly retired; its late events are ignored. */
   private retiringWorker: DbWorkerPort | null = null
   private termination: { worker: DbWorkerPort; promise: Promise<void> } | null = null
+  /** The crash backoff started by the native exit callback, interrupted and
+   * joined before this client's shutdown completes. */
+  private respawnFiber: Fiber.Fiber<void, never> | null = null
   private currentReady: ReadyHandshake
   /** True once the CURRENT worker incarnation posted `ready`. Gates respawn:
    * only a worker that once lived is recreated. */
@@ -233,14 +238,10 @@ export class DbWorkerClient {
       // (TestClock in tests — no raw `setTimeout`). In-flight calls are
       // already rejected above: no replay, exactly as before. Never-lived
       // workers return early above and never enter this path.
-      const nowMs = Date.now()
       this.currentReady = createReadyHandshake()
-      const attempt = nextRespawnAttempt(this.consecutiveCrashes, nowMs, this.lastCrashAtMs)
-      this.consecutiveCrashes = attempt
-      this.lastCrashAtMs = nowMs
       // Recreate so the app keeps serving reads; the renderer already shows
       // error states for the rejected in-flight calls.
-      void Effect.runPromise(this.respawnAfterCrashEffect(attempt, code))
+      this.respawnFiber = Effect.runFork(this.respawnAfterExitEffect(code))
     })
   }
 
@@ -504,22 +505,34 @@ export class DbWorkerClient {
    * this deadline — no second runtime, no shared SQLite state.
    */
   shutdownEffect(timeoutMs = 2000): Effect.Effect<void> {
-    return awaitGracefulShutdown(() => this.send('shutdown'), timeoutMs).pipe(
-      Effect.ensuring(this.terminateWorkerEffect()),
+    const teardown = this.interruptRespawnEffect().pipe(Effect.andThen(this.terminateWorkerEffect()))
+    return Effect.sync(() => {
+      this.intentionalTeardown = true
+    }).pipe(
+      Effect.andThen(this.interruptRespawnEffect()),
+      Effect.andThen(awaitGracefulShutdown(() => this.send('shutdown'), timeoutMs)),
+      Effect.ensuring(teardown),
     )
   }
 
   /**
-   * Delayed crash-respawn behind `worker.on('exit')` (ADR 0023 + Wave 7 §4.4):
-   * files the scheduling record, sleeps the attempt's capped+jittered
-   * exponential backoff on the Effect Clock, then recreates the worker —
-   * unless torn down meanwhile. attempt/backoff ride the allowlisted `count`
-   * + `label` fields (the sanitizer drops any other key, so no bespoke field
-   * names here). Exposed (additive) so tests run it under `TestClock`;
-   * production runs it via the exit handler with the live Clock — the same
-   * seam shape as `shutdownEffect`. Never fails: a respawn that cannot sleep
-   * or spawn must not surface as a rejection.
+   * Captures the crash time on the Effect Clock, updates the streak/reset
+   * policy, then runs the delayed respawn. Production enters from the worker's
+   * exit handler; exposed so the clock-dependent policy is testable under
+   * `TestClock`.
    */
+  respawnAfterExitEffect(exitCode: string): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const nowMs = yield* Clock.currentTimeMillis
+      const attempt = nextRespawnAttempt(this.consecutiveCrashes, nowMs, this.lastCrashAtMs)
+      this.consecutiveCrashes = attempt
+      this.lastCrashAtMs = nowMs
+      yield* this.respawnAfterCrashEffect(attempt, exitCode)
+    })
+  }
+
+  /** Sleeps the attempt's capped+jittered backoff, logs it and respawns unless
+   * torn down meanwhile. Never fails: sleep and spawn failures stay contained. */
   respawnAfterCrashEffect(attempt: number, exitCode: string): Effect.Effect<void> {
     // Arrow closure (NOT a `self` alias): lexical `this`, same shape as
     // `terminateWorkerEffect`'s `takeWorker` below. Returns an Effect rather
@@ -590,6 +603,21 @@ export class DbWorkerClient {
           Effect.ignore,
         )
       }
+    })
+  }
+
+  private interruptRespawnEffect(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      const fiber = this.respawnFiber
+      if (!fiber) return Effect.void
+      return Fiber.interrupt(fiber).pipe(
+        Effect.asVoid,
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (this.respawnFiber === fiber) this.respawnFiber = null
+          }),
+        ),
+      )
     })
   }
 

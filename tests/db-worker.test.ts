@@ -1036,6 +1036,100 @@ describe('DbWorkerClient crash-respawn backoff (Wave 7 §4.4, TestClock)', () =>
     expect(nextRespawnAttempt(7, now + RESPAWN_BACKOFF_RESET_AFTER_MS, now)).toBe(8)
   })
 
+  it('uses Effect Clock time when deciding whether to reset the crash streak', async () => {
+    const { client, fakes } = makeClient()
+    const worker = fakes[0]
+    if (!worker) throw new Error('initial fake worker was not created')
+    worker.emit('message', { event: 'ready' })
+    await client.ready
+    let countAtResetDeadline = 0
+
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(1_000_000)
+          const firstCrash = yield* Effect.forkChild(client.respawnAfterExitEffect('1'))
+          yield* TestClock.adjust(1_200)
+          yield* Fiber.join(firstCrash)
+          fakes[1]?.emit('message', { event: 'ready' })
+
+          yield* TestClock.adjust(RESPAWN_BACKOFF_RESET_AFTER_MS + 1)
+          const recoveredCrash = yield* Effect.forkChild(client.respawnAfterExitEffect('1'))
+          yield* TestClock.adjust(1_200)
+          countAtResetDeadline = fakes.length
+          yield* TestClock.adjust(1_300)
+          yield* Fiber.join(recoveredCrash)
+        }).pipe(Effect.provide(TestClock.layer())),
+      )
+      expect(countAtResetDeadline).toBe(3)
+    } finally {
+      await client.terminate()
+    }
+  })
+
+  it.each(['shutdown', 'terminate'] as const)(
+    'interrupts and joins the exit-callback backoff during client %s',
+    async teardown => {
+      vi.useFakeTimers()
+      const spawn = vi.fn()
+      const { client, fakes } = makeClient(echoResponder, () => {
+        spawn()
+      })
+
+      try {
+        const worker = fakes[0]
+        if (!worker) throw new Error('initial fake worker was not created')
+        worker.emit('message', { event: 'ready' })
+        await client.ready
+        worker.emit('exit', 1)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(vi.getTimerCount()).toBeGreaterThan(0)
+        expect(spawn).toHaveBeenCalledTimes(1)
+
+        await client[teardown]()
+
+        expect(spawn).toHaveBeenCalledTimes(1)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(vi.getTimerCount()).toBe(0)
+        await vi.advanceTimersByTimeAsync(40_000)
+        expect(spawn).toHaveBeenCalledTimes(1)
+      } finally {
+        await client.terminate()
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it('interrupts the exit-callback backoff when shutdownEffect is itself interrupted', async () => {
+    vi.useFakeTimers()
+    const spawn = vi.fn()
+    const { client, fakes } = makeClient(echoResponder, () => {
+      spawn()
+    })
+
+    try {
+      const worker = fakes[0]
+      if (!worker) throw new Error('initial fake worker was not created')
+      worker.emit('message', { event: 'ready' })
+      await client.ready
+      worker.emit('exit', 1)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.getTimerCount()).toBeGreaterThan(0)
+      expect(spawn).toHaveBeenCalledTimes(1)
+
+      const shutdown = Effect.runFork(client.shutdownEffect())
+      await Effect.runPromise(Fiber.interrupt(shutdown))
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(40_000)
+      expect(spawn).toHaveBeenCalledTimes(1)
+    } finally {
+      await client.terminate()
+      vi.useRealTimers()
+    }
+  })
+
   it('grows exponentially with jitter bounds and caps at tens of seconds', async () => {
     const nominal = (attempt: number): number =>
       Math.min(RESPAWN_BACKOFF_BASE_MS * 2 ** (attempt - 1), RESPAWN_BACKOFF_CAP_MS)
