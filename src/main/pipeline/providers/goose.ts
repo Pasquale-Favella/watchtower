@@ -1,7 +1,7 @@
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Result, Schema, Stream } from 'effect'
+import { Clock, Effect, Result, Schema, Stream } from 'effect'
 
 import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
@@ -55,6 +55,15 @@ const decodeToolArguments = Schema.decodeUnknownResult(toolArgumentsSchema)
 const decodeString = Schema.decodeUnknownResult(Schema.String)
 const decodeFinite = Schema.decodeUnknownResult(Schema.Finite)
 const decodeTimestampValue = Schema.decodeUnknownResult(Schema.Union([Schema.String, Schema.Finite]))
+
+function sessionTimestamp(raw: unknown, nowMs: number): Date {
+  const decodedTimestamp = decodeTimestampValue(raw)
+  const dateInput = Result.isSuccess(decodedTimestamp) ? decodedTimestamp.success : String(raw)
+  let timestamp = new Date(dateInput)
+  if (Number.isNaN(timestamp.getTime())) timestamp = new Date(`${String(raw)}Z`)
+  if (Number.isNaN(timestamp.getTime())) timestamp = new Date(nowMs)
+  return timestamp
+}
 
 type GooseDatabase = { db: SqliteDatabase; closed: boolean }
 type DatabaseAcquisition = { database: GooseDatabase | null; error: GooseDatabaseError | null }
@@ -308,11 +317,8 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
           const { tools, bashCommands, toolSequence } = extractToolsFromMessages(db, split.sessionId)
           const userMessage = getFirstUserMessage(db, split.sessionId)
           const raw = session.updated_at || session.created_at || ''
-          const decodedTimestamp = decodeTimestampValue(raw)
-          const dateInput = Result.isSuccess(decodedTimestamp) ? decodedTimestamp.success : String(raw)
-          let timestamp = new Date(dateInput)
-          if (Number.isNaN(timestamp.getTime())) timestamp = new Date(`${String(raw)}Z`)
-          if (Number.isNaN(timestamp.getTime())) timestamp = new Date()
+          const nowMs = yield* Clock.currentTimeMillis
+          const timestamp = sessionTimestamp(raw, nowMs)
 
           // All SQLite data needed for this call is materialized before pricing.
           yield* closeDatabase(database)

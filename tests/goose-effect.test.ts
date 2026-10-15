@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { Cause, Effect, Exit, Option, Stream } from 'effect'
+import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const sqliteState = vi.hoisted(() => ({
@@ -382,6 +383,24 @@ describe('Goose native Effect provider', () => {
 
     const calls = await collect(parser({ pricing: pricing(() => 1) }))
     expect(calls[0]?.timestamp).toBe(new Date(42).toISOString())
+    expect(sqliteState.closeCount).toBe(1)
+  })
+
+  it('uses the Effect Clock when malformed session timestamps fall back to now', async () => {
+    const db = new DatabaseSync(databasePath)
+    db.prepare('UPDATE sessions SET created_at = ?, updated_at = NULL').run('not-a-timestamp')
+    db.close()
+    const selected = parser({ pricing: pricing(() => 1) })
+    const nowMs = Date.parse('2026-10-15T12:30:00.000Z')
+
+    const calls = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(nowMs)
+        return yield* Stream.runCollect(nativeStream(selected)())
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+
+    expect(calls[0]?.timestamp).toBe(new Date(nowMs).toISOString())
     expect(sqliteState.closeCount).toBe(1)
   })
 
