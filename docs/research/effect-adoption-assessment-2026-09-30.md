@@ -6,7 +6,7 @@ The assessment began at `a917305`. Local commit `ce81593` subsequently landed th
 
 ## Current migration status, 2026-10-15
 
-The priority is completion of the backend Effect migration. Profiling is stopped. All five profiling JSON files were deleted in `223c928`; recursive inspection finds zero JSON files under docs. Historical measurements do not create new profiling work.
+The priority is completion of the backend Effect migration. Profiling is stopped. Profiling JSON files were removed in `223c928`; recursive inspection finds zero JSON files under docs. Historical measurements do not create new profiling work.
 
 | Area                                |        Accepted coverage | Percentage |
 | ----------------------------------- | -----------------------: | ---------: |
@@ -30,15 +30,15 @@ At `4e03e68`, all ten local product gates pass, including 3,031 unit tests with 
 
 The later `bfc4429` checkpoint also passes all ten local gates, with 3,036 unit tests and two skips, four Electron checks and actual Windows packaged IPC/MCP. Its [ordinary CI](https://github.com/Pasquale-Favella/watchtower/actions/runs/38568836424) passes 3,031 tests with seven platform skips. In its [artifact workflow](https://github.com/Pasquale-Favella/watchtower/actions/runs/38568836481), actual Windows/Linux Electron, Linux/macOS directory packages, NSIS install/uninstall and DMG/ZIP checks pass. Linux AppImage UI/IPC passes, then MCP stdio fails with connection closed. This source therefore does not pass every installer gate.
 
-`391d171` changes SDK child launch to the running app's actual `process.execPath`, retaining AppRun for the UI. Actual AppImage/deb execution must validate this correction; the precise cause of the previous failure is not proven.
+`391d171` changes SDK child launch to the running app's actual `process.execPath`, retaining AppRun for the UI. At `bf3aa91`, [all seven artifact workflow jobs](https://github.com/Pasquale-Favella/watchtower/actions/runs/38706017801) pass. Actual NSIS install/uninstall, DMG/ZIP payloads, AppImage and deb install/purge each pass packaged IPC and official SDK stdio/HTTP. Actual Windows/Linux Electron and Linux/macOS directory-package checks pass. [Ordinary CI](https://github.com/Pasquale-Favella/watchtower/actions/runs/38706017835) passes 250 files with 3,052 tests and seven platform skips. The local immutable run passes 3,057 tests and two skips in 390.52 seconds and four Electron checks in 7.1 minutes, then packaging fails with `connect EACCES` during a build-dependency download. Packaging then passes using the installed, version-matched Electron 43.2.0 distribution through the supported electronDist option. Actual packaged Windows IPC/MCP also passes. All ten local gates are therefore covered with that explicit packaging retry; its original download failure remains recorded. The precise cause of the older AppImage failure is unproven; the corrected verifier passes those real artifacts. This frozen proof excludes the later query-error operational-code correction.
 
 ### Final source integration
 
-The latest source audit closes provider environment reads through Effect Config and full startup AppPaths snapshots. An AST regression scans every provider for direct `process.env` access. Native probe configuration uses one provider and one PATH value for cache identity and detection. Config feeds Env during Layer construction without casts.
+The latest source audit closes provider environment reads through Effect Config and full startup AppPaths snapshots. An AST regression scans every provider for direct `process.env` access. Native probe configuration uses one provider and one PATH value for cache identity and detection. Main provides its configurable ConfigProvider to Env during Layer construction without casts. Worker Env uses Effect's native environment default; startup path capture preserves raw empty values where path precedence requires them.
 
 Clock now governs parser/pricing cache policies, refresh-lock deadlines, crash-streak reset, Cursor lookback and Goose timestamp fallback. Main startup, MCP parent polling and worker crash backoff have owned, interrupted and joined fibers. Native counters and gauges use per-runtime registries and preserve the existing operational-log records, including actual probe and HTTP-timeout producers. No extra runtime or metrics exporter is introduced.
 
-Independent reviews have no remaining blockers. Root integration passed 417 tests across 30 files before the final Cursor/Goose and shutdown-interruption regressions. The final seven-suite regression run passes 161 tests. A fresh complete product run and source-matched CI, including every installer artifact, remain required. Original assertions and timeouts remain unchanged. No billed Coach prompt, local installation or release occurs.
+Independent reviews have no remaining blockers. Root integration passed 417 tests across 30 files before the final Cursor/Goose and shutdown-interruption regressions. The final seven-suite regression run passes 161 tests. The final completion audit identified one missing operational-code record on typed query failures. The correction uses inline Effect.tapError in the existing worker runtime and preserves the original failed response. Real worker tests assert exactly one raw, sanitized record before the response, with no dynamic row, SQL or path data. Both review axes pass; root integration passes 85 tests across four files. Fresh complete product/CI verification of this last source correction remains required. Original assertions and timeouts remain unchanged. No billed Coach prompt, local installation or release occurs.
 
 F31 retains native stream ownership and drain barriers, with no bounded-drain claim for uncooperative Promises. F35 preserves ADR 0011 and the original renderer flow. F36 retries a shared worker read overtaken by a data/config event before resolving the same Promise, with captured inputs and shutdown admission checks after recovery.
 
@@ -61,7 +61,7 @@ Completion requires observable properties:
 
 Import counts and Effect LOC share do not establish these properties.
 
-## Status against the baseline
+## Historical baseline status, 2026-09-30
 
 | Baseline item                                | Current disposition                                                 | Evidence                                                                  |
 | -------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -82,7 +82,7 @@ Import counts and Effect LOC share do not establish these properties.
 
 At the assessment baseline, [PR #147](https://github.com/Pasquale-Favella/watchtower/pull/147) described a narrow migration foundation and contained `Closes #148`. Its September 24 rollout comment also said work was complete. The current PR description and living assessment now track the expanded programme and leave #148 open.
 
-## Architectural findings and corrections
+## Historical architectural findings and corrections
 
 ### F27. The worker borrows services from a separate runtime
 
