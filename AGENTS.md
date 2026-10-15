@@ -13,3 +13,7 @@ Issues use the default triage labels: `needs-triage`, `needs-info`, `ready-for-a
 ### Domain docs
 
 Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Effect
+
+This repository uses the Effect Typescript library. See `docs/agents/effect.md`.

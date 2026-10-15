@@ -1,30 +1,54 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
 import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
-import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
+import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
 import { useCoachSkillsStore } from '../src/renderer/src/features/coach-skills/store.js'
+import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
 
 /** Stub the preload surface: capture each on* callback for manual firing,
  * merging any extra (fetch) methods onto the same `window.api`. */
 function captureApi(extra?: Record<string, unknown>): Record<string, (payload?: unknown) => void> {
   const listeners: Record<string, (payload?: unknown) => void> = {}
   mockWindow({
-    onProgress: (cb: (p: unknown) => void) => { listeners.onProgress = cb; return () => {} },
-    onError: (cb: (p: string) => void) => { listeners.onError = cb; return () => {} },
-    onChanged: (cb: (p: unknown) => void) => { listeners.onChanged = cb; return () => {} },
-    onIdle: (cb: () => void) => { listeners.onIdle = cb; return () => {} },
-    onCurrencyChanged: (cb: (p: unknown) => void) => { listeners.onCurrencyChanged = cb; return () => {} },
-    onConfigChanged: (cb: () => void) => { listeners.onConfigChanged = cb; return () => {} },
-    onCoachEvent: (cb: (p: unknown) => void) => { listeners.onCoachEvent = cb; return () => {} },
-    onCoachHarnessesChanged: (cb: (p: unknown) => void) => { listeners.onCoachHarnessesChanged = cb; return () => {} },
+    onProgress: (cb: (p: unknown) => void) => {
+      listeners.onProgress = cb
+      return () => {}
+    },
+    onError: (cb: (p: unknown) => void) => {
+      listeners.onError = cb
+      return () => {}
+    },
+    onChanged: (cb: (p: unknown) => void) => {
+      listeners.onChanged = cb
+      return () => {}
+    },
+    onIdle: (cb: () => void) => {
+      listeners.onIdle = cb
+      return () => {}
+    },
+    onCurrencyChanged: (cb: (p: unknown) => void) => {
+      listeners.onCurrencyChanged = cb
+      return () => {}
+    },
+    onConfigChanged: (cb: () => void) => {
+      listeners.onConfigChanged = cb
+      return () => {}
+    },
+    onCoachEvent: (cb: (p: unknown) => void) => {
+      listeners.onCoachEvent = cb
+      return () => {}
+    },
+    onCoachHarnessesChanged: (cb: (p: unknown) => void) => {
+      listeners.onCoachHarnessesChanged = cb
+      return () => {}
+    },
     ...extra,
   })
   return listeners
 }
 
 function mockWindow(api: unknown): void {
-  ;(globalThis as { window?: unknown }).window = { api }
+  vi.stubGlobal('window', { api })
 }
 
 const statusScanned = {
@@ -66,7 +90,31 @@ beforeEach(() => {
   useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
 })
 
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
 describe('subscribeToIpc (ADR 0011)', () => {
+  it('decodes Coach events and forwards only valid, stripped envelopes', () => {
+    const listeners = captureApi()
+    const onEvent = vi.spyOn(useCoachSkillsStore.getState(), 'onEvent').mockImplementation(() => {})
+    const notifyNotice = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('api', { notifyNotice })
+    const teardown = subscribeToIpc()
+
+    listeners.onCoachEvent!({
+      runId: 'run-1',
+      event: { kind: 'text', delta: 'Hello', extra: 'discarded' },
+      extra: 'discarded',
+    })
+    expect(onEvent).toHaveBeenCalledExactlyOnceWith({ runId: 'run-1', event: { kind: 'text', delta: 'Hello' } })
+
+    listeners.onCoachEvent!({ runId: 'run-1', event: { kind: 'text', delta: 42 } })
+    expect(onEvent).toHaveBeenCalledTimes(1)
+    expect(notifyNotice).toHaveBeenCalledWith('coach event', 'event.delta')
+    teardown()
+  })
   it('feeds scan progress into the scan store, dropping malformed broadcasts', () => {
     const listeners = captureApi()
     const teardown = subscribeToIpc()
@@ -137,6 +185,8 @@ describe('subscribeToIpc (ADR 0011)', () => {
   })
 
   it('feeds a currency:changed broadcast into the settings store, dropping malformed ones', () => {
+    const notifyNotice = vi.fn<(label: string, location: string) => Promise<void>>(() => Promise.resolve())
+    vi.stubGlobal('api', { notifyNotice })
     const listeners = captureApi()
     const teardown = subscribeToIpc()
 
@@ -145,6 +195,8 @@ describe('subscribeToIpc (ADR 0011)', () => {
 
     listeners.onCurrencyChanged!({ code: 123 })
     expect(useSettingsStore.getState().activeCurrency.code).toBe('EUR')
+    expect(notifyNotice).toHaveBeenCalledWith('currency changed', 'code')
+    expect(notifyNotice).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything())
 
     teardown()
   })
@@ -153,14 +205,38 @@ describe('subscribeToIpc (ADR 0011)', () => {
     const unsub = vi.fn(() => {})
     const listeners: Record<string, (payload?: unknown) => void> = {}
     mockWindow({
-      onProgress: (cb: (p: unknown) => void) => { listeners.onProgress = cb; return unsub },
-      onError: (cb: (p: string) => void) => { listeners.onError = cb; return unsub },
-      onChanged: (cb: (p: unknown) => void) => { listeners.onChanged = cb; return unsub },
-      onIdle: (cb: () => void) => { listeners.onIdle = cb; return unsub },
-      onCurrencyChanged: (cb: (p: unknown) => void) => { listeners.onCurrencyChanged = cb; return unsub },
-      onConfigChanged: (cb: () => void) => { listeners.onConfigChanged = cb; return unsub },
-      onCoachEvent: (cb: (p: unknown) => void) => { listeners.onCoachEvent = cb; return unsub },
-      onCoachHarnessesChanged: (cb: (p: unknown) => void) => { listeners.onCoachHarnessesChanged = cb; return unsub },
+      onProgress: (cb: (p: unknown) => void) => {
+        listeners.onProgress = cb
+        return unsub
+      },
+      onError: (cb: (p: unknown) => void) => {
+        listeners.onError = cb
+        return unsub
+      },
+      onChanged: (cb: (p: unknown) => void) => {
+        listeners.onChanged = cb
+        return unsub
+      },
+      onIdle: (cb: () => void) => {
+        listeners.onIdle = cb
+        return unsub
+      },
+      onCurrencyChanged: (cb: (p: unknown) => void) => {
+        listeners.onCurrencyChanged = cb
+        return unsub
+      },
+      onConfigChanged: (cb: () => void) => {
+        listeners.onConfigChanged = cb
+        return unsub
+      },
+      onCoachEvent: (cb: (p: unknown) => void) => {
+        listeners.onCoachEvent = cb
+        return unsub
+      },
+      onCoachHarnessesChanged: (cb: (p: unknown) => void) => {
+        listeners.onCoachHarnessesChanged = cb
+        return unsub
+      },
     })
     const teardown = subscribeToIpc()
     teardown()
@@ -170,7 +246,13 @@ describe('subscribeToIpc (ADR 0011)', () => {
   it('feeds a coach:harnesses-changed broadcast into the coach store, dropping malformed ones', () => {
     const listeners = captureApi()
     const teardown = subscribeToIpc()
-    const row = { instanceId: 'codex', kind: 'codex', displayName: 'Codex', status: 'ready', auth: { status: 'configured' } }
+    const row = {
+      instanceId: 'codex',
+      kind: 'codex',
+      displayName: 'Codex',
+      status: 'ready',
+      auth: { status: 'configured' },
+    }
 
     listeners.onCoachHarnessesChanged!([{ bogus: 1 }])
     expect(useCoachSkillsStore.getState().harnesses).toEqual([])

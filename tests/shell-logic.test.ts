@@ -4,7 +4,7 @@ import {
   buildScopeCaption,
   resolveThemeMode,
   themeIsDark,
-  CADENCE_UI_OPTIONS
+  CADENCE_UI_OPTIONS,
 } from '../src/renderer/src/shared/lib/shell.js'
 
 describe('providerOptionsFromDetected', () => {
@@ -18,7 +18,7 @@ describe('providerOptionsFromDetected', () => {
     expect(options).toEqual([
       { value: 'all', label: 'All providers' },
       { value: 'claude', label: 'Claude' },
-      { value: 'opencode', label: 'Opencode' }
+      { value: 'opencode', label: 'Opencode' },
     ])
   })
 
@@ -63,7 +63,7 @@ describe('themeIsDark', () => {
 })
 
 describe('CADENCE_UI_OPTIONS (kept in sync with main/cadence.ts by hand)', () => {
-  it('matches the main process cadence module\'s values exactly, so the Settings dropdown never drifts from what cadence:set accepts', async () => {
+  it("matches the main process cadence module's values exactly, so the Settings dropdown never drifts from what cadence:set accepts", async () => {
     const { CADENCE_OPTIONS } = await import('../src/main/cadence.js')
     expect(CADENCE_UI_OPTIONS.map(o => o.value)).toEqual(CADENCE_OPTIONS.map(o => o.value))
   })

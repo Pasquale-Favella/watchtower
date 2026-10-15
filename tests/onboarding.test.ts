@@ -30,7 +30,9 @@ describe('ONBOARDING_STEPS', () => {
   })
 
   it('never mentions telemetry, consent, or data collection — there is no telemetry step', () => {
-    const copy = ONBOARDING_STEPS.map(step => `${step.title} ${step.body}`).join(' ').toLowerCase()
+    const copy = ONBOARDING_STEPS.map(step => `${step.title} ${step.body}`)
+      .join(' ')
+      .toLowerCase()
     expect(copy).not.toMatch(/telemetry/)
     expect(copy).not.toMatch(/consent/)
     expect(copy).not.toMatch(/collect/i)
@@ -42,7 +44,9 @@ describe('onboarding persistence', () => {
     const map = new Map<string, string>()
     return {
       getItem: (key: string) => map.get(key) ?? null,
-      setItem: (key: string, value: string) => { map.set(key, value) },
+      setItem: (key: string, value: string) => {
+        map.set(key, value)
+      },
     }
   }
 

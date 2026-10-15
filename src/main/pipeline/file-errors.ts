@@ -4,7 +4,8 @@ export { errnoCodeFor as fileErrorCode } from '../../shared/logging.js'
 
 /**
  * Worker-side file-error outbox (#128). The scan pipeline runs on the
- * db-worker thread, which must stay Electron-free and pino-free — so per-file
+ * db-worker thread, which must stay Electron-free and dependency-free — so
+ * per-file
  * failure signals (provider + basename + short code, never contents or full
  * paths) queue here during a scan and the worker context drains them into
  * `oplog` host events afterwards. Main records each drained entry through the

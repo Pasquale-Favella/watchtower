@@ -58,7 +58,7 @@ export function CustomRangePicker({
             type="button"
             variant="outline"
             size="sm"
-            className={cn('h-[25px] gap-1 rounded-md border-border px-2 text-[11px]', value && 'text-foreground')}
+            className={cn('border-border h-[25px] gap-1 rounded-md px-2 text-[11px]', value && 'text-foreground')}
             aria-expanded={open}
           >
             <CalendarIcon className="size-3" />
@@ -74,7 +74,7 @@ export function CustomRangePicker({
           selected={draft}
           onSelect={range => setDraft(range)}
         />
-        <div className="flex justify-between gap-2 border-t border-border pt-2">
+        <div className="border-border flex justify-between gap-2 border-t pt-2">
           <Button
             type="button"
             variant="ghost"

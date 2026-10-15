@@ -1,16 +1,29 @@
-import { readdir, stat } from 'fs/promises'
+import { Effect, Scope, Stream } from 'effect'
 import { createReadStream } from 'fs'
-import { createInterface } from 'readline'
+import { readdir, stat } from 'fs/promises'
 import { basename, join } from 'path'
-import { homedir } from 'os'
 
-import { readSessionLines } from '../fs-utils.js'
-import { calculateCost } from '../models.js'
-import { readCachedCodexResults, writeCachedCodexResults, getCachedCodexProject, fingerprintFile } from '../codex-cache.js'
+import { type AppPaths, appPaths, resolveCodexHome } from '../../env.js'
+import { billableOutputTokens } from '../billable-output.js'
+import {
+  getCachedCodexProjectEffect,
+  lookupCachedCodexResultsEffect,
+  writeCachedCodexResultsEffect,
+} from '../codex-cache.js'
 import { normalizeContentBlocks } from '../content-utils.js'
+import { readSessionLinesStream } from '../fs-utils.js'
+import { captureScanPricing } from '../models.js'
+import { isScanAbortedError, throwIfScanAborted } from '../scan-control.js'
 import { estimateTokensFromChars } from '../token-estimate.js'
-import type { ToolCall } from '../types.js'
-import type { Provider, ProbeRoot, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import type { DateRange, ToolCall } from '../types.js'
+import type {
+  ParsedProviderCall,
+  ProbeRoot,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from './types.js'
 
 const modelDisplayNames: Record<string, string> = {
   'codex-auto-review': 'Codex Auto Review',
@@ -64,14 +77,20 @@ const toolNameMap: Record<string, string> = {
 // class don't overlap, so there is no catastrophic backtracking.
 const MCP_CLI_CALL = /(?<![\w.-])mcp-cli(?:\s+(?!call\b)[^\s;|&]+)*\s+call\s+(\S+)\s+(\S+)/
 function mcpToolFromShellCommand(command: unknown): string | null {
-  const text = typeof command === 'string'
-    ? command
-    : Array.isArray(command) ? command.filter(x => typeof x === 'string').join(' ') : ''
+  const text =
+    typeof command === 'string'
+      ? command
+      : Array.isArray(command)
+        ? command.filter(x => typeof x === 'string').join(' ')
+        : ''
   if (!text) return null
   const m = MCP_CLI_CALL.exec(text)
   if (!m) return null
-  const server = m[1]!.replace(/['"]/g, '')
-  const tool = m[2]!.replace(/['"]/g, '')
+  const serverMatch = m[1]
+  const toolMatch = m[2]
+  if (!serverMatch || !toolMatch) return null
+  const server = serverMatch.replace(/['"]/g, '')
+  const tool = toolMatch.replace(/['"]/g, '')
   if (!server || !tool) return null
   return `mcp__${server}__${tool}`
 }
@@ -125,10 +144,6 @@ type CodexTokenUsage = {
 const RAW_HEAD_BYTES = 64 * 1024
 const LARGE_TEXT_CAP = 2000
 
-function getCodexDir(override?: string): string {
-  return override ?? process.env['CODEX_HOME'] ?? join(homedir(), '.codex')
-}
-
 function sanitizeProject(cwd: string): string {
   return cwd.replace(/^[/\\]+/, '').replace(/[/\\]/g, '-')
 }
@@ -138,52 +153,79 @@ function sanitizeProject(cwd: string): string {
 // keeping memory bounded if a corrupt file has no newline at all.
 const FIRST_LINE_READ_CAP = 1024 * 1024
 
-async function readFirstLine(filePath: string): Promise<CodexEntry | null> {
-  // Codex CLI 0.128+ writes a session_meta line that can exceed 20 KB because
-  // it embeds the full base_instructions / system prompt. A fixed-size buffer
-  // would miss the trailing newline and reject the session as invalid.
-  // Stream the file via readline so we can read the first line up to
-  // FIRST_LINE_READ_CAP, which keeps memory bounded if the file has no newline.
-  const stream = createReadStream(filePath, {
-    encoding: 'utf-8',
-    start: 0,
-    end: FIRST_LINE_READ_CAP - 1,
-  })
-  // Silence stream errors so a late read-ahead error after we've already
-  // returned the first line cannot escape as an unhandled 'error' event.
-  // readline's async iterator re-throws underlying stream errors (ENOENT,
-  // EACCES, etc.) on Node 16+, which the catch below handles for the cases
-  // that matter for validation.
-  stream.on('error', () => {})
-  const rl = createInterface({ input: stream, crlfDelay: Infinity })
-  let firstLine: string | undefined
-  try {
-    for await (const line of rl) {
-      firstLine = line
-      break
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause))
+}
+
+const readFirstLine = Effect.fn('readCodexFirstLine')(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<CodexEntry | null, Error, Scope.Scope> {
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  const resource = yield* Effect.acquireRelease(
+    Effect.try({
+      try: () => {
+        const stream = createReadStream(filePath, {
+          start: 0,
+          end: FIRST_LINE_READ_CAP - 1,
+          ...(signal ? { signal } : {}),
+        })
+        // A late stream error after finding the newline must not become an
+        // unhandled event while the scope drains the native reader.
+        stream.on('error', () => {})
+        return { stream, iterator: stream[Symbol.asyncIterator]() }
+      },
+      catch: toError,
+    }),
+    resource =>
+      Effect.promise(async () => {
+        if (!resource.stream.closed) {
+          const closed = new Promise<void>(resolve => resource.stream.once('close', resolve))
+          resource.stream.destroy()
+          await closed
+        }
+        await resource.iterator.return?.()
+      }),
+  )
+
+  const firstLine = yield* Effect.gen(function* () {
+    let bytes = Buffer.alloc(0)
+    while (bytes.length < FIRST_LINE_READ_CAP) {
+      const next = yield* Effect.tryPromise({ try: () => resource.iterator.next(), catch: toError })
+      if (next.done) break
+      const chunk = next.value as Buffer
+      const newline = chunk.indexOf(0x0a)
+      const part = newline === -1 ? chunk : chunk.subarray(0, newline)
+      const remaining = FIRST_LINE_READ_CAP - bytes.length
+      bytes = Buffer.concat([bytes, part.subarray(0, remaining)])
+      if (newline !== -1 || part.length > remaining) break
     }
-  } catch {
-    return null
-  } finally {
-    rl.close()
-    stream.destroy()
-  }
-  if (!firstLine || !firstLine.trim()) return null
+    return bytes.toString('utf-8').replace(/\r$/, '')
+  })
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  if (!firstLine.trim()) return null
   try {
     return JSON.parse(firstLine) as CodexEntry
   } catch {
     return null
   }
-}
+})
 
-async function isValidCodexSession(filePath: string): Promise<{ valid: boolean; meta?: CodexEntry }> {
-  const entry = await readFirstLine(filePath)
+const isValidCodexSession = Effect.fn('isValidCodexSession')(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<{ valid: boolean; meta?: CodexEntry }, Error, Scope.Scope> {
+  const entry = yield* readFirstLine(filePath, signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
   if (!entry) return { valid: false }
-  const valid = entry.type === 'session_meta' &&
+  const valid =
+    entry.type === 'session_meta' &&
     typeof entry.payload?.originator === 'string' &&
     entry.payload.originator.toLowerCase().startsWith('codex')
   return { valid, meta: valid ? entry : undefined }
-}
+})
 
 function getRawJsonStringField(head: string, field: string): string | undefined {
   const re = new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`)
@@ -286,33 +328,45 @@ function parseCodexLine(line: string | Buffer): CodexEntry | null {
       name: getRawJsonStringField(pHead, 'name'),
     },
   }
+  const payload = entry.payload
+  if (!payload) return entry
 
   if (type === 'response_item' && payloadType === 'message' && role === 'user') {
-    entry.payload!.content = [{ type: 'input_text', text: extractFirstJsonText(line) }]
+    payload.content = [{ type: 'input_text', text: extractFirstJsonText(line) }]
   } else if (type === 'response_item' && payloadType === 'message' && role === 'assistant') {
-    entry.payload!.content = [{ type: 'output_text', text: 'x'.repeat(Math.min(countFirstJsonText(line), LARGE_TEXT_CAP)) }]
+    payload.content = [{ type: 'output_text', text: 'x'.repeat(Math.min(countFirstJsonText(line), LARGE_TEXT_CAP)) }]
   }
 
   return entry
 }
 
-async function discoverSessionFile(filePath: string): Promise<SessionSource | null> {
-  const s = await stat(filePath).catch(() => null)
-  if (!s?.isFile()) return null
+const statForDiscovery = Effect.fn('codexDiscoveryStat')(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<boolean, Error> {
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  const result = yield* Effect.uninterruptible(
+    Effect.result(Effect.tryPromise({ try: () => stat(filePath), catch: toError })),
+  )
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  return result._tag === 'Success' && result.success.isFile()
+})
 
-  const cachedProject = await getCachedCodexProject(filePath)
-  if (cachedProject) {
-    return { path: filePath, project: cachedProject, provider: 'codex' }
-  }
+const discoverSessionFile = Effect.fn('discoverCodexSessionFile')(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<SessionSource | null, Error> {
+  if (!(yield* statForDiscovery(filePath, signal))) return null
 
-  const { valid, meta } = await isValidCodexSession(filePath)
+  const cachedProject = yield* getCachedCodexProjectEffect(filePath, signal)
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  if (cachedProject) return { path: filePath, project: cachedProject, provider: 'codex' }
+
+  const { valid, meta } = yield* Effect.scoped(isValidCodexSession(filePath, signal))
   if (!valid || !meta) return null
 
   const cwd = meta.payload?.cwd ?? 'unknown'
-  // Forward the absolute checkout so the port-in seam can attribute the
-  // session even when the file-level cache carries no directory (the
-  // call-level fallback in port.ts covers already-cached files; this covers
-  // fresh discoveries and keeps `source.workingDirectory` truthful).
+  // The absolute checkout lets the port-in seam attribute fresh discoveries.
   const workingDirectory = cwd !== 'unknown' && cwd.trim() ? cwd : undefined
   return {
     path: filePath,
@@ -320,418 +374,502 @@ async function discoverSessionFile(filePath: string): Promise<SessionSource | nu
     provider: 'codex',
     ...(workingDirectory ? { workingDirectory } : {}),
   }
-}
+})
 
-async function discoverSessionsInDir(codexDir: string): Promise<SessionSource[]> {
+const readdirOrEmpty = Effect.fn('codexDiscoveryReaddir')(function* (
+  path: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<string[], Error> {
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  const result = yield* Effect.uninterruptible(
+    Effect.result(Effect.tryPromise({ try: () => readdir(path), catch: toError })),
+  )
+  yield* Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+  return result._tag === 'Success' ? result.success : []
+})
+
+const discoverSessionsInDir = Effect.fn('discoverCodexSessionsInDir')(function* (
+  codexDir: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<SessionSource[], Error> {
   const sources: SessionSource[] = []
-  const sessionsDir = join(codexDir, 'sessions')
-
-  const years = await readdir(sessionsDir).catch(() => [] as string[])
+  const years = yield* readdirOrEmpty(join(codexDir, 'sessions'), signal)
 
   for (const year of years) {
     if (!/^\d{4}$/.test(year)) continue
-    const yearDir = join(sessionsDir, year)
-    const months = await readdir(yearDir).catch(() => [] as string[])
-
+    const months = yield* readdirOrEmpty(join(codexDir, 'sessions', year), signal)
     for (const month of months) {
       if (!/^\d{2}$/.test(month)) continue
-      const monthDir = join(yearDir, month)
-      const days = await readdir(monthDir).catch(() => [] as string[])
-
+      const days = yield* readdirOrEmpty(join(codexDir, 'sessions', year, month), signal)
       for (const day of days) {
         if (!/^\d{2}$/.test(day)) continue
-        const dayDir = join(monthDir, day)
-        const files = await readdir(dayDir).catch(() => [] as string[])
-
+        const dayDir = join(codexDir, 'sessions', year, month, day)
+        const files = yield* readdirOrEmpty(dayDir, signal)
         for (const file of files) {
           if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue
-          const filePath = join(dayDir, file)
-          const source = await discoverSessionFile(filePath)
+          const source = yield* discoverSessionFile(join(dayDir, file), signal)
           if (source) sources.push(source)
         }
       }
     }
   }
 
-  // Codex moves archived sessions into a flat directory. Keep them in usage
-  // reports so archiving a conversation does not erase its historical usage.
+  // Archived sessions live in a flat directory and remain part of usage reports.
   const archivedDir = join(codexDir, 'archived_sessions')
-  const archivedFiles = await readdir(archivedDir).catch(() => [] as string[])
+  const archivedFiles = yield* readdirOrEmpty(archivedDir, signal)
   for (const file of archivedFiles) {
     if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue
-    const source = await discoverSessionFile(join(archivedDir, file))
+    const source = yield* discoverSessionFile(join(archivedDir, file), signal)
     if (source) sources.push(source)
   }
 
   return sources
-}
+})
 
 function resolveModel(info: CodexEntry['payload'], sessionModel?: string): string {
-  return info?.model
-    ?? info?.info?.model
-    ?? info?.info?.model_name
-    ?? sessionModel
-    ?? 'gpt-5'
+  return info?.model ?? info?.info?.model ?? info?.info?.model_name ?? sessionModel ?? 'gpt-5'
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const cached = await readCachedCodexResults(source.path)
-      if (cached) {
-        for (const call of cached) {
-          if (seenKeys.has(call.deduplicationKey)) continue
-          seenKeys.add(call.deduplicationKey)
-          yield call
-        }
-        return
-      }
-
-      const fp = await fingerprintFile(source.path)
-      if (!fp) return
-
-      let sessionModel: string | undefined
-      let sessionId = ''
-      let sessionCwd: string | undefined
-      let forkedFromId = ''
-      let forkCutoff = ''
-      // Null sentinel rather than `0` so the FIRST event is never confused
-      // with a duplicate. A session that only emits last_token_usage (no
-      // total_token_usage) reports cumulativeTotal=0 on every event; with a
-      // 0-initialized prev, the first event would have matched and been
-      // dropped. Once we've observed any event, we record its cumulative
-      // total and dedup on equality regardless of whether it is zero.
-      let prevCumulativeTotal: number | null = null
-      let prevInput = 0
-      let prevCached = 0
-      let prevOutput = 0
-      let prevReasoning = 0
-      let pendingTools: string[] = []
-      let pendingToolSequence: ToolCall[][] = []
-      let pendingUserMessage = ''
-      // Bounded assistant output text for the central PR scan (the agent
-      // printing the URL of the PR it just created). Transient evidence only.
-      let pendingAssistantText = ''
-      let pendingOutputChars = 0
-      // Rich-session-capture: edit LOC deltas and failed-patch count accumulated
-      // across a turn's patch_apply_end events, flushed onto the turn's call.
-      let pendingLocAdded = 0
-      let pendingLocRemoved = 0
-      let pendingEditFailed = 0
-      let estCounter = 0
-      let turnCounter = 0
-      let currentTurnId = `${sessionId}:t0`
-      let sawAnyLine = false
-      const results: ParsedProviderCall[] = []
-
-      // Stream the session file line by line. Heavy Codex sessions can exceed
-      // 250 MB on disk; reading the entire file into a string would either hit
-      // the readSessionFile cap or push V8 toward its 512 MB string limit
-      // after split('\n'). readSessionLines streams raw buffers and hands
-      // huge lines to the compact parser without full string conversion.
-      for await (const rawLine of readSessionLines(source.path, undefined, { largeLineAsBuffer: true })) {
-        sawAnyLine = true
-        const entry = parseCodexLine(rawLine)
-        if (!entry) continue
-
-        if (entry.type === 'session_meta') {
-          sessionId = entry.payload?.session_id ?? basename(source.path, '.jsonl')
-          sessionCwd = entry.payload?.cwd ?? sessionCwd
-          forkedFromId = entry.payload?.forked_from_id ?? ''
-          if (forkedFromId && entry.timestamp) {
-            forkCutoff = new Date(new Date(entry.timestamp).getTime() + 5000).toISOString()
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
+  const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.scoped(
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const { signal } = context ?? {}
+          const checkAbort = Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
+          yield* checkAbort
+          const lookup = yield* lookupCachedCodexResultsEffect(source.path, signal)
+          yield* checkAbort
+          const cached = lookup.calls
+          if (cached) {
+            return Stream.fromIterable(cached).pipe(
+              Stream.rechunk(1),
+              Stream.filterEffect(call =>
+                Effect.try({
+                  try: () => {
+                    throwIfScanAborted(signal)
+                    if (seenKeys.has(call.deduplicationKey)) return false
+                    seenKeys.add(call.deduplicationKey)
+                    return true
+                  },
+                  catch: toError,
+                }),
+              ),
+            )
           }
-          sessionModel = entry.payload?.model ?? sessionModel
-          continue
-        }
 
-        if (entry.type === 'turn_context' && entry.payload?.model) {
-          sessionModel = entry.payload.model
-          continue
-        }
+          const fp = lookup.fingerprint
+          yield* checkAbort
+          if (!fp) return Stream.empty
 
-        if (entry.type === 'response_item' && entry.payload?.type === 'function_call') {
-          const rawName = entry.payload.name ?? ''
-          const mapped = toolNameMap[rawName] ?? rawName
-          pendingTools.push(mapped)
-          const call: ToolCall = { tool: mapped }
-          const rawArgs = (entry.payload as Record<string, unknown>)['arguments']
-          const args = typeof rawArgs === 'string'
-            ? (() => { try { return JSON.parse(rawArgs) as Record<string, unknown> } catch { return null } })()
-            : typeof rawArgs === 'object' && rawArgs ? rawArgs as Record<string, unknown> : null
-          if (args) {
-            const fp = args['file_path'] ?? args['path']
-            if (typeof fp === 'string') call.file = fp
-            const cmd = args['command'] ?? args['cmd']
-            if (typeof cmd === 'string') call.command = cmd
-            // Attribute a CLI-wrapped MCP call (e.g. `mcp-cli call server tool`)
-            // to the MCP breakdown too; the exec still counts as Bash above.
-            const mcpTool = mcpToolFromShellCommand(cmd)
-            if (mcpTool) {
-              pendingTools.push(mcpTool)
-              pendingToolSequence.push([{ tool: mcpTool }])
+          let sessionModel: string | undefined
+          let sessionId = ''
+          let sessionCwd: string | undefined
+          let forkedFromId = ''
+          let forkCutoff = ''
+          // Null sentinel rather than `0` so the FIRST event is never confused
+          // with a duplicate. A session that only emits last_token_usage (no
+          // total_token_usage) reports cumulativeTotal=0 on every event; with a
+          // 0-initialized prev, the first event would have matched and been
+          // dropped. Once we've observed any event, we record its cumulative
+          // total and dedup on equality regardless of whether it is zero.
+          let prevCumulativeTotal: number | null = null
+          let prevInput = 0
+          let prevCached = 0
+          let prevOutput = 0
+          let prevReasoning = 0
+          let pendingTools: string[] = []
+          let pendingToolSequence: ToolCall[][] = []
+          let pendingUserMessage = ''
+          // Bounded assistant output text for the central PR scan (the agent
+          // printing the URL of the PR it just created). Transient evidence only.
+          let pendingAssistantText = ''
+          let pendingOutputChars = 0
+          // Rich-session-capture: edit LOC deltas and failed-patch count accumulated
+          // across a turn's patch_apply_end events, flushed onto the turn's call.
+          let pendingLocAdded = 0
+          let pendingLocRemoved = 0
+          let pendingEditFailed = 0
+          let estCounter = 0
+          let turnCounter = 0
+          let currentTurnId = `${sessionId}:t0`
+          let sawAnyLine = false
+          const results: ParsedProviderCall[] = []
+
+          // Per-line state changes remain synchronous; file IO and stream
+          // lifecycle belong to the native Effect workflow below.
+          const processLine = (rawLine: string | Buffer): void => {
+            throwIfScanAborted(signal)
+            const entry = parseCodexLine(rawLine)
+            if (!entry) return
+
+            if (entry.type === 'session_meta') {
+              sessionId = entry.payload?.session_id ?? basename(source.path, '.jsonl')
+              sessionCwd = entry.payload?.cwd ?? sessionCwd
+              forkedFromId = entry.payload?.forked_from_id ?? ''
+              if (forkedFromId && entry.timestamp) {
+                forkCutoff = new Date(new Date(entry.timestamp).getTime() + 5000).toISOString()
+              }
+              sessionModel = entry.payload?.model ?? sessionModel
+              return
+            }
+
+            if (entry.type === 'turn_context' && entry.payload?.model) {
+              sessionModel = entry.payload.model
+              return
+            }
+
+            if (entry.type === 'response_item' && entry.payload?.type === 'function_call') {
+              const rawName = entry.payload.name ?? ''
+              const mapped = toolNameMap[rawName] ?? rawName
+              pendingTools.push(mapped)
+              const call: ToolCall = { tool: mapped }
+              const rawArgs = (entry.payload as Record<string, unknown>)['arguments']
+              const args =
+                typeof rawArgs === 'string'
+                  ? (() => {
+                      try {
+                        return JSON.parse(rawArgs) as Record<string, unknown>
+                      } catch {
+                        return null
+                      }
+                    })()
+                  : typeof rawArgs === 'object' && rawArgs
+                    ? (rawArgs as Record<string, unknown>)
+                    : null
+              if (args) {
+                const fp = args['file_path'] ?? args['path']
+                if (typeof fp === 'string') call.file = fp
+                const cmd = args['command'] ?? args['cmd']
+                if (typeof cmd === 'string') call.command = cmd
+                // Attribute a CLI-wrapped MCP call (e.g. `mcp-cli call server tool`)
+                // to the MCP breakdown too; the exec still counts as Bash above.
+                const mcpTool = mcpToolFromShellCommand(cmd)
+                if (mcpTool) {
+                  pendingTools.push(mcpTool)
+                  pendingToolSequence.push([{ tool: mcpTool }])
+                }
+              }
+              pendingToolSequence.push([call])
+              return
+            }
+
+            if (entry.type === 'event_msg' && entry.payload?.type === 'patch_apply_end') {
+              pendingTools.push('Edit')
+              const p = entry.payload as Record<string, unknown>
+              const changes = p['changes']
+              const changesObj = typeof changes === 'object' && changes ? (changes as Record<string, unknown>) : {}
+              const filePaths = Object.keys(changesObj)
+              if (filePaths.length > 0) {
+                for (const fp of filePaths) {
+                  pendingToolSequence.push([{ tool: 'Edit', file: fp }])
+                  const diff = (changesObj[fp] as Record<string, unknown> | undefined)?.['unified_diff']
+                  const loc = countUnifiedDiffLoc(diff)
+                  pendingLocAdded += loc.added
+                  pendingLocRemoved += loc.removed
+                }
+              } else {
+                pendingToolSequence.push([{ tool: 'Edit' }])
+              }
+              // Only an explicit failure counts; a missing `success` is treated as ok.
+              if (p['success'] === false) pendingEditFailed++
+              return
+            }
+
+            // Recent Codex emits MCP calls as `event_msg`/`mcp_tool_call_end`
+            // instead of a `function_call` response_item, so the call was never
+            // attributed. Rebuild the canonical `mcp__<server>__<tool>` name the
+            // classifier recognizes.
+            if (entry.type === 'event_msg' && entry.payload?.type === 'mcp_tool_call_end') {
+              const inv = (entry.payload as Record<string, unknown>)['invocation'] as
+                Record<string, unknown> | undefined
+              const server = typeof inv?.['server'] === 'string' ? (inv['server'] as string) : ''
+              const tool = typeof inv?.['tool'] === 'string' ? (inv['tool'] as string) : ''
+              if (server && tool) {
+                const name = `mcp__${server}__${tool}`
+                pendingTools.push(name)
+                pendingToolSequence.push([{ tool: name }])
+              }
+              return
+            }
+
+            if (entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload?.role === 'user') {
+              const texts = normalizeContentBlocks(entry.payload.content)
+                .filter(c => c.type === 'input_text')
+                .map(c => c.text ?? '')
+                .filter(Boolean)
+              if (texts.length > 0) {
+                pendingUserMessage = texts.join(' ').slice(0, 500)
+                currentTurnId = `${sessionId}:t${++turnCounter}`
+              }
+              return
+            }
+
+            if (
+              entry.type === 'response_item' &&
+              entry.payload?.type === 'message' &&
+              entry.payload?.role === 'assistant'
+            ) {
+              const texts = normalizeContentBlocks(entry.payload.content)
+                .filter(c => c.type === 'output_text' || c.type === 'text')
+                .map(c => c.text ?? '')
+              pendingOutputChars += texts.join('').length
+              if (pendingAssistantText.length < 2000) {
+                pendingAssistantText = (pendingAssistantText + texts.join(' ')).slice(0, 2000)
+              }
+              return
+            }
+
+            if (entry.type === 'event_msg' && entry.payload?.type === 'token_count') {
+              // Forked sessions replay the parent's entire event history with
+              // timestamps clustered at the fork creation time. Skip replayed
+              // events (within 5s of fork) to avoid double-counting.
+              if (forkCutoff && entry.timestamp && entry.timestamp < forkCutoff) return
+              const info = entry.payload.info
+              if (!info) {
+                if (pendingOutputChars === 0 && pendingUserMessage.length === 0) return
+                const estInput = estimateTokensFromChars(pendingUserMessage.length)
+                const estOutput = estimateTokensFromChars(pendingOutputChars)
+                if (estInput === 0 && estOutput === 0) return
+
+                const model = sessionModel ?? 'gpt-5'
+                const timestamp = entry.timestamp ?? ''
+                const dedupKey = `codex:${sessionId}:${timestamp}:est${estCounter++}`
+
+                if (seenKeys.has(dedupKey)) {
+                  pendingTools = []
+                  pendingToolSequence = []
+                  pendingUserMessage = ''
+                  pendingAssistantText = ''
+                  pendingOutputChars = 0
+                  pendingLocAdded = 0
+                  pendingLocRemoved = 0
+                  pendingEditFailed = 0
+                  return
+                }
+                seenKeys.add(dedupKey)
+
+                const costUSD = pricing.calculateCost(model, estInput, estOutput, 0, 0, 0)
+
+                results.push({
+                  provider: 'codex',
+                  model,
+                  inputTokens: estInput,
+                  outputTokens: estOutput,
+                  cacheCreationInputTokens: 0,
+                  cacheReadInputTokens: 0,
+                  cachedInputTokens: 0,
+                  reasoningTokens: 0,
+                  webSearchRequests: 0,
+                  costUSD,
+                  costIsEstimated: true,
+                  tools: pendingTools,
+                  bashCommands: [],
+                  timestamp,
+                  speed: 'standard',
+                  deduplicationKey: dedupKey,
+                  turnId: currentTurnId,
+                  toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
+                  userMessage: pendingUserMessage,
+                  ...(pendingAssistantText ? { assistantText: pendingAssistantText } : {}),
+                  sessionId,
+                  ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
+                  ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
+                  ...(pendingLocRemoved ? { locRemoved: pendingLocRemoved } : {}),
+                  ...(pendingEditFailed ? { editFailed: pendingEditFailed } : {}),
+                })
+
+                pendingTools = []
+                pendingToolSequence = []
+                pendingUserMessage = ''
+                pendingAssistantText = ''
+                pendingOutputChars = 0
+                pendingLocAdded = 0
+                pendingLocRemoved = 0
+                pendingEditFailed = 0
+                return
+              }
+
+              const cumulativeTotal = info.total_token_usage?.total_tokens ?? 0
+              // Dedup guard. Two consecutive events with cumulativeTotal=0 but
+              // non-empty last_token_usage would have been double-counted with
+              // the previous `> 0` clause. The null sentinel ensures the FIRST
+              // event always passes (so a session that never reports cumulative
+              // doesn't lose its opening turn).
+              if (prevCumulativeTotal !== null && cumulativeTotal === prevCumulativeTotal) return
+              prevCumulativeTotal = cumulativeTotal
+
+              const last = info.last_token_usage
+              let inputTokens = 0
+              let cachedInputTokens = 0
+              let outputTokens = 0
+              let reasoningTokens = 0
+
+              if (last) {
+                inputTokens = last.input_tokens ?? 0
+                cachedInputTokens = last.cached_input_tokens ?? 0
+                outputTokens = last.output_tokens ?? 0
+                reasoningTokens = last.reasoning_output_tokens ?? 0
+              } else if (cumulativeTotal > 0) {
+                const total = info.total_token_usage
+                if (!total) return
+                inputTokens = (total.input_tokens ?? 0) - prevInput
+                cachedInputTokens = (total.cached_input_tokens ?? 0) - prevCached
+                outputTokens = (total.output_tokens ?? 0) - prevOutput
+                reasoningTokens = (total.reasoning_output_tokens ?? 0) - prevReasoning
+              }
+
+              // Always advance the prev counters to track the cumulative state.
+              // Previously prev was only updated on the fallback branch, so a
+              // session with mixed last_token_usage / no-last events would
+              // compute the next fallback delta against a stale prev=0 baseline,
+              // double-counting the entire cumulative window. The prev value
+              // must mirror what cumulative reports regardless of whether this
+              // event used `last` or fell back to deltas.
+              const total = info.total_token_usage
+              if (total) {
+                prevInput = total.input_tokens ?? 0
+                prevCached = total.cached_input_tokens ?? 0
+                prevOutput = total.output_tokens ?? 0
+                prevReasoning = total.reasoning_output_tokens ?? 0
+              }
+
+              const totalTokens = inputTokens + cachedInputTokens + outputTokens + reasoningTokens
+              if (totalTokens === 0) return
+
+              // OpenAI includes cached tokens inside input_tokens; Anthropic does not.
+              // Normalize to Anthropic semantics: inputTokens = non-cached only.
+              const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens)
+
+              const model = resolveModel(entry.payload, sessionModel)
+              const timestamp = entry.timestamp ?? ''
+              // Forked sessions copy the parent's entire token_count history
+              // (re-timestamped), so replays must collide with the parent's events
+              // and drop to avoid double-counting -- hence the parent namespace
+              // (forkedFromId) and the deliberate omission of the per-session id.
+              // But cumulativeTotal alone is too coarse a discriminator: a genuine
+              // post-divergence fork event whose running total coincidentally equals
+              // some parent total would also collide and be lost (undercount). So we
+              // also key on the cumulative token breakdown, which a fork replays
+              // verbatim from the parent -- a true replay collides exactly, while
+              // genuinely different work at the same total stays distinct. We use the
+              // CUMULATIVE figures (not the per-event deltas) on purpose: the deltas
+              // are computed against a running `prev` that the fork advances
+              // differently once the 5s cutoff skips some replays, so a delta-based
+              // key would spuriously diverge on a replay and double-count it.
+              const dedupKey = `codex:${forkedFromId || sessionId}:${cumulativeTotal}:${total?.input_tokens ?? 0}:${total?.cached_input_tokens ?? 0}:${total?.output_tokens ?? 0}:${total?.reasoning_output_tokens ?? 0}`
+
+              if (seenKeys.has(dedupKey)) return
+              seenKeys.add(dedupKey)
+
+              const costUSD = pricing.calculateCost(
+                model,
+                uncachedInputTokens,
+                // OpenAI's `reasoning_output_tokens` is a breakdown of
+                // `output_tokens`, not a sibling of it — the helper keeps the fold
+                // from billing the same tokens twice.
+                billableOutputTokens('codex', outputTokens, reasoningTokens),
+                0,
+                cachedInputTokens,
+                0,
+              )
+
+              results.push({
+                provider: 'codex',
+                model,
+                inputTokens: uncachedInputTokens,
+                outputTokens,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: cachedInputTokens,
+                cachedInputTokens,
+                reasoningTokens,
+                webSearchRequests: 0,
+                costUSD,
+                tools: pendingTools,
+                bashCommands: [],
+                timestamp,
+                speed: 'standard',
+                deduplicationKey: dedupKey,
+                turnId: currentTurnId,
+                toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
+                userMessage: pendingUserMessage,
+                ...(pendingAssistantText ? { assistantText: pendingAssistantText } : {}),
+                sessionId,
+                ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
+                ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
+                ...(pendingLocRemoved ? { locRemoved: pendingLocRemoved } : {}),
+                ...(pendingEditFailed ? { editFailed: pendingEditFailed } : {}),
+              })
+
+              pendingTools = []
+              pendingToolSequence = []
+              pendingUserMessage = ''
+              pendingAssistantText = ''
+              pendingOutputChars = 0
+              pendingLocAdded = 0
+              pendingLocRemoved = 0
+              pendingEditFailed = 0
             }
           }
-          pendingToolSequence.push([call])
-          continue
-        }
 
-        if (entry.type === 'event_msg' && entry.payload?.type === 'patch_apply_end') {
-          pendingTools.push('Edit')
-          const p = entry.payload as Record<string, unknown>
-          const changes = p['changes']
-          const changesObj = typeof changes === 'object' && changes ? changes as Record<string, unknown> : {}
-          const filePaths = Object.keys(changesObj)
-          if (filePaths.length > 0) {
-            for (const fp of filePaths) {
-              pendingToolSequence.push([{ tool: 'Edit', file: fp }])
-              const diff = (changesObj[fp] as Record<string, unknown> | undefined)?.['unified_diff']
-              const loc = countUnifiedDiffLoc(diff)
-              pendingLocAdded += loc.added
-              pendingLocRemoved += loc.removed
-            }
-          } else {
-            pendingToolSequence.push([{ tool: 'Edit' }])
-          }
-          // Only an explicit failure counts; a missing `success` is treated as ok.
-          if (p['success'] === false) pendingEditFailed++
-          continue
-        }
-
-        // Recent Codex emits MCP calls as `event_msg`/`mcp_tool_call_end`
-        // instead of a `function_call` response_item, so the call was never
-        // attributed. Rebuild the canonical `mcp__<server>__<tool>` name the
-        // classifier recognizes.
-        if (entry.type === 'event_msg' && entry.payload?.type === 'mcp_tool_call_end') {
-          const inv = (entry.payload as Record<string, unknown>)['invocation'] as Record<string, unknown> | undefined
-          const server = typeof inv?.['server'] === 'string' ? inv['server'] as string : ''
-          const tool = typeof inv?.['tool'] === 'string' ? inv['tool'] as string : ''
-          if (server && tool) {
-            const name = `mcp__${server}__${tool}`
-            pendingTools.push(name)
-            pendingToolSequence.push([{ tool: name }])
-          }
-          continue
-        }
-
-        if (entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload?.role === 'user') {
-          const texts = normalizeContentBlocks(entry.payload.content)
-            .filter(c => c.type === 'input_text')
-            .map(c => c.text ?? '')
-            .filter(Boolean)
-          if (texts.length > 0) {
-            pendingUserMessage = texts.join(' ').slice(0, 500)
-            currentTurnId = `${sessionId}:t${++turnCounter}`
-          }
-          continue
-        }
-
-        if (entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload?.role === 'assistant') {
-          const texts = normalizeContentBlocks(entry.payload.content)
-            .filter(c => c.type === 'output_text' || c.type === 'text')
-            .map(c => c.text ?? '')
-          pendingOutputChars += texts.join('').length
-          if (pendingAssistantText.length < 2000) {
-            pendingAssistantText = (pendingAssistantText + texts.join(' ')).slice(0, 2000)
-          }
-          continue
-        }
-
-        if (entry.type === 'event_msg' && entry.payload?.type === 'token_count') {
-          // Forked sessions replay the parent's entire event history with
-          // timestamps clustered at the fork creation time. Skip replayed
-          // events (within 5s of fork) to avoid double-counting.
-          if (forkCutoff && entry.timestamp && entry.timestamp < forkCutoff) continue
-          const info = entry.payload.info
-          if (!info) {
-            if (pendingOutputChars === 0 && pendingUserMessage.length === 0) continue
-            const estInput = estimateTokensFromChars(pendingUserMessage.length)
-            const estOutput = estimateTokensFromChars(pendingOutputChars)
-            if (estInput === 0 && estOutput === 0) continue
-
-            const model = sessionModel ?? 'gpt-5'
-            const timestamp = entry.timestamp ?? ''
-            const dedupKey = `codex:${sessionId}:${timestamp}:est${estCounter++}`
-
-            if (seenKeys.has(dedupKey)) { pendingTools = []; pendingToolSequence = []; pendingUserMessage = ''; pendingAssistantText = ''; pendingOutputChars = 0; pendingLocAdded = 0; pendingLocRemoved = 0; pendingEditFailed = 0; continue }
-            seenKeys.add(dedupKey)
-
-            const costUSD = calculateCost(model, estInput, estOutput, 0, 0, 0)
-
-            results.push({
-              provider: 'codex',
-              model,
-              inputTokens: estInput,
-              outputTokens: estOutput,
-              cacheCreationInputTokens: 0,
-              cacheReadInputTokens: 0,
-              cachedInputTokens: 0,
-              reasoningTokens: 0,
-              webSearchRequests: 0,
-              costUSD,
-              costIsEstimated: true,
-              tools: pendingTools,
-              bashCommands: [],
-              timestamp,
-              speed: 'standard',
-              deduplicationKey: dedupKey,
-              turnId: currentTurnId,
-              toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
-              userMessage: pendingUserMessage,
-              ...(pendingAssistantText ? { assistantText: pendingAssistantText } : {}),
-              sessionId,
-              ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
-              ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
-              ...(pendingLocRemoved ? { locRemoved: pendingLocRemoved } : {}),
-              ...(pendingEditFailed ? { editFailed: pendingEditFailed } : {}),
-            })
-
-            pendingTools = []
-            pendingToolSequence = []
-            pendingUserMessage = ''
-            pendingAssistantText = ''
-            pendingOutputChars = 0
-            pendingLocAdded = 0
-            pendingLocRemoved = 0
-            pendingEditFailed = 0
-            continue
-          }
-
-          const cumulativeTotal = info.total_token_usage?.total_tokens ?? 0
-          // Dedup guard. Two consecutive events with cumulativeTotal=0 but
-          // non-empty last_token_usage would have been double-counted with
-          // the previous `> 0` clause. The null sentinel ensures the FIRST
-          // event always passes (so a session that never reports cumulative
-          // doesn't lose its opening turn).
-          if (prevCumulativeTotal !== null && cumulativeTotal === prevCumulativeTotal) continue
-          prevCumulativeTotal = cumulativeTotal
-
-          const last = info.last_token_usage
-          let inputTokens = 0
-          let cachedInputTokens = 0
-          let outputTokens = 0
-          let reasoningTokens = 0
-
-          if (last) {
-            inputTokens = last.input_tokens ?? 0
-            cachedInputTokens = last.cached_input_tokens ?? 0
-            outputTokens = last.output_tokens ?? 0
-            reasoningTokens = last.reasoning_output_tokens ?? 0
-          } else if (cumulativeTotal > 0) {
-            const total = info.total_token_usage
-            if (!total) continue
-            inputTokens = (total.input_tokens ?? 0) - prevInput
-            cachedInputTokens = (total.cached_input_tokens ?? 0) - prevCached
-            outputTokens = (total.output_tokens ?? 0) - prevOutput
-            reasoningTokens = (total.reasoning_output_tokens ?? 0) - prevReasoning
-          }
-
-          // Always advance the prev counters to track the cumulative state.
-          // Previously prev was only updated on the fallback branch, so a
-          // session with mixed last_token_usage / no-last events would
-          // compute the next fallback delta against a stale prev=0 baseline,
-          // double-counting the entire cumulative window. The prev value
-          // must mirror what cumulative reports regardless of whether this
-          // event used `last` or fell back to deltas.
-          const total = info.total_token_usage
-          if (total) {
-            prevInput = total.input_tokens ?? 0
-            prevCached = total.cached_input_tokens ?? 0
-            prevOutput = total.output_tokens ?? 0
-            prevReasoning = total.reasoning_output_tokens ?? 0
-          }
-
-          const totalTokens = inputTokens + cachedInputTokens + outputTokens + reasoningTokens
-          if (totalTokens === 0) continue
-
-          // OpenAI includes cached tokens inside input_tokens; Anthropic does not.
-          // Normalize to Anthropic semantics: inputTokens = non-cached only.
-          const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens)
-
-          const model = resolveModel(entry.payload, sessionModel)
-          const timestamp = entry.timestamp ?? ''
-          // Forked sessions copy the parent's entire token_count history
-          // (re-timestamped), so replays must collide with the parent's events
-          // and drop to avoid double-counting -- hence the parent namespace
-          // (forkedFromId) and the deliberate omission of the per-session id.
-          // But cumulativeTotal alone is too coarse a discriminator: a genuine
-          // post-divergence fork event whose running total coincidentally equals
-          // some parent total would also collide and be lost (undercount). So we
-          // also key on the cumulative token breakdown, which a fork replays
-          // verbatim from the parent -- a true replay collides exactly, while
-          // genuinely different work at the same total stays distinct. We use the
-          // CUMULATIVE figures (not the per-event deltas) on purpose: the deltas
-          // are computed against a running `prev` that the fork advances
-          // differently once the 5s cutoff skips some replays, so a delta-based
-          // key would spuriously diverge on a replay and double-count it.
-          const dedupKey = `codex:${forkedFromId || sessionId}:${cumulativeTotal}:${total?.input_tokens ?? 0}:${total?.cached_input_tokens ?? 0}:${total?.output_tokens ?? 0}:${total?.reasoning_output_tokens ?? 0}`
-
-          if (seenKeys.has(dedupKey)) continue
-          seenKeys.add(dedupKey)
-
-          const costUSD = calculateCost(
-            model,
-            uncachedInputTokens,
-            outputTokens + reasoningTokens,
-            0,
-            cachedInputTokens,
-            0,
+          yield* Stream.runForEach(
+            readSessionLinesStream(source.path, undefined, {
+              largeLineAsBuffer: true,
+              ...(signal ? { signal } : {}),
+            }),
+            rawLine =>
+              Effect.try({
+                try: () => {
+                  sawAnyLine = true
+                  processLine(rawLine)
+                },
+                catch: toError,
+              }),
           )
 
-          results.push({
-            provider: 'codex',
-            model,
-            inputTokens: uncachedInputTokens,
-            outputTokens,
-            cacheCreationInputTokens: 0,
-            cacheReadInputTokens: cachedInputTokens,
-            cachedInputTokens,
-            reasoningTokens,
-            webSearchRequests: 0,
-            costUSD,
-            tools: pendingTools,
-            bashCommands: [],
-            timestamp,
-            speed: 'standard',
-            deduplicationKey: dedupKey,
-            turnId: currentTurnId,
-            toolSequence: pendingToolSequence.length > 0 ? pendingToolSequence : undefined,
-            userMessage: pendingUserMessage,
-            ...(pendingAssistantText ? { assistantText: pendingAssistantText } : {}),
-            sessionId,
-            ...(sessionCwd ? { projectPath: sessionCwd, workingDirectory: sessionCwd } : {}),
-            ...(pendingLocAdded ? { locAdded: pendingLocAdded } : {}),
-            ...(pendingLocRemoved ? { locRemoved: pendingLocRemoved } : {}),
-            ...(pendingEditFailed ? { editFailed: pendingEditFailed } : {}),
-          })
+          // If the stream yielded nothing the file was unreadable, oversized, or
+          // empty. Skip cache write so a transient failure can't pin an empty
+          // result set against a fingerprint that would otherwise be re-parsed.
+          yield* checkAbort
+          if (!sawAnyLine) return Stream.empty
 
-          pendingTools = []
-          pendingToolSequence = []
-          pendingUserMessage = ''
-          pendingAssistantText = ''
-          pendingOutputChars = 0
-          pendingLocAdded = 0
-          pendingLocRemoved = 0
-          pendingEditFailed = 0
-        }
-      }
+          yield* writeCachedCodexResultsEffect(source.path, source.project, results, fp, signal)
+          yield* checkAbort
 
-      // If the stream yielded nothing the file was unreadable, oversized, or
-      // empty. Skip cache write so a transient failure can't pin an empty
-      // result set against a fingerprint that would otherwise be re-parsed.
-      if (!sawAnyLine) return
+          return Stream.fromIterable(results)
+        }),
+      ),
+    )
 
-      await writeCachedCodexResults(source.path, source.project, results, fp)
-
-      for (const call of results) {
-        yield call
-      }
+  return {
+    parseStream,
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      yield* Stream.toAsyncIterable(parseStream())
     },
   }
 }
 
-export function createCodexProvider(codexDir?: string): Provider {
-  const dir = getCodexDir(codexDir)
+export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provider {
+  // One trailing snapshot param, never a second "override" slot: the explicit
+  // `codexDir` wins, then `AppPaths.codexHome` — the `CODEX_HOME` value the
+  // startup snapshot reports, or the homedir default when the var is unset.
+  // The seam keeps its own `??` chain, so an uninitialized snapshot resolves
+  // exactly the `process.env['CODEX_HOME']` the pre-snapshot read saw.
+  //
+  // A FUNCTION, not a value: the dir is resolved per call so this factory is
+  // safe to run at module-evaluation time (the registry imports the singleton
+  // below, and module bodies evaluate before any importer's body, so a value
+  // captured here would freeze the pre-`initAppPaths` snapshot). Every other
+  // seam already resolves `appPaths()` inside its call; this one now does too.
+  const dir = (): string => resolveCodexHome((paths ?? appPaths()).codexHome, codexDir)
+  const discoverEffect = (context?: ProviderScanContext): Effect.Effect<SessionSource[], Error> =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Effect.try({ try: () => throwIfScanAborted(context?.signal), catch: toError })
+        return yield* discoverSessionsInDir(dir(), context?.signal)
+      }),
+    )
 
   return {
     name: 'codex',
@@ -748,23 +886,46 @@ export function createCodexProvider(codexDir?: string): Provider {
       return toolNameMap[rawTool] ?? rawTool
     },
 
-    // Same `dir` discoverSessionsInDir walks: <codexDir>/sessions (dated
-    // rollout files) and <codexDir>/archived_sessions. Honors CODEX_HOME.
+    // `<home>/sessions` (dated rollout files) and `<home>/archived_sessions`
+    // are the two roots `discoverSessionsInDir` walks, where `home` is `dir()`
+    // resolved at this call. Honors CODEX_HOME.
     async probeRoots(): Promise<ProbeRoot[]> {
+      const home = dir()
       return [
-        { path: join(dir, 'sessions'), label: 'sessions' },
-        { path: join(dir, 'archived_sessions'), label: 'archived' },
+        { path: join(home, 'sessions'), label: 'sessions' },
+        { path: join(home, 'archived_sessions'), label: 'archived' },
       ]
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      return discoverSessionsInDir(dir)
+    discoverSessionsEffect: discoverEffect,
+
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      return Effect.runPromise(discoverEffect(context))
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }
 
+// The registry (`providers/index.ts`) imports this singleton, and it is built
+// with NO threaded record for the same reason `export const opencode =
+// createOpenCodeProvider()` is: the seam falls back to `appPaths()` at CALL
+// time, so the record the importer's `initAppPaths` installs is honoured.
+//
+// LAZY, deliberately — and the ordering constraint that used to force the
+// opposite is gone. Module bodies evaluate BEFORE any importer's body, so the
+// previous `createCodexProvider(undefined, appPaths())` captured the snapshot
+// from BEFORE `initAppPaths` runs in either isolate: a boot-time
+// `initAppPaths({ codexHome })` would have been ignored by `codex` while every
+// other provider honoured it. That was invisible only because an uninitialized
+// `codexHome` falls back to the same `process.env['CODEX_HOME']` the seam
+// always read. Per-call resolution is what makes `codex` report the pin the
+// moment boot makes it, with no import-order contract to maintain.
 export const codex = createCodexProvider()

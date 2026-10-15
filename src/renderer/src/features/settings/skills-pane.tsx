@@ -15,14 +15,12 @@ export function SkillsPane() {
   return (
     <div className="flex max-w-md flex-col gap-5">
       <div className="flex flex-col gap-2">
-        <p className="text-[10.5px] font-semibold tracking-[0.05em] text-muted-foreground uppercase">
-          Detection
-        </p>
+        <p className="text-muted-foreground text-[10.5px] font-semibold tracking-[0.05em] uppercase">Detection</p>
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="skills-frequency" className="text-[12.5px] font-medium text-foreground">
+          <label htmlFor="skills-frequency" className="text-foreground text-[12.5px] font-medium">
             Minimum frequency
           </label>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-muted-foreground text-[11px]">
             How often a pattern must appear in the current scope before it is proposed as a draft skill.
           </p>
           <input
@@ -31,14 +29,14 @@ export function SkillsPane() {
             min={1}
             value={frequency}
             onChange={e => setSkillsThresholds(clamp(Number(e.target.value)), spread)}
-            className="mt-1 w-28 rounded-md border border-border bg-card px-2.5 py-1.5 text-[12.5px] tabular-nums text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            className="border-border bg-card text-foreground focus:ring-ring mt-1 w-28 rounded-md border px-2.5 py-1.5 text-[12.5px] tabular-nums focus:ring-1 focus:outline-none"
           />
         </div>
         <div className="flex flex-col gap-1.5">
-          <label htmlFor="skills-spread" className="text-[12.5px] font-medium text-foreground">
+          <label htmlFor="skills-spread" className="text-foreground text-[12.5px] font-medium">
             Minimum spread
           </label>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-muted-foreground text-[11px]">
             How many distinct sessions or projects the pattern must span before it counts as a workflow habit.
           </p>
           <input
@@ -47,7 +45,7 @@ export function SkillsPane() {
             min={1}
             value={spread}
             onChange={e => setSkillsThresholds(frequency, clamp(Number(e.target.value)))}
-            className="mt-1 w-28 rounded-md border border-border bg-card px-2.5 py-1.5 text-[12.5px] tabular-nums text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            className="border-border bg-card text-foreground focus:ring-ring mt-1 w-28 rounded-md border px-2.5 py-1.5 text-[12.5px] tabular-nums focus:ring-1 focus:outline-none"
           />
         </div>
       </div>

@@ -6,7 +6,7 @@ export function ScanIndicator() {
   const scanning = useScanStore(s => s.scanning)
   return (
     <div
-      className={`h-[2px] shrink-0 transition-colors ${scanning ? 'animate-pulse bg-primary' : 'bg-transparent'}`}
+      className={`h-[2px] shrink-0 transition-colors ${scanning ? 'bg-primary animate-pulse' : 'bg-transparent'}`}
       role="status"
       aria-label={scanning ? 'Refreshing data in the background' : undefined}
     />

@@ -1,6 +1,14 @@
 import {
-  ArrowLeftRight, BarChart3, Flame, GitPullRequestArrow, LayoutDashboard,
-  Layers, Lightbulb, PanelsTopLeft, Settings, Sparkles,
+  ArrowLeftRight,
+  BarChart3,
+  Flame,
+  GitPullRequestArrow,
+  LayoutDashboard,
+  Layers,
+  Lightbulb,
+  PanelsTopLeft,
+  Settings,
+  Sparkles,
 } from 'lucide-react'
 import type { OnboardingStep } from '../../../../shared/schemas/renderer.js'
 export type { OnboardingStep }

@@ -11,7 +11,12 @@ export function DashboardLayout() {
   return (
     <>
       <TopBar />
-      <div className={motionClass('flex min-h-0 flex-1 flex-col items-center overflow-y-auto gap-4 px-5 pt-4 pb-4', 'section-fade')}>
+      <div
+        className={motionClass(
+          'flex min-h-0 flex-1 flex-col items-center gap-4 overflow-y-auto px-5 pt-4 pb-4',
+          'section-fade',
+        )}
+      >
         <Outlet />
       </div>
       <StatusBar />

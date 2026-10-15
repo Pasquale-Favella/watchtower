@@ -15,7 +15,7 @@ export function InfoTip({ label, text, className }: { label: string; text: strin
             type="button"
             aria-label={label}
             className={cn(
-              'inline-flex shrink-0 cursor-help items-center rounded-sm text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
+              'text-muted-foreground/70 hover:text-foreground focus-visible:outline-ring inline-flex shrink-0 cursor-help items-center rounded-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-1',
               className,
             )}
           >

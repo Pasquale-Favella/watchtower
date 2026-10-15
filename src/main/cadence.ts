@@ -15,7 +15,7 @@ export const CADENCE_OPTIONS: readonly CadenceOption[] = [
   { value: '1m', label: '1 minute', ms: 60_000 },
   { value: '3m', label: '3 minutes', ms: 180_000 },
   { value: '5m', label: '5 minutes', ms: 300_000 },
-  { value: '10m', label: '10 minutes', ms: 600_000 }
+  { value: '10m', label: '10 minutes', ms: 600_000 },
 ]
 
 /** Matches the reference app's default (halves idle scan frequency vs. 30s

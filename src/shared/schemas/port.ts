@@ -1,118 +1,125 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
+
 import { toolCallSchema } from './pipeline.js'
-import { cachedFileSchema, fileFingerprintSchema, type FileFingerprint } from './session-cache.js'
+import { cachedFileSchema, type FileFingerprint, fileFingerprintSchema } from './session-cache.js'
+
+const finiteNumber = Schema.Number.pipe(Schema.check(Schema.isFinite()))
+const writable = Schema.mutableKey
+const stringArray = Schema.mutable(Schema.Array(Schema.String))
+const toolSequence = Schema.mutable(Schema.Array(Schema.mutable(Schema.Array(toolCallSchema))))
+const stringRecord = Schema.Record(Schema.String, writable(Schema.String))
 
 /** The verdict a scan delta assigns a session-cache file. */
-export const fileVerdictSchema = z.enum(['new', 'appended', 'modified', 'unchanged'])
-export type FileVerdict = z.infer<typeof fileVerdictSchema>
+export const fileVerdictSchema = Schema.Literals(['new', 'appended', 'modified', 'unchanged'])
+export type FileVerdict = Schema.Schema.Type<typeof fileVerdictSchema>
 
 /** The port-in request: one session-cache file's delta plus the discovery-time
  * metadata that the cached file itself cannot carry. `cachedFile` is the
  * cache's own validated blob. */
-export const portInputSchema = z.object({
-  provider: z.string(),
-  envFingerprint: z.string(),
-  filePath: z.string(),
-  verdict: fileVerdictSchema,
-  cachedFile: cachedFileSchema,
-  repoUrl: z.string().optional(),
-  durable: z.boolean().optional(),
-  project: z.string().optional(),
-  workingDirectory: z.string().optional(),
+export const portInputSchema = Schema.Struct({
+  provider: writable(Schema.String),
+  envFingerprint: writable(Schema.String),
+  filePath: writable(Schema.String),
+  verdict: writable(fileVerdictSchema),
+  cachedFile: writable(cachedFileSchema),
+  repoUrl: writable(Schema.optional(Schema.String)),
+  durable: writable(Schema.optional(Schema.Boolean)),
+  project: writable(Schema.optional(Schema.String)),
+  workingDirectory: writable(Schema.optional(Schema.String)),
 })
-export type PortInput = z.infer<typeof portInputSchema>
+export type PortInput = Schema.Schema.Type<typeof portInputSchema>
 
-export const mappedSourceSchema = z.object({
-  provider: z.string(),
-  envFingerprint: z.string(),
-  filePath: z.string(),
-  repoUrl: z.string().optional(),
-  fingerprint: fileFingerprintSchema,
+export const mappedSourceSchema = Schema.Struct({
+  provider: writable(Schema.String),
+  envFingerprint: writable(Schema.String),
+  filePath: writable(Schema.String),
+  repoUrl: writable(Schema.optional(Schema.String)),
+  fingerprint: writable(fileFingerprintSchema),
 })
-export type MappedSource = z.infer<typeof mappedSourceSchema>
+export type MappedSource = Schema.Schema.Type<typeof mappedSourceSchema>
 
 /** The port-in source fingerprint is the cache's numeric `FileFingerprint`.
  * (The ledger read-back fingerprint is a distinct string-flavoured shape.) */
 export type MappedFingerprint = FileFingerprint
 
-export const mappedSessionSchema = z.object({
-  sessionId: z.string(),
-  project: z.string().nullable(),
-  projectPath: z.string().nullable(),
-  workingDirectory: z.string().nullable(),
-  canonicalProject: z.string().nullable(),
-  canonicalCwd: z.string().nullable(),
-  agentType: z.string().nullable(),
-  title: z.string().nullable(),
-  prLinks: z.array(z.string()),
-  isSidechain: z.boolean(),
-  parentSessionId: z.string().nullable(),
-  agentSpawnLinks: z.record(z.string(), z.string()),
-  mcpInventory: z.array(z.string()),
-  everHadBranch: z.boolean(),
-  ambiguousSpawnAgentIds: z.array(z.string()),
+export const mappedSessionSchema = Schema.Struct({
+  sessionId: writable(Schema.String),
+  project: writable(Schema.NullOr(Schema.String)),
+  projectPath: writable(Schema.NullOr(Schema.String)),
+  workingDirectory: writable(Schema.NullOr(Schema.String)),
+  canonicalProject: writable(Schema.NullOr(Schema.String)),
+  canonicalCwd: writable(Schema.NullOr(Schema.String)),
+  agentType: writable(Schema.NullOr(Schema.String)),
+  title: writable(Schema.NullOr(Schema.String)),
+  prLinks: writable(stringArray),
+  isSidechain: writable(Schema.Boolean),
+  parentSessionId: writable(Schema.NullOr(Schema.String)),
+  agentSpawnLinks: writable(stringRecord),
+  mcpInventory: writable(stringArray),
+  everHadBranch: writable(Schema.Boolean),
+  ambiguousSpawnAgentIds: writable(stringArray),
 })
-export type MappedSession = z.infer<typeof mappedSessionSchema>
+export type MappedSession = Schema.Schema.Type<typeof mappedSessionSchema>
 
-export const mappedTurnSchema = z.object({
-  sessionId: z.string(),
-  turnIndex: z.number(),
-  timestamp: z.string(),
-  userMessage: z.string(),
-  gitBranch: z.string().nullable(),
-  prRefs: z.array(z.string()),
-  spawnToolUseIds: z.array(z.string()),
-  category: z.string(),
-  subCategory: z.string().nullable(),
-  retries: z.number(),
-  hasEdits: z.boolean(),
+export const mappedTurnSchema = Schema.Struct({
+  sessionId: writable(Schema.String),
+  turnIndex: writable(finiteNumber),
+  timestamp: writable(Schema.String),
+  userMessage: writable(Schema.String),
+  gitBranch: writable(Schema.NullOr(Schema.String)),
+  prRefs: writable(stringArray),
+  spawnToolUseIds: writable(stringArray),
+  category: writable(Schema.String),
+  subCategory: writable(Schema.NullOr(Schema.String)),
+  retries: writable(finiteNumber),
+  hasEdits: writable(Schema.Boolean),
 })
-export type MappedTurn = z.infer<typeof mappedTurnSchema>
+export type MappedTurn = Schema.Schema.Type<typeof mappedTurnSchema>
 
-export const mappedCallSchema = z.object({
-  sessionId: z.string(),
-  turnIndex: z.number(),
-  callIndex: z.number(),
-  dedupKey: z.string().nullable(),
-  provider: z.string(),
-  model: z.string(),
-  timestamp: z.string(),
-  speed: z.enum(['standard', 'fast']),
-  project: z.string().nullable(),
-  projectPath: z.string().nullable(),
-  workingDirectory: z.string().nullable(),
-  baseCostUSD: z.number(),
-  isEstimated: z.boolean(),
-  savingsUSD: z.number(),
-  savingsBaselineModel: z.string().nullable(),
-  inputTokens: z.number(),
-  outputTokens: z.number(),
-  cacheCreationInputTokens: z.number(),
-  cacheReadInputTokens: z.number(),
-  cachedInputTokens: z.number(),
-  reasoningTokens: z.number(),
-  webSearchRequests: z.number(),
-  cacheCreationOneHourTokens: z.number(),
-  agentType: z.string().nullable(),
-  tools: z.array(z.string()),
-  mcpTools: z.array(z.string()),
-  skills: z.array(z.string()),
-  subagentTypes: z.array(z.string()),
-  bashCommands: z.array(z.string()),
-  toolSequence: z.array(z.array(toolCallSchema)),
-  locAdded: z.number().nullable(),
-  locRemoved: z.number().nullable(),
-  interrupted: z.boolean(),
-  userModified: z.boolean(),
-  toolErrors: z.number(),
-  editFailed: z.number(),
+export const mappedCallSchema = Schema.Struct({
+  sessionId: writable(Schema.String),
+  turnIndex: writable(finiteNumber),
+  callIndex: writable(finiteNumber),
+  dedupKey: writable(Schema.NullOr(Schema.String)),
+  provider: writable(Schema.String),
+  model: writable(Schema.String),
+  timestamp: writable(Schema.String),
+  speed: writable(Schema.Literals(['standard', 'fast'])),
+  project: writable(Schema.NullOr(Schema.String)),
+  projectPath: writable(Schema.NullOr(Schema.String)),
+  workingDirectory: writable(Schema.NullOr(Schema.String)),
+  baseCostUSD: writable(finiteNumber),
+  isEstimated: writable(Schema.Boolean),
+  savingsUSD: writable(finiteNumber),
+  savingsBaselineModel: writable(Schema.NullOr(Schema.String)),
+  inputTokens: writable(finiteNumber),
+  outputTokens: writable(finiteNumber),
+  cacheCreationInputTokens: writable(finiteNumber),
+  cacheReadInputTokens: writable(finiteNumber),
+  cachedInputTokens: writable(finiteNumber),
+  reasoningTokens: writable(finiteNumber),
+  webSearchRequests: writable(finiteNumber),
+  cacheCreationOneHourTokens: writable(finiteNumber),
+  agentType: writable(Schema.NullOr(Schema.String)),
+  tools: writable(stringArray),
+  mcpTools: writable(stringArray),
+  skills: writable(stringArray),
+  subagentTypes: writable(stringArray),
+  bashCommands: writable(stringArray),
+  toolSequence: writable(toolSequence),
+  locAdded: writable(Schema.NullOr(finiteNumber)),
+  locRemoved: writable(Schema.NullOr(finiteNumber)),
+  interrupted: writable(Schema.Boolean),
+  userModified: writable(Schema.Boolean),
+  toolErrors: writable(finiteNumber),
+  editFailed: writable(finiteNumber),
 })
-export type MappedCall = z.infer<typeof mappedCallSchema>
+export type MappedCall = Schema.Schema.Type<typeof mappedCallSchema>
 
-export const mappedFileSchema = z.object({
-  source: mappedSourceSchema,
-  session: mappedSessionSchema,
-  turns: z.array(mappedTurnSchema),
-  calls: z.array(mappedCallSchema),
+export const mappedFileSchema = Schema.Struct({
+  source: writable(mappedSourceSchema),
+  session: writable(mappedSessionSchema),
+  turns: writable(Schema.mutable(Schema.Array(mappedTurnSchema))),
+  calls: writable(Schema.mutable(Schema.Array(mappedCallSchema))),
 })
-export type MappedFile = z.infer<typeof mappedFileSchema>
+export type MappedFile = Schema.Schema.Type<typeof mappedFileSchema>

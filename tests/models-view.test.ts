@@ -1,21 +1,26 @@
+import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import type { TokenUsage } from '../src/main/pipeline/types.js'
+
+import { queryModelsView } from '../src/main/application/models-query.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { buildModelsViewFromLedger, type ModelsConfig } from '../src/main/models-view.js'
-import { buildFixtureCachedFile, buildFixtureCachedTurn, buildFixtureCachedCall } from './fixtures/cached-file.js'
+import type { TokenUsage } from '../src/main/pipeline/types.js'
+import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
 import {
-  categoryLabel, formatCompact, formatUsd, groupTaskRows,
-  isAuditEstimated, isUnpriced, providerTitle, sumGroup,
+  categoryLabel,
+  formatCompact,
+  formatUsd,
+  groupTaskRows,
+  isAuditEstimated,
+  isUnpriced,
+  providerTitle,
+  sumGroup,
 } from '../src/renderer/src/shared/lib/models.js'
+import type { ModelsConfig, ModelsPayload } from '../src/shared/schemas/models.js'
+import type { OverviewScope } from '../src/shared/schemas/overview.js'
+import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 const NOW = new Date(2026, 6, 15)
-const EMPTY_CONFIG: ModelsConfig = { aliases: [], overrides: [] }
-
-
 // ── Ledger-backed Models view (map 04) ─────────────────────────────────────
 
 type ModelsSessionSpec = {
@@ -29,9 +34,11 @@ type ModelsSessionSpec = {
   speed?: 'standard' | 'fast'
 }
 
-function modelsMakeLedger(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-models-'))
-  return new LedgerStore(join(dir, 'data.db'))
+function modelsView(
+  runtime: ReturnType<typeof openLedgerFixture>['runtime'],
+  scope: OverviewScope = { period: 'lifetime' },
+): ModelsPayload {
+  return runtime.runSync(atTime(queryModelsView(viewInputs(scope)), NOW))
 }
 
 function modelsCachedFile(index: number, spec: ModelsSessionSpec): CachedFile {
@@ -54,78 +61,150 @@ function modelsCachedFile(index: number, spec: ModelsSessionSpec): CachedFile {
   return buildFixtureCachedFile({ canonicalProjectName: spec.project, title: '', turns: [turn] })
 }
 
-function modelsPort(store: LedgerStore, specs: ModelsSessionSpec[]): void {
-  specs.forEach((spec, i) => {
-    store.portIn({
-      provider: spec.provider,
-      envFingerprint: 'env-demo',
-      filePath: `/cache/${spec.provider}/${spec.sessionId}.jsonl`,
-      verdict: 'new',
-      cachedFile: modelsCachedFile(i, spec),
-    })
-  })
+function modelsPort(runtime: ReturnType<typeof openLedgerFixture>['runtime'], specs: ModelsSessionSpec[]): void {
+  runtime.runSync(
+    Effect.flatMap(LedgerIngest, ingest =>
+      Effect.forEach(specs, (spec, i) =>
+        ingest.portIn({
+          provider: spec.provider,
+          envFingerprint: 'env-demo',
+          filePath: `/cache/${spec.provider}/${spec.sessionId}.jsonl`,
+          verdict: 'new',
+          cachedFile: modelsCachedFile(i, spec),
+        }),
+      ),
+    ),
+  )
+}
+
+function setModelsConfig(runtime: ReturnType<typeof openLedgerFixture>['runtime'], config: ModelsConfig): void {
+  runtime.runSync(
+    Effect.flatMap(LedgerConfig, ledgerConfig =>
+      Effect.gen(function* () {
+        for (const alias of config.aliases) yield* ledgerConfig.setModelAlias(alias.model, alias.aliasOf)
+        for (const override of config.overrides) {
+          yield* ledgerConfig.setPriceOverride(override.model, {
+            inputPricePerMillion: override.inputPricePerMillion,
+            outputPricePerMillion: override.outputPricePerMillion,
+          })
+        }
+      }),
+    ),
+  )
 }
 
 const MODELS_SPECS: ModelsSessionSpec[] = [
-  { sessionId: 'sess-m0', project: 'demo-project', provider: 'claude', model: 'claude-opus-4', cost: 10, date: '2026-07-10' },
-  { sessionId: 'sess-m1', project: 'demo-project', provider: 'claude', model: 'claude-sonnet-4', cost: 4, date: '2026-07-11' },
-  { sessionId: 'sess-m2', project: 'demo-project', provider: 'claude', model: 'claude-opus-4', cost: 6, date: '2026-07-12' },
-  { sessionId: 'sess-m3', project: 'demo-project', provider: 'opencode', model: 'claude-haiku-4', cost: 7, date: '2026-07-10' },
+  {
+    sessionId: 'sess-m0',
+    project: 'demo-project',
+    provider: 'claude',
+    model: 'claude-opus-4',
+    cost: 10,
+    date: '2026-07-10',
+  },
+  {
+    sessionId: 'sess-m1',
+    project: 'demo-project',
+    provider: 'claude',
+    model: 'claude-sonnet-4',
+    cost: 4,
+    date: '2026-07-11',
+  },
+  {
+    sessionId: 'sess-m2',
+    project: 'demo-project',
+    provider: 'claude',
+    model: 'claude-opus-4',
+    cost: 6,
+    date: '2026-07-12',
+  },
+  {
+    sessionId: 'sess-m3',
+    project: 'demo-project',
+    provider: 'opencode',
+    model: 'claude-haiku-4',
+    cost: 7,
+    date: '2026-07-10',
+  },
 ]
 
-describe('buildModelsViewFromLedger (aggregation seam scope)', () => {
+describe('queryModelsView (aggregation seam scope)', () => {
   it('buckets by model, sorts by cost, across the full range', () => {
-    const store = modelsMakeLedger()
-    modelsPort(store, MODELS_SPECS)
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, EMPTY_CONFIG, NOW)
+    const { runtime } = openLedgerFixture()
+    modelsPort(runtime, MODELS_SPECS)
+    const payload = modelsView(runtime)
 
     expect(payload.byModel.map(row => row.model)).toEqual(['claude-opus-4', 'claude-haiku-4', 'claude-sonnet-4'])
     const opus = payload.byModel[0]!
     expect(opus.costUSD).toBe(16)
     expect(opus.calls).toBe(2)
     expect(opus.totalTokens).toBe(opus.inputTokens + opus.outputTokens + opus.cacheWriteTokens + opus.cacheReadTokens)
-    store.close()
   })
 
   it('filters to a single provider at query time', () => {
-    const store = modelsMakeLedger()
-    modelsPort(store, MODELS_SPECS)
-    const payload = buildModelsViewFromLedger(store, {
+    const { runtime } = openLedgerFixture()
+    modelsPort(runtime, MODELS_SPECS)
+    const payload = modelsView(runtime, {
       period: 'lifetime',
       provider: 'claude',
       range: { since: '2026-07-10', until: '2026-07-10' },
-    }, EMPTY_CONFIG, NOW)
+    })
 
     expect(payload.byModel.map(row => row.model)).toEqual(['claude-opus-4'])
     expect(payload.audit.map(row => row.provider)).toEqual(['claude'])
-    store.close()
   })
 
   it('respects the custom range window', () => {
-    const store = modelsMakeLedger()
-    modelsPort(store, [
-      { sessionId: 'sess-r0', project: 'demo-project', provider: 'claude', model: 'claude-opus-4', cost: 10, date: '2026-07-10' },
-      { sessionId: 'sess-r1', project: 'demo-project', provider: 'claude', model: 'claude-sonnet-4', cost: 4, date: '2026-07-12' },
+    const { runtime } = openLedgerFixture()
+    modelsPort(runtime, [
+      {
+        sessionId: 'sess-r0',
+        project: 'demo-project',
+        provider: 'claude',
+        model: 'claude-opus-4',
+        cost: 10,
+        date: '2026-07-10',
+      },
+      {
+        sessionId: 'sess-r1',
+        project: 'demo-project',
+        provider: 'claude',
+        model: 'claude-sonnet-4',
+        cost: 4,
+        date: '2026-07-12',
+      },
     ])
-    const payload = buildModelsViewFromLedger(store, {
+    const payload = modelsView(runtime, {
       period: 'lifetime',
       range: { since: '2026-07-11', until: '2026-07-13' },
-    }, EMPTY_CONFIG, NOW)
+    })
 
     expect(payload.byModel.map(row => row.model)).toEqual(['claude-sonnet-4'])
-    store.close()
   })
 
   it('an alias rewrites the model and reprices the row from token usage', () => {
-    const store = modelsMakeLedger()
-    modelsPort(store, [{
-      sessionId: 'sess-mx', project: 'demo-project', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10',
-      usage: { inputTokens: 1000, outputTokens: 500, reasoningTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, cachedInputTokens: 0, webSearchRequests: 0 },
-    }])
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
-      aliases: [{ model: 'weird-model', aliasOf: 'claude-sonnet-4-6' }],
-      overrides: [],
-    }, NOW)
+    const { runtime } = openLedgerFixture()
+    modelsPort(runtime, [
+      {
+        sessionId: 'sess-mx',
+        project: 'demo-project',
+        provider: 'claude',
+        model: 'weird-model',
+        cost: 0,
+        date: '2026-07-10',
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 500,
+          reasoningTokens: 0,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          cachedInputTokens: 0,
+          webSearchRequests: 0,
+        },
+      },
+    ])
+    setModelsConfig(runtime, { aliases: [{ model: 'weird-model', aliasOf: 'claude-sonnet-4-6' }], overrides: [] })
+    const payload = modelsView(runtime, { period: 'lifetime' })
 
     const row = payload.byModel[0]!
     expect(row.model).toBe('claude-sonnet-4-6')
@@ -134,30 +213,41 @@ describe('buildModelsViewFromLedger (aggregation seam scope)', () => {
     const auditRow = payload.audit[0]!
     expect(auditRow.model).toBe('weird-model')
     expect(auditRow.attributedCostUSD).toBeCloseTo(0.0105)
-    store.close()
   })
 
-
   it('returns an empty payload for an empty ledger', () => {
-    const store = modelsMakeLedger()
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, EMPTY_CONFIG, NOW)
+    const { runtime } = openLedgerFixture()
+    const payload = modelsView(runtime)
     expect(payload).toEqual({ byModel: [], byTask: [], audit: [] })
-    store.close()
   })
 })
 
 describe('models rows expose their pricing state (alias/override management)', () => {
-  const PRICED_USAGE = { inputTokens: 1000, outputTokens: 500, reasoningTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, cachedInputTokens: 0, webSearchRequests: 0 }
+  const PRICED_USAGE = {
+    inputTokens: 1000,
+    outputTokens: 500,
+    reasoningTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    cachedInputTokens: 0,
+    webSearchRequests: 0,
+  }
 
   it('an aliased by-model row names its raw feeders; the audit row keeps the raw name with its alias target', () => {
-    const store = modelsMakeLedger()
-    modelsPort(store, [{
-      sessionId: 'sess-mx', project: 'demo-project', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10', usage: PRICED_USAGE,
-    }])
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
-      aliases: [{ model: 'weird-model', aliasOf: 'claude-sonnet-4-6' }],
-      overrides: [],
-    }, NOW)
+    const { runtime } = openLedgerFixture()
+    modelsPort(runtime, [
+      {
+        sessionId: 'sess-mx',
+        project: 'demo-project',
+        provider: 'claude',
+        model: 'weird-model',
+        cost: 0,
+        date: '2026-07-10',
+        usage: PRICED_USAGE,
+      },
+    ])
+    setModelsConfig(runtime, { aliases: [{ model: 'weird-model', aliasOf: 'claude-sonnet-4-6' }], overrides: [] })
+    const payload = modelsView(runtime)
 
     const row = payload.byModel[0]!
     expect(row.model).toBe('claude-sonnet-4-6')
@@ -168,19 +258,23 @@ describe('models rows expose their pricing state (alias/override management)', (
     const auditRow = payload.audit[0]!
     expect(auditRow.model).toBe('weird-model')
     expect(auditRow.aliasOf).toBe('claude-sonnet-4-6')
-    store.close()
   })
 
   it('an alias on the bare name merges variant-spelled usage into the target row', () => {
-    const store = modelsMakeLedger()
-    modelsPort(store, [{
-      sessionId: 'sess-mx', project: 'demo-project', provider: 'opencode', model: 'Opencode/Weird-Model@20250929', cost: 0, date: '2026-07-10', usage: PRICED_USAGE,
-    }])
-    store.setModelAlias('weird-model', 'claude-sonnet-4-6')
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
-      aliases: store.getModelAliases(),
-      overrides: store.getPriceOverrides(),
-    }, NOW)
+    const { runtime } = openLedgerFixture()
+    modelsPort(runtime, [
+      {
+        sessionId: 'sess-mx',
+        project: 'demo-project',
+        provider: 'opencode',
+        model: 'Opencode/Weird-Model@20250929',
+        cost: 0,
+        date: '2026-07-10',
+        usage: PRICED_USAGE,
+      },
+    ])
+    setModelsConfig(runtime, { aliases: [{ model: 'weird-model', aliasOf: 'claude-sonnet-4-6' }], overrides: [] })
+    const payload = modelsView(runtime)
 
     const row = payload.byModel[0]!
     expect(row.model).toBe('claude-sonnet-4-6')
@@ -190,18 +284,26 @@ describe('models rows expose their pricing state (alias/override management)', (
     expect(auditRow.model).toBe('Opencode/Weird-Model@20250929')
     expect(auditRow.aliasOf).toBe('claude-sonnet-4-6')
     expect(auditRow.attributedCostUSD).toBeCloseTo(0.0105, 9)
-    store.close()
   })
 
   it('a Price override on the effective model is exposed on by-model and audit rows', () => {
-    const store = modelsMakeLedger()
-    modelsPort(store, [{
-      sessionId: 'sess-mx', project: 'demo-project', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10', usage: PRICED_USAGE,
-    }])
-    const payload = buildModelsViewFromLedger(store, { period: 'lifetime' }, {
+    const { runtime } = openLedgerFixture()
+    modelsPort(runtime, [
+      {
+        sessionId: 'sess-mx',
+        project: 'demo-project',
+        provider: 'claude',
+        model: 'weird-model',
+        cost: 0,
+        date: '2026-07-10',
+        usage: PRICED_USAGE,
+      },
+    ])
+    setModelsConfig(runtime, {
       aliases: [{ model: 'weird-model', aliasOf: 'claude-sonnet-4-6' }],
       overrides: [{ model: 'claude-sonnet-4-6', inputPricePerMillion: 6, outputPricePerMillion: 30 }],
-    }, NOW)
+    })
+    const payload = modelsView(runtime)
 
     // 1000 in @ $6/M + 500 out @ $30/M.
     const row = payload.byModel[0]!
@@ -211,28 +313,43 @@ describe('models rows expose their pricing state (alias/override management)', (
     const auditRow = payload.audit[0]!
     expect(auditRow.aliasOf).toBe('claude-sonnet-4-6')
     expect(auditRow.override).toEqual({ inputPricePerMillion: 6, outputPricePerMillion: 30 })
-    store.close()
   })
 
   it('removing the alias and override reverts rows to plain unpriced identity', () => {
-    const store = modelsMakeLedger()
-    modelsPort(store, [{
-      sessionId: 'sess-mx', project: 'demo-project', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10', usage: PRICED_USAGE,
-    }])
+    const { runtime } = openLedgerFixture()
+    modelsPort(runtime, [
+      {
+        sessionId: 'sess-mx',
+        project: 'demo-project',
+        provider: 'claude',
+        model: 'weird-model',
+        cost: 0,
+        date: '2026-07-10',
+        usage: PRICED_USAGE,
+      },
+    ])
     const config: ModelsConfig = {
       aliases: [{ model: 'weird-model', aliasOf: 'claude-sonnet-4-6' }],
       overrides: [{ model: 'claude-sonnet-4-6', inputPricePerMillion: 6, outputPricePerMillion: 30 }],
     }
-    expect(buildModelsViewFromLedger(store, { period: 'lifetime' }, config, NOW).byModel[0]!.model).toBe('claude-sonnet-4-6')
+    setModelsConfig(runtime, config)
+    expect(modelsView(runtime).byModel[0]!.model).toBe('claude-sonnet-4-6')
 
-    const reverted = buildModelsViewFromLedger(store, { period: 'lifetime' }, EMPTY_CONFIG, NOW)
+    runtime.runSync(
+      Effect.flatMap(LedgerConfig, ledgerConfig =>
+        Effect.gen(function* () {
+          yield* ledgerConfig.removeModelAlias('weird-model')
+          yield* ledgerConfig.removePriceOverride('claude-sonnet-4-6')
+        }),
+      ),
+    )
+    const reverted = modelsView(runtime)
     const row = reverted.byModel[0]!
     expect(row.model).toBe('weird-model')
     expect(row.sourceModels).toBeUndefined()
     expect(row.override).toBeUndefined()
     expect(reverted.audit[0]!.aliasOf).toBeUndefined()
     expect(reverted.audit[0]!.override).toBeUndefined()
-    store.close()
   })
 })
 
@@ -277,17 +394,30 @@ describe('models lib helpers', () => {
       modelDisplayName: 'mystery-model',
       calls: 1,
       raw: {
-        inputTokens: 1000, outputTokens: 0, reasoningTokens: 0,
-        cacheCreationInputTokens: 0, cacheReadInputTokens: 0, cachedInputTokens: 0, webSearchRequests: 0,
+        inputTokens: 1000,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        cachedInputTokens: 0,
+        webSearchRequests: 0,
       },
       displayed: { inputTokens: 1000, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0 },
       rates: {
-        inputCostPerToken: 0.000003, outputCostPerToken: 0.000015,
-        cacheWriteCostPerToken: 0, cacheReadCostPerToken: 0,
-        webSearchCostPerRequest: 0, fastMultiplier: 1,
+        inputCostPerToken: 0.000003,
+        outputCostPerToken: 0.000015,
+        cacheWriteCostPerToken: 0,
+        cacheReadCostPerToken: 0,
+        webSearchCostPerRequest: 0,
+        fastMultiplier: 1,
       },
       cost: {
-        input: 0.003, output: 0, cacheWrite: 0, cacheRead: 0, webSearch: 0, recomputedTotalUSD: 0.003,
+        input: 0.003,
+        output: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        webSearch: 0,
+        recomputedTotalUSD: 0.003,
       },
     }
     expect(isAuditEstimated({ ...base, attributedCostUSD: 0.003 })).toBe(false)
@@ -297,10 +427,34 @@ describe('models lib helpers', () => {
 
   it('groups by-task rows under their model and sums the group', () => {
     const rows = [
-      { provider: 'claude', model: 'claude-opus-4', modelDisplayName: 'Opus 4', category: 'coding', calls: 2, costUSD: 10, savingsUSD: 1 },
-      { provider: 'claude', model: 'claude-opus-4', modelDisplayName: 'Opus 4', category: 'debugging', calls: 1, costUSD: 6, savingsUSD: 0 },
-      { provider: 'claude', model: 'claude-sonnet-4', modelDisplayName: 'Sonnet 4', category: 'coding', calls: 1, costUSD: 4, savingsUSD: 0 },
-    ] as unknown as ReturnType<typeof buildModelsView>['byTask']
+      {
+        provider: 'claude',
+        model: 'claude-opus-4',
+        modelDisplayName: 'Opus 4',
+        category: 'coding',
+        calls: 2,
+        costUSD: 10,
+        savingsUSD: 1,
+      },
+      {
+        provider: 'claude',
+        model: 'claude-opus-4',
+        modelDisplayName: 'Opus 4',
+        category: 'debugging',
+        calls: 1,
+        costUSD: 6,
+        savingsUSD: 0,
+      },
+      {
+        provider: 'claude',
+        model: 'claude-sonnet-4',
+        modelDisplayName: 'Sonnet 4',
+        category: 'coding',
+        calls: 1,
+        costUSD: 4,
+        savingsUSD: 0,
+      },
+    ] as unknown as ModelsPayload['byTask']
 
     const groups = groupTaskRows(rows)
     expect(groups).toHaveLength(2)

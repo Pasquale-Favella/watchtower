@@ -41,7 +41,7 @@ export function scopedDataSlice<T>(
     status: 'idle',
     scope: EMPTY_SCOPE,
     dataKey: '',
-    load: async (scope) => {
+    load: async scope => {
       const dataKey = keyOfScope(scope)
       if (get().dataKey === '' || get().dataKey !== dataKey) {
         set({ data: null, error: null, status: 'loading', scope, dataKey })
@@ -62,12 +62,16 @@ export function scopedDataSlice<T>(
 
 /** A self-contained scoped data store that subscribes to the shared refresh
  * tick. The standard shape for a section whose view owns exactly one payload. */
-export function createScopedDataStore<T>(
-  fetch: (scope: OverviewScope) => Promise<ApiResult<T | null>>,
-) {
+export function createScopedDataStore<T>(fetch: (scope: OverviewScope) => Promise<ApiResult<T | null>>) {
   const useStore = create<ScopedDataSlice<T>>()((set, get) => ({
-    ...scopedDataSlice<T>(fetch, patch => set(patch), () => get()),
+    ...scopedDataSlice<T>(
+      fetch,
+      patch => set(patch),
+      () => get(),
+    ),
   }))
-  subscribeToRefresh(() => { void useStore.getState().reload() })
+  subscribeToRefresh(() => {
+    void useStore.getState().reload()
+  })
   return useStore
 }

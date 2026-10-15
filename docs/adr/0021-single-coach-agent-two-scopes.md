@@ -15,8 +15,8 @@ prompt, and `build-skill` runs turned a DETECTED CANDIDATE's normalized evidence
 SKILL.md through the main-side `buildProsePrompt`, landing an interactive draft card
 (Copy / Save… / Dismiss) mid-thread. Pathfinder map 58 and its roast (#59) concluded the
 skill side was misaligned with how the user actually thinks: the candidate-picker +
-one-shot prose flow was a *picker one-shot*, while the product wants *an interactive
-crafting conversation* where the agent proposes, discusses, and writes the skill with the
+one-shot prose flow was a _picker one-shot_, while the product wants _an interactive
+crafting conversation_ where the agent proposes, discusses, and writes the skill with the
 user — pulling evidence from the ledger MCP mid-conversation.
 
 Two more observations made the picker flow removable rather than replaceable:
@@ -64,8 +64,7 @@ and the draft-card plumbing are deleted.
 
 ### 4. Per-harness model cache
 
-The store keeps the models/modes each harness declared through the ACP handshake (ADR
-0018) in a per-harness cache (`modelsByKind`) that ALSO holds the user's picks. A
+The store keeps the models/modes each harness declared through the ACP handshake (ADR 0018) in a per-harness cache (`modelsByKind`) that ALSO holds the user's picks. A
 successful probe — or a run's session event — writes the cache; a failed probe never
 does, so unavailable agents are retried. Switching harnesses restores a previously-probed
 set and the user's picks INSTANTLY (no IPC, no agent spawn), and a probe that answers

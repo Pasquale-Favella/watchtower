@@ -6,8 +6,11 @@ import { SegTabs, type SegOption } from '@/shared/components/SegTabs'
 import { motionClass } from '@/shared/lib/motion'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import {
-  filterSessions, sortSessions, groupSessionsByProvider, summarizeSessions,
-  type SessionSort
+  filterSessions,
+  sortSessions,
+  groupSessionsByProvider,
+  summarizeSessions,
+  type SessionSort,
 } from '@/features/sessions/sessions-lib'
 import { formatUsd } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
@@ -46,7 +49,12 @@ const COLUMNS = 'grid-cols-[minmax(0,1.4fr)_88px_minmax(0,1fr)_136px_44px_76px_8
 
 function ColumnHeaders(): React.JSX.Element {
   return (
-    <div className={cn('grid items-center gap-3 px-3 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground', COLUMNS)}>
+    <div
+      className={cn(
+        'text-muted-foreground grid items-center gap-3 px-3 pt-2 pb-1 text-[10px] font-medium tracking-wide uppercase',
+        COLUMNS,
+      )}
+    >
       <span>Session</span>
       <span>Provider</span>
       <span>Models</span>
@@ -66,27 +74,38 @@ function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: 
       type="button"
       onClick={() => onOpen(row.sessionId)}
       className={cn(
-        'grid w-full items-center gap-3 border-t border-border px-3 py-1.5 text-left transition-colors hover:bg-accent',
+        'border-border hover:bg-accent grid w-full items-center gap-3 border-t px-3 py-1.5 text-left transition-colors',
         COLUMNS,
       )}
     >
       <span className="min-w-0">
-        <span className="block truncate text-[12.5px] font-medium text-foreground">{row.title || row.project || 'Untitled session'}</span>
-        <span className="block truncate font-mono text-[10px] text-muted-foreground">{row.project} · {row.sessionId}</span>
+        <span className="text-foreground block truncate text-[12.5px] font-medium">
+          {row.title || row.project || 'Untitled session'}
+        </span>
+        <span className="text-muted-foreground block truncate font-mono text-[10px]">
+          {row.project} · {row.sessionId}
+        </span>
       </span>
-      <span className="truncate text-[11px] text-muted-foreground">{row.provider}</span>
+      <span className="text-muted-foreground truncate text-[11px]">{row.provider}</span>
       <span className="min-w-0">
-        <span className="block truncate text-[11px] text-muted-foreground">{row.models.join(', ') || '—'}</span>
+        <span className="text-muted-foreground block truncate text-[11px]">{row.models.join(', ') || '—'}</span>
         {merged.length > 0 && (
-          <span className="block truncate text-[10px] text-muted-foreground" title={merged.map(model => `${model}: ${provenance[model]!.join(', ')}`).join(' · ')}>
+          <span
+            className="text-muted-foreground block truncate text-[10px]"
+            title={merged.map(model => `${model}: ${provenance[model]!.join(', ')}`).join(' · ')}
+          >
             includes {merged.map(model => provenance[model]!.join(', ')).join(', ')}
           </span>
         )}
       </span>
-      <span className="truncate text-[11px] text-muted-foreground">{formatDate(row.endedAt)}</span>
-      <span className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">{row.turns.toLocaleString('en-US')}</span>
-      <span className="text-right font-mono text-[11.5px] tabular-nums text-foreground">{formatUsd(row.cost)}</span>
-      <span className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">{formatCompact(row.inputTokens + row.outputTokens)}</span>
+      <span className="text-muted-foreground truncate text-[11px]">{formatDate(row.endedAt)}</span>
+      <span className="text-muted-foreground text-right font-mono text-[11px] tabular-nums">
+        {row.turns.toLocaleString('en-US')}
+      </span>
+      <span className="text-foreground text-right font-mono text-[11.5px] tabular-nums">{formatUsd(row.cost)}</span>
+      <span className="text-muted-foreground text-right font-mono text-[11px] tabular-nums">
+        {formatCompact(row.inputTokens + row.outputTokens)}
+      </span>
     </button>
   )
 }
@@ -122,9 +141,11 @@ export function SessionsView(): React.JSX.Element {
       )}
 
       {rows === null ? (
-        error ? <ErrorPanel message={error} /> : (
-          <LoadingRegion label="Loading sessions…" className="overflow-hidden rounded-lg border border-border bg-card">
-            <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-3.5 py-3">
+        error ? (
+          <ErrorPanel message={error} />
+        ) : (
+          <LoadingRegion label="Loading sessions…" className="border-border bg-card overflow-hidden rounded-lg border">
+            <div className="border-border flex flex-wrap items-center gap-2.5 border-b px-3.5 py-3">
               <Skeleton className="h-[25px] w-full max-w-xs rounded-md" />
               <Skeleton className="h-[25px] w-44 rounded-md" />
               <Skeleton className="h-[25px] w-28 rounded-md" />
@@ -133,7 +154,9 @@ export function SessionsView(): React.JSX.Element {
           </LoadingRegion>
         )
       ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-[12px] text-muted-foreground">No sessions in this range yet.</div>
+        <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-[12px]">
+          No sessions in this range yet.
+        </div>
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-2.5">
@@ -142,7 +165,7 @@ export function SessionsView(): React.JSX.Element {
               placeholder="Search project, model, or id…"
               value={query}
               onChange={e => setQuery(e.target.value)}
-              className="h-[25px] w-full max-w-xs rounded-md border border-border bg-card px-2 text-[11px] text-foreground outline-none placeholder:text-muted-foreground focus:border-brand"
+              className="border-border bg-card text-foreground placeholder:text-muted-foreground focus:border-brand h-[25px] w-full max-w-xs rounded-md border px-2 text-[11px] outline-none"
             />
             <SegTabs options={SORT_OPTIONS} value={sort} onChange={value => setSort(value as SessionSort)} />
             <button
@@ -151,38 +174,49 @@ export function SessionsView(): React.JSX.Element {
               onClick={() => setGrouped(v => !v)}
               className={cn(
                 'rounded-md border px-2.5 py-[3px] text-[11px] transition-colors',
-                grouped ? 'border-brand bg-card font-medium text-foreground' : 'border-border text-muted-foreground hover:text-foreground',
+                grouped
+                  ? 'border-brand bg-card text-foreground font-medium'
+                  : 'border-border text-muted-foreground hover:text-foreground',
               )}
             >
               Group by provider
             </button>
           </div>
 
-          <div className="text-[11px] text-muted-foreground">
-            {summary.count.toLocaleString('en-US')} {summary.count === 1 ? 'session' : 'sessions'} · {formatUsd(summary.costUSD)} · {formatCompact(summary.tokens)} tokens
+          <div className="text-muted-foreground text-[11px]">
+            {summary.count.toLocaleString('en-US')} {summary.count === 1 ? 'session' : 'sessions'} ·{' '}
+            {formatUsd(summary.costUSD)} · {formatCompact(summary.tokens)} tokens
           </div>
 
           {filtered.length === 0 ? (
-            <div className="rounded-lg border border-border bg-card px-3.5 py-6 text-center">
-              <p className="text-[12px] text-muted-foreground">No sessions match “{query}”.</p>
-              <button type="button" onClick={() => setQuery('')} className="mt-2 text-[11px] font-medium text-brand-text hover:underline">
+            <div className="border-border bg-card rounded-lg border px-3.5 py-6 text-center">
+              <p className="text-muted-foreground text-[12px]">No sessions match “{query}”.</p>
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                className="text-brand-text mt-2 text-[11px] font-medium hover:underline"
+              >
                 Clear search
               </button>
             </div>
           ) : (
-            <div className="overflow-hidden rounded-lg border border-border bg-card">
+            <div className="border-border bg-card overflow-hidden rounded-lg border">
               <ColumnHeaders />
               {grouped
                 ? groups.map(group => (
-                  <div key={group.provider}>
-                    <div className="flex items-center gap-2 border-t border-border bg-muted/30 px-3 py-1 text-[11px] text-muted-foreground">
-                      <span className="font-medium text-foreground">{titleCase(group.provider)}</span>
-                      <span>{group.count} {group.count === 1 ? 'session' : 'sessions'}</span>
-                      <span className="ml-auto font-mono tabular-nums">{formatUsd(group.cost)}</span>
+                    <div key={group.provider}>
+                      <div className="border-border bg-muted/30 text-muted-foreground flex items-center gap-2 border-t px-3 py-1 text-[11px]">
+                        <span className="text-foreground font-medium">{titleCase(group.provider)}</span>
+                        <span>
+                          {group.count} {group.count === 1 ? 'session' : 'sessions'}
+                        </span>
+                        <span className="ml-auto font-mono tabular-nums">{formatUsd(group.cost)}</span>
+                      </div>
+                      {group.rows.map(row => (
+                        <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />
+                      ))}
                     </div>
-                    {group.rows.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
-                  </div>
-                ))
+                  ))
                 : flat.map(row => <SessionListRow key={row.sessionId} row={row} onOpen={navigateToSession} />)}
             </div>
           )}

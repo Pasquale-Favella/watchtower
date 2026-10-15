@@ -1,5 +1,11 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
+
 import { toolCallSchema } from './pipeline.js'
+
+const finiteNumber = Schema.Number.pipe(Schema.check(Schema.isFinite()))
+const writable = Schema.mutableKey
+const stringArray = Schema.mutable(Schema.Array(Schema.String))
+const toolSequence = Schema.mutable(Schema.Array(Schema.mutable(Schema.Array(toolCallSchema))))
 
 /**
  * The shared extraction seam: every provider's parsed call record flows through
@@ -7,59 +13,59 @@ import { toolCallSchema } from './pipeline.js'
  * design — unknown keys from a newer provider shape are stripped, never fatal;
  * only a declared field failing its type triggers the skip-and-report path.
  */
-export const parsedProviderCallSchema = z.object({
-  provider: z.string(),
-  model: z.string(),
-  inputTokens: z.number(),
-  outputTokens: z.number(),
-  cacheCreationInputTokens: z.number(),
-  cacheReadInputTokens: z.number(),
-  cachedInputTokens: z.number(),
-  reasoningTokens: z.number(),
-  webSearchRequests: z.number(),
-  costUSD: z.number(),
-  costIsEstimated: z.boolean().optional(),
-  tools: z.array(z.string()),
-  bashCommands: z.array(z.string()),
-  subagentTypes: z.array(z.string()).optional(),
-  skills: z.array(z.string()).optional(),
-  timestamp: z.string(),
-  speed: z.enum(['standard', 'fast']),
-  deduplicationKey: z.string(),
-  locAdded: z.number().optional(),
-  locRemoved: z.number().optional(),
-  editFailed: z.number().optional(),
-  turnId: z.string().optional(),
-  toolSequence: z.array(z.array(toolCallSchema)).optional(),
-  userMessage: z.string(),
+export const parsedProviderCallSchema = Schema.Struct({
+  provider: writable(Schema.String),
+  model: writable(Schema.String),
+  inputTokens: writable(finiteNumber),
+  outputTokens: writable(finiteNumber),
+  cacheCreationInputTokens: writable(finiteNumber),
+  cacheReadInputTokens: writable(finiteNumber),
+  cachedInputTokens: writable(finiteNumber),
+  reasoningTokens: writable(finiteNumber),
+  webSearchRequests: writable(finiteNumber),
+  costUSD: writable(finiteNumber),
+  costIsEstimated: writable(Schema.optional(Schema.Boolean)),
+  tools: writable(stringArray),
+  bashCommands: writable(stringArray),
+  subagentTypes: writable(Schema.optional(stringArray)),
+  skills: writable(Schema.optional(stringArray)),
+  timestamp: writable(Schema.String),
+  speed: writable(Schema.Literals(['standard', 'fast'])),
+  deduplicationKey: writable(Schema.String),
+  locAdded: writable(Schema.optional(finiteNumber)),
+  locRemoved: writable(Schema.optional(finiteNumber)),
+  editFailed: writable(Schema.optional(finiteNumber)),
+  turnId: writable(Schema.optional(Schema.String)),
+  toolSequence: writable(Schema.optional(toolSequence)),
+  userMessage: writable(Schema.String),
   // Bounded assistant/tool-output text for this call (providers that persist
   // it: Claude path via the journal, OpenCode/Kilo via message parts, Codex
   // via response messages). Transient PR-evidence surface only: the central
   // PR scan reads it at parse time into per-turn `prRefs` (which ARE
   // persisted); the text itself is never cached per-call or ported to the
   // ledger. Optional since most providers don't expose it.
-  assistantText: z.string().optional(),
-  sessionId: z.string(),
-  project: z.string().optional(),
-  projectPath: z.string().optional(),
-  workingDirectory: z.string().optional(),
+  assistantText: writable(Schema.optional(Schema.String)),
+  sessionId: writable(Schema.String),
+  project: writable(Schema.optional(Schema.String)),
+  projectPath: writable(Schema.optional(Schema.String)),
+  workingDirectory: writable(Schema.optional(Schema.String)),
 })
-export type ParsedProviderCall = z.infer<typeof parsedProviderCallSchema>
+export type ParsedProviderCall = Schema.Schema.Type<typeof parsedProviderCallSchema>
 
-export const sessionSourceSchema = z.object({
-  path: z.string(),
-  project: z.string(),
-  provider: z.string(),
-  sourceId: z.string().optional(),
-  sourceLabel: z.string().optional(),
-  sourcePath: z.string().optional(),
-  sourceKind: z.enum(['claude-config', 'claude-desktop']).optional(),
-  workingDirectory: z.string().optional(),
+export const sessionSourceSchema = Schema.Struct({
+  path: writable(Schema.String),
+  project: writable(Schema.String),
+  provider: writable(Schema.String),
+  sourceId: writable(Schema.optional(Schema.String)),
+  sourceLabel: writable(Schema.optional(Schema.String)),
+  sourcePath: writable(Schema.optional(Schema.String)),
+  sourceKind: writable(Schema.optional(Schema.Literals(['claude-config', 'claude-desktop']))),
+  workingDirectory: writable(Schema.optional(Schema.String)),
 })
-export type SessionSource = z.infer<typeof sessionSourceSchema>
+export type SessionSource = Schema.Schema.Type<typeof sessionSourceSchema>
 
-export const probeRootSchema = z.object({
-  path: z.string(),
-  label: z.string(),
+export const probeRootSchema = Schema.Struct({
+  path: writable(Schema.String),
+  label: writable(Schema.String),
 })
-export type ProbeRoot = z.infer<typeof probeRootSchema>
+export type ProbeRoot = Schema.Schema.Type<typeof probeRootSchema>

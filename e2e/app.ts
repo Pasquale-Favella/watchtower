@@ -66,11 +66,16 @@ export async function dismissOnboarding(window: Page): Promise<void> {
   // Settle on either terminal boot state, then distinguish: a bare
   // `.toBe('onboard')` would report a broken scan as a timeout, hiding the
   // signal the splash already shows.
-  await expect.poll(async () => {
-    if (await scanRetry.isVisible().catch(() => false)) return 'scan-error'
-    if (await skip.isVisible().catch(() => false)) return 'onboard'
-    return 'waiting'
-  }, { timeout: 240_000 }).not.toBe('waiting')
+  await expect
+    .poll(
+      async () => {
+        if (await scanRetry.isVisible().catch(() => false)) return 'scan-error'
+        if (await skip.isVisible().catch(() => false)) return 'onboard'
+        return 'waiting'
+      },
+      { timeout: 240_000 },
+    )
+    .not.toBe('waiting')
   expect(await scanRetry.isVisible(), 'boot scan failed (splash shows Retry)').toBe(false)
 
   await skip.click()
@@ -83,12 +88,17 @@ export async function dismissOnboarding(window: Page): Promise<void> {
  * hosts with and without data.
  */
 export async function waitForAnyVisible(locators: Locator[], timeout = 30_000): Promise<void> {
-  await expect.poll(async () => {
-    for (const locator of locators) {
-      if (await locator.isVisible().catch(() => false)) return 'visible'
-    }
-    return 'waiting'
-  }, { timeout }).not.toBe('waiting')
+  await expect
+    .poll(
+      async () => {
+        for (const locator of locators) {
+          if (await locator.isVisible().catch(() => false)) return 'visible'
+        }
+        return 'waiting'
+      },
+      { timeout },
+    )
+    .not.toBe('waiting')
 }
 
 /**
@@ -96,9 +106,7 @@ export async function waitForAnyVisible(locators: Locator[], timeout = 30_000): 
  * `pageerror`s, then always closes the app and removes the temp profile —
  * specs stay focused on behavior instead of repeating the lifecycle triple.
  */
-export async function withApp(
-  body: (ctx: { app: ElectronApplication; window: Page }) => Promise<void>,
-): Promise<void> {
+export async function withApp(body: (ctx: { app: ElectronApplication; window: Page }) => Promise<void>): Promise<void> {
   const { app, window, pageErrors, close } = await launchApp()
   try {
     await body({ app, window })

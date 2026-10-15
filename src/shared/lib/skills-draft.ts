@@ -20,15 +20,17 @@ const SOURCE_VERB: Record<SkillCandidate['source'], string> = {
 
 /** One-line description for a draft card: the pattern key + what it is. */
 export function describeCandidate(candidate: SkillCandidate): string {
-  const kind = candidate.source === 'bash'
-    ? 'command pattern'
-    : candidate.source === 'tool' ? 'tool usage' : 'skill'
+  const kind = candidate.source === 'bash' ? 'command pattern' : candidate.source === 'tool' ? 'tool usage' : 'skill'
   return `${SOURCE_VERB[candidate.source]} \`${candidate.name}\` — a recurring ${kind} in your workflow`
 }
 
 /** A filename-safe slug for the pattern key (e.g. `git commit` → `git-commit`). */
 export function slugifyCandidateName(name: string): string {
-  const slug = name.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '-').replace(/^-+|-+$/g, '')
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '-')
+    .replace(/^-+|-+$/g, '')
   return slug || 'skill'
 }
 
@@ -46,9 +48,8 @@ function evidenceSummary(candidate: SkillCandidate): string {
  * prose.
  */
 export function assembleDraftMarkdown(candidate: SkillCandidate): string {
-  const example = candidate.source === 'bash' && candidate.sample
-    ? `\`\`\`sh\n${candidate.sample}\n\`\`\``
-    : `\`${candidate.name}\``
+  const example =
+    candidate.source === 'bash' && candidate.sample ? `\`\`\`sh\n${candidate.sample}\n\`\`\`` : `\`${candidate.name}\``
   return [
     `# ${candidate.name}`,
     '',
@@ -69,8 +70,12 @@ export function assembleDraftMarkdown(candidate: SkillCandidate): string {
     `- Cost: ${candidate.costUSD.toFixed(2)} USD`,
     `- Turns: ${candidate.turns}`,
     '',
-    ...candidate.sourceSessions.slice(0, 3).map(session =>
-      `- ${session.date} · ${session.project} (${session.sessionId}) — ${session.turns} turn(s), ${session.costUSD.toFixed(2)} USD`),
+    ...candidate.sourceSessions
+      .slice(0, 3)
+      .map(
+        session =>
+          `- ${session.date} · ${session.project} (${session.sessionId}) — ${session.turns} turn(s), ${session.costUSD.toFixed(2)} USD`,
+      ),
     '',
   ].join('\n')
 }

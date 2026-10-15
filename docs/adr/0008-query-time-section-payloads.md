@@ -16,3 +16,9 @@ Deliberate decisions embedded here:
 - **Output-only validation** — request scopes are typed, not zod-validated; the validation boundary is deliberately the output payload.
 
 **Why:** this is the payoff of the raw-facts ledger (ADR 0002). Building every section as a pure query-time derivation keeps the renderer sandboxed, keeps config changes instant, and lets each section's logic live in one testable main-process module.
+
+## Clarifications for the Effect migration
+
+ADR 0023 moved query-time payload construction into the db-worker; references above to main describe the original placement. ADR 0034 changes schema authority to Effect Schema incrementally, preserving the wire/tripwire boundary. The current implementation filters some scope semantics after reading rows, so the statement above that scope always applies in SQL describes the intended design rather than all current queries.
+
+The target architecture first reuses a loaded set of facts/config within one request, preserving query-time derivation and live config. Caching derived results across requests remains a proposed extension requiring an explicit amendment to this decision, bounded memory, revisions and measured benefit. Request reuse does not authorize persisting repriced scan facts or returning stale config-derived totals.

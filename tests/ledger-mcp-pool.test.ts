@@ -1,15 +1,35 @@
+import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import type { ChildProcess } from 'node:child_process'
-import { describe, expect, it } from 'vitest'
+
+import { Deferred, Effect, Fiber, Layer } from 'effect'
+import * as TestClock from 'effect/testing/TestClock'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
 import type { LedgerMcpSpawnContext } from '../src/main/agents/ledger-mcp/config.js'
-import { createSidecarPool } from '../src/main/agents/ledger-mcp/pool.js'
-import { parseReadyPort, readReadyPort } from '../src/main/agents/ledger-mcp/sidecar.js'
-import type { StartedLedgerMcpHttp } from '../src/main/agents/ledger-mcp/sidecar.js'
+import {
+  createSidecarPool,
+  LedgerMcpPool,
+  ledgerMcpPoolLayer,
+  type SidecarPool,
+} from '../src/main/agents/ledger-mcp/pool.js'
+import { LedgerMcpSidecar, type StartedLedgerMcpHttp } from '../src/main/agents/ledger-mcp/sidecar.js'
+import { parseReadyPort, readReadyPort, readReadyPortEffect } from '../src/main/agents/ledger-mcp/sidecar.js'
 
 const CTX: LedgerMcpSpawnContext = { execPath: '/bin/app', entryPath: '/app/ledger-mcp.js', dbPath: '/data/ledger.db' }
+
+const ownedPools: SidecarPool[] = []
+
+function makeTestPool(deps: Parameters<typeof createSidecarPool>[0]): SidecarPool {
+  const pool = createSidecarPool(deps)
+  ownedPools.push(pool)
+  return pool
+}
+
+afterEach(async () => {
+  await Promise.all(ownedPools.splice(0).map(pool => pool.dispose()))
+})
 
 function httpServer(port: number): AcpMcpServer {
   return {
@@ -47,6 +67,14 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
     reject = rej
   })
   return { promise, resolve, reject }
+}
+
+function trackRelease(started: FakeSidecar, onRelease: (sidecar: FakeSidecar) => void): void {
+  const release = started.release
+  started.release = () => {
+    onRelease(started)
+    release()
+  }
 }
 
 describe('sidecar ready announcement (parent-side port handoff)', () => {
@@ -91,9 +119,47 @@ describe('sidecar ready announcement (parent-side port handoff)', () => {
 })
 
 describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
+  it('the native pool layer owns its pooled sidecar until its scope closes', async () => {
+    const closeGate = Deferred.makeUnsafe<undefined>()
+    const releaseStarted = Deferred.makeUnsafe<undefined>()
+    let healthChecks = 0
+    const started = {
+      server: httpServer(9_999),
+      checkHealth: Effect.sync(() => {
+        healthChecks++
+        return true
+      }),
+      release: Effect.gen(function* () {
+        yield* Deferred.succeed(releaseStarted, undefined)
+        yield* Deferred.await(closeGate)
+      }),
+    }
+    const sidecarLayer = Layer.succeed(LedgerMcpSidecar, LedgerMcpSidecar.of({ start: () => Effect.succeed(started) }))
+    const poolLayer = ledgerMcpPoolLayer.pipe(Layer.provide(sidecarLayer))
+    const program = Effect.gen(function* () {
+      const pool = yield* LedgerMcpPool
+      expect(yield* pool.acquire(CTX)).toMatchObject({ server: httpServer(9_999) })
+      expect(yield* pool.status()).toEqual(httpServer(9_999))
+    }).pipe(Effect.provide(poolLayer), Effect.scoped)
+
+    let completed = false
+    const running = Effect.runPromise(program).then(() => {
+      completed = true
+    })
+    try {
+      await Effect.runPromise(Deferred.await(releaseStarted))
+      expect(healthChecks).toBe(1)
+      expect(completed).toBe(false)
+    } finally {
+      Deferred.doneUnsafe(closeGate, Effect.succeed(undefined))
+      await running
+    }
+    expect(completed).toBe(true)
+  })
+
   it('reuses a healthy sidecar across turns — one spawn, per-run releases are no-ops', async () => {
     let spawns = 0
-    const pool = createSidecarPool({
+    const pool = makeTestPool({
       spawn: async () => {
         spawns++
         return fakeSidecar(() => true)
@@ -111,7 +177,7 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
 
   it('exposes the same healthy connection to Coach and local clients', async () => {
     let spawns = 0
-    const pool = createSidecarPool({
+    const pool = makeTestPool({
       spawn: async () => {
         spawns++
         return fakeSidecar(() => true)
@@ -129,12 +195,13 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
   it('regenerates the app-level sidecar and token on demand', async () => {
     let spawns = 0
     const released: FakeSidecar[] = []
-    const pool = createSidecarPool({
+    const pool = makeTestPool({
       spawn: async () => {
         spawns++
         const started = fakeSidecar(() => true)
-        const release = started.release
-        started.release = () => { released.push(started); release() }
+        trackRelease(started, sidecar => {
+          released.push(sidecar)
+        })
         started.server = { ...started.server, url: `http://127.0.0.1:${9_999 + spawns}/mcp` }
         return started
       },
@@ -152,15 +219,13 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
     let spawns = 0
     let alive = true
     let lastReleased: FakeSidecar | null = null
-    const pool = createSidecarPool({
+    const pool = makeTestPool({
       spawn: async () => {
         spawns++
         const started = fakeSidecar(() => alive)
-        const release = started.release
-        started.release = () => {
-          lastReleased = started
-          release()
-        }
+        trackRelease(started, sidecar => {
+          lastReleased = sidecar
+        })
         return started
       },
     })
@@ -171,13 +236,13 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
 
     expect(next?.server).toEqual(httpServer(9_999))
     expect(spawns).toBe(2)
-    expect(lastReleased?.released).toBe(true)
+    expect(lastReleased).toMatchObject({ released: true })
   })
 
   it('respawns when the health probe itself throws', async () => {
     let spawns = 0
     let failProbe = false
-    const pool = createSidecarPool({
+    const pool = makeTestPool({
       spawn: async () => {
         spawns++
         const started = fakeSidecar(() => true)
@@ -197,7 +262,7 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
   })
 
   it('degrades to null when the spawn fails — the turn runs without data tools', async () => {
-    const pool = createSidecarPool({
+    const pool = makeTestPool({
       spawn: async () => {
         throw new Error('no binary')
       },
@@ -209,15 +274,13 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
   it('releaseAll kills the pooled sidecar and the next acquire spawns fresh', async () => {
     let spawns = 0
     const released: FakeSidecar[] = []
-    const pool = createSidecarPool({
+    const pool = makeTestPool({
       spawn: async () => {
         spawns++
         const started = fakeSidecar(() => true)
-        const release = started.release
-        started.release = () => {
-          released.push(started)
-          release()
-        }
+        trackRelease(started, sidecar => {
+          released.push(sidecar)
+        })
         return started
       },
     })
@@ -233,7 +296,7 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
   it('a reset racing an in-flight spawn kills the orphan and degrades that turn to null', async () => {
     const gate = deferred<StartedLedgerMcpHttp>()
     const spawned = fakeSidecar(() => true)
-    const pool = createSidecarPool({ spawn: () => gate.promise })
+    const pool = makeTestPool({ spawn: () => gate.promise })
 
     const pending = pool.acquire(CTX)
     pool.releaseAll()
@@ -246,7 +309,7 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
   it('coalesces rapid turns while a spawn is in flight — one sidecar, not one each', async () => {
     let spawns = 0
     const gate = deferred<StartedLedgerMcpHttp>()
-    const pool = createSidecarPool({
+    const pool = makeTestPool({
       spawn: () => {
         spawns++
         return gate.promise
@@ -268,7 +331,7 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
     const staleSidecar = fakeSidecar(() => true)
     const freshSidecar = fakeSidecar(() => true)
     let calls = 0
-    const pool = createSidecarPool({
+    const pool = makeTestPool({
       spawn: () => {
         calls++
         return calls === 1 ? firstGate.promise : secondGate.promise
@@ -291,5 +354,43 @@ describe('sidecar pool (one app-level sidecar for local MCP clients)', () => {
     expect((await late)?.server).toEqual(httpServer(9_999))
     expect(calls).toBe(2)
     expect(freshSidecar.released).toBe(false)
+  })
+
+  it('releaseAll during a hung spawn degrades pending acquires immediately (Deferred interruption)', async () => {
+    let spawns = 0
+    const pool = makeTestPool({
+      spawn: () => {
+        spawns++
+        return new Promise<StartedLedgerMcpHttp>(() => {})
+      },
+    })
+
+    const pending = pool.acquire(CTX)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    pool.releaseAll()
+
+    await expect(pending).resolves.toBeNull()
+    expect(spawns).toBe(1)
+  })
+})
+
+describe('sidecar READY deadline (Clock-governed)', () => {
+  it('a hung READY hits the deadline via TestClock instead of hanging', async () => {
+    const child = new EventEmitter() as unknown as ChildProcess
+    const stdout = new PassThrough()
+    let failure: unknown = null
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(readReadyPortEffect(child, stdout) as Effect.Effect<number, Error>)
+        yield* TestClock.adjust(10_000 + 100)
+        const result = yield* Fiber.await(fiber)
+        if (result._tag === 'Failure') {
+          failure = result.cause
+        }
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+    stdout.destroy()
+    expect(failure).not.toBeNull()
+    expect(String(failure)).toContain('did not become ready')
   })
 })

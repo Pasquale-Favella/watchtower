@@ -1,36 +1,44 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
-export const yieldCategorySchema = z.enum(['productive', 'reverted', 'abandoned', 'ambiguous'])
-export type YieldCategory = z.infer<typeof yieldCategorySchema>
+const finiteNumber = Schema.Finite
+const writable = Schema.mutableKey
+const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))
 
-export const yieldBucketSchema = z.object({
-  costUSD: z.number(),
-  sessions: z.number(),
-  costPercent: z.number(),
-  sessionPercent: z.number(),
+export const yieldCategorySchema = Schema.Literals(['productive', 'reverted', 'abandoned', 'ambiguous'])
+export type YieldCategory = Schema.Schema.Type<typeof yieldCategorySchema>
+
+export const yieldBucketSchema = Schema.Struct({
+  costUSD: writable(finiteNumber),
+  sessions: writable(finiteNumber),
+  costPercent: writable(finiteNumber),
+  sessionPercent: writable(finiteNumber),
 })
-export type YieldBucket = z.infer<typeof yieldBucketSchema>
+export type YieldBucket = Schema.Schema.Type<typeof yieldBucketSchema>
 
-export const yieldDetailSchema = z.object({
-  sessionId: z.string(),
-  project: z.string(),
-  costUSD: z.number(),
-  category: yieldCategorySchema,
-  commitCount: z.number(),
+export const yieldDetailSchema = Schema.Struct({
+  sessionId: writable(Schema.String),
+  project: writable(Schema.String),
+  costUSD: writable(finiteNumber),
+  category: writable(yieldCategorySchema),
+  commitCount: writable(finiteNumber),
 })
-export type YieldDetail = z.infer<typeof yieldDetailSchema>
+export type YieldDetail = Schema.Schema.Type<typeof yieldDetailSchema>
 
-export const yieldPayloadSchema = z.object({
-  period: z.object({ start: z.string().nullable(), end: z.string().nullable() }),
-  summary: z.object({
-    productive: yieldBucketSchema,
-    reverted: yieldBucketSchema,
-    abandoned: yieldBucketSchema,
-    ambiguous: yieldBucketSchema,
-    total: z.object({ costUSD: z.number(), sessions: z.number() }),
-    productiveToRevertedCostRatio: z.number().nullable(),
-  }),
-  methodology: z.literal('timestamp-window'),
-  details: z.array(yieldDetailSchema),
+export const yieldPayloadSchema = Schema.Struct({
+  period: writable(
+    Schema.Struct({ start: writable(Schema.NullOr(Schema.String)), end: writable(Schema.NullOr(Schema.String)) }),
+  ),
+  summary: writable(
+    Schema.Struct({
+      productive: writable(yieldBucketSchema),
+      reverted: writable(yieldBucketSchema),
+      abandoned: writable(yieldBucketSchema),
+      ambiguous: writable(yieldBucketSchema),
+      total: writable(Schema.Struct({ costUSD: writable(finiteNumber), sessions: writable(finiteNumber) })),
+      productiveToRevertedCostRatio: writable(Schema.NullOr(finiteNumber)),
+    }),
+  ),
+  methodology: writable(Schema.Literal('timestamp-window')),
+  details: writable(mutableArray(yieldDetailSchema)),
 })
-export type YieldPayload = z.infer<typeof yieldPayloadSchema>
+export type YieldPayload = Schema.Schema.Type<typeof yieldPayloadSchema>

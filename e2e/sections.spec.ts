@@ -33,14 +33,8 @@ const MARKERS: Record<SectionName, (window: Page) => Locator[]> = {
     window.getByRole('textbox', { name: 'Search sessions' }),
     window.getByText('No sessions in this range yet.'),
   ],
-  'Pull requests': window => [
-    window.getByText('Attributed pull requests'),
-    window.getByText(/PR links are captured/),
-  ],
-  Spend: window => [
-    window.getByText('Daily spend by model'),
-    window.getByText('No model spend in this range yet.'),
-  ],
+  'Pull requests': window => [window.getByText('Attributed pull requests'), window.getByText(/PR links are captured/)],
+  Spend: window => [window.getByText('Daily spend by model'), window.getByText('No model spend in this range yet.')],
   // Tab labels carry live values (`Waste $1.23`), so match the prefix.
   Optimize: window => [window.getByRole('tab', { name: /^Waste/ })],
   Models: window => [window.getByRole('tab', { name: 'By model' })],

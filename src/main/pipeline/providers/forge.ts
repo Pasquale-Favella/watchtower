@@ -1,74 +1,111 @@
+import { Effect, Result, Schema, Stream } from 'effect'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
 import { extractBashCommands } from '../bash-utils.js'
-import { calculateCost } from '../models.js'
-import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import { reportProviderIssue } from '../file-errors.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
-
-type ConversationRow = {
-  conversation_id: string
-  title: string | null
-  workspace_id: number | string
-  context: string | null
-  created_at: string | null
-  updated_at: string | null
-}
-
-type DiscoveryRow = {
-  conversation_id: string
-  title: string | null
-  workspace_id: string
-}
-
-type ContextMessage = {
-  message?: {
-    text?: {
-      role?: unknown
-      content?: unknown
-      model?: unknown
-      tool_calls?: unknown
-    }
-  }
-  usage?: unknown
-}
+import { captureScanPricing } from '../models.js'
+import { checkScanAbort } from '../scan-io.js'
+import { blobToText, isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const DEFAULT_DB_PATH = join(homedir(), '.forge', '.forge.db')
 
-function validateSchema(db: SqliteDatabase): boolean {
-  try {
-    db.query('SELECT conversation_id, title, CAST(workspace_id AS TEXT) AS workspace_id, context, created_at, updated_at FROM conversations LIMIT 1')
-    return true
-  } catch {
-    return false
-  }
-}
+const discoveryRowSchema = Schema.Struct({
+  conversation_id: Schema.String,
+  title: Schema.NullOr(Schema.String),
+  workspace_id: Schema.NullOr(Schema.String),
+})
+const conversationRowSchema = Schema.Struct({
+  conversation_id: Schema.String,
+  context: Schema.NullOr(Schema.Union([Schema.String, Schema.Uint8Array])),
+  created_at: Schema.NullOr(Schema.String),
+  updated_at: Schema.NullOr(Schema.String),
+})
+const contextSchema = Schema.Struct({ messages: Schema.optional(Schema.Unknown) })
+const contextJsonSchema = Schema.fromJsonString(contextSchema)
+const itemSchema = Schema.Struct({ message: Schema.optional(Schema.Unknown), usage: Schema.optional(Schema.Unknown) })
+const messageSchema = Schema.Struct({
+  text: Schema.optional(Schema.Unknown),
+})
+const textSchema = Schema.Struct({
+  role: Schema.optional(Schema.Unknown),
+  content: Schema.optional(Schema.Unknown),
+  model: Schema.optional(Schema.Unknown),
+  tool_calls: Schema.optional(Schema.Unknown),
+})
+const recordSchema = Schema.Record(Schema.String, Schema.Unknown)
+const callSchema = Schema.Struct({
+  name: Schema.optional(Schema.Unknown),
+  call_id: Schema.optional(Schema.Unknown),
+  arguments: Schema.optional(Schema.Unknown),
+})
+const argsSchema = Schema.Struct({ command: Schema.optional(Schema.Unknown) })
+const actualSchema = Schema.Struct({ actual: Schema.optional(Schema.Finite) })
+const decodeDiscoveryRow = Schema.decodeUnknownResult(discoveryRowSchema)
+const decodeConversationRow = Schema.decodeUnknownResult(conversationRowSchema)
+const decodeContext = Schema.decodeUnknownResult(contextJsonSchema)
+const decodeItem = Schema.decodeUnknownResult(itemSchema)
+const decodeMessage = Schema.decodeUnknownResult(messageSchema)
+const decodeText = Schema.decodeUnknownResult(textSchema)
+const decodeRecord = Schema.decodeUnknownResult(recordSchema)
+const decodeCall = Schema.decodeUnknownResult(callSchema)
+const decodeArgs = Schema.decodeUnknownResult(argsSchema)
+const decodeActual = Schema.decodeUnknownResult(actualSchema)
+const decodeString = Schema.decodeUnknownResult(Schema.String)
+const decodeFinite = Schema.decodeUnknownResult(Schema.Finite)
+const decodeMessages = Schema.decodeUnknownResult(Schema.Array(Schema.Unknown))
+const decodeToolCalls = Schema.decodeUnknownResult(Schema.Array(Schema.Unknown))
+
+type ForgeDatabase = { db: SqliteDatabase; closed: boolean }
 
 function sqliteTimestampToIso(value: string | null | undefined): string {
   if (!value) return new Date(0).toISOString()
-
   const match = value.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d+))?$/)
   if (match) {
     const ms = (match[3] ?? '').padEnd(3, '0').slice(0, 3)
     const parsed = new Date(`${match[1]}T${match[2]}.${ms}Z`)
     if (!Number.isNaN(parsed.getTime())) return parsed.toISOString()
   }
-
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? new Date(0).toISOString() : parsed.toISOString()
 }
 
-function actual(value: unknown): number {
-  if (!value || typeof value !== 'object') return 0
-  const raw = (value as Record<string, unknown>)['actual']
-  return typeof raw === 'number' && Number.isFinite(raw) ? raw : 0
+function validateSchema(db: SqliteDatabase): Effect.Effect<boolean> {
+  return Effect.try({
+    try: () =>
+      db.query(
+        'SELECT conversation_id, title, CAST(workspace_id AS TEXT) AS workspace_id, context, created_at, updated_at FROM conversations WHERE 0',
+      ),
+    catch: cause => databaseError('read', cause),
+  }).pipe(
+    Effect.as(true),
+    Effect.catch(() => Effect.succeed(false)),
+  )
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  const result = decodeRecord(value)
+  return Result.isSuccess(result) ? result.success : undefined
+}
+
+function string(value: unknown): string | undefined {
+  const result = decodeString(value)
+  return Result.isSuccess(result) ? result.success : undefined
+}
+
+function finite(value: unknown): number | undefined {
+  const result = decodeFinite(value)
+  return Result.isSuccess(result) ? result.success : undefined
 }
 
 function usageActual(usage: unknown, key: string): number {
-  if (!usage || typeof usage !== 'object') return 0
-  return actual((usage as Record<string, unknown>)[key])
+  const values = record(usage)
+  const result = values && decodeActual(values[key])
+  const fields = result && Result.isSuccess(result) ? result.success : undefined
+  return finite(fields?.actual) ?? 0
 }
 
 function mapToolName(name: string): string {
@@ -101,184 +138,259 @@ function pushUnique(values: string[], value: string): void {
   if (!values.includes(value)) values.push(value)
 }
 
-function toolCalls(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter(v => v && typeof v === 'object') as Record<string, unknown>[] : []
-}
-
-function extractToolsAndCommands(calls: Record<string, unknown>[]): { tools: string[]; bashCommands: string[]; firstCallId?: string } {
+function extractToolsAndCommands(value: unknown): { tools: string[]; bashCommands: string[]; firstCallId?: string } {
   const tools: string[] = []
   const bashCommands: string[] = []
   let firstCallId: string | undefined
-
-  for (const call of calls) {
-    const rawName = call['name']
-    if (typeof rawName !== 'string') continue
-    if (!firstCallId && typeof call['call_id'] === 'string') firstCallId = call['call_id']
-
-    const tool = mapToolName(rawName)
+  const decodedCalls = decodeToolCalls(value)
+  if (Result.isFailure(decodedCalls)) return { tools, bashCommands }
+  for (const item of decodedCalls.success) {
+    const result = decodeCall(item)
+    if (Result.isFailure(result)) continue
+    const call = result.success
+    const name = string(call?.name)
+    if (!name) continue
+    const callId = string(call?.call_id)
+    if (!firstCallId && callId) firstCallId = callId
+    const tool = mapToolName(name)
     pushUnique(tools, tool)
-
     if (tool === 'Bash') {
-      const args = call['arguments']
-      if (args && typeof args === 'object') {
-        const command = (args as Record<string, unknown>)['command']
-        if (typeof command === 'string') {
-          for (const cmd of extractBashCommands(command)) pushUnique(bashCommands, cmd)
-        }
-      }
+      const argsResult = decodeArgs(call.arguments)
+      const args = Result.isSuccess(argsResult) ? argsResult.success : undefined
+      const command = string(args?.command)
+      if (command) for (const extracted of extractBashCommands(command)) pushUnique(bashCommands, extracted)
     }
   }
-
   return { tools, bashCommands, firstCallId }
 }
 
-function splitSourcePath(path: string): { dbPath: string; conversationId: string } | null {
-  const idx = path.lastIndexOf(':')
-  if (idx < 0) return null
-  return { dbPath: path.slice(0, idx), conversationId: path.slice(idx + 1) }
+function splitSourcePath(path: string): { dbPath: string; conversationId: string } | undefined {
+  const index = path.lastIndexOf(':')
+  return index < 0 ? undefined : { dbPath: path.slice(0, index), conversationId: path.slice(index + 1) }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+class ForgeDatabaseError extends Schema.TaggedError<ForgeDatabaseError>()('ForgeDatabaseError', {
+  operation: Schema.Literals(['open', 'read', 'close']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+function databaseError(operation: ForgeDatabaseError['operation'], cause: unknown): ForgeDatabaseError {
+  const error = cause instanceof Error ? cause : new Error(String(cause), { cause })
+  return new ForgeDatabaseError({ operation, cause: error, message: error.message })
+}
+
+function closeDatabase(source: ForgeDatabase): Effect.Effect<void, ForgeDatabaseError> {
+  return Effect.suspend(() => {
+    if (source.closed) return Effect.void
+    source.closed = true
+    return Effect.try({ try: () => source.db.close(), catch: cause => databaseError('close', cause) })
+  })
+}
+
+function acquireDatabase(path: string): Effect.Effect<ForgeDatabase | null, never> {
+  return Effect.try({
+    try: () => ({ db: openDatabase(path), closed: false }),
+    catch: cause => databaseError('open', cause),
+  }).pipe(Effect.catchTag('ForgeDatabaseError', () => Effect.succeed(null)))
+}
+
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
+  const signal = context?.signal
+  const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.scoped(
+      Stream.unwrap(
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          if (!isSqliteAvailable()) {
+            reportProviderIssue('forge', 'sqlite-unavailable')
+            return Stream.empty
+          }
+          const split = splitSourcePath(source.path)
+          if (!split) return Stream.empty
+          const acquired = yield* Effect.acquireRelease(acquireDatabase(split.dbPath), source =>
+            source ? closeDatabase(source).pipe(Effect.orDie) : Effect.void,
+          )
+          if (!acquired) return Stream.empty
+          const db = acquired.db
+          const finishEmpty = () => Stream.fromEffectDrain(closeDatabase(acquired))
+          if (!(yield* validateSchema(db))) return finishEmpty()
+          yield* checkScanAbort(signal)
+          const rows = yield* Effect.try({
+            try: () =>
+              db.query(
+                'SELECT conversation_id, CAST(context AS BLOB) AS context, created_at, updated_at FROM conversations WHERE conversation_id = ?',
+                [split.conversationId],
+              ),
+            catch: cause => databaseError('read', cause),
+          })
+          yield* checkScanAbort(signal)
+          const rowResult = decodeConversationRow(rows[0])
+          const row = Result.isSuccess(rowResult) ? rowResult.success : undefined
+          if (!row?.context) return finishEmpty()
+          const payloadResult = decodeContext(blobToText(row.context))
+          const payload = Result.isSuccess(payloadResult) ? payloadResult.success : undefined
+          const decodedMessages = decodeMessages(payload?.messages)
+          const messages = Result.isSuccess(decodedMessages) ? decodedMessages.success : []
+          let index = 0
+          let userMessage = ''
+          return Stream.fromIterable(messages).pipe(
+            Stream.rechunk(1),
+            Stream.mapEffect(item =>
+              Effect.gen(function* () {
+                yield* checkScanAbort(signal)
+                const currentIndex = index++
+                const entryResult = decodeItem(item)
+                const entry = Result.isSuccess(entryResult) ? entryResult.success : undefined
+                const messageResult = entry && decodeMessage(entry.message)
+                const message = messageResult && Result.isSuccess(messageResult) ? messageResult.success : undefined
+                const textResult = message && decodeText(message.text)
+                const text = textResult && Result.isSuccess(textResult) ? textResult.success : undefined
+                const role = string(text?.role)?.toLowerCase() ?? ''
+                const content = string(text?.content) ?? ''
+                if (role === 'user') {
+                  userMessage = content.length > 500 ? content.slice(0, 500) : content
+                  return Result.fail(undefined)
+                }
+                if (role !== 'assistant' || !entry) return Result.fail(undefined)
+                const promptTokens = usageActual(entry.usage, 'prompt_tokens')
+                const outputTokens = usageActual(entry.usage, 'completion_tokens')
+                const cachedInputTokens = usageActual(entry.usage, 'cached_tokens')
+                const inputTokens = Math.max(0, promptTokens - cachedInputTokens)
+                if (inputTokens === 0 && outputTokens === 0) return Result.fail(undefined)
+                const model = string(text?.model) ?? 'unknown'
+                const { tools, bashCommands, firstCallId } = extractToolsAndCommands(text?.tool_calls)
+                const stableId = firstCallId ?? `${model}:${promptTokens}:${outputTokens}:${currentIndex}`
+                const deduplicationKey = `forge:${row.conversation_id}:${stableId}`
+                if (seenKeys.has(deduplicationKey)) return Result.fail(undefined)
+                seenKeys.add(deduplicationKey)
+                yield* checkScanAbort(signal)
+                const costUSD = yield* Effect.try({
+                  try: () => pricing.calculateCost(model, inputTokens, outputTokens, 0, cachedInputTokens, 0),
+                  catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+                })
+                yield* checkScanAbort(signal)
+                return Result.succeed({
+                  provider: 'forge' as const,
+                  model,
+                  inputTokens,
+                  outputTokens,
+                  cacheCreationInputTokens: 0,
+                  cacheReadInputTokens: cachedInputTokens,
+                  cachedInputTokens,
+                  reasoningTokens: 0,
+                  webSearchRequests: 0,
+                  costUSD,
+                  tools,
+                  bashCommands,
+                  timestamp: sqliteTimestampToIso(row.updated_at ?? row.created_at),
+                  speed: 'standard' as const,
+                  deduplicationKey,
+                  userMessage,
+                  sessionId: row.conversation_id,
+                })
+              }),
+            ),
+            Stream.filterMap(value => value),
+            Stream.concat(Stream.fromEffectDrain(closeDatabase(acquired))),
+          )
+        }),
+      ),
+    )
   return {
+    parseStream,
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      if (!isSqliteAvailable()) {
-        reportProviderIssue('forge', 'sqlite-unavailable')
-        return
-      }
-
-      const split = splitSourcePath(source.path)
-      if (!split) return
-
-      let db: SqliteDatabase
+      // Remove when all direct parser callers consume parseStream.
+      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
       try {
-        db = openDatabase(split.dbPath)
-      } catch {
-        return
-      }
-
-      try {
-        if (!validateSchema(db)) return
-        const rows = db.query<ConversationRow>(
-          `SELECT conversation_id, title, CAST(workspace_id AS TEXT) AS workspace_id, context, created_at, updated_at
-           FROM conversations
-           WHERE conversation_id = ?`,
-          [split.conversationId],
-        )
-        const row = rows[0]
-        if (!row?.context) return
-
-        let parsed: unknown
-        try {
-          parsed = JSON.parse(row.context)
-        } catch {
-          return
+        while (true) {
+          const next = await iterator.next()
+          if (next.done) return
+          yield next.value
         }
-        const messages = Array.isArray((parsed as { messages?: unknown }).messages)
-          ? (parsed as { messages: ContextMessage[] }).messages
-          : []
-
-        let userMessage = ''
-        for (let i = 0; i < messages.length; i++) {
-          const text = messages[i]?.message?.text
-          const role = typeof text?.role === 'string' ? text.role.toLowerCase() : ''
-          const content = typeof text?.content === 'string' ? text.content : ''
-
-          if (role === 'user') {
-            userMessage = content.length > 500 ? content.slice(0, 500) : content
-            continue
-          }
-          if (role !== 'assistant') continue
-
-          const promptTokens = usageActual(messages[i]?.usage, 'prompt_tokens')
-          const outputTokens = usageActual(messages[i]?.usage, 'completion_tokens')
-          const cachedInputTokens = usageActual(messages[i]?.usage, 'cached_tokens')
-          const inputTokens = Math.max(0, promptTokens - cachedInputTokens)
-          if (inputTokens === 0 && outputTokens === 0) continue
-
-          const model = typeof text?.model === 'string' ? text.model : 'unknown'
-          const calls = toolCalls(text?.tool_calls)
-          const { tools, bashCommands, firstCallId } = extractToolsAndCommands(calls)
-          const stableId = firstCallId ?? `${model}:${promptTokens}:${outputTokens}:${i}`
-          const deduplicationKey = `forge:${row.conversation_id}:${stableId}`
-          if (seenKeys.has(deduplicationKey)) continue
-          seenKeys.add(deduplicationKey)
-          yield {
-            provider: 'forge',
-            model,
-            inputTokens,
-            outputTokens,
-            cacheCreationInputTokens: 0,
-            cacheReadInputTokens: cachedInputTokens,
-            cachedInputTokens,
-            reasoningTokens: 0,
-            webSearchRequests: 0,
-            costUSD: calculateCost(model, inputTokens, outputTokens, 0, cachedInputTokens, 0),
-            tools,
-            bashCommands,
-            timestamp: sqliteTimestampToIso(row.updated_at ?? row.created_at),
-            speed: 'standard',
-            deduplicationKey,
-            userMessage,
-            sessionId: row.conversation_id,
-          }
-        }
+      } catch (error) {
+        // The legacy Promise API must preserve the original SQLite error identity.
+        // eslint-disable-next-line no-restricted-syntax
+        if (error instanceof ForgeDatabaseError) throw error.cause
+        // eslint-disable-next-line no-restricted-syntax
+        throw error
       } finally {
-        db.close()
+        await iterator.return?.()
       }
     },
   }
 }
 
-async function discoverFromDb(dbPath: string): Promise<SessionSource[]> {
-  if (!existsSync(dbPath)) return []
+function discoverFromDb(dbPath: string, context?: ProviderScanContext): Effect.Effect<SessionSource[], Error> {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* checkScanAbort(context?.signal)
+      if (!isSqliteAvailable()) return []
+      if (!existsSync(dbPath)) return []
 
-  let db: SqliteDatabase
-  try {
-    db = openDatabase(dbPath)
-  } catch {
-    return []
-  }
+      const acquired = yield* Effect.acquireRelease(acquireDatabase(dbPath), source =>
+        source ? closeDatabase(source).pipe(Effect.orDie) : Effect.void,
+      )
+      if (!acquired) return []
+      const db = acquired.db
+      if (!(yield* validateSchema(db))) {
+        yield* closeDatabase(acquired)
+        yield* checkScanAbort(context?.signal)
+        return []
+      }
 
-  try {
-    if (!validateSchema(db)) return []
-    const rows = db.query<DiscoveryRow>(
-      `SELECT conversation_id, title, CAST(workspace_id AS TEXT) AS workspace_id
-       FROM conversations
-       WHERE context IS NOT NULL`,
-    )
-    return rows.map(row => ({
-      path: `${dbPath}:${row.conversation_id}`,
-      project: row.title ?? String(row.workspace_id),
-      provider: 'forge',
-    }))
-  } catch {
-    return []
-  } finally {
-    db.close()
-  }
+      yield* checkScanAbort(context?.signal)
+      const rows = yield* Effect.try({
+        try: () =>
+          db.query(
+            'SELECT conversation_id, title, CAST(workspace_id AS TEXT) AS workspace_id FROM conversations WHERE context IS NOT NULL',
+          ),
+        catch: cause => databaseError('read', cause),
+      }).pipe(Effect.catchTag('ForgeDatabaseError', () => Effect.succeed(null)))
+      yield* checkScanAbort(context?.signal)
+
+      const sessions =
+        rows?.flatMap(value => {
+          const rowResult = decodeDiscoveryRow(value)
+          const row = Result.isSuccess(rowResult) ? rowResult.success : undefined
+          return row
+            ? [
+                {
+                  path: `${dbPath}:${row.conversation_id}`,
+                  project: row.title ?? String(row.workspace_id),
+                  provider: 'forge' as const,
+                },
+              ]
+            : []
+        }) ?? []
+      yield* closeDatabase(acquired)
+      yield* checkScanAbort(context?.signal)
+      return sessions
+    }),
+  )
 }
 
 export function createForgeProvider(dbPath = DEFAULT_DB_PATH): Provider {
   return {
     name: 'forge',
     displayName: 'Forge',
-
-    modelDisplayName(model: string): string {
-      return model
+    modelDisplayName: model => model,
+    toolDisplayName: rawTool => rawTool,
+    discoverSessions: context => {
+      // Remove this Promise edge after callers use the native Effect hook.
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discoverFromDb(dbPath, context)).catch(error =>
+        Promise.reject(error instanceof ForgeDatabaseError ? error.cause : error),
+      )
     },
-
-    toolDisplayName(rawTool: string): string {
-      return rawTool
-    },
-
-    async discoverSessions(): Promise<SessionSource[]> {
-      if (!isSqliteAvailable()) return []
-      return discoverFromDb(dbPath)
-    },
-
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
-    },
+    discoverSessionsEffect: context => discoverFromDb(dbPath, context),
+    createSessionParser: (
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ) => createParser(source, seenKeys, context),
   }
 }
 

@@ -14,7 +14,11 @@ export function buildFixtureCachedFile(overrides: Partial<CachedFile> = {}): Cac
   }
 }
 
-export function buildFixtureCachedTurn(index: number, userMessage: string, overrides: Partial<CachedTurn> = {}): CachedTurn {
+export function buildFixtureCachedTurn(
+  index: number,
+  userMessage: string,
+  overrides: Partial<CachedTurn> = {},
+): CachedTurn {
   return {
     timestamp: turnTimestamp(index),
     sessionId: 'sess-0',

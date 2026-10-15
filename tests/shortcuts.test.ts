@@ -6,7 +6,7 @@ import {
   shortcutForAction,
   displayShortcut,
   displayShortcutForAction,
-  sectionsRangeLabel
+  sectionsRangeLabel,
 } from '../src/renderer/src/app/shortcuts.js'
 
 describe('shortcut registry', () => {
@@ -25,9 +25,9 @@ describe('shortcut registry', () => {
   })
 
   it('registers nothing for digits beyond the numbered sections (Mod+9/Mod+10 no-op)', () => {
-    const hotkeys = new Set(SHORTCUTS.map(def => def.hotkey))
+    const hotkeys = new Set<string>(SHORTCUTS.map(def => def.hotkey))
     expect(hotkeys.has('Mod+9')).toBe(false)
-    expect(hotkeys.has('Mod+10')).toBe(false)
+    expect([...hotkeys].some(hotkey => hotkey === 'Mod+10')).toBe(false)
     expect(NUMBERED_SECTION_SHORTCUTS).toHaveLength(NAV_SECTIONS.length - 1)
     expect(NUMBERED_SECTION_SHORTCUTS.some(def => def.action === 'commandPalette')).toBe(false)
   })

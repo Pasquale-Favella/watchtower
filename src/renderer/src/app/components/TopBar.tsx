@@ -3,13 +3,7 @@ import type { ReactNode } from 'react'
 import { cn } from '@/shared/lib/utils'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { DEFAULT_PERIOD_OPTIONS, PERIOD_LABELS } from '@/shared/lib/settings-constants'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/shared/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { Separator } from '@/shared/components/ui/separator'
 import { SidebarTrigger } from '@/shared/components/ui/sidebar'
 import { buildScopeCaption, providerOptionsFromDetected } from '@/shared/lib/shell'
@@ -46,15 +40,26 @@ export function TopBarShell({
   children?: ReactNode
 }) {
   return (
-    <div className="flex items-center gap-2.5 border-b border-border px-4 pb-[11px] pt-[13px]">
+    <div className="border-border flex items-center gap-2.5 border-b px-4 pt-[13px] pb-[11px]">
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="mr-1 h-4" />
       <div className="text-sm font-semibold tracking-tight">{title}</div>
-      {scope !== undefined && <span className="text-[11px] text-muted-foreground">{scope}</span>}
+      {scope !== undefined && <span className="text-muted-foreground text-[11px]">{scope}</span>}
       <div className="flex-1" />
       <SegTabs options={DEFAULT_PERIOD_OPTIONS} value={period} onChange={onPeriodChange} />
-      <Select value={provider} onValueChange={(value) => { if (value) onProviderSelect(value) }}>
-        <SelectTrigger size="sm" className={cn('h-[25px] rounded-md border-border px-2 text-[11px] text-muted-foreground', provider !== 'all' && 'text-foreground')}>
+      <Select
+        value={provider}
+        onValueChange={value => {
+          if (value) onProviderSelect(value)
+        }}
+      >
+        <SelectTrigger
+          size="sm"
+          className={cn(
+            'border-border text-muted-foreground h-[25px] rounded-md px-2 text-[11px]',
+            provider !== 'all' && 'text-foreground',
+          )}
+        >
           <SelectValue>{providerLabel}</SelectValue>
         </SelectTrigger>
         <SelectContent>
@@ -86,9 +91,7 @@ export function TopBar() {
 
   const providerOptions = providerOptionsFromDetected(detectedProviders)
   const providerLabel = providerOptions.find(p => p.value === provider)?.label ?? provider
-  const periodLabel = customRange
-    ? `${customRange.since} → ${customRange.until}`
-    : (PERIOD_LABELS[period] ?? period)
+  const periodLabel = customRange ? `${customRange.since} → ${customRange.until}` : (PERIOD_LABELS[period] ?? period)
   const scope = buildScopeCaption(periodLabel, providerLabel)
 
   return (
@@ -102,11 +105,7 @@ export function TopBar() {
       providerOptions={providerOptions}
       onProviderSelect={setProvider}
     >
-      <CustomRangePicker
-        value={customRange}
-        onApply={setCustomRange}
-        onClear={() => setCustomRange(null)}
-      />
+      <CustomRangePicker value={customRange} onApply={setCustomRange} onClear={() => setCustomRange(null)} />
     </TopBarShell>
   )
 }

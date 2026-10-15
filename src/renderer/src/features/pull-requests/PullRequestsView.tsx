@@ -45,16 +45,22 @@ function ModelChips({ models, provenance }: ModelChipsProps) {
   })
   return (
     <div className="flex min-w-0 flex-col items-end gap-1">
-      <div className="flex flex-wrap justify-end gap-1" aria-label={models.length ? `Models used: ${models.join(', ')}` : 'No model data'}>
+      <div
+        className="flex flex-wrap justify-end gap-1"
+        aria-label={models.length ? `Models used: ${models.join(', ')}` : 'No model data'}
+      >
         {models.map(model => (
-          <span key={model} className="rounded border border-border bg-background px-1.5 py-px font-mono text-[10px] text-muted-foreground">
+          <span
+            key={model}
+            className="border-border bg-background text-muted-foreground rounded border px-1.5 py-px font-mono text-[10px]"
+          >
             {model}
           </span>
         ))}
       </div>
       {merged.length > 0 && (
         <span
-          className="block max-w-full truncate text-[10px] text-muted-foreground"
+          className="text-muted-foreground block max-w-full truncate text-[10px]"
           title={merged.map(entry => `${entry.model}: ${entry.raws.join(', ')}`).join(' · ')}
         >
           includes {merged.map(entry => entry.raws.join(', ')).join(', ')}
@@ -70,63 +76,84 @@ function PrRowView({ pr, expanded, onToggle }: { pr: PullRequestRow; expanded: b
   const catMax = categories.length ? Math.max(...categories.map(cat => cat.cost)) : 0
 
   return (
-    <div className={cn('border-t border-border first:border-t-0', expanded && 'bg-accent/40')}>
+    <div className={cn('border-border border-t first:border-t-0', expanded && 'bg-accent/40')}>
       <div
-        className="flex cursor-pointer select-none items-center gap-3 px-3.5 py-2 transition-colors hover:bg-accent"
+        className="hover:bg-accent flex cursor-pointer items-center gap-3 px-3.5 py-2 transition-colors select-none"
         role="button"
         tabIndex={0}
         aria-expanded={expanded}
         onClick={onToggle}
         onKeyDown={event => rowKeyDown(event, onToggle)}
       >
-        <GitPullRequest className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <GitPullRequest className="text-muted-foreground size-4 shrink-0" aria-hidden="true" />
         <div className="min-w-0 flex-1">
           <div className="min-w-0">
-            <a className="truncate text-[12.5px] font-medium text-foreground hover:text-primary hover:underline" href={pr.url} title={pr.url} onClick={event => openPr(event, pr.url)}>
+            <a
+              className="text-foreground hover:text-primary truncate text-[12.5px] font-medium hover:underline"
+              href={pr.url}
+              title={pr.url}
+              onClick={event => openPr(event, pr.url)}
+            >
               {pr.label}
             </a>
           </div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-muted-foreground">
+          <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px]">
             <span>{spanLabel(pr.firstStarted, pr.lastEnded)}</span>
-            <span>{pr.sessions.toLocaleString('en-US')} {sessionWord(pr.sessions)}</span>
+            <span>
+              {pr.sessions.toLocaleString('en-US')} {sessionWord(pr.sessions)}
+            </span>
             <span>{pr.calls.toLocaleString('en-US')} calls</span>
           </div>
         </div>
-        <div className="hidden min-w-0 max-w-[260px] shrink-0 flex-col items-end gap-1 lg:flex">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Models</span>
+        <div className="hidden max-w-[260px] min-w-0 shrink-0 flex-col items-end gap-1 lg:flex">
+          <span className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">Models</span>
           <ModelChips models={models} provenance={pr.modelProvenance} />
         </div>
         <div className="w-20 shrink-0 text-right">
-          <span className="block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Spend</span>
-          <strong className="font-mono text-[12.5px] tabular-nums text-foreground">{formatUsd(pr.cost)}</strong>
+          <span className="text-muted-foreground block text-[10px] font-medium tracking-wide uppercase">Spend</span>
+          <strong className="text-foreground font-mono text-[12.5px] tabular-nums">{formatUsd(pr.cost)}</strong>
         </div>
-        <ChevronRight className={cn('size-4 shrink-0 text-muted-foreground transition-transform', expanded && 'rotate-90')} aria-hidden="true" />
+        <ChevronRight
+          className={cn('text-muted-foreground size-4 shrink-0 transition-transform', expanded && 'rotate-90')}
+          aria-hidden="true"
+        />
       </div>
       {expanded && (
         <div className="px-3.5 pb-2.5">
           {categories.length > 0 ? (
-            <div role="region" aria-label={`${pr.label} cost breakdown`} className="flex flex-col gap-1.5 border-t border-border pt-2">
+            <div
+              role="region"
+              aria-label={`${pr.label} cost breakdown`}
+              className="border-border flex flex-col gap-1.5 border-t pt-2"
+            >
               <div className="flex items-center justify-between text-[10.5px]">
-                <span className="font-medium text-muted-foreground">Work breakdown</span>
-                <strong className="font-mono tabular-nums text-foreground">{formatUsd(pr.cost)} total</strong>
+                <span className="text-muted-foreground font-medium">Work breakdown</span>
+                <strong className="text-foreground font-mono tabular-nums">{formatUsd(pr.cost)} total</strong>
               </div>
               <div className="flex flex-col gap-1.5">
                 {categories.map(cat => (
                   <div className="flex items-center gap-2.5" key={cat.name}>
-                    <span className="w-28 shrink-0 truncate text-[11px] text-muted-foreground">{cat.name}</span>
-                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-background" aria-hidden="true">
+                    <span className="text-muted-foreground w-28 shrink-0 truncate text-[11px]">{cat.name}</span>
+                    <div className="bg-background h-1.5 flex-1 overflow-hidden rounded-full" aria-hidden="true">
                       <span
                         className="block h-full rounded-full"
-                        style={{ width: `${catMax > 0 ? (cat.cost / catMax) * 100 : 0}%`, background: 'var(--primary)' }}
+                        style={{
+                          width: `${catMax > 0 ? (cat.cost / catMax) * 100 : 0}%`,
+                          background: 'var(--primary)',
+                        }}
                       />
                     </div>
-                    <strong className="w-16 shrink-0 text-right font-mono text-[11px] tabular-nums text-foreground">{formatUsd(cat.cost)}</strong>
+                    <strong className="text-foreground w-16 shrink-0 text-right font-mono text-[11px] tabular-nums">
+                      {formatUsd(cat.cost)}
+                    </strong>
                   </div>
                 ))}
               </div>
             </div>
           ) : (
-            <p className="border-t border-border pt-2 text-[11px] text-muted-foreground">No per-category breakdown for this pull request.</p>
+            <p className="border-border text-muted-foreground border-t pt-2 text-[11px]">
+              No per-category breakdown for this pull request.
+            </p>
           )}
         </div>
       )}
@@ -142,7 +169,7 @@ function HeroMini({ label, info, children }: { label: string; info?: string; chi
   return (
     <div className="min-w-0">
       <div className="flex min-w-0 items-center gap-1.5">
-        <div className="truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+        <div className="text-muted-foreground truncate text-[10px] font-medium tracking-wide uppercase">{label}</div>
         {info ? <InfoTip label={`About ${label.toLowerCase()}`} text={info} /> : null}
       </div>
       <div className="mt-0.5 min-w-0 text-[12.5px]">{children}</div>
@@ -153,23 +180,26 @@ function HeroMini({ label, info, children }: { label: string; info?: string; chi
 function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
   const { attributedCost } = useMemo(() => summarizePullRequests(payload.rows), [payload])
   const top = payload.rows[0]
-  const coveragePct = payload.distinctCost > 0
-    ? Math.min(100, Math.max(0, Math.round((attributedCost / payload.distinctCost) * 100)))
-    : null
+  const coveragePct =
+    payload.distinctCost > 0
+      ? Math.min(100, Math.max(0, Math.round((attributedCost / payload.distinctCost) * 100)))
+      : null
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <Card className="flex flex-col gap-0 rounded-lg border border-border bg-card px-4 py-3 shadow-[var(--card-shadow)] ring-0 [--card-spacing:0px] sm:col-span-2">
+      <Card className="border-border bg-card flex flex-col gap-0 rounded-lg border px-4 py-3 shadow-[var(--card-shadow)] ring-0 [--card-spacing:0px] sm:col-span-2">
         <div className="grid flex-1 grid-cols-2 content-between gap-x-4 gap-y-3">
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-1.5">
-              <div className="truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Attributed spend</div>
+              <div className="text-muted-foreground truncate text-[11px] font-medium tracking-wider uppercase">
+                Attributed spend
+              </div>
               <InfoTip
                 label="About attributed spend"
                 text="AI spend pinned to one of the PRs listed below. Counted turn by turn, so a session working on two PRs splits its cost instead of counting it twice."
               />
             </div>
-            <div className="mt-2 truncate font-mono text-3xl font-semibold tracking-tight tabular-nums text-primary">
+            <div className="text-primary mt-2 truncate font-mono text-3xl font-semibold tracking-tight tabular-nums">
               {formatUsd(attributedCost)}
             </div>
           </div>
@@ -179,13 +209,16 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
               info="Share of PR-linked spend pinned to a specific PR. The rest is work from those same sessions done before any PR was mentioned, so it cannot be tied to one PR."
             >
               <span className="block truncate">
-                <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
+                <span className="text-foreground font-mono text-2xl font-semibold tabular-nums">
                   {coveragePct.toLocaleString('en-US')}%
                 </span>{' '}
                 <span className="text-muted-foreground">of linked spend</span>
               </span>
-              <span className="mt-1.5 block h-1.5 overflow-hidden rounded-full bg-background" aria-hidden="true">
-                <span className="block h-full rounded-full" style={{ width: `${coveragePct}%`, background: 'var(--primary)' }} />
+              <span className="bg-background mt-1.5 block h-1.5 overflow-hidden rounded-full" aria-hidden="true">
+                <span
+                  className="block h-full rounded-full"
+                  style={{ width: `${coveragePct}%`, background: 'var(--primary)' }}
+                />
               </span>
             </HeroMini>
           ) : (
@@ -194,10 +227,10 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
               info="Share of PR-linked spend pinned to a specific PR. The rest is work from those same sessions done before any PR was mentioned, so it cannot be tied to one PR."
             >
               <span className="block truncate">
-                <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">—</span>{' '}
+                <span className="text-foreground font-mono text-2xl font-semibold tabular-nums">—</span>{' '}
                 <span className="text-muted-foreground">of linked spend</span>
               </span>
-              <span className="mt-1.5 block h-1.5 overflow-hidden rounded-full bg-background" aria-hidden="true">
+              <span className="bg-background mt-1.5 block h-1.5 overflow-hidden rounded-full" aria-hidden="true">
                 <span className="block h-full rounded-full" style={{ width: '0%', background: 'var(--primary)' }} />
               </span>
             </HeroMini>
@@ -208,16 +241,16 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
               info="The PR that absorbed the most AI spend in the current scope. Click its name to open it."
             >
               <span className="flex min-w-0 items-center gap-1.5">
-                <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <GitPullRequest className="text-muted-foreground size-3.5 shrink-0" aria-hidden="true" />
                 <a
-                  className="truncate font-medium text-foreground hover:text-primary hover:underline"
+                  className="text-foreground hover:text-primary truncate font-medium hover:underline"
                   href={top.url}
                   title={top.url}
                   onClick={event => openPr(event, top.url)}
                 >
                   {top.label}
                 </a>
-                <strong className="shrink-0 font-mono tabular-nums text-foreground">{formatUsd(top.cost)}</strong>
+                <strong className="text-foreground shrink-0 font-mono tabular-nums">{formatUsd(top.cost)}</strong>
               </span>
             </HeroMini>
           ) : (
@@ -225,14 +258,16 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
               label="Top PR by spend"
               info="The PR that absorbed the most AI spend in the current scope. Click its name to open it."
             >
-              <span className="block truncate text-muted-foreground">—</span>
+              <span className="text-muted-foreground block truncate">—</span>
             </HeroMini>
           )}
           <HeroMini
             label="Unattributed"
             info="Spend from PR-linked sessions that cannot be tied to one PR - mostly work done before the first PR link appeared in the session."
           >
-            <strong className="block truncate font-mono tabular-nums text-foreground">{formatUsd(payload.unattributedCost)}</strong>
+            <strong className="text-foreground block truncate font-mono tabular-nums">
+              {formatUsd(payload.unattributedCost)}
+            </strong>
           </HeroMini>
         </div>
       </Card>
@@ -247,7 +282,11 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
         <MetricCard
           label="Linked sessions"
           value={payload.distinctSessions.toLocaleString('en-US')}
-          sub={payload.rows.length > 0 ? `Avg ${(payload.distinctSessions / payload.rows.length).toFixed(1)} per PR` : undefined}
+          sub={
+            payload.rows.length > 0
+              ? `Avg ${(payload.distinctSessions / payload.rows.length).toFixed(1)} per PR`
+              : undefined
+          }
           subInline
           info="Parent sessions that mention at least one PR. Subagent runs are folded into their parent session, so they add cost but never inflate this count."
         />
@@ -281,10 +320,12 @@ export function PullRequestsView(): React.JSX.Element {
       )}
 
       {payload === null ? (
-        error ? <ErrorPanel message={error} /> : (
+        error ? (
+          <ErrorPanel message={error} />
+        ) : (
           <LoadingRegion label="Loading pull requests…" className="flex flex-col gap-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="rounded-lg border border-border bg-card p-4 sm:col-span-2">
+              <div className="border-border bg-card rounded-lg border p-4 sm:col-span-2">
                 <div className="grid grid-cols-2 gap-x-4 gap-y-4">
                   <div>
                     <Skeleton className="h-3 w-28" />
@@ -320,7 +361,7 @@ export function PullRequestsView(): React.JSX.Element {
         )
       ) : payload.rows.length === 0 ? (
         <Panel title="Pull request spend">
-          <p className="py-3 text-center text-[11.5px] text-muted-foreground">
+          <p className="text-muted-foreground py-3 text-center text-[11.5px]">
             PR links are captured as sessions are parsed. Once a session references a pull request, it appears here.
           </p>
         </Panel>
@@ -331,28 +372,33 @@ export function PullRequestsView(): React.JSX.Element {
             <div className="flex items-center justify-between">
               <div className="text-[11.5px]">
                 <strong className="text-foreground">Attributed pull requests</strong>
-                <span className="ml-1.5 text-muted-foreground">Sorted by spend, highest first</span>
+                <span className="text-muted-foreground ml-1.5">Sorted by spend, highest first</span>
               </div>
-              <span className="font-mono text-[11px] text-muted-foreground">{payload.rows.length.toLocaleString('en-US')} total</span>
+              <span className="text-muted-foreground font-mono text-[11px]">
+                {payload.rows.length.toLocaleString('en-US')} total
+              </span>
             </div>
 
-          <div className="mt-1" aria-label="Spend by pull request">
-            {payload.rows.map(pr => (
-              <PrRowView
-                key={pr.url}
-                pr={pr}
-                expanded={expandedUrl === pr.url}
-                onToggle={() => setExpandedUrl(current => current === pr.url ? null : pr.url)}
-              />
-            ))}
-          </div>
+            <div className="mt-1" aria-label="Spend by pull request">
+              {payload.rows.map(pr => (
+                <PrRowView
+                  key={pr.url}
+                  pr={pr}
+                  expanded={expandedUrl === pr.url}
+                  onToggle={() => setExpandedUrl(current => (current === pr.url ? null : pr.url))}
+                />
+              ))}
+            </div>
 
-            <p className="mt-2.5 border-t border-border pt-2 text-[10.5px] leading-relaxed text-muted-foreground">
+            <p className="border-border text-muted-foreground mt-2.5 border-t pt-2 text-[10.5px] leading-relaxed">
               Costs are attributed turn by turn, so every row adds up without double counting.
-              {payload.subagentSessions > 0 && ` ${payload.subagentSessions.toLocaleString('en-US')} subagent ${payload.subagentSessions === 1 ? 'run is' : 'runs are'} included in the PR where the work happened.`}
+              {payload.subagentSessions > 0 &&
+                ` ${payload.subagentSessions.toLocaleString('en-US')} subagent ${payload.subagentSessions === 1 ? 'run is' : 'runs are'} included in the PR where the work happened.`}
             </p>
             {payload.unattributedCost > 0 && (
-              <p className="mt-1 text-[10.5px] text-muted-foreground">Not tied to a specific PR: {formatUsd(payload.unattributedCost)}</p>
+              <p className="text-muted-foreground mt-1 text-[10.5px]">
+                Not tied to a specific PR: {formatUsd(payload.unattributedCost)}
+              </p>
             )}
           </Panel>
         </>

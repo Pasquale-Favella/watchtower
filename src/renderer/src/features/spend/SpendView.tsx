@@ -8,7 +8,14 @@ import { Panel } from '@/shared/components/Panel'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { motionClass } from '@/shared/lib/motion'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { formatDayLabel, providerLabel, sankeyData, stackedRows, type SpendRow, type SankeyNodeData } from '@/features/spend/lib'
+import {
+  formatDayLabel,
+  providerLabel,
+  sankeyData,
+  stackedRows,
+  type SpendRow,
+  type SankeyNodeData,
+} from '@/features/spend/lib'
 import { isOtherNode, seriesColorForModel } from '@/shared/lib/modelSeries'
 import { formatUsd, formatConverted } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
@@ -91,7 +98,7 @@ function DailyStackedChart({
   const leadingNoData = dataStart !== null && rows.length > 0 && rows[0]!.date < dataStart
 
   if (!hasSpend) {
-    return <p className="py-3 text-center text-[11.5px] text-muted-foreground">{emptyText}</p>
+    return <p className="text-muted-foreground py-3 text-center text-[11.5px]">{emptyText}</p>
   }
 
   return (
@@ -108,9 +115,15 @@ function DailyStackedChart({
               tickLine={false}
               minTickGap={40}
             />
-            <YAxis tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }} tickFormatter={(value: number) => formatConverted(value).replace(/\.\d+$/, '')} axisLine={false} tickLine={false} width={42} />
+            <YAxis
+              tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
+              tickFormatter={(value: number) => formatConverted(value).replace(/\.\d+$/, '')}
+              axisLine={false}
+              tickLine={false}
+              width={42}
+            />
             <Tooltip
-              formatter={(value) => formatUsd(Number(value))}
+              formatter={value => formatUsd(Number(value))}
               contentStyle={tooltipStyle}
               cursor={{ fill: 'var(--accent)' }}
             />
@@ -131,7 +144,11 @@ function DailyStackedChart({
           {series.map(name => {
             const raws = provenance?.get(name)
             return (
-              <span key={name} className="inline-flex items-center gap-1.5 text-[10.5px] text-muted-foreground" title={raws?.length ? `includes ${raws.join(', ')}` : undefined}>
+              <span
+                key={name}
+                className="text-muted-foreground inline-flex items-center gap-1.5 text-[10.5px]"
+                title={raws?.length ? `includes ${raws.join(', ')}` : undefined}
+              >
                 <span className="size-2 rounded-[2px]" style={{ background: colorFor(name) }} aria-hidden="true" />
                 {name}
                 {raws?.length ? <span className="text-muted-foreground/80">· includes {raws.join(', ')}</span> : null}
@@ -141,7 +158,9 @@ function DailyStackedChart({
         </div>
       )}
       {leadingNoData && (
-        <p className="text-[10.5px] text-muted-foreground">Days before {formatDayLabel(dataStart ?? '')} recorded no activity.</p>
+        <p className="text-muted-foreground text-[10.5px]">
+          Days before {formatDayLabel(dataStart ?? '')} recorded no activity.
+        </p>
       )}
     </div>
   )
@@ -152,7 +171,9 @@ function SankeyFlow({ flow }: { flow: SpendFlow }) {
   const merged = useMemo(() => flow.models.filter(node => node.sourceModels?.length), [flow])
 
   if (flow.links.length === 0) {
-    return <p className="py-3 text-center text-[11.5px] text-muted-foreground">No model-project flow in this range yet.</p>
+    return (
+      <p className="text-muted-foreground py-3 text-center text-[11.5px]">No model-project flow in this range yet.</p>
+    )
   }
 
   return (
@@ -168,15 +189,12 @@ function SankeyFlow({ flow }: { flow: SpendFlow }) {
             linkCurvature={0.5}
             margin={{ top: 4, right: 12, bottom: 4, left: 12 }}
           >
-            <Tooltip
-              formatter={(value) => formatUsd(Number(value))}
-              contentStyle={tooltipStyle}
-            />
+            <Tooltip formatter={value => formatUsd(Number(value))} contentStyle={tooltipStyle} />
           </Sankey>
         </ResponsiveContainer>
       </div>
       {merged.length > 0 && (
-        <p className="text-[10.5px] text-muted-foreground">
+        <p className="text-muted-foreground text-[10.5px]">
           {merged.map(node => `${node.label} includes ${node.sourceModels!.join(', ')}`).join(' · ')}
         </p>
       )}
@@ -221,13 +239,21 @@ export function SpendView(): React.JSX.Element {
       )}
 
       {payload === null ? (
-        error ? <ErrorPanel message={error} /> : (
+        error ? (
+          <ErrorPanel message={error} />
+        ) : (
           <LoadingRegion label="Loading spend…" className="flex flex-col gap-3">
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-              <SkeletonCard title><SkeletonBars className="h-40" /></SkeletonCard>
-              <SkeletonCard title><SkeletonBars className="h-40" /></SkeletonCard>
+              <SkeletonCard title>
+                <SkeletonBars className="h-40" />
+              </SkeletonCard>
+              <SkeletonCard title>
+                <SkeletonBars className="h-40" />
+              </SkeletonCard>
             </div>
-            <SkeletonCard title><SkeletonBars className="h-44" /></SkeletonCard>
+            <SkeletonCard title>
+              <SkeletonBars className="h-44" />
+            </SkeletonCard>
           </LoadingRegion>
         )
       ) : (

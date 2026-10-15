@@ -4,7 +4,14 @@ import { SegTabs } from '@/shared/components/SegTabs'
 import { formatUsd, providerTitle } from '@/shared/lib/models'
 import { Button } from '@/shared/components/ui/button'
 import { Input } from '@/shared/components/ui/input'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/shared/components/ui/dialog'
 import type { ModelReportRow } from '../../../../shared/schemas/models.js'
 import { ModelPickerCombobox, type ModelPickerGroup } from './model-picker'
 import { usePricingStore } from './pricing-store'
@@ -70,28 +77,31 @@ export function QuickAddModal({
     [aliases, target.model],
   )
 
-  const pickerGroups = useMemo<ModelPickerGroup[]>(() => [
-    {
-      label: 'Already mapped',
-      items: mappedCandidates.map(alias => ({
-        id: `mapped:${alias.model}`,
-        value: alias.aliasOf,
-        label: alias.aliasOf,
-        dot: alias.aliasOf,
-        sub: `from ${alias.model}`,
-      })),
-    },
-    {
-      label: 'Recognized models',
-      items: candidates.map(model => ({
-        id: `recognized:${model.provider}:${model.model}`,
-        value: model.model,
-        label: model.modelDisplayName,
-        dot: model.modelDisplayName,
-        sub: `${providerTitle(model.provider)} · ${model.calls.toLocaleString('en-US')} calls · ${formatUsd(model.costUSD)}`,
-      })),
-    },
-  ], [mappedCandidates, candidates])
+  const pickerGroups = useMemo<ModelPickerGroup[]>(
+    () => [
+      {
+        label: 'Already mapped',
+        items: mappedCandidates.map(alias => ({
+          id: `mapped:${alias.model}`,
+          value: alias.aliasOf,
+          label: alias.aliasOf,
+          dot: alias.aliasOf,
+          sub: `from ${alias.model}`,
+        })),
+      },
+      {
+        label: 'Recognized models',
+        items: candidates.map(model => ({
+          id: `recognized:${model.provider}:${model.model}`,
+          value: model.model,
+          label: model.modelDisplayName,
+          dot: model.modelDisplayName,
+          sub: `${providerTitle(model.provider)} · ${model.calls.toLocaleString('en-US')} calls · ${formatUsd(model.costUSD)}`,
+        })),
+      },
+    ],
+    [mappedCandidates, candidates],
+  )
 
   const pick = (model: string): void => {
     setAliasTarget(model)
@@ -146,11 +156,18 @@ export function QuickAddModal({
   }
 
   return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+    <Dialog
+      open
+      onOpenChange={open => {
+        if (!open) onClose()
+      }}
+    >
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
           <DialogTitle className="text-[13px] tracking-tight">Price {target.modelDisplayName}</DialogTitle>
-          <DialogDescription className="truncate text-[10px] text-muted-foreground">{providerTitle(target.provider)} · {target.model}</DialogDescription>
+          <DialogDescription className="text-muted-foreground truncate text-[10px]">
+            {providerTitle(target.provider)} · {target.model}
+          </DialogDescription>
         </DialogHeader>
 
         <SegTabs
@@ -159,12 +176,15 @@ export function QuickAddModal({
             { value: 'alias', label: 'Map to model' },
           ]}
           value={mode}
-          onChange={value => { setMode(value as 'alias' | 'price'); setError(null) }}
+          onChange={value => {
+            setMode(value as 'alias' | 'price')
+            setError(null)
+          }}
         />
 
         {mode === 'alias' ? (
           <div className="flex flex-col gap-1.5">
-            <span className="text-[10.5px] font-medium text-muted-foreground">Price this model as</span>
+            <span className="text-muted-foreground text-[10.5px] font-medium">Price this model as</span>
 
             <ModelPickerCombobox
               groups={pickerGroups}
@@ -175,19 +195,22 @@ export function QuickAddModal({
             />
 
             {aliasTarget ? (
-              <p className="text-[10.5px] text-muted-foreground">
-                Mapping <code className="font-mono text-foreground">{target.model}</code> →{' '}
-                <code className="font-mono text-primary">{aliasTarget}</code>
+              <p className="text-muted-foreground text-[10.5px]">
+                Mapping <code className="text-foreground font-mono">{target.model}</code> →{' '}
+                <code className="text-primary font-mono">{aliasTarget}</code>
               </p>
             ) : (
-              <p className="text-[10px] text-muted-foreground">
-                Adds a <code className="font-mono">{target.model}</code> → target alias. Existing calls are repriced from their token usage, no rescan needed.
+              <p className="text-muted-foreground text-[10px]">
+                Adds a <code className="font-mono">{target.model}</code> → target alias. Existing calls are repriced
+                from their token usage, no rescan needed.
               </p>
             )}
           </div>
         ) : (
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="models-price-input" className="text-[10.5px] font-medium text-muted-foreground">Input price · USD per 1M tokens</label>
+            <label htmlFor="models-price-input" className="text-muted-foreground text-[10.5px] font-medium">
+              Input price · USD per 1M tokens
+            </label>
             <Input
               id="models-price-input"
               value={inputPrice}
@@ -196,7 +219,9 @@ export function QuickAddModal({
               placeholder="0"
               className="h-7 text-[12px]"
             />
-            <label htmlFor="models-price-output" className="text-[10.5px] font-medium text-muted-foreground">Output price · USD per 1M tokens</label>
+            <label htmlFor="models-price-output" className="text-muted-foreground text-[10.5px] font-medium">
+              Output price · USD per 1M tokens
+            </label>
             <Input
               id="models-price-output"
               value={outputPrice}
@@ -205,15 +230,24 @@ export function QuickAddModal({
               placeholder="0"
               className="h-7 text-[12px]"
             />
-            <p className="text-[10px] text-muted-foreground">Writes a manual price override; the affected rows update without a rescan.</p>
+            <p className="text-muted-foreground text-[10px]">
+              Writes a manual price override; the affected rows update without a rescan.
+            </p>
           </div>
         )}
 
-        {error && <p className="text-[11px] text-destructive">{error}</p>}
+        {error && <p className="text-destructive text-[11px]">{error}</p>}
 
         <DialogFooter>
-          <Button type="button" variant="outline" size="sm" onClick={onClose}>Cancel</Button>
-          <Button type="button" size="sm" onClick={() => void submit()} disabled={saving || (mode === 'alias' && !aliasTarget.trim())}>
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => void submit()}
+            disabled={saving || (mode === 'alias' && !aliasTarget.trim())}
+          >
             {saving ? 'Saving…' : 'Save'}
           </Button>
         </DialogFooter>

@@ -11,26 +11,26 @@ Shortcuts are declared once in the shortcut registry
 registration and every place the UI renders them. `Mod` resolves to `⌘` on
 macOS and `Ctrl` on Windows and Linux.
 
-| Shortcut | Action |
-|----------|--------|
-| `Mod+1` | Overview |
-| `Mod+2` | Sessions |
-| `Mod+3` | Pull requests |
-| `Mod+4` | Spend |
-| `Mod+5` | Optimize |
-| `Mod+6` | Models |
-| `Mod+7` | Compare |
-| `Mod+8` | Coach & Skills |
-| `Mod+,` | Settings |
-| `Mod+R` | Refresh |
-| `Mod+B` | Toggle sidebar |
+| Shortcut | Action         |
+| -------- | -------------- |
+| `Mod+1`  | Overview       |
+| `Mod+2`  | Sessions       |
+| `Mod+3`  | Pull requests  |
+| `Mod+4`  | Spend          |
+| `Mod+5`  | Optimize       |
+| `Mod+6`  | Models         |
+| `Mod+7`  | Compare        |
+| `Mod+8`  | Coach & Skills |
+| `Mod+,`  | Settings       |
+| `Mod+R`  | Refresh        |
+| `Mod+B`  | Toggle sidebar |
 
 ## Scope: period and provider
 
 Every section shares the same **period switcher** (Today, 7D, 30D, Month, 6M,
 Life, or a custom date range) and **provider filter**, and every data fetch
 consumes the active scope. The Coach is the one exception: it has no filter of
-its own — it reads the current scope as the *suggested default* for its
+its own — it reads the current scope as the _suggested default_ for its
 answers, never a boundary.
 
 ## The nine sections
@@ -82,14 +82,14 @@ missing.
 Sixteen store-driven detectors scan your sessions for waste and rank findings
 by urgency:
 
-| Detector | What it catches |
-|----------|-----------------|
-| `redundant-rereads`, `read-edit-ratio`, `build-folder-reads` | Re-reading the same files, editing without reading, junk directory reads |
-| `warmup-heavy` | Excessive cache warm-up on short sessions |
-| `mcp-low-coverage`, `mcp-project-scope`, `mcp-deferral-off`, `mcp-alwaysload-hygiene`, `mcp-defer-threshold` | MCP servers paying overhead without being used |
-| `retry-heavy-capabilities` | Tools or capabilities with unusually high retry rates |
-| `unused-agents`, `unused-skills`, `unused-commands` | Definitions that are never invoked |
-| `low-worth-sessions`, `context-heavy-sessions`, `cost-outliers` | Sessions that spent heavily with little to show |
+| Detector                                                                                                     | What it catches                                                          |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| `redundant-rereads`, `read-edit-ratio`, `build-folder-reads`                                                 | Re-reading the same files, editing without reading, junk directory reads |
+| `warmup-heavy`                                                                                               | Excessive cache warm-up on short sessions                                |
+| `mcp-low-coverage`, `mcp-project-scope`, `mcp-deferral-off`, `mcp-alwaysload-hygiene`, `mcp-defer-threshold` | MCP servers paying overhead without being used                           |
+| `retry-heavy-capabilities`                                                                                   | Tools or capabilities with unusually high retry rates                    |
+| `unused-agents`, `unused-skills`, `unused-commands`                                                          | Definitions that are never invoked                                       |
+| `low-worth-sessions`, `context-heavy-sessions`, `cost-outliers`                                              | Sessions that spent heavily with little to show                          |
 
 Each finding includes an estimated token or dollar saving and a ready-to-paste
 fix.
@@ -97,8 +97,8 @@ fix.
 > [!NOTE]
 > The Optimize section is **read-only by design**: it diagnoses and advises
 > but never edits your setup. The **Yield** tab runs live git queries (only
-> when opened) to classify session spend as *productive*, *reverted*,
-> *abandoned*, or *ambiguous* using timestamp-window attribution.
+> when opened) to classify session spend as _productive_, _reverted_,
+> _abandoned_, or _ambiguous_ using timestamp-window attribution.
 
 ### Models
 

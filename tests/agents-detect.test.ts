@@ -38,7 +38,7 @@ describe('detectHarnesses — registry detection (seam: pure logic)', () => {
     expect(harnesses[0]).toMatchObject({ name: 'codex', kind: 'codex', bin: 'C:\\bin\\codex-acp.exe' })
   })
 
-  it('detects a BUNDLED harness (codex) from the app\'s own node_modules when no global copy is on PATH', async () => {
+  it("detects a BUNDLED harness (codex) from the app's own node_modules when no global copy is on PATH", async () => {
     const entry = 'C:\\app\\node_modules\\@agentclientprotocol\\codex-acp\\dist\\index.js'
     const harnesses = await detectHarnesses({
       commandExists: lookup([]),
@@ -54,7 +54,7 @@ describe('detectHarnesses — registry detection (seam: pure logic)', () => {
     })
   })
 
-  it('detects a BUNDLED Claude Code (claude-agent-acp from the app\'s own node_modules)', async () => {
+  it("detects a BUNDLED Claude Code (claude-agent-acp from the app's own node_modules)", async () => {
     const entry = 'C:\\app\\node_modules\\@agentclientprotocol\\claude-agent-acp\\dist\\index.js'
     const harnesses = await detectHarnesses({
       commandExists: lookup([]),
@@ -144,7 +144,15 @@ describe('detectHarnesses — registry detection (seam: pure logic)', () => {
     const harnesses = await detectHarnesses({
       commandExists: lookup(['claude-agent-acp', 'opencode', 'codex-acp', 'gemini', 'goose', 'copilot', 'qwen-code']),
     })
-    expect(harnesses.map(h => h.name).sort()).toEqual(['claude', 'codex', 'copilot', 'gemini', 'goose', 'opencode', 'qwen'])
+    expect(harnesses.map(h => h.name).sort()).toEqual([
+      'claude',
+      'codex',
+      'copilot',
+      'gemini',
+      'goose',
+      'opencode',
+      'qwen',
+    ])
   })
 
   it('reports the auth probe status for a detected harness', async () => {
@@ -170,7 +178,7 @@ describe('harness spec invariants — registry shape (ADR 0016)', () => {
     }
   })
 
-  it('a bundled spec\'s PATH probe name matches its bundled bin name', () => {
+  it("a bundled spec's PATH probe name matches its bundled bin name", () => {
     for (const spec of harnessSpecs) {
       if (spec.bundled) {
         expect(spec.commands[0], `${spec.kind}: probe must match the bundled bin`).toBe(spec.bundled.bin)

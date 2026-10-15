@@ -19,6 +19,7 @@ Each drivable harness gets a single file under `agents/harnesses/<name>.ts` expo
 ### 2. Full spec shape with a discriminated-union adapter descriptor
 
 Each `HarnessSpec` carries:
+
 - `commands[]`: CLI names probed on PATH, in order (aliases last). For ACP harnesses the probe is the SPAWN TARGET — the ACP server binary (e.g. `claude-agent-acp`, `codex-acp`), never the base CLI whose presence would not make the harness drivable. OpenCode and Grok speak ACP with their own binary, so their probe is that same binary.
 - `displayName`: human-readable label
 - `scrubEnv[]`: env vars dropped before spawn (host CLI login, no API keys — ADR 0012)

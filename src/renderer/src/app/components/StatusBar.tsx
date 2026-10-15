@@ -9,15 +9,29 @@ export function StatusBar() {
   const sectionsRange = sectionsRangeLabel()
 
   return (
-    <div className="flex items-center gap-3.5 border-t border-border px-4 py-2 text-[10.5px] text-muted-foreground">
-      {sectionsRange && <span><kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{sectionsRange}</kbd>Navigate</span>}
-      <span><kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('settings')}</kbd>Settings</span>
+    <div className="border-border text-muted-foreground flex items-center gap-3.5 border-t px-4 py-2 text-[10.5px]">
+      {sectionsRange && (
+        <span>
+          <kbd className="border-border text-muted-foreground mr-1 rounded border px-1 font-mono">{sectionsRange}</kbd>
+          Navigate
+        </span>
+      )}
+      <span>
+        <kbd className="border-border text-muted-foreground mr-1 rounded border px-1 font-mono">
+          {displayShortcutForAction('settings')}
+        </kbd>
+        Settings
+      </span>
       <span title={shortcutForAction('commandPalette')?.label}>
-        <kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('commandPalette')}</kbd>
+        <kbd className="border-border text-muted-foreground mr-1 rounded border px-1 font-mono">
+          {displayShortcutForAction('commandPalette')}
+        </kbd>
         Command Palette
       </span>
       <span>
-        <kbd className="mr-1 rounded border border-border px-1 font-mono text-muted-foreground">{displayShortcutForAction('refresh')}</kbd>
+        <kbd className="border-border text-muted-foreground mr-1 rounded border px-1 font-mono">
+          {displayShortcutForAction('refresh')}
+        </kbd>
         {scanning ? 'Refreshing…' : 'Refresh'}
       </span>
       {unparsedTotal > 0 && (

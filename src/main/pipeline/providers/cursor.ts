@@ -1,32 +1,55 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
-import { join } from 'path'
-import { homedir } from 'os'
+import * as fsPromises from 'node:fs/promises'
 
-import { calculateCost } from '../models.js'
+import { Clock, Effect, Result, Schema, Stream } from 'effect'
+import { existsSync, statSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
+
+import { parsedProviderCallSchema } from '../../../shared/schemas/providers.js'
+import { type AppPaths, readOptionalEnv } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
-import { readCachedResults, writeCachedResults } from '../cursor-cache.js'
-import { isSqliteAvailable, isSqliteBusyError, openDatabase, blobToText, type SqliteDatabase } from '../sqlite.js'
-import { estimateTokensFromChars } from '../token-estimate.js'
+import { readCachedResultsEffect, writeCachedResultsEffect } from '../cursor-cache.js'
 import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../file-errors.js'
+import { captureScanPricing } from '../models.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
+import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../sqlite.js'
+import { estimateTokensFromChars } from '../token-estimate.js'
 import type { DateRange } from '../types.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 /** Matches cli-date.ts "all" period cap (6 months). */
 const CURSOR_MAX_LOOKBACK_MONTHS = 6
 
-export function getCursorTimeFloor(dateRange?: DateRange): string {
-  const now = new Date()
-  const maxStart = new Date(
-    now.getFullYear(),
-    now.getMonth() - CURSOR_MAX_LOOKBACK_MONTHS,
-    now.getDate(),
-  )
+export function getCursorTimeFloor(dateRange?: DateRange, now = new Date()): string {
+  const maxStart = new Date(now.getFullYear(), now.getMonth() - CURSOR_MAX_LOOKBACK_MONTHS, now.getDate())
   const start = dateRange?.start ?? maxStart
   const effective = start < maxStart ? maxStart : start
   return effective.toISOString()
 }
 
 const CURSOR_COST_MODEL = 'claude-sonnet-4-5'
+
+class CursorDatabaseError extends Schema.TaggedError<CursorDatabaseError>()('CursorDatabaseError', {
+  operation: Schema.Literals(['open', 'read', 'close']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+function databaseError(operation: CursorDatabaseError['operation'], cause: unknown): CursorDatabaseError {
+  const error = cause instanceof Error ? cause : new Error(String(cause), { cause })
+  return new CursorDatabaseError({ operation, cause: error, message: error.message })
+}
+
+function queryCursorRows(
+  db: SqliteDatabase,
+  sql: string,
+  params?: ReadonlyArray<unknown>,
+): Effect.Effect<unknown[], CursorDatabaseError> {
+  return Effect.try({
+    try: () => db.query<Record<string, unknown>>(sql, params ? [...params] : undefined),
+    catch: cause => databaseError('read', cause),
+  })
+}
 
 const modelDisplayNames: Record<string, string> = {
   'claude-4.5-opus-high-thinking': 'Opus 4.5 (Thinking)',
@@ -61,20 +84,42 @@ type BubbleRow = {
   rid?: number
 }
 
-type AgentKvRow = {
-  role: string | null
-  content: Uint8Array | string | null
-  request_id: string | null
-  model: string | null
+const bubbleRowSchema = Schema.Struct({
+  bubble_key: Schema.String,
+  input_tokens: Schema.NullOr(Schema.Finite),
+  output_tokens: Schema.NullOr(Schema.Finite),
+  model: Schema.NullOr(Schema.String),
+  created_at: Schema.NullOr(Schema.String),
+  request_id: Schema.NullOr(Schema.String),
+  user_text: Schema.NullOr(Schema.Union([Schema.Uint8Array, Schema.String])),
+  text_length: Schema.NullOr(Schema.Finite),
+  bubble_type: Schema.NullOr(Schema.Finite),
+  code_blocks: Schema.NullOr(Schema.Union([Schema.Uint8Array, Schema.String])),
+  rid: Schema.optional(Schema.Finite),
+})
+const decodeBubbleRow = Schema.decodeUnknownResult(bubbleRowSchema)
+
+function decodeBubbleRows(values: ReadonlyArray<unknown>): { rows: BubbleRow[]; skipped: number } {
+  const rows: BubbleRow[] = []
+  let skipped = 0
+  for (const value of values) {
+    const decoded = decodeBubbleRow(value)
+    if (Result.isFailure(decoded)) {
+      skipped++
+      continue
+    }
+    rows.push(decoded.success)
+  }
+  return { rows, skipped }
 }
 
-// SQLITE_BUSY must reach parser.ts, whose busy path skips the source without
-// caching; swallowing it here would stamp a silently degraded parse into the
-// results cache under an unchanged DB fingerprint (Cursor writes via WAL, so
-// contention does not change the main file's stat).
-function rethrowBusy(err: unknown): void {
-  if (isSqliteBusyError(err)) throw err
-}
+const agentKvRowSchema = Schema.Struct({
+  role: Schema.NullOr(Schema.String),
+  content: Schema.NullOr(Schema.Union([Schema.Uint8Array, Schema.String])),
+  request_id: Schema.NullOr(Schema.String),
+  model: Schema.NullOr(Schema.String),
+})
+const decodeAgentKvRow = Schema.decodeUnknownResult(agentKvRowSchema)
 
 function getCursorDbPath(): string {
   if (process.platform === 'darwin') {
@@ -105,8 +150,23 @@ function getCursorWorkspaceStorageDir(globalDbPath: string): string {
 ///     composerId opened in that workspace
 /// We walk every workspace dir, pull both, and build composerId -> folder.
 type WorkspaceMapping = {
-  composerToWorkspace: Map<string, string>     // composerId -> folder URI
-  workspaceProjectName: Map<string, string>    // folder URI -> sanitized project name
+  composerToWorkspace: Map<string, string> // composerId -> folder URI
+  workspaceProjectName: Map<string, string> // folder URI -> sanitized project name
+}
+
+function getComposerFilter(
+  workspaceTag: string,
+  workspaceMap: WorkspaceMapping | null,
+): { readonly composers: Set<string> | null; readonly mode: 'include' | 'exclude' } {
+  if (workspaceTag === '__all__' || workspaceMap === null) return { composers: null, mode: 'include' }
+  if (workspaceTag === ORPHAN_TAG) {
+    return { composers: new Set(workspaceMap.composerToWorkspace.keys()), mode: 'exclude' }
+  }
+  const composers = new Set<string>()
+  for (const [composerId, folder] of workspaceMap.composerToWorkspace) {
+    if (folder === workspaceTag) composers.add(composerId)
+  }
+  return { composers, mode: 'include' }
 }
 
 const ORPHAN_TAG = '__orphan__'
@@ -162,10 +222,7 @@ let workspaceMapCacheRoot: string | null = null
 /// undefined checkout (remote URI, orphan source) leaves the call untouched
 /// so the session keeps flowing to the orphan bucket. Pure — the yield-attach
 /// seam under test without a bubble-DB fixture.
-export function attachWorkspacePaths(
-  call: ParsedProviderCall,
-  workspacePath: string | undefined,
-): ParsedProviderCall {
+export function attachWorkspacePaths(call: ParsedProviderCall, workspacePath: string | undefined): ParsedProviderCall {
   return workspacePath ? { ...call, projectPath: workspacePath, workingDirectory: workspacePath } : call
 }
 
@@ -176,93 +233,94 @@ export function clearCursorWorkspaceMapCache(): void {
   workspaceMapCacheRoot = null
 }
 
-function loadWorkspaceMap(workspaceStorageDir: string): WorkspaceMapping {
-  if (workspaceMapCache && workspaceMapCacheRoot === workspaceStorageDir) {
-    return workspaceMapCache
-  }
-  const result: WorkspaceMapping = {
-    composerToWorkspace: new Map(),
-    workspaceProjectName: new Map(),
-  }
+const workspaceJsonSchema = Schema.fromJsonString(Schema.Struct({ folder: Schema.optional(Schema.String) }))
+const decodeWorkspaceJson = Schema.decodeUnknownResult(workspaceJsonSchema)
+const workspaceComposersSchema = Schema.fromJsonString(
+  Schema.Struct({ allComposers: Schema.optional(Schema.Array(Schema.Unknown)) }),
+)
+const decodeWorkspaceComposers = Schema.decodeUnknownResult(workspaceComposersSchema)
+const workspaceComposerSchema = Schema.Struct({ composerId: Schema.optional(Schema.Unknown) })
+const decodeWorkspaceComposer = Schema.decodeUnknownResult(workspaceComposerSchema)
+const decodeString = Schema.decodeUnknownResult(Schema.String)
+const workspaceValueRowSchema = Schema.Struct({ value: Schema.String })
+const decodeWorkspaceValueRow = Schema.decodeUnknownResult(workspaceValueRowSchema)
 
-  let entries: string[]
-  try {
-    entries = readdirSync(workspaceStorageDir)
-  } catch {
-    workspaceMapCache = result
-    workspaceMapCacheRoot = workspaceStorageDir
-    return result
-  }
+const loadWorkspaceMapEffect = Effect.fnUntraced(function* (
+  workspaceStorageDir: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<WorkspaceMapping, Error> {
+  const cached = yield* Effect.sync(() =>
+    workspaceMapCache && workspaceMapCacheRoot === workspaceStorageDir ? workspaceMapCache : null,
+  )
+  if (cached) return cached
+
+  const result: WorkspaceMapping = { composerToWorkspace: new Map(), workspaceProjectName: new Map() }
+  const entries = yield* scanIo(() => fsPromises.readdir(workspaceStorageDir), signal).pipe(
+    Effect.catch(() => Effect.as(checkScanAbort(signal), [] as string[])),
+  )
 
   for (const hashDir of entries) {
+    yield* checkScanAbort(signal)
     const wsJsonPath = join(workspaceStorageDir, hashDir, 'workspace.json')
     const wsDbPath = join(workspaceStorageDir, hashDir, 'state.vscdb')
+    const json = yield* scanIo(() => fsPromises.readFile(wsJsonPath, 'utf-8'), signal).pipe(
+      Effect.catch(() => Effect.as(checkScanAbort(signal), null)),
+    )
+    if (json === null) continue
+    const decodedWorkspace = decodeWorkspaceJson(json)
+    if (Result.isFailure(decodedWorkspace) || !decodedWorkspace.success.folder) continue
+    const folder = decodedWorkspace.success.folder
+    const dbExists = yield* Effect.try({
+      try: () => existsSync(wsDbPath),
+      catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+    })
+    if (!dbExists) continue
 
-    let wsJsonRaw: string
-    try {
-      wsJsonRaw = readFileSync(wsJsonPath, 'utf-8')
-    } catch {
-      continue
-    }
+    const rows = yield* Effect.acquireUseRelease(
+      openCursorDatabase(wsDbPath).pipe(
+        Effect.catchTag('CursorDatabaseError', error =>
+          isSqliteBusyError(error) ? Effect.fail(error) : Effect.succeed(null),
+        ),
+      ),
+      owned =>
+        owned
+          ? queryCursorRows(
+              owned.db,
+              "SELECT value FROM ItemTable WHERE key IN ('composer.composerData', 'composer.composerHeaders')",
+            ).pipe(
+              Effect.catchTag('CursorDatabaseError', error =>
+                isSqliteBusyError(error) ? Effect.fail(error) : Effect.succeed([]),
+              ),
+            )
+          : Effect.succeed([]),
+      owned => (owned ? closeCursorDatabase(owned) : Effect.void),
+    )
 
-    let folder: string | undefined
-    try {
-      const parsed = JSON.parse(wsJsonRaw) as { folder?: string }
-      folder = parsed.folder
-    } catch {
-      continue
-    }
-    if (!folder) continue
-    if (!existsSync(wsDbPath)) continue
-
-    let db: SqliteDatabase
-    try {
-      db = openDatabase(wsDbPath)
-    } catch {
-      continue
-    }
-    try {
-      // Cursor renamed the per-workspace composer list from
-      // 'composer.composerData' to 'composer.composerHeaders' in newer builds
-      // (identical { allComposers: [{ composerId }] } shape). Read both keys
-      // and merge so the composer -> workspace mapping keeps working across
-      // Cursor versions. Without this, on builds that only write
-      // 'composer.composerHeaders' every composer falls through to the
-      // 'cursor' orphan bucket and per-project attribution is lost.
-      const rows = db.query<{ value: string }>(
-        "SELECT value FROM ItemTable WHERE key IN ('composer.composerData', 'composer.composerHeaders')",
-      )
-      if (rows.length === 0) continue
-      const project = sanitizeWorkspaceUri(folder)
-      let added = 0
-      for (const row of rows) {
-        let parsed: { allComposers?: Array<{ composerId?: string }> }
-        try {
-          parsed = JSON.parse(row.value)
-        } catch {
-          continue
-        }
-        for (const c of parsed.allComposers ?? []) {
-          if (typeof c.composerId === 'string') {
-            result.composerToWorkspace.set(c.composerId, folder)
-            added += 1
-          }
-        }
+    let added = 0
+    for (const value of rows) {
+      const decodedRow = decodeWorkspaceValueRow(value)
+      if (Result.isFailure(decodedRow)) continue
+      const decoded = decodeWorkspaceComposers(decodedRow.success.value)
+      if (Result.isFailure(decoded)) continue
+      for (const composer of decoded.success.allComposers ?? []) {
+        const decodedComposer = decodeWorkspaceComposer(composer)
+        if (Result.isFailure(decodedComposer)) continue
+        const composerId = decodedComposer.success.composerId
+        const decodedId = composerId === undefined ? undefined : decodeString(composerId)
+        if (!decodedId || Result.isFailure(decodedId) || !decodedId.success) continue
+        result.composerToWorkspace.set(decodedId.success, folder)
+        added++
       }
-      if (added > 0) {
-        result.workspaceProjectName.set(folder, project)
-      }
-    } catch {
-      // best-effort
-    } finally {
-      db.close()
     }
+    if (added > 0) result.workspaceProjectName.set(folder, sanitizeWorkspaceUri(folder))
   }
 
-  workspaceMapCache = result
-  workspaceMapCacheRoot = workspaceStorageDir
+  yield* Effect.sync(() => {
+    workspaceMapCache = result
+    workspaceMapCacheRoot = workspaceStorageDir
+  })
   return result
-}
+})
 
 /// Pulls the composer id out of a `bubbleId:<composerId>:<bubbleUuid>` key.
 /// Returns null when the composer segment contains a CR/LF, which is the
@@ -308,23 +366,25 @@ function decodeSourcePath(sourcePath: string): { dbPath: string; workspaceTag: s
   }
 }
 
-type CodeBlock = { languageId?: string }
+const codeBlocksJsonSchema = Schema.fromJsonString(Schema.Array(Schema.Unknown))
+const decodeCodeBlocksJson = Schema.decodeUnknownResult(codeBlocksJsonSchema)
+const codeBlockSchema = Schema.Struct({ languageId: Schema.optional(Schema.Unknown) })
+const decodeCodeBlock = Schema.decodeUnknownResult(codeBlockSchema)
 
 function extractLanguages(codeBlocksJson: string | null): string[] {
   if (!codeBlocksJson) return []
-  try {
-    const blocks = JSON.parse(codeBlocksJson) as CodeBlock[]
-    if (!Array.isArray(blocks)) return []
-    const langs = new Set<string>()
-    for (const block of blocks) {
-      if (block.languageId && block.languageId !== 'plaintext') {
-        langs.add(block.languageId)
-      }
+  const decoded = decodeCodeBlocksJson(codeBlocksJson)
+  if (Result.isFailure(decoded)) return []
+  const languages = new Set<string>()
+  for (const value of decoded.success) {
+    const block = decodeCodeBlock(value)
+    if (Result.isFailure(block) || block.success.languageId === undefined) continue
+    const language = decodeString(block.success.languageId)
+    if (Result.isSuccess(language) && language.success && language.success !== 'plaintext') {
+      languages.add(language.success)
     }
-    return [...langs]
-  } catch {
-    return []
   }
+  return [...languages]
 }
 
 function resolveModel(raw: string | null): string {
@@ -368,7 +428,6 @@ const AGENTKV_QUERY = `
 const USER_MESSAGES_QUERY = `
   SELECT
     key as bubble_key,
-    json_extract(value, '$.createdAt') as created_at,
     CAST(substr(json_extract(value, '$.text'), 1, 500) AS BLOB) as text
   FROM cursorDiskKV
   WHERE key LIKE 'bubbleId:%'
@@ -381,7 +440,9 @@ const USER_MESSAGES_QUERY = `
 // caller can splice in an optional `ROWID >= ?` cutoff without rewriting
 // the whole template. The original combined string is preserved as
 // BUBBLE_QUERY_SINCE for any caller that doesn't want the cap.
-const BUBBLE_QUERY_SINCE_HEAD = BUBBLE_QUERY_BASE + `
+const BUBBLE_QUERY_SINCE_HEAD =
+  BUBBLE_QUERY_BASE +
+  `
     AND json_extract(value, '$.createdAt') IS NOT NULL
     AND json_extract(value, '$.createdAt') > ?`
 const BUBBLE_QUERY_SINCE_TAIL = `
@@ -412,19 +473,26 @@ const BUBBLE_QUERY_PAGE = `
   LIMIT ?
 `
 
-function validateSchema(db: SqliteDatabase): boolean {
-  try {
-    const rows = db.query<{ cnt: number }>(
-      "SELECT COUNT(*) as cnt FROM cursorDiskKV WHERE key LIKE 'bubbleId:%' LIMIT 1"
-    )
-    return rows.length > 0
-  } catch (err) {
-    rethrowBusy(err)
-    return false
-  }
-}
+type UserMsgRow = { bubble_key: string; text: Uint8Array | string }
+const userMessageRowSchema = Schema.Struct({
+  bubble_key: Schema.String,
+  text: Schema.Union([Schema.Uint8Array, Schema.String]),
+})
+const decodeUserMessageRow = Schema.decodeUnknownResult(userMessageRowSchema)
 
-type UserMsgRow = { bubble_key: string; created_at: string; text: Uint8Array | string }
+function decodeUserMessageRows(values: ReadonlyArray<unknown>): { rows: UserMsgRow[]; skipped: number } {
+  const rows: UserMsgRow[] = []
+  let skipped = 0
+  for (const value of values) {
+    const decoded = decodeUserMessageRow(value)
+    if (Result.isFailure(decoded)) {
+      skipped++
+      continue
+    }
+    rows.push(decoded.success)
+  }
+  return { rows, skipped }
+}
 
 /// Per-conversation user-message buffer. We pop messages in arrival order via
 /// the `pos` cursor — a previous implementation called Array.shift() which is
@@ -435,25 +503,18 @@ type UserMessageQueue = {
   pos: number
 }
 
-function buildUserMessageMap(db: SqliteDatabase, timeFloor: string): Map<string, UserMessageQueue> {
+function buildUserMessageMap(rows: ReadonlyArray<UserMsgRow>): Map<string, UserMessageQueue> {
   const map = new Map<string, UserMessageQueue>()
-  try {
-    const rows = db.query<UserMsgRow>(USER_MESSAGES_QUERY, [timeFloor])
-    for (const row of rows) {
-      // Extract the composerId from the bubble key, matching parseBubbles().
-      // The JSON `conversationId` field is empty in current Cursor builds.
-      const composerId = parseComposerIdFromKey(row.bubble_key)
-      if (!composerId || !row.text) continue
-      const text = blobToText(row.text)
-      const existing = map.get(composerId)
-      if (existing) {
-        existing.messages.push(text)
-      } else {
-        map.set(composerId, { messages: [text], pos: 0 })
-      }
+  for (const row of rows) {
+    const composerId = parseComposerIdFromKey(row.bubble_key)
+    if (!composerId || !row.text) continue
+    const text = blobToText(row.text)
+    const existing = map.get(composerId)
+    if (existing) {
+      existing.messages.push(text)
+    } else {
+      map.set(composerId, { messages: [text], pos: 0 })
     }
-  } catch (err) {
-    rethrowBusy(err)
   }
   return map
 }
@@ -472,44 +533,42 @@ function takeUserMessage(queues: Map<string, UserMessageQueue>, conversationId: 
 /// of in-range bubbles collected so a genuinely enormous in-range scan can't
 /// stall; `truncated` is set only when that budget is actually hit, so the
 /// caller warns only when older in-range sessions were really dropped.
-function scanBubblesPaged(
+const scanBubblesPagedEffect = Effect.fnUntraced(function* (
   db: SqliteDatabase,
   timeFloor: string,
   budget: number,
-): { rows: BubbleRow[]; truncated: boolean } {
+): Effect.fn.Return<{ rows: BubbleRow[]; truncated: boolean; skipped: number }, CursorDatabaseError> {
   const BATCH = 25_000
   const collected: BubbleRow[] = []
   let beforeRowId = Number.MAX_SAFE_INTEGER
   let truncated = false
+  let skipped = 0
 
   paging: while (true) {
-    let batch: BubbleRow[]
-    try {
-      batch = db.query<BubbleRow>(BUBBLE_QUERY_PAGE, [beforeRowId, BATCH])
-    } catch (err) {
-      rethrowBusy(err)
-      break
-    }
+    const rawBatch = yield* queryCursorRows(db, BUBBLE_QUERY_PAGE, [beforeRowId, BATCH])
+    const decoded = decodeBubbleRows(rawBatch)
+    skipped += decoded.skipped
+    const batch = decoded.rows
     if (batch.length === 0) break
 
     for (const row of batch) {
-      if (collected.length >= budget) { truncated = true; break paging }
+      if (collected.length >= budget) {
+        truncated = true
+        break paging
+      }
       if (row.created_at != null && row.created_at > timeFloor) collected.push(row)
     }
 
-    const oldest = batch[batch.length - 1]!
+    const oldest = batch[batch.length - 1]
+    if (!oldest) break
     beforeRowId = oldest.rid ?? 0
-    if (beforeRowId <= 0) break
-    if (batch.length < BATCH) break // exhausted the table
-    // Pages are ROWID-descending (~chronological), so once the oldest row in a
-    // full page predates the window, every older page does too.
+    if (beforeRowId <= 0 || batch.length < BATCH) break
     if (oldest.created_at != null && oldest.created_at <= timeFloor) break
   }
 
-  // Restore ROWID-ascending order to match the un-paged query's row ordering.
-  collected.sort((a, b) => (a.rid ?? 0) - (b.rid ?? 0))
-  return { rows: collected, truncated }
-}
+  collected.sort((left, right) => (left.rid ?? 0) - (right.rid ?? 0))
+  return { rows: collected, truncated, skipped }
+})
 
 // Cursor leaves the per-bubble tokenCount at {0,0} on current builds. The only
 // real input figure on disk is the latest context-window snapshot, which Cursor
@@ -530,21 +589,28 @@ const COMPOSER_META_QUERY = `
 
 type ComposerMeta = { tokens: number; createdAt: number | null }
 
-function loadComposerMeta(db: SqliteDatabase): Map<string, ComposerMeta> {
+const composerMetaRowSchema = Schema.Struct({
+  composer_id: Schema.String,
+  used: Schema.NullOr(Schema.Finite),
+  ctx: Schema.NullOr(Schema.Finite),
+  created_at: Schema.NullOr(Schema.Finite),
+})
+const decodeComposerMetaRow = Schema.decodeUnknownResult(composerMetaRowSchema)
+
+function loadComposerMeta(rows: ReadonlyArray<unknown>): { meta: Map<string, ComposerMeta>; skipped: number } {
   const map = new Map<string, ComposerMeta>()
-  try {
-    const rows = db.query<{ composer_id: string; used: number | null; ctx: number | null; created_at: number | null }>(COMPOSER_META_QUERY)
-    for (const r of rows) {
-      // `||` rather than `??`: a recorded-but-zero breakdown must fall through
-      // to the context meter instead of shadowing it.
-      const tokens = (r.used || r.ctx) ?? 0
-      if (r.composer_id && tokens > 0) map.set(r.composer_id, { tokens, createdAt: r.created_at ?? null })
+  let skipped = 0
+  for (const value of rows) {
+    const decoded = decodeComposerMetaRow(value)
+    if (Result.isFailure(decoded)) {
+      skipped++
+      continue
     }
-  } catch (err) {
-    rethrowBusy(err)
-    /* best-effort: callers fall back to the per-bubble text estimate */
+    const row = decoded.success
+    const tokens = (row.used || row.ctx) ?? 0
+    if (row.composer_id && tokens > 0) map.set(row.composer_id, { tokens, createdAt: row.created_at ?? null })
   }
-  return map
+  return { meta: map, skipped }
 }
 
 type AgentStream = {
@@ -563,23 +629,46 @@ function newAgentStream(): AgentStream {
 // agentKv rows store content as a plain string or a block array; count only
 // the text inside blocks so the JSON envelope and non-text parts are not
 // billed as prompt characters.
+const contentJsonSchema = Schema.fromJsonString(
+  Schema.Union([Schema.Array(Schema.Unknown), Schema.Record(Schema.String, Schema.Unknown)]),
+)
+const decodeContentJson = Schema.decodeUnknownResult(contentJsonSchema)
+const textContentBlockSchema = Schema.Struct({
+  text: Schema.optional(Schema.Unknown),
+  content: Schema.optional(Schema.Unknown),
+})
+const decodeTextContentBlock = Schema.decodeUnknownResult(textContentBlockSchema)
+const assistantContentJsonSchema = Schema.fromJsonString(Schema.Array(Schema.Unknown))
+const decodeAssistantContentJson = Schema.decodeUnknownResult(assistantContentJsonSchema)
+const assistantContentBlockSchema = Schema.Struct({
+  type: Schema.optional(Schema.Unknown),
+  text: Schema.optional(Schema.Unknown),
+  toolName: Schema.optional(Schema.Unknown),
+  args: Schema.optional(Schema.Unknown),
+})
+const decodeAssistantContentBlock = Schema.decodeUnknownResult(assistantContentBlockSchema)
+const assistantArgsSchema = Schema.Struct({ command: Schema.optional(Schema.Unknown) })
+const decodeAssistantArgs = Schema.decodeUnknownResult(assistantArgsSchema)
+
 function contentTextLength(raw: string): number {
   const trimmed = raw.trimStart()
   if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(trimmed) as unknown
-      const blocks = Array.isArray(parsed) ? parsed : [parsed]
-      let len = 0
-      for (const block of blocks) {
-        if (block == null || typeof block !== 'object') continue
-        const b = block as { text?: unknown; content?: unknown }
-        if (typeof b.text === 'string') len += b.text.length
-        else if (typeof b.content === 'string') len += b.content.length
+    const parsed = decodeContentJson(trimmed)
+    if (Result.isFailure(parsed)) return raw.length
+    const blocks = Array.isArray(parsed.success) ? parsed.success : [parsed.success]
+    let length = 0
+    for (const value of blocks) {
+      const block = decodeTextContentBlock(value)
+      if (Result.isFailure(block)) continue
+      const text = block.success.text === undefined ? undefined : decodeString(block.success.text)
+      if (text && Result.isSuccess(text)) {
+        length += text.success.length
+        continue
       }
-      return len
-    } catch {
-      return raw.length
+      const content = block.success.content === undefined ? undefined : decodeString(block.success.content)
+      if (content && Result.isSuccess(content)) length += content.success.length
     }
+    return length
   }
   return raw.length
 }
@@ -591,19 +680,12 @@ function contentTextLength(raw: string): number {
 // they are real sessions (background runs, older builds) that would otherwise
 // vanish from totals.
 function loadAgentStreams(
-  db: SqliteDatabase,
+  rows: ReadonlyArray<unknown>,
   requestToComposer: Map<string, string>,
-): { byComposer: Map<string, AgentStream>; unjoined: Map<string, AgentStream> } {
+): { byComposer: Map<string, AgentStream>; unjoined: Map<string, AgentStream>; skipped: number } {
   const byComposer = new Map<string, AgentStream>()
   const unjoined = new Map<string, AgentStream>()
-
-  let rows: AgentKvRow[]
-  try {
-    rows = db.query<AgentKvRow>(AGENTKV_QUERY)
-  } catch (err) {
-    rethrowBusy(err)
-    return { byComposer, unjoined }
-  }
+  let skipped = 0
 
   const bucketFor = (requestId: string): AgentStream => {
     const composer = requestToComposer.get(requestId)
@@ -624,7 +706,13 @@ function loadAgentStreams(
   let currentRequestId: string | null = null
   let pendingUserChars = 0
   let pendingContextChars = 0
-  for (const row of rows) {
+  for (const value of rows) {
+    const decodedRow = decodeAgentKvRow(value)
+    if (Result.isFailure(decodedRow)) {
+      skipped++
+      continue
+    }
+    const row = decodedRow.success
     if (row.request_id) {
       currentRequestId = row.request_id
       if (pendingUserChars > 0 || pendingContextChars > 0) {
@@ -658,27 +746,31 @@ function loadAgentStreams(
     }
     if (row.role !== 'assistant' || !currentRequestId) continue
 
-    let content: unknown
-    try {
-      content = JSON.parse(blobToText(row.content))
-    } catch {
-      continue
-    }
-    if (!Array.isArray(content)) continue
+    const content = decodeAssistantContentJson(blobToText(row.content))
+    if (Result.isFailure(content)) continue
     const bucket = bucketFor(currentRequestId)
-    for (const block of content as Array<{ type?: string; text?: unknown; toolName?: unknown; args?: { command?: unknown } }>) {
-      if (block == null || typeof block !== 'object') continue
-      if (typeof block.text === 'string') bucket.assistantChars += block.text.length
-      if (block.type !== 'tool-call' || typeof block.toolName !== 'string' || !block.toolName) continue
+    for (const value of content.success) {
+      const decodedBlock = decodeAssistantContentBlock(value)
+      if (Result.isFailure(decodedBlock)) continue
+      const block = decodedBlock.success
+      const text = block.text === undefined ? undefined : decodeString(block.text)
+      if (text && Result.isSuccess(text)) bucket.assistantChars += text.success.length
+      const type = block.type === undefined ? undefined : decodeString(block.type)
+      const toolName = block.toolName === undefined ? undefined : decodeString(block.toolName)
+      if (!type || Result.isFailure(type) || type.success !== 'tool-call') continue
+      if (!toolName || Result.isFailure(toolName) || !toolName.success) continue
       // Cursor's terminal tool is 'Shell'; emit the canonical 'Bash' so the
       // cross-provider tool and command breakdowns merge.
-      bucket.tools.push(block.toolName === 'Shell' ? 'Bash' : block.toolName)
-      if (block.toolName === 'Shell' && typeof block.args?.command === 'string') {
-        bucket.bash.push(...extractBashCommands(block.args.command))
+      bucket.tools.push(toolName.success === 'Shell' ? 'Bash' : toolName.success)
+      if (toolName.success === 'Shell' && block.args !== undefined) {
+        const args = decodeAssistantArgs(block.args)
+        if (Result.isFailure(args) || args.success.command === undefined) continue
+        const command = decodeString(args.success.command)
+        if (Result.isSuccess(command)) bucket.bash.push(...extractBashCommands(command.success))
       }
     }
   }
-  return { byComposer, unjoined }
+  return { byComposer, unjoined, skipped }
 }
 
 // What drives a conversation's input figure, decided once per conversation so
@@ -699,56 +791,110 @@ type ComposerScan = {
   model: string | null
 }
 
-function parseBubbles(
+type CursorFacts = {
+  readonly bubbles: BubbleRow[]
+  readonly composerMeta: ReadonlyArray<unknown>
+  readonly agentKv: ReadonlyArray<unknown>
+  readonly userMessages: UserMsgRow[]
+  readonly skippedRows: number
+  readonly truncatedCount: number | null
+}
+
+const bubbleCountRowSchema = Schema.Struct({ cnt: Schema.Finite })
+const decodeBubbleCountRow = Schema.decodeUnknownResult(bubbleCountRowSchema)
+
+const validateCursorSchema = Effect.fnUntraced(function* (
   db: SqliteDatabase,
-  seenKeys: Set<string>,
+): Effect.fn.Return<boolean, CursorDatabaseError> {
+  const result = yield* Effect.result(queryCursorRows(db, 'SELECT 1 FROM cursorDiskKV LIMIT 0'))
+  if (Result.isFailure(result)) {
+    if (isSqliteBusyError(result.failure)) return yield* Effect.fail(result.failure)
+    return false
+  }
+  return true
+})
+
+const readCursorFacts = Effect.fnUntraced(function* (
+  db: SqliteDatabase,
   timeFloor: string,
-  agentKvTimestamp: string,
-): { calls: ParsedProviderCall[] } {
-  const results: ParsedProviderCall[] = []
-  let skipped = 0
-
-  const composerMeta = loadComposerMeta(db)
-
-  // The bubble timestamp lives inside the JSON value (no index), so the date
-  // filter forces a full JSON decode per row. Multi-GB Cursor DBs (500k+
-  // bubbles) were producing 30s+ parse stalls, so the scan is bounded. The old
-  // approach kept only the most-recent MAX_BUBBLES by ROWID, which dropped
-  // in-range older sessions and warned even when the requested window fit
-  // comfortably. Instead, for large DBs we page the requested window
-  // (ROWID-descending, stopping past the window floor) and only fall back to a
-  // hard budget — warning — when the in-range scan genuinely exceeds it.
-  // Override the budget in tests via WATCHTOWER_CURSOR_MAX_BUBBLES.
-  const MAX_BUBBLES = Number(process.env['WATCHTOWER_CURSOR_MAX_BUBBLES']) || 250_000
-
+): Effect.fn.Return<CursorFacts, CursorDatabaseError> {
+  const countResult = yield* Effect.result(
+    queryCursorRows(db, "SELECT COUNT(*) as cnt FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'"),
+  )
   let total = 0
-  try {
-    const countRows = db.query<{ cnt: number }>(
-      "SELECT COUNT(*) as cnt FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'"
-    )
-    total = countRows[0]?.cnt ?? 0
-  } catch (err) {
-    rethrowBusy(err)
+  if (Result.isFailure(countResult)) {
+    if (isSqliteBusyError(countResult.failure)) return yield* Effect.fail(countResult.failure)
+  } else {
+    const count = countResult.success[0] === undefined ? undefined : decodeBubbleCountRow(countResult.success[0])
+    if (count && Result.isSuccess(count)) total = count.success.cnt
   }
 
-  let rows: BubbleRow[]
-  try {
-    if (total > MAX_BUBBLES) {
-      const scan = scanBubblesPaged(db, timeFloor, MAX_BUBBLES)
-      rows = scan.rows
-      if (scan.truncated) {
-        queueLogRecord({
-          logEvent: 'scan.file-error',
-          level: 'warn',
-          fields: { op: 'scan', provider: 'cursor', code: 'scan-truncated', count: total },
-        })
-      }
+  const maxBubblesRaw = yield* readOptionalEnv('WATCHTOWER_CURSOR_MAX_BUBBLES')
+  const maxBubbles = Number(maxBubblesRaw) || 250_000
+  let bubbles: BubbleRow[]
+  let skippedRows = 0
+  let truncatedCount: number | null = null
+  if (total > maxBubbles) {
+    const paged = yield* scanBubblesPagedEffect(db, timeFloor, maxBubbles)
+    bubbles = paged.rows
+    skippedRows += paged.skipped
+    if (paged.truncated) truncatedCount = total
+  } else {
+    const result = yield* Effect.result(queryCursorRows(db, BUBBLE_QUERY_SINCE, [timeFloor]))
+    if (Result.isFailure(result)) {
+      if (isSqliteBusyError(result.failure)) return yield* Effect.fail(result.failure)
+      bubbles = []
     } else {
-      rows = db.query<BubbleRow>(BUBBLE_QUERY_SINCE, [timeFloor])
+      const decoded = decodeBubbleRows(result.success)
+      bubbles = decoded.rows
+      skippedRows += decoded.skipped
     }
-  } catch (err) {
-    rethrowBusy(err)
-    return { calls: results }
+  }
+
+  const readOptionalRows = (sql: string, params?: ReadonlyArray<unknown>) =>
+    queryCursorRows(db, sql, params).pipe(
+      Effect.catchTag('CursorDatabaseError', error =>
+        isSqliteBusyError(error) ? Effect.fail(error) : Effect.succeed([]),
+      ),
+    )
+  const composerMeta = yield* readOptionalRows(COMPOSER_META_QUERY)
+  const agentKv = yield* readOptionalRows(AGENTKV_QUERY)
+  const rawUserMessages = yield* readOptionalRows(USER_MESSAGES_QUERY, [timeFloor])
+  const userMessages = decodeUserMessageRows(rawUserMessages)
+  skippedRows += userMessages.skipped
+
+  return {
+    bubbles,
+    composerMeta,
+    agentKv,
+    userMessages: userMessages.rows,
+    skippedRows,
+    truncatedCount,
+  }
+})
+
+type CursorCandidate = Omit<ParsedProviderCall, 'costUSD'> & { pricingModel: string }
+
+function parseBubbles(
+  rows: BubbleRow[],
+  composerMetaRows: ReadonlyArray<unknown>,
+  agentKvRows: ReadonlyArray<unknown>,
+  userMessageRows: ReadonlyArray<UserMsgRow>,
+  skippedRows: number,
+  truncatedCount: number | null,
+  seenKeys: Set<string>,
+  agentKvTimestamp: string,
+): { calls: CursorCandidate[] } {
+  const results: CursorCandidate[] = []
+  const composerMetaResult = loadComposerMeta(composerMetaRows)
+  const composerMeta = composerMetaResult.meta
+  let skipped = skippedRows + composerMetaResult.skipped
+  if (truncatedCount !== null) {
+    queueLogRecord({
+      logEvent: 'scan.file-error',
+      level: 'warn',
+      fields: { op: 'scan', provider: 'cursor', code: 'scan-truncated', count: truncatedCount },
+    })
   }
 
   // Pre-pass: per-conversation facts the crediting decisions need, plus the
@@ -771,8 +917,10 @@ function parseBubbles(
     if (!scan.model && row.model) scan.model = row.model
   }
 
-  const { byComposer: agentStreams, unjoined } = loadAgentStreams(db, requestToComposer)
-  const userMessages = buildUserMessageMap(db, timeFloor)
+  const agentStreamResult = loadAgentStreams(agentKvRows, requestToComposer)
+  const { byComposer: agentStreams, unjoined } = agentStreamResult
+  skipped += agentStreamResult.skipped
+  const userMessages = buildUserMessageMap(userMessageRows)
   const lastUserMsg = new Map<string, string>()
 
   const inputSource = (cid: string): InputSource => {
@@ -783,7 +931,20 @@ function parseBubbles(
     return 'text'
   }
 
-  const emit = (call: Omit<ParsedProviderCall, 'provider' | 'speed' | 'cacheCreationInputTokens' | 'cacheReadInputTokens' | 'cachedInputTokens' | 'reasoningTokens' | 'webSearchRequests' | 'costIsEstimated'>): void => {
+  const emit = (
+    call: Omit<
+      ParsedProviderCall,
+      | 'costUSD'
+      | 'provider'
+      | 'speed'
+      | 'cacheCreationInputTokens'
+      | 'cacheReadInputTokens'
+      | 'cachedInputTokens'
+      | 'reasoningTokens'
+      | 'webSearchRequests'
+      | 'costIsEstimated'
+    > & { pricingModel: string },
+  ): void => {
     results.push({
       provider: 'cursor',
       cacheCreationInputTokens: 0,
@@ -849,10 +1010,9 @@ function parseBubbles(
 
       // User bubbles (type=1) carry no modelInfo, so fall back to the
       // conversation's model seen on its assistant bubbles or agent stream.
-      const effectiveModel = row.model ?? scans.get(conversationId)?.model ?? agentStreams.get(conversationId)?.model ?? null
+      const effectiveModel =
+        row.model ?? scans.get(conversationId)?.model ?? agentStreams.get(conversationId)?.model ?? null
       const pricingModel = resolveModel(effectiveModel)
-      const costUSD = calculateCost(pricingModel, inputTokens, outputTokens, 0, 0, 0)
-
       const userQuestion = lastUserMsg.get(conversationId) ?? ''
       const assistantText = blobToText(row.user_text)
       const userText = (userQuestion + ' ' + assistantText).trim()
@@ -874,11 +1034,8 @@ function parseBubbles(
         model: modelForDisplay(effectiveModel),
         inputTokens,
         outputTokens,
-        costUSD,
-        tools: [
-          ...(hasCode ? ['cursor:edit', ...languages.map(l => `lang:${l}`)] : []),
-          ...(agentTurn?.tools ?? []),
-        ],
+        pricingModel,
+        tools: [...(hasCode ? ['cursor:edit', ...languages.map(l => `lang:${l}`)] : []), ...(agentTurn?.tools ?? [])],
         bashCommands: agentTurn?.bash ?? [],
         timestamp: createdAt,
         deduplicationKey: dedupKey,
@@ -902,9 +1059,10 @@ function parseBubbles(
     if (source !== 'meter' && source !== 'stream') continue
     const stream = agentStreams.get(cid)
     const meta = composerMeta.get(cid)
-    const inputTokens = source === 'meter'
-      ? meta?.tokens ?? 0
-      : estimateTokensFromChars((stream?.userChars ?? 0) + (stream?.contextChars ?? 0))
+    const inputTokens =
+      source === 'meter'
+        ? (meta?.tokens ?? 0)
+        : estimateTokensFromChars((stream?.userChars ?? 0) + (stream?.contextChars ?? 0))
     // Reply text normally lives on assistant bubbles; count the stream's
     // reply deltas only when the bubbles carried none.
     const outputTokens = scan.assistantTextChars > 0 ? 0 : estimateTokensFromChars(stream?.assistantChars ?? 0)
@@ -915,7 +1073,8 @@ function parseBubbles(
     seenKeys.add(dedupKey)
 
     const createdAtMs = meta?.createdAt
-    const timestamp = typeof createdAtMs === 'number' && createdAtMs > 0 ? new Date(createdAtMs).toISOString() : scan.firstBubbleTs
+    const timestamp =
+      typeof createdAtMs === 'number' && createdAtMs > 0 ? new Date(createdAtMs).toISOString() : scan.firstBubbleTs
     if (!timestamp) continue
 
     const effectiveModel = scan.model ?? stream?.model ?? null
@@ -923,7 +1082,7 @@ function parseBubbles(
       model: modelForDisplay(effectiveModel),
       inputTokens,
       outputTokens,
-      costUSD: calculateCost(resolveModel(effectiveModel), inputTokens, outputTokens, 0, 0, 0),
+      pricingModel: resolveModel(effectiveModel),
       tools: stream?.tools ?? [],
       bashCommands: stream?.bash ?? [],
       timestamp,
@@ -949,7 +1108,7 @@ function parseBubbles(
       model: modelForDisplay(stream.model),
       inputTokens,
       outputTokens,
-      costUSD: calculateCost(resolveModel(stream.model), inputTokens, outputTokens, 0, 0, 0),
+      pricingModel: resolveModel(stream.model),
       tools: stream.tools,
       bashCommands: stream.bash,
       timestamp: agentKvTimestamp,
@@ -970,109 +1129,239 @@ function parseBubbles(
   return { calls: results }
 }
 
+type OwnedDatabase = { readonly db: SqliteDatabase; closed: boolean }
+
+function openCursorDatabase(path: string): Effect.Effect<OwnedDatabase, CursorDatabaseError> {
+  return Effect.try({
+    try: () => ({ db: openDatabase(path), closed: false }),
+    catch: cause => databaseError('open', cause),
+  })
+}
+
+function closeCursorDatabase(owned: OwnedDatabase): Effect.Effect<void, CursorDatabaseError> {
+  return Effect.suspend(() => {
+    if (owned.closed) return Effect.void
+    owned.closed = true
+    return Effect.try({
+      try: () => owned.db.close(),
+      catch: cause => databaseError('close', cause),
+    })
+  })
+}
+
+const decodeCachedCalls = Schema.decodeUnknownResult(Schema.Array(parsedProviderCallSchema))
+
+function matchesWorkspaceFilter(
+  sessionId: string,
+  composers: Set<string> | null,
+  mode: 'include' | 'exclude',
+): boolean {
+  if (composers === null) return true
+  const included = composers.has(sessionId)
+  return mode === 'include' ? included : !included
+}
+
+function filterWorkspaceCalls<T extends Pick<ParsedProviderCall, 'sessionId'>>(
+  calls: ReadonlyArray<T>,
+  composers: Set<string> | null,
+  mode: 'include' | 'exclude',
+): T[] {
+  return calls.filter(call => matchesWorkspaceFilter(call.sessionId, composers, mode))
+}
+
+function emitCursorCalls(
+  calls: ReadonlyArray<ParsedProviderCall>,
+  seenKeys: Set<string>,
+  workspacePath: string | undefined,
+  signal?: AbortSignal,
+): Stream.Stream<ParsedProviderCall, Error> {
+  return Stream.fromIterable(calls).pipe(
+    Stream.mapEffect(call =>
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
+        if (seenKeys.has(call.deduplicationKey)) return Result.fail(undefined)
+        seenKeys.add(call.deduplicationKey)
+        return Result.succeed(attachWorkspacePaths(call, workspacePath))
+      }),
+    ),
+    Stream.filterMap(value => value),
+  )
+}
+
 function createParser(
   source: SessionSource,
   seenKeys: Set<string>,
   dateRange?: DateRange,
+  paths?: AppPaths,
+  pricing = captureScanPricing(),
+  signal?: AbortSignal,
 ): SessionParser {
-  const timeFloor = getCursorTimeFloor(dateRange)
+  const { dbPath, workspaceTag } = decodeSourcePath(source.path)
+  const workspacePath = workspaceFsPath(workspaceTag)
+
+  const parseStream: NonNullable<SessionParser['parseStream']> = () =>
+    Stream.scoped(
+      Stream.unwrap(
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          const timeFloor = getCursorTimeFloor(dateRange, new Date(yield* Clock.currentTimeMillis))
+          if (!isSqliteAvailable()) {
+            reportProviderIssue('cursor', 'sqlite-unavailable')
+            return Stream.empty
+          }
+
+          const workspaceMap =
+            workspaceTag === '__all__'
+              ? null
+              : yield* loadWorkspaceMapEffect(getCursorWorkspaceStorageDir(dbPath), signal)
+          const { composers: composerFilter, mode: filterMode } = getComposerFilter(workspaceTag, workspaceMap)
+
+          const cachedUnknown = yield* readCachedResultsEffect(dbPath, timeFloor, signal)
+          const cached = cachedUnknown === null ? null : decodeCachedCalls(cachedUnknown)
+          if (cached !== null && Result.isSuccess(cached)) {
+            return emitCursorCalls(
+              filterWorkspaceCalls(cached.success, composerFilter, filterMode),
+              seenKeys,
+              workspacePath,
+              signal,
+            )
+          }
+
+          const acquired = yield* Effect.acquireRelease(
+            openCursorDatabase(dbPath).pipe(
+              Effect.catchTag('CursorDatabaseError', error => {
+                if (isSqliteBusyError(error)) return Effect.fail(error)
+                reportProviderIssue('cursor', fileErrorCode(error.cause, 'db-open-failed'))
+                return Effect.succeed(null)
+              }),
+            ),
+            owned => (owned ? closeCursorDatabase(owned).pipe(Effect.orDie) : Effect.void),
+          )
+          if (!acquired) return Stream.empty
+
+          const valid = yield* validateCursorSchema(acquired.db)
+          if (!valid) {
+            reportProviderIssue('cursor', 'format-unrecognized')
+            return Stream.fromEffectDrain(closeCursorDatabase(acquired))
+          }
+
+          yield* checkScanAbort(signal)
+          const localSeen = new Set<string>()
+          const agentKvTimestamp = yield* Effect.try({
+            try: () => {
+              try {
+                return new Date(statSync(dbPath).mtimeMs).toISOString()
+              } catch {
+                return new Date().toISOString()
+              }
+            },
+            catch: cause => databaseError('read', cause),
+          })
+          const facts = yield* readCursorFacts(acquired.db, timeFloor)
+          const extracted = parseBubbles(
+            facts.bubbles,
+            facts.composerMeta,
+            facts.agentKv,
+            facts.userMessages,
+            facts.skippedRows,
+            facts.truncatedCount,
+            localSeen,
+            agentKvTimestamp,
+          ).calls
+          yield* checkScanAbort(signal)
+          // The SQLite snapshot is complete. Close it before per-call pricing,
+          // which remains lazy and follows downstream stream demand.
+          yield* closeCursorDatabase(acquired)
+
+          const cacheCalls: ParsedProviderCall[] = []
+          const neutralCalls = Stream.fromIterable(extracted).pipe(
+            Stream.mapEffect(candidate =>
+              Effect.gen(function* () {
+                yield* checkScanAbort(signal)
+                const { pricingModel, ...call } = candidate
+                const pricedCall: ParsedProviderCall = {
+                  ...call,
+                  costUSD: pricing.calculateCost(pricingModel, call.inputTokens, call.outputTokens, 0, 0, 0),
+                }
+                cacheCalls.push(pricedCall)
+                return pricedCall
+              }),
+            ),
+          )
+          const publicCalls = neutralCalls.pipe(
+            Stream.filter(call => matchesWorkspaceFilter(call.sessionId, composerFilter, filterMode)),
+            Stream.mapEffect(call =>
+              Effect.gen(function* () {
+                yield* checkScanAbort(signal)
+                if (seenKeys.has(call.deduplicationKey)) return Result.fail(undefined)
+                seenKeys.add(call.deduplicationKey)
+                return Result.succeed(attachWorkspacePaths(call, workspacePath))
+              }),
+            ),
+            Stream.filterMap(value => value),
+          )
+          return Stream.concat(
+            publicCalls,
+            Stream.fromEffectDrain(
+              writeCachedResultsEffect(dbPath, cacheCalls, timeFloor, paths?.suppressCacheWrites, signal),
+            ),
+          )
+        }),
+      ),
+    )
 
   return {
+    parseStream,
+    // Remove after external callers consume parseStream; retain native SQLite errors.
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      if (!isSqliteAvailable()) {
-        reportProviderIssue('cursor', 'sqlite-unavailable')
-        return
-      }
-
-      const { dbPath, workspaceTag } = decodeSourcePath(source.path)
-
-      // Decide which composers belong to this source. The workspace map is
-      // built once per process from `workspaceStorage/*` and reused across
-      // every workspace-scoped source, so we pay the directory walk cost
-      // only once per CLI run regardless of how many projects the user has.
-      // `composerFilter` holds the set of composers EITHER allowed (workspace
-      // source) or denied (orphan source); `filterMode` says which.
-      let composerFilter: Set<string> | null = null
-      let filterMode: 'include' | 'exclude' = 'include'
-      if (workspaceTag !== '__all__') {
-        const wsMap = loadWorkspaceMap(getCursorWorkspaceStorageDir(dbPath))
-        if (workspaceTag === ORPHAN_TAG) {
-          // Orphan source: every composer that is mapped to SOME workspace
-          // is excluded here, so unmapped composers (and any non-UUID
-          // sub-composer ids that slip through) land in this bucket.
-          composerFilter = new Set(wsMap.composerToWorkspace.keys())
-          filterMode = 'exclude'
-        } else {
-          composerFilter = new Set()
-          for (const [composerId, folder] of wsMap.composerToWorkspace) {
-            if (folder === workspaceTag) composerFilter.add(composerId)
-          }
-          filterMode = 'include'
+      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
+      try {
+        while (true) {
+          const next = await iterator.next()
+          if (next.done) return
+          yield next.value
         }
-      }
-
-      // Cache is keyed on the bare DB path so multiple workspace-scoped
-      // sources reuse one parsed bubble set per CLI run. Filtering happens
-      // post-cache so each source emits only its own composers.
-      //
-      // The workspace folder URI doubles as this source's exact checkout for
-      // the canonical project identity (non-file URIs and the orphan source
-      // yield undefined and keep flowing to the orphan bucket). Attached
-      // here, post-cache, so the shared bubble cache stays workspace-neutral.
-      const workspacePath = workspaceFsPath(workspaceTag)
-      let allCalls: ParsedProviderCall[] | null = null
-      const cached = await readCachedResults(dbPath, timeFloor)
-      if (cached) {
-        allCalls = cached
-      } else {
-        let db: SqliteDatabase
-        try {
-          db = openDatabase(dbPath)
-        } catch (err) {
-          rethrowBusy(err)
-          reportProviderIssue('cursor', fileErrorCode(err, 'db-open-failed'))
-          return
-        }
-        try {
-          if (!validateSchema(db)) {
-            reportProviderIssue('cursor', 'format-unrecognized')
-            return
-          }
-          // Use a fresh local Set for intra-parse dedup so the global
-          // seenKeys is not mutated by calls that the workspace filter is
-          // about to drop. Cross-source dedup happens at yield time.
-          const localSeen = new Set<string>()
-          // agentKv rows carry no timestamps; sessions found only there get
-          // the DB's last-write time.
-          let agentKvTimestamp: string
-          try {
-            agentKvTimestamp = new Date(statSync(dbPath).mtimeMs).toISOString()
-          } catch {
-            agentKvTimestamp = new Date().toISOString()
-          }
-          const { calls: bubbleCalls } = parseBubbles(db, localSeen, timeFloor, agentKvTimestamp)
-          allCalls = bubbleCalls
-          await writeCachedResults(dbPath, allCalls, timeFloor)
-        } finally {
-          db.close()
-        }
-      }
-
-      for (const call of allCalls) {
-        if (composerFilter !== null) {
-          const inSet = composerFilter.has(call.sessionId)
-          if (filterMode === 'include' && !inSet) continue
-          if (filterMode === 'exclude' && inSet) continue
-        }
-        if (seenKeys.has(call.deduplicationKey)) continue
-        seenKeys.add(call.deduplicationKey)
-        yield attachWorkspacePaths(call, workspacePath)
+      } catch (error) {
+        if (error instanceof CursorDatabaseError) throw error.cause
+        throw error
+      } finally {
+        await iterator.return?.()
       }
     },
   }
 }
 
-export function createCursorProvider(dbPathOverride?: string): Provider {
+const discoverCursorSessionsEffect = Effect.fn('discoverCursorSessions')(function* (
+  dbPathOverride?: string,
+  context?: ProviderScanContext,
+): Effect.fn.Return<SessionSource[], Error> {
+  yield* checkScanAbort(context?.signal)
+  if (!isSqliteAvailable()) return []
+  const dbPath = dbPathOverride ?? getCursorDbPath()
+  const exists = yield* Effect.try({
+    try: () => existsSync(dbPath),
+    catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+  })
+  yield* checkScanAbort(context?.signal)
+  if (!exists) return []
+
+  const wsMap = yield* loadWorkspaceMapEffect(getCursorWorkspaceStorageDir(dbPath), context?.signal)
+  const sources: SessionSource[] = []
+  for (const [folder, project] of wsMap.workspaceProjectName) {
+    yield* checkScanAbort(context?.signal)
+    const workspacePath = workspaceFsPath(folder)
+    sources.push({
+      path: encodeSourcePath(dbPath, folder),
+      project,
+      provider: 'cursor',
+      ...(workspacePath ? { workingDirectory: workspacePath } : {}),
+    })
+  }
+  sources.push({ path: encodeSourcePath(dbPath, ORPHAN_TAG), project: ORPHAN_PROJECT, provider: 'cursor' })
+  return sources
+})
+
+export function createCursorProvider(dbPathOverride?: string, paths?: AppPaths): Provider {
   return {
     name: 'cursor',
     displayName: 'Cursor',
@@ -1085,39 +1374,21 @@ export function createCursorProvider(dbPathOverride?: string): Provider {
       return rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      if (!isSqliteAvailable()) return []
+    discoverSessionsEffect: context => discoverCursorSessionsEffect(dbPathOverride, context),
 
-      const dbPath = dbPathOverride ?? getCursorDbPath()
-      if (!existsSync(dbPath)) return []
-
-      const wsMap = loadWorkspaceMap(getCursorWorkspaceStorageDir(dbPath))
-      const sources: SessionSource[] = []
-      for (const [folder, project] of wsMap.workspaceProjectName) {
-        const workspacePath = workspaceFsPath(folder)
-        sources.push({
-          path: encodeSourcePath(dbPath, folder),
-          project,
-          provider: 'cursor',
-          ...(workspacePath ? { workingDirectory: workspacePath } : {}),
-        })
-      }
-      // Always emit a catch-all source for composers with no workspace
-      // mapping. About a third of composers in real-world Cursor installs
-      // are unmapped (multi-root workspaces, "no folder open" sessions,
-      // deleted workspaces with surviving global rows). When the user has
-      // no workspaces at all this source captures everything and the
-      // dashboard looks identical to the pre-PR `cursor` project.
-      sources.push({
-        path: encodeSourcePath(dbPath, ORPHAN_TAG),
-        project: ORPHAN_PROJECT,
-        provider: 'cursor',
-      })
-      return sources
+    // Remove after discovery callers use the native Effect hook.
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discoverCursorSessionsEffect(dbPathOverride, context))
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>, dateRange?: DateRange): SessionParser {
-      return createParser(source, seenKeys, dateRange)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, dateRange, paths, context?.pricing ?? captureScanPricing(), context?.signal)
     },
   }
 }

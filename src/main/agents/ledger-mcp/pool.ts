@@ -1,132 +1,287 @@
-import type { LedgerMcpAttachment } from '../ipc.js'
+import * as Context from 'effect/Context'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as FiberSet from 'effect/FiberSet'
+import * as Layer from 'effect/Layer'
+import * as Scope from 'effect/Scope'
+
 import type { AcpMcpServer } from '../harnesses/types.js'
-import { safeLogOperationalEvent } from '../../operational-log.js'
+import type { LedgerMcpAttachment } from '../ipc.js'
 import type { LedgerMcpSpawnContext } from './config.js'
-import type { StartedLedgerMcpHttp } from './sidecar.js'
+import { LedgerMcpSidecar, type StartedLedgerMcpHttp } from './sidecar.js'
 
-/**
- * App-level pool for the loopback-HTTP ledger sidecar: one sidecar serves
- * every Coach conversation and explicitly configured local MCP clients
- * instead of spawning + booting + readiness-probing for each conversation.
- * Reuse is safe because the sidecar carries no per-turn state (it serves the
- * full lifetime ledger) and the ledger runs in WAL mode (a long-lived
- * read-only handle never blocks writers nor goes stale — every statement
- * reads the latest commit).
- *
- * The pool sits behind the runner's `ledgerMcpServer` seam, so the runner is
- * untouched: per-run attachments carry a no-op release (the settle path is
- * unchanged). A pooled sidecar is health-gated on every acquire — one that
- * died between turns is respawned, never handed out. Conversation reset does
- * not drop it because a local external client may be using it independently;
- * app quit still releases it. A reset-like generation race kills an orphan
- * and degrades that turn to no-tools (the booked honesty rule).
- */
-
-export interface SidecarPoolDeps {
-  spawn: (ctx: LedgerMcpSpawnContext) => Promise<StartedLedgerMcpHttp>
+interface NativeStartedLedgerMcpHttp {
+  readonly server: AcpMcpServer
+  readonly checkHealth: Effect.Effect<boolean>
+  readonly release: Effect.Effect<void>
 }
 
-export interface SidecarPool {
-  /** A healthy pooled sidecar's server, or null when none could be started
-   *  (spawn failure, reset raced the spawn) — the turn runs without data
-   *  tools, exactly like a sidecar that fails to boot. */
-  acquire: (ctx: LedgerMcpSpawnContext) => Promise<LedgerMcpAttachment | null>
-  /** Returns the healthy HTTP server config for a Coach or local client. */
-  connection: (ctx: LedgerMcpSpawnContext) => Promise<AcpMcpServer | null>
-  /** Replaces the running sidecar and bearer token. If it was stopped, this
-   *  starts it on demand. */
-  regenerate: (ctx: LedgerMcpSpawnContext) => Promise<AcpMcpServer | null>
-  /** Returns the current healthy server, if one is running. */
-  status: () => Promise<AcpMcpServer | null>
-  /** Drops the app-level sidecar (app quit). In-flight spawns are orphaned by
-   *  generation and killed on arrival — never pooled. */
-  releaseAll: () => void
+interface LedgerMcpPoolMethods {
+  readonly acquire: (ctx: LedgerMcpSpawnContext) => Effect.Effect<LedgerMcpAttachment | null>
+  readonly connection: (ctx: LedgerMcpSpawnContext) => Effect.Effect<AcpMcpServer | null>
+  readonly regenerate: (ctx: LedgerMcpSpawnContext) => Effect.Effect<AcpMcpServer | null>
+  readonly status: () => Effect.Effect<AcpMcpServer | null>
+  readonly releaseAll: () => Effect.Effect<void>
 }
 
-export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
-  let pooled: StartedLedgerMcpHttp | null = null
-  let inflight: Promise<StartedLedgerMcpHttp | null> | null = null
-  let generation = 0
+/** App-scoped pool for the native ledger sidecar service. */
+export class LedgerMcpPool extends Context.Service<LedgerMcpPool, LedgerMcpPoolMethods>()(
+  'watchtower/agents/ledger-mcp/Pool',
+) {}
 
-  function logHealthFailure(): void {
-    safeLogOperationalEvent('error', 'sidecar.error', { op: 'ledger-mcp-health', code: 'unhealthy' }, 'sidecar')
+interface NativePoolCore extends LedgerMcpPoolMethods {
+  readonly releaseAllNow: () => void
+  readonly releaseAllEffect: Effect.Effect<void>
+}
+
+function makePoolCore(
+  start: (ctx: LedgerMcpSpawnContext) => Effect.Effect<NativeStartedLedgerMcpHttp, Error>,
+  spawnFibers: FiberSet.FiberSet<unknown, never>,
+): NativePoolCore {
+  let pooled: NativeStartedLedgerMcpHttp | null = null
+  let flight: Deferred.Deferred<NativeStartedLedgerMcpHttp | null, never> | null = null
+  let spawnFiber: Fiber.Fiber<NativeStartedLedgerMcpHttp | null, never> | null = null
+
+  function completeFlight(
+    deferred: Deferred.Deferred<NativeStartedLedgerMcpHttp | null, never>,
+    value: NativeStartedLedgerMcpHttp | null,
+  ): void {
+    Deferred.doneUnsafe(deferred, Effect.succeed(value))
   }
 
-  async function spawnFresh(ctx: LedgerMcpSpawnContext): Promise<StartedLedgerMcpHttp | null> {
-    const gen = generation
-    let started: StartedLedgerMcpHttp
-    try {
-      started = await deps.spawn(ctx)
-    } catch {
-      return null
-    }
-    if (gen !== generation) {
-      started.release()
-      return null
-    }
-    pooled = started
-    return started
+  function invalidateFlight(): void {
+    const previous = flight
+    flight = null
+    if (previous) completeFlight(previous, null)
+    spawnFiber?.interruptUnsafe()
+    spawnFiber = null
   }
 
-  async function acquire(ctx: LedgerMcpSpawnContext): Promise<LedgerMcpAttachment | null> {
-    // The app serves a single ledger.db — one slot, no keying. A pooled
-    // sidecar is health-gated on every acquire: one that died between
-    // conversations is respawned, never handed out.
-    if (pooled) {
-      let healthy = false
-      try {
-        healthy = await pooled.checkHealth()
-      } catch { /* treat a failed probe as unhealthy */ }
-      if (healthy) return { server: pooled.server, release: () => {} }
-      // A sidecar that died between turns is respawned, never handed out —
-      // and the death is recorded (health failures are log records, #129).
-      logHealthFailure()
-      pooled.release()
-      pooled = null
-    }
-    // Coalesce: rapid turns while a spawn is in flight share it instead of
-    // spawning one sidecar each. The guard clears only the owning slot, so
-    // a reset racing a spawn can never orphan a newer spawn's handle (which
-    // would leak a duplicate sidecar no acquire can reach).
-    if (!inflight) {
-      const slot: Promise<StartedLedgerMcpHttp | null> = spawnFresh(ctx).finally(() => {
-        if (inflight === slot) inflight = null
-      })
-      inflight = slot
-    }
-    const started = await inflight
+  // The Promise test seam keeps synchronous release semantics. Production
+  // shutdown uses releaseAllEffect from the owning application Scope.
+  const releaseAllNow = (): void => {
+    invalidateFlight()
+    const previous = pooled
+    pooled = null
+    if (previous) Effect.runFork(previous.release)
+  }
+
+  const releaseAllEffect = Effect.gen(function* () {
+    const previous = pooled
+    pooled = null
+    const previousFiber = spawnFiber
+    invalidateFlight()
+    if (previousFiber) yield* Fiber.interrupt(previousFiber)
+    if (previous) yield* previous.release
+  })
+
+  const isHealthy = (sidecar: NativeStartedLedgerMcpHttp): Effect.Effect<boolean> =>
+    sidecar.checkHealth.pipe(Effect.catch(() => Effect.succeed(false)))
+
+  function toAttachment(started: NativeStartedLedgerMcpHttp | null): LedgerMcpAttachment | null {
     return started ? { server: started.server, release: () => {} } : null
   }
 
-  async function connection(ctx: LedgerMcpSpawnContext): Promise<AcpMcpServer | null> {
-    const attachment = await acquire(ctx)
-    return attachment?.server ?? null
-  }
+  const logHealthFailure = Effect.logError('sidecar.error').pipe(
+    Effect.annotateLogs({
+      event: 'sidecar.error',
+      context: 'sidecar',
+      op: 'ledger-mcp-health',
+      code: 'unhealthy',
+    }),
+  )
 
-  async function regenerate(ctx: LedgerMcpSpawnContext): Promise<AcpMcpServer | null> {
-    releaseAll()
-    return connection(ctx)
-  }
+  const acquire = Effect.fn('LedgerMcpPool.acquire')(function* (
+    ctx: LedgerMcpSpawnContext,
+  ): Effect.fn.Return<LedgerMcpAttachment | null> {
+    const current = pooled
+    if (current) {
+      const healthy = yield* isHealthy(current)
+      if (healthy && pooled === current) return toAttachment(current)
+      if (pooled === current) {
+        pooled = null
+        yield* logHealthFailure
+        yield* current.release
+      }
+    }
 
-  async function status(): Promise<AcpMcpServer | null> {
-    if (!pooled) return null
-    let healthy = false
-    try {
-      healthy = await pooled.checkHealth()
-    } catch { /* treat a failed probe as unhealthy */ }
-    if (healthy) return pooled.server
-    logHealthFailure()
-    pooled.release()
+    if (flight) return toAttachment(yield* Deferred.await(flight))
+
+    // Flight identity is the staleness token. Forking with startImmediately
+    // preserves the synchronous spawn prefix while callers share one Deferred.
+    const myFlight = Deferred.makeUnsafe<NativeStartedLedgerMcpHttp | null, never>()
+    flight = myFlight
+    const spawn = Effect.gen(function* () {
+      const started = yield* start(ctx).pipe(Effect.catch(() => Effect.succeed(null)))
+      if (flight !== myFlight) {
+        if (started) yield* started.release
+        completeFlight(myFlight, null)
+        return null
+      }
+
+      pooled = started
+      if (flight === myFlight) flight = null
+      completeFlight(myFlight, started)
+      return started
+    }).pipe(
+      Effect.onExit(exit => {
+        if (Exit.isSuccess(exit)) return Effect.void
+        return Effect.sync(() => {
+          if (flight === myFlight) flight = null
+          Deferred.doneUnsafe(myFlight, Effect.failCause(exit.cause))
+        })
+      }),
+    )
+    spawnFiber = yield* FiberSet.run(spawnFibers, spawn, { startImmediately: true })
+    return toAttachment(yield* Deferred.await(myFlight))
+  })
+
+  const connection = Effect.fn('LedgerMcpPool.connection')(function* (
+    ctx: LedgerMcpSpawnContext,
+  ): Effect.fn.Return<AcpMcpServer | null> {
+    return (yield* acquire(ctx))?.server ?? null
+  })
+
+  const regenerate = Effect.fn('LedgerMcpPool.regenerate')(function* (
+    ctx: LedgerMcpSpawnContext,
+  ): Effect.fn.Return<AcpMcpServer | null> {
+    yield* releaseAllEffect
+    return yield* connection(ctx)
+  })
+
+  const status = Effect.fn('LedgerMcpPool.status')(function* (): Effect.fn.Return<AcpMcpServer | null> {
+    const current = pooled
+    if (!current) return null
+    const healthy = yield* isHealthy(current)
+    if (healthy && pooled === current) return current.server
+    if (pooled !== current) return null
     pooled = null
+    yield* logHealthFailure
+    yield* current.release
     return null
-  }
+  })
 
-  function releaseAll(): void {
-    generation++
-    inflight = null
-    pooled?.release()
-    pooled = null
+  return {
+    acquire,
+    connection,
+    regenerate,
+    status,
+    releaseAll: () => releaseAllEffect,
+    releaseAllNow,
+    releaseAllEffect,
   }
+}
 
-  return { acquire, connection, regenerate, status, releaseAll }
+/** Production pool layer: sidecar creation, health probes, and close remain in
+ *  the app's existing Effect graph and Scope. The finalizer drains pooled and
+ *  in-flight child resources before the sidecar layer closes its Scope. */
+export const ledgerMcpPoolLayer: Layer.Layer<LedgerMcpPool, never, LedgerMcpSidecar> = Layer.effect(
+  LedgerMcpPool,
+  Effect.gen(function* () {
+    const sidecar = yield* LedgerMcpSidecar
+    const appScope = yield* Scope.Scope
+    const spawnFibers = yield* FiberSet.make<unknown, never>()
+    const pool = makePoolCore(ctx => sidecar.start(ctx), spawnFibers)
+    yield* Scope.addFinalizer(appScope, pool.releaseAllEffect)
+    return LedgerMcpPool.of({
+      acquire: pool.acquire,
+      connection: pool.connection,
+      regenerate: pool.regenerate,
+      status: pool.status,
+      releaseAll: pool.releaseAll,
+    })
+  }),
+)
+
+/** Promise boundary retained for direct pool tests until their callers use
+ *  `LedgerMcpPool` from the existing application runtime. */
+export interface SidecarPoolDeps {
+  readonly spawn: (ctx: LedgerMcpSpawnContext) => Promise<StartedLedgerMcpHttp>
+}
+
+export interface SidecarPool {
+  readonly acquire: (ctx: LedgerMcpSpawnContext) => Promise<LedgerMcpAttachment | null>
+  readonly connection: (ctx: LedgerMcpSpawnContext) => Promise<AcpMcpServer | null>
+  readonly regenerate: (ctx: LedgerMcpSpawnContext) => Promise<AcpMcpServer | null>
+  readonly status: () => Promise<AcpMcpServer | null>
+  readonly releaseAll: () => void
+  readonly dispose: () => Promise<void>
+}
+
+function errorFrom(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause))
+}
+
+function promiseSpawn(
+  deps: SidecarPoolDeps,
+): (ctx: LedgerMcpSpawnContext) => Effect.Effect<NativeStartedLedgerMcpHttp, Error> {
+  return ctx =>
+    Effect.callback<NativeStartedLedgerMcpHttp, Error>((resume, signal) => {
+      let cancelled = false
+      let raw: Promise<StartedLedgerMcpHttp>
+      try {
+        raw = deps.spawn(ctx)
+      } catch (cause) {
+        resume(Effect.fail(errorFrom(cause)))
+        return
+      }
+      const onAbort = (): void => {
+        cancelled = true
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      void raw.then(
+        started => {
+          if (cancelled) {
+            try {
+              started.release()
+            } catch {
+              /* stale test handles have best-effort release semantics */
+            }
+            return
+          }
+          resume(
+            Effect.succeed({
+              server: started.server,
+              checkHealth: Effect.tryPromise({
+                try: () => started.checkHealth(),
+                catch: errorFrom,
+              }).pipe(Effect.catch(() => Effect.succeed(false))),
+              release: Effect.sync(() => {
+                try {
+                  started.release()
+                } catch {
+                  /* preserve the Promise pool's best-effort release */
+                }
+              }),
+            }),
+          )
+        },
+        cause => {
+          if (!cancelled) resume(Effect.fail(errorFrom(cause)))
+        },
+      )
+      return Effect.sync(() => {
+        signal.removeEventListener('abort', onAbort)
+        cancelled = true
+      })
+    })
+}
+
+export function createSidecarPool(deps: SidecarPoolDeps): SidecarPool {
+  const appScope = Scope.makeUnsafe()
+  const spawnFibers = Effect.runSync(Scope.provide(appScope)(FiberSet.make<unknown, never>()))
+  const pool = makePoolCore(promiseSpawn(deps), spawnFibers)
+  return {
+    acquire: ctx => Effect.runPromise(pool.acquire(ctx)),
+    connection: ctx => Effect.runPromise(pool.connection(ctx)),
+    regenerate: ctx => Effect.runPromise(pool.regenerate(ctx)),
+    status: () => Effect.runPromise(pool.status()),
+    releaseAll: pool.releaseAllNow,
+    dispose: async () => {
+      await Effect.runPromise(pool.releaseAllEffect)
+      await Effect.runPromise(Scope.close(appScope, Exit.void))
+    },
+  }
 }

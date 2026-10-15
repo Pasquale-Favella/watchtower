@@ -1,20 +1,38 @@
-import { readdir, readFile, mkdir, stat, open, rename, unlink } from 'fs/promises'
+import type { Stats } from 'node:fs'
+
 import { execFile } from 'child_process'
 import { randomBytes } from 'crypto'
-import { basename, join } from 'path'
-import { homedir } from 'os'
-import { fileURLToPath } from 'url'
+import { Effect, Result, Schema, Stream } from 'effect'
+import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises'
 import https from 'https'
+import { homedir } from 'os'
+import { basename, join } from 'path'
+import { fileURLToPath } from 'url'
 
-import { calculateCost } from '../models.js'
-import { isSqliteAvailable, isSqliteBusyError, openDatabase } from '../sqlite.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import { parsedProviderCallSchema } from '../../../shared/schemas/providers.js'
+import { resolveCacheDir } from '../../env.js'
+import { billableOutputTokens } from '../billable-output.js'
+import { readSessionLinesStream, SessionLineReadError } from '../fs-utils.js'
+import { captureScanPricing } from '../models.js'
+import { isScanAbortedError, ScanAbortedError, scanAbortError } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import type { SqliteDatabase } from '../sqlite.js'
+import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase } from '../sqlite.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 type AntigravityConversationRoot = {
   dir: string
   project: string
   extensions: readonly string[]
 }
+
+class ProviderOperationError extends Schema.TaggedError<ProviderOperationError>()('ProviderOperationError', {
+  operation: Schema.Literals(['readdir', 'stat']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
 
 // Computed on each call rather than frozen at module load so discovery honors
 // the current home directory (env overrides in tests, and any runtime change).
@@ -99,25 +117,6 @@ type GeneratorMetadataResponse = {
   }
 }
 
-type StatusLineCurrentUsage = {
-  input_tokens?: number
-  output_tokens?: number
-  cache_creation_input_tokens?: number
-  cache_read_input_tokens?: number
-}
-
-type StatusLinePayload = {
-  conversation_id?: string
-  session_id?: string
-  model?: string | {
-    id?: string
-    display_name?: string
-  }
-  context_window?: {
-    current_usage?: StatusLineCurrentUsage | null
-  }
-}
-
 type StatusLineEvent = {
   at: string
   conversationId: string
@@ -131,16 +130,38 @@ type StatusLineEvent = {
   }
 }
 
-type CachedCascade = {
-  mtimeMs: number
-  sizeBytes: number
-  calls: ParsedProviderCall[]
-}
+const statusLineEventInputSchema = Schema.Struct({
+  at: Schema.optional(Schema.Unknown),
+  conversationId: Schema.optional(Schema.Unknown),
+  sessionId: Schema.optional(Schema.Unknown),
+  model: Schema.optional(Schema.Unknown),
+  usage: Schema.optional(
+    Schema.Struct({
+      inputTokens: Schema.optional(Schema.Unknown),
+      outputTokens: Schema.optional(Schema.Unknown),
+      cacheCreationInputTokens: Schema.optional(Schema.Unknown),
+      cacheReadInputTokens: Schema.optional(Schema.Unknown),
+    }),
+  ),
+})
+const decodeStatusLineEventInput = Schema.decodeUnknownResult(statusLineEventInputSchema)
+const decodeStatusLineJson = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))
 
-type AntigravityCache = {
-  version: number
-  cascades: Record<string, CachedCascade>
-}
+type StatusLineRun = { event: StatusLineEvent; signature: string; count: number }
+type StatusLineRunsByConversation = Map<string, StatusLineRun[]>
+
+const finiteNumber = Schema.Number.pipe(Schema.check(Schema.isFinite()))
+const cachedCascadeSchema = Schema.Struct({
+  mtimeMs: finiteNumber,
+  sizeBytes: finiteNumber,
+  calls: Schema.mutable(Schema.Array(parsedProviderCallSchema)),
+})
+const antigravityCacheSchema = Schema.Struct({
+  version: Schema.Literal(CACHE_VERSION),
+  cascades: Schema.mutableKey(Schema.Record(Schema.String, Schema.mutableKey(cachedCascadeSchema))),
+})
+const antigravityCacheJsonSchema = Schema.fromJsonString(antigravityCacheSchema)
+type AntigravityCache = typeof antigravityCacheSchema.Type
 
 type ProtoField = {
   number: number
@@ -155,9 +176,17 @@ type ProtoVarint = {
 }
 
 type AntigravityGenMetadataRow = {
-  idx: number
+  idx: unknown
   data: Uint8Array | string
 }
+
+type AntigravityCallCandidate = Omit<ParsedProviderCall, 'costUSD'> & { pricingModel: string }
+
+const genMetadataRowSchema = Schema.Struct({
+  idx: Schema.Unknown,
+  data: Schema.Union([Schema.Uint8Array, Schema.String]),
+})
+const decodeGenMetadataRow = Schema.decodeUnknownResult(genMetadataRowSchema)
 
 const cachedServers = new Map<string, ServerInfo | null>()
 const cachedModelMaps = new Map<string, ModelMap>()
@@ -176,7 +205,7 @@ function getAgent(): https.Agent {
 }
 
 function getCacheDir(): string {
-  return process.env['WATCHTOWER_CACHE_DIR'] ?? join(homedir(), '.cache', 'watchtower')
+  return resolveCacheDir()
 }
 
 function getCachePath(): string {
@@ -187,14 +216,94 @@ export function getAntigravityStatusLineEventsPath(): string {
   return join(getCacheDir(), 'antigravity-statusline.jsonl')
 }
 
-function execFileText(command: string, args: string[], timeout = 3000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, { encoding: 'utf-8', timeout, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-      if (err) reject(err)
-      else resolve(stdout)
+class AntigravityProcessError extends Schema.TaggedError<AntigravityProcessError>()('AntigravityProcessError', {
+  command: Schema.String,
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+class AntigravityRpcError extends Schema.TaggedError<AntigravityRpcError>()('AntigravityRpcError', {
+  method: Schema.String,
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause), { cause })
+}
+
+const execFileTextEffect = Effect.fnUntraced(function* (
+  command: string,
+  args: string[],
+  timeout = 3000,
+  signal?: AbortSignal,
+): Effect.fn.Return<string, Error | AntigravityProcessError | ScanAbortedError> {
+  yield* checkScanAbort(signal)
+  const output = yield* Effect.callback<string, AntigravityProcessError | ScanAbortedError>(resume => {
+    let child: ReturnType<typeof execFile> | undefined
+    let closed = false
+    let completed = false
+    const finish = (effect: Effect.Effect<string, AntigravityProcessError | ScanAbortedError>): void => {
+      if (completed) return
+      completed = true
+      signal?.removeEventListener('abort', abort)
+      resume(effect)
+    }
+    const abort = (): void => {
+      child?.kill()
+    }
+    try {
+      child = execFile(command, args, { encoding: 'utf-8', timeout, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        if (signal?.aborted) {
+          finish(Effect.fail(scanAbortError(signal)))
+        } else if (err) {
+          finish(
+            Effect.fail(
+              new AntigravityProcessError({
+                command,
+                cause: err,
+                message: 'Antigravity process inspection failed',
+              }),
+            ),
+          )
+        } else {
+          finish(Effect.succeed(stdout))
+        }
+      })
+    } catch (cause) {
+      finish(
+        Effect.fail(
+          new AntigravityProcessError({
+            command,
+            cause,
+            message: 'Antigravity process inspection failed',
+          }),
+        ),
+      )
+    }
+
+    if (child && !completed) {
+      child.once('close', () => {
+        closed = true
+        if (signal?.aborted) finish(Effect.fail(scanAbortError(signal)))
+      })
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted) abort()
+    }
+
+    return Effect.gen(function* () {
+      signal?.removeEventListener('abort', abort)
+      const activeChild = child
+      if (!activeChild || completed) return
+      activeChild.kill()
+      if (!closed) {
+        yield* Effect.promise(() => new Promise<void>(resolve => activeChild.once('close', () => resolve())))
+      }
     })
   })
-}
+  yield* checkScanAbort(signal)
+  return output
+})
 
 function getFlagValue(line: string, names: string[]): string | null {
   for (const name of names) {
@@ -218,7 +327,9 @@ function normalizeAppDataDir(value: string | null): 'antigravity' | 'antigravity
   return undefined
 }
 
-export function extractAntigravityAppDataDirFromLine(line: string): 'antigravity' | 'antigravity-cli' | 'antigravity-ide' | undefined {
+export function extractAntigravityAppDataDirFromLine(
+  line: string,
+): 'antigravity' | 'antigravity-cli' | 'antigravity-ide' | undefined {
   return normalizeAppDataDir(getFlagValue(line, APP_DATA_DIR_FLAGS))
 }
 
@@ -323,250 +434,456 @@ export function extractAntigravityGeneratorMetadata(resp: unknown): GeneratorMet
   return Array.isArray(metadata) ? metadata : []
 }
 
-async function loadCache(): Promise<AntigravityCache> {
+class AntigravityCacheIoError extends Schema.TaggedError<AntigravityCacheIoError>()('AntigravityCacheIoError', {
+  operation: Schema.Literals(['read', 'mkdir', 'open', 'write', 'sync', 'close', 'rename', 'unlink']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+type CacheIoOperation = 'read' | 'mkdir' | 'open' | 'write' | 'sync' | 'close' | 'rename' | 'unlink'
+
+const checkCacheAbort = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<void, ScanAbortedError> {
+  if (signal?.aborted) return yield* Effect.fail(scanAbortError(signal))
+})
+
+const cacheIo = Effect.fnUntraced(function* <A>(
+  operation: CacheIoOperation,
+  run: () => Promise<A>,
+): Effect.fn.Return<A, AntigravityCacheIoError> {
+  return yield* scanIo(run).pipe(
+    Effect.mapError(
+      cause => new AntigravityCacheIoError({ operation, cause, message: `Antigravity cache ${operation} failed` }),
+    ),
+  )
+})
+
+const loadCacheEffect = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<AntigravityCache, Error> {
+  yield* checkCacheAbort(signal)
   if (memCache) return memCache
-  try {
-    const raw = await readFile(getCachePath(), 'utf-8')
-    const cache = JSON.parse(raw) as AntigravityCache
-    if (cache.version === CACHE_VERSION && cache.cascades && typeof cache.cascades === 'object') {
-      memCache = cache
-      return cache
-    }
-  } catch { /* no cache or invalid */ }
-  memCache = { version: CACHE_VERSION, cascades: {} }
+
+  const raw = yield* cacheIo('read', () => readFile(getCachePath(), 'utf-8')).pipe(
+    Effect.catchTag('AntigravityCacheIoError', () => Effect.succeed(null)),
+  )
+  yield* checkCacheAbort(signal)
+  const decoded =
+    raw === null
+      ? null
+      : yield* Schema.decodeUnknownEffect(antigravityCacheJsonSchema)(raw).pipe(
+          Effect.matchEffect({ onFailure: () => Effect.succeed(null), onSuccess: Effect.succeed }),
+        )
+  yield* checkCacheAbort(signal)
+  memCache = decoded ?? { version: CACHE_VERSION, cascades: {} }
   return memCache
-}
+})
+
+export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffect')(function* (
+  liveCascadeIds?: Set<string>,
+  signal?: AbortSignal,
+): Effect.fn.Return<void, AntigravityCacheIoError | ScanAbortedError | Schema.SchemaError> {
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      yield* checkCacheAbort(signal)
+      if (!memCache) return
+      // If the caller supplied liveCascadeIds, we must run the eviction step
+      // even when no cascade was added or updated this run; otherwise deleted
+      // .pb files would persist in the cache forever once it stops getting
+      // dirty writes. Mark the cache dirty when an eviction happens so the
+      // file write below proceeds.
+      if (liveCascadeIds) {
+        for (const id of Object.keys(memCache.cascades)) {
+          if (!liveCascadeIds.has(id)) {
+            delete memCache.cascades[id]
+            cacheDirty = true
+          }
+        }
+      }
+      if (!cacheDirty) return
+
+      const dir = getCacheDir()
+      yield* checkCacheAbort(signal)
+      yield* cacheIo('mkdir', () => mkdir(dir, { recursive: true }))
+      yield* checkCacheAbort(signal)
+      const finalPath = getCachePath()
+      const tempPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
+      let ownedTempPath: string | undefined = tempPath
+      yield* Effect.addFinalizer(() => {
+        if (!ownedTempPath) return Effect.void
+        const path = ownedTempPath
+        ownedTempPath = undefined
+        return cacheIo('unlink', () => unlink(path)).pipe(Effect.catchTag('AntigravityCacheIoError', () => Effect.void))
+      })
+
+      // Invalid in-memory data is a schema failure, not a recoverable filesystem
+      // outcome. Let it escape after the scoped temp cleanup and keep dirty set.
+      const encoded = yield* Schema.encodeUnknownEffect(antigravityCacheSchema)(memCache)
+      const payload = JSON.stringify(encoded)
+      yield* checkCacheAbort(signal)
+
+      const file = yield* Effect.acquireRelease(
+        Effect.uninterruptible(
+          cacheIo('open', () => open(tempPath, 'w', 0o600)).pipe(Effect.map(handle => ({ handle, closed: false }))),
+        ),
+        owned => {
+          if (owned.closed) return Effect.void
+          owned.closed = true
+          return cacheIo('close', () => owned.handle.close()).pipe(
+            Effect.catchTag('AntigravityCacheIoError', () => Effect.void),
+          )
+        },
+      )
+
+      yield* checkCacheAbort(signal)
+      yield* cacheIo('write', () => file.handle.writeFile(payload, { encoding: 'utf-8' }))
+      yield* checkCacheAbort(signal)
+      yield* cacheIo('sync', () => file.handle.sync())
+      yield* checkCacheAbort(signal)
+      file.closed = true
+      yield* cacheIo('close', () => file.handle.close())
+      yield* checkCacheAbort(signal)
+
+      // Check cancellation before beginning the commit attempt. The leaf itself
+      // drains uninterruptibly, then dirty-state follows whether rename worked.
+      yield* checkCacheAbort(signal)
+      yield* Effect.uninterruptible(
+        cacheIo('rename', () => rename(tempPath, finalPath)).pipe(
+          Effect.map(() => true),
+          Effect.catchTag('AntigravityCacheIoError', () => Effect.succeed(false)),
+          Effect.tap(renamed =>
+            Effect.sync(() => {
+              if (renamed) ownedTempPath = undefined
+              // Match the previous attempt policy: a completed rename attempt
+              // clears dirty even on rejected rename. Earlier failures stay dirty.
+              cacheDirty = false
+            }),
+          ),
+        ),
+      )
+      yield* checkCacheAbort(signal)
+    }),
+  ).pipe(Effect.catchTag('AntigravityCacheIoError', () => Effect.void))
+})
 
 async function flushCache(liveCascadeIds?: Set<string>): Promise<void> {
-  if (!memCache) return
-  // If the caller supplied liveCascadeIds, we must run the eviction step
-  // even when no cascade was added or updated this run; otherwise deleted
-  // .pb files would persist in the cache forever once it stops getting
-  // dirty writes. Mark the cache dirty when an eviction happens so the
-  // file write below proceeds.
-  if (liveCascadeIds) {
-    for (const id of Object.keys(memCache.cascades)) {
-      if (!liveCascadeIds.has(id)) {
-        delete memCache.cascades[id]
-        cacheDirty = true
-      }
-    }
-  }
-  if (!cacheDirty) return
-  try {
-
-    const dir = getCacheDir()
-    await mkdir(dir, { recursive: true })
-    const finalPath = getCachePath()
-    const tempPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
-    const handle = await open(tempPath, 'w', 0o600)
-    try {
-      await handle.writeFile(JSON.stringify(memCache), { encoding: 'utf-8' })
-      await handle.sync()
-    } finally {
-      await handle.close()
-    }
-    try {
-      await rename(tempPath, finalPath)
-    } catch {
-      try { await unlink(tempPath) } catch { /* cleanup */ }
-    }
-    cacheDirty = false
-  } catch { /* best-effort */ }
+  // Remove this Promise edge once the remaining Antigravity cache writers use the native cache effect.
+  // eslint-disable-next-line no-restricted-syntax
+  await Effect.runPromise(flushAntigravityCacheEffect(liveCascadeIds))
 }
 
-async function readProcessCommandLines(): Promise<string[]> {
+const readProcessCommandLinesEffect = Effect.fnUntraced(function* (
+  signal?: AbortSignal,
+): Effect.fn.Return<string[], Error | AntigravityProcessError | ScanAbortedError> {
   if (process.platform === 'win32') {
     const script = [
       "$ErrorActionPreference = 'SilentlyContinue'",
       '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
       "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and $_.CommandLine -like '*antigravity*' } | ForEach-Object { $_.CommandLine }",
     ].join('; ')
-    const output = await execFileText('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], 5000)
+    const output = yield* execFileTextEffect(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      5000,
+      signal,
+    )
     return output.split(/\r?\n/)
   }
 
-  const output = await execFileText('ps', ['-ww', '-eo', 'args'])
+  const output = yield* execFileTextEffect('ps', ['-ww', '-eo', 'args'], 3000, signal)
   return output.split('\n')
-}
+})
 
-async function resolveEphemeralPort(csrfToken: string, appDataDir?: 'antigravity' | 'antigravity-cli' | 'antigravity-ide'): Promise<ServerInfo | null> {
+const resolveEphemeralPortEffect = Effect.fnUntraced(function* (
+  csrfToken: string,
+  appDataDir?: 'antigravity' | 'antigravity-cli' | 'antigravity-ide',
+  signal?: AbortSignal,
+): Effect.fn.Return<ServerInfo | null, Error | AntigravityProcessError | AntigravityRpcError | ScanAbortedError> {
   if (process.platform === 'win32') {
-    try {
-      const script = [
-        "$ErrorActionPreference = 'SilentlyContinue'",
-        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
-        "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and $_.CommandLine -like '*antigravity*' } | ForEach-Object { @{ PID = $_.ProcessId; Cmd = $_.CommandLine } | ConvertTo-Json -Compress }"
-      ].join('; ')
-      const output = await execFileText('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], 5000)
-      
-      let targetPid = 0
-      for (const line of output.split(/\r?\n/)) {
-        if (!line.trim()) continue
-        try {
-          const proc = JSON.parse(line) as { PID: number; Cmd: string }
-          const candidate = parseAntigravityServerCandidateFromLine(proc.Cmd)
-          if (candidate && candidate.csrfToken === csrfToken) {
-            if (!appDataDir || !candidate.appDataDir || candidate.appDataDir === appDataDir) {
-              targetPid = proc.PID
-              break
-            }
+    const script = [
+      "$ErrorActionPreference = 'SilentlyContinue'",
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+      "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -like '*language_server*' -and $_.CommandLine -like '*antigravity*' } | ForEach-Object { @{ PID = $_.ProcessId; Cmd = $_.CommandLine } | ConvertTo-Json -Compress }",
+    ].join('; ')
+    const output = yield* execFileTextEffect(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      5000,
+      signal,
+    ).pipe(Effect.catchTag('AntigravityProcessError', () => Effect.succeed('')))
+
+    let targetPid = 0
+    for (const line of output.split(/\r?\n/)) {
+      if (!line.trim()) continue
+      try {
+        const proc = JSON.parse(line) as { PID: number; Cmd: string }
+        const candidate = parseAntigravityServerCandidateFromLine(proc.Cmd)
+        if (candidate && candidate.csrfToken === csrfToken) {
+          if (!appDataDir || !candidate.appDataDir || candidate.appDataDir === appDataDir) {
+            targetPid = proc.PID
+            break
           }
-        } catch { /* skip invalid parse */ }
+        }
+      } catch {
+        /* skip invalid parse */
       }
-      
-      if (targetPid === 0) return null
-      
-      const portScript = `Get-NetTCPConnection -State Listen -OwningProcess ${targetPid} | Select-Object -ExpandProperty LocalPort`
-      const portOutput = await execFileText('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', portScript], 5000)
-      const ports = portOutput.split(/\r?\n/)
-        .map(p => Number(p.trim()))
-        .filter(p => Number.isInteger(p) && p > 0)
-      
-      for (const port of ports) {
-        try {
-          await new Promise((resolve, reject) => {
-            const req = https.request({
-              hostname: '127.0.0.1',
-              port: port,
-              path: '/exa.language_server_pb.LanguageServerService/GetAvailableModels',
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Connect-Protocol-Version': '1',
-                'X-Codeium-Csrf-Token': csrfToken,
-                'Content-Length': 2,
-              },
-              agent: getAgent(),
-              timeout: 1000,
-            }, (res) => {
-              if (res.statusCode === 200) resolve(true)
-              else reject(new Error())
-            })
-            req.on('error', reject)
-            req.write('{}')
-            req.end()
-          })
-          return { port, csrfToken }
-        } catch { /* try next port */ }
-      }
-    } catch { /* best-effort */ }
+    }
+
+    if (targetPid === 0) return null
+
+    const portScript = `Get-NetTCPConnection -State Listen -OwningProcess ${targetPid} | Select-Object -ExpandProperty LocalPort`
+    const portOutput = yield* execFileTextEffect(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', portScript],
+      5000,
+      signal,
+    ).pipe(Effect.catchTag('AntigravityProcessError', () => Effect.succeed('')))
+    const ports = portOutput
+      .split(/\r?\n/)
+      .map(p => Number(p.trim()))
+      .filter(p => Number.isInteger(p) && p > 0)
+
+    for (const port of ports) {
+      const probe = yield* probePortEffect({ port, csrfToken }, signal).pipe(
+        Effect.catchTag('AntigravityRpcError', () => Effect.succeed(false)),
+      )
+      if (probe) return { port, csrfToken }
+    }
     return null
   }
 
-  try {
-    const processOutput = await execFileText('ps', ['-ww', '-eo', 'pid=,args='])
-    let pid = ''
-    for (const line of processOutput.split('\n')) {
-      const match = line.trim().match(/^(\d+)\s+(.+)$/)
-      if (!match) continue
-      const candidate = parseAntigravityServerCandidateFromLine(match[2]!)
-      if (!candidate) continue
-      if (candidate.csrfToken !== csrfToken) continue
-      if (appDataDir && candidate.appDataDir && candidate.appDataDir !== appDataDir) continue
-      pid = match[1]!
-      break
-    }
-    if (!pid) return null
-    const lsofOutput = await execFileText('lsof', ['-a', '-i', '-P', '-n', '-p', pid])
-    for (const line of lsofOutput.split('\n')) {
-      if (!line.includes('LISTEN')) continue
-      const match = line.match(/:(\d+)\s+\(LISTEN\)/)
-      if (match) {
-        const port = Number(match[1])
-        if (port > 0) return { port, csrfToken }
-      }
-    }
-  } catch { /* best-effort */ }
+  const processOutput = yield* execFileTextEffect('ps', ['-ww', '-eo', 'pid=,args='], 3000, signal).pipe(
+    Effect.catchTag('AntigravityProcessError', () => Effect.succeed('')),
+  )
+  let pid = ''
+  for (const line of processOutput.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(.+)$/)
+    if (!match) continue
+    const candidate = parseAntigravityServerCandidateFromLine(match[2]!)
+    if (!candidate) continue
+    if (candidate.csrfToken !== csrfToken) continue
+    if (appDataDir && candidate.appDataDir && candidate.appDataDir !== appDataDir) continue
+    pid = match[1]!
+    break
+  }
+  if (!pid) return null
+
+  const lsofOutput = yield* execFileTextEffect('lsof', ['-a', '-i', '-P', '-n', '-p', pid], 3000, signal).pipe(
+    Effect.catchTag('AntigravityProcessError', () => Effect.succeed('')),
+  )
+  for (const line of lsofOutput.split('\n')) {
+    if (!line.includes('LISTEN')) continue
+    const match = line.match(/:(\d+)\s+\(LISTEN\)/)
+    if (!match) continue
+    const port = Number(match[1])
+    if (port > 0) return { port, csrfToken }
+  }
   return null
+})
+
+const detectServerEffect = Effect.fnUntraced(function* (
+  appDataDir: 'antigravity' | 'antigravity-cli' | 'antigravity-ide' = 'antigravity',
+  signal?: AbortSignal,
+): Effect.fn.Return<ServerInfo | null, Error | AntigravityProcessError | AntigravityRpcError | ScanAbortedError> {
+  yield* checkScanAbort(signal)
+  if (cachedServers.has(appDataDir)) return cachedServers.get(appDataDir)!
+  const candidates = yield* readProcessCommandLinesEffect(signal).pipe(
+    Effect.catchTag('AntigravityProcessError', () => Effect.succeed([])),
+  )
+  const parsedCandidates = parseAntigravityServerCandidates(candidates)
+  const info =
+    parsedCandidates.find(candidate => candidate.appDataDir === appDataDir) ??
+    (appDataDir === 'antigravity'
+      ? parsedCandidates.find(candidate => candidate.appDataDir === undefined)
+      : undefined) ??
+    null
+  let detected: ServerInfo | null = null
+  if (info && info.port > 0 && appDataDir !== 'antigravity-ide') {
+    detected = { port: info.port, csrfToken: info.csrfToken }
+  } else if (info) {
+    detected = yield* resolveEphemeralPortEffect(info.csrfToken, appDataDir, signal)
+  }
+  cachedServers.set(appDataDir, detected)
+  return detected
+})
+
+const rpcEffect = Effect.fnUntraced(function* (
+  server: ServerInfo,
+  method: string,
+  body: Record<string, unknown> = {},
+  signal?: AbortSignal,
+): Effect.fn.Return<unknown, Error | AntigravityRpcError | ScanAbortedError> {
+  yield* checkScanAbort(signal)
+  const data = JSON.stringify(body)
+  const response = yield* requestJsonEffect(server, method, data, RPC_TIMEOUT_MS, MAX_RESPONSE_BYTES, true, signal)
+  yield* checkScanAbort(signal)
+  return response
+})
+
+const getModelMapEffect = Effect.fnUntraced(function* (
+  server: ServerInfo,
+  signal?: AbortSignal,
+): Effect.fn.Return<ModelMap, Error | AntigravityRpcError | ScanAbortedError> {
+  yield* checkScanAbort(signal)
+  const cacheKey = `${server.port}:${server.csrfToken}`
+  const cachedModelMap = cachedModelMaps.get(cacheKey)
+  if (cachedModelMap) return cachedModelMap
+  const modelMap = yield* rpcEffect(server, 'GetAvailableModels', {}, signal).pipe(
+    Effect.map(extractAntigravityModelMap),
+    Effect.catchTag('AntigravityRpcError', () => Effect.succeed({})),
+  )
+  cachedModelMaps.set(cacheKey, modelMap)
+  return modelMap
+})
+
+function requestJsonEffect(
+  server: ServerInfo,
+  method: string,
+  data: string,
+  timeout: number,
+  maxResponseBytes: number | undefined,
+  decodeJson: boolean,
+  signal?: AbortSignal,
+): Effect.Effect<unknown, Error | AntigravityRpcError | ScanAbortedError> {
+  return Effect.callback<unknown, Error | AntigravityRpcError | ScanAbortedError>(resume => {
+    let request: ReturnType<typeof https.request> | undefined
+    let response: import('http').IncomingMessage | undefined
+    let closed = false
+    let settled = false
+    let pendingFailure: Error | ScanAbortedError | undefined
+    const settle = (effect: Effect.Effect<unknown, AntigravityRpcError | ScanAbortedError>): void => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', abort)
+      resume(effect)
+    }
+    const settleFailure = (cause: unknown): void => {
+      const failure = signal?.aborted ? scanAbortError(signal) : cause instanceof ScanAbortedError ? cause : undefined
+      settle(
+        Effect.fail(
+          failure ??
+            new AntigravityRpcError({
+              method,
+              cause,
+              message: `Antigravity RPC ${method} failed`,
+            }),
+        ),
+      )
+    }
+    const settleSuccess = (value: unknown): void => {
+      settle(Effect.succeed(value))
+    }
+    const failAndClose = (cause: Error | ScanAbortedError): void => {
+      if (settled || pendingFailure) return
+      pendingFailure = cause
+      if (response && !response.destroyed) response.destroy()
+      if (request && !request.destroyed) request.destroy()
+      if (!request || closed) settleFailure(cause)
+    }
+    const abort = (): void => {
+      if (signal) failAndClose(scanAbortError(signal))
+    }
+    const onClose = (): void => {
+      closed = true
+      if (pendingFailure) settleFailure(pendingFailure)
+      else if (!decodeJson && response?.statusCode === 200) settleSuccess(undefined)
+    }
+
+    if (signal?.aborted) {
+      settleFailure(scanAbortError(signal))
+      return
+    }
+
+    try {
+      request = https.request(
+        {
+          hostname: '127.0.0.1',
+          port: server.port,
+          path: `/exa.language_server_pb.LanguageServerService/${method}`,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
+            'X-Codeium-Csrf-Token': server.csrfToken,
+            'Content-Length': Buffer.byteLength(data),
+          },
+          agent: getAgent(),
+          timeout,
+        },
+        res => {
+          response = res
+          res.on('error', failAndClose)
+          if (!decodeJson) {
+            if (res.statusCode !== 200) {
+              failAndClose(new Error(`RPC ${method}: HTTP ${res.statusCode}`))
+            } else {
+              res.destroy()
+              request?.destroy()
+            }
+            return
+          }
+          const chunks: Buffer[] = []
+          let totalBytes = 0
+          res.on('data', chunk => {
+            if (settled || pendingFailure) return
+            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+            totalBytes += bytes.length
+            if (maxResponseBytes !== undefined && totalBytes > maxResponseBytes) {
+              failAndClose(new Error(`RPC ${method}: response too large`))
+              return
+            }
+            chunks.push(bytes)
+          })
+          res.on('end', () => {
+            if (settled || pendingFailure) return
+            if (res.statusCode !== 200) {
+              failAndClose(new Error(`RPC ${method}: HTTP ${res.statusCode}`))
+              return
+            }
+            try {
+              settleSuccess(JSON.parse(Buffer.concat(chunks).toString('utf-8')))
+            } catch (cause) {
+              failAndClose(new Error(`RPC ${method}: invalid JSON`, { cause }))
+            }
+          })
+          res.on('aborted', () => failAndClose(new Error(`RPC ${method}: response aborted`)))
+        },
+      )
+      request.once('close', onClose)
+      request.on('error', failAndClose)
+      request.on('timeout', () => failAndClose(new Error(`RPC ${method}: timeout`)))
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted) abort()
+      request.write(data)
+      request.end()
+    } catch (cause) {
+      failAndClose(toError(cause))
+    }
+
+    return Effect.gen(function* () {
+      signal?.removeEventListener('abort', abort)
+      const activeRequest = request
+      if (!activeRequest || settled) return
+      if (!activeRequest.destroyed) activeRequest.destroy()
+      if (response && !response.destroyed) response.destroy()
+      if (!closed)
+        yield* Effect.promise(() => new Promise<void>(resolve => activeRequest.once('close', () => resolve())))
+    })
+  })
 }
 
-export function antigravityAppDataDirFromSourcePath(path: string): 'antigravity' | 'antigravity-cli' | 'antigravity-ide' {
+const probePortEffect = Effect.fnUntraced(function* (
+  server: ServerInfo,
+  signal?: AbortSignal,
+): Effect.fn.Return<boolean, Error | AntigravityRpcError | ScanAbortedError> {
+  yield* requestJsonEffect(server, 'GetAvailableModels', '{}', 1000, undefined, false, signal)
+  return true
+})
+
+export function antigravityAppDataDirFromSourcePath(
+  path: string,
+): 'antigravity' | 'antigravity-cli' | 'antigravity-ide' {
   const lower = path.replace(/\\/g, '/').toLowerCase()
   if (lower.includes('/.gemini/antigravity-ide/')) return 'antigravity-ide'
   if (lower.includes('/.gemini/antigravity-cli/')) return 'antigravity-cli'
   return 'antigravity'
-}
-
-async function detectServer(appDataDir: 'antigravity' | 'antigravity-cli' | 'antigravity-ide' = 'antigravity'): Promise<ServerInfo | null> {
-  if (cachedServers.has(appDataDir)) return cachedServers.get(appDataDir)!
-  try {
-    const candidates = parseAntigravityServerCandidates(await readProcessCommandLines())
-    const info = candidates.find(candidate => candidate.appDataDir === appDataDir)
-      ?? (appDataDir === 'antigravity' ? candidates.find(candidate => candidate.appDataDir === undefined) : undefined)
-      ?? null
-    if (info && info.port > 0 && appDataDir !== 'antigravity-ide') {
-      cachedServers.set(appDataDir, { port: info.port, csrfToken: info.csrfToken })
-    } else if (info) {
-      cachedServers.set(appDataDir, await resolveEphemeralPort(info.csrfToken, appDataDir))
-    } else {
-      cachedServers.set(appDataDir, null)
-    }
-    return cachedServers.get(appDataDir)!
-  } catch { /* process discovery failed or timed out */ }
-  cachedServers.set(appDataDir, null)
-  return null
-}
-
-async function rpc(server: ServerInfo, method: string, body: Record<string, unknown> = {}): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const data = JSON.stringify(body)
-    const req = https.request({
-      hostname: '127.0.0.1',
-      port: server.port,
-      path: `/exa.language_server_pb.LanguageServerService/${method}`,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Connect-Protocol-Version': '1',
-        'X-Codeium-Csrf-Token': server.csrfToken,
-        'Content-Length': Buffer.byteLength(data),
-      },
-      agent: getAgent(),
-      timeout: RPC_TIMEOUT_MS,
-    }, (res) => {
-      const chunks: Buffer[] = []
-      let totalBytes = 0
-      res.on('data', (chunk: Buffer) => {
-        totalBytes += chunk.length
-        if (totalBytes > MAX_RESPONSE_BYTES) {
-          res.destroy()
-          reject(new Error(`RPC ${method}: response too large`))
-          return
-        }
-        chunks.push(chunk)
-      })
-      res.on('end', () => {
-        if (res.statusCode !== 200) {
-          reject(new Error(`RPC ${method}: HTTP ${res.statusCode}`))
-          return
-        }
-        try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')))
-        } catch {
-          reject(new Error(`RPC ${method}: invalid JSON`))
-        }
-      })
-      res.on('error', reject)
-    })
-    req.on('error', reject)
-    req.on('timeout', () => { req.destroy(); reject(new Error(`RPC ${method}: timeout`)) })
-    req.write(data)
-    req.end()
-  })
-}
-
-async function getModelMap(server: ServerInfo): Promise<ModelMap> {
-  const cacheKey = `${server.port}:${server.csrfToken}`
-  const cachedModelMap = cachedModelMaps.get(cacheKey)
-  if (cachedModelMap) return cachedModelMap
-  try {
-    const modelMap = extractAntigravityModelMap(await rpc(server, 'GetAvailableModels'))
-    cachedModelMaps.set(cacheKey, modelMap)
-    return modelMap
-  } catch { /* best-effort */ }
-  cachedModelMaps.set(cacheKey, {})
-  return {}
 }
 
 // Strip Antigravity-specific suffixes so the pricing DB can match
@@ -679,9 +996,7 @@ function antigravitySqliteResponseId(usageFields: readonly ProtoField[], fallbac
 }
 
 function genMetadataDataBytes(value: Uint8Array | string): Uint8Array {
-  return typeof value === 'string'
-    ? new TextEncoder().encode(value)
-    : value
+  return typeof value === 'string' ? new TextEncoder().encode(value) : value
 }
 
 function antigravitySqliteMetadataAttributes(chatFields: readonly ProtoField[]): Map<string, string> {
@@ -699,10 +1014,8 @@ function antigravitySqliteMetadataAttributes(chatFields: readonly ProtoField[]):
 function antigravitySqliteModel(chatFields: readonly ProtoField[]): string {
   const attributes = antigravitySqliteMetadataAttributes(chatFields)
   const displayName = protoFieldText(firstProtoField(chatFields, 21))
-  const rawModel = protoFieldText(firstProtoField(chatFields, 19))
-    ?? attributes.get('model_enum')
-    ?? displayName
-    ?? 'unknown'
+  const rawModel =
+    protoFieldText(firstProtoField(chatFields, 19)) ?? attributes.get('model_enum') ?? displayName ?? 'unknown'
 
   return getCanonicalModelId(rawModel, displayName)
 }
@@ -741,14 +1054,18 @@ function antigravitySqliteCreatedAt(chatFields: readonly ProtoField[]): string {
   return protoTimestampToIso(firstProtoField(parseProtoFields(metadataBytes), 4))
 }
 
-function buildCallFromSqliteGenMetadataRow(cascadeId: string, row: AntigravityGenMetadataRow): ParsedProviderCall | null {
+function buildCandidateFromSqliteGenMetadataRow(
+  cascadeId: string,
+  row: AntigravityGenMetadataRow,
+): AntigravityCallCandidate | null {
   const rootFields = parseProtoFields(genMetadataDataBytes(row.data))
   const chatFields = parseProtoFields(protoFieldBytes(firstProtoField(rootFields, 1)) ?? new Uint8Array())
   const usageFields = parseProtoFields(protoFieldBytes(firstProtoField(chatFields, 4)) ?? new Uint8Array())
   if (usageFields.length === 0) return null
 
-  const inputTokens = protoFieldPositiveInteger(firstProtoField(usageFields, 2))
-    || protoFieldPositiveInteger(firstProtoField(usageFields, 1))
+  const inputTokens =
+    protoFieldPositiveInteger(firstProtoField(usageFields, 2)) ||
+    protoFieldPositiveInteger(firstProtoField(usageFields, 1))
   const totalOutputTokens = protoFieldPositiveInteger(firstProtoField(usageFields, 3))
   let responseTokens = protoFieldPositiveInteger(firstProtoField(usageFields, 9))
   const thinkingTokens = protoFieldPositiveInteger(firstProtoField(usageFields, 10))
@@ -764,8 +1081,6 @@ function buildCallFromSqliteGenMetadataRow(cascadeId: string, row: AntigravityGe
 
   const responseId = antigravitySqliteResponseId(usageFields, String(row.idx))
   const model = antigravitySqliteModel(chatFields)
-  const pricingModel = normalizePricingModel(model)
-  const costUSD = calculateCost(pricingModel, inputTokens, responseTokens + thinkingTokens, 0, 0, 0)
 
   return {
     provider: 'antigravity',
@@ -777,7 +1092,6 @@ function buildCallFromSqliteGenMetadataRow(cascadeId: string, row: AntigravityGe
     cachedInputTokens: 0,
     reasoningTokens: thinkingTokens,
     webSearchRequests: 0,
-    costUSD,
     tools: [],
     bashCommands: [],
     timestamp: antigravitySqliteCreatedAt(chatFields),
@@ -785,58 +1099,17 @@ function buildCallFromSqliteGenMetadataRow(cascadeId: string, row: AntigravityGe
     deduplicationKey: `antigravity:${cascadeId}:${responseId}`,
     userMessage: '',
     sessionId: cascadeId,
-  }
-}
-
-function buildCallsFromSqliteGenMetadata(cascadeId: string, rows: AntigravityGenMetadataRow[]): ParsedProviderCall[] {
-  const calls: ParsedProviderCall[] = []
-  const seenResponseIds = new Set<string>()
-
-  for (const row of rows) {
-    const call = buildCallFromSqliteGenMetadataRow(cascadeId, row)
-    if (!call) continue
-    if (seenResponseIds.has(call.deduplicationKey)) continue
-    seenResponseIds.add(call.deduplicationKey)
-    calls.push(call)
-  }
-
-  return calls
-}
-
-async function parseSqliteGenMetadataCalls(filePath: string, cascadeId: string): Promise<ParsedProviderCall[]> {
-  if (!filePath.toLowerCase().endsWith('.db')) return []
-  if (!isSqliteAvailable()) return []
-
-  let db: ReturnType<typeof openDatabase> | null = null
-  try {
-    db = openDatabase(filePath)
-    const rows = db.query<AntigravityGenMetadataRow>('SELECT idx, data FROM gen_metadata ORDER BY idx')
-    return buildCallsFromSqliteGenMetadata(cascadeId, rows)
-  } catch (err) {
-    // Let a transient lock propagate so the run retries this file on the next
-    // refresh instead of treating it as empty (see parser.ts busy handling).
-    if (isSqliteBusyError(err)) throw err
-    return []
-  } finally {
-    db?.close()
+    pricingModel: normalizePricingModel(model),
   }
 }
 
 function parseFiniteToken(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : 0
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
 }
 
 function usageSignature(event: StatusLineEvent): string {
   const u = event.usage
-  return [
-    event.model,
-    u.inputTokens,
-    u.outputTokens,
-    u.cacheCreationInputTokens,
-    u.cacheReadInputTokens,
-  ].join(':')
+  return [event.model, u.inputTokens, u.outputTokens, u.cacheCreationInputTokens, u.cacheReadInputTokens].join(':')
 }
 
 function usageHasTokens(usage: StatusLineEvent['usage']): boolean {
@@ -870,55 +1143,126 @@ export function antigravityCascadeIdFromPath(path: string): string {
   return basename(path).replace(/\.(pb|db)$/i, '')
 }
 
-function buildCallsFromGeneratorMetadata(
+const generatorMetadataEntrySchema = Schema.Struct({ chatModel: Schema.optional(Schema.Unknown) })
+const generatorChatModelSchema = Schema.Struct({
+  usage: Schema.optional(Schema.Unknown),
+  chatStartMetadata: Schema.optional(Schema.Unknown),
+})
+const generatorUsageSchema = Schema.Struct({
+  model: Schema.optional(Schema.Unknown),
+  inputTokens: Schema.optional(Schema.Unknown),
+  outputTokens: Schema.optional(Schema.Unknown),
+  thinkingOutputTokens: Schema.optional(Schema.Unknown),
+  responseOutputTokens: Schema.optional(Schema.Unknown),
+  responseId: Schema.optional(Schema.Unknown),
+})
+const generatorStartMetadataSchema = Schema.Struct({ createdAt: Schema.optional(Schema.Unknown) })
+const generatorTokenCountsSchema = Schema.Struct({
+  inputTokens: Schema.Finite,
+  outputTokens: Schema.Finite,
+  thinkingTokens: Schema.Finite,
+  responseTokens: Schema.Finite,
+})
+const generatorSelectedFieldsSchema = Schema.Struct({
+  model: Schema.String,
+  responseId: Schema.String,
+  timestamp: Schema.String,
+})
+const decodeGeneratorMetadataEntry = Schema.decodeUnknownResult(generatorMetadataEntrySchema)
+const decodeGeneratorChatModel = Schema.decodeUnknownResult(generatorChatModelSchema)
+const decodeGeneratorUsage = Schema.decodeUnknownResult(generatorUsageSchema)
+const decodeGeneratorStartMetadata = Schema.decodeUnknownResult(generatorStartMetadataSchema)
+const decodeGeneratorTokenCounts = Schema.decodeUnknownResult(generatorTokenCountsSchema)
+const decodeGeneratorSelectedFields = Schema.decodeUnknownResult(generatorSelectedFieldsSchema)
+
+function parseGeneratorTokenCount(value: unknown): number {
+  return Number.parseInt(String(value ?? '0'), 10)
+}
+
+function decodeGeneratorMetadataCandidate(
   cascadeId: string,
-  metadata: GeneratorMetadata[],
+  input: unknown,
+  index: number,
   modelMap: ModelMap,
-): ParsedProviderCall[] {
-  const results: ParsedProviderCall[] = []
+): { candidate: AntigravityCallCandidate | null; malformed: boolean } {
+  const entryResult = decodeGeneratorMetadataEntry(input)
+  if (Result.isFailure(entryResult)) return { candidate: null, malformed: true }
+  if (!entryResult.success.chatModel) return { candidate: null, malformed: false }
+  const chatModelResult = decodeGeneratorChatModel(entryResult.success.chatModel)
+  if (Result.isFailure(chatModelResult)) return { candidate: null, malformed: true }
+  if (!chatModelResult.success.usage) return { candidate: null, malformed: false }
+  const usageResult = decodeGeneratorUsage(chatModelResult.success.usage)
+  if (Result.isFailure(usageResult)) return { candidate: null, malformed: true }
 
-  for (let i = 0; i < metadata.length; i++) {
-    const entry = metadata[i]!
-    const usage = entry.chatModel?.usage
-    if (!usage) continue
+  const usage = usageResult.success
+  const inputTokens = parseGeneratorTokenCount(usage.inputTokens)
+  const outputTokens = parseGeneratorTokenCount(usage.outputTokens)
+  const thinkingTokens = parseGeneratorTokenCount(usage.thinkingOutputTokens)
+  const responseTokens = parseGeneratorTokenCount(usage.responseOutputTokens)
+  const tokenCountsResult = decodeGeneratorTokenCounts({
+    inputTokens,
+    outputTokens,
+    thinkingTokens,
+    responseTokens,
+  })
+  if (Result.isFailure(tokenCountsResult)) return { candidate: null, malformed: true }
+  const tokenCounts = tokenCountsResult.success
+  if (tokenCounts.inputTokens === 0 && tokenCounts.outputTokens === 0) {
+    return { candidate: null, malformed: false }
+  }
 
-    const inputTokens = parseInt(usage.inputTokens ?? '0', 10)
-    const outputTokens = parseInt(usage.outputTokens ?? '0', 10)
-    const thinkingTokens = parseInt(usage.thinkingOutputTokens ?? '0', 10)
-    const responseTokens = parseInt(usage.responseOutputTokens ?? '0', 10)
+  const selectedModel = modelMap[String(usage.model)] ?? usage.model
+  const startMetadata =
+    chatModelResult.success.chatStartMetadata === undefined
+      ? undefined
+      : decodeGeneratorStartMetadata(chatModelResult.success.chatStartMetadata)
+  const createdAt = startMetadata && Result.isSuccess(startMetadata) ? startMetadata.success.createdAt : undefined
+  const selectedFieldsResult = decodeGeneratorSelectedFields({
+    model: selectedModel,
+    responseId: String(usage.responseId || index),
+    timestamp: createdAt || '',
+  })
+  if (Result.isFailure(selectedFieldsResult)) return { candidate: null, malformed: true }
+  const selectedFields = selectedFieldsResult.success
+  const model = dropPlaceholderModelId(selectedFields.model)
 
-    if (inputTokens === 0 && outputTokens === 0) continue
-
-    const responseId = usage.responseId || String(i)
-    const dedupKey = `antigravity:${cascadeId}:${responseId}`
-
-    const model = dropPlaceholderModelId(modelMap[usage.model] ?? usage.model)
-    const pricingModel = normalizePricingModel(model)
-    const timestamp = entry.chatModel?.chatStartMetadata?.createdAt ?? ''
-    const costUSD = calculateCost(pricingModel, inputTokens, responseTokens + thinkingTokens, 0, 0, 0)
-
-    results.push({
+  return {
+    candidate: {
       provider: 'antigravity',
       model,
-      inputTokens,
-      outputTokens: responseTokens,
+      inputTokens: tokenCounts.inputTokens,
+      outputTokens: tokenCounts.responseTokens,
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 0,
       cachedInputTokens: 0,
-      reasoningTokens: thinkingTokens,
+      reasoningTokens: tokenCounts.thinkingTokens,
       webSearchRequests: 0,
-      costUSD,
       tools: [],
       bashCommands: [],
-      timestamp,
+      timestamp: selectedFields.timestamp,
       speed: 'standard',
-      deduplicationKey: dedupKey,
+      deduplicationKey: `antigravity:${cascadeId}:${selectedFields.responseId}`,
       userMessage: '',
       sessionId: cascadeId,
-    })
+      pricingModel: normalizePricingModel(model),
+    },
+    malformed: false,
   }
+}
 
-  return results
+function priceAntigravityCandidate(candidate: AntigravityCallCandidate, pricing: ScanPricing): ParsedProviderCall {
+  const { pricingModel, ...call } = candidate
+  return {
+    ...call,
+    costUSD: pricing.calculateCost(
+      pricingModel,
+      call.inputTokens,
+      billableOutputTokens('antigravity', call.outputTokens, call.reasoningTokens),
+      0,
+      0,
+      0,
+    ),
+  }
 }
 
 function isConversationFile(file: string, extensions: readonly string[]): boolean {
@@ -930,27 +1274,42 @@ export function isAntigravityStatusLineEventsPath(path: string): boolean {
   return path === getAntigravityStatusLineEventsPath()
 }
 
-export async function discoverAntigravitySessionSources(
+const discoverIo = Effect.fnUntraced(function* <A>(
+  operation: ProviderOperationError['operation'],
+  run: () => Promise<A>,
+  signal?: AbortSignal,
+): Effect.fn.Return<A, Error> {
+  return yield* scanIo(run, signal).pipe(
+    Effect.mapError(cause =>
+      isScanAbortedError(cause) ? cause : new ProviderOperationError({ operation, cause, message: cause.message }),
+    ),
+  )
+})
+
+const discoverAntigravitySessionsEffect = Effect.fnUntraced(function* (
   roots?: readonly AntigravityConversationRoot[],
-): Promise<SessionSource[]> {
+  context?: ProviderScanContext,
+): Effect.fn.Return<SessionSource[], Error> {
   // The statusline JSONL is a synthetic source only appended for the real
   // default roots, not when a caller passes an explicit (test) root set.
   const includeStatusLineEvents = roots === undefined
   const effectiveRoots = roots ?? conversationRoots()
   const sources: SessionSource[] = []
+  const signal = context?.signal
   for (const root of effectiveRoots) {
-    let files: string[]
-    try {
-      files = await readdir(root.dir)
-    } catch {
+    const entries = yield* Effect.result(discoverIo('readdir', () => readdir(root.dir), signal))
+    yield* checkScanAbort(signal)
+    if (entries._tag === 'Failure') {
       continue
     }
 
-    for (const file of files.sort()) {
+    for (const file of entries.success.sort()) {
+      yield* checkScanAbort(signal)
       if (!isConversationFile(file, root.extensions)) continue
       const path = join(root.dir, file)
-      const s = await stat(path).catch(() => null)
-      if (!s?.isFile()) continue
+      const fileStat = yield* Effect.result(discoverIo('stat', () => stat(path), signal))
+      yield* checkScanAbort(signal)
+      if (fileStat._tag === 'Failure' || !fileStat.success.isFile()) continue
       sources.push({
         path,
         project: root.project,
@@ -961,8 +1320,9 @@ export async function discoverAntigravitySessionSources(
 
   if (includeStatusLineEvents) {
     const statusLinePath = getAntigravityStatusLineEventsPath()
-    const statusLineStat = await stat(statusLinePath).catch(() => null)
-    if (statusLineStat?.isFile()) {
+    const statusLineStat = yield* Effect.result(discoverIo('stat', () => stat(statusLinePath), signal))
+    yield* checkScanAbort(signal)
+    if (statusLineStat._tag === 'Success' && statusLineStat.success.isFile()) {
       sources.push({
         path: statusLinePath,
         project: 'antigravity-cli',
@@ -972,60 +1332,24 @@ export async function discoverAntigravitySessionSources(
   }
 
   return sources
-}
+})
 
-function parseStatusLinePayload(input: unknown): StatusLineEvent | null {
-  if (!input || typeof input !== 'object') return null
-  const payload = input as StatusLinePayload
-  if (typeof payload.conversation_id !== 'string' || payload.conversation_id.length === 0) return null
-  const usage = payload.context_window?.current_usage
-  if (!usage) return null
-
-  const event: StatusLineEvent = {
-    at: new Date().toISOString(),
-    conversationId: payload.conversation_id,
-    sessionId: typeof payload.session_id === 'string' ? payload.session_id : undefined,
-    model: typeof payload.model === 'string'
-      ? payload.model
-      : payload.model?.id ?? payload.model?.display_name ?? 'unknown',
-    usage: {
-      inputTokens: parseFiniteToken(usage.input_tokens),
-      outputTokens: parseFiniteToken(usage.output_tokens),
-      cacheCreationInputTokens: parseFiniteToken(usage.cache_creation_input_tokens),
-      cacheReadInputTokens: parseFiniteToken(usage.cache_read_input_tokens),
-    },
-  }
-
-  const u = event.usage
-  if (u.inputTokens === 0 && u.outputTokens === 0 && u.cacheCreationInputTokens === 0 && u.cacheReadInputTokens === 0) {
-    return null
-  }
-  if (event.model === 'unknown') return null
-  return event
-}
-
-export async function recordAntigravityStatusLinePayload(input: unknown): Promise<boolean> {
-  const event = parseStatusLinePayload(input)
-  if (!event) return false
-
-  const path = getAntigravityStatusLineEventsPath()
-  await mkdir(getCacheDir(), { recursive: true, mode: 0o700 })
-  const fd = await open(path, 'a', 0o600)
-  try {
-    await fd.appendFile(`${JSON.stringify(event)}\n`, { encoding: 'utf-8' })
-  } finally {
-    await fd.close()
-  }
-  return true
+// Remove after direct discovery callers consume the Effect-native path.
+export function discoverAntigravitySessionSources(
+  roots?: readonly AntigravityConversationRoot[],
+): Promise<SessionSource[]> {
+  // eslint-disable-next-line no-restricted-syntax
+  return Effect.runPromise(discoverAntigravitySessionsEffect(roots))
 }
 
 function parseStatusLineEvent(input: unknown): StatusLineEvent | null {
-  if (!input || typeof input !== 'object') return null
-  const event = input as StatusLineEvent
+  const decoded = decodeStatusLineEventInput(input)
+  if (Result.isFailure(decoded)) return null
+  const event = decoded.success
   if (typeof event.at !== 'string' || Number.isNaN(new Date(event.at).getTime())) return null
   if (typeof event.conversationId !== 'string' || event.conversationId.length === 0) return null
   if (typeof event.model !== 'string' || event.model.length === 0) return null
-  if (!event.usage || typeof event.usage !== 'object') return null
+  if (!event.usage) return null
 
   const usage = {
     inputTokens: parseFiniteToken(event.usage.inputTokens),
@@ -1039,7 +1363,8 @@ function parseStatusLineEvent(input: unknown): StatusLineEvent | null {
     usage.outputTokens === 0 &&
     usage.cacheCreationInputTokens === 0 &&
     usage.cacheReadInputTokens === 0
-  ) return null
+  )
+    return null
 
   return {
     at: event.at,
@@ -1058,94 +1383,145 @@ function hasRpcCacheForConversation(seenKeys: Set<string>, conversationId: strin
   return false
 }
 
-async function parseStatusLineCalls(source: SessionSource, seenKeys: Set<string>): Promise<ParsedProviderCall[]> {
-  const raw = await readFile(source.path, 'utf-8').catch(() => '')
-  const runsByConversation = new Map<string, Array<{ event: StatusLineEvent; signature: string; count: number }>>()
+type StatusLineCandidate = {
+  event: StatusLineEvent
+  usage: StatusLineEvent['usage']
+  deduplicationKey: string
+}
 
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) continue
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(line)
-    } catch {
-      continue
-    }
-
-    const event = parseStatusLineEvent(parsed)
-    if (!event) continue
-    if (hasRpcCacheForConversation(seenKeys, event.conversationId)) continue
-
-    const signature = usageSignature(event)
-    const runs = runsByConversation.get(event.conversationId) ?? []
-    const lastRun = runs.at(-1)
-    if (lastRun?.signature === signature) {
-      lastRun.count += 1
-      lastRun.event = event
-    } else {
-      runs.push({ event, signature, count: 1 })
-      runsByConversation.set(event.conversationId, runs)
-    }
-  }
-
-  const results: ParsedProviderCall[] = []
-
+function statusLineCandidates(runsByConversation: StatusLineRunsByConversation): StatusLineCandidate[] {
+  const candidates: StatusLineCandidate[] = []
   for (const runs of runsByConversation.values()) {
     let turnIndex = 0
     let previousSnapshotUsage: StatusLineEvent['usage'] | null = null
-    for (let i = 0; i < runs.length; i++) {
-      const run = runs[i]!
-      const isLastRun = i === runs.length - 1
+    for (let index = 0; index < runs.length; index++) {
+      const run = runs[index]!
+      const isLastRun = index === runs.length - 1
       if (run.count === 1 && !isLastRun) continue
 
       const event = run.event
-      const signature = run.signature
-      const billableUsage = previousSnapshotUsage && usageIsMonotonic(event.usage, previousSnapshotUsage)
-        ? usageDelta(event.usage, previousSnapshotUsage)
-        : event.usage
+      const usage =
+        previousSnapshotUsage && usageIsMonotonic(event.usage, previousSnapshotUsage)
+          ? usageDelta(event.usage, previousSnapshotUsage)
+          : event.usage
       previousSnapshotUsage = event.usage
-      if (!usageHasTokens(billableUsage)) continue
+      if (!usageHasTokens(usage)) continue
 
-      const dedupKey = `antigravity-statusline:${event.conversationId}:${turnIndex}:${signature}`
-      turnIndex += 1
-      if (seenKeys.has(dedupKey)) continue
-
-      const u = billableUsage
-      const costUSD = calculateCost(
-        normalizePricingModel(event.model),
-        u.inputTokens,
-        u.outputTokens,
-        u.cacheCreationInputTokens,
-        u.cacheReadInputTokens,
-        0,
-      )
-
-      results.push({
-        provider: 'antigravity',
-        model: event.model,
-        inputTokens: u.inputTokens,
-        outputTokens: u.outputTokens,
-        cacheCreationInputTokens: u.cacheCreationInputTokens,
-        cacheReadInputTokens: u.cacheReadInputTokens,
-        cachedInputTokens: 0,
-        // StatusLine current_usage exposes aggregate output tokens, not a
-        // separate thinking/response split. Preserve the exact total instead
-        // of inventing a breakdown.
-        reasoningTokens: 0,
-        webSearchRequests: 0,
-        costUSD,
-        tools: [],
-        bashCommands: [],
-        timestamp: event.at,
-        speed: 'standard',
-        deduplicationKey: dedupKey,
-        userMessage: '',
-        sessionId: event.conversationId,
-        project: source.project,
+      candidates.push({
+        event,
+        usage,
+        deduplicationKey: `antigravity-statusline:${event.conversationId}:${turnIndex++}:${run.signature}`,
       })
     }
   }
+  return candidates
+}
 
-  return results
+function parseStatusLineCallsStream(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  pricing: ScanPricing,
+  signal?: AbortSignal,
+): (onUnparsedCall?: Effect.Effect<void>) => Stream.Stream<ParsedProviderCall, Error> {
+  return (onUnparsedCall = Effect.void) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
+        const runsByConversation: StatusLineRunsByConversation = new Map()
+        yield* Stream.runForEach(
+          readSessionLinesStream(source.path, undefined, { maxBytes: Infinity, readFailure: 'fail', signal }).pipe(
+            Stream.map(line => Result.succeed(line)),
+            Stream.catch(error =>
+              error instanceof SessionLineReadError ? Stream.fromIterable([Result.fail(error)]) : Stream.fail(error),
+            ),
+          ),
+          result =>
+            Effect.gen(function* () {
+              yield* checkScanAbort(signal)
+              if (Result.isFailure(result)) {
+                runsByConversation.clear()
+                return
+              }
+              const line = result.success
+              const raw = typeof line === 'string' ? line : line.toString('utf8')
+              if (!raw.trim()) return
+
+              const input = decodeStatusLineJson(raw)
+              if (Result.isFailure(input)) {
+                yield* onUnparsedCall
+                return
+              }
+
+              const event = parseStatusLineEvent(input.success)
+              if (!event) {
+                yield* onUnparsedCall
+                return
+              }
+              if (hasRpcCacheForConversation(seenKeys, event.conversationId)) return
+
+              const signature = usageSignature(event)
+              const runs = runsByConversation.get(event.conversationId) ?? []
+              const lastRun = runs.at(-1)
+              if (lastRun?.signature === signature) {
+                lastRun.count += 1
+                lastRun.event = event
+              } else {
+                runs.push({ event, signature, count: 1 })
+                runsByConversation.set(event.conversationId, runs)
+              }
+            }),
+        )
+        yield* checkScanAbort(signal)
+
+        // Grouping needs EOF to decide which singleton runs are final. Retain
+        // only the latest compact event and count for each adjacent run.
+        const candidates = statusLineCandidates(runsByConversation)
+        return Stream.fromIterable(candidates).pipe(
+          Stream.mapEffect(candidate =>
+            Effect.gen(function* () {
+              yield* checkScanAbort(signal)
+              if (hasRpcCacheForConversation(seenKeys, candidate.event.conversationId)) return Result.fail(undefined)
+              if (seenKeys.has(candidate.deduplicationKey)) return Result.fail(undefined)
+
+              const costUSD = yield* Effect.try({
+                try: () =>
+                  pricing.calculateCost(
+                    normalizePricingModel(candidate.event.model),
+                    candidate.usage.inputTokens,
+                    candidate.usage.outputTokens,
+                    candidate.usage.cacheCreationInputTokens,
+                    candidate.usage.cacheReadInputTokens,
+                    0,
+                  ),
+                catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+              })
+              seenKeys.add(candidate.deduplicationKey)
+              return Result.succeed({
+                provider: 'antigravity',
+                model: candidate.event.model,
+                inputTokens: candidate.usage.inputTokens,
+                outputTokens: candidate.usage.outputTokens,
+                cacheCreationInputTokens: candidate.usage.cacheCreationInputTokens,
+                cacheReadInputTokens: candidate.usage.cacheReadInputTokens,
+                cachedInputTokens: 0,
+                reasoningTokens: 0,
+                webSearchRequests: 0,
+                costUSD,
+                tools: [],
+                bashCommands: [],
+                timestamp: candidate.event.at,
+                speed: 'standard',
+                deduplicationKey: candidate.deduplicationKey,
+                userMessage: '',
+                sessionId: candidate.event.conversationId,
+                project: source.project,
+              } satisfies ParsedProviderCall)
+            }),
+          ),
+          Stream.filterMap(call => call),
+        )
+      }),
+    )
 }
 
 export function shouldReparseAntigravitySource(path: string, cachedTurnCount: number): boolean {
@@ -1153,91 +1529,15 @@ export function shouldReparseAntigravitySource(path: string, cachedTurnCount: nu
   return isAntigravityStatusLineEventsPath(path)
 }
 
-async function findCascadeSource(cascadeId: string): Promise<SessionSource | null> {
-  const sources = await discoverAntigravitySessionSources()
-  return sources.find(source => {
-    const lower = source.path.replace(/\\/g, '/').toLowerCase()
-    return (lower.includes('/.gemini/antigravity-cli/') || lower.includes('/.gemini/antigravity-ide/')) &&
-      antigravityCascadeIdFromPath(source.path) === cascadeId
-  }) ?? null
-}
-
-export async function snapshotAntigravityStatusLinePayload(input: unknown): Promise<boolean> {
-  const event = parseStatusLinePayload(input)
-  if (!event) return false
-
-  const cascadeId = event.conversationId
-  const source = await findCascadeSource(cascadeId)
-  if (!source) return false
-
-  const s = await stat(source.path).catch(() => null)
-  if (!s) return false
-
-  const cache = await loadCache()
-  const cached = cache.cascades[cascadeId]
-  if (cached && cached.mtimeMs === s.mtimeMs && cached.sizeBytes === s.size && cached.calls.length > 0) {
-    return true
-  }
-
-  const server = await detectServer(antigravityAppDataDirFromSourcePath(source.path))
-  if (!server) return false
-
-  let metadata: GeneratorMetadata[]
-  try {
-    const modelMap = await getModelMap(server)
-    metadata = extractAntigravityGeneratorMetadata(
-      await rpc(server, 'GetCascadeTrajectoryGeneratorMetadata', { cascadeId }),
-    )
-    const snapshotCalls = buildCallsFromGeneratorMetadata(cascadeId, metadata, modelMap)
-    assignStableTimestamps(snapshotCalls, cached?.calls, new Date(s.mtimeMs).toISOString())
-    cache.cascades[cascadeId] = {
-      mtimeMs: s.mtimeMs,
-      sizeBytes: s.size,
-      calls: snapshotCalls,
-    }
-    cacheDirty = true
-    await flushCache()
-    return cache.cascades[cascadeId]!.calls.length > 0
-  } catch {
-    return false
-  }
-}
-
-async function extractWorkspacePath(filePath: string): Promise<string | undefined> {
-  let text = ''
-  if (filePath.endsWith('.db') && isSqliteAvailable()) {
-    try {
-      const db = openDatabase(filePath)
-      const rows = db.query<{ data: Uint8Array }>('SELECT data FROM trajectory_metadata_blob')
-      db.close()
-      const textDecoder = new TextDecoder('utf-8', { fatal: false })
-      text = rows.map(r => textDecoder.decode(r.data)).join(' ')
-    } catch { /* ignore and fallback */ }
-  }
-
-  if (!text) {
-    try {
-      text = await readFile(filePath, 'utf-8')
-    } catch {
-      return undefined
-    }
-  }
-
-  const match = text.match(/file:\/\/\/[^\x00-\x1F\x7F"'\s]+/i)
-  if (!match) return undefined
-
-  try {
-    return fileURLToPath(match[0])
-  } catch {
-    return undefined
-  }
-}
-
 function sanitizeProject(path: string): string {
   return basename(path.replace(/\\/g, '/'))
 }
 
-function applyAntigravityProject(call: ParsedProviderCall, source: SessionSource, projectPath: string | undefined): void {
+function applyAntigravityProject(
+  call: ParsedProviderCall,
+  source: SessionSource,
+  projectPath: string | undefined,
+): void {
   if (source.project === 'antigravity-cli') {
     call.project = source.project
     delete call.projectPath
@@ -1253,34 +1553,6 @@ function applyAntigravityProject(call: ParsedProviderCall, source: SessionSource
   call.project = source.project
 }
 
-// gen_metadata rows and RPC entries without a real ChatStartMetadata.created_at
-// carry no per-call timestamp. Left empty, those calls are dropped by the
-// date-range filters in parser.ts (`if (!callTs) continue`), so each needs a
-// fallback. The fallback must be *stable* across file rewrites: the generic
-// session-cache persists whatever timestamp is emitted, and a non-durable
-// source is cleared and reparsed whenever its mtime changes, so stamping the
-// current mtime on every reparse would retro-date the whole session forward.
-//
-// assignStableTimestamps carries forward the timestamp already recorded for a
-// dedup key (its first-seen time, held in the durable Antigravity cache) and
-// only falls back to the current file mtime for genuinely new calls. Real
-// timestamps (created_at) are preserved untouched. This runs on the fresh-parse
-// paths whose result is written back to the cache.
-function assignStableTimestamps(
-  calls: ParsedProviderCall[],
-  priorCalls: readonly ParsedProviderCall[] | undefined,
-  firstSeenTimestamp: string,
-): void {
-  const priorByKey = new Map<string, string>()
-  for (const prior of priorCalls ?? []) {
-    if (prior.timestamp) priorByKey.set(prior.deduplicationKey, prior.timestamp)
-  }
-  for (const call of calls) {
-    if (call.timestamp) continue
-    call.timestamp = priorByKey.get(call.deduplicationKey) ?? firstSeenTimestamp
-  }
-}
-
 // Emit-time safety net for cache-hit / cached-fallback paths, where the calls
 // already carry stable timestamps from a prior parse. Applied to a copy so the
 // cache is never mutated; only fills a still-empty timestamp defensively.
@@ -1288,108 +1560,448 @@ function withFallbackTimestamp(call: ParsedProviderCall, fallbackTimestamp: stri
   return call.timestamp ? call : { ...call, timestamp: fallbackTimestamp }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      if (isAntigravityStatusLineEventsPath(source.path)) {
-        for (const call of await parseStatusLineCalls(source, seenKeys)) {
-          seenKeys.add(call.deduplicationKey)
-          yield call
-        }
-        return
+class AntigravityConversationDatabaseError extends Schema.TaggedError<AntigravityConversationDatabaseError>()(
+  'AntigravityConversationDatabaseError',
+  {
+    operation: Schema.Literals(['open', 'read', 'close']),
+    cause: Schema.Defect(),
+    message: Schema.String,
+  },
+) {}
+
+type OwnedAntigravityDatabase = { readonly db: SqliteDatabase; closed: boolean }
+
+const workspaceBlobRowSchema = Schema.Struct({ data: Schema.Union([Schema.Uint8Array, Schema.String]) })
+const decodeWorkspaceBlobRow = Schema.decodeUnknownResult(workspaceBlobRowSchema)
+
+function antigravityDatabaseError(
+  operation: AntigravityConversationDatabaseError['operation'],
+  cause: unknown,
+): AntigravityConversationDatabaseError {
+  const error = cause instanceof Error ? cause : new Error(String(cause), { cause })
+  return new AntigravityConversationDatabaseError({ operation, cause: error, message: error.message })
+}
+
+function openAntigravityDatabase(
+  path: string,
+): Effect.Effect<OwnedAntigravityDatabase, AntigravityConversationDatabaseError> {
+  return Effect.try({
+    try: () => ({ db: openDatabase(path), closed: false }),
+    catch: cause => antigravityDatabaseError('open', cause),
+  })
+}
+
+function closeAntigravityDatabase(
+  owned: OwnedAntigravityDatabase,
+): Effect.Effect<void, AntigravityConversationDatabaseError> {
+  return Effect.suspend(() => {
+    if (owned.closed) return Effect.void
+    owned.closed = true
+    return Effect.try({ try: () => owned.db.close(), catch: cause => antigravityDatabaseError('close', cause) })
+  })
+}
+
+function workspacePathFromText(text: string): string | undefined {
+  const match = text.match(/file:\/\/\/[^\x00-\x1F\x7F"'\s]+/i)
+  if (!match) return undefined
+  try {
+    return fileURLToPath(match[0])
+  } catch {
+    return undefined
+  }
+}
+
+function workspaceTextFromDatabaseEffect(
+  filePath: string,
+  signal?: AbortSignal,
+  onUnparsedCall: Effect.Effect<void> = Effect.void,
+): Effect.Effect<string | undefined, Error> {
+  if (!filePath.toLowerCase().endsWith('.db') || !isSqliteAvailable()) return Effect.succeed(undefined)
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const opened = yield* Effect.acquireRelease(
+        openAntigravityDatabase(filePath).pipe(
+          Effect.catchTag('AntigravityConversationDatabaseError', error =>
+            isSqliteBusyError(error.cause) ? Effect.fail(error) : Effect.succeed(null),
+          ),
+        ),
+        owned => (owned ? closeAntigravityDatabase(owned).pipe(Effect.orDie) : Effect.void),
+      )
+      if (!opened) return undefined
+
+      const queryResult = yield* Effect.result(
+        Effect.try({
+          try: () =>
+            opened.db.query(
+              `SELECT CASE WHEN typeof(data) = 'text' THEN CAST(data AS BLOB) ELSE data END AS data
+               FROM trajectory_metadata_blob`,
+            ),
+          catch: cause => antigravityDatabaseError('read', cause),
+        }),
+      )
+      yield* checkScanAbort(signal)
+      if (Result.isFailure(queryResult)) {
+        if (isSqliteBusyError(queryResult.failure.cause)) return yield* Effect.fail(queryResult.failure)
+        return undefined
       }
 
-      const cascadeId = antigravityCascadeIdFromPath(source.path)
-      const cache = await loadCache()
-
-      const s = await stat(source.path).catch(() => null)
-      if (!s) return
-
-      const projectPath = await extractWorkspacePath(source.path)
-      const fallbackTimestamp = new Date(s.mtimeMs).toISOString()
-
-      const cached = cache.cascades[cascadeId]
-      if (cached && cached.mtimeMs === s.mtimeMs && cached.sizeBytes === s.size && cached.calls.length > 0) {
-        for (const call of cached.calls) {
-          applyAntigravityProject(call, source, projectPath)
-          if (seenKeys.has(call.deduplicationKey)) continue
-          seenKeys.add(call.deduplicationKey)
-          yield withFallbackTimestamp(call, fallbackTimestamp)
+      const textParts: string[] = []
+      for (const row of queryResult.success) {
+        const decoded = decodeWorkspaceBlobRow(row)
+        if (Result.isFailure(decoded)) {
+          yield* onUnparsedCall
+          continue
         }
-        return
+        textParts.push(blobToText(decoded.success.data))
+      }
+      yield* closeAntigravityDatabase(opened)
+      const text = textParts.join(' ')
+      return text || undefined
+    }),
+  )
+}
+
+function extractWorkspacePathEffect(
+  filePath: string,
+  signal?: AbortSignal,
+  onUnparsedCall: Effect.Effect<void> = Effect.void,
+): Effect.Effect<string | undefined, Error> {
+  return Effect.gen(function* () {
+    yield* checkScanAbort(signal)
+    const text = yield* workspaceTextFromDatabaseEffect(filePath, signal, onUnparsedCall).pipe(
+      Effect.catch(error =>
+        isScanAbortedError(error) ||
+        (error instanceof AntigravityConversationDatabaseError && isSqliteBusyError(error.cause))
+          ? Effect.fail(error)
+          : Effect.succeed(undefined),
+      ),
+    )
+    return yield* workspacePathFromSourceTextEffect(filePath, text, signal)
+  })
+}
+
+function workspacePathFromSourceTextEffect(
+  filePath: string,
+  initialText: string | undefined,
+  signal?: AbortSignal,
+): Effect.Effect<string | undefined, Error> {
+  return Effect.gen(function* () {
+    let text = initialText
+    if (!text) {
+      text = yield* scanIo(() => readFile(filePath, 'utf-8'), signal).pipe(
+        Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(undefined))),
+      )
+    }
+    yield* checkScanAbort(signal)
+    return text ? workspacePathFromText(text) : undefined
+  })
+}
+
+type AntigravitySqliteConversationSnapshot = {
+  workspaceText: string | undefined
+  candidates: AntigravityCallCandidate[] | null
+}
+
+function sqliteConversationSnapshotEffect(
+  filePath: string,
+  cascadeId: string,
+  signal?: AbortSignal,
+  onUnparsedCall: Effect.Effect<void> = Effect.void,
+): Effect.Effect<AntigravitySqliteConversationSnapshot | null, Error> {
+  if (!filePath.toLowerCase().endsWith('.db') || !isSqliteAvailable()) return Effect.succeed(null)
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* checkScanAbort(signal)
+      const opened = yield* Effect.acquireRelease(
+        openAntigravityDatabase(filePath).pipe(
+          Effect.catchTag('AntigravityConversationDatabaseError', error =>
+            isSqliteBusyError(error.cause) ? Effect.fail(error) : Effect.succeed(null),
+          ),
+        ),
+        owned => (owned ? closeAntigravityDatabase(owned).pipe(Effect.orDie) : Effect.void),
+      )
+      if (!opened) return null
+
+      const workspaceQuery = yield* Effect.result(
+        Effect.try({
+          try: () =>
+            opened.db.query(
+              `SELECT CASE WHEN typeof(data) = 'text' THEN CAST(data AS BLOB) ELSE data END AS data
+               FROM trajectory_metadata_blob`,
+            ),
+          catch: cause => antigravityDatabaseError('read', cause),
+        }),
+      )
+      yield* checkScanAbort(signal)
+      if (Result.isFailure(workspaceQuery) && isSqliteBusyError(workspaceQuery.failure.cause)) {
+        yield* closeAntigravityDatabase(opened)
+        return yield* Effect.fail(workspaceQuery.failure)
+      }
+      const workspaceParts: string[] = []
+      if (Result.isSuccess(workspaceQuery)) {
+        for (const row of workspaceQuery.success) {
+          const decoded = decodeWorkspaceBlobRow(row)
+          if (Result.isFailure(decoded)) {
+            yield* onUnparsedCall
+            continue
+          }
+          workspaceParts.push(blobToText(decoded.success.data))
+        }
       }
 
-      const sqliteResults = await parseSqliteGenMetadataCalls(source.path, cascadeId)
-      if (sqliteResults.length > 0) {
-        assignStableTimestamps(sqliteResults, cached?.calls, fallbackTimestamp)
-        for (const call of sqliteResults) {
-          applyAntigravityProject(call, source, projectPath)
-        }
+      const queryResult = yield* Effect.result(
+        Effect.try({
+          try: () => opened.db.query('SELECT idx, data FROM gen_metadata ORDER BY idx'),
+          catch: cause => antigravityDatabaseError('read', cause),
+        }),
+      )
+      yield* checkScanAbort(signal)
+      if (Result.isFailure(queryResult)) {
+        const workspaceText = workspaceParts.join(' ') || undefined
+        yield* closeAntigravityDatabase(opened)
+        if (isSqliteBusyError(queryResult.failure.cause)) return yield* Effect.fail(queryResult.failure)
+        return { workspaceText, candidates: null }
+      }
 
+      const candidates: AntigravityCallCandidate[] = []
+      const seenResponseIds = new Set<string>()
+      for (const candidate of queryResult.success) {
+        const decoded = decodeGenMetadataRow(candidate)
+        if (Result.isFailure(decoded)) {
+          yield* onUnparsedCall
+          continue
+        }
+        const call = buildCandidateFromSqliteGenMetadataRow(cascadeId, decoded.success)
+        if (!call || seenResponseIds.has(call.deduplicationKey)) continue
+        seenResponseIds.add(call.deduplicationKey)
+        candidates.push(call)
+      }
+
+      yield* closeAntigravityDatabase(opened)
+      return { workspaceText: workspaceParts.join(' ') || undefined, candidates }
+    }),
+  )
+}
+
+function generatorMetadataCandidateStream(
+  cascadeId: string,
+  metadata: readonly unknown[],
+  modelMap: ModelMap,
+  onUnparsedCall: Effect.Effect<void>,
+  signal?: AbortSignal,
+): Stream.Stream<AntigravityCallCandidate, Error> {
+  return Stream.fromIterable(metadata).pipe(
+    Stream.zipWithIndex,
+    Stream.mapEffect(([entry, index]) =>
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
+        const decoded = decodeGeneratorMetadataCandidate(cascadeId, entry, index, modelMap)
+        if (decoded.malformed) yield* onUnparsedCall
+        return decoded.candidate ? Result.succeed(decoded.candidate) : Result.fail(undefined)
+      }),
+    ),
+    Stream.filterMap(candidate => candidate),
+  )
+}
+
+function cachedConversationCallsStream(
+  calls: readonly ParsedProviderCall[],
+  source: SessionSource,
+  projectPath: string | undefined,
+  fallbackTimestamp: string,
+  seenKeys: Set<string>,
+  signal?: AbortSignal,
+): Stream.Stream<ParsedProviderCall, Error> {
+  return Stream.fromIterable(calls).pipe(
+    Stream.mapEffect(call =>
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
+        if (seenKeys.has(call.deduplicationKey)) return Result.fail(undefined)
+        seenKeys.add(call.deduplicationKey)
+        const emitted = withFallbackTimestamp({ ...call }, fallbackTimestamp)
+        applyAntigravityProject(emitted, source, projectPath)
+        return Result.succeed(emitted)
+      }),
+    ),
+    Stream.filterMap(call => call),
+  )
+}
+
+function priceAndCacheConversationCandidates(
+  candidates: Stream.Stream<AntigravityCallCandidate, Error>,
+  source: SessionSource,
+  projectPath: string | undefined,
+  fallbackTimestamp: string,
+  priorCalls: readonly ParsedProviderCall[] | undefined,
+  cascadeId: string,
+  fileStat: Stats,
+  cache: AntigravityCache,
+  cacheCalls: ParsedProviderCall[],
+  seenKeys: Set<string>,
+  pricing: ScanPricing,
+  signal?: AbortSignal,
+): Stream.Stream<ParsedProviderCall, Error> {
+  const priorTimestamps = new Map<string, string>()
+  for (const prior of priorCalls ?? []) {
+    if (prior.timestamp) priorTimestamps.set(prior.deduplicationKey, prior.timestamp)
+  }
+
+  const priced = candidates.pipe(
+    Stream.mapEffect(candidate =>
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
+        const timestamp = candidate.timestamp || priorTimestamps.get(candidate.deduplicationKey) || fallbackTimestamp
+        const pricedCall = yield* Effect.sync(() => priceAntigravityCandidate({ ...candidate, timestamp }, pricing))
+        yield* checkScanAbort(signal)
+        applyAntigravityProject(pricedCall, source, projectPath)
+        cacheCalls.push(pricedCall)
+        if (seenKeys.has(pricedCall.deduplicationKey)) return Result.fail(undefined)
+        seenKeys.add(pricedCall.deduplicationKey)
+        return Result.succeed(pricedCall)
+      }),
+    ),
+    Stream.filterMap(call => call),
+  )
+
+  return Stream.concat(
+    priced,
+    Stream.fromEffectDrain(
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
         cache.cascades[cascadeId] = {
-          mtimeMs: s.mtimeMs,
-          sizeBytes: s.size,
-          calls: sqliteResults,
+          mtimeMs: fileStat.mtimeMs,
+          sizeBytes: fileStat.size,
+          calls: cacheCalls,
         }
         cacheDirty = true
+      }),
+    ),
+  )
+}
 
-        for (const call of sqliteResults) {
-          if (seenKeys.has(call.deduplicationKey)) continue
-          seenKeys.add(call.deduplicationKey)
-          yield call
-        }
-        return
-      }
-
-      const server = await detectServer(antigravityAppDataDirFromSourcePath(source.path))
-      if (!server) {
-        if (cached) {
-          for (const call of cached.calls) {
-            applyAntigravityProject(call, source, projectPath)
-            if (seenKeys.has(call.deduplicationKey)) continue
-            seenKeys.add(call.deduplicationKey)
-            yield withFallbackTimestamp(call, fallbackTimestamp)
+function createParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  pricing = captureScanPricing(),
+  signal?: AbortSignal,
+): SessionParser {
+  const statusLineSource = isAntigravityStatusLineEventsPath(source.path)
+  const parseConversationStream = (
+    onUnparsedCall: Effect.Effect<void> = Effect.void,
+  ): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.scoped(
+      Stream.unwrap(
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          const cascadeId = antigravityCascadeIdFromPath(source.path)
+          const cache = yield* loadCacheEffect(signal)
+          const statResult = yield* Effect.result(scanIo(() => stat(source.path), signal))
+          yield* checkScanAbort(signal)
+          if (Result.isFailure(statResult)) {
+            if (isScanAbortedError(statResult.failure)) return yield* Effect.fail(statResult.failure)
+            return Stream.empty
           }
-        }
-        return
-      }
 
-      const modelMap = await getModelMap(server)
+          const fileStat = statResult.success
+          const fallbackTimestamp = new Date(fileStat.mtimeMs).toISOString()
+          const cached = cache.cascades[cascadeId]
+          if (
+            cached &&
+            cached.mtimeMs === fileStat.mtimeMs &&
+            cached.sizeBytes === fileStat.size &&
+            cached.calls.length > 0
+          ) {
+            const projectPath = yield* extractWorkspacePathEffect(source.path, signal, onUnparsedCall)
+            return cachedConversationCallsStream(cached.calls, source, projectPath, fallbackTimestamp, seenKeys, signal)
+          }
 
-      let metadata: GeneratorMetadata[]
+          const sqliteSnapshot = yield* sqliteConversationSnapshotEffect(source.path, cascadeId, signal, onUnparsedCall)
+          const projectPath = yield* workspacePathFromSourceTextEffect(
+            source.path,
+            sqliteSnapshot?.workspaceText,
+            signal,
+          )
+          const sqliteCandidates = sqliteSnapshot?.candidates ?? null
+          if (sqliteCandidates && sqliteCandidates.length > 0) {
+            const cacheCalls: ParsedProviderCall[] = []
+            return priceAndCacheConversationCandidates(
+              Stream.fromIterable(sqliteCandidates),
+              source,
+              projectPath,
+              fallbackTimestamp,
+              cached?.calls,
+              cascadeId,
+              fileStat,
+              cache,
+              cacheCalls,
+              seenKeys,
+              pricing,
+              signal,
+            )
+          }
+
+          const server = yield* detectServerEffect(antigravityAppDataDirFromSourcePath(source.path), signal)
+          if (!server) {
+            return cached
+              ? cachedConversationCallsStream(cached.calls, source, projectPath, fallbackTimestamp, seenKeys, signal)
+              : Stream.empty
+          }
+
+          const modelMap = yield* getModelMapEffect(server, signal)
+          const metadata = yield* rpcEffect(
+            server,
+            'GetCascadeTrajectoryGeneratorMetadata',
+            { cascadeId },
+            signal,
+          ).pipe(
+            Effect.map(extractAntigravityGeneratorMetadata),
+            Effect.catchTag('AntigravityRpcError', () => Effect.succeed(null)),
+          )
+          if (metadata === null) {
+            return cached
+              ? cachedConversationCallsStream(cached.calls, source, projectPath, fallbackTimestamp, seenKeys, signal)
+              : Stream.empty
+          }
+
+          const cacheCalls: ParsedProviderCall[] = []
+          return priceAndCacheConversationCandidates(
+            generatorMetadataCandidateStream(cascadeId, metadata, modelMap, onUnparsedCall, signal),
+            source,
+            projectPath,
+            fallbackTimestamp,
+            cached?.calls,
+            cascadeId,
+            fileStat,
+            cache,
+            cacheCalls,
+            seenKeys,
+            pricing,
+            signal,
+          )
+        }),
+      ),
+    )
+
+  const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
+    statusLineSource
+      ? parseStatusLineCallsStream(source, seenKeys, pricing, signal)(onUnparsedCall)
+      : parseConversationStream(onUnparsedCall)
+
+  return {
+    parseStream,
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
       try {
-        metadata = extractAntigravityGeneratorMetadata(
-          await rpc(server, 'GetCascadeTrajectoryGeneratorMetadata', { cascadeId }),
-        )
-      } catch {
-        if (cached) {
-          for (const call of cached.calls) {
-            applyAntigravityProject(call, source, projectPath)
-            if (seenKeys.has(call.deduplicationKey)) continue
-            seenKeys.add(call.deduplicationKey)
-            yield withFallbackTimestamp(call, fallbackTimestamp)
-          }
+        while (true) {
+          const next = await iterator.next()
+          if (next.done) return
+          yield next.value
         }
-        return
-      }
-
-      const results = buildCallsFromGeneratorMetadata(cascadeId, metadata, modelMap)
-      assignStableTimestamps(results, cached?.calls, fallbackTimestamp)
-      for (const call of results) {
-        applyAntigravityProject(call, source, projectPath)
-      }
-
-      cache.cascades[cascadeId] = {
-        mtimeMs: s.mtimeMs,
-        sizeBytes: s.size,
-        calls: results,
-      }
-      cacheDirty = true
-
-      for (const call of results) {
-        if (seenKeys.has(call.deduplicationKey)) continue
-        seenKeys.add(call.deduplicationKey)
-        yield call
+      } catch (error) {
+        if (error instanceof AntigravityConversationDatabaseError) throw error.cause
+        throw error
+      } finally {
+        await iterator.return?.()
       }
     },
   }
@@ -1416,6 +2028,7 @@ const modelDisplayNames: Record<string, string> = {
 }
 
 export function createAntigravityProvider(): Provider {
+  const discover = (context?: ProviderScanContext) => discoverAntigravitySessionsEffect(undefined, context)
   return {
     name: 'antigravity',
     displayName: 'Antigravity',
@@ -1428,12 +2041,20 @@ export function createAntigravityProvider(): Provider {
       return rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      return discoverAntigravitySessionSources()
+    discoverSessionsEffect: discover,
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // Remove this Promise edge once direct discovery callers consume the native hook.
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discover(context))
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context?.pricing ?? captureScanPricing(), context?.signal)
     },
   }
 }

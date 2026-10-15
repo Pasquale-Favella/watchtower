@@ -63,8 +63,14 @@ describe('validatePricing (Settings › Pricing add/update form)', () => {
   })
 
   it('rejects non-positive rates with a rate error', () => {
-    expect(validatePricing('m', '-1', '2')).toMatchObject({ ok: false, error: 'Rates must be positive numbers (USD per 1M tokens).' })
-    expect(validatePricing('m', '1', '0')).toMatchObject({ ok: false, error: 'Rates must be positive numbers (USD per 1M tokens).' })
+    expect(validatePricing('m', '-1', '2')).toMatchObject({
+      ok: false,
+      error: 'Rates must be positive numbers (USD per 1M tokens).',
+    })
+    expect(validatePricing('m', '1', '0')).toMatchObject({
+      ok: false,
+      error: 'Rates must be positive numbers (USD per 1M tokens).',
+    })
   })
 
   it('trims the model and returns the parsed rates on success', () => {

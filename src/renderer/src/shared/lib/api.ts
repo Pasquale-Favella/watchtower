@@ -1,122 +1,122 @@
 /**
  * Renderer fetch library (ADR 0005) — the renderer-side tripwire over
- * the preload's IPC surface. Every payload-bearing channel is `safeParse`d
+ * the preload's IPC surface. Every payload-bearing channel is decoded
  * against the same shared schema the main process validates against, so a
  * malformed payload becomes a `{ ok: false }` result the views render as an
  * error state instead of a crash or garbage. The wire contract is frozen: no
  * channel name, request shape, or payload byte changes here.
  */
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
-import { overviewPayloadSchema, type OverviewPayload, type OverviewScope } from '../../../../shared/schemas/overview.js'
 import {
-  analyticalViewsSchema,
-  dashboardViewsSchema,
-  projectRowSchema,
-  searchHitSchema,
-  sessionDetailSchema,
-  sessionRowSchema,
-  type AnalyticalViews,
-  type DashboardViews,
-  type ProjectRow,
-  type SearchHit,
-  type SessionDetail,
-  type SessionRow,
-} from '../../../../shared/schemas/views.js'
-import { spendPayloadSchema, type SpendPayload } from '../../../../shared/schemas/spend.js'
-import {
-  modelAliasSchema,
-  modelsPayloadSchema,
-  priceOverrideSchema,
-  type ModelAlias,
-  type ModelsPayload,
-  type PriceOverride,
-} from '../../../../shared/schemas/models.js'
-import {
-  comparePayloadSchema,
-  type ComparePair,
-  type ComparePayload,
-} from '../../../../shared/schemas/compare.js'
-import { optimizePayloadSchema, type OptimizePayload } from '../../../../shared/schemas/optimize.js'
-import { yieldPayloadSchema, type YieldPayload } from '../../../../shared/schemas/yield.js'
-import {
-  skillsDismissalResultSchema,
-  skillsPayloadSchema,
-  skillsSaveResultSchema,
-  type SkillsDismissalRequest,
-  type SkillsDismissalResult,
-  type SkillsPayload,
-  type SkillsSaveRequest,
-  type SkillsSaveResult,
-  type SkillsThresholds,
-} from '../../../../shared/schemas/skills.js'
-import {
-  pullRequestsPayloadSchema,
-  type PullRequestsPayload,
-} from '../../../../shared/schemas/pull-requests.js'
-import {
-  pricingRefreshResultSchema,
-  scanResultSchema,
-  scanStatusSchema,
-  settingsInfoSchema,
-  type PricingRefreshResult,
-  type ScanResult,
-  type ScanStatus,
-  type SettingsInfo,
-} from '../../../../shared/schemas/ipc.js'
-import { updateStatusSchema, appVersionSchema, type AppVersion, type UpdateStatus } from '../../../../shared/schemas/updates.js'
-import {
-  activeCurrencySchema,
-  currencyOptionSchema,
-  type ActiveCurrency,
-  type CurrencyOption,
-} from '../../../../shared/schemas/fx.js'
-import { cadenceValueSchema, type CadenceValue } from '../../../../shared/schemas/cadence.js'
-import { exportResultSchema, type ExportResult } from '../../../../shared/schemas/export.js'
-import {
-  ledgerMcpConnectionSchema,
-  ledgerMcpStatusSchema,
-  type LedgerMcpStartupMode,
-  type LedgerMcpStatus,
-  type LedgerMcpConnection,
-} from '../../../../shared/schemas/ledger-mcp.js'
-import {
-  coachHarnessesResultSchema,
-    coachLoginTerminalResultSchema,
-  coachInspectResultSchema,
-  coachRunResultSchema,
-  type CoachHarnessRow,
   type CoachHarnessesResult,
-    type CoachLoginTerminalResult,
+  coachHarnessesResultSchema,
+  type CoachHarnessRow,
   type CoachInspectRequest,
   type CoachInspectResult,
+  coachInspectResultSchema,
+  type CoachLoginTerminalResult,
+  coachLoginTerminalResultSchema,
   type CoachRunRequest,
   type CoachRunResult,
+  coachRunResultSchema,
 } from '../../../../shared/schemas/agents.js'
+import { type CadenceValue, cadenceValueSchema } from '../../../../shared/schemas/cadence.js'
+import { type ComparePair, type ComparePayload, comparePayloadSchema } from '../../../../shared/schemas/compare.js'
+import { type ExportResult, exportResultSchema } from '../../../../shared/schemas/export.js'
+import {
+  type ActiveCurrency,
+  activeCurrencySchema,
+  type CurrencyOption,
+  currencyOptionsSchema,
+} from '../../../../shared/schemas/fx.js'
+import {
+  type PricingRefreshResult,
+  pricingRefreshResultSchema,
+  type ScanResult,
+  scanResultSchema,
+  type ScanStatus,
+  scanStatusSchema,
+  type SettingsInfo,
+  settingsInfoSchema,
+} from '../../../../shared/schemas/ipc.js'
+import {
+  type LedgerMcpConnection,
+  ledgerMcpConnectionSchema,
+  type LedgerMcpStartupMode,
+  type LedgerMcpStatus,
+  ledgerMcpStatusSchema,
+} from '../../../../shared/schemas/ledger-mcp.js'
+import {
+  type ModelAlias,
+  modelAliasSchema,
+  type ModelsPayload,
+  modelsPayloadSchema,
+  type PriceOverride,
+  priceOverrideSchema,
+} from '../../../../shared/schemas/models.js'
+import { type OptimizePayload, optimizePayloadSchema } from '../../../../shared/schemas/optimize.js'
+import { type OverviewPayload, overviewPayloadSchema, type OverviewScope } from '../../../../shared/schemas/overview.js'
+import { type PullRequestsPayload, pullRequestsPayloadSchema } from '../../../../shared/schemas/pull-requests.js'
+import {
+  type SkillsDismissalRequest,
+  type SkillsDismissalResult,
+  skillsDismissalResultSchema,
+  type SkillsPayload,
+  skillsPayloadSchema,
+  type SkillsSaveRequest,
+  type SkillsSaveResult,
+  skillsSaveResultSchema,
+  type SkillsThresholds,
+} from '../../../../shared/schemas/skills.js'
+import { type SpendPayload, spendPayloadSchema } from '../../../../shared/schemas/spend.js'
+import {
+  type AppVersion,
+  appVersionSchema,
+  type UpdateStatus,
+  updateStatusSchema,
+} from '../../../../shared/schemas/updates.js'
+import {
+  type AnalyticalViews,
+  analyticalViewsSchema,
+  type DashboardViews,
+  dashboardViewsSchema,
+  type ProjectRow,
+  projectRowSchema,
+  type SearchHit,
+  searchHitSchema,
+  type SessionDetail,
+  sessionDetailSchema,
+  type SessionRow,
+  sessionRowSchema,
+} from '../../../../shared/schemas/views.js'
+import { type YieldPayload, yieldPayloadSchema } from '../../../../shared/schemas/yield.js'
+import { decodeSchema } from './schema-decoder.js'
 
 /** The shared renderer error shape for an IPC payload: either validated data
  * or a human-readable message naming the channel and the failing field. */
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string }
 
-/** `safeParse`s a raw IPC payload against its shared schema. Invalid payloads
+/** Decodes a raw IPC payload against its shared contract. Invalid payloads
  * become a visible error naming the channel and first failing field/path —
  * never garbage the views would render. */
-export function parsePayload<T>(schema: z.ZodType<T>, label: string, raw: unknown): ApiResult<T> {
-  const parsed = schema.safeParse(raw)
-  if (parsed.success) return { ok: true, data: parsed.data }
-  const issue = parsed.error.issues[0]
-  const where = issue && issue.path.length ? issue.path.join('.') : 'payload'
-  const detail = issue ? issue.message : 'does not match the expected shape'
-  return { ok: false, error: `Invalid ${label} payload (${where}: ${detail})` }
+export function parsePayload<S extends Schema.ConstraintDecoder<unknown>>(
+  schema: S,
+  label: string,
+  raw: unknown,
+): ApiResult<S['Type']> {
+  const parsed = decodeSchema(schema, raw)
+  if (parsed.ok) return { ok: true, data: parsed.value }
+  return { ok: false, error: `Invalid ${label} payload (${parsed.path}: ${parsed.message})` }
 }
 
-/** Runs an IPC invoke and safeParses its resolution; a rejected IPC call also
+/** Runs an IPC invoke and decodes its resolution; a rejected IPC call also
  * surfaces as a `{ ok: false }` result (never an unhandled rejection). */
-export async function fetchPayload<T>(
+export async function fetchPayload<S extends Schema.ConstraintDecoder<unknown>>(
   label: string,
-  schema: z.ZodType<T>,
+  schema: S,
   invoke: () => Promise<unknown>,
-): Promise<ApiResult<T>> {
+): Promise<ApiResult<S['Type']>> {
   try {
     return parsePayload(schema, label, await invoke())
   } catch (err) {
@@ -129,86 +129,100 @@ export async function fetchPayload<T>(
  * Operational log with its label + location only (never contents) — a bad
  * `scan:progress` or `currency:changed` can't paint garbage, it just falls
  * back to the last good value. The forward never breaks rendering. */
-export function parseEvent<T>(schema: z.ZodType<T>, label: string, raw: unknown): T | null {
-  const parsed = schema.safeParse(raw)
-  if (parsed.success) return parsed.data
-  const issue = parsed.error.issues[0]
-  const where = issue && issue.path.length ? issue.path.join('.') : 'payload'
-  forwardTripwireNotice(label, where)
+export function parseEvent<S extends Schema.ConstraintDecoder<unknown>>(
+  schema: S,
+  label: string,
+  raw: unknown,
+): S['Type'] | null {
+  const parsed = decodeSchema(schema, raw)
+  if (parsed.ok) return parsed.value
+  forwardTripwireNotice(label, parsed.path)
   return null
 }
 
 function forwardTripwireNotice(label: string, location: string): void {
   try {
-    const api = (globalThis as unknown as { api?: { notifyNotice?: (label: string, location: string) => Promise<unknown> } }).api
+    const api = (
+      globalThis as unknown as { api?: { notifyNotice?: (label: string, location: string) => Promise<unknown> } }
+    ).api
     void api?.notifyNotice?.(label, location)?.catch(() => {})
-  } catch { /* logging must never break rendering */ }
+  } catch {
+    /* logging must never break rendering */
+  }
 }
 
-const okEnvelopeSchema = z.object({ ok: z.literal(true) })
-export type OkEnvelope = z.infer<typeof okEnvelopeSchema>
+const okEnvelopeSchema = Schema.Struct({ ok: Schema.mutableKey(Schema.Literal(true)) })
+export type OkEnvelope = Schema.Schema.Type<typeof okEnvelopeSchema>
 
 export function fetchScanStatus(): Promise<ApiResult<ScanStatus>> {
   return fetchPayload('scan status', scanStatusSchema, () => window.api.getScanStatus())
 }
 
 export function fetchViews(): Promise<ApiResult<DashboardViews | null>> {
-  return fetchPayload('dashboard views', dashboardViewsSchema.nullable(), () => window.api.getViews())
+  return fetchPayload('dashboard views', Schema.NullOr(dashboardViewsSchema), () => window.api.getViews())
 }
 
 export function fetchProjects(): Promise<ApiResult<ProjectRow[]>> {
-  return fetchPayload('projects', z.array(projectRowSchema), () => window.api.getProjects())
+  return fetchPayload('projects', Schema.mutable(Schema.Array(projectRowSchema)), () => window.api.getProjects())
 }
 
-export function fetchSessions(filter?: { project?: string; since?: string; until?: string }): Promise<ApiResult<SessionRow[]>> {
-  return fetchPayload('sessions', z.array(sessionRowSchema), () => window.api.getSessions(filter))
+export function fetchSessions(filter?: {
+  project?: string
+  since?: string
+  until?: string
+}): Promise<ApiResult<SessionRow[]>> {
+  return fetchPayload('sessions', Schema.mutable(Schema.Array(sessionRowSchema)), () => window.api.getSessions(filter))
 }
 
 export function fetchSession(sessionId: string): Promise<ApiResult<SessionDetail | null>> {
-  return fetchPayload('session detail', sessionDetailSchema.nullable(), () => window.api.getSession(sessionId))
+  return fetchPayload('session detail', Schema.NullOr(sessionDetailSchema), () => window.api.getSession(sessionId))
 }
 
 export function fetchAnalytics(): Promise<ApiResult<AnalyticalViews | null>> {
-  return fetchPayload('analytics', analyticalViewsSchema.nullable(), () => window.api.getAnalytics())
+  return fetchPayload('analytics', Schema.NullOr(analyticalViewsSchema), () => window.api.getAnalytics())
 }
 
 export function fetchOverview(scope: OverviewScope): Promise<ApiResult<OverviewPayload | null>> {
-  return fetchPayload('overview', overviewPayloadSchema.nullable(), () => window.api.getOverview(scope))
+  return fetchPayload('overview', Schema.NullOr(overviewPayloadSchema), () => window.api.getOverview(scope))
 }
 
 export function fetchSessionRows(scope: OverviewScope): Promise<ApiResult<SessionRow[]>> {
-  return fetchPayload('session rows', z.array(sessionRowSchema), () => window.api.getSessionRows(scope))
+  return fetchPayload('session rows', Schema.mutable(Schema.Array(sessionRowSchema)), () =>
+    window.api.getSessionRows(scope),
+  )
 }
 
 export function fetchPullRequests(scope: OverviewScope): Promise<ApiResult<PullRequestsPayload | null>> {
-  return fetchPayload('pull requests', pullRequestsPayloadSchema.nullable(), () => window.api.getPullRequests(scope))
+  return fetchPayload('pull requests', Schema.NullOr(pullRequestsPayloadSchema), () =>
+    window.api.getPullRequests(scope),
+  )
 }
 
 export function fetchSpend(scope: OverviewScope): Promise<ApiResult<SpendPayload | null>> {
-  return fetchPayload('spend', spendPayloadSchema.nullable(), () => window.api.getSpend(scope))
+  return fetchPayload('spend', Schema.NullOr(spendPayloadSchema), () => window.api.getSpend(scope))
 }
 
 export function fetchModels(scope: OverviewScope): Promise<ApiResult<ModelsPayload | null>> {
-  return fetchPayload('models', modelsPayloadSchema.nullable(), () => window.api.getModels(scope))
+  return fetchPayload('models', Schema.NullOr(modelsPayloadSchema), () => window.api.getModels(scope))
 }
 
 export function fetchCompare(scope: OverviewScope, pair?: ComparePair): Promise<ApiResult<ComparePayload | null>> {
-  return fetchPayload('compare', comparePayloadSchema.nullable(), () => window.api.getCompare(scope, pair))
+  return fetchPayload('compare', Schema.NullOr(comparePayloadSchema), () => window.api.getCompare(scope, pair))
 }
 
 export function fetchOptimize(scope: OverviewScope): Promise<ApiResult<OptimizePayload | null>> {
-  return fetchPayload('optimize', optimizePayloadSchema.nullable(), () => window.api.getOptimize(scope))
+  return fetchPayload('optimize', Schema.NullOr(optimizePayloadSchema), () => window.api.getOptimize(scope))
 }
 
 export function fetchYield(scope: OverviewScope): Promise<ApiResult<YieldPayload | null>> {
-  return fetchPayload('yield', yieldPayloadSchema.nullable(), () => window.api.getYield(scope))
+  return fetchPayload('yield', Schema.NullOr(yieldPayloadSchema), () => window.api.getYield(scope))
 }
 
 export function fetchSkills(
   scope: OverviewScope,
   thresholds?: SkillsThresholds,
 ): Promise<ApiResult<SkillsPayload | null>> {
-  return fetchPayload('skills', skillsPayloadSchema.nullable(), () => window.api.getSkills(scope, thresholds))
+  return fetchPayload('skills', Schema.NullOr(skillsPayloadSchema), () => window.api.getSkills(scope, thresholds))
 }
 
 export function fetchDismissSkill(request: SkillsDismissalRequest): Promise<ApiResult<SkillsDismissalResult>> {
@@ -220,11 +234,15 @@ export function fetchSaveSkill(request: SkillsSaveRequest): Promise<ApiResult<Sk
 }
 
 export function fetchModelAliases(): Promise<ApiResult<ModelAlias[]>> {
-  return fetchPayload('model aliases', z.array(modelAliasSchema), () => window.api.getModelAliases())
+  return fetchPayload('model aliases', Schema.mutable(Schema.Array(modelAliasSchema)), () =>
+    window.api.getModelAliases(),
+  )
 }
 
 export function fetchPriceOverrides(): Promise<ApiResult<PriceOverride[]>> {
-  return fetchPayload('price overrides', z.array(priceOverrideSchema), () => window.api.getPriceOverrides())
+  return fetchPayload('price overrides', Schema.mutable(Schema.Array(priceOverrideSchema)), () =>
+    window.api.getPriceOverrides(),
+  )
 }
 
 export function fetchSettings(): Promise<ApiResult<SettingsInfo>> {
@@ -268,7 +286,7 @@ export function fetchSetCurrency(code: string): Promise<ApiResult<ActiveCurrency
 }
 
 export function fetchCurrencies(): Promise<ApiResult<CurrencyOption[]>> {
-  return fetchPayload('currency options', z.array(currencyOptionSchema), () => window.api.getCurrencies())
+  return fetchPayload('currency options', currencyOptionsSchema, () => window.api.getCurrencies())
 }
 
 export function fetchCadence(): Promise<ApiResult<CadenceValue>> {
@@ -284,7 +302,7 @@ export function fetchAppVersion(): Promise<ApiResult<AppVersion>> {
 }
 
 export function fetchSearch(query: string): Promise<ApiResult<SearchHit[]>> {
-  return fetchPayload('search', z.array(searchHitSchema), () => window.api.search(query))
+  return fetchPayload('search', Schema.mutable(Schema.Array(searchHitSchema)), () => window.api.search(query))
 }
 
 export function fetchExport(format: 'csv' | 'json', destination?: string): Promise<ApiResult<ExportResult>> {
@@ -308,7 +326,9 @@ export function fetchSetModelPrice(
   inputPricePerMillion: number,
   outputPricePerMillion: number,
 ): Promise<ApiResult<OkEnvelope>> {
-  return fetchPayload('price write', okEnvelopeSchema, () => window.api.setModelPrice(model, inputPricePerMillion, outputPricePerMillion))
+  return fetchPayload('price write', okEnvelopeSchema, () =>
+    window.api.setModelPrice(model, inputPricePerMillion, outputPricePerMillion),
+  )
 }
 
 export function fetchRemovePriceOverride(model: string): Promise<ApiResult<OkEnvelope>> {
@@ -324,7 +344,9 @@ export function refreshCoachHarnesses(): Promise<ApiResult<CoachHarnessesResult>
 }
 
 export function openCoachLoginTerminal(instanceId: string): Promise<ApiResult<CoachLoginTerminalResult>> {
-  return fetchPayload('coach login terminal', coachLoginTerminalResultSchema, () => window.api.openCoachLoginTerminal(instanceId))
+  return fetchPayload('coach login terminal', coachLoginTerminalResultSchema, () =>
+    window.api.openCoachLoginTerminal(instanceId),
+  )
 }
 
 export function onCoachHarnessesChanged(callback: (rows: CoachHarnessRow[]) => void): () => void {
@@ -346,4 +368,3 @@ export function fetchCoachInspect(request: CoachInspectRequest): Promise<ApiResu
 export function fetchCoachRun(request: CoachRunRequest): Promise<ApiResult<CoachRunResult>> {
   return fetchPayload('coach run', coachRunResultSchema, () => window.api.startCoachRun(request))
 }
-

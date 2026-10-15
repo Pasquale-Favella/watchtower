@@ -8,3 +8,17 @@ playwright-report/
 node_modules/
 assets/
 .electron-vite/
+
+# Vendored agent skills: the upstream library owns their formatting, so a
+# local `prettier --write .` only produces diff churn against upstream.
+.agents/
+
+# Root config and docs files kept at their hand-authored layout: the one-time
+# Prettier pass (#136) reflowed them (markdown tables, trailing commas,
+# quote style) for no readability gain, and every future edit re-litigates it.
+README.md
+electron-builder.yml
+electron.vite.config.ts
+tsconfig.json
+tsconfig.web.json
+vitest.config.ts

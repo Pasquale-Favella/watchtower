@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  formatConverted, formatUsd, getActiveCurrency, setActiveCurrency,
+  formatConverted,
+  formatUsd,
+  getActiveCurrency,
+  setActiveCurrency,
 } from '../src/renderer/src/shared/lib/currency.js'
 
 const USD = { code: 'USD', symbol: '$', rate: 1 }

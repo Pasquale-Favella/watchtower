@@ -1,17 +1,59 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as Effect from 'effect/Effect'
+import { describe, expect, it } from 'vitest'
+import { closeOperationalLog, initOperationalLog, OperationalLogLoggerLayer } from '../src/main/operational-log.js'
+import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import {
   compareSemver,
-  createUpdateChecker,
-  fetchReleases,
+  createUpdateCheckerEffect,
+  fetchReleasesEffect,
   pickLatestDesktopVersion,
+  type UpdateCheckerEffect,
+  UpdateFetchError,
+  type UpdateStatus,
 } from '../src/main/updates.js'
-import { closeOperationalLog, initOperationalLog } from '../src/main/operational-log.js'
 import { releasePageUrl } from '../src/renderer/src/features/settings/updates.js'
 
 const CURRENT = '0.1.0'
+
+function okFetch(body: unknown): typeof fetch {
+  return (async () => ({
+    ok: true,
+    status: 200,
+    json: async () => body,
+  })) as unknown as typeof fetch
+}
+
+function statusFetch(status: number): typeof fetch {
+  return (async () => ({
+    ok: false,
+    status,
+    json: async () => ({}),
+  })) as unknown as typeof fetch
+}
+
+function throwingFetch(message = 'offline'): typeof fetch {
+  return (async () => {
+    throw new Error(message)
+  }) as unknown as typeof fetch
+}
+
+function makeChecker(version: string = CURRENT): Promise<UpdateCheckerEffect> {
+  return Effect.runPromise(createUpdateCheckerEffect({ currentVersion: version }))
+}
+
+function runCheck(checker: UpdateCheckerEffect, fetchImpl: typeof fetch): Promise<UpdateStatus> {
+  // `OperationalLogLoggerLayer` is what production installs in `MainLive`; this
+  // test builds its own graph, so it installs the `Logger` reference itself.
+  // Without it the `update.offline` record would go to Effect's default logger.
+  return Effect.runPromise(
+    checker
+      .check()
+      .pipe(Effect.provide(OperationalLogLoggerLayer), Effect.provide(HttpFetch.layerWithFetch(fetchImpl))),
+  )
+}
 
 describe('compareSemver', () => {
   it('orders major.minor.patch numerically', () => {
@@ -41,16 +83,14 @@ describe('pickLatestDesktopVersion', () => {
     expect(pickLatestDesktopVersion(releases)).toEqual({ version: '0.2.5', tag: 'desktop-v0.2.5' })
 
     // plain v-prefixed tags compete on the same semver scale
-    expect(pickLatestDesktopVersion([{ tag_name: 'v0.3.0' }, { tag_name: 'desktop-v0.2.5' }]))
-      .toEqual({ version: '0.3.0', tag: 'v0.3.0' })
+    expect(pickLatestDesktopVersion([{ tag_name: 'v0.3.0' }, { tag_name: 'desktop-v0.2.5' }])).toEqual({
+      version: '0.3.0',
+      tag: 'v0.3.0',
+    })
   })
 
   it('ignores releases whose tag is not a version (e.g. CLI tags)', () => {
-    const releases = [
-      { tag_name: 'cli-v1.0.0' },
-      { tag_name: 'not-a-version' },
-      { tag_name: undefined },
-    ]
+    const releases = [{ tag_name: 'cli-v1.0.0' }, { tag_name: 'not-a-version' }, { tag_name: undefined }]
     expect(pickLatestDesktopVersion(releases)).toBeNull()
   })
 
@@ -59,14 +99,10 @@ describe('pickLatestDesktopVersion', () => {
   })
 })
 
-describe('createUpdateChecker', () => {
-  const checker = (releases: unknown[]) => createUpdateChecker({
-    currentVersion: CURRENT,
-    fetchReleasesImpl: async () => releases as never,
-  })
-
+describe('createUpdateCheckerEffect', () => {
   it('flags an update when a newer desktop release exists', async () => {
-    expect(await checker([{ tag_name: 'v0.2.0' }]).check()).toEqual({
+    const checker = await makeChecker()
+    expect(await runCheck(checker, okFetch([{ tag_name: 'v0.2.0' }]))).toEqual({
       currentVersion: '0.1.0',
       latestVersion: '0.2.0',
       updateAvailable: true,
@@ -75,7 +111,8 @@ describe('createUpdateChecker', () => {
   })
 
   it('reports up-to-date when the newest release equals the running version', async () => {
-    expect(await checker([{ tag_name: 'v0.1.0' }]).check()).toEqual({
+    const checker = await makeChecker()
+    expect(await runCheck(checker, okFetch([{ tag_name: 'v0.1.0' }]))).toEqual({
       currentVersion: '0.1.0',
       latestVersion: '0.1.0',
       updateAvailable: false,
@@ -84,45 +121,43 @@ describe('createUpdateChecker', () => {
   })
 
   it('reports up-to-date (no tag link) when the newest release is older', async () => {
-    const status = await checker([{ tag_name: 'v0.0.9' }]).check()
+    const checker = await makeChecker()
+    const status = await runCheck(checker, okFetch([{ tag_name: 'v0.0.9' }]))
     expect(status).toMatchObject({ updateAvailable: false, latestVersion: '0.0.9', tag: null })
   })
 
   it('degrades gracefully on a fetch error — no crash, no update', async () => {
-    const broken = createUpdateChecker({
+    const checker = await makeChecker()
+    expect(await runCheck(checker, throwingFetch())).toEqual({
       currentVersion: CURRENT,
-      fetchReleasesImpl: async () => { throw new Error('offline') },
-    })
-    expect(await broken.check()).toEqual({
-      currentVersion: CURRENT, latestVersion: null, updateAvailable: false, tag: null,
+      latestVersion: null,
+      updateAvailable: false,
+      tag: null,
     })
   })
 
   it('recovers on the next click after a failure', async () => {
-    let calls = 0
-    const flaky = createUpdateChecker({
-      currentVersion: CURRENT,
-      fetchReleasesImpl: async () => {
-        calls += 1
-        if (calls === 1) throw new Error('offline')
-        return [{ tag_name: 'v0.2.0' }]
-      },
+    const checker = await makeChecker()
+    expect((await runCheck(checker, throwingFetch())).updateAvailable).toBe(false)
+    expect(await runCheck(checker, okFetch([{ tag_name: 'v0.2.0' }]))).toMatchObject({
+      updateAvailable: true,
+      latestVersion: '0.2.0',
     })
-    expect((await flaky.check()).updateAvailable).toBe(false)
-    expect((await flaky.check()).updateAvailable).toBe(true)
   })
 
   it('dedupes concurrent clicks into a single fetch', async () => {
+    const checker = await makeChecker()
     let fetches = 0
-    const slow = createUpdateChecker({
-      currentVersion: CURRENT,
-      fetchReleasesImpl: async () => {
-        fetches += 1
-        await new Promise(resolve => setTimeout(resolve, 10))
-        return [{ tag_name: 'v0.2.0' }]
-      },
-    })
-    const [first, second] = await Promise.all([slow.check(), slow.check()])
+    const slow = (async () => {
+      fetches += 1
+      await new Promise(resolve => setTimeout(resolve, 10))
+      return { ok: true, status: 200, json: async () => [{ tag_name: 'v0.2.0' }] }
+    }) as unknown as typeof fetch
+    const [first, second] = await Effect.runPromise(
+      Effect.all([checker.check(), checker.check()], { concurrency: 2 }).pipe(
+        Effect.provide(HttpFetch.layerWithFetch(slow)),
+      ),
+    )
     expect(first).toEqual(second)
     expect(fetches).toBe(1)
   })
@@ -131,20 +166,25 @@ describe('createUpdateChecker', () => {
     const base = mkdtempSync(join(tmpdir(), 'watchtower-updates-log-'))
     try {
       await initOperationalLog({ logDir: join(base, 'logs'), isPackaged: true })
-      const broken = createUpdateChecker({
-        currentVersion: CURRENT,
-        fetchReleasesImpl: async () => { throw new Error('offline') },
-      })
-      expect((await broken.check()).updateAvailable).toBe(false)
+      const checker = await makeChecker()
+      expect((await runCheck(checker, throwingFetch())).updateAvailable).toBe(false)
       const lines: string[] = []
       for (const file of readdirSync(join(base, 'logs')).filter(f => f.startsWith('operational'))) {
-        lines.push(...readFileSync(join(base, 'logs', file), 'utf8').split('\n').filter(l => l.trim()))
+        lines.push(
+          ...readFileSync(join(base, 'logs', file), 'utf8')
+            .split('\n')
+            .filter(l => l.trim()),
+        )
       }
       expect(lines).toHaveLength(1)
       const parsed = JSON.parse(lines[0]!) as Record<string, unknown>
       expect(parsed).toMatchObject({ level: 'info', event: 'update.offline', op: 'updates:check', code: 'unavailable' })
     } finally {
-      try { closeOperationalLog() } catch { /* not initialised */ }
+      try {
+        closeOperationalLog()
+      } catch {
+        /* not initialised */
+      }
       rmSync(base, { recursive: true, force: true })
     }
   })
@@ -153,22 +193,27 @@ describe('createUpdateChecker', () => {
 describe('releasePageUrl (renderer lib)', () => {
   it('links the informational release page for a tag', () => {
     expect(releasePageUrl('v0.2.0')).toBe('https://github.com/Pasquale-Favella/watchtower/releases/tag/v0.2.0')
-    expect(releasePageUrl('desktop-v0.2.0')).toBe('https://github.com/Pasquale-Favella/watchtower/releases/tag/desktop-v0.2.0')
+    expect(releasePageUrl('desktop-v0.2.0')).toBe(
+      'https://github.com/Pasquale-Favella/watchtower/releases/tag/desktop-v0.2.0',
+    )
   })
 })
 
-describe('fetchReleases', () => {
+describe('fetchReleasesEffect', () => {
   it('parses the releases array from a 200 response', async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      json: async () => [{ tag_name: 'v0.2.0' }],
-    })) as unknown as typeof fetch
-    const releases = await fetchReleases(new AbortController().signal, fetchImpl)
+    const releases = await Effect.runPromise(
+      fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(okFetch([{ tag_name: 'v0.2.0' }])))),
+    )
     expect(releases).toEqual([{ tag_name: 'v0.2.0' }])
   })
 
-  it('throws on a non-2xx response (private/unknown repo degrades upstream)', async () => {
-    const fetchImpl = vi.fn(async () => ({ ok: false, status: 404 })) as unknown as typeof fetch
-    await expect(fetchReleases(new AbortController().signal, fetchImpl)).rejects.toThrow('GitHub HTTP 404')
+  it('maps a non-2xx response to a typed error (private/unknown repo degrades upstream)', async () => {
+    const error = await Effect.runPromise(
+      fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(statusFetch(404))), Effect.flip),
+    )
+    expect(error).toBeInstanceOf(UpdateFetchError)
+    expect(error.reason).toBe('http')
+    expect(error.status).toBe(404)
+    expect(error.message).toBe('GitHub HTTP 404')
   })
 })

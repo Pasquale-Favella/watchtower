@@ -24,15 +24,15 @@ export function Panel({
   return (
     <Card
       className={cn(
-        'gap-0 overflow-hidden rounded-lg border-border bg-card shadow-[var(--card-shadow)] ring-0 [--card-spacing:0px]',
+        'border-border bg-card gap-0 overflow-hidden rounded-lg shadow-[var(--card-shadow)] ring-0 [--card-spacing:0px]',
         className,
       )}
     >
       {hasHead && (
-        <CardHeader className="flex flex-row items-center justify-between gap-2 border-b border-border px-3.5 py-2">
+        <CardHeader className="border-border flex flex-row items-center justify-between gap-2 border-b px-3.5 py-2">
           {title !== undefined && <CardTitle className="text-subhead font-subhead text-foreground">{title}</CardTitle>}
           {right !== undefined && (
-            <span className={cn('text-meta', rightLink && 'font-medium text-primary')}>{right}</span>
+            <span className={cn('text-meta', rightLink && 'text-primary font-medium')}>{right}</span>
           )}
         </CardHeader>
       )}
@@ -42,14 +42,31 @@ export function Panel({
 }
 
 /** Stat — a KPI cell mapped onto a padded Card. */
-export function Stat({ label, value, sub, accent }: { label: ReactNode; value: ReactNode; sub?: ReactNode; accent?: boolean }) {
+export function Stat({
+  label,
+  value,
+  sub,
+  accent,
+}: {
+  label: ReactNode
+  value: ReactNode
+  sub?: ReactNode
+  accent?: boolean
+}) {
   return (
-    <div className={cn('flex flex-col justify-center gap-1 px-3 py-2', accent && 'shadow-[inset_0_2px_0_var(--primary)]')}>
+    <div
+      className={cn('flex flex-col justify-center gap-1 px-3 py-2', accent && 'shadow-[inset_0_2px_0_var(--primary)]')}
+    >
       <span className={cn('text-label font-medium', accent && 'text-primary')}>{label}</span>
-      <strong className={cn('truncate font-mono text-kpi font-semibold leading-tight tabular-nums', accent ? 'text-primary' : 'text-foreground')}>
+      <strong
+        className={cn(
+          'text-kpi truncate font-mono leading-tight font-semibold tabular-nums',
+          accent ? 'text-primary' : 'text-foreground',
+        )}
+      >
         {value}
       </strong>
-      {sub && <small className="truncate text-[9.5px] text-muted-foreground">{sub}</small>}
+      {sub && <small className="text-muted-foreground truncate text-[9.5px]">{sub}</small>}
     </div>
   )
 }

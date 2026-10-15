@@ -5,7 +5,15 @@ export type { Section, ShortcutAction, ShortcutDef, Platform }
 
 /** Sections in sidebar/nav order. `Mod+1`–`Mod+7` map to the first seven. */
 export const NAV_SECTIONS: readonly Section[] = [
-  'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'coachSkills', 'settings',
+  'overview',
+  'sessions',
+  'pullRequests',
+  'spend',
+  'optimize',
+  'models',
+  'compare',
+  'coachSkills',
+  'settings',
 ]
 
 /**
@@ -37,14 +45,10 @@ export function shortcutForAction(action: ShortcutAction): ShortcutDef | undefin
 
 /** Shortcut actions without a numbered section jump — excluded from the
  * numbered badges and the footer range. */
-const NON_NUMBERED: ReadonlySet<ShortcutAction> = new Set([
-  'settings', 'refresh', 'toggleSidebar', 'commandPalette',
-])
+const NON_NUMBERED: ReadonlySet<ShortcutAction> = new Set(['settings', 'refresh', 'toggleSidebar', 'commandPalette'])
 
 /** The numbered section shortcuts (settings excluded): `Mod+1`..`Mod+N` in nav order. */
-export const NUMBERED_SECTION_SHORTCUTS: readonly ShortcutDef[] = SHORTCUTS.filter(
-  def => !NON_NUMBERED.has(def.action)
-)
+export const NUMBERED_SECTION_SHORTCUTS: readonly ShortcutDef[] = SHORTCUTS.filter(def => !NON_NUMBERED.has(def.action))
 
 /** Platform-aware shortcut badge: `⌘1` on mac, `Ctrl+1` on Windows/Linux. */
 export function displayShortcut(hotkey: Hotkey, platform?: Platform): string {

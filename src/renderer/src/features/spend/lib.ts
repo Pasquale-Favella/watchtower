@@ -32,9 +32,7 @@ export function stackedRows(days: SpendDayEntry[]): { rows: SpendRow[]; series: 
       totals.set(segment.name, (totals.get(segment.name) ?? 0) + segment.cost)
     }
   }
-  const series = [...totals.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([name]) => name)
+  const series = [...totals.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name]) => name)
   const rows: SpendRow[] = days.map(day => {
     const row: SpendRow = { date: day.date }
     for (const segment of day.segments) row[segment.name] = segment.cost

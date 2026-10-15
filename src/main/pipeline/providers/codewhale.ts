@@ -1,47 +1,78 @@
+import type { Dirent } from 'node:fs'
+
+import { Effect, Result, Schema, Stream } from 'effect'
 import { open, readdir, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
+import type { AppPaths, Env } from '../../env.js'
+import { overrideFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
-import { readSessionFile } from '../fs-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
+import { readSessionFileEffect } from '../fs-utils.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import { isScanAbortedError } from '../scan-control.js'
+import { checkScanAbort, scanIo } from '../scan-io.js'
+import type { ScanPricing } from '../scan-pricing.js'
+import type { DateRange } from '../types.js'
 import type { ToolCall } from '../types.js'
-import type { ParsedProviderCall, Provider, SessionParser, SessionSource } from './types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const METADATA_PREFIX_BYTES = 64 * 1024
 
-type CodeWhaleCost = {
-  session_cost_usd?: number
-  subagent_cost_usd?: number
-}
+const recordSchema = Schema.Record(Schema.String, Schema.Unknown)
+const stringSchema = Schema.String
+const numberSchema = Schema.Number
+const metadataSchema = Schema.Struct({
+  id: Schema.optional(Schema.Unknown),
+  created_at: Schema.optional(Schema.Unknown),
+  updated_at: Schema.optional(Schema.Unknown),
+  total_tokens: Schema.optional(Schema.Unknown),
+  model: Schema.optional(Schema.Unknown),
+  model_provider: Schema.optional(Schema.Unknown),
+  workspace: Schema.optional(Schema.Unknown),
+  cost: Schema.optional(Schema.Unknown),
+})
+const costSchema = Schema.Struct({
+  session_cost_usd: Schema.optional(Schema.Unknown),
+  subagent_cost_usd: Schema.optional(Schema.Unknown),
+})
+const sessionSchema = Schema.Struct({
+  metadata: Schema.optional(Schema.Unknown),
+  messages: Schema.optional(Schema.Unknown),
+})
+const messageSchema = Schema.Struct({
+  role: Schema.optional(Schema.Unknown),
+  content: Schema.optional(Schema.Unknown),
+})
+const contentBlockSchema = Schema.Struct({
+  type: Schema.optional(Schema.Unknown),
+  text: Schema.optional(Schema.Unknown),
+  name: Schema.optional(Schema.Unknown),
+  input: Schema.optional(Schema.Unknown),
+})
+const unknownArraySchema = Schema.Array(Schema.Unknown)
+
+const decodeRecord = Schema.decodeUnknownResult(recordSchema)
+const decodeString = Schema.decodeUnknownResult(stringSchema)
+const decodeNumber = Schema.decodeUnknownResult(numberSchema)
+const decodeMetadata = Schema.decodeUnknownResult(metadataSchema)
+const decodeCost = Schema.decodeUnknownResult(costSchema)
+const decodeSessionJson = Schema.decodeUnknownResult(Schema.fromJsonString(sessionSchema))
+const decodeMessage = Schema.decodeUnknownResult(messageSchema)
+const decodeContentBlock = Schema.decodeUnknownResult(contentBlockSchema)
+const decodeUnknownArray = Schema.decodeUnknownResult(unknownArraySchema)
 
 type CodeWhaleMetadata = {
-  id: string
-  created_at?: string
-  updated_at?: string
-  total_tokens?: number
-  model?: string
-  model_provider?: string
-  workspace?: string
-  cost?: CodeWhaleCost
+  readonly id: string
+  readonly created_at?: string
+  readonly updated_at?: string
+  readonly total_tokens: number
+  readonly model?: string
+  readonly model_provider?: string
+  readonly workspace?: string
+  readonly cost?: Schema.Schema.Type<typeof costSchema>
 }
-
-type CodeWhaleContentBlock = {
-  type?: string
-  text?: string
-  name?: string
-  input?: unknown
-}
-
-type CodeWhaleMessage = {
-  role?: string
-  content?: string | CodeWhaleContentBlock[]
-}
-
-type CodeWhaleSession = {
-  metadata?: unknown
-  messages?: unknown
-}
+type CodeWhaleMessage = Schema.Schema.Type<typeof messageSchema>
 
 const toolNameMap: Record<string, string> = {
   exec_shell: 'Bash',
@@ -83,16 +114,20 @@ const toolNameMap: Record<string, string> = {
   request_user_input: 'AskUser',
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause), { cause })
 }
 
 function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+  const decoded = decodeString(value)
+  if (Result.isFailure(decoded)) return undefined
+  const trimmed = decoded.success.trim()
+  return trimmed || undefined
 }
 
 function safeNonNegativeNumber(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
+  const decoded = decodeNumber(value)
+  return Result.isSuccess(decoded) && Number.isFinite(decoded.success) && decoded.success >= 0 ? decoded.success : 0
 }
 
 function safeTokenCount(value: unknown): number {
@@ -100,19 +135,22 @@ function safeTokenCount(value: unknown): number {
 }
 
 function parseMetadata(value: unknown): CodeWhaleMetadata | null {
-  if (!isRecord(value)) return null
-  const id = nonEmptyString(value['id'])
+  const decoded = decodeMetadata(value)
+  if (Result.isFailure(decoded)) return null
+  const id = nonEmptyString(decoded.success.id)
   if (!id) return null
 
+  const costRecord = decodeRecord(decoded.success.cost)
+  const cost = Result.isSuccess(costRecord) ? decodeCost(costRecord.success) : null
   return {
     id,
-    created_at: nonEmptyString(value['created_at']),
-    updated_at: nonEmptyString(value['updated_at']),
-    total_tokens: safeTokenCount(value['total_tokens']),
-    model: nonEmptyString(value['model']),
-    model_provider: nonEmptyString(value['model_provider']),
-    workspace: nonEmptyString(value['workspace']),
-    cost: isRecord(value['cost']) ? value['cost'] as CodeWhaleCost : undefined,
+    created_at: nonEmptyString(decoded.success.created_at),
+    updated_at: nonEmptyString(decoded.success.updated_at),
+    total_tokens: safeTokenCount(decoded.success.total_tokens),
+    model: nonEmptyString(decoded.success.model),
+    model_provider: nonEmptyString(decoded.success.model_provider),
+    workspace: nonEmptyString(decoded.success.workspace),
+    cost: cost && Result.isSuccess(cost) ? cost.success : undefined,
   }
 }
 
@@ -144,8 +182,8 @@ function findObjectEnd(source: string, start: number): number {
   return -1
 }
 
-// CodeWhale itself reads only the first 64 KiB when listing sessions. Mirror
-// that fast path so discovery does not parse every multi-megabyte transcript.
+// Discovery keeps CodeWhale's 64 KiB metadata prefix fast path. The full-file
+// fallback only runs after a successful prefix read with no complete metadata.
 function extractTopLevelMetadata(source: string): CodeWhaleMetadata | null {
   let depth = 0
   for (let i = 0; i < source.length; i++) {
@@ -194,69 +232,104 @@ function extractTopLevelMetadata(source: string): CodeWhaleMetadata | null {
   return null
 }
 
-async function readSessionMetadata(filePath: string): Promise<CodeWhaleMetadata | null> {
-  const handle = await open(filePath, 'r').catch(() => null)
-  if (!handle) return null
+type PrefixRead =
+  { readonly _tag: 'ReadFailed' } | { readonly _tag: 'Read'; readonly metadata: CodeWhaleMetadata | null }
 
-  try {
-    try {
-      const prefix = Buffer.alloc(METADATA_PREFIX_BYTES)
-      const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0)
-      const metadata = extractTopLevelMetadata(prefix.subarray(0, bytesRead).toString('utf-8'))
-      if (metadata) return metadata
-    } catch {
-      return null
+const readMetadataPrefix = Effect.fnUntraced(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<PrefixRead, Error> {
+  const result = yield* Effect.result(
+    Effect.acquireUseRelease(
+      scanIo(() => open(filePath, 'r')),
+      handle =>
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          const prefix = Buffer.alloc(METADATA_PREFIX_BYTES)
+          const readResult = yield* Effect.result(scanIo(() => handle.read(prefix, 0, prefix.length, 0), signal))
+          if (Result.isFailure(readResult)) {
+            if (isScanAbortedError(readResult.failure)) return yield* Effect.fail(readResult.failure)
+            return { _tag: 'ReadFailed' } as const
+          }
+          return {
+            _tag: 'Read',
+            metadata: extractTopLevelMetadata(prefix.subarray(0, readResult.success.bytesRead).toString('utf-8')),
+          } as const
+        }),
+      handle => scanIo(() => handle.close()).pipe(Effect.catch(() => Effect.void)),
+    ),
+  )
+  if (Result.isFailure(result)) {
+    if (isScanAbortedError(result.failure)) return yield* Effect.fail(result.failure)
+    if (signal?.aborted) {
+      yield* checkScanAbort(signal)
+      return yield* Effect.fail(result.failure)
     }
-  } finally {
-    await handle.close().catch(() => {})
+    return { _tag: 'ReadFailed' }
   }
+  return result.success
+})
 
-  const raw = await readSessionFile(filePath)
+const readSessionMetadataEffect = Effect.fnUntraced(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<CodeWhaleMetadata | null, Error> {
+  const prefix = yield* readMetadataPrefix(filePath, signal)
+  if (prefix._tag === 'ReadFailed') return null
+  if (prefix.metadata) return prefix.metadata
+
+  const raw = yield* readSessionFileEffect(filePath, 'utf-8', signal ? { signal } : {})
   if (raw === null) return null
-  try {
-    const parsed = JSON.parse(raw) as CodeWhaleSession
-    return parseMetadata(parsed.metadata)
-  } catch {
-    return null
-  }
-}
+  const saved = decodeSessionJson(raw)
+  return Result.isSuccess(saved) ? parseMetadata(saved.success.metadata) : null
+})
 
-function defaultSessionDirs(): string[] {
-  const configuredHome = process.env['CODEWHALE_HOME']?.trim()
+const readDirectoryEntries = Effect.fnUntraced(function* (
+  dir: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<Dirent[], Error> {
+  return yield* scanIo(() => readdir(dir, { withFileTypes: true }), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed([] as Dirent[]))),
+  )
+})
+
+function defaultSessionDirs(paths?: AppPaths): string[] {
+  const configuredHome = overrideFor(paths, 'CODEWHALE_HOME')?.trim()
   if (configuredHome) return [join(configuredHome, 'sessions')]
-  return [
-    join(homedir(), '.codewhale', 'sessions'),
-    join(homedir(), '.deepseek', 'sessions'),
-  ]
+  return [join(homedir(), '.codewhale', 'sessions'), join(homedir(), '.deepseek', 'sessions')]
 }
 
 function projectName(workspace: string | undefined): string {
   if (!workspace) return 'CodeWhale'
-  const parts = workspace.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
+  const parts = workspace
+    .replace(/[\\/]+$/, '')
+    .split(/[\\/]/)
+    .filter(Boolean)
   return parts.at(-1) ?? 'CodeWhale'
 }
 
-async function discoverInDir(dir: string): Promise<Array<{ source: SessionSource; id: string }>> {
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+const discoverInDir = Effect.fnUntraced(function* (
+  dir: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<Array<{ source: SessionSource; id: string }>, Error> {
+  const entries = yield* readDirectoryEntries(dir, signal)
   const results: Array<{ source: SessionSource; id: string }> = []
 
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    yield* checkScanAbort(signal)
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue
-    const path = join(dir, entry.name)
-    const metadata = await readSessionMetadata(path)
+    const name = entry.name
+    const path = join(dir, name)
+    const metadata = yield* readSessionMetadataEffect(path, signal)
     if (!metadata) continue
     results.push({
       id: metadata.id,
-      source: {
-        path,
-        project: projectName(metadata.workspace),
-        provider: 'codewhale',
-      },
+      source: { path, project: projectName(nonEmptyString(metadata.workspace)), provider: 'codewhale' },
     })
   }
 
   return results
-}
+})
 
 function normalizeTimestamp(value: string | undefined): string {
   if (!value) return ''
@@ -264,17 +337,38 @@ function normalizeTimestamp(value: string | undefined): string {
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : ''
 }
 
+function messageRole(message: CodeWhaleMessage): string {
+  const decoded = decodeString(message.role)
+  return Result.isSuccess(decoded) ? decoded.success : ''
+}
+
+function messageContent(message: CodeWhaleMessage): string | unknown[] {
+  const stringContent = decodeString(message.content)
+  if (Result.isSuccess(stringContent)) return stringContent.success
+  const arrayContent = decodeUnknownArray(message.content)
+  return Result.isSuccess(arrayContent) ? [...arrayContent.success] : []
+}
+
 function firstUserMessage(messages: CodeWhaleMessage[]): string {
   for (const message of messages) {
-    if (message.role !== 'user') continue
-    const text = typeof message.content === 'string'
-      ? message.content
-      : Array.isArray(message.content)
-        ? message.content
-          .filter(block => block?.type === 'text' && typeof block.text === 'string')
-          .map(block => block.text)
-          .join(' ')
-        : ''
+    if (messageRole(message) !== 'user') continue
+    const content = messageContent(message)
+    let text = ''
+    if (typeof content === 'string') {
+      text = content
+    } else {
+      const textParts: string[] = []
+      for (const value of content) {
+        const decodedBlock = decodeContentBlock(value)
+        if (Result.isFailure(decodedBlock)) continue
+        const type = decodeString(decodedBlock.success.type)
+        const blockText = decodeString(decodedBlock.success.text)
+        if (Result.isSuccess(type) && type.success === 'text' && Result.isSuccess(blockText)) {
+          textParts.push(blockText.success)
+        }
+      }
+      text = textParts.join(' ')
+    }
     if (text.trim()) return Array.from(text.trim()).slice(0, 500).join('')
   }
   return ''
@@ -283,13 +377,12 @@ function firstUserMessage(messages: CodeWhaleMessage[]): string {
 function mapToolName(rawName: string): string {
   if (rawName.startsWith('mcp__')) return rawName
   if (rawName.startsWith('agents/')) return 'Agent'
-  return Object.prototype.hasOwnProperty.call(toolNameMap, rawName)
-    ? toolNameMap[rawName]!
-    : rawName
+  return Object.prototype.hasOwnProperty.call(toolNameMap, rawName) ? toolNameMap[rawName]! : rawName
 }
 
 function toolInput(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {}
+  const decoded = decodeRecord(value)
+  return Result.isSuccess(decoded) ? decoded.success : {}
 }
 
 function firstString(input: Record<string, unknown>, keys: string[]): string | undefined {
@@ -316,11 +409,18 @@ function collectTools(messages: CodeWhaleMessage[]): {
   let webSearchRequests = 0
 
   for (const message of messages) {
-    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue
+    if (messageRole(message) !== 'assistant') continue
+    const blocks = decodeUnknownArray(message.content)
+    if (Result.isFailure(blocks)) continue
     const turnTools: ToolCall[] = []
 
-    for (const block of message.content) {
-      if (block?.type !== 'tool_use' && block?.type !== 'server_tool_use') continue
+    for (const value of blocks.success) {
+      const decoded = decodeContentBlock(value)
+      if (Result.isFailure(decoded)) continue
+      const block = decoded.success
+      const decodedType = decodeString(block.type)
+      if (Result.isFailure(decodedType)) continue
+      if (decodedType.success !== 'tool_use' && decodedType.success !== 'server_tool_use') continue
       const rawName = nonEmptyString(block.name)
       if (!rawName) continue
       const mapped = mapToolName(rawName)
@@ -332,9 +432,7 @@ function collectTools(messages: CodeWhaleMessage[]): {
       const command = firstString(input, ['command', 'cmd'])
       if (command) toolCall.command = command
 
-      if (mapped === 'Bash' && command) {
-        bashCommands.push(...extractBashCommands(command))
-      }
+      if (mapped === 'Bash' && command) bashCommands.push(...extractBashCommands(command))
       if (mapped === 'Skill') {
         const skill = firstString(input, ['name', 'skill', 'skill_name'])
         if (skill) skills.push(skill)
@@ -355,95 +453,139 @@ function collectTools(messages: CodeWhaleMessage[]): {
   return { tools, bashCommands, toolSequence, skills, subagentTypes, webSearchRequests }
 }
 
-function reportedCost(cost: CodeWhaleCost | undefined): { value: number; exact: boolean } {
-  if (!cost || typeof cost !== 'object') return { value: 0, exact: false }
-  const hasSessionCost = Object.prototype.hasOwnProperty.call(cost, 'session_cost_usd')
-  const hasSubagentCost = Object.prototype.hasOwnProperty.call(cost, 'subagent_cost_usd')
+function reportedCost(value: unknown): { value: number; exact: boolean } {
+  const record = decodeRecord(value)
+  if (Result.isFailure(record)) return { value: 0, exact: false }
+  const cost = decodeCost(record.success)
+  if (Result.isFailure(cost)) return { value: 0, exact: false }
+  const hasSessionCost = Object.prototype.hasOwnProperty.call(cost.success, 'session_cost_usd')
+  const hasSubagentCost = Object.prototype.hasOwnProperty.call(cost.success, 'subagent_cost_usd')
   if (!hasSessionCost && !hasSubagentCost) return { value: 0, exact: false }
   return {
-    value: safeNonNegativeNumber(cost.session_cost_usd) + safeNonNegativeNumber(cost.subagent_cost_usd),
+    value: safeNonNegativeNumber(cost.success.session_cost_usd) + safeNonNegativeNumber(cost.success.subagent_cost_usd),
     exact: true,
   }
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function decodeMessages(value: unknown): CodeWhaleMessage[] {
+  const array = decodeUnknownArray(value)
+  if (Result.isFailure(array)) return []
+  const messages: CodeWhaleMessage[] = []
+  for (const item of array.success) {
+    const decoded = decodeMessage(item)
+    if (Result.isSuccess(decoded)) messages.push(decoded.success)
+  }
+  return messages
+}
+
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
+  const signal = context?.signal
+  const parseEffect = Effect.fn('parseCodeWhaleSession')(function* (): Effect.fn.Return<
+    Stream.Stream<ParsedProviderCall, Error>,
+    Error
+  > {
+    yield* checkScanAbort(signal)
+    const raw = yield* readSessionFileEffect(source.path, 'utf-8', signal ? { signal } : {})
+    let metadata: CodeWhaleMetadata | null = null
+    let messages: CodeWhaleMessage[] = []
+
+    if (raw !== null) {
+      const saved = decodeSessionJson(raw)
+      if (Result.isSuccess(saved)) {
+        metadata = parseMetadata(saved.success.metadata)
+        messages = decodeMessages(saved.success.messages)
+      }
+    }
+    metadata ??= yield* readSessionMetadataEffect(source.path, signal)
+    if (!metadata) return Stream.empty
+    yield* checkScanAbort(signal)
+
+    const totalTokens = metadata.total_tokens
+    const model = metadata.model ?? metadata.model_provider ?? 'unknown'
+    const localCost = reportedCost(metadata.cost)
+    const costUSD = localCost.exact ? localCost.value : pricing.calculateCost(model, totalTokens, 0, 0, 0, 0)
+    if (totalTokens === 0 && costUSD === 0) return Stream.empty
+
+    const deduplicationKey = `codewhale:${metadata.id}`
+    if (seenKeys.has(deduplicationKey)) return Stream.empty
+    yield* checkScanAbort(signal)
+    yield* Effect.sync(() => seenKeys.add(deduplicationKey))
+
+    let timestamp = normalizeTimestamp(metadata.updated_at) || normalizeTimestamp(metadata.created_at)
+    if (!timestamp) {
+      const fileStat = yield* scanIo(() => stat(source.path), signal).pipe(
+        Effect.map(value => value.mtime.toISOString()),
+        Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(''))),
+      )
+      timestamp = fileStat
+    }
+
+    const { tools, bashCommands, toolSequence, skills, subagentTypes, webSearchRequests } = collectTools(messages)
+    const workspace = nonEmptyString(metadata.workspace)
+    const call: ParsedProviderCall = {
+      provider: 'codewhale',
+      model,
+      // CodeWhale persists one aggregate token counter; retain it in input.
+      inputTokens: totalTokens,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningTokens: 0,
+      webSearchRequests,
+      costUSD,
+      costIsEstimated: !localCost.exact,
+      tools,
+      bashCommands,
+      skills,
+      subagentTypes,
+      timestamp,
+      speed: 'standard',
+      deduplicationKey,
+      turnId: `${metadata.id}:session`,
+      toolSequence: toolSequence.length > 0 ? toolSequence : undefined,
+      userMessage: firstUserMessage(messages),
+      sessionId: metadata.id,
+      project: projectName(workspace),
+      projectPath: workspace,
+    }
+    return Stream.succeed(call)
+  })
+
+  const parseStream: NonNullable<SessionParser['parseStream']> = () => Stream.unwrap(parseEffect())
   return {
+    parseStream,
+    // Remove when the scanner and external parser callers consume parseStream.
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const raw = await readSessionFile(source.path)
-      let metadata: CodeWhaleMetadata | null = null
-      let messages: CodeWhaleMessage[] = []
-
-      if (raw !== null) {
-        try {
-          const saved = JSON.parse(raw) as CodeWhaleSession
-          metadata = parseMetadata(saved.metadata)
-          messages = Array.isArray(saved.messages)
-            ? saved.messages.filter(isRecord) as CodeWhaleMessage[]
-            : []
-        } catch {
-          // A truncated transcript can still have complete, authoritative
-          // aggregate metadata at the front of the file.
-        }
-      }
-      metadata ??= await readSessionMetadata(source.path)
-      if (!metadata) return
-      const totalTokens = safeTokenCount(metadata.total_tokens)
-      const model = metadata.model ?? metadata.model_provider ?? 'unknown'
-      const localCost = reportedCost(metadata.cost)
-      const costUSD = localCost.exact
-        ? localCost.value
-        : calculateCost(model, totalTokens, 0, 0, 0, 0)
-      if (totalTokens === 0 && costUSD === 0) return
-
-      const deduplicationKey = `codewhale:${metadata.id}`
-      if (seenKeys.has(deduplicationKey)) return
-      seenKeys.add(deduplicationKey)
-
-      let timestamp = normalizeTimestamp(metadata.updated_at) || normalizeTimestamp(metadata.created_at)
-      if (!timestamp) {
-        const fileStat = await stat(source.path).catch(() => null)
-        timestamp = fileStat?.mtime.toISOString() ?? ''
-      }
-
-      const { tools, bashCommands, toolSequence, skills, subagentTypes, webSearchRequests } = collectTools(messages)
-      const workspace = metadata.workspace
-
-      yield {
-        provider: 'codewhale',
-        model,
-        // CodeWhale persists only one aggregate token counter. Preserve it
-        // losslessly in the input column instead of inventing a split.
-        inputTokens: totalTokens,
-        outputTokens: 0,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 0,
-        cachedInputTokens: 0,
-        reasoningTokens: 0,
-        webSearchRequests,
-        costUSD,
-        costIsEstimated: !localCost.exact,
-        tools,
-        bashCommands,
-        skills,
-        subagentTypes,
-        timestamp,
-        speed: 'standard',
-        deduplicationKey,
-        turnId: `${metadata.id}:session`,
-        toolSequence: toolSequence.length > 0 ? toolSequence : undefined,
-        userMessage: firstUserMessage(messages),
-        sessionId: metadata.id,
-        project: projectName(workspace),
-        projectPath: workspace,
-      }
+      yield* Stream.toAsyncIterable(parseStream())
     },
   }
 }
 
-export function createCodeWhaleProvider(overrideDirs?: string | string[]): Provider {
-  const configuredDirs = overrideDirs === undefined
-    ? undefined
-    : Array.isArray(overrideDirs) ? overrideDirs : [overrideDirs]
+export function createCodeWhaleProvider(overrideDirs?: string | string[], paths?: AppPaths): Provider {
+  const configuredDirs =
+    overrideDirs === undefined ? undefined : Array.isArray(overrideDirs) ? overrideDirs : [overrideDirs]
+  const sessionDirs = (): string[] => configuredDirs ?? defaultSessionDirs(paths)
+
+  const discoverEffect = Effect.fn('discoverCodeWhaleSessions')(function* (
+    context?: ProviderScanContext,
+  ): Effect.fn.Return<SessionSource[], Error> {
+    const signal = context?.signal
+    yield* checkScanAbort(signal)
+    const seenSessionIds = new Set<string>()
+    const sources: SessionSource[] = []
+
+    // Primary roots precede legacy roots; duplicate ids retain the primary copy.
+    for (const dir of sessionDirs()) {
+      for (const candidate of yield* discoverInDir(dir, signal)) {
+        if (seenSessionIds.has(candidate.id)) continue
+        seenSessionIds.add(candidate.id)
+        sources.push(candidate.source)
+      }
+    }
+    return sources
+  })
 
   return {
     name: 'codewhale',
@@ -457,24 +599,22 @@ export function createCodeWhaleProvider(overrideDirs?: string | string[]): Provi
       return mapToolName(rawTool)
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      const seenSessionIds = new Set<string>()
-      const sources: SessionSource[] = []
-
-      // Primary comes before legacy so an id already migrated by CodeWhale is
-      // not counted twice and the primary copy wins without modifying either.
-      for (const dir of configuredDirs ?? defaultSessionDirs()) {
-        for (const candidate of await discoverInDir(dir)) {
-          if (seenSessionIds.has(candidate.id)) continue
-          seenSessionIds.add(candidate.id)
-          sources.push(candidate.source)
-        }
-      }
-      return sources
+    discoverSessionsEffect(context?: ProviderScanContext): Effect.Effect<SessionSource[], Error, Env> {
+      return discoverEffect(context)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    // Remove when external discovery callers use discoverSessionsEffect.
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      return Effect.runPromise(discoverEffect(context))
+    },
+
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

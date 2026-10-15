@@ -17,9 +17,9 @@ function SparkTooltip({
   const point = payload[0]?.payload
   if (!point) return null
   return (
-    <div className="rounded-md border border-border bg-popover px-2 py-1 shadow-md">
-      <p className="text-[10.5px] whitespace-nowrap text-muted-foreground">{point.label}</p>
-      <p className="font-mono text-[12px] font-semibold tabular-nums text-foreground">{formatValue(point.v)}</p>
+    <div className="border-border bg-popover rounded-md border px-2 py-1 shadow-md">
+      <p className="text-muted-foreground text-[10.5px] whitespace-nowrap">{point.label}</p>
+      <p className="text-foreground font-mono text-[12px] font-semibold tabular-nums">{formatValue(point.v)}</p>
     </div>
   )
 }
@@ -46,14 +46,10 @@ export function Sparkline({
 
   if (!hasSignal) {
     return (
-      <div
-        className={className}
-        style={{ height }}
-        aria-hidden="true"
-      >
+      <div className={className} style={{ height }} aria-hidden="true">
         <div className="flex h-full items-end gap-[3px]">
           {data.slice(-24).map((_, i) => (
-            <div key={i} className="h-[3px] w-full min-w-[2px] rounded-full bg-muted" />
+            <div key={i} className="bg-muted h-[3px] w-full min-w-[2px] rounded-full" />
           ))}
         </div>
       </div>

@@ -17,7 +17,15 @@ beforeEach(() => {
 describe('navigation (ADR 0014)', () => {
   it('keeps SECTIONS in canonical sidebar order (overview first, settings last)', () => {
     expect(SECTIONS).toEqual([
-      'overview', 'sessions', 'pullRequests', 'spend', 'optimize', 'models', 'compare', 'coachSkills', 'settings',
+      'overview',
+      'sessions',
+      'pullRequests',
+      'spend',
+      'optimize',
+      'models',
+      'compare',
+      'coachSkills',
+      'settings',
     ])
   })
 
@@ -49,14 +57,18 @@ describe('navigation (ADR 0014)', () => {
 
   it('navigateToSection drives the configured router', () => {
     const calls: string[] = []
-    setRouter(to => { calls.push(to) })
+    setRouter(to => {
+      calls.push(to)
+    })
     navigateToSection('models')
     expect(calls).toEqual(['/models'])
   })
 
   it('navigateToSession drives the configured router to the detail path', () => {
     const calls: string[] = []
-    setRouter(to => { calls.push(to) })
+    setRouter(to => {
+      calls.push(to)
+    })
     navigateToSession('abc')
     expect(calls).toEqual(['/sessions/abc'])
   })

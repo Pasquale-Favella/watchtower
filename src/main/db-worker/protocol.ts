@@ -30,9 +30,7 @@ export interface DbWorkerRequest {
 }
 
 /** Worker → main: the settled outcome of one request. */
-export type DbWorkerResponse =
-  | { id: number; ok: true; data: unknown }
-  | { id: number; ok: false; error: string }
+export type DbWorkerResponse = { id: number; ok: true; data: unknown } | { id: number; ok: false; error: string }
 
 /** Worker → main: fire-and-forget broadcasts the main relays to windows.
  * `manual` tags scan-lifecycle events that belong to the requesting window

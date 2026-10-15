@@ -35,13 +35,15 @@ function writePkg(appRoot: string, spec: NonNullable<HarnessSpec['bundled']>, pk
   writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg))
 }
 
-describe('resolveBundledEntry — bundled ACP servers from the app\'s node_modules', () => {
+describe("resolveBundledEntry — bundled ACP servers from the app's node_modules", () => {
   it('returns null for a spec without a bundled descriptor', () => {
     expect(resolveBundledEntry(codexSpec(undefined), fakeAppRoot())).toBeNull()
   })
 
   it('returns null when the package is not installed under appRoot', () => {
-    expect(resolveBundledEntry(codexSpec({ package: '@agentclientprotocol/codex-acp', bin: 'codex-acp' }), fakeAppRoot())).toBeNull()
+    expect(
+      resolveBundledEntry(codexSpec({ package: '@agentclientprotocol/codex-acp', bin: 'codex-acp' }), fakeAppRoot()),
+    ).toBeNull()
   })
 
   it('resolves the entry from a package.json `bin` string', () => {

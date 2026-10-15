@@ -17,7 +17,10 @@ export function SegTabs({
   className?: string
 }) {
   return (
-    <div role="tablist" className={cn('inline-flex gap-px rounded-md border border-border bg-background p-0.5', className)}>
+    <div
+      role="tablist"
+      className={cn('border-border bg-background inline-flex gap-px rounded-md border p-0.5', className)}
+    >
       {options.map(opt => (
         <span
           key={opt.value}
@@ -33,7 +36,9 @@ export function SegTabs({
           }}
           className={cn(
             'cursor-pointer rounded-[5px] px-2.5 py-[3px] text-[11px] whitespace-nowrap',
-            opt.value === value ? 'bg-card font-medium text-foreground shadow-[inset_0_-2px_0_var(--primary)]' : 'text-muted-foreground',
+            opt.value === value
+              ? 'bg-card text-foreground font-medium shadow-[inset_0_-2px_0_var(--primary)]'
+              : 'text-muted-foreground',
           )}
         >
           {opt.label}

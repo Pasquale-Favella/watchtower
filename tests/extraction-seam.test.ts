@@ -1,6 +1,8 @@
+import * as Schema from 'effect/Schema'
 import { describe, expect, it, vi } from 'vitest'
-import { parsedProviderCallSchema } from '../src/shared/schemas/providers.js'
+
 import { parseOrSkip } from '../src/shared/schemas/extract.js'
+import { parsedProviderCallSchema } from '../src/shared/schemas/providers.js'
 
 const validCall = {
   provider: 'demo',
@@ -22,9 +24,9 @@ const validCall = {
   sessionId: 'sess-0',
 }
 
-describe('extraction seam under zod (ADR 0003: loose + skip-and-report)', () => {
+describe('extraction seam under Effect Schema (ADR 0003: loose + skip-and-report)', () => {
   it('accepts a valid provider call; unknown extra keys are stripped, never fatal', () => {
-    const parsed = parsedProviderCallSchema.parse({
+    const parsed = Schema.decodeUnknownSync(parsedProviderCallSchema)({
       ...validCall,
       // A new provider version added columns this build does not know about:
       // loose schema must tolerate them and strip them from the result.
@@ -42,7 +44,12 @@ describe('extraction seam under zod (ADR 0003: loose + skip-and-report)', () => 
     // full context (which embeds source paths) never leaves the scan.
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
 
-    const bad = parseOrSkip(parsedProviderCallSchema, { ...validCall, costUSD: 'not-a-number' }, tally, 'demo session /x.jsonl')
+    const bad = parseOrSkip(
+      parsedProviderCallSchema,
+      { ...validCall, costUSD: 'not-a-number' },
+      tally,
+      'demo session /x.jsonl',
+    )
     expect(bad).toBeNull()
     expect(tally.count).toBe(1)
     expect(stderr).not.toHaveBeenCalled()
@@ -57,7 +64,12 @@ describe('extraction seam under zod (ADR 0003: loose + skip-and-report)', () => 
 
   it('an invalid enum value (speed) is a declared-field failure, not an unknown-key case', () => {
     const tally = { count: 0 }
-    const parsed = parseOrSkip(parsedProviderCallSchema, { ...validCall, speed: 'turbo' }, tally, 'demo session /x.jsonl')
+    const parsed = parseOrSkip(
+      parsedProviderCallSchema,
+      { ...validCall, speed: 'turbo' },
+      tally,
+      'demo session /x.jsonl',
+    )
     expect(parsed).toBeNull()
     expect(tally.count).toBe(1)
   })

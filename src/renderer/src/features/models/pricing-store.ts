@@ -79,7 +79,7 @@ export const usePricingStore = create<PricingState>()((set, get) => ({
     await afterWrite(get, 'aliases')
     return true
   },
-  removeAlias: async (model) => {
+  removeAlias: async model => {
     const result = await fetchRemoveModelAlias(model)
     if (!result.ok) {
       set({ error: result.error })
@@ -97,7 +97,7 @@ export const usePricingStore = create<PricingState>()((set, get) => ({
     await afterWrite(get, 'overrides')
     return true
   },
-  removeOverride: async (model) => {
+  removeOverride: async model => {
     const result = await fetchRemovePriceOverride(model)
     if (!result.ok) {
       set({ error: result.error })

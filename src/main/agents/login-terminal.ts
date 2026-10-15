@@ -9,10 +9,15 @@ export interface LoginTerminalDeps {
 export type LoginTerminalResult = { ok: true } | { ok: false; error: string }
 
 function attachErrorListener(child: ChildProcess): void {
-  child.on('error', () => { /* A terminal launch failure is returned or ignored, never uncaught. */ })
+  child.on('error', () => {
+    /* A terminal launch failure is returned or ignored, never uncaught. */
+  })
 }
 
-function launch(argv: readonly string[], deps: Required<Pick<LoginTerminalDeps, 'platform' | 'spawn' | 'execFile'>>): LoginTerminalResult {
+function launch(
+  argv: readonly string[],
+  deps: Required<Pick<LoginTerminalDeps, 'platform' | 'spawn' | 'execFile'>>,
+): LoginTerminalResult {
   try {
     if (deps.platform === 'win32') {
       const child = deps.spawn('cmd.exe', ['/k', ...argv], { detached: true, stdio: 'ignore', windowsHide: false })
@@ -30,8 +35,8 @@ function launch(argv: readonly string[], deps: Required<Pick<LoginTerminalDeps, 
     attachErrorListener(child)
     child.unref()
     return { ok: true }
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  } catch {
+    return { ok: false, error: 'The login terminal could not be opened. Run the harness login command in a terminal.' }
   }
 }
 

@@ -286,12 +286,28 @@ export type SessionSummary = {
   /// from a provider that never captures branches (→ contributes nothing).
   /// Claude only; absent otherwise.
   everHadBranch?: boolean
-  modelBreakdown: Record<string, { calls: number; costUSD: number; tokens: TokenUsage; savingsUSD: number; estimatedCostUSD?: number; sourceModels?: string[] }>
+  modelBreakdown: Record<
+    string,
+    {
+      calls: number
+      costUSD: number
+      tokens: TokenUsage
+      savingsUSD: number
+      estimatedCostUSD?: number
+      sourceModels?: string[]
+    }
+  >
   toolBreakdown: Record<string, { calls: number }>
   mcpBreakdown: Record<string, { calls: number }>
   bashBreakdown: Record<string, { calls: number }>
-  categoryBreakdown: Record<TaskCategory, { turns: number; costUSD: number; savingsUSD: number; retries: number; editTurns: number; oneShotTurns: number }>
-  skillBreakdown: Record<string, { turns: number; costUSD: number; savingsUSD: number; editTurns: number; oneShotTurns: number }>
+  categoryBreakdown: Record<
+    TaskCategory,
+    { turns: number; costUSD: number; savingsUSD: number; retries: number; editTurns: number; oneShotTurns: number }
+  >
+  skillBreakdown: Record<
+    string,
+    { turns: number; costUSD: number; savingsUSD: number; editTurns: number; oneShotTurns: number }
+  >
   subagentBreakdown: Record<string, { calls: number; costUSD: number; savingsUSD: number }>
   // Observed MCP tools available in this session, captured from
   // `attachment.deferred_tools_delta.addedNames` entries. Union across all

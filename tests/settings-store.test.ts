@@ -7,12 +7,20 @@ function mockWindow(api: unknown): void {
 function createMemoryStorage(): Storage {
   const store = new Map<string, string>()
   return {
-    get length() { return store.size },
-    clear: () => { store.clear() },
+    get length() {
+      return store.size
+    },
+    clear: () => {
+      store.clear()
+    },
     getItem: (key: string) => store.get(key) ?? null,
     key: (index: number) => Array.from(store.keys())[index] ?? null,
-    removeItem: (key: string) => { store.delete(key) },
-    setItem: (key: string, value: string) => { store.set(key, value) },
+    removeItem: (key: string) => {
+      store.delete(key)
+    },
+    setItem: (key: string, value: string) => {
+      store.set(key, value)
+    },
   }
 }
 
@@ -84,10 +92,11 @@ describe('useSettingsStore (ADR 0011)', () => {
     mockWindow({
       getCadence: () => Promise.resolve('5m'),
       getCurrency: () => Promise.resolve({ code: 'EUR', symbol: '€', rate: 0.92, updatedAt: '2026-01-01T00:00:00Z' }),
-      getCurrencies: () => Promise.resolve([
-        { code: 'USD', symbol: '$' },
-        { code: 'EUR', symbol: '€' },
-      ]),
+      getCurrencies: () =>
+        Promise.resolve([
+          { code: 'USD', symbol: '$' },
+          { code: 'EUR', symbol: '€' },
+        ]),
     })
     const { loadCadence, loadCurrency, loadCurrencyOptions } = useSettingsStore.getState()
     await loadCadence()
@@ -102,7 +111,10 @@ describe('useSettingsStore (ADR 0011)', () => {
   it('setCadence applies optimistically, then confirms with the persisted value', async () => {
     let resolveCadence!: (value: string) => void
     mockWindow({
-      setCadence: () => new Promise<string>(resolve => { resolveCadence = resolve }),
+      setCadence: () =>
+        new Promise<string>(resolve => {
+          resolveCadence = resolve
+        }),
     })
     const pending = useSettingsStore.getState().setCadence('3m')
     expect(useSettingsStore.getState().cadence).toBe('3m')
@@ -124,9 +136,15 @@ describe('useSettingsStore (ADR 0011)', () => {
   })
 
   it('onCurrencyChanged repaints with the broadcast rate', () => {
-    useSettingsStore.getState().onCurrencyChanged({ code: 'JPY', symbol: '¥', rate: 150, updatedAt: '2026-01-01T00:00:00Z' })
-    expect(useSettingsStore.getState().activeCurrency)
-      .toEqual({ code: 'JPY', symbol: '¥', rate: 150, updatedAt: '2026-01-01T00:00:00Z' })
+    useSettingsStore
+      .getState()
+      .onCurrencyChanged({ code: 'JPY', symbol: '¥', rate: 150, updatedAt: '2026-01-01T00:00:00Z' })
+    expect(useSettingsStore.getState().activeCurrency).toEqual({
+      code: 'JPY',
+      symbol: '¥',
+      rate: 150,
+      updatedAt: '2026-01-01T00:00:00Z',
+    })
   })
 
   it('the Skills detection thresholds default to 5 × 2 and persist locally (ticket 24)', () => {

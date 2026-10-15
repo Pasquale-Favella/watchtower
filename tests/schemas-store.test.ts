@@ -1,31 +1,14 @@
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { buildFixtureCachedFile } from './fixtures/cached-file.js'
-import {
-  ledgerCallRowSchema,
-  ledgerSessionRowSchema,
-  ledgerSourceRowSchema,
-  ledgerTurnRowSchema,
-} from '../src/shared/schemas/ledger.js'
+
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import { describe, expect, it } from 'vitest'
+
+import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { ledgerCallRowSchema } from '../src/shared/schemas/ledger.js'
 import { mappedFileSchema } from '../src/shared/schemas/port.js'
-
-const tempDirs: string[] = []
-
-function makeStore(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-schemas-'))
-  tempDirs.push(dir)
-  return new LedgerStore(join(dir, 'data.db'))
-}
-
-afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    // temp dirs are left to the OS; only the store handle is closed by tests
-  }
-})
+import { buildFixtureCachedFile } from './fixtures/cached-file.js'
+import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 const baseInput = {
   provider: 'opencode',
@@ -33,14 +16,14 @@ const baseInput = {
   filePath: '/workspace/demo-project/.opencode/sess-1.jsonl',
 }
 
-/** Opens a raw second connection to the store's db file (WAL allows it). */
-function rawDb(store: LedgerStore): DatabaseSync {
-  return new DatabaseSync(store.dbPath)
+/** Opens a raw second connection to the runtime's db file (WAL allows it). */
+function rawDb(dbPath: string): DatabaseSync {
+  return new DatabaseSync(dbPath)
 }
 
-describe('store seam under zod (ADR 0003: read-back parsing)', () => {
+describe('store seam under Effect Schema (ADR 0003: read-back parsing)', () => {
   it('a raw SQL row parses through the schema and transforms to the camelCase shape', () => {
-    // The schema's input is the snake_case SQL row; its transform produces the
+    // The schema's input is the snake_case SQL row; its codec produces the
     // camelCase shape with JSON columns parsed. Asserted against a literal
     // raw row so the expected value is independent of the store.
     const rawRow = {
@@ -83,7 +66,7 @@ describe('store seam under zod (ADR 0003: read-back parsing)', () => {
       tool_errors: 0,
       edit_failed: 0,
     }
-    const parsed = ledgerCallRowSchema.parse(rawRow)
+    const parsed = Schema.decodeUnknownSync(ledgerCallRowSchema)(rawRow)
     expect(parsed).toMatchObject({
       sourceId: 1,
       sessionId: 'sess-0',
@@ -95,59 +78,95 @@ describe('store seam under zod (ADR 0003: read-back parsing)', () => {
       toolSequence: [],
       speed: 'standard',
     })
-    // And the whole-set parse accepts an array of such rows in one pass.
-    expect(ledgerCallRowSchema.array().safeParse([rawRow]).success).toBe(true)
+    // And the whole-set decode accepts an array of such rows in one pass.
+    expect(Schema.decodeUnknownSync(Schema.Array(ledgerCallRowSchema))([rawRow])).toHaveLength(1)
+  })
+
+  it('a malformed row fails in the ERROR channel, not as a defect', () => {
+    // The point of the Wave A migration: `Schema.decodeUnknownEffect` puts a bad
+    // row on `E` as a `SchemaError`, where the old `z.array(...).parse` threw
+    // into `Cause` as an unmodelled defect.
+    const rawRow = { source_id: 1, session_id: 'sess-0', speed: 'turbo' }
+    const result = Schema.decodeUnknownResult(ledgerCallRowSchema)(rawRow)
+    expect(result._tag).toBe('Failure')
+    if (result._tag === 'Failure') expect(Schema.isSchemaError(result.failure)).toBe(true)
+
+    const effect = Schema.decodeUnknownEffect(ledgerCallRowSchema)(rawRow)
+    const decoded = Effect.runSync(Effect.result(effect))
+    expect(decoded._tag).toBe('Failure')
+    if (decoded._tag === 'Failure') expect(Schema.isSchemaError(decoded.failure)).toBe(true)
   })
 
   it('a corrupted read-back row fails loudly (bad JSON in a *_json column)', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const { dbPath, runtime } = openLedgerFixture()
+    runtime.runSync(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          ...baseInput,
+          verdict: 'new',
+          cachedFile: buildFixtureCachedFile(),
+        }),
+      ),
+    )
 
     // Corrupt the stored tools_json column directly, bypassing the write path:
     // read-back validation must catch it instead of hand-rolled casts silently
     // passing garbage through.
-    const db = rawDb(store)
+    const db = rawDb(dbPath)
     db.prepare("UPDATE ledger_call SET tools_json = '{not-json' WHERE call_key = 'call-1'").run()
     db.close()
 
-    expect(() => store.getCalls()).toThrow()
-    store.close()
+    expect(() => runtime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getCalls()))).toThrow()
   })
 
   it('a declared-field type mismatch in a row fails loudly (speed not standard/fast)', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const { dbPath, runtime } = openLedgerFixture()
+    runtime.runSync(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          ...baseInput,
+          verdict: 'new',
+          cachedFile: buildFixtureCachedFile(),
+        }),
+      ),
+    )
 
-    const db = rawDb(store)
+    const db = rawDb(dbPath)
     db.prepare("UPDATE ledger_call SET speed = 'turbo' WHERE call_key = 'call-1'").run()
     db.close()
 
-    expect(() => store.getCalls()).toThrow()
-    store.close()
+    expect(() => runtime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getCalls()))).toThrow()
   })
 })
 
-describe('port-in seam under zod (ADR 0002: mapping validation)', () => {
+describe('port-in seam under Effect Schema (ADR 0002: mapping validation)', () => {
   it('a valid mapping validates against mappedFileSchema', async () => {
-    const store = makeStore()
     const input = { ...baseInput, verdict: 'new' as const, cachedFile: buildFixtureCachedFile() }
     const { mapFileToLedgerRows } = await import('../src/main/store/port.js')
     const mapped = mapFileToLedgerRows(input)
-    expect(mappedFileSchema.safeParse(mapped).success).toBe(true)
-    store.close()
+    expect(Schema.decodeUnknownResult(mappedFileSchema)(mapped)._tag).toBe('Success')
   })
 
   it('a mapping with a corrupted declared field is rejected before any ledger write', () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
     const file = buildFixtureCachedFile()
     // Corrupt a declared field at the mapping input: mcpInventory must be a
     // string[], and it flows straight into MappedSession — the schema must
     // reject the mapping loudly and nothing may land in the ledger.
     file.mcpInventory = 'not-an-array' as unknown as string[]
 
-    expect(() => store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })).toThrow()
-    expect(store.getCalls()).toEqual([])
-    expect(store.getSessions()).toEqual([])
-    store.close()
+    expect(() =>
+      runtime.runSync(
+        Effect.flatMap(LedgerIngest, ingest =>
+          ingest.portIn({
+            ...baseInput,
+            verdict: 'new',
+            cachedFile: file,
+          }),
+        ),
+      ),
+    ).toThrow()
+    expect(runtime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getCalls()))).toEqual([])
+    expect(runtime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getSessions()))).toEqual([])
   })
 })

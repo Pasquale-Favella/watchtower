@@ -40,4 +40,10 @@ export const harnessSpecs: readonly HarnessSpec[] = [
   pi,
 ]
 
-export { type HarnessSpec, type HarnessAdapter, type AcpAdapter, type AcpMcpServer, type DirectAdapter } from './types.js'
+export {
+  type HarnessSpec,
+  type HarnessAdapter,
+  type AcpAdapter,
+  type AcpMcpServer,
+  type DirectAdapter,
+} from './types.js'

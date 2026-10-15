@@ -28,9 +28,7 @@ export function DailySpendChart({
 }) {
   if (!data.length) return null
 
-  const ranked = data
-    .map((d, i) => ({ i, v: d.costUSD }))
-    .sort((a, b) => b.v - a.v)
+  const ranked = data.map((d, i) => ({ i, v: d.costUSD })).sort((a, b) => b.v - a.v)
   const peak = ranked[0] && ranked[0].v > 0 ? ranked[0].i : -1
   const second = ranked[1] && ranked[1].v > 0 ? ranked[1].i : -1
 
@@ -57,15 +55,21 @@ export function DailySpendChart({
           cursor={{ fill: 'var(--accent)' }}
           content={
             <ChartTooltipContent
-              labelFormatter={(label) => formatDate(String(label))}
+              labelFormatter={label => formatDate(String(label))}
               formatter={(value, _name, item) => {
                 const entry = item?.payload as OverviewDailyEntry | undefined
                 return (
                   <span className="inline-flex items-center gap-2">
-                    <span className="size-2 shrink-0 rounded-[2px] bg-primary" aria-hidden="true" />
+                    <span className="bg-primary size-2 shrink-0 rounded-[2px]" aria-hidden="true" />
                     <span className="text-muted-foreground">Spend</span>
-                    <span className="font-mono font-semibold text-foreground tabular-nums">{formatValue(Number(value))}</span>
-                    {entry && entry.calls > 0 && <span className="text-muted-foreground">{entry.calls} {entry.calls === 1 ? 'call' : 'calls'}</span>}
+                    <span className="text-foreground font-mono font-semibold tabular-nums">
+                      {formatValue(Number(value))}
+                    </span>
+                    {entry && entry.calls > 0 && (
+                      <span className="text-muted-foreground">
+                        {entry.calls} {entry.calls === 1 ? 'call' : 'calls'}
+                      </span>
+                    )}
                   </span>
                 )
               }}

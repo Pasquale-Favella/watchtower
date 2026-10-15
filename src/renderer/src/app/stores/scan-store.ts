@@ -56,7 +56,9 @@ const refreshListeners = new Set<RefreshListener>()
  * `reload` here so every section refetches after a scan without polling. */
 export function subscribeToRefresh(listener: RefreshListener): () => void {
   refreshListeners.add(listener)
-  return () => { refreshListeners.delete(listener) }
+  return () => {
+    refreshListeners.delete(listener)
+  }
 }
 
 function notifyRefreshListeners(): void {
@@ -91,7 +93,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
     } else {
       set({ detectedProviders: [] })
     }
-    set((state) => ({ refreshVersion: state.refreshVersion + 1 }))
+    set(state => ({ refreshVersion: state.refreshVersion + 1 }))
     notifyRefreshListeners()
   },
   refresh: async () => {
@@ -123,6 +125,6 @@ export const useScanStore = create<ScanState>()((set, get) => ({
     const next = get().progress.filter(p => p.provider !== provider)
     set({ progress: [...next, { provider, processed, total, done }], scanning: true })
   },
-  onError: (message) => set({ scanError: message, scanning: false }),
+  onError: message => set({ scanError: message, scanning: false }),
   onIdle: () => set({ scanning: false, progress: [] }),
 }))

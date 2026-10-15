@@ -1,8 +1,10 @@
-import { z } from 'zod'
+import * as Schema from 'effect/Schema'
 
-export const exportResultSchema = z.object({
-  ok: z.boolean(),
-  path: z.string().optional(),
-  error: z.string().optional(),
+const writable = Schema.mutableKey
+
+export const exportResultSchema = Schema.Struct({
+  ok: writable(Schema.Boolean),
+  path: writable(Schema.optional(Schema.String)),
+  error: writable(Schema.optional(Schema.String)),
 })
-export type ExportResult = z.infer<typeof exportResultSchema>
+export type ExportResult = Schema.Schema.Type<typeof exportResultSchema>

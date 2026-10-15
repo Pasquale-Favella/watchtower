@@ -1,7 +1,7 @@
 # Unified Coach & Skills section: one mode-tagged harness chat, no consent gate
 
 > **Superseded in part (ADR 0021):** the mode-tagged run design — `CoachMode =
-> 'coach' | 'build-skill'`, the renderer-driven `SkillsProseRequest` evidence, and the
+'coach' | 'build-skill'`, the renderer-driven `SkillsProseRequest` evidence, and the
 > mid-thread draft card with its dismiss flow — was deleted in favour of ONE
 > mode-less coach run. The single harness agent serves both coaching and skill
 > authoring off the same ledger briefing, and the suggested-skill chips are plain
@@ -14,10 +14,10 @@ Status: accepted
 
 The Coach and Skills chains landed as two separate sections on the same HarnessRuntime seam (ADR 0016): a Coach run surface (ticket 23, never shipped in the renderer — only the store existed) and a Skills detection board with a separate one-shot draft-prose runner (tickets 24–25). Two things did not survive contact with the real product:
 
-1. **Two sections, two mental models.** The user asked for ONE surface: *"a common section where we can tag one of the two agents — Coach or Skills — for coaching or building skill."* The machine's harnesses are the shared engine for both; splitting them into sibling sections duplicated pickers, state, and prose plumbing.
-2. **The consent gate was the wrong privacy model here.** Ticket 22 (ADR 0012 addendum) gated every harness run behind a persisted opt-in toggle, on the theory that ledger-derived data reaches a harness's model provider. The user's direction revoked that: *"no permission — we are using the harnesses on the machine."* The harnesses are the user's own installed CLIs, the app drives them in the user's own workspace, and every run is user-initiated from an explicit click. A gate between the user and their own tooling added friction without adding safety the OS-user model doesn't already provide.
+1. **Two sections, two mental models.** The user asked for ONE surface: _"a common section where we can tag one of the two agents — Coach or Skills — for coaching or building skill."_ The machine's harnesses are the shared engine for both; splitting them into sibling sections duplicated pickers, state, and prose plumbing.
+2. **The consent gate was the wrong privacy model here.** Ticket 22 (ADR 0012 addendum) gated every harness run behind a persisted opt-in toggle, on the theory that ledger-derived data reaches a harness's model provider. The user's direction revoked that: _"no permission — we are using the harnesses on the machine."_ The harnesses are the user's own installed CLIs, the app drives them in the user's own workspace, and every run is user-initiated from an explicit click. A gate between the user and their own tooling added friction without adding safety the OS-user model doesn't already provide.
 
-Additionally, model selection is not yet available through ACP (upstream PR #182), so a per-run *model* picker is aspirational; the per-harness picker remains.
+Additionally, model selection is not yet available through ACP (upstream PR #182), so a per-run _model_ picker is aspirational; the per-harness picker remains.
 
 ## Decision
 
