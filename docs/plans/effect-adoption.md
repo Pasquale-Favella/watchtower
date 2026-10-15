@@ -790,8 +790,10 @@ records structural gates, source evidence, and remaining product verification.
   retry using the installed, version-matched Electron distribution after a
   download EACCES. All CI jobs pass, including actual NSIS, DMG/ZIP, AppImage
   and deb verification. The final query operational-code correction at
-  `5a8afc4` passes both reviews and 85 root regressions; a fresh complete run
-  and source-matched CI remain required for that later source.
+  `5a8afc4` passes both reviews and 85 root regressions. Source-matched CI at
+  `210da5b` passes all jobs and artifact checks; the local run passes full units
+  but fails smoke and worker teardown timeouts. An unchanged diagnostic
+  reproduction is running; final local acceptance remains unproven.
 
 ### Historical execution queue (superseded)
 
