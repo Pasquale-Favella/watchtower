@@ -229,15 +229,24 @@ function verifyWindowsInstaller(root) {
     const uninstaller = path.join(installPath, `Uninstall ${productName}.exe`)
     if (fs.existsSync(uninstaller)) {
       try {
+        // Keep the running uninstaller outside the tree it removes; _?= disables NSIS self-copying.
+        const uninstallerCopy = path.join(root, 'uninstall-watchtower.exe')
+        fs.copyFileSync(uninstaller, uninstallerCopy)
         run(
           'powershell.exe',
           [
             '-NoProfile',
             '-NonInteractive',
             '-Command',
-            '$ErrorActionPreference = "Stop"; $process = Start-Process -FilePath $env:WATCHTOWER_UNINSTALLER -ArgumentList "/S" -Wait -PassThru -WindowStyle Hidden; exit $process.ExitCode',
+            '$ErrorActionPreference = "Stop"; $process = Start-Process -FilePath $env:WATCHTOWER_UNINSTALLER -ArgumentList "/S /currentuser _?=$env:WATCHTOWER_INSTALL_PATH" -Wait -PassThru -WindowStyle Hidden; exit $process.ExitCode',
           ],
-          { env: { ...process.env, WATCHTOWER_UNINSTALLER: uninstaller } },
+          {
+            env: {
+              ...process.env,
+              WATCHTOWER_UNINSTALLER: uninstallerCopy,
+              WATCHTOWER_INSTALL_PATH: installPath,
+            },
+          },
         )
         assert.equal(queryWindowsUninstallEntries(), '', 'NSIS uninstall left a Watchtower registry entry')
         assert.deepEqual(matchingWindowsShortcuts(), shortcutsBefore, 'NSIS uninstall left a Watchtower shortcut')
