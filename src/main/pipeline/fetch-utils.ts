@@ -3,6 +3,7 @@ import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
+import * as Metric from 'effect/Metric'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 import * as Schema from 'effect/Schema'
@@ -192,19 +193,17 @@ export interface HttpFetchCounters {
   ) => Effect.Effect<void>
 }
 
-/**
- * Live counter delegation for the fetch-timeout slice (Wave 5, issue #148):
- * files `FETCH_TIMEOUT_COUNTER` through the main-owned writer via
- * `Effect.log*` + `annotateLogs` — same sink, same allowlist, same `main`
- * context, never a second sink, never OTLP. `event` and `context` ride the
- * annotation bag because they are not Effect concepts. The never-throw guard
- * lives in ONE place (inside the `Logger`) rather than being re-declared here,
- * so every call site that omits `counters` files counters with zero edits and
- * no duplicated try/`catch`.
- */
+/** Updates the runtime's native counter and forwards one delta through the
+ * existing Logger and sanitized operational sink. No separate exporter. */
 const liveFetchCounters: HttpFetchCounters = {
-  incrementCounter: (name, amount = 1, fields = {}) =>
-    Effect.logInfo(name).pipe(Effect.annotateLogs({ event: name, context: 'main', ...fields, count: amount })),
+  incrementCounter: Effect.fnUntraced(function* (
+    name: OperationalLogCounter,
+    amount = 1,
+    fields: Record<string, unknown> = {},
+  ) {
+    yield* Metric.update(Metric.counter(name), amount)
+    yield* Effect.logInfo(name).pipe(Effect.annotateLogs({ event: name, context: 'main', ...fields, count: amount }))
+  }),
 }
 
 // Timeout-only counter: filed AFTER the deadline race resolves (the race
