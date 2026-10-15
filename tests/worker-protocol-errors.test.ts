@@ -28,6 +28,12 @@ const workerFailureResponseSchema = Schema.Struct({
   ok: Schema.Literal(false),
   error: Schema.String,
 })
+const workerQueryErrorSchema = Schema.Struct({
+  event: Schema.Literal('oplog'),
+  level: Schema.Literal('error'),
+  logEvent: Schema.Literal('ledger.query.error'),
+  fields: Schema.Struct({ op: Schema.Literal('ledger.query'), code: Schema.String }),
+})
 
 function tempDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-protocol-'))
@@ -95,7 +101,18 @@ function waitForWorkerMessage<A>(
   })
 }
 
-async function runRealWorker(dbPath: string, op = 'store:views'): Promise<unknown> {
+interface RealWorkerResult {
+  readonly response: unknown
+  readonly events: readonly unknown[]
+}
+
+function workerQueryErrorEvents(
+  events: readonly unknown[],
+): readonly Schema.Schema.Type<typeof workerQueryErrorSchema>[] {
+  return events.filter(Schema.is(workerQueryErrorSchema))
+}
+
+async function runRealWorker(dbPath: string, op = 'store:views'): Promise<RealWorkerResult> {
   const directory = join(process.cwd(), 'node_modules', '.cache')
   mkdirSync(directory, { recursive: true })
   const workerDirectory = mkdtempSync(join(directory, 'watchtower-worker-protocol-entry-'))
@@ -117,6 +134,11 @@ async function runRealWorker(dbPath: string, op = 'store:views'): Promise<unknow
     cacheDir: join(workerDirectory, 'cache'),
   }
   const worker = new Worker(workerPath, { workerData: init })
+  const events: unknown[] = []
+  const captureEvent = (event: unknown): void => {
+    events.push(event)
+  }
+  worker.on('message', captureEvent)
   try {
     const bootMessage = await waitForWorkerMessage(
       worker,
@@ -127,13 +149,15 @@ async function runRealWorker(dbPath: string, op = 'store:views'): Promise<unknow
     if (bootMessage.event === 'init-error') throw new Error(`worker boot failed: ${bootMessage.error}`)
 
     worker.postMessage({ id: 1, op, args: [] })
-    return await waitForWorkerMessage(
+    const response = await waitForWorkerMessage(
       worker,
       raw => Schema.decodeUnknownResult(workerFailureResponseSchema)(raw),
       response => response.id === 1,
       'worker response timeout',
     )
+    return { response, events }
   } finally {
+    worker.off('message', captureEvent)
     await worker.terminate()
   }
 }
@@ -173,8 +197,22 @@ describe('worker protocol error mapping', () => {
     schemaWriter.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
     schemaWriter.close()
 
-    const schemaResponse = await runRealWorker(schemaPath)
-    expect(schemaResponse).toEqual({ id: 1, ok: false, error: 'Stored ledger data is invalid.' })
+    const schemaResult = await runRealWorker(schemaPath)
+    expect(schemaResult.response).toEqual({ id: 1, ok: false, error: 'Stored ledger data is invalid.' })
+    const schemaLogs = workerQueryErrorEvents(schemaResult.events)
+    expect(schemaLogs).toHaveLength(1)
+    expect(schemaLogs[0]).toEqual({
+      event: 'oplog',
+      level: 'error',
+      logEvent: 'ledger.query.error',
+      fields: { op: 'ledger.query', code: 'schema' },
+    })
+    expect(schemaResult.events.findIndex(Schema.is(workerQueryErrorSchema))).toBeLessThan(
+      schemaResult.events.findIndex(Schema.is(workerFailureResponseSchema)),
+    )
+    expect(JSON.stringify(schemaLogs)).not.toContain('hyperdrive')
+    expect(JSON.stringify(schemaLogs)).not.toContain('ledger_call')
+    expect(JSON.stringify(schemaLogs)).not.toContain(schemaPath)
 
     const sqlDirectory = tempDirectory()
     const sqlPath = await seedLedger(sqlDirectory)
@@ -182,8 +220,21 @@ describe('worker protocol error mapping', () => {
     sqlWriter.exec('DROP TABLE ledger_turn')
     sqlWriter.close()
 
-    const sqlResponse = await runRealWorker(sqlPath)
-    expect(sqlResponse).toEqual({ id: 1, ok: false, error: 'The ledger database operation failed.' })
+    const sqlResult = await runRealWorker(sqlPath)
+    expect(sqlResult.response).toEqual({ id: 1, ok: false, error: 'The ledger database operation failed.' })
+    const sqlLogs = workerQueryErrorEvents(sqlResult.events)
+    expect(sqlLogs).toHaveLength(1)
+    expect(sqlLogs[0]).toEqual({
+      event: 'oplog',
+      level: 'error',
+      logEvent: 'ledger.query.error',
+      fields: { op: 'ledger.query', code: 'effect-sql-sql' },
+    })
+    expect(sqlResult.events.findIndex(Schema.is(workerQueryErrorSchema))).toBeLessThan(
+      sqlResult.events.findIndex(Schema.is(workerFailureResponseSchema)),
+    )
+    expect(JSON.stringify(sqlLogs)).not.toContain('ledger_turn')
+    expect(JSON.stringify(sqlLogs)).not.toContain(sqlPath)
   })
 
   it('preserves known validation text and maps defects and interruption causes safely', () => {

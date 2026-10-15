@@ -14,6 +14,7 @@ import { scanLedger } from '../application/scan-ledger.js'
 import { settingsInfoEffect } from '../application/settings-info.js'
 import { resolveCadenceMs } from '../cadence.js'
 import { type CurrencyOption, FxRates, isValidCurrencyCode, listCurrencies, refreshFxRateWithRates } from '../fx.js'
+import { logCodeFor } from '../operational-log.js'
 import type { HttpFetch } from '../pipeline/fetch-utils.js'
 import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
 import { refreshPricingNowEffect } from '../pipeline/models.js'
@@ -353,7 +354,17 @@ export class DbWorkerContext {
   async dispatch(op: string, args: unknown[]): Promise<unknown> {
     if (this.closed && op !== 'shutdown') throw new Error('db-worker is shutting down')
     const query = ledgerQueryRequest(op, args)
-    if (query) return this.runtime.runPromise(query)
+    if (query)
+      return this.runtime.runPromise(
+        query.pipe(
+          Effect.tapError(error =>
+            Effect.logError('ledger.query.error').pipe(
+              Effect.annotateLogs({ event: 'ledger.query.error', op: 'ledger.query', code: logCodeFor(error) }),
+              Effect.catchCause(() => Effect.void),
+            ),
+          ),
+        ),
+      )
     const command = ledgerConfigRequest(
       op,
       args,
