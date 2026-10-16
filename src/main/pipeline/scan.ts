@@ -7,9 +7,10 @@ import type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress } from '.
 import type { Env } from '../env.js'
 import { OperationalLog, SCAN_DURATION_COUNTER } from '../operational-log.js'
 import { HttpFetch } from './fetch-utils.js'
-import { loadPricingEffect } from './models.js'
+import { captureScanPricing, loadPricingEffect } from './models.js'
 import type { DeltaHandler } from './parser.js'
-import { parseAllSessions } from './parser.js'
+import { parseAllSessionsEffect } from './parser.js'
+import type { ProviderScanServices } from './providers/types.js'
 import { abortedScanError, ScanAbortedError } from './scan-control.js'
 
 export type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress, ScanStage } from '../../shared/schemas/scan.js'
@@ -120,6 +121,7 @@ export const runScan = Effect.fnUntraced(function* (
   onProgress?: (progress: ScanProgress) => void,
   abort?: { isAborted(): boolean },
   onDelta?: DeltaHandler,
+  providerServices: ProviderScanServices = {},
 ): Effect.fn.Return<ScanMetadata, ScanAbortedError | Error, HttpFetch | Env | OperationalLog> {
   // Wall-duration start via the Effect Clock so TestClock governs duration in
   // tests (mirrors `refreshFxRateWithRates` staleness + fetch-timeout Clock).
@@ -132,6 +134,7 @@ export const runScan = Effect.fnUntraced(function* (
 
     onProgress?.({ stage: 'pricing' })
     yield* loadPricingEffect()
+    const pricing = providerServices.pricing ?? captureScanPricing()
 
     onProgress?.({ stage: 'parse' })
     if (onDelta) onProgress?.({ stage: 'port-in' })
@@ -148,15 +151,12 @@ export const runScan = Effect.fnUntraced(function* (
 
     let aborted = false
 
-    // Promise-boundary seam (NOT Effect-native): `DeltaHandler` is
-    // `(delta) => void | Promise<void>`, so this stays `async`/`throw`.
-    // Throws the TAGGED error with the preserved `'scan aborted'` message —
-    // `instanceof` + `err.name` both keep working for the parser re-throw.
+    // Delta counting and ledger ingestion stay in the parser's fiber.
     const countingDelta: DeltaHandler | undefined = onDelta
-      ? async delta => {
+      ? Effect.fnUntraced(function* (delta): Effect.fn.Return<void, Error> {
           if (abort?.isAborted()) {
             aborted = true
-            throw abortedScanError()
+            return yield* abortedScanError()
           }
           const row = ensureProvider(delta.provider)
           if (delta.cachedFile.failed) {
@@ -167,8 +167,8 @@ export const runScan = Effect.fnUntraced(function* (
           }
           if (delta.verdict === 'unchanged') row.unchanged++
           else row.ported++
-          await onDelta(delta)
-        }
+          yield* onDelta(delta, pricing)
+        })
       : undefined
 
     // Extraction seam tally (ADR 0003): rows/blobs skipped because a declared
@@ -178,10 +178,29 @@ export const runScan = Effect.fnUntraced(function* (
       ensureProvider(provider).unparsed += count
     }
 
-    // Parser work observes this per-run signal, but the Promise remains owned
-    // until every parser and callback has actually settled after interruption.
-    yield* runOwnedScanPromise(signal =>
-      parseAllSessions(options.range, options.provider, countingDelta, onUnparsed, signal),
+    // The parser workflow composes in Effect. This one process-boundary adapter
+    // supplies the AbortSignal expected by existing native provider APIs and
+    // keeps ownership until those cooperative APIs and callbacks have settled.
+    let parserCompleted = false
+    yield* Effect.acquireUseRelease(
+      Effect.sync(() => new AbortController()),
+      controller =>
+        Effect.gen(function* () {
+          yield* parseAllSessionsEffect(
+            options.range,
+            options.provider,
+            countingDelta,
+            onUnparsed,
+            controller.signal,
+            { ...providerServices, pricing },
+            () => controller.abort(abortedScanError()),
+          )
+          parserCompleted = true
+        }),
+      controller =>
+        Effect.sync(() => {
+          if (!parserCompleted && !controller.signal.aborted) controller.abort(abortedScanError())
+        }),
     )
 
     if (onDelta && abort?.isAborted()) {

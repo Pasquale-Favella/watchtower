@@ -53,7 +53,7 @@ const SPAN_ID_PATTERN = /^[0-9a-f]{1,64}$/
  *   `src/main/pipeline/fetch-utils.ts`, timeout-only (the `HttpFetchError`
  *   `abort`/`network` reasons are error values, never filed). That keeps every
  *   other `reason` in the app droppable, e.g. the free-text skills-dismiss
- *   reason in `src/main/store/ledger.ts`.
+ *   reason in `src/main/store/ledger-repository.ts`.
  *
  * `kind` deliberately stays in `ALLOWED_STRING_FIELDS` (free-form, 200-capped)
  * instead of joining this map: it is allowlisted by name today, so moving it

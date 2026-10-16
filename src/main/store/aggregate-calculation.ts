@@ -1,11 +1,7 @@
+import type { LedgerSessionRow, LedgerTurnRow } from '../../shared/schemas/ledger.js'
+import { canonicalSessionProject } from '../canonical-session-project.js'
 import { getShortModelName } from '../pipeline/model-names.js'
-import {
-  buildSpawnPrSets,
-  deriveCanonicalProjectKey,
-  extractPrUrlsFromProviderCall,
-  isAbsoluteProjectPath,
-  projectNameFromPath,
-} from '../pipeline/parser-calculations.js'
+import { buildSpawnPrSets, extractPrUrlsFromProviderCall } from '../pipeline/parser-calculations.js'
 import {
   calculateRepricedCostResult,
   type PricingCatalogue,
@@ -22,7 +18,6 @@ import type {
   TaskCategory,
   TokenUsage,
 } from '../pipeline/types.js'
-import type { LedgerSessionRow, LedgerTurnRow } from './ledger.js'
 import type { LedgerQuerySnapshot } from './ledger-query-snapshot.js'
 import type { LedgerCallFactsRow } from './read-projections.js'
 
@@ -42,7 +37,7 @@ export const DEFAULT_RANGE_DAYS = 30
  *  table's 38 columns) rather than the maximal `LedgerCallRow`: the nine
  *  omitted columns have no reader in `src/main`, and the per-column map with a
  *  `file:line` for every kept one is on `ledgerCallFactsRowSchema`
- *  (`./read-projections.ts`). `LedgerStore.getCalls` remains the wide read — the
+ *  (`./read-projections.ts`). `LedgerQueries.getCalls` remains the wide read — the
  *  fallback, and the measurement harness's baseline. */
 export type ScopedCall = LedgerCallFactsRow & {
   /** `model` after a configured `model_alias` rewrite (identity for display/grouping). */
@@ -474,25 +469,7 @@ export function sessionProjectKey(summary: SessionSummary): string {
  * per-view special cases.
  */
 function attachCanonicalIdentity(summary: SessionSummary, session: LedgerSessionRow, provider: string): void {
-  const storedPath = session.projectPath?.trim()
-  const pathCandidate = storedPath && isAbsoluteProjectPath(storedPath) ? storedPath : undefined
-  summary.projectKey = deriveCanonicalProjectKey(
-    pathCandidate,
-    session.workingDirectory,
-    provider,
-    session.canonicalCwd,
-  )
-  const canonicalPath = (session.canonicalCwd ?? session.workingDirectory ?? pathCandidate ?? '').trim()
-  if (canonicalPath) {
-    summary.projectPath = canonicalPath
-  }
-  // Display precedence: the explicit canonical project name first (Claude
-  // worktrees — set from this same canonical path at parse time, so identical
-  // for real data), then the path leaf in original case, then the legacy
-  // label for orphans via the bucket name (set below).
-  summary.project =
-    session.canonicalProject ??
-    (canonicalPath ? projectNameFromPath(summary.projectPath!, summary.project) : summary.projectKey)
+  Object.assign(summary, canonicalSessionProject(session, provider))
 }
 
 /**

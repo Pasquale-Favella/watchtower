@@ -1,41 +1,72 @@
-import { join } from 'path'
-import { homedir, platform } from 'os'
+import { homedir, platform } from 'node:os'
+import { join } from 'node:path'
 
-import { calculateCost, getShortModelName } from '../models.js'
+import { Clock, Effect, Result, Schema, Stream } from 'effect'
+
+import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
-import { isSqliteAvailable, openDatabase, blobToText, type SqliteDatabase } from '../sqlite.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import { checkScanAbort } from '../scan-io.js'
+import { blobToText, isSqliteAvailable, openDatabase, type SqliteDatabase } from '../sqlite.js'
 import type { ToolCall } from '../types.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
-type SessionRow = {
-  id: string
-  name: string
-  working_dir: string | null
-  created_at: string | null
-  updated_at: string | null
-  accumulated_input_tokens: number | null
-  accumulated_output_tokens: number | null
-  provider_name: string | null
-  model_config_json: Uint8Array | string | null
+const sessionRowSchema = Schema.Struct({
+  created_at: Schema.Unknown,
+  updated_at: Schema.Unknown,
+  accumulated_input_tokens: Schema.Unknown,
+  accumulated_output_tokens: Schema.Unknown,
+  model_config_json: Schema.Unknown,
+})
+const discoveryRowSchema = Schema.Struct({
+  id: Schema.String,
+  working_dir: Schema.NullOr(Schema.String),
+  accumulated_input_tokens: Schema.NullOr(Schema.Finite),
+  accumulated_output_tokens: Schema.NullOr(Schema.Finite),
+})
+const modelConfigSchema = Schema.fromJsonString(Schema.Struct({ model_name: Schema.optional(Schema.Unknown) }))
+const modelConfigValueSchema = Schema.NullOr(Schema.Union([Schema.String, Schema.Uint8Array]))
+const contentItemsSchema = Schema.fromJsonString(Schema.Array(Schema.Unknown))
+const contentItemSchema = Schema.Struct({
+  type: Schema.optional(Schema.Unknown),
+  text: Schema.optional(Schema.Unknown),
+  toolCall: Schema.optional(Schema.Unknown),
+})
+const toolCallSchema = Schema.Struct({ value: Schema.optional(Schema.Unknown) })
+const toolCallValueSchema = Schema.Struct({
+  name: Schema.optional(Schema.Unknown),
+  arguments: Schema.optional(Schema.Unknown),
+})
+const toolArgumentsSchema = Schema.Struct({
+  file_path: Schema.optional(Schema.Unknown),
+  command: Schema.optional(Schema.Unknown),
+})
+const decodeSessionRow = Schema.decodeUnknownResult(sessionRowSchema)
+const decodeDiscoveryRow = Schema.decodeUnknownResult(discoveryRowSchema)
+const decodeModelConfig = Schema.decodeUnknownResult(modelConfigSchema)
+const decodeModelConfigValue = Schema.decodeUnknownResult(modelConfigValueSchema)
+const decodeContentItems = Schema.decodeUnknownResult(contentItemsSchema)
+const decodeContentItem = Schema.decodeUnknownResult(contentItemSchema)
+const decodeToolCall = Schema.decodeUnknownResult(toolCallSchema)
+const decodeToolCallValue = Schema.decodeUnknownResult(toolCallValueSchema)
+const decodeToolArguments = Schema.decodeUnknownResult(toolArgumentsSchema)
+const decodeString = Schema.decodeUnknownResult(Schema.String)
+const decodeFinite = Schema.decodeUnknownResult(Schema.Finite)
+const decodeTimestampValue = Schema.decodeUnknownResult(Schema.Union([Schema.String, Schema.Finite]))
+
+function sessionTimestamp(raw: unknown, nowMs: number): Date {
+  const decodedTimestamp = decodeTimestampValue(raw)
+  const dateInput = Result.isSuccess(decodedTimestamp) ? decodedTimestamp.success : String(raw)
+  let timestamp = new Date(dateInput)
+  if (Number.isNaN(timestamp.getTime())) timestamp = new Date(`${String(raw)}Z`)
+  if (Number.isNaN(timestamp.getTime())) timestamp = new Date(nowMs)
+  return timestamp
 }
 
-type ModelConfig = {
-  model_name?: string
-  reasoning?: boolean
-}
-
-type MessageRow = {
-  message_id: string
-  role: string
-  content_json: Uint8Array | string
-  created_timestamp: number
-}
-
-type ContentItem = {
-  type: string
-  toolCall?: { value?: { name?: string; arguments?: Record<string, unknown> } }
-}
+type GooseDatabase = { db: SqliteDatabase; closed: boolean }
+type DatabaseAcquisition = { database: GooseDatabase | null; error: GooseDatabaseError | null }
 
 const toolNameMap: Record<string, string> = {
   developer__shell: 'Bash',
@@ -51,35 +82,77 @@ function sanitize(dir: string): string {
   return dir.replace(/^\//, '').replace(/\//g, '-')
 }
 
-function getDbPath(): string {
-  const root = process.env['GOOSE_PATH_ROOT']
+export function getGooseDbPath(paths?: AppPaths): string {
+  const root = overrideFor(paths, 'GOOSE_PATH_ROOT')
   if (root) return join(root, 'data', 'sessions', 'sessions.db')
 
-  const p = platform()
-  if (p === 'darwin' || p === 'linux') {
-    const base = process.env['XDG_DATA_HOME'] ?? join(homedir(), '.local', 'share')
+  if (platform() === 'darwin' || platform() === 'linux') {
+    const base = platformFor(paths).xdgDataHome ?? join(homedir(), '.local', 'share')
     return join(base, 'goose', 'sessions', 'sessions.db')
   }
   return join(homedir(), 'AppData', 'Roaming', 'Block', 'goose', 'sessions', 'sessions.db')
 }
 
-function validateSchema(db: SqliteDatabase): boolean {
-  try {
-    db.query<{ cnt: number }>('SELECT COUNT(*) as cnt FROM sessions LIMIT 1')
-    db.query<{ cnt: number }>('SELECT COUNT(*) as cnt FROM messages LIMIT 1')
-    return true
-  } catch {
-    return false
-  }
+class GooseDatabaseError extends Schema.TaggedError<GooseDatabaseError>()('GooseDatabaseError', {
+  operation: Schema.Literals(['open', 'read', 'close']),
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
+
+function toError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause), { cause })
 }
 
-function parseModelConfig(raw: string | null): ModelConfig {
-  if (!raw) return {}
-  try {
-    return JSON.parse(raw) as ModelConfig
-  } catch {
-    return {}
-  }
+function databaseError(operation: GooseDatabaseError['operation'], cause: unknown): GooseDatabaseError {
+  const error = toError(cause)
+  return new GooseDatabaseError({ operation, cause: error, message: error.message })
+}
+
+function validateSchema(db: SqliteDatabase): Effect.Effect<boolean> {
+  return Effect.try({
+    try: () => {
+      db.query('SELECT 1 FROM sessions WHERE 0')
+      db.query('SELECT 1 FROM messages WHERE 0')
+      return true
+    },
+    catch: cause => databaseError('read', cause),
+  }).pipe(Effect.catch(() => Effect.succeed(false)))
+}
+
+function closeDatabase(source: GooseDatabase): Effect.Effect<void, GooseDatabaseError> {
+  return Effect.suspend(() => {
+    if (source.closed) return Effect.void
+    source.closed = true
+    return Effect.try({
+      try: () => source.db.close(),
+      catch: cause => databaseError('close', cause),
+    })
+  })
+}
+
+function acquireDatabase(path: string): Effect.Effect<DatabaseAcquisition, never> {
+  return Effect.try({
+    try: () => ({ db: openDatabase(path), closed: false }),
+    catch: cause => databaseError('open', cause),
+  }).pipe(
+    Effect.map(database => ({ database, error: null })),
+    Effect.catchTag('GooseDatabaseError', error => Effect.succeed({ database: null, error })),
+  )
+}
+
+function splitSourcePath(path: string): { dbPath: string; sessionId: string } | undefined {
+  const index = path.lastIndexOf(':')
+  return index < 0 ? undefined : { dbPath: path.slice(0, index), sessionId: path.slice(index + 1) }
+}
+
+function parseContentItems(raw: Uint8Array | string | null | undefined): unknown[] {
+  const decoded = decodeContentItems(blobToText(raw))
+  return Result.isSuccess(decoded) ? [...decoded.success] : []
+}
+
+function string(value: unknown): string | undefined {
+  const decoded = decodeString(value)
+  return Result.isSuccess(decoded) ? decoded.success : undefined
 }
 
 function extractToolsFromMessages(
@@ -98,44 +171,42 @@ function extractToolsFromMessages(
     )
 
     for (const row of rows) {
-      let items: ContentItem[]
-      try {
-        items = JSON.parse(blobToText(row.content_json)) as ContentItem[]
-      } catch {
-        continue
-      }
-      const msgCalls: ToolCall[] = []
-      for (const item of items) {
-        if (item.type !== 'toolRequest') continue
-        const rawName = item.toolCall?.value?.name ?? ''
+      const calls: ToolCall[] = []
+      for (const rawItem of parseContentItems(row.content_json)) {
+        const decodedItem = decodeContentItem(rawItem)
+        if (Result.isFailure(decodedItem) || string(decodedItem.success.type) !== 'toolRequest') continue
+
+        const decodedToolCall = decodeToolCall(decodedItem.success.toolCall)
+        if (Result.isFailure(decodedToolCall)) continue
+        const decodedValue = decodeToolCallValue(decodedToolCall.success.value)
+        if (Result.isFailure(decodedValue)) continue
+        const rawName = string(decodedValue.success.name)
         if (!rawName) continue
+
         const mapped = toolNameMap[rawName] ?? rawName.split('__').pop() ?? rawName
         if (!seen.has(mapped)) {
           seen.add(mapped)
           tools.push(mapped)
         }
         const call: ToolCall = { tool: mapped }
-        const args = item.toolCall?.value?.arguments
-        if (args && typeof args === 'object') {
-          const fp = (args as Record<string, unknown>)['file_path']
-          if (typeof fp === 'string') call.file = fp
-          const cmd = (args as Record<string, unknown>)['command']
-          if (typeof cmd === 'string') call.command = cmd
-        }
-        msgCalls.push(call)
-        if (mapped === 'Bash') {
-          const cmd = item.toolCall?.value?.arguments?.command
-          if (typeof cmd === 'string') {
-            for (const c of extractBashCommands(cmd)) {
-              if (!bashCommands.includes(c)) bashCommands.push(c)
-            }
+        const decodedArgs = decodeToolArguments(decodedValue.success.arguments)
+        const args = Result.isSuccess(decodedArgs) ? decodedArgs.success : undefined
+        const file = string(args?.file_path)
+        const command = string(args?.command)
+        if (file !== undefined) call.file = file
+        if (command !== undefined) call.command = command
+        calls.push(call)
+
+        if (mapped === 'Bash' && command !== undefined) {
+          for (const extracted of extractBashCommands(command)) {
+            if (!bashCommands.includes(extracted)) bashCommands.push(extracted)
           }
         }
       }
-      if (msgCalls.length > 0) toolSequence.push(msgCalls)
+      if (calls.length > 0) toolSequence.push(calls)
     }
   } catch {
-    /* best-effort */
+    // Tool messages are best effort. A damaged sibling message does not discard usage.
   }
 
   return { tools, bashCommands, toolSequence }
@@ -147,117 +218,210 @@ function getFirstUserMessage(db: SqliteDatabase, sessionId: string): string {
       "SELECT CAST(content_json AS BLOB) AS content_json FROM messages WHERE session_id = ? AND role = 'user' ORDER BY created_timestamp ASC LIMIT 1",
       [sessionId],
     )
-    if (rows.length === 0) return ''
-    const items = JSON.parse(blobToText(rows[0]!.content_json)) as ContentItem[]
-    const text = items.find(i => i.type === 'text') as { text?: string } | undefined
-    return (text?.text ?? '').slice(0, 500)
+    const first = rows[0]
+    if (!first) return ''
+    for (const rawItem of parseContentItems(first.content_json)) {
+      const decodedItem = decodeContentItem(rawItem)
+      if (Result.isFailure(decodedItem) || string(decodedItem.success.type) !== 'text') continue
+      return (string(decodedItem.success.text) ?? '').slice(0, 500)
+    }
   } catch {
-    return ''
+    // The first prompt is optional context and must not block usage extraction.
   }
+  return ''
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
+  const signal = context?.signal
+
+  const parseStream = (onUnparsedCall: Effect.Effect<void> = Effect.void): Stream.Stream<ParsedProviderCall, Error> =>
+    Stream.scoped(
+      Stream.unwrap(
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          if (!isSqliteAvailable()) {
+            reportProviderIssue('goose', 'sqlite-unavailable')
+            return Stream.empty
+          }
+
+          const split = splitSourcePath(source.path)
+          if (!split) return Stream.empty
+
+          const acquired = yield* Effect.acquireRelease(acquireDatabase(split.dbPath), value =>
+            value.database ? closeDatabase(value.database).pipe(Effect.orDie) : Effect.void,
+          )
+          const database = acquired.database
+          if (!database) {
+            reportProviderIssue('goose', fileErrorCode(acquired.error?.cause, 'db-open-failed'))
+            return Stream.empty
+          }
+
+          const finishEmpty = () => Stream.fromEffectDrain(closeDatabase(database))
+          const db = database.db
+          if (!(yield* validateSchema(db))) return finishEmpty()
+
+          yield* checkScanAbort(signal)
+          const rows = yield* Effect.try({
+            try: () =>
+              db.query(
+                'SELECT created_at, updated_at, accumulated_input_tokens, accumulated_output_tokens, CAST(model_config_json AS BLOB) AS model_config_json FROM sessions WHERE id = ?',
+                [split.sessionId],
+              ),
+            catch: cause => databaseError('read', cause),
+          })
+          yield* checkScanAbort(signal)
+
+          const decodedRow = decodeSessionRow(rows[0])
+          if (Result.isFailure(decodedRow)) {
+            if (rows.length > 0) yield* onUnparsedCall
+            return finishEmpty()
+          }
+          const session = decodedRow.success
+          const rawInputTokens = session.accumulated_input_tokens ?? 0
+          const rawOutputTokens = session.accumulated_output_tokens ?? 0
+          if (rawInputTokens === 0 && rawOutputTokens === 0) return finishEmpty()
+
+          const deduplicationKey = `goose:${split.sessionId}`
+          if (seenKeys.has(deduplicationKey)) return finishEmpty()
+          seenKeys.add(deduplicationKey)
+
+          const inputResult = decodeFinite(rawInputTokens)
+          const outputResult = decodeFinite(rawOutputTokens)
+          if (Result.isFailure(inputResult) || Result.isFailure(outputResult)) {
+            yield* onUnparsedCall
+            return finishEmpty()
+          }
+          const inputTokens = inputResult.success
+          const outputTokens = outputResult.success
+
+          let model = 'unknown'
+          const configValueResult = decodeModelConfigValue(session.model_config_json)
+          if (Result.isFailure(configValueResult)) {
+            yield* onUnparsedCall
+            return finishEmpty()
+          }
+          if (configValueResult.success !== null) {
+            const decodedConfig = decodeModelConfig(blobToText(configValueResult.success))
+            if (Result.isSuccess(decodedConfig)) {
+              const selectedModel = decodedConfig.success.model_name ?? 'unknown'
+              const modelResult = decodeString(selectedModel)
+              if (Result.isFailure(modelResult)) {
+                yield* onUnparsedCall
+                return finishEmpty()
+              }
+              model = modelResult.success
+            }
+          }
+
+          const { tools, bashCommands, toolSequence } = extractToolsFromMessages(db, split.sessionId)
+          const userMessage = getFirstUserMessage(db, split.sessionId)
+          const raw = session.updated_at || session.created_at || ''
+          const nowMs = yield* Clock.currentTimeMillis
+          const timestamp = sessionTimestamp(raw, nowMs)
+
+          // All SQLite data needed for this call is materialized before pricing.
+          yield* closeDatabase(database)
+          yield* checkScanAbort(signal)
+          const costUSD = yield* Effect.try({
+            try: () => pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0),
+            catch: toError,
+          })
+          yield* checkScanAbort(signal)
+
+          const call: ParsedProviderCall = {
+            provider: 'goose',
+            model,
+            inputTokens,
+            outputTokens,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            cachedInputTokens: 0,
+            reasoningTokens: 0,
+            webSearchRequests: 0,
+            costUSD,
+            tools,
+            bashCommands,
+            toolSequence: toolSequence.length > 1 ? toolSequence : undefined,
+            timestamp: timestamp.toISOString(),
+            speed: 'standard',
+            deduplicationKey,
+            userMessage,
+            sessionId: split.sessionId,
+          }
+          return Stream.succeed(call)
+        }),
+      ),
+    )
+
   return {
+    parseStream,
     async *parse(): AsyncGenerator<ParsedProviderCall> {
-      if (!isSqliteAvailable()) {
-        reportProviderIssue('goose', 'sqlite-unavailable')
-        return
-      }
-
-      const segments = source.path.split(':')
-      const sessionId = segments[segments.length - 1]!
-      const dbPath = segments.slice(0, -1).join(':')
-
-      let db: SqliteDatabase
+      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
       try {
-        db = openDatabase(dbPath)
-      } catch (err) {
-        reportProviderIssue('goose', fileErrorCode(err, 'db-open-failed'))
-        return
-      }
-
-      try {
-        if (!validateSchema(db)) return
-
-        const rows = db.query<SessionRow>(
-          'SELECT id, name, working_dir, created_at, updated_at, accumulated_input_tokens, accumulated_output_tokens, provider_name, CAST(model_config_json AS BLOB) AS model_config_json FROM sessions WHERE id = ?',
-          [sessionId],
-        )
-        if (rows.length === 0) return
-
-        const session = rows[0]!
-        const inputTokens = session.accumulated_input_tokens ?? 0
-        const outputTokens = session.accumulated_output_tokens ?? 0
-        if (inputTokens === 0 && outputTokens === 0) return
-
-        const dedupKey = `goose:${sessionId}`
-        if (seenKeys.has(dedupKey)) return
-        seenKeys.add(dedupKey)
-
-        const config = parseModelConfig(blobToText(session.model_config_json))
-        const model = config.model_name ?? 'unknown'
-        const costUSD = calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
-
-        const { tools, bashCommands, toolSequence } = extractToolsFromMessages(db, sessionId)
-        const userMessage = getFirstUserMessage(db, sessionId)
-
-        const raw = session.updated_at || session.created_at || ''
-        let ts = new Date(raw)
-        if (isNaN(ts.getTime())) ts = new Date(raw + 'Z')
-        if (isNaN(ts.getTime())) ts = new Date()
-
-        yield {
-          provider: 'goose',
-          model,
-          inputTokens,
-          outputTokens,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: 0,
-          cachedInputTokens: 0,
-          reasoningTokens: 0,
-          webSearchRequests: 0,
-          costUSD,
-          tools,
-          bashCommands,
-          toolSequence: toolSequence.length > 1 ? toolSequence : undefined,
-          timestamp: ts.toISOString(),
-          speed: 'standard',
-          deduplicationKey: dedupKey,
-          userMessage,
-          sessionId,
+        while (true) {
+          const next = await iterator.next()
+          if (next.done) return
+          yield next.value
         }
+      } catch (error) {
+        // The Promise adapter preserves the SQLite Error object used by callers.
+        // eslint-disable-next-line no-restricted-syntax
+        if (error instanceof GooseDatabaseError) throw error.cause
+        // eslint-disable-next-line no-restricted-syntax
+        throw error
       } finally {
-        db.close()
+        await iterator.return?.()
       }
     },
   }
 }
 
-async function discoverFromDb(dbPath: string): Promise<SessionSource[]> {
-  let db: SqliteDatabase
-  try {
-    db = openDatabase(dbPath)
-  } catch {
-    return []
-  }
+function discoverFromDb(dbPath: string, context?: ProviderScanContext) {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* checkScanAbort(context?.signal)
+      if (!isSqliteAvailable()) return []
 
-  try {
-    const rows = db.query<SessionRow>(
-      'SELECT id, name, working_dir, created_at, updated_at, accumulated_input_tokens, accumulated_output_tokens, provider_name, CAST(model_config_json AS BLOB) AS model_config_json FROM sessions ORDER BY updated_at DESC',
-    )
+      const acquired = yield* Effect.acquireRelease(acquireDatabase(dbPath), value =>
+        value.database ? closeDatabase(value.database).pipe(Effect.orDie) : Effect.void,
+      )
+      if (!acquired.database) return []
 
-    return rows
-      .filter(r => (r.accumulated_input_tokens ?? 0) > 0 || (r.accumulated_output_tokens ?? 0) > 0)
-      .map(row => ({
-        path: `${dbPath}:${row.id}`,
-        project: row.working_dir ? sanitize(row.working_dir) : 'goose',
-        provider: 'goose',
-      }))
-  } catch {
-    return []
-  } finally {
-    db.close()
-  }
+      const db = acquired.database.db
+      const result = yield* Effect.result(
+        Effect.try({
+          try: () =>
+            db.query(
+              'SELECT id, working_dir, accumulated_input_tokens, accumulated_output_tokens FROM sessions ORDER BY updated_at DESC',
+            ),
+          catch: cause => databaseError('read', cause),
+        }),
+      )
+      yield* checkScanAbort(context?.signal)
+      if (Result.isFailure(result)) {
+        yield* closeDatabase(acquired.database)
+        return []
+      }
+
+      const sessions: SessionSource[] = []
+      for (const raw of result.success) {
+        const decoded = decodeDiscoveryRow(raw)
+        if (Result.isFailure(decoded)) continue
+        const row = decoded.success
+        if ((row.accumulated_input_tokens ?? 0) <= 0 && (row.accumulated_output_tokens ?? 0) <= 0) continue
+        sessions.push({
+          path: `${dbPath}:${row.id}`,
+          project: row.working_dir ? sanitize(row.working_dir) : 'goose',
+          provider: 'goose',
+        })
+      }
+
+      yield* closeDatabase(acquired.database)
+      yield* checkScanAbort(context?.signal)
+      return sessions
+    }),
+  )
 }
 
 const modelDisplayNames: Record<string, string> = {
@@ -268,7 +432,9 @@ const modelDisplayNames: Record<string, string> = {
   'gpt-4o-mini': 'GPT-4o Mini',
 }
 
-export function createGooseProvider(): Provider {
+export function createGooseProvider(paths?: AppPaths): Provider {
+  const discover = (context?: ProviderScanContext) => discoverFromDb(getGooseDbPath(paths), context)
+
   return {
     name: 'goose',
     displayName: 'Goose',
@@ -281,14 +447,23 @@ export function createGooseProvider(): Provider {
       return toolNameMap[rawTool] ?? rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      if (!isSqliteAvailable()) return []
-      const dbPath = getDbPath()
-      return discoverFromDb(dbPath)
+    discoverSessionsEffect: discover,
+
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // Remove this Promise edge when external discovery callers use the Effect hook.
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discover(context)).catch(error =>
+        Promise.reject(error instanceof GooseDatabaseError ? error.cause : error),
+      )
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

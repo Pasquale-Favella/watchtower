@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
@@ -13,9 +13,30 @@ import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { ExportFileContent } from '../src/main/export-calculation.js'
 import { FxRates } from '../src/main/fx.js'
-import { LedgerConfig, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { openWorkerOwner } from '../src/main/worker-runtime.js'
+import { LedgerConfig, LedgerExportReads, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
+import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+
+interface WorkerOwner {
+  dbPath: string
+  runtime: WorkerRuntime
+}
+
+function removeTemporaryDirectory(directory: string): void {
+  const resolvedDirectory = resolve(directory)
+  const resolvedParent = dirname(resolvedDirectory)
+  const resolvedTempDirectory = resolve(tmpdir())
+  const directoryName = basename(resolvedDirectory)
+  const prefix = 'watchtower-worker-export-'
+  if (
+    resolvedParent !== resolvedTempDirectory ||
+    !directoryName.startsWith(prefix) ||
+    directoryName.length <= prefix.length
+  ) {
+    throw new Error(`Refusing to remove unexpected temporary directory: ${resolvedDirectory}`)
+  }
+  rmSync(resolvedDirectory, { recursive: true, force: true })
+}
 
 interface ExportWrite {
   path: string
@@ -24,7 +45,7 @@ interface ExportWrite {
 }
 
 async function withWorker(
-  run: (context: DbWorkerContext, owner: ReturnType<typeof openWorkerOwner>, writes: ExportWrite[]) => Promise<void>,
+  run: (context: DbWorkerContext, owner: WorkerOwner, writes: ExportWrite[]) => Promise<void>,
   fileError?: ExportFileError,
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-export-'))
@@ -60,60 +81,54 @@ async function withWorker(
     PricingDiagnostics,
     PricingDiagnostics.of({ reportUnpricedModels: () => Effect.void }),
   )
-  const owner = openWorkerOwner(join(directory, 'ledger.db'), undefined, Layer.mergeAll(files, fx, diagnostics))
-  const context = new DbWorkerContext(
-    { dbPath: owner.ledger.dbPath, dataDir: directory, cacheDir: join(directory, 'cache') },
-    () => {},
-    owner,
-  )
+  const dbPath = join(directory, 'ledger.db')
+  let runtime: WorkerRuntime | undefined
+  let context: DbWorkerContext | undefined
   try {
+    runtime = openWorkerRuntime(dbPath, undefined, Layer.mergeAll(files, fx, diagnostics))
+    const owner = { dbPath, runtime }
+    context = new DbWorkerContext({ dbPath, dataDir: directory, cacheDir: join(directory, 'cache') }, () => {}, {
+      runtime,
+    })
     await run(context, owner, writes)
   } finally {
     vi.restoreAllMocks()
-    await context.close()
-    rmSync(directory, { recursive: true, force: true })
+    try {
+      if (context) await context.close()
+    } finally {
+      try {
+        if (runtime) await runtime.dispose()
+      } finally {
+        removeTemporaryDirectory(directory)
+      }
+    }
   }
 }
 
-function seedLedger(owner: ReturnType<typeof openWorkerOwner>): void {
-  owner.ledger.portIn({
-    provider: 'opencode',
-    envFingerprint: 'worker-export',
-    filePath: FIXTURE_SOURCE_PATH,
-    verdict: 'new',
-    cachedFile: buildFixtureCachedFile(),
-  })
-}
-
-function forbidFacadeReads(owner: ReturnType<typeof openWorkerOwner>): void {
-  for (const method of [
-    'getSources',
-    'getSessions',
-    'getTurns',
-    'getCalls',
-    'getCallFacts',
-    'getModelAliases',
-    'getPriceOverrides',
-    'getDisplayCurrency',
-    'getCurrencyRate',
-    'runQueriesSync',
-    'runRepositorySync',
-  ] as const) {
-    vi.spyOn(owner.ledger, method).mockImplementation(() => {
-      throw new Error(`Export must not call the compatibility facade: ${method}`)
-    })
-  }
+function seedLedger(owner: WorkerOwner): void {
+  owner.runtime.runSync(
+    Effect.flatMap(LedgerIngest, ingest =>
+      ingest.portIn({
+        provider: 'opencode',
+        envFingerprint: 'worker-export',
+        filePath: FIXTURE_SOURCE_PATH,
+        verdict: 'new',
+        cachedFile: buildFixtureCachedFile(),
+      }),
+    ),
+  )
 }
 
 describe('worker export routes', () => {
   for (const kind of ['csv', 'json'] as const) {
     const operation = `export:${kind}` as const
 
-    it(`${operation} uses one canonical snapshot and one fresh currency capture`, async () => {
+    it(`${operation} uses one sufficient export read and one fresh currency capture`, async () => {
       await withWorker(async (context, owner, writes) => {
         seedLedger(owner)
         const config = owner.runtime.runSync(LedgerConfig)
         const queries = owner.runtime.runSync(LedgerQueries)
+        const reads = owner.runtime.runSync(LedgerExportReads)
         await owner.runtime.runPromise(
           config.setCurrencyRate({ code: 'EUR', symbol: '€', rate: 0.9, updatedAt: '2026-07-01T00:00:00.000Z' }),
         )
@@ -121,8 +136,18 @@ describe('worker export routes', () => {
           config.setCurrencyRate({ code: 'JPY', symbol: '¥', rate: 150, updatedAt: '2026-07-01T00:00:00.000Z' }),
         )
         await owner.runtime.runPromise(config.setDisplayCurrency('EUR'))
-        forbidFacadeReads(owner)
-        const snapshots = vi.spyOn(queries, 'getRequestSnapshotData')
+        const queryReads = [
+          vi.spyOn(queries, 'hasSources'),
+          vi.spyOn(queries, 'getSources'),
+          vi.spyOn(queries, 'getSessions'),
+          vi.spyOn(queries, 'getTurns'),
+          vi.spyOn(queries, 'getCalls'),
+          vi.spyOn(queries, 'getCallFacts'),
+          vi.spyOn(queries, 'getRequestSnapshotData'),
+        ]
+        const aliases = vi.spyOn(config, 'getModelAliases')
+        const overrides = vi.spyOn(config, 'getPriceOverrides')
+        const exportReads = vi.spyOn(reads, 'getExportData')
         const currencies = vi.spyOn(config, 'getDisplayCurrency')
         const rates = vi.spyOn(config, 'getCurrencyRate')
 
@@ -136,7 +161,10 @@ describe('worker export routes', () => {
           path: '/export/next',
         })
 
-        expect(snapshots).toHaveBeenCalledTimes(2)
+        expect(exportReads).toHaveBeenCalledTimes(2)
+        for (const read of queryReads) expect(read).not.toHaveBeenCalled()
+        expect(aliases).not.toHaveBeenCalled()
+        expect(overrides).not.toHaveBeenCalled()
         expect(currencies).toHaveBeenCalledTimes(2)
         expect(rates.mock.calls).toEqual([['EUR'], ['JPY']])
         expect(writes).toHaveLength(2)
@@ -173,21 +201,20 @@ describe('worker export routes', () => {
 
     it(`${operation} keeps database and schema failures in the failure channel`, async () => {
       await withWorker(async (context, owner, writes) => {
-        const queries = owner.runtime.runSync(LedgerQueries)
-        const snapshot = vi.spyOn(queries, 'getRequestSnapshotData')
+        const reads = owner.runtime.runSync(LedgerExportReads)
+        const exportDataRead = vi.spyOn(reads, 'getExportData')
         const sqlError = new SqlError.SqlError({
           reason: new SqlError.SqlSyntaxError({
             cause: new Error('private database cause'),
             message: 'controlled failure',
           }),
         })
-        snapshot.mockImplementationOnce(() => Effect.fail(sqlError))
+        exportDataRead.mockImplementationOnce(() => Effect.fail(sqlError))
         await expect(context.dispatch(operation, ['/export/report'])).rejects.toMatchObject({ _tag: 'SqlError' })
 
-        snapshot.mockImplementationOnce(() =>
+        exportDataRead.mockImplementationOnce(() =>
           Schema.decodeUnknownEffect(Schema.String)(42).pipe(
             Effect.map(() => ({
-              sources: [],
               sessions: [],
               turns: [],
               calls: [],

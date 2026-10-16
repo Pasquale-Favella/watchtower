@@ -1,12 +1,15 @@
-import { writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 
+import * as ConfigProvider from 'effect/ConfigProvider'
+import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { existsSync, mkdirSync } from 'fs'
-import { dirname, join } from 'path'
+import { existsSync } from 'fs'
+import { join } from 'path'
 
 import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
+import type { ComparePair } from '../shared/schemas/compare.js'
+import type { ExportResult } from '../shared/schemas/export.js'
 import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
 import {
   type LedgerMcpConnection,
@@ -14,17 +17,16 @@ import {
   ledgerMcpStartupModeSchema,
   type LedgerMcpStatus,
 } from '../shared/schemas/ledger-mcp.js'
+import type { OverviewScope } from '../shared/schemas/overview.js'
 import { skillsSaveRequestSchema, type SkillsSaveResult, type SkillsThresholds } from '../shared/schemas/skills.js'
 import type { AcpMcpServer } from './agents/harnesses/types.js'
-import { type LedgerMcpAttachment, registerAgentsIpc } from './agents/ipc.js'
+import { registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
-import { createSidecarPool } from './agents/ledger-mcp/pool.js'
-import { startLedgerMcpHttp } from './agents/ledger-mcp/sidecar.js'
+import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
+import { saveSkill } from './application/save-skill.js'
 import { type BackgroundShell, createBackgroundShell } from './background-shell.js'
-import type { ComparePair } from './compare-view.js'
 import { DbWorkerClient } from './db-worker/client.js'
-import { initAppPaths } from './env.js'
-import type { ExportResult } from './export.js'
+import { initAppPaths, readAppPathsEffect } from './env.js'
 import { makeMainRuntime } from './main-runtime.js'
 import {
   closeOperationalLog,
@@ -33,7 +35,6 @@ import {
   logIpcError,
   safeLogOperationalEvent,
 } from './operational-log.js'
-import type { OverviewScope } from './overview.js'
 import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
 
 /**
@@ -59,7 +60,13 @@ const mainRuntime = makeMainRuntime({
  * MCP clients, and any future harness that rejects stdio. It remains lazy by
  * default and is prewarmed after the data worker is ready when the persisted
  * startup setting requests it. */
-const sidecarPool = createSidecarPool({ spawn: ctx => startLedgerMcpHttp(ctx) })
+const sidecarPool = {
+  connection: (context: ReturnType<typeof ledgerMcpContext>) =>
+    mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.connection(context))),
+  regenerate: (context: ReturnType<typeof ledgerMcpContext>) =>
+    mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.regenerate(context))),
+  status: () => mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.status())),
+}
 /** Tray + floating orb + hide-on-close (set once the app is ready). */
 let backgroundShell: BackgroundShell | null = null
 
@@ -238,15 +245,12 @@ function registerIpc(db: DbWorkerClient): void {
       filters: [{ name: 'SKILL.md', extensions: ['md'] }],
     })
     if (picked.canceled || !picked.filePath) return { ok: false, error: 'cancelled' }
-    try {
-      // The dialog confirmed the target — create its parent dir so the write
-      // succeeds even when the nested .agents/skills/<slug>/ is brand new.
-      mkdirSync(dirname(picked.filePath), { recursive: true })
-      await writeFile(picked.filePath, parsed.success.content, 'utf8')
-      return { ok: true, path: picked.filePath }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
+    return mainRuntime.runPromise(
+      saveSkill(picked.filePath, parsed.success.content).pipe(
+        Effect.map(path => ({ ok: true as const, path })),
+        Effect.catchTag('SaveSkillError', error => Effect.succeed({ ok: false as const, error: error.message })),
+      ),
+    )
   })
 
   handleLogged('optimize:yield', (_event, scope: OverviewScope) => db.request('optimize:yield', scope))
@@ -406,30 +410,27 @@ function registerIpc(db: DbWorkerClient): void {
     // filters through each tool's optional `scope` argument). Paths:
     // `process.execPath` (dev + packaged), the bundled entry under appPath,
     // and the ledger DB beside the cache.
-    ledgerMcpServer: async (harnessKind: string): Promise<LedgerMcpAttachment | null> => {
-      await db.ready
-      // Fresh install: no ledger.db yet → no data to serve, so no MCP server
-      // (its read-only open would throw on a missing file). Once the first
-      // scan lands, the next run injects it.
-      const context = ledgerMcpContext()
-      const dbPath = context.dbPath
-      if (!existsSync(dbPath)) return null
-      // Harnesses that reject client-provided stdio servers (Copilot) get
-      // the same ledger over the app-level loopback-HTTP sidecar instead. A null
-      // (spawn failure, reset raced the spawn) degrades to no-tools (the
-      // turn still runs) rather than failing the turn.
-      if (ledgerMcpTransportFor(harnessKind) === 'http') {
-        try {
-          return await sidecarPool.acquire(context)
-        } catch {
-          return null
+    ledgerMcpServer: harnessKind =>
+      Effect.gen(function* () {
+        yield* Effect.tryPromise({ try: () => db.ready, catch: error => error })
+        // Fresh install: no ledger.db yet → no data to serve, so no MCP server
+        // (its read-only open would throw on a missing file). Once the first
+        // scan lands, the next run injects it.
+        const context = ledgerMcpContext()
+        const dbPath = context.dbPath
+        if (!existsSync(dbPath)) return null
+        // Harnesses that reject client-provided stdio servers (Copilot) get
+        // the same ledger over the app-level loopback-HTTP sidecar instead. A null
+        // (spawn failure, reset raced the spawn) degrades to no-tools (the
+        // turn still runs) rather than failing the turn.
+        if (ledgerMcpTransportFor(harnessKind) === 'http') {
+          return yield* Effect.flatMap(LedgerMcpPool, pool => pool.acquire(context))
         }
-      }
-      return {
-        server: buildLedgerMcpServer(context),
-        release: () => {},
-      }
-    },
+        return {
+          server: buildLedgerMcpServer(context),
+          release: () => {},
+        }
+      }),
   })
 }
 
@@ -475,15 +476,17 @@ app.whenReady().then(async () => {
   // The data plane boots first: the worker owns the ledger from here on —
   // requests simply queue on its port until its synchronous init finishes.
   const cacheDir = join(dataDir, 'cache')
-  // This isolate's own copy of the `AppPaths` startup snapshot, from the same
-  // value the worker gets below — so a sync discovery path reached from main
-  // resolves the same cache dir as the one reached from the worker. The env
-  // override still wins, exactly as it did before the snapshot existed: the
-  // snapshot is initialized with the value the reader would have resolved
-  // anyway, never with a value that shadows the documented override.
-  initAppPaths({ cacheDir: process.env['WATCHTOWER_CACHE_DIR'] ?? cacheDir })
+  // Capture the full sync-path snapshot once through this isolate's existing
+  // application runtime. Pass its resolved cache directory to the worker so
+  // both isolates use the same cache root.
+  const appPathSnapshot = await mainRuntime.runPromise(
+    readAppPathsEffect(cacheDir).pipe(
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ preserveEmptyStrings: true })),
+    ),
+  )
+  initAppPaths(appPathSnapshot)
   const db = new DbWorkerClient(
-    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir },
+    { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir: appPathSnapshot.cacheDir },
     join(__dirname, 'db-worker.js'),
   )
   relayWorkerEvents(db)
@@ -558,9 +561,9 @@ app.on('before-quit', event => {
   event.preventDefault()
   if (quitState === 'closing') return
   quitState = 'closing'
-  sidecarPool.releaseAll()
-  const coachShutdown = Promise.resolve()
-    .then(() => agentsCleanup?.dispose())
+  const coachShutdown = mainRuntime
+    .runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.releaseAll()))
+    .finally(() => agentsCleanup?.dispose())
     .finally(() => mainRuntime.dispose())
   void Promise.allSettled([coachShutdown, dbClient?.shutdown()]).then(() => {
     try {

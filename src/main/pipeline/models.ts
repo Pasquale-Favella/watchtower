@@ -1,3 +1,4 @@
+import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { mkdir, readFile, writeFile } from 'fs/promises'
@@ -30,6 +31,7 @@ import {
   normalizeProxyPath as normalizeProxyPathPure,
   type ProxyPathConfig,
 } from './proxy-paths.js'
+import { createScanPricing, type ScanPricing } from './scan-pricing.js'
 
 export type { ModelCosts } from './pricing-calculation.js'
 export type { ConfigRatePair, PricingConfigLookup } from './pricing-calculation.js'
@@ -902,6 +904,15 @@ export function captureModelPricingCatalogue(): PricingCatalogue {
   return capturedPricingCatalogue
 }
 
+/** Capture both pricing and local-savings mappings before parser IO begins.
+ * Production scans call this once after loading pricing. Remove standalone
+ * parser and ingest defaults when their direct callers supply that capture. */
+export function captureScanPricing(paths?: AppPaths): ScanPricing {
+  return createScanPricing(captureModelPricingCatalogue(), captureLocalModelSavings(), model =>
+    warnAboutUnknownModel(model, paths),
+  )
+}
+
 export function calculateCost(
   model: string,
   inputTokens: number,
@@ -964,7 +975,7 @@ function describeErrorCause(cause: unknown): string {
   return String(cause)
 }
 
-function parseCachedPricingPayload(raw: string, ttlMs: number): Map<string, ModelCosts> | null {
+function parseCachedPricingPayload(raw: string, ttlMs: number, nowMs: number): Map<string, ModelCosts> | null {
   let parsed: { timestamp: number; data: Record<string, ModelCosts> } | null = null
   try {
     parsed = JSON.parse(raw) as { timestamp: number; data: Record<string, ModelCosts> }
@@ -974,7 +985,7 @@ function parseCachedPricingPayload(raw: string, ttlMs: number): Map<string, Mode
   if (parsed === null || typeof parsed.timestamp !== 'number' || !parsed.data || typeof parsed.data !== 'object') {
     return null
   }
-  if (Date.now() - parsed.timestamp > ttlMs) return null
+  if (nowMs - parsed.timestamp > ttlMs) return null
   return new Map(Object.entries(parsed.data))
 }
 
@@ -996,7 +1007,8 @@ const loadCachedPricingEffect = Effect.fn('loadCachedPricingEffect')(function* (
     return null
   }
   const { pricingCacheTtlMs } = yield* Env
-  return parseCachedPricingPayload(raw, pricingCacheTtlMs)
+  const nowMs = yield* Clock.currentTimeMillis
+  return parseCachedPricingPayload(raw, pricingCacheTtlMs, nowMs)
 })
 
 const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(function* (
@@ -1059,16 +1071,16 @@ const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(funct
     const stripped = name.replace(/^[^/]+\//, '')
     if (stripped !== name && !pricing.has(stripped)) pricing.set(stripped, costs)
   }
+  const cacheError = (cause: unknown) =>
+    new PricingRefreshError({ reason: 'cache', message: describeErrorCause(cause) })
   yield* Effect.tryPromise({
-    try: async () => {
-      await mkdir(getCacheDir(), { recursive: true })
-      await writeFile(getCachePath(), JSON.stringify({ timestamp: Date.now(), data: Object.fromEntries(pricing) }))
-    },
-    catch: cause =>
-      new PricingRefreshError({
-        reason: 'cache',
-        message: describeErrorCause(cause),
-      }),
+    try: () => mkdir(getCacheDir(), { recursive: true }),
+    catch: cacheError,
+  })
+  const timestamp = yield* Clock.currentTimeMillis
+  yield* Effect.tryPromise({
+    try: () => writeFile(getCachePath(), JSON.stringify({ timestamp, data: Object.fromEntries(pricing) })),
+    catch: cacheError,
   })
   return pricing
 })

@@ -1,6 +1,7 @@
+import { strict as assert } from 'node:assert'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
@@ -25,10 +26,17 @@ import { Env } from '../src/main/env.js'
 import { OperationalLog, type OperationalLogSink, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { runScan, ScanAbortedError, type ScanMetadata } from '../src/main/pipeline/scan.js'
-import { openWorkerOwner, type WorkerOverrides } from '../src/main/worker-runtime.js'
+import { openWorkerRuntime, type WorkerOverrides, type WorkerRuntime } from '../src/main/worker-runtime.js'
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'watchtower-dbworker-'))
+}
+
+function removeTempDir(directory: string, prefix: string): void {
+  const target = resolve(directory)
+  assert.equal(dirname(target), resolve(tmpdir()))
+  assert.ok(basename(target).startsWith(prefix))
+  rmSync(target, { recursive: true, force: true })
 }
 
 function okFetch(body: unknown): typeof fetch {
@@ -48,14 +56,15 @@ function throwingFetch(message = 'offline'): typeof fetch {
 describe('DbWorkerContext ops (ADR 0023)', () => {
   let dir = ''
   let ctx: DbWorkerContext | null = null
+  let runtime: WorkerRuntime | null = null
   const events: DbWorkerEvent[] = []
 
-  /** Uses the same runtime, client, migrations and facade owner as worker boot. */
+  /** Uses the same runtime, client and migrations as worker boot. */
   function openWith<Overrides extends WorkerOverrides = never>(runtimeLayer?: Layer.Layer<Overrides>): DbWorkerContext {
     dir = tempDataDir()
     const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
-    const owner = openWorkerOwner(init.dbPath, undefined, runtimeLayer)
-    ctx = new DbWorkerContext(init, event => events.push(event), owner)
+    runtime = openWorkerRuntime(init.dbPath, undefined, runtimeLayer)
+    ctx = new DbWorkerContext(init, event => events.push(event), { runtime })
     return ctx
   }
 
@@ -67,12 +76,16 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     events.length = 0
     try {
       await ctx?.close()
-    } catch {
-      /* already closed */
+    } finally {
+      try {
+        await runtime?.dispose()
+      } finally {
+        ctx = null
+        runtime = null
+        if (dir) removeTempDir(dir, 'watchtower-dbworker-')
+        dir = ''
+      }
     }
-    ctx = null
-    if (dir) rmSync(dir, { recursive: true, force: true })
-    dir = ''
   })
 
   it('reports an unscanned status on a fresh ledger', async () => {
@@ -95,8 +108,8 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     vi.useFakeTimers()
     const c = open()
     const triggerScan = vi
-      .spyOn(c as unknown as { triggerBackgroundScan: () => Promise<void> }, 'triggerBackgroundScan')
-      .mockResolvedValue(undefined)
+      .spyOn(c as unknown as { triggerBackgroundScanEffect: () => Effect.Effect<void> }, 'triggerBackgroundScanEffect')
+      .mockReturnValue(Effect.void)
 
     try {
       await c.dispatch('cadence:set', ['30s'])
@@ -263,6 +276,118 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     expect(closed).toBe(true)
   })
 
+  it('emits background scan completion before closing the scan scope', async () => {
+    const c = open()
+    let resolveScan!: (metadata: ScanMetadata) => void
+    const scanResult = new Promise<ScanMetadata>(resolve => {
+      resolveScan = resolve
+    })
+    vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    ).mockReturnValue(Effect.tryPromise({ try: () => scanResult, catch: cause => cause }))
+
+    const worker = c as unknown as { triggerBackgroundScanEffect(): Effect.Effect<void> }
+    const activeRuntime = runtime
+    if (!activeRuntime) throw new Error('DbWorker runtime was not initialized')
+    await activeRuntime.runPromise(worker.triggerBackgroundScanEffect())
+    await vi.waitFor(() => expect((c as unknown as { activeScan: unknown }).activeScan).not.toBeNull())
+
+    let eventsAtClose: DbWorkerEvent[] | undefined
+    const closing = c.close().then(() => {
+      eventsAtClose = [...events]
+    })
+    await Promise.resolve()
+    expect(eventsAtClose).toBeUndefined()
+
+    resolveScan({
+      scanId: 'background-test',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      portedFiles: 1,
+      unchangedFiles: 0,
+      failedFiles: 0,
+      perProvider: [],
+      aborted: false,
+    })
+    await closing
+
+    expect(eventsAtClose).toContainEqual(expect.objectContaining({ event: 'store:changed' }))
+    expect(eventsAtClose).toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.finish' }))
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
+  })
+
+  it('clears a background scan owner when startup event emission defects', async () => {
+    const c = open()
+    const worker = c as unknown as { triggerBackgroundScanEffect(): Effect.Effect<void> }
+    const startFailure = new Error('scan start event failed')
+    vi.spyOn(c as unknown as { emitScanStart: () => void }, 'emitScanStart').mockImplementation(() => {
+      throw startFailure
+    })
+    const performScan = vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    )
+    const activeRuntime = runtime
+    if (!activeRuntime) throw new Error('DbWorker runtime was not initialized')
+
+    await expect(activeRuntime.runPromise(worker.triggerBackgroundScanEffect())).rejects.toThrow(startFailure)
+    expect(performScan).not.toHaveBeenCalled()
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
+  })
+
+  it('rolls back manual scan admission when the start event defects', async () => {
+    const c = open()
+    const startFailure = new Error('manual scan start event failed')
+    vi.spyOn(c as unknown as { emitScanStart: (provider?: string) => void }, 'emitScanStart').mockImplementation(() => {
+      throw startFailure
+    })
+    const performScan = vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    )
+
+    await expect(c.dispatch('scan:start', [])).rejects.toBe(startFailure)
+    expect(performScan).not.toHaveBeenCalled()
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
+  })
+
+  it('owns manual finish failures and blocks replacement until failure events finish', async () => {
+    const c = open()
+    const finishFailure = new Error('scan finish event failed')
+    const metadata: ScanMetadata = {
+      scanId: 'manual-finish-failure',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      portedFiles: 0,
+      unchangedFiles: 0,
+      failedFiles: 0,
+      perProvider: [],
+      aborted: false,
+    }
+    vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    ).mockReturnValue(Effect.succeed(metadata))
+    let replacement: Promise<unknown> | undefined
+    vi.spyOn(c as unknown as { emitScanFinish: (result: ScanMetadata) => void }, 'emitScanFinish').mockImplementation(
+      () => {
+        replacement = c.dispatch('scan:start', [])
+        throw finishFailure
+      },
+    )
+
+    await expect(c.dispatch('scan:start', [])).resolves.toEqual({
+      ok: false,
+      aborted: false,
+      error: finishFailure.message,
+    })
+    await expect(replacement).resolves.toEqual({ ok: false, alreadyRunning: true })
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
+    expect(events).toContainEqual({ event: 'scan:error', manual: true, message: finishFailure.message })
+    expect(events).toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.error', level: 'error' }))
+  })
+
   it('scan:abort interrupts the running scan fiber and maps to {ok:false, aborted:true}', async () => {
     const c = open()
     const scanResult = new Promise<ScanMetadata>(() => {})
@@ -279,6 +404,36 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     await expect(request).resolves.toMatchObject({ ok: false, aborted: true })
     await expect(c.dispatch('scan:active', [])).resolves.toBe(false)
     expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
+  })
+
+  it('reports an abort before manual work registration without starting the scan', async () => {
+    const c = open()
+    const activeRuntime = runtime
+    if (!activeRuntime) throw new Error('DbWorker runtime was not initialized')
+    const performScan = vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    )
+    const runSync = activeRuntime.runSync.bind(activeRuntime)
+    const runSyncSpy = vi.spyOn(activeRuntime, 'runSync')
+    let abortRequest: Promise<unknown> | undefined
+    let stopAtFork = true
+    runSyncSpy.mockImplementation(effect => {
+      // Dispatch stop at the external fork boundary: admission and start event
+      // have happened, but the owned lifecycle fiber has not started yet.
+      if (stopAtFork) {
+        stopAtFork = false
+        abortRequest = c.dispatch('scan:abort', [])
+      }
+      return runSync(effect)
+    })
+
+    await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: false, aborted: true, error: 'scan aborted' })
+    await expect(abortRequest).resolves.toBeNull()
+    expect(performScan).not.toHaveBeenCalled()
+    expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
+    expect(events).toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.abort', level: 'warn' }))
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
   })
 
   it('ScanAbortedError TaggedError preserves instanceof, name, message, _tag (parser name-check)', () => {
@@ -378,9 +533,12 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
       expect(typeof failed.error).toBe('string')
       expect(failed.error).toContain('offline')
     } finally {
-      vi.stubGlobal('fetch', originalFetch)
-      delete process.env['WATCHTOWER_CACHE_DIR']
-      rmSync(pricingCacheDir, { recursive: true, force: true })
+      try {
+        vi.stubGlobal('fetch', originalFetch)
+        delete process.env['WATCHTOWER_CACHE_DIR']
+      } finally {
+        removeTempDir(pricingCacheDir, 'watchtower-pricing-wiring-')
+      }
     }
   })
 
@@ -481,7 +639,7 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
   it('files aborted with outcome label via fake sink (abort flag + onDelta seam)', async () => {
     const { sink, records } = makeFakeSink()
     const program = provideScanLayers(
-      runScan(lifetimeOptions(), undefined, { isAborted: () => true }, async () => {}),
+      runScan(lifetimeOptions(), undefined, { isAborted: () => true }, () => Effect.void),
       sink,
     )
     const error = await Effect.runPromise(program.pipe(Effect.flip))
@@ -516,7 +674,7 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
     await expect(Effect.runPromise(okProgram)).resolves.toMatchObject({ aborted: false })
 
     const abortProgram = provideScanLayers(
-      runScan(lifetimeOptions(), undefined, { isAborted: () => true }, async () => {}),
+      runScan(lifetimeOptions(), undefined, { isAborted: () => true }, () => Effect.void),
       throwing,
     )
     const error = await Effect.runPromise(abortProgram.pipe(Effect.flip))
@@ -665,15 +823,134 @@ describe('DbWorkerClient request/response correlation', () => {
     await client.terminate()
   })
 
+  it.each([false, true])('settles opaque thread errors safely when ready is %s', async becameReady => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    try {
+      if (becameReady) {
+        worker.emit('message', { event: 'ready' })
+        await client.ready
+      }
+      const ready = becameReady
+        ? Promise.resolve()
+        : expect(client.ready).rejects.toThrow('The database worker failed.')
+      const pending = expect(client.request('overview:query', {})).rejects.toThrow('The database worker failed.')
+      expect(() => worker.emit('error', Object.create(null))).not.toThrow()
+      await Promise.all([ready, pending])
+      worker.emit('exit', 1)
+      if (!becameReady) expect(fakes).toHaveLength(1)
+    } finally {
+      await client.terminate()
+    }
+  })
+
   it('coalesces identical concurrent reads into one execution', async () => {
     const { client, fakes } = makeClient()
-    const [a, b] = await Promise.all([
-      client.request('overview:query', { period: 'today' }),
-      client.request('overview:query', { period: 'today' }),
-    ])
+    const first = client.request('overview:query', { period: 'today' })
+    const second = client.request('overview:query', { period: 'today' })
+    expect(second).toBe(first)
+    const [a, b] = await Promise.all([first, second])
     expect(fakes[0]!.posted).toHaveLength(1)
     expect(a).toEqual(b)
     await client.terminate()
+  })
+
+  it('keeps one coalesced flight while retrying reads overtaken by multiple mutations', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const args = { period: 'today' }
+    const first = client.request('overview:query', args)
+    expect(client.request('overview:query', args)).toBe(first)
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+
+    const firstId = (worker.posted[0] as { id: number }).id
+    worker.emit('message', { event: 'config:changed' })
+    worker.emit('message', { event: 'store:changed', metadata: {} })
+    worker.emit('message', { id: firstId, ok: true, data: 'stale snapshot' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
+    expect(client.request('overview:query', args)).toBe(first)
+
+    const secondId = (worker.posted[1] as { id: number }).id
+    worker.emit('message', { event: 'config:changed' })
+    worker.emit('message', { id: secondId, ok: true, data: 'also stale' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(3))
+    expect(client.request('overview:query', args)).toBe(first)
+
+    const thirdId = (worker.posted[2] as { id: number }).id
+    worker.emit('message', { id: thirdId, ok: true, data: 'current snapshot' })
+    await expect(first).resolves.toBe('current snapshot')
+    expect(worker.posted.map(message => (message as { op: string }).op)).toEqual([
+      'overview:query',
+      'overview:query',
+      'overview:query',
+    ])
+    await client.terminate()
+  })
+
+  it('retries with the original cloned query args after the caller mutates them', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const args = { period: 'today' }
+    const pending = client.request('overview:query', args)
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+    args.period = 'week'
+    worker.emit('message', { event: 'config:changed' })
+    worker.emit('message', { id: (worker.posted[0] as { id: number }).id, ok: true, data: 'stale' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
+
+    expect((worker.posted[1] as { args: unknown[] }).args).toEqual([{ period: 'today' }])
+    worker.emit('message', { id: (worker.posted[1] as { id: number }).id, ok: true, data: 'current' })
+    await expect(pending).resolves.toBe('current')
+    await client.terminate()
+  })
+
+  it('does not retry a failed read after a mutation event', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const pending = client.request('overview:query', { period: 'today' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+    worker.emit('message', { event: 'config:changed' })
+    worker.emit('message', { id: (worker.posted[0] as { id: number }).id, ok: false, error: 'read failed' })
+    await expect(pending).rejects.toThrow('read failed')
+    expect(worker.posted).toHaveLength(1)
+    await client.terminate()
+  })
+
+  it('does not send an invalidated retry after shutdown starts', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const pending = client.request('overview:query', { period: 'today' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+    worker.emit('message', { event: 'config:changed' })
+
+    const closing = client.shutdown()
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
+    const [readRequest, closeRequest] = worker.posted as { id: number; op: string }[]
+    worker.emit('message', { id: readRequest!.id, ok: true, data: 'stale snapshot' })
+    await expect(pending).rejects.toThrow('data worker shut down')
+    expect(worker.posted.map(message => (message as { op: string }).op)).toEqual(['overview:query', 'shutdown'])
+    worker.emit('message', { id: closeRequest!.id, ok: true, data: null })
+    await closing
+  })
+
+  it('does not resume a request queued behind recovery after shutdown, but still sends shutdown', async () => {
+    const { client, fakes } = makeClient(() => {})
+    fakes[0]!.emit('message', { event: 'ready' })
+    await client.ready
+    const abort = Effect.runPromise(client.scanAbortEffect([], 1, 5_000)).catch(() => undefined)
+    await vi.waitFor(() => expect(fakes).toHaveLength(2))
+
+    const queuedRead = client.request('overview:query', { period: 'today' })
+    const closing = client.shutdown()
+    fakes[1]!.emit('message', { event: 'ready' })
+    await abort
+    await vi.waitFor(() => expect(fakes[1]!.posted).toHaveLength(1))
+    expect(fakes[1]!.posted).toMatchObject([{ op: 'shutdown', args: [] }])
+    const shutdownId = (fakes[1]!.posted[0] as { id: number }).id
+    fakes[1]!.emit('message', { id: shutdownId, ok: true, data: null })
+
+    await expect(queuedRead).rejects.toThrow('data worker shut down')
+    await closing
   })
 
   it('does not coalesce distinct args or writes', async () => {
@@ -765,6 +1042,100 @@ describe('DbWorkerClient crash-respawn backoff (Wave 7 §4.4, TestClock)', () =>
     expect(nextRespawnAttempt(7, now + RESPAWN_BACKOFF_RESET_AFTER_MS, now)).toBe(8)
   })
 
+  it('uses Effect Clock time when deciding whether to reset the crash streak', async () => {
+    const { client, fakes } = makeClient()
+    const worker = fakes[0]
+    if (!worker) throw new Error('initial fake worker was not created')
+    worker.emit('message', { event: 'ready' })
+    await client.ready
+    let countAtResetDeadline = 0
+
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(1_000_000)
+          const firstCrash = yield* Effect.forkChild(client.respawnAfterExitEffect('1'))
+          yield* TestClock.adjust(1_200)
+          yield* Fiber.join(firstCrash)
+          fakes[1]?.emit('message', { event: 'ready' })
+
+          yield* TestClock.adjust(RESPAWN_BACKOFF_RESET_AFTER_MS + 1)
+          const recoveredCrash = yield* Effect.forkChild(client.respawnAfterExitEffect('1'))
+          yield* TestClock.adjust(1_200)
+          countAtResetDeadline = fakes.length
+          yield* TestClock.adjust(1_300)
+          yield* Fiber.join(recoveredCrash)
+        }).pipe(Effect.provide(TestClock.layer())),
+      )
+      expect(countAtResetDeadline).toBe(3)
+    } finally {
+      await client.terminate()
+    }
+  })
+
+  it.each(['shutdown', 'terminate'] as const)(
+    'interrupts and joins the exit-callback backoff during client %s',
+    async teardown => {
+      vi.useFakeTimers()
+      const spawn = vi.fn()
+      const { client, fakes } = makeClient(echoResponder, () => {
+        spawn()
+      })
+
+      try {
+        const worker = fakes[0]
+        if (!worker) throw new Error('initial fake worker was not created')
+        worker.emit('message', { event: 'ready' })
+        await client.ready
+        worker.emit('exit', 1)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(vi.getTimerCount()).toBeGreaterThan(0)
+        expect(spawn).toHaveBeenCalledTimes(1)
+
+        await client[teardown]()
+
+        expect(spawn).toHaveBeenCalledTimes(1)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(vi.getTimerCount()).toBe(0)
+        await vi.advanceTimersByTimeAsync(40_000)
+        expect(spawn).toHaveBeenCalledTimes(1)
+      } finally {
+        await client.terminate()
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it('interrupts the exit-callback backoff when shutdownEffect is itself interrupted', async () => {
+    vi.useFakeTimers()
+    const spawn = vi.fn()
+    const { client, fakes } = makeClient(echoResponder, () => {
+      spawn()
+    })
+
+    try {
+      const worker = fakes[0]
+      if (!worker) throw new Error('initial fake worker was not created')
+      worker.emit('message', { event: 'ready' })
+      await client.ready
+      worker.emit('exit', 1)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.getTimerCount()).toBeGreaterThan(0)
+      expect(spawn).toHaveBeenCalledTimes(1)
+
+      const shutdown = Effect.runFork(client.shutdownEffect())
+      await Effect.runPromise(Fiber.interrupt(shutdown))
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(40_000)
+      expect(spawn).toHaveBeenCalledTimes(1)
+    } finally {
+      await client.terminate()
+      vi.useRealTimers()
+    }
+  })
+
   it('grows exponentially with jitter bounds and caps at tens of seconds', async () => {
     const nominal = (attempt: number): number =>
       Math.min(RESPAWN_BACKOFF_BASE_MS * 2 ** (attempt - 1), RESPAWN_BACKOFF_CAP_MS)
@@ -845,16 +1216,22 @@ describe('DbWorkerContext cadence jitter (Wave 7 §4.4)', () => {
     vi.useFakeTimers()
     const dir = tempDataDir()
     const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
-    const owner = openWorkerOwner(init.dbPath)
-    const ctx = new DbWorkerContext(init, () => {}, owner)
+    let runtime: WorkerRuntime | null = null
+    let workerContext: DbWorkerContext | null = null
     const tickTimes: number[] = []
-    const triggerScan = vi
-      .spyOn(ctx as unknown as { triggerBackgroundScan: () => Promise<void> }, 'triggerBackgroundScan')
-      .mockImplementation(async () => {
-        tickTimes.push(Date.now())
-      })
     try {
-      await ctx.dispatch('cadence:set', ['30s'])
+      runtime = openWorkerRuntime(init.dbPath)
+      workerContext = new DbWorkerContext(init, () => {}, { runtime })
+      const triggerScan = vi
+        .spyOn(
+          workerContext as unknown as { triggerBackgroundScanEffect: () => Effect.Effect<void> },
+          'triggerBackgroundScanEffect',
+        )
+        .mockImplementation(() => {
+          tickTimes.push(Date.now())
+          return Effect.void
+        })
+      await workerContext.dispatch('cadence:set', ['30s'])
       await vi.advanceTimersByTimeAsync(300_000)
       // Every repeat gap is one independent jittered draw in [24s, 36s]
       // (`Date` is real-walled under these fake timers, so gaps only —
@@ -872,9 +1249,19 @@ describe('DbWorkerContext cadence jitter (Wave 7 §4.4)', () => {
       expect(tickTimes.length).toBeLessThanOrEqual(12)
       expect(triggerScan.mock.calls.length).toBe(tickTimes.length)
     } finally {
-      await ctx.close()
-      vi.useRealTimers()
-      rmSync(dir, { recursive: true, force: true })
+      try {
+        await workerContext?.close()
+      } finally {
+        try {
+          await runtime?.dispose()
+        } finally {
+          try {
+            removeTempDir(dir, 'watchtower-dbworker-')
+          } finally {
+            vi.useRealTimers()
+          }
+        }
+      }
     }
   })
 

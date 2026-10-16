@@ -1,8 +1,13 @@
+import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { existsSync } from 'fs'
-import { lstat, readdir, readFile, stat } from 'fs/promises'
+import { lstat, readdir, readFile } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
 
-import { type AppPaths, overrideFor } from '../env.js'
+import { type AppPaths, Env, overrideFor } from '../env.js'
 import { billableOutputTokens } from './billable-output.js'
 import {
   buildSpawnPrSets,
@@ -25,42 +30,50 @@ export {
 import { parseOrSkip, type UnparsedTally } from '../../shared/schemas/extract.js'
 import { parsedProviderCallSchema } from '../../shared/schemas/providers.js'
 import { extractBashCommands } from './bash-utils.js'
-import { acquireCacheRefreshLock, type RefreshLockHandle } from './cache-refresh-lock.js'
+import { acquireCacheRefreshLockEffect, type RefreshLockHandle } from './cache-refresh-lock.js'
 import { BASH_TOOLS, classifyTurn, EDIT_TOOLS } from './classifier.js'
-import { flushCodexCache } from './codex-cache.js'
+import { flushCodexCacheEffect } from './codex-cache.js'
 import { normalizeContentBlocks } from './content-utils.js'
+import { HttpFetch } from './fetch-utils.js'
 import { logFileName, queueLogRecord } from './file-errors.js'
-import { readSessionLines } from './fs-utils.js'
-import {
-  calculateCost,
-  calculateLocalModelSavings,
-  getProxyPathsConfigHash,
-  getShortModelName,
-  isProxiedPath,
-} from './models.js'
+import { readSessionLinesStream } from './fs-utils.js'
+import { captureScanPricing, getProxyPathsConfigHash, getShortModelName, isProxiedPath } from './models.js'
 import {
   antigravityCascadeIdFromPath,
-  flushAntigravityCache,
+  flushAntigravityCacheEffect,
   shouldReparseAntigravitySource,
 } from './providers/antigravity.js'
 import { getDesktopSessionsDirs } from './providers/claude.js'
-import { discoverAllSessions, getProvider } from './providers/index.js'
-import type { ParsedProviderCall, SessionSource } from './providers/types.js'
-import { isScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
+import { createDevinScanReads, DevinScanReads } from './providers/devin.js'
+import { discoverAllSessionsEffect, getProviderEffect } from './providers/index.js'
+import { createKiroScanReads, KiroScanReads } from './providers/kiro.js'
+import { createQuickdeskScanData, QuickdeskScanReads } from './providers/quickdesk.js'
+import type {
+  DiscoverableProvider,
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  ProviderScanServices,
+  SessionSource,
+} from './providers/types.js'
+import { fetchVercelGatewayReportEffect } from './providers/vercel-gateway.js'
+import { isScanAbortedError, type ScanAbortedError, scanAbortError } from './scan-control.js'
+import type { ScanPricing } from './scan-pricing.js'
 import {
-  beginColdHydration,
+  beginColdHydrationEffect,
   type CachedCall,
   type CachedFile,
   type CachedTurn,
-  cleanupOrphanedTempFiles,
+  cleanupOrphanedTempFilesEffect,
   computeEnvFingerprint,
   DURABLE_PROVIDER_NAMES,
   fingerprintFile,
+  fingerprintFileEffect,
   isCacheComplete,
-  loadCache,
+  loadCacheEffect,
   type ProviderSection,
   reconcileFile,
-  saveCache,
+  saveCacheEffect,
   sectionNeedsPrEvidenceReparse,
   type SessionCache,
 } from './session-cache.js'
@@ -88,7 +101,60 @@ import type {
 export type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 import type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
 
-export type DeltaHandler = (delta: ScanDelta) => void | Promise<void>
+export type DeltaHandler = (delta: ScanDelta, pricing?: ScanPricing) => Effect.Effect<void, Error>
+/** Promise callback edge for standalone callers of parseAllSessions. */
+export type PromiseDeltaHandler = (delta: ScanDelta, pricing?: ScanPricing) => void | Promise<void>
+
+/** Owns a native Promise leaf until it settles. Parsing composes in the current
+ * fiber. Remaining uses are provider IO and external Promise callbacks.
+ * Remove each use when that API returns an Effect. */
+function runOwnedParserPromise<A>(
+  signal: AbortSignal | undefined,
+  stop: (() => void) | undefined,
+  start: () => Promise<A>,
+): Effect.Effect<A, Error> {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      let settled = false
+      const promise = Promise.resolve().then(() => {
+        if (signal?.aborted) throw scanAbortError(signal)
+        return start()
+      })
+      const drain = promise.then(
+        () => {
+          settled = true
+        },
+        () => {
+          settled = true
+        },
+      )
+      return { promise, drain, isSettled: () => settled }
+    }),
+    owned => Effect.tryPromise({ try: () => owned.promise, catch: parserError }),
+    owned =>
+      Effect.sync(() => {
+        if (!owned.isSettled()) stop?.()
+      }).pipe(Effect.ensuring(Effect.promise(() => owned.drain))),
+  )
+}
+
+function isSessionProvider(provider: DiscoverableProvider): provider is Provider {
+  return 'createSessionParser' in provider
+}
+
+function checkScanAbort(signal?: AbortSignal): Effect.Effect<void, ScanAbortedError> {
+  return Effect.suspend(() => (signal?.aborted ? Effect.fail(scanAbortError(signal)) : Effect.void))
+}
+
+function parserError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause), { cause })
+}
+
+/** Node filesystem leaves without a cancellable API must settle before the
+ * scan releases its resources. Keep the uninterruptible region to one call. */
+function parserFileIo<A>(operation: () => Promise<A>): Effect.Effect<A, Error> {
+  return Effect.uninterruptible(Effect.tryPromise({ try: operation, catch: parserError }))
+}
 
 /** A single file's port-in must never abort the whole scan: a throw from the
  * delta consumer (e.g. a ledger write failing on one file) is warned and
@@ -96,13 +162,14 @@ export type DeltaHandler = (delta: ScanDelta) => void | Promise<void>
  * on a later scan — the ledger is its own resume marker. The scan's own abort
  * sentinel (`ScanAbortedError`) is re-thrown by name: cancelling
  * must never be swallowed. */
-async function safeEmitDelta(onDelta: DeltaHandler, delta: ScanDelta): Promise<void> {
-  try {
-    await onDelta(delta)
-  } catch (err) {
-    if ((err as Error | undefined)?.name === 'ScanAbortedError') throw err
-    warnProviderPortFailure(delta.provider, delta.filePath)
-  }
+function safeEmitDeltaEffect(onDelta: DeltaHandler, delta: ScanDelta): Effect.Effect<void, Error> {
+  return Effect.suspend(() => onDelta(delta)).pipe(
+    Effect.catch(error =>
+      isScanAbortedError(error)
+        ? Effect.fail(error)
+        : Effect.sync(() => warnProviderPortFailure(delta.provider, delta.filePath)),
+    ),
+  )
 }
 
 const portFailureWarned = new Set<string>()
@@ -165,7 +232,11 @@ function isCoworkSession(cwd: string, filePath: string): boolean {
   })
 }
 
-async function resolveCanonicalProjectPath(cwd: string): Promise<{ path: string; isWorktree: boolean }> {
+const resolveCanonicalProjectPathEffect = Effect.fnUntraced(function* (
+  cwd: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<{ path: string; isWorktree: boolean }, Error> {
+  yield* checkScanAbort(signal)
   const trimmed = cwd.trim()
   if (!trimmed) return { path: cwd, isWorktree: false }
 
@@ -183,12 +254,16 @@ async function resolveCanonicalProjectPath(cwd: string): Promise<{ path: string;
   let dir = trimmed
   while (true) {
     const gitEntry = join(dir, '.git')
-    const entryStat = await lstat(gitEntry).catch(() => null)
+    const entryStat = yield* parserFileIo(() => lstat(gitEntry)).pipe(Effect.catch(() => Effect.succeed(null)))
+    yield* checkScanAbort(signal)
     if (entryStat?.isDirectory()) {
       return { path: dir === trimmed ? dir : cwd, isWorktree: false }
     }
     if (entryStat?.isFile()) {
-      const gitFile = await readFile(gitEntry, 'utf-8').catch(() => null)
+      const gitFile = yield* parserFileIo(() => readFile(gitEntry, 'utf-8')).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+      )
+      yield* checkScanAbort(signal)
       if (gitFile === null) return { path: dir === trimmed ? dir : cwd, isWorktree: false }
       const match = gitFile.match(/^gitdir:\s*(.+?)\s*$/m)
       if (!match?.[1]) return { path: dir === trimmed ? dir : cwd, isWorktree: false }
@@ -203,7 +278,7 @@ async function resolveCanonicalProjectPath(cwd: string): Promise<{ path: string;
     if (parent === dir) return { path: cwd, isWorktree: false }
     dir = parent
   }
-}
+})
 
 const LARGE_JSONL_LINE_BYTES = 32 * 1024
 
@@ -1412,9 +1487,9 @@ function extractClaudeCacheCreation(usage: {
 /// to $0 and the hypothetical baseline cost is recorded as `savingsUSD`.
 /// Returns the input unchanged when no mapping is configured for the
 /// model — keeps the hot path branch-free for the common paid-only case.
-function applyLocalModelSavings(call: ParsedApiCall): ParsedApiCall {
+function applyLocalModelSavings(call: ParsedApiCall, pricing: ScanPricing): ParsedApiCall {
   const u = call.usage
-  const savings = calculateLocalModelSavings(
+  const savings = pricing.calculateLocalModelSavings(
     call.model,
     u.inputTokens,
     u.outputTokens,
@@ -1588,7 +1663,11 @@ export function collectSessionMeta(entry: JournalEntry, meta: SessionMeta): void
   }
 }
 
-export function parseApiCall(entry: JournalEntry, toolResultMeta?: Map<string, ToolResultMeta>): ParsedApiCall | null {
+export function parseApiCall(
+  entry: JournalEntry,
+  toolResultMeta?: Map<string, ToolResultMeta>,
+  pricing: ScanPricing = captureScanPricing(),
+): ParsedApiCall | null {
   if (entry.type !== 'assistant') return null
   const msg = entry.message as AssistantMessageContent | undefined
   if (!msg?.usage || !msg?.model) return null
@@ -1612,7 +1691,7 @@ export function parseApiCall(entry: JournalEntry, toolResultMeta?: Map<string, T
   const tools = extractToolNames(contentBlocks)
   const skills = extractSkillNames(contentBlocks)
   const subagentTypes = extractSubagentTypes(contentBlocks)
-  const costUSD = calculateCost(
+  const costUSD = pricing.calculateCost(
     msg.model,
     tokens.inputTokens,
     tokens.outputTokens,
@@ -1663,30 +1742,33 @@ export function parseApiCall(entry: JournalEntry, toolResultMeta?: Map<string, T
     }
   }
 
-  return applyLocalModelSavings({
-    provider: 'claude',
-    model: msg.model,
-    usage: tokens,
-    costUSD,
-    tools,
-    mcpTools: extractMcpTools(tools),
-    skills,
-    subagentTypes,
-    hasAgentSpawn: tools.includes('Agent'),
-    hasPlanMode: tools.includes('EnterPlanMode'),
-    speed: usage.speed ?? 'standard',
-    timestamp: entry.timestamp ?? '',
-    bashCommands: bashCmds,
-    deduplicationKey: msg.id ?? `claude:${entry.timestamp}`,
-    cacheCreationOneHourTokens: cacheCreation.oneHourTokens || undefined,
-    toolSequence: toolSeq.length > 0 ? toolSeq : undefined,
-    ...(spawnIds.length > 0 ? { spawnToolUseIds: spawnIds } : {}),
-    ...(locAdded ? { locAdded } : {}),
-    ...(locRemoved ? { locRemoved } : {}),
-    ...(interrupted ? { interrupted: true } : {}),
-    ...(userModified ? { userModified: true } : {}),
-    ...(toolErrors ? { toolErrors } : {}),
-  })
+  return applyLocalModelSavings(
+    {
+      provider: 'claude',
+      model: msg.model,
+      usage: tokens,
+      costUSD,
+      tools,
+      mcpTools: extractMcpTools(tools),
+      skills,
+      subagentTypes,
+      hasAgentSpawn: tools.includes('Agent'),
+      hasPlanMode: tools.includes('EnterPlanMode'),
+      speed: usage.speed ?? 'standard',
+      timestamp: entry.timestamp ?? '',
+      bashCommands: bashCmds,
+      deduplicationKey: msg.id ?? `claude:${entry.timestamp}`,
+      cacheCreationOneHourTokens: cacheCreation.oneHourTokens || undefined,
+      toolSequence: toolSeq.length > 0 ? toolSeq : undefined,
+      ...(spawnIds.length > 0 ? { spawnToolUseIds: spawnIds } : {}),
+      ...(locAdded ? { locAdded } : {}),
+      ...(locRemoved ? { locRemoved } : {}),
+      ...(interrupted ? { interrupted: true } : {}),
+      ...(userModified ? { userModified: true } : {}),
+      ...(toolErrors ? { toolErrors } : {}),
+    },
+    pricing,
+  )
 }
 
 /// Claude Code's advisor tool (/advisor) escalates hard decisions to a stronger
@@ -1695,7 +1777,7 @@ export function parseApiCall(entry: JournalEntry, toolResultMeta?: Map<string, T
 /// are excluded from the top-level `message.usage` totals that `parseApiCall`
 /// reads. Emit them as separate calls so the advisor's spend is counted and
 /// attributed to the advisor model rather than silently dropped.
-export function parseAdvisorCalls(entry: JournalEntry): ParsedApiCall[] {
+export function parseAdvisorCalls(entry: JournalEntry, pricing: ScanPricing = captureScanPricing()): ParsedApiCall[] {
   if (entry.type !== 'assistant') return []
   const msg = entry.message as AssistantMessageContent | undefined
   const iterations = msg?.usage?.iterations
@@ -1724,7 +1806,7 @@ export function parseAdvisorCalls(entry: JournalEntry): ParsedApiCall[] {
       webSearchRequests: it.server_tool_use?.web_search_requests ?? 0,
     }
     const speed = it.speed ?? msg.usage.speed ?? 'standard'
-    const costUSD = calculateCost(
+    const costUSD = pricing.calculateCost(
       model,
       tokens.inputTokens,
       tokens.outputTokens,
@@ -1736,23 +1818,26 @@ export function parseAdvisorCalls(entry: JournalEntry): ParsedApiCall[] {
     )
 
     calls.push(
-      applyLocalModelSavings({
-        provider: 'claude',
-        model,
-        usage: tokens,
-        costUSD,
-        tools: [],
-        mcpTools: [],
-        skills: [],
-        subagentTypes: [],
-        hasAgentSpawn: false,
-        hasPlanMode: false,
-        speed,
-        timestamp: entry.timestamp ?? '',
-        bashCommands: [],
-        deduplicationKey: `${baseKey}:advisor:${index}`,
-        cacheCreationOneHourTokens: cacheCreation.oneHourTokens || undefined,
-      }),
+      applyLocalModelSavings(
+        {
+          provider: 'claude',
+          model,
+          usage: tokens,
+          costUSD,
+          tools: [],
+          mcpTools: [],
+          skills: [],
+          subagentTypes: [],
+          hasAgentSpawn: false,
+          hasPlanMode: false,
+          speed,
+          timestamp: entry.timestamp ?? '',
+          bashCommands: [],
+          deduplicationKey: `${baseKey}:advisor:${index}`,
+          cacheCreationOneHourTokens: cacheCreation.oneHourTokens || undefined,
+        },
+        pricing,
+      ),
     )
   }
   return calls
@@ -1786,6 +1871,7 @@ export function groupIntoTurns(
   entries: JournalEntry[],
   seenMsgIds: Set<string>,
   toolResultMeta?: Map<string, ToolResultMeta>,
+  pricing: ScanPricing = captureScanPricing(),
 ): ParsedTurn[] {
   const turns: ParsedTurn[] = []
   let currentUserMessage = ''
@@ -1841,13 +1927,13 @@ export function groupIntoTurns(
       const msgId = getMessageId(entry)
       if (msgId && seenMsgIds.has(msgId)) continue
       if (msgId) seenMsgIds.add(msgId)
-      const call = parseApiCall(entry, toolResultMeta)
+      const call = parseApiCall(entry, toolResultMeta, pricing)
       if (call) {
         currentCalls.push(call)
         if (call.spawnToolUseIds)
           for (const id of call.spawnToolUseIds) if (!currentSpawnIds.includes(id)) currentSpawnIds.push(id)
       }
-      for (const advisorCall of parseAdvisorCalls(entry)) currentCalls.push(advisorCall)
+      for (const advisorCall of parseAdvisorCalls(entry, pricing)) currentCalls.push(advisorCall)
     } else if (entry.type === 'pr-link') {
       const url = (entry as Record<string, unknown>)['prUrl']
       if (typeof url === 'string' && url && !currentPrRefs.includes(url)) currentPrRefs.push(url)
@@ -2083,127 +2169,83 @@ export function buildSessionSummary(
   }
 }
 
-async function parseSessionFile(
-  filePath: string,
-  project: string,
-  seenMsgIds: Set<string>,
-  dateRange?: DateRange,
-): Promise<{ session: SessionSummary; canonicalCwd?: string } | null> {
-  // Skip files whose mtime is older than the range start. A session file
-  // can only contain entries up to its last-modified time; if that predates
-  // the requested range, nothing in this file can match.
-  if (dateRange) {
-    try {
-      const s = await stat(filePath)
-      if (s.mtimeMs < dateRange.start.getTime()) return null
-    } catch {
-      /* fall through to normal read; missing stat shouldn't break parsing */
-    }
-  }
-  const entries: JournalEntry[] = []
-  let hasLines = false
-
-  // When a dateRange is given, skip user/assistant lines whose timestamp
-  // is older than range.start - 24h without calling JSON.parse. Huge lines
-  // that cannot be skipped are yielded as Buffers and compact-parsed without
-  // converting the whole line into a V8 string.
-  const earlySkipThreshold = dateRange ? new Date(dateRange.start.getTime() - 86_400_000).toISOString() : null
-  const skipFn = earlySkipThreshold ? (head: string) => shouldSkipLine(head, earlySkipThreshold) : undefined
-
-  for await (const line of readSessionLines(filePath, skipFn, { largeLineAsBuffer: true })) {
-    hasLines = true
-    const entry = parseJsonlLine(line)
-    if (entry) entries.push(compactEntry(entry))
-  }
-
-  if (!hasLines) return null
-
-  if (entries.length === 0) return null
-
-  const sessionId = basename(filePath, '.jsonl')
-  const dedupedEntries = dedupeStreamingMessageIds(entries)
-  let turns = groupIntoTurns(dedupedEntries, seenMsgIds)
-  if (dateRange) {
-    // Bucket a turn by the timestamp of its first assistant call (when the cost was
-    // actually incurred). Filtering entries directly produced orphan assistant calls
-    // when a user message sat in one day and the response landed in another -- those
-    // got pushed as turns with empty timestamps, which some code paths counted and
-    // others dropped, producing inconsistent Today totals.
-    turns = turns.filter(turn => {
-      if (turn.assistantCalls.length === 0) return false
-      const firstCallTs = turn.assistantCalls[0]!.timestamp
-      if (!firstCallTs) return false
-      const ts = new Date(firstCallTs)
-      return ts >= dateRange.start && ts <= dateRange.end
-    })
-    if (turns.length === 0) return null
-  }
-  const classified = turns.map(classifyTurn)
-
-  // Inventory is extracted from the full entry stream, not just the
-  // turns we kept after date filtering: tool availability is set up
-  // once at the start of a session (with possible mid-session reloads),
-  // and we want to reflect what was loaded even if the user only ran
-  // turns inside a narrow date window.
-  const mcpInventory = extractMcpInventory(entries)
-  const canonicalCwd = extractCanonicalCwd(entries)
-
-  return {
-    session: buildSessionSummary(sessionId, project, classified, mcpInventory),
-    ...(canonicalCwd ? { canonicalCwd } : {}),
-  }
-}
-
 // Recursively collect every `.jsonl` under `dir`. Subagent transcripts live in
 // `subagents/`, and workflow/ultracode runs nest a further level deep
 // (`subagents/workflows/<wf>/agent-*.jsonl`); a flat scan misses those, so their
 // usage went uncounted whenever the workflow feature was on. (#470)
-async function collectJsonlInto(dir: string, out: Set<string>, signal?: AbortSignal): Promise<void> {
-  throwIfScanAborted(signal)
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
-  throwIfScanAborted(signal)
+const collectJsonlIntoEffect = Effect.fnUntraced(function* (
+  dir: string,
+  out: Set<string>,
+  signal?: AbortSignal,
+): Effect.fn.Return<void, Error> {
+  yield* checkScanAbort(signal)
+  const entries = yield* parserFileIo(() => readdir(dir, { withFileTypes: true })).pipe(
+    Effect.catch(() => Effect.succeed([])),
+  )
+  yield* checkScanAbort(signal)
   for (const e of entries) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     const p = join(dir, e.name)
-    if (e.isDirectory()) await collectJsonlInto(p, out, signal)
+    if (e.isDirectory()) yield* collectJsonlIntoEffect(p, out, signal)
     else if (e.name.endsWith('.jsonl')) out.add(p)
   }
-}
+})
 
-export async function collectJsonlFiles(dirPath: string, signal?: AbortSignal): Promise<string[]> {
-  throwIfScanAborted(signal)
-  const files = await readdir(dirPath).catch(() => [])
-  throwIfScanAborted(signal)
+const collectJsonlFilesEffect = Effect.fnUntraced(function* (
+  dirPath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<string[], Error> {
+  yield* checkScanAbort(signal)
+  const files = yield* parserFileIo(() => readdir(dirPath)).pipe(Effect.catch(() => Effect.succeed([])))
+  yield* checkScanAbort(signal)
   const jsonlFiles = new Set(files.filter(f => f.endsWith('.jsonl')).map(f => join(dirPath, f)))
 
-  await collectJsonlInto(join(dirPath, 'subagents'), jsonlFiles, signal)
+  yield* collectJsonlIntoEffect(join(dirPath, 'subagents'), jsonlFiles, signal)
   for (const entry of files) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     if (entry.endsWith('.jsonl')) continue
-    await collectJsonlInto(join(dirPath, entry, 'subagents'), jsonlFiles, signal)
+    yield* collectJsonlIntoEffect(join(dirPath, entry, 'subagents'), jsonlFiles, signal)
   }
 
   return [...jsonlFiles]
+})
+
+/** Promise edge for discovery callers that still expose Promise APIs. */
+export function collectJsonlFiles(dirPath: string, signal?: AbortSignal): Promise<string[]> {
+  return Effect.runPromise(collectJsonlFilesEffect(dirPath, signal))
 }
 
 // Claude Code subagent transcripts (`subagents/.../agent-*.jsonl`) have a sibling
 // `.meta.json` carrying the `agentType` (e.g. `workflow-subagent`, `Explore`).
 // Returns undefined for ordinary session files, which carry no agent type.
-export async function readAgentType(filePath: string): Promise<string | undefined> {
-  if (!/[\\/]subagents[\\/]/.test(filePath)) return undefined
-  const metaPath = filePath.replace(/\.jsonl$/, '.meta.json')
-  try {
-    const t = (JSON.parse(await readFile(metaPath, 'utf8')) as { agentType?: unknown }).agentType
-    if (typeof t === 'string' && t.trim()) return t.trim().slice(0, 100)
-  } catch {
-    /* missing or unreadable meta */
-  }
-  // Workflow agents always live under `subagents/workflows/`, so fall back to that
-  // even when the meta sidecar is absent.
-  return /[\\/]subagents[\\/]workflows[\\/]/.test(filePath) ? 'workflow-subagent' : undefined
+export function readAgentType(filePath: string): Promise<string | undefined> {
+  return Effect.runPromise(readAgentTypeEffect(filePath))
 }
 
-async function scanProjectDirs(
+const claudeAgentMetadataSchema = Schema.fromJsonString(Schema.Struct({ agentType: Schema.optional(Schema.String) }))
+
+export const readAgentTypeEffect = Effect.fnUntraced(function* (
+  filePath: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<string | undefined, Error> {
+  yield* checkScanAbort(signal)
+  if (!/[\\/]subagents[\\/]/.test(filePath)) return undefined
+  const metaPath = filePath.replace(/\.jsonl$/, '.meta.json')
+  const readResult = yield* Effect.result(
+    parserFileIo(() => readFile(metaPath, { encoding: 'utf8', ...(signal ? { signal } : {}) })),
+  )
+  yield* checkScanAbort(signal)
+  if (readResult._tag === 'Success') {
+    const decoded = yield* Effect.result(Schema.decodeUnknownEffect(claudeAgentMetadataSchema)(readResult.success))
+    if (decoded._tag === 'Success' && decoded.success.agentType?.trim()) {
+      return decoded.success.agentType.trim().slice(0, 100)
+    }
+  }
+  yield* checkScanAbort(signal)
+  return /[\\/]subagents[\\/]workflows[\\/]/.test(filePath) ? 'workflow-subagent' : undefined
+})
+
+const scanProjectDirsEffect = Effect.fnUntraced(function* (
   dirs: Array<{ path: string; name: string; source?: SessionSourceMetadata }>,
   seenMsgIds: Set<string>,
   diskCache: SessionCache,
@@ -2211,12 +2253,13 @@ async function scanProjectDirs(
   // Cold-run robustness: called after every parsed Claude file so a throttled
   // caller (parseAllSessions) can persist partial progress. A run killed
   // mid-scan then resumes from a warm cache instead of re-parsing from zero.
-  onFileParsed?: () => Promise<void>,
+  onFileParsed?: () => Effect.Effect<void, Error>,
   readOnly = false,
   onDelta?: DeltaHandler,
   signal?: AbortSignal,
-): Promise<ProjectSummary[]> {
-  throwIfScanAborted(signal)
+  pricing: ScanPricing = captureScanPricing(),
+): Effect.fn.Return<ProjectSummary[], Error> {
+  yield* checkScanAbort(signal)
   const section = getOrCreateProviderSection(diskCache, 'claude')
   const allDiscoveredFiles = new Set<string>()
 
@@ -2242,30 +2285,34 @@ async function scanProjectDirs(
   // `section.files`. Skipped in read-only mode (nothing may be mutated). Failed
   // files are forwarded so scan metadata can count them — consumers that port
   // into the ledger (runScan) gate failed deltas out.
-  const emitDelta = async (filePath: string, verdict: ScanDeltaVerdict, cachedFile: CachedFile): Promise<void> => {
-    throwIfScanAborted(signal)
+  const emitDelta = Effect.fnUntraced(function* (
+    filePath: string,
+    verdict: ScanDeltaVerdict,
+    cachedFile: CachedFile,
+  ): Effect.fn.Return<void, Error> {
+    yield* checkScanAbort(signal)
     if (readOnly || !onDelta) return
-    await safeEmitDelta(onDelta, {
+    yield* safeEmitDeltaEffect(onDelta, {
       provider: 'claude',
       envFingerprint: section.envFingerprint,
       filePath,
       verdict,
       cachedFile,
     })
-    throwIfScanAborted(signal)
-  }
+    yield* checkScanAbort(signal)
+  })
 
   const discoverProgress = createScanProgress('scanning claude project dirs', dirs.length)
   let dirsDone = 0
   for (const { path: dirPath, name: dirName, source } of dirs) {
-    throwIfScanAborted(signal)
-    const jsonlFiles = await collectJsonlFiles(dirPath, signal)
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
+    const jsonlFiles = yield* collectJsonlFilesEffect(dirPath, signal)
+    yield* checkScanAbort(signal)
     for (const filePath of jsonlFiles) {
-      throwIfScanAborted(signal)
+      yield* checkScanAbort(signal)
       allDiscoveredFiles.add(filePath)
-      const fp = await fingerprintFile(filePath)
-      throwIfScanAborted(signal)
+      const fp = yield* Effect.uninterruptible(fingerprintFileEffect(filePath))
+      yield* checkScanAbort(signal)
       if (!fp) continue
 
       const cached = section.files[filePath]
@@ -2298,11 +2345,11 @@ async function scanProjectDirs(
       }
     }
     dirsDone++
-    await discoverProgress.tick(dirsDone)
-    throwIfScanAborted(signal)
+    yield* discoverProgress.tick(dirsDone)
+    yield* checkScanAbort(signal)
   }
-  throwIfScanAborted(signal)
-  discoverProgress.finish()
+  yield* checkScanAbort(signal)
+  yield* discoverProgress.finish()
 
   // Orphans: cached sessions whose source file is no longer discovered. In
   // read-only mode surface them all (the snapshot is authoritative, nothing is
@@ -2311,7 +2358,7 @@ async function scanProjectDirs(
   // report must keep (as a legacy even-split); the eviction below preserves the
   // same set so `section.files` still holds them when summaries are built.
   for (const [filePath, cached] of Object.entries(section.files)) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     if (allDiscoveredFiles.has(filePath)) continue
     if (!readOnly && !cached.prLinks?.length) continue
     const dirName = cached.canonicalProjectName ?? cached.turns[0]?.calls[0]?.project ?? basename(dirname(filePath))
@@ -2320,7 +2367,7 @@ async function scanProjectDirs(
 
   // Pre-seed dedup set from cached (unchanged) files
   for (const { cached } of unchangedFiles) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     for (const turn of cached.turns) {
       for (const call of turn.calls) {
         seenMsgIds.add(call.deduplicationKey)
@@ -2331,22 +2378,21 @@ async function scanProjectDirs(
   // Warm files emit an unchanged delta (a no-op for the ledger — nothing is
   // written — but the delta stream stays complete for metadata/counting).
   for (const { filePath, cached } of unchangedFiles) {
-    throwIfScanAborted(signal)
-    await emitDelta(filePath, 'unchanged', cached)
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
+    yield* emitDelta(filePath, 'unchanged', cached)
+    yield* checkScanAbort(signal)
   }
 
   const parseProgress = createScanProgress('parsing changed claude sessions', changedFiles.length)
   const progressTotal = changedFiles.length
   let filesDone = 0
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   emitScanProgress({ kind: 'tick', provider: 'claude', done: 0, total: progressTotal })
   for (const { filePath, info, append, verdict } of changedFiles) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     const priorEntry = section.files[filePath]
     delete section.files[filePath]
-
-    try {
+    const parseFile = Effect.gen(function* () {
       if (append) {
         // Append-only growth: parse ONLY the bytes past the cached resume offset
         // and merge with the cached turns, rather than re-reading the file from 0.
@@ -2356,7 +2402,7 @@ async function scanProjectDirs(
         const tracker = { lastCompleteLineOffset: append.readFromOffset }
         const toolResultMeta = new Map<string, ToolResultMeta>()
         const sessionMeta = emptySessionMeta()
-        const newEntries = await parseClaudeEntries(
+        const newEntries = yield* parseClaudeEntriesEffect(
           filePath,
           tracker,
           append.readFromOffset,
@@ -2366,7 +2412,7 @@ async function scanProjectDirs(
           },
           signal,
         )
-        throwIfScanAborted(signal)
+        yield* checkScanAbort(signal)
         const cached = append.cached
 
         // Straddle guard: a streamed assistant message id that first appeared in
@@ -2387,7 +2433,7 @@ async function scanProjectDirs(
         if (!straddles) {
           const newTurns = newEntries
             ? parsedTurnsToCachedTurns(
-                groupIntoTurns(dedupeStreamingMessageIds(newEntries), seenMsgIds, toolResultMeta),
+                groupIntoTurns(dedupeStreamingMessageIds(newEntries), seenMsgIds, toolResultMeta, pricing),
               )
             : []
 
@@ -2429,8 +2475,8 @@ async function scanProjectDirs(
             const cwd = extractCanonicalCwd(newEntries)
             workingDirectory = workingDirectory ?? cwd
             const canonical =
-              cwd && !isCoworkSession(cwd, filePath) ? await resolveCanonicalProjectPath(cwd) : undefined
-            throwIfScanAborted(signal)
+              cwd && !isCoworkSession(cwd, filePath) ? yield* resolveCanonicalProjectPathEffect(cwd, signal) : undefined
+            yield* checkScanAbort(signal)
             canonicalCwd = canonical?.path
             canonicalProjectName = canonical?.isWorktree ? projectNameFromPath(canonical.path, info.dirName) : undefined
           }
@@ -2470,14 +2516,7 @@ async function scanProjectDirs(
             ...(mergedAmbiguousIds.length > 0 ? { ambiguousSpawnAgentIds: mergedAmbiguousIds } : {}),
           }
           ;(diskCache as { _dirty?: boolean })._dirty = true
-          filesDone++
-          await parseProgress.tick(filesDone)
-          if (filesDone % 50 === 0 || filesDone === progressTotal) {
-            emitScanProgress({ kind: 'tick', provider: 'claude', done: filesDone, total: progressTotal })
-          }
-          await emitDelta(filePath, 'appended', section.files[filePath]!)
-          if (onFileParsed) await onFileParsed()
-          continue
+          return 'appended' as const
         }
         // Straddled: fall through to the full re-parse below.
       }
@@ -2485,20 +2524,23 @@ async function scanProjectDirs(
       const tracker = { lastCompleteLineOffset: 0 }
       const toolResultMeta = new Map<string, ToolResultMeta>()
       const sessionMeta = emptySessionMeta()
-      const entries = await parseClaudeEntries(filePath, tracker, undefined, { toolResultMeta, sessionMeta }, signal)
-      throwIfScanAborted(signal)
-      if (!entries) {
-        filesDone++
-        await parseProgress.tick(filesDone)
-        continue
-      }
+      const entries = yield* parseClaudeEntriesEffect(
+        filePath,
+        tracker,
+        undefined,
+        { toolResultMeta, sessionMeta },
+        signal,
+      )
+      yield* checkScanAbort(signal)
+      if (!entries) return undefined
 
-      const turns = groupIntoTurns(dedupeStreamingMessageIds(entries), seenMsgIds, toolResultMeta)
+      const turns = groupIntoTurns(dedupeStreamingMessageIds(entries), seenMsgIds, toolResultMeta, pricing)
       const cwd = extractCanonicalCwd(entries)
-      const canonical = cwd && !isCoworkSession(cwd, filePath) ? await resolveCanonicalProjectPath(cwd) : undefined
-      throwIfScanAborted(signal)
-      const agentType = await readAgentType(filePath)
-      throwIfScanAborted(signal)
+      const canonical =
+        cwd && !isCoworkSession(cwd, filePath) ? yield* resolveCanonicalProjectPathEffect(cwd, signal) : undefined
+      yield* checkScanAbort(signal)
+      const agentType = yield* readAgentTypeEffect(filePath, signal)
+      yield* checkScanAbort(signal)
       section.files[filePath] = {
         fingerprint: info.fp,
         lastCompleteLineOffset: tracker.lastCompleteLineOffset,
@@ -2520,39 +2562,43 @@ async function scanProjectDirs(
           : {}),
       }
       ;(diskCache as { _dirty?: boolean })._dirty = true
-    } catch (err) {
-      if (signal?.aborted || isScanAbortedError(err)) {
-        if (priorEntry) section.files[filePath] = priorEntry
-        else delete section.files[filePath]
-        if (signal?.aborted) throw scanAbortError(signal)
-        throw err
+
+      return verdict
+    }).pipe(
+      Effect.catch(error => {
+        if (signal?.aborted) return Effect.fail(scanAbortError(signal))
+        if (isScanAbortedError(error)) return Effect.fail(error)
+        section.files[filePath] = { fingerprint: info.fp, mcpInventory: [], turns: [], failed: true }
+        ;(diskCache as { _dirty?: boolean })._dirty = true
+        warnProviderParseFailure('claude', filePath, error)
+        return Effect.succeed(verdict)
+      }),
+    )
+    yield* Effect.gen(function* () {
+      const settledVerdict = yield* parseFile
+      filesDone++
+      yield* parseProgress.tick(filesDone)
+      yield* checkScanAbort(signal)
+      if (settledVerdict === undefined) return
+      if (filesDone % 50 === 0 || filesDone === progressTotal) {
+        emitScanProgress({ kind: 'tick', provider: 'claude', done: filesDone, total: progressTotal })
       }
-      // A single malformed Claude session file must not abort the whole run — that
-      // would empty the daily-cache backfill and wipe the trend/history (issue #441,
-      // same isolation the provider path already has). Record a failure marker keyed
-      // by the current fingerprint so it isn't re-read and re-thrown every run; it
-      // re-parses only if the file changes.
-      section.files[filePath] = { fingerprint: info.fp, mcpInventory: [], turns: [], failed: true }
-      ;(diskCache as { _dirty?: boolean })._dirty = true
-      warnProviderParseFailure('claude', filePath, err)
-    }
-    filesDone++
-    await parseProgress.tick(filesDone)
-    throwIfScanAborted(signal)
-    // Machine-readable tick for the app splash (throttled to ~every 50 files so
-    // a large cold run doesn't flood stderr), plus a partial-progress save.
-    if (filesDone % 50 === 0 || filesDone === progressTotal) {
-      emitScanProgress({ kind: 'tick', provider: 'claude', done: filesDone, total: progressTotal })
-    }
-    // Delta for a settled changed file (new/modified; the failure marker above
-    // makes emitDelta a no-op).
-    await emitDelta(filePath, verdict, section.files[filePath]!)
-    throwIfScanAborted(signal)
-    if (onFileParsed) await onFileParsed()
-    throwIfScanAborted(signal)
+      yield* emitDelta(filePath, settledVerdict, section.files[filePath]!)
+      yield* checkScanAbort(signal)
+      if (onFileParsed) yield* onFileParsed()
+      yield* checkScanAbort(signal)
+    }).pipe(
+      Effect.onExit(exit =>
+        Effect.sync(() => {
+          if (exit._tag !== 'Failure') return
+          if (priorEntry) section.files[filePath] = priorEntry
+          else delete section.files[filePath]
+        }),
+      ),
+    )
   }
-  throwIfScanAborted(signal)
-  parseProgress.finish()
+  yield* checkScanAbort(signal)
+  yield* parseProgress.finish()
 
   if (!readOnly && dirs.length > 0) {
     for (const cachedPath of Object.keys(section.files)) {
@@ -2577,13 +2623,13 @@ async function scanProjectDirs(
     ;(diskCache as { _dirty?: boolean })._dirty = true
   }
   if (!onDelta) {
-    return buildClaudeProjectSummaries(unchangedFiles, changedFiles, section, dateRange)
+    return buildClaudeProjectSummaries(unchangedFiles, changedFiles, section, dateRange, pricing)
   }
   return []
-}
+})
 
 /** The report-era query-time assembly for Claude (see the gate above). */
-async function buildClaudeProjectSummaries(
+function buildClaudeProjectSummaries(
   unchangedFiles: Array<{ filePath: string; dirName: string; source?: SessionSourceMetadata; cached: CachedFile }>,
   changedFiles: Array<{
     filePath: string
@@ -2591,8 +2637,9 @@ async function buildClaudeProjectSummaries(
     verdict: 'new' | 'appended' | 'modified'
   }>,
   section: ProviderSection,
-  dateRange?: DateRange,
-): Promise<ProjectSummary[]> {
+  dateRange: DateRange | undefined,
+  pricing: ScanPricing,
+): ProjectSummary[] {
   const projectMap = new Map<
     string,
     {
@@ -2635,7 +2682,7 @@ async function buildClaudeProjectSummaries(
         }
       }
       if (turn.prRefs?.length) carriedPrRefs = turn.prRefs
-      return cachedTurnToClassified(turn, carriedBranch)
+      return cachedTurnToClassified(turn, carriedBranch, pricing)
     })
     // Captured from the FULL turn list, before the date slice below can drop the
     // turn a branch was first seen on. Lets the by-branch report keep this
@@ -2788,7 +2835,7 @@ function summarizeProject(
 // ever pasting a link). Providers that persist richer surfaces (Claude
 // assistant / tool-result text) add those before compaction; see
 // collectPrUrlsFromEntry.
-function providerCallToTurn(call: ParsedProviderCall): ParsedTurn {
+function providerCallToTurn(call: ParsedProviderCall, pricing: ScanPricing): ParsedTurn {
   const tools = call.tools
   const usage: TokenUsage = {
     inputTokens: call.inputTokens,
@@ -2800,23 +2847,26 @@ function providerCallToTurn(call: ParsedProviderCall): ParsedTurn {
     webSearchRequests: call.webSearchRequests,
   }
 
-  const apiCall: ParsedApiCall = applyLocalModelSavings({
-    provider: call.provider,
-    model: call.model,
-    usage,
-    costUSD: call.costUSD,
-    tools,
-    mcpTools: extractMcpTools(tools),
-    skills: call.skills ?? [],
-    subagentTypes: call.subagentTypes ?? [],
-    hasAgentSpawn: tools.includes('Agent'),
-    hasPlanMode: tools.includes('EnterPlanMode'),
-    speed: call.speed,
-    timestamp: call.timestamp,
-    bashCommands: call.bashCommands,
-    deduplicationKey: call.deduplicationKey,
-    isEstimated: call.costIsEstimated,
-  })
+  const apiCall: ParsedApiCall = applyLocalModelSavings(
+    {
+      provider: call.provider,
+      model: call.model,
+      usage,
+      costUSD: call.costUSD,
+      tools,
+      mcpTools: extractMcpTools(tools),
+      skills: call.skills ?? [],
+      subagentTypes: call.subagentTypes ?? [],
+      hasAgentSpawn: tools.includes('Agent'),
+      hasPlanMode: tools.includes('EnterPlanMode'),
+      speed: call.speed,
+      timestamp: call.timestamp,
+      bashCommands: call.bashCommands,
+      deduplicationKey: call.deduplicationKey,
+      isEstimated: call.costIsEstimated,
+    },
+    pricing,
+  )
 
   const prRefs = extractPrUrlsFromProviderCall(call)
   return {
@@ -2873,10 +2923,13 @@ function providerCallToCachedCall(call: ParsedProviderCall): CachedCall {
   }
 }
 
-async function canonicalizeProviderCallProject(call: ParsedProviderCall): Promise<ParsedProviderCall> {
+const canonicalizeProviderCallProjectEffect = Effect.fnUntraced(function* (
+  call: ParsedProviderCall,
+  signal?: AbortSignal,
+): Effect.fn.Return<ParsedProviderCall, Error> {
   if (!call.projectPath) return call
 
-  const canonical = await resolveCanonicalProjectPath(call.projectPath)
+  const canonical = yield* resolveCanonicalProjectPathEffect(call.projectPath, signal)
   if (!canonical.isWorktree) return { ...call, workingDirectory: call.workingDirectory ?? call.projectPath }
 
   return {
@@ -2885,7 +2938,7 @@ async function canonicalizeProviderCallProject(call: ParsedProviderCall): Promis
     project: projectNameFromPath(canonical.path, call.project ?? canonical.path),
     projectPath: canonical.path,
   }
-}
+})
 
 function apiCallToCachedCall(call: ParsedApiCall): CachedCall {
   return {
@@ -2982,10 +3035,10 @@ function providerCallsToCachedTurns(calls: ParsedProviderCall[]): CachedTurn[] {
   return turns
 }
 
-function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
+function cachedCallToApiCall(call: CachedCall, pricing: ScanPricing): ParsedApiCall {
   const u = call.usage
   const outputForCost = billableOutputTokens(call.provider, u.outputTokens, u.reasoningTokens)
-  const costUSD = calculateCost(
+  const costUSD = pricing.calculateCost(
     call.model,
     u.inputTokens,
     outputForCost,
@@ -2995,33 +3048,36 @@ function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
     call.speed,
     u.cacheCreationOneHourTokens,
   )
-  return applyLocalModelSavings({
-    provider: call.provider,
-    model: call.model,
-    usage: {
-      inputTokens: u.inputTokens,
-      outputTokens: u.outputTokens,
-      cacheCreationInputTokens: u.cacheCreationInputTokens,
-      cacheReadInputTokens: u.cacheReadInputTokens,
-      cachedInputTokens: u.cachedInputTokens,
-      reasoningTokens: u.reasoningTokens,
-      webSearchRequests: u.webSearchRequests,
+  return applyLocalModelSavings(
+    {
+      provider: call.provider,
+      model: call.model,
+      usage: {
+        inputTokens: u.inputTokens,
+        outputTokens: u.outputTokens,
+        cacheCreationInputTokens: u.cacheCreationInputTokens,
+        cacheReadInputTokens: u.cacheReadInputTokens,
+        cachedInputTokens: u.cachedInputTokens,
+        reasoningTokens: u.reasoningTokens,
+        webSearchRequests: u.webSearchRequests,
+      },
+      costUSD: call.costUSD ?? costUSD,
+      isEstimated: call.isEstimated,
+      tools: call.tools,
+      mcpTools: extractMcpTools(call.tools),
+      skills: call.skills,
+      subagentTypes: call.subagentTypes ?? [],
+      hasAgentSpawn: call.tools.includes('Agent'),
+      hasPlanMode: call.tools.includes('EnterPlanMode'),
+      speed: call.speed,
+      timestamp: call.timestamp,
+      bashCommands: call.bashCommands,
+      deduplicationKey: call.deduplicationKey,
+      cacheCreationOneHourTokens: u.cacheCreationOneHourTokens || undefined,
+      toolSequence: call.toolSequence,
     },
-    costUSD: call.costUSD ?? costUSD,
-    isEstimated: call.isEstimated,
-    tools: call.tools,
-    mcpTools: extractMcpTools(call.tools),
-    skills: call.skills,
-    subagentTypes: call.subagentTypes ?? [],
-    hasAgentSpawn: call.tools.includes('Agent'),
-    hasPlanMode: call.tools.includes('EnterPlanMode'),
-    speed: call.speed,
-    timestamp: call.timestamp,
-    bashCommands: call.bashCommands,
-    deduplicationKey: call.deduplicationKey,
-    cacheCreationOneHourTokens: u.cacheCreationOneHourTokens || undefined,
-    toolSequence: call.toolSequence,
-  })
+    pricing,
+  )
 }
 
 // `resolvedBranch` restores the turn's git branch after the cache's per-turn
@@ -3029,7 +3085,11 @@ function cachedCallToApiCall(call: CachedCall): ParsedApiCall {
 // turns in order carry the last stored value forward and pass it here, so each
 // reconstructed turn regains the "branch active for this turn" the cache elided —
 // and downstream date/day filtering can slice turns without losing the anchor.
-export function cachedTurnToClassified(turn: CachedTurn, resolvedBranch?: string): ClassifiedTurn {
+export function cachedTurnToClassified(
+  turn: CachedTurn,
+  resolvedBranch?: string,
+  pricing: ScanPricing = captureScanPricing(),
+): ClassifiedTurn {
   const branch = turn.gitBranch ?? resolvedBranch
   // Re-extract when the cached turn predates PR capture (or a narrower URL
   // shape): the user message plus every call's executed commands, so already
@@ -3043,7 +3103,7 @@ export function cachedTurnToClassified(turn: CachedTurn, resolvedBranch?: string
       })
   const parsed: ParsedTurn = {
     userMessage: turn.userMessage,
-    assistantCalls: turn.calls.map(cachedCallToApiCall),
+    assistantCalls: turn.calls.map(call => cachedCallToApiCall(call, pricing)),
     timestamp: turn.timestamp,
     sessionId: turn.sessionId,
     ...(branch ? { gitBranch: branch } : {}),
@@ -3093,35 +3153,37 @@ function mergeBoundaryCalls(cachedCalls: CachedCall[], newCalls: CachedCall[]): 
   return result
 }
 
-async function parseClaudeEntries(
+/** Native Claude journal reader used by the scan Effect. The stream owns the
+ * ReadStream and drains its close event when this Effect is interrupted. */
+export const parseClaudeEntriesEffect = Effect.fnUntraced(function* (
   filePath: string,
   tracker: { lastCompleteLineOffset: number },
   startByteOffset?: number,
-  // Rich-capture collectors, populated from the RAW entry before compaction
-  // strips toolUseResult / ai-title / pr-link / isSidechain.
   collectors?: { toolResultMeta?: Map<string, ToolResultMeta>; sessionMeta?: SessionMeta },
   signal?: AbortSignal,
-): Promise<JournalEntry[] | null> {
+): Effect.fn.Return<JournalEntry[] | null, Error> {
+  yield* checkScanAbort(signal)
   const entries: JournalEntry[] = []
-  let hasLines = false
-  for await (const line of readSessionLines(filePath, undefined, {
-    largeLineAsBuffer: true,
-    byteOffsetTracker: tracker,
-    signal,
-    ...(startByteOffset !== undefined ? { startByteOffset } : {}),
-  })) {
-    throwIfScanAborted(signal)
-    hasLines = true
-    const entry = parseJsonlLine(line)
-    if (!entry) continue
-    if (collectors?.toolResultMeta) collectToolResultMeta(entry, collectors.toolResultMeta)
-    if (collectors?.sessionMeta) collectSessionMeta(entry, collectors.sessionMeta)
-    entries.push(compactEntry(entry))
-  }
-  throwIfScanAborted(signal)
-  if (!hasLines || entries.length === 0) return null
-  return entries
-}
+  yield* Stream.runForEach(
+    readSessionLinesStream(filePath, undefined, {
+      largeLineAsBuffer: true,
+      byteOffsetTracker: tracker,
+      signal,
+      ...(startByteOffset !== undefined ? { startByteOffset } : {}),
+    }),
+    line =>
+      Effect.gen(function* () {
+        yield* checkScanAbort(signal)
+        const entry = parseJsonlLine(line)
+        if (!entry) return
+        if (collectors?.toolResultMeta) collectToolResultMeta(entry, collectors.toolResultMeta)
+        if (collectors?.sessionMeta) collectSessionMeta(entry, collectors.sessionMeta)
+        entries.push(compactEntry(entry))
+      }),
+  )
+  yield* checkScanAbort(signal)
+  return entries.length === 0 ? null : entries
+})
 
 function getOrCreateProviderSection(cache: SessionCache, provider: string): ProviderSection {
   const envFp = computeEnvFingerprint(provider)
@@ -3219,9 +3281,10 @@ function isPermissionError(err: unknown): boolean {
 // progress during the scan.
 const YIELD_EVERY = 25
 
-function yieldToEventLoop(): Promise<void> {
-  return new Promise(resolve => setImmediate(resolve))
-}
+const yieldToEventLoopEffect = Effect.callback<undefined>(resume => {
+  const pending = setImmediate(() => resume(Effect.succeed(undefined)))
+  return Effect.sync(() => clearImmediate(pending))
+})
 
 // Suppress the scan-progress line while an interactive Ink UI is live. The
 // dashboard and compare render to stdout on the same terminal, and their scans
@@ -3271,26 +3334,33 @@ export function emitScanProgress(event: ScanProgressEvent, paths?: AppPaths): vo
 // full-cache writes never dominate a fast warm run.
 const PROGRESS_SAVE_THROTTLE_MS = 5000
 
-export function createScanProgress(label: string, total: number) {
+export function createScanProgress(
+  label: string,
+  total: number,
+): {
+  tick(done: number): Effect.Effect<void>
+  finish(): Effect.Effect<void>
+} {
   const show = !interactiveScanUI && total > 20 && process.stderr.isTTY === true
-  let lastWrite = 0
+  let lastWrite: number | null = null
   return {
-    async tick(done: number): Promise<void> {
-      if (done % YIELD_EVERY === 0) await yieldToEventLoop()
+    tick: Effect.fnUntraced(function* (done: number) {
+      if (done % YIELD_EVERY === 0) yield* yieldToEventLoopEffect
       if (!show) return
-      const now = Date.now()
-      if (done !== total && now - lastWrite < 100) return
+      const now = yield* Clock.currentTimeMillis
+      if (done !== total && lastWrite !== null && now - lastWrite < 100) return
       lastWrite = now
       process.stderr.write(`\rwatchtower: ${label} ${done}/${total}…`)
-    },
-    finish(): void {
-      if (!show) return
-      process.stderr.write('\r\x1b[K')
+    }),
+    finish(): Effect.Effect<void> {
+      return Effect.sync(() => {
+        if (show) process.stderr.write('\r\x1b[K')
+      })
     },
   }
 }
 
-async function parseProviderSources(
+const parseProviderSourcesEffect = Effect.fnUntraced(function* (
   providerName: string,
   sources: SessionSource[],
   seenKeys: Set<string>,
@@ -3299,12 +3369,15 @@ async function parseProviderSources(
   readOnly = false,
   onDelta?: DeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
-  signal?: AbortSignal,
-): Promise<ProjectSummary[]> {
-  throwIfScanAborted(signal)
-  const provider = await getProvider(providerName)
-  throwIfScanAborted(signal)
-  if (!provider) return []
+  context: ProviderScanContext & { stop?: () => void } = {},
+): Effect.fn.Return<ProjectSummary[], Error> {
+  const { signal } = context
+  const pricing = context.pricing ?? captureScanPricing()
+  yield* checkScanAbort(signal)
+  const discoveredProvider = yield* getProviderEffect(providerName, context)
+  yield* checkScanAbort(signal)
+  if (!discoveredProvider || !isSessionProvider(discoveredProvider)) return []
+  const provider = discoveredProvider
 
   const section = getOrCreateProviderSection(diskCache, providerName)
   const allDiscoveredFiles = new Set<string>()
@@ -3322,15 +3395,15 @@ async function parseProviderSources(
   // in `section.files`. Skipped in read-only mode; failed files are forwarded so
   // scan metadata can count them (ledger consumers gate them out). Durable
   // providers mark the delta so the store never deletes already-ported rows.
-  const emitProviderDelta = async (
+  const emitProviderDelta = Effect.fnUntraced(function* (
     path: string,
     verdict: ScanDeltaVerdict,
     cachedFile: CachedFile,
     source?: SessionSource,
-  ): Promise<void> => {
-    throwIfScanAborted(signal)
+  ): Effect.fn.Return<void, Error> {
+    yield* checkScanAbort(signal)
     if (readOnly || !onDelta) return
-    await safeEmitDelta(onDelta, {
+    yield* safeEmitDeltaEffect(onDelta, {
       provider: providerName,
       envFingerprint: section.envFingerprint,
       filePath: path,
@@ -3343,11 +3416,11 @@ async function parseProviderSources(
       ...(source?.project ? { project: source.project } : {}),
       ...(source?.workingDirectory ? { workingDirectory: source.workingDirectory } : {}),
     })
-    throwIfScanAborted(signal)
-  }
+    yield* checkScanAbort(signal)
+  })
 
   for (const source of sources) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     allDiscoveredFiles.add(source.path)
 
     // Network providers (e.g. Vercel AI Gateway) have no on-disk file — their data
@@ -3355,12 +3428,13 @@ async function parseProviderSources(
     // fingerprint or incrementally cache, so re-fetch every run with a synthetic
     // fingerprint (mtime=now so the date-range filter below never excludes it).
     if (provider.network && !readOnly) {
-      changedSources.push({ source, fp: { dev: 0, ino: 0, mtimeMs: Date.now(), sizeBytes: 0 }, verdict: 'modified' })
+      const nowMs = yield* Clock.currentTimeMillis
+      changedSources.push({ source, fp: { dev: 0, ino: 0, mtimeMs: nowMs, sizeBytes: 0 }, verdict: 'modified' })
       continue
     }
 
-    const fp = await fingerprintFile(source.path)
-    throwIfScanAborted(signal)
+    const fp = yield* fingerprintFileEffect(source.path)
+    yield* checkScanAbort(signal)
     if (!fp) continue
 
     const cached = section.files[source.path]
@@ -3389,7 +3463,7 @@ async function parseProviderSources(
 
   if (readOnly) {
     for (const [path, cached] of Object.entries(section.files)) {
-      throwIfScanAborted(signal)
+      yield* checkScanAbort(signal)
       if (allDiscoveredFiles.has(path)) continue
       servedSources.push({
         provider: providerName,
@@ -3405,7 +3479,7 @@ async function parseProviderSources(
   // Separate from seenKeys so parsing doesn't suppress query-time output.
   const parserDedup = new Set(seenKeys)
   for (const { cached } of unchangedSources) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     for (const turn of cached.turns) {
       for (const call of turn.calls) {
         parserDedup.add(call.deduplicationKey)
@@ -3415,9 +3489,9 @@ async function parseProviderSources(
 
   // Warm files emit an unchanged delta (a ledger no-op; the stream stays whole).
   for (const { source, cached } of unchangedSources) {
-    throwIfScanAborted(signal)
-    await emitProviderDelta(source.path, 'unchanged', cached, source)
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
+    yield* emitProviderDelta(source.path, 'unchanged', cached, source)
+    yield* checkScanAbort(signal)
   }
 
   // Parse changed files, update cache
@@ -3427,104 +3501,157 @@ async function parseProviderSources(
   // agent-traces.db) can accumulate via the merge logic below rather than
   // being wiped on every iteration.
   const clearedPaths = new Set<string>()
-  try {
-    for (const { source, fp, verdict } of changedSources) {
-      throwIfScanAborted(signal)
-      const priorEntry = section.files[source.path]
-      if (dateRange) {
-        if (fp.mtimeMs < dateRange.start.getTime()) continue
-      }
-
-      // Clear stale entry before parse — but only once per path so that
-      // multiple sources mapping to the same file path can merge their turns.
-      // Durable providers (e.g. copilot OTel) never clear existing entries so
-      // that pruned-away data is preserved for monotonic monthly totals.
-      if (!provider.durableSources && !clearedPaths.has(source.path)) {
-        delete section.files[source.path]
-        clearedPaths.add(source.path)
-      }
-
-      const parser = provider.createSessionParser(source, parserDedup, dateRange)
-
-      try {
-        // Extraction seam (ADR 0003): every provider's emitted call runs through
-        // the loose shared schema. Unknown keys are stripped; a declared field
-        // failing its type is skipped and counted (unparsed), never fatal — a
-        // provider version bump degrades that provider, not the whole scan.
-        const providerCalls: ParsedProviderCall[] = []
-        const tally: UnparsedTally = { count: 0 }
-        for await (const call of parser.parse()) {
-          throwIfScanAborted(signal)
-          const parsed = parseOrSkip(parsedProviderCallSchema, call, tally, `${providerName} session ${source.path}`)
-          if (parsed) providerCalls.push(parsed)
-        }
-        throwIfScanAborted(signal)
-        if (tally.count > 0) onUnparsed?.(providerName, tally.count)
-        const canonicalCalls = await Promise.all(providerCalls.map(canonicalizeProviderCallProject))
-        throwIfScanAborted(signal)
-        const turns = providerCallsToCachedTurns(canonicalCalls)
-
-        // Store/merge parsed turns into the cache.
-        // Durable providers use a union-by-deduplicationKey merge: existing turns
-        // are NEVER deleted (preserves data for spans pruned from the DB), and
-        // only turns whose dedup keys are not already cached are appended.
-        // Non-durable providers keep the original overwrite-or-append behaviour.
-        if (provider.durableSources) {
-          const existingEntry = section.files[source.path]
-          if (existingEntry) {
-            const existingKeys = new Set(existingEntry.turns.flatMap(t => t.calls.map(c => c.deduplicationKey)))
-            const newTurns = turns.filter(t => t.calls.every(c => !existingKeys.has(c.deduplicationKey)))
-            existingEntry.turns = [...existingEntry.turns, ...newTurns]
-            existingEntry.fingerprint = fp
-          } else {
-            section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns }
+  let activeParse: { readonly path: string; readonly priorEntry: CachedFile | undefined } | undefined
+  yield* Effect.onExit(
+    Effect.onExit(
+      Effect.gen(function* () {
+        for (const { source, fp, verdict } of changedSources) {
+          yield* checkScanAbort(signal)
+          const priorEntry = section.files[source.path]
+          activeParse = { path: source.path, priorEntry }
+          if (dateRange) {
+            if (fp.mtimeMs < dateRange.start.getTime()) continue
           }
-        } else {
-          // Non-durable: overwrite (clearedPaths already deleted stale entry above)
-          // or append when multiple sources map to the same path. NOTE: the append
-          // path assumes discoverSessions yields a unique path per source, which all
-          // current providers do; it only fires for same-path multi-source providers.
-          const existingCacheEntry = section.files[source.path]
-          if (existingCacheEntry) {
-            existingCacheEntry.turns = [...existingCacheEntry.turns, ...turns]
-          } else {
-            section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns }
+
+          // Clear stale entry before parse — but only once per path so that
+          // multiple sources mapping to the same file path can merge their turns.
+          // Durable providers (e.g. copilot OTel) never clear existing entries so
+          // that pruned-away data is preserved for monotonic monthly totals.
+          if (!provider.durableSources && !clearedPaths.has(source.path)) {
+            delete section.files[source.path]
+            clearedPaths.add(source.path)
+          }
+
+          const parser = provider.createSessionParser(source, parserDedup, dateRange, context)
+
+          try {
+            // Extraction seam (ADR 0003): every provider's emitted call runs through
+            // the loose shared schema. Unknown keys are stripped; a declared field
+            // failing its type is skipped and counted (unparsed), never fatal — a
+            // provider version bump degrades that provider, not the whole scan.
+            const providerCalls: ParsedProviderCall[] = []
+            const tally: UnparsedTally = { count: 0 }
+            const collectCall = (call: ParsedProviderCall): void => {
+              const parsed = parseOrSkip(
+                parsedProviderCallSchema,
+                call,
+                tally,
+                `${providerName} session ${source.path}`,
+              )
+              if (parsed) providerCalls.push(parsed)
+            }
+            const streamResult = yield* Effect.result(
+              Stream.runForEach(
+                parser.parseStream(
+                  Effect.sync(() => {
+                    tally.count++
+                  }),
+                ),
+                call =>
+                  Effect.gen(function* () {
+                    yield* checkScanAbort(signal)
+                    yield* Effect.sync(() => collectCall(call))
+                  }),
+              ),
+            )
+            if (streamResult._tag === 'Failure') throw streamResult.failure
+            yield* checkScanAbort(signal)
+            if (tally.count > 0) onUnparsed?.(providerName, tally.count)
+            const canonicalization = yield* Effect.result(
+              Effect.forEach(providerCalls, call => canonicalizeProviderCallProjectEffect(call, signal), {
+                concurrency: 'unbounded',
+              }),
+            )
+            if (canonicalization._tag === 'Failure') throw canonicalization.failure
+            const canonicalCalls = canonicalization.success
+            yield* checkScanAbort(signal)
+            const turns = providerCallsToCachedTurns(canonicalCalls)
+
+            // Store/merge parsed turns into the cache.
+            // Durable providers use a union-by-deduplicationKey merge: existing turns
+            // are NEVER deleted (preserves data for spans pruned from the DB), and
+            // only turns whose dedup keys are not already cached are appended.
+            // Non-durable providers keep the original overwrite-or-append behaviour.
+            if (provider.durableSources) {
+              const existingEntry = section.files[source.path]
+              if (existingEntry) {
+                const existingKeys = new Set(existingEntry.turns.flatMap(t => t.calls.map(c => c.deduplicationKey)))
+                const newTurns = turns.filter(t => t.calls.every(c => !existingKeys.has(c.deduplicationKey)))
+                section.files[source.path] = {
+                  ...existingEntry,
+                  turns: [...existingEntry.turns, ...newTurns],
+                  fingerprint: fp,
+                }
+              } else {
+                section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns }
+              }
+            } else {
+              // Non-durable: overwrite (clearedPaths already deleted stale entry above)
+              // or append when multiple sources map to the same path. NOTE: the append
+              // path assumes discoverSessions yields a unique path per source, which all
+              // current providers do; it only fires for same-path multi-source providers.
+              const existingCacheEntry = section.files[source.path]
+              if (existingCacheEntry) {
+                section.files[source.path] = {
+                  ...existingCacheEntry,
+                  turns: [...existingCacheEntry.turns, ...turns],
+                }
+              } else {
+                section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns }
+              }
+            }
+            yield* checkScanAbort(signal)
+            didParse = true
+            ;(diskCache as { _dirty?: boolean })._dirty = true
+            const deltaResult = yield* Effect.result(
+              emitProviderDelta(source.path, verdict, section.files[source.path]!, source),
+            )
+            if (deltaResult._tag === 'Failure') throw deltaResult.failure
+            activeParse = undefined
+          } catch (err) {
+            if (signal?.aborted || isScanAbortedError(err)) {
+              if (priorEntry) section.files[source.path] = priorEntry
+              else delete section.files[source.path]
+              if (signal?.aborted) return yield* Effect.fail(scanAbortError(signal))
+              return yield* Effect.fail(err as Error)
+            }
+            if (isSqliteBusyError(err)) {
+              warnProviderReadFailureOnce(providerName, err)
+              activeParse = undefined
+              continue
+            }
+            // A single malformed session file must not abort the entire run — that
+            // would silently empty the daily-cache backfill and wipe the trend /
+            // history (issue #441). Record a negative-result marker keyed by the
+            // current fingerprint so we don't re-read + re-throw this unchanged file
+            // on every refresh; it re-parses only if it changes. Empty turns => no
+            // usage contributed.
+            section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns: [], failed: true }
+            ;(diskCache as { _dirty?: boolean })._dirty = true
+            warnProviderParseFailure(providerName, source.path, err)
+            activeParse = undefined
+            continue
           }
         }
-        throwIfScanAborted(signal)
-        didParse = true
-        ;(diskCache as { _dirty?: boolean })._dirty = true
-        await emitProviderDelta(source.path, verdict, section.files[source.path]!, source)
-      } catch (err) {
-        if (signal?.aborted || isScanAbortedError(err)) {
-          if (priorEntry) section.files[source.path] = priorEntry
-          else delete section.files[source.path]
-          if (signal?.aborted) throw scanAbortError(signal)
-          throw err
+      }),
+      exit =>
+        Effect.sync(() => {
+          if (exit._tag !== 'Failure' || !activeParse) return
+          if (activeParse.priorEntry) section.files[activeParse.path] = activeParse.priorEntry
+          else delete section.files[activeParse.path]
+          activeParse = undefined
+        }),
+    ),
+    exit =>
+      Effect.gen(function* () {
+        if ((exit._tag === 'Failure' && Cause.hasInterrupts(exit.cause)) || signal?.aborted || !didParse) return
+        if (providerName === 'codex') yield* Effect.scoped(flushCodexCacheEffect(signal))
+        if (providerName === 'antigravity') {
+          const liveIds = new Set(sources.map(s => antigravityCascadeIdFromPath(s.path)))
+          yield* flushAntigravityCacheEffect(liveIds, signal)
         }
-        if (isSqliteBusyError(err)) {
-          warnProviderReadFailureOnce(providerName, err)
-          continue
-        }
-        // A single malformed session file must not abort the entire run — that
-        // would silently empty the daily-cache backfill and wipe the trend /
-        // history (issue #441). Record a negative-result marker keyed by the
-        // current fingerprint so we don't re-read + re-throw this unchanged file
-        // on every refresh; it re-parses only if it changes. Empty turns => no
-        // usage contributed.
-        section.files[source.path] = { fingerprint: fp, mcpInventory: [], turns: [], failed: true }
-        ;(diskCache as { _dirty?: boolean })._dirty = true
-        warnProviderParseFailure(providerName, source.path, err)
-        continue
-      }
-    }
-  } finally {
-    if (!signal?.aborted && didParse && providerName === 'codex') await flushCodexCache()
-    if (!signal?.aborted && didParse && providerName === 'antigravity') {
-      const liveIds = new Set(sources.map(s => antigravityCascadeIdFromPath(s.path)))
-      await flushAntigravityCache(liveIds)
-    }
-  }
+      }),
+  )
 
   // Stamp the durable flag into the cache section so the orphan-bootstrap in
   // parseAllSessions can fast-check without a getProvider() round-trip.
@@ -3545,7 +3672,8 @@ async function parseProviderSources(
   // 90-day age-out for durable providers: remove entries whose newest call is
   // older than 90 days so the cache doesn't grow unboundedly over time.
   if (!readOnly && provider.durableSources) {
-    const cutoffMs = Date.now() - 90 * 24 * 60 * 60 * 1000
+    const nowMs = yield* Clock.currentTimeMillis
+    const cutoffMs = nowMs - 90 * 24 * 60 * 60 * 1000
     for (const [cachedPath, cachedFile] of Object.entries(section.files)) {
       const newestTs = cachedFile.turns
         .flatMap(t => t.calls)
@@ -3565,7 +3693,7 @@ async function parseProviderSources(
   if (!readOnly && provider.durableSources && onDelta) {
     for (const [path, cachedFile] of Object.entries(section.files)) {
       if (allDiscoveredFiles.has(path)) continue
-      await emitProviderDelta(path, 'appended', cachedFile)
+      yield* emitProviderDelta(path, 'appended', cachedFile)
     }
   }
 
@@ -3644,7 +3772,7 @@ async function parseProviderSources(
         if (ts < dateRange.start || ts > dateRange.end) continue
       }
 
-      const classified = cachedTurnToClassified(turn)
+      const classified = cachedTurnToClassified(turn, undefined, pricing)
       const project = turn.calls[0]?.project ?? source.project
       const key = `${providerName}:${turn.sessionId}:${project}`
 
@@ -3694,7 +3822,7 @@ async function parseProviderSources(
           if (ts < dateRange.start || ts > dateRange.end) continue
         }
 
-        const classified = cachedTurnToClassified(turn)
+        const classified = cachedTurnToClassified(turn, undefined, pricing)
         const project = turn.calls[0]?.project ?? providerName
         const key = `${providerName}:${turn.sessionId}:${project}`
 
@@ -3745,7 +3873,7 @@ async function parseProviderSources(
   }
 
   return projects
-}
+})
 
 const CACHE_TTL_MS = 180_000
 const MAX_CACHE_ENTRIES = 10
@@ -3773,8 +3901,7 @@ export function clearSessionCache(): void {
   sessionCache.clear()
 }
 
-function cachePut(key: string, data: ProjectSummary[]) {
-  const now = Date.now()
+function cachePut(key: string, data: ProjectSummary[], now: number): void {
   for (const [k, v] of sessionCache) {
     if (now - v.ts > CACHE_TTL_MS) sessionCache.delete(k)
   }
@@ -4202,109 +4329,200 @@ export function isSessionHydrationComplete(): boolean {
   return sessionHydrationComplete
 }
 
-export async function parseAllSessions(
+export const parseAllSessionsEffect = Effect.fnUntraced(
+  function* (
+    dateRange?: DateRange,
+    providerFilter?: string,
+    onDelta?: DeltaHandler,
+    onUnparsed?: (provider: string, count: number) => void,
+    signal?: AbortSignal,
+    services: ProviderScanServices = {},
+    stop?: () => void,
+  ): Effect.fn.Return<ProjectSummary[], Error, Env | HttpFetch> {
+    yield* checkScanAbort(signal)
+    const pricing = services.pricing ?? captureScanPricing()
+    const gatewayEnabled = services.gatewayEnabled ?? (yield* Env).vercelGatewayApiKey !== null
+    const fetchGatewayReport =
+      services.fetchGatewayReport ??
+      (yield* Effect.gen(function* () {
+        const env = yield* Env
+        const http = yield* HttpFetch
+        return (range: DateRange, requestSignal?: AbortSignal) =>
+          fetchVercelGatewayReportEffect(range, requestSignal).pipe(
+            Effect.provideService(Env, env),
+            Effect.provideService(HttpFetch, http),
+          )
+      }))
+    const context: ProviderScanContext & { stop?: () => void } = {
+      ...services,
+      gatewayEnabled,
+      fetchGatewayReport,
+      signal,
+      pricing,
+      stop,
+    }
+    const pricedDelta: DeltaHandler | undefined = onDelta ? delta => onDelta(delta, pricing) : undefined
+    const key = cacheKey(dateRange, providerFilter)
+    const cached = sessionCache.get(key)
+    if (cached) {
+      const nowMs = yield* Clock.currentTimeMillis
+      if (nowMs - cached.ts < CACHE_TTL_MS) return cached.data
+    }
+
+    let diskCache = yield* loadCacheEffect()
+    yield* checkScanAbort(signal)
+    yield* cleanupOrphanedTempFilesEffect()
+    yield* checkScanAbort(signal)
+
+    // Cold-hydration coordination (advisory, cross-process). Engages whenever the
+    // on-disk cache is not COMPLETE — an empty cache OR a partial one an interrupted
+    // cold start left behind. Keying on completeness (not mere non-emptiness) is
+    // what keeps a resumed partial hydration under the lock, so a concurrent menubar
+    // + desktop can't race their partial writes and freeze a partial daily history.
+    // If another live process is already hydrating, wait for it, then reload the
+    // now-warm cache instead of double-parsing. Never a correctness gate: on any
+    // doubt it proceeds unlocked.
+    if (!isCacheComplete(diskCache)) {
+      return yield* Effect.uninterruptibleMask(restore =>
+        restore(beginColdHydrationEffect(true)).pipe(
+          Effect.flatMap(hydration =>
+            restore(
+              Effect.gen(function* () {
+                yield* checkScanAbort(signal)
+                if (hydration.waited) diskCache = yield* loadCacheEffect()
+                yield* checkScanAbort(signal)
+                return yield* runParseEffect(
+                  key,
+                  diskCache,
+                  dateRange,
+                  providerFilter,
+                  { isCold: !isCacheComplete(diskCache) },
+                  pricedDelta,
+                  onUnparsed,
+                  context,
+                )
+              }),
+            ).pipe(Effect.onExit(() => hydration.release)),
+          ),
+        ),
+      )
+    }
+
+    // A complete cache refresh is a strict read/reconcile/parse/save transaction.
+    // Keep the snapshot loaded before acquisition: timeout/unavailable paths serve
+    // exactly this complete snapshot and never mutate or invalidate the holder.
+    const priorSnapshot = diskCache
+    return yield* Effect.uninterruptibleMask(restore =>
+      restore(acquireCacheRefreshLockEffect()).pipe(
+        Effect.flatMap(owned =>
+          restore(
+            Effect.gen(function* () {
+              yield* checkScanAbort(signal)
+              if (owned.outcome === 'timed-out' || owned.outcome === 'unavailable') {
+                return yield* runParseEffect(
+                  key,
+                  priorSnapshot,
+                  dateRange,
+                  providerFilter,
+                  { readOnly: true },
+                  pricedDelta,
+                  onUnparsed,
+                  context,
+                )
+              }
+              if (owned.outcome === 'completed-by-other') {
+                diskCache = yield* loadCacheEffect()
+                yield* checkScanAbort(signal)
+                return yield* runParseEffect(
+                  key,
+                  diskCache,
+                  dateRange,
+                  providerFilter,
+                  { readOnly: true },
+                  pricedDelta,
+                  onUnparsed,
+                  context,
+                )
+              }
+              // Reload only after ownership is canonical. This closes the lost-update
+              // window between the pre-gate read and the holder's completed publication.
+              diskCache = yield* loadCacheEffect()
+              yield* checkScanAbort(signal)
+              return yield* runParseEffect(
+                key,
+                diskCache,
+                dateRange,
+                providerFilter,
+                { refreshLock: owned.handle },
+                pricedDelta,
+                onUnparsed,
+                context,
+              ).pipe(
+                Effect.catch(error => {
+                  if (
+                    !(error instanceof RefreshFenceLostError) &&
+                    !(error instanceof RefreshPublicationUnavailableError)
+                  ) {
+                    return Effect.fail(error)
+                  }
+                  return Effect.gen(function* () {
+                    yield* checkScanAbort(signal)
+                    const latest = yield* loadCacheEffect()
+                    yield* checkScanAbort(signal)
+                    return yield* runParseEffect(
+                      key,
+                      latest,
+                      dateRange,
+                      providerFilter,
+                      { readOnly: true },
+                      pricedDelta,
+                      onUnparsed,
+                      context,
+                    )
+                  })
+                }),
+              )
+            }),
+          ).pipe(Effect.onExit(() => (owned.outcome === 'acquired' ? owned.handle.releaseEffect : Effect.void))),
+        ),
+      ),
+    )
+  },
+  (effect, ...args) =>
+    Effect.gen(function* () {
+      const signal = args[4]
+      const quickdeskReads = yield* createQuickdeskScanData(signal)
+      const devinReads = yield* createDevinScanReads(signal)
+      const kiroReads = yield* createKiroScanReads(signal)
+      return yield* effect.pipe(
+        Effect.provideService(QuickdeskScanReads, quickdeskReads),
+        Effect.provideService(DevinScanReads, devinReads),
+        Effect.provideService(KiroScanReads, kiroReads),
+      )
+    }),
+)
+
+/** Compatibility edge for direct tests and callers not migrated yet. */
+export function parseAllSessions(
   dateRange?: DateRange,
   providerFilter?: string,
-  onDelta?: DeltaHandler,
+  onDelta?: PromiseDeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
   signal?: AbortSignal,
+  services: ProviderScanServices = {},
 ): Promise<ProjectSummary[]> {
-  throwIfScanAborted(signal)
-  const key = cacheKey(dateRange, providerFilter)
-  const cached = sessionCache.get(key)
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data
-
-  let diskCache = await loadCache()
-  throwIfScanAborted(signal)
-  await cleanupOrphanedTempFiles()
-  throwIfScanAborted(signal)
-
-  // Cold-hydration coordination (advisory, cross-process). Engages whenever the
-  // on-disk cache is not COMPLETE — an empty cache OR a partial one an interrupted
-  // cold start left behind. Keying on completeness (not mere non-emptiness) is
-  // what keeps a resumed partial hydration under the lock, so a concurrent menubar
-  // + desktop can't race their partial writes and freeze a partial daily history.
-  // If another live process is already hydrating, wait for it, then reload the
-  // now-warm cache instead of double-parsing. Never a correctness gate: on any
-  // doubt it proceeds unlocked.
-  if (!isCacheComplete(diskCache)) {
-    const hydration = await beginColdHydration(true)
-    try {
-      throwIfScanAborted(signal)
-      if (hydration.waited) diskCache = await loadCache()
-      throwIfScanAborted(signal)
-      const isCold = !isCacheComplete(diskCache)
-      const result = await runParse(key, diskCache, dateRange, providerFilter, { isCold }, onDelta, onUnparsed, signal)
-      throwIfScanAborted(signal)
-      return result
-    } finally {
-      await hydration.release()
-    }
-  }
-
-  // A complete cache refresh is a strict read/reconcile/parse/save transaction.
-  // Keep the snapshot loaded before acquisition: timeout/unavailable paths serve
-  // exactly this complete snapshot and never mutate or invalidate the holder.
-  const priorSnapshot = diskCache
-  const refresh = await acquireCacheRefreshLock()
-  if (refresh.outcome === 'timed-out' || refresh.outcome === 'unavailable') {
-    throwIfScanAborted(signal)
-    const result = await runParse(
-      key,
-      priorSnapshot,
-      dateRange,
-      providerFilter,
-      { readOnly: true },
-      onDelta,
-      onUnparsed,
-      signal,
-    )
-    throwIfScanAborted(signal)
-    return result
-  }
-  if (refresh.outcome === 'completed-by-other') {
-    throwIfScanAborted(signal)
-    diskCache = await loadCache()
-    throwIfScanAborted(signal)
-    const result = await runParse(
-      key,
-      diskCache,
-      dateRange,
-      providerFilter,
-      { readOnly: true },
-      onDelta,
-      onUnparsed,
-      signal,
-    )
-    throwIfScanAborted(signal)
-    return result
-  }
-
-  try {
-    throwIfScanAborted(signal)
-    // Reload only after ownership is canonical; this closes the lost-update
-    // window between the pre-gate read and the holder's completed publication.
-    diskCache = await loadCache()
-    throwIfScanAborted(signal)
-    return await runParse(
-      key,
-      diskCache,
-      dateRange,
-      providerFilter,
-      { refreshLock: refresh.handle },
-      onDelta,
-      onUnparsed,
-      signal,
-    )
-  } catch (err) {
-    if (!(err instanceof RefreshFenceLostError) && !(err instanceof RefreshPublicationUnavailableError)) throw err
-    throwIfScanAborted(signal)
-    diskCache = await loadCache()
-    throwIfScanAborted(signal)
-    return runParse(key, diskCache, dateRange, providerFilter, { readOnly: true }, onDelta, onUnparsed, signal)
-  } finally {
-    await refresh.handle.release()
-  }
+  const nativeDelta: DeltaHandler | undefined = onDelta
+    ? (delta, pricing) =>
+        runOwnedParserPromise(signal, undefined, async () => {
+          await onDelta(delta, pricing)
+        })
+    : undefined
+  return Effect.runPromise(
+    parseAllSessionsEffect(dateRange, providerFilter, nativeDelta, onUnparsed, signal, services).pipe(
+      Effect.provide(Env.layer),
+      Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
+    ),
+  )
 }
 
 class RefreshFenceLostError extends Error {}
@@ -4316,7 +4534,7 @@ type RunParseOptions = {
   refreshLock?: RefreshLockHandle
 }
 
-async function runParse(
+const runParseEffect = Effect.fnUntraced(function* (
   key: string,
   diskCache: SessionCache,
   dateRange?: DateRange,
@@ -4324,21 +4542,22 @@ async function runParse(
   options: RunParseOptions = {},
   onDelta?: DeltaHandler,
   onUnparsed?: (provider: string, count: number) => void,
-  signal?: AbortSignal,
-): Promise<ProjectSummary[]> {
-  throwIfScanAborted(signal)
+  context: ProviderScanContext & { stop?: () => void } = {},
+): Effect.fn.Return<ProjectSummary[], Error, Env> {
+  const { signal } = context
+  yield* checkScanAbort(signal)
   const { isCold = false, readOnly = false, refreshLock } = options
   const seenMsgIds = new Set<string>()
   const seenKeys = new Set<string>()
-  const allSources = await discoverAllSessions(providerFilter)
-  throwIfScanAborted(signal)
+  const allSources = yield* discoverAllSessionsEffect(providerFilter, undefined, context)
+  yield* checkScanAbort(signal)
 
   const claudeSources = allSources.filter(s => s.provider === 'claude')
   const nonClaudeSources = allSources.filter(s => s.provider !== 'claude')
 
   const providerGroups = new Map<string, SessionSource[]>()
   for (const source of nonClaudeSources) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     const existing = providerGroups.get(source.provider) ?? []
     existing.push(source)
     providerGroups.set(source.provider, existing)
@@ -4346,25 +4565,21 @@ async function runParse(
 
   // Cold-run robustness: persist partial progress during a long parse (throttled)
   // so a run interrupted before the single end-of-parse save still leaves a warm
-  // cache behind. saveCache is atomic (temp + rename) and clears `_dirty`, so this
+  // cache behind. saveCacheEffect is atomic (temp + rename) and clears `_dirty`, so this
   // never races the final save below.
-  let lastSaveAt = Date.now()
-  const saveProgress = async (): Promise<void> => {
-    throwIfScanAborted(signal)
+  let lastSaveAt = yield* Clock.currentTimeMillis
+  const saveProgress = Effect.fnUntraced(function* (): Effect.fn.Return<void, Error> {
+    yield* checkScanAbort(signal)
     if (!isCold || readOnly) return
     if (!(diskCache as { _dirty?: boolean })._dirty) return
-    if (Date.now() - lastSaveAt < PROGRESS_SAVE_THROTTLE_MS) return
-    lastSaveAt = Date.now()
-    try {
-      await saveCache(diskCache)
-    } catch {
-      throwIfScanAborted(signal)
-      /* best-effort partial save */
-    }
-    throwIfScanAborted(signal)
-  }
+    const nowMs = yield* Clock.currentTimeMillis
+    if (nowMs - lastSaveAt < PROGRESS_SAVE_THROTTLE_MS) return
+    lastSaveAt = nowMs
+    yield* saveCacheEffect(diskCache).pipe(Effect.catch(() => checkScanAbort(signal)))
+    yield* checkScanAbort(signal)
+  })
 
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   emitScanProgress({
     kind: 'providers',
     cold: isCold,
@@ -4381,8 +4596,8 @@ async function runParse(
   }))
   if (claudeSources.length > 0) emitScanProgress({ kind: 'provider', provider: 'claude', state: 'start' })
   let claudeProjects: ProjectSummary[] = []
-  try {
-    claudeProjects = await scanProjectDirs(
+  const claudeResult = yield* Effect.result(
+    scanProjectDirsEffect(
       claudeDirs,
       seenMsgIds,
       diskCache,
@@ -4391,13 +4606,18 @@ async function runParse(
       readOnly,
       onDelta,
       signal,
-    )
-    throwIfScanAborted(signal)
+      context.pricing,
+    ),
+  )
+  if (claudeResult._tag === 'Success') {
+    claudeProjects = claudeResult.success
+    yield* checkScanAbort(signal)
     if (claudeSources.length > 0)
       emitScanProgress({ kind: 'provider', provider: 'claude', state: 'done', files: claudeSources.length })
-  } catch (err) {
-    throwIfScanAborted(signal)
-    if (!isPermissionError(err)) throw err
+  } else {
+    const err = claudeResult.failure
+    yield* checkScanAbort(signal)
+    if (!isPermissionError(err)) return yield* Effect.fail(err)
     queueLogRecord({
       logEvent: 'scan.file-error',
       level: 'warn',
@@ -4408,10 +4628,10 @@ async function runParse(
 
   const otherProjects: ProjectSummary[] = []
   for (const [providerName, sources] of providerGroups) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     emitScanProgress({ kind: 'provider', provider: providerName, state: 'start' })
-    try {
-      const projects = await parseProviderSources(
+    const providerResult = yield* Effect.result(
+      parseProviderSourcesEffect(
         providerName,
         sources,
         seenKeys,
@@ -4420,16 +4640,20 @@ async function runParse(
         readOnly,
         onDelta,
         onUnparsed,
-        signal,
-      )
-      throwIfScanAborted(signal)
+        context,
+      ),
+    )
+    if (providerResult._tag === 'Success') {
+      const projects = providerResult.success
+      yield* checkScanAbort(signal)
       emitScanProgress({ kind: 'provider', provider: providerName, state: 'done', files: sources.length })
       otherProjects.push(...projects)
-    } catch (err) {
-      throwIfScanAborted(signal)
+    } else {
+      const err = providerResult.failure
+      yield* checkScanAbort(signal)
       // A permission-locked provider skips-and-continues; any other error is a
       // real bug and still aborts (per-file/DB-lock cases are handled deeper).
-      if (!isPermissionError(err)) throw err
+      if (!isPermissionError(err)) return yield* Effect.fail(err)
       queueLogRecord({
         logEvent: 'scan.file-error',
         level: 'warn',
@@ -4437,7 +4661,7 @@ async function runParse(
       })
       emitScanProgress({ kind: 'provider', provider: providerName, state: 'skipped' })
     }
-    await saveProgress()
+    yield* saveProgress()
   }
 
   // Durable providers with cached data but NO discovered sources (all files pruned
@@ -4446,7 +4670,7 @@ async function runParse(
   // any such provider found in the disk cache.
   const processedProviders = new Set(providerGroups.keys())
   for (const providerName of Object.keys(diskCache.providers)) {
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     if (processedProviders.has(providerName)) continue
     // Skip if filtered to a different provider
     if (providerFilter && providerFilter !== 'all' && providerFilter !== providerName) continue
@@ -4457,7 +4681,7 @@ async function runParse(
     // constant — both checks are O(1) and avoid a getProvider() dynamic-import
     // round-trip for every unprocessed provider in the disk cache.
     if (!section.durable && !DURABLE_PROVIDER_NAMES.has(providerName)) continue
-    const projects = await parseProviderSources(
+    const projects = yield* parseProviderSourcesEffect(
       providerName,
       [],
       seenKeys,
@@ -4466,9 +4690,9 @@ async function runParse(
       readOnly,
       onDelta,
       onUnparsed,
-      signal,
+      context,
     )
-    throwIfScanAborted(signal)
+    yield* checkScanAbort(signal)
     otherProjects.push(...projects)
   }
 
@@ -4479,21 +4703,24 @@ async function runParse(
   // on is durable. A run killed before here never reaches this, so its throttled
   // partial saves keep `complete: false` and the next launch resumes cold.
   const wasComplete = isCacheComplete(diskCache)
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   if (!readOnly && !wasComplete) diskCache.complete = true
   if (!readOnly && ((diskCache as { _dirty?: boolean })._dirty || !wasComplete)) {
-    try {
-      throwIfScanAborted(signal)
-      const published = await saveCache(diskCache, refreshLock?.verifyStillOwner)
-      throwIfScanAborted(signal)
-      if (!published) throw new RefreshFenceLostError()
-    } catch (err) {
-      if (signal?.aborted || isScanAbortedError(err)) throw signal?.aborted ? scanAbortError(signal) : err
-      if (err instanceof RefreshFenceLostError) throw err
-      if (refreshLock) throw new RefreshPublicationUnavailableError()
+    yield* checkScanAbort(signal)
+    const publication = yield* Effect.result(
+      saveCacheEffect(diskCache, refreshLock ? () => refreshLock.verifyStillOwnerEffect : undefined),
+    )
+    if (publication._tag === 'Failure') {
+      const err = publication.failure
+      if (signal?.aborted) return yield* scanAbortError(signal)
+      if (isScanAbortedError(err)) return yield* err
+      if (refreshLock) return yield* Effect.fail(new RefreshPublicationUnavailableError())
+      return yield* Effect.fail(err)
     }
+    yield* checkScanAbort(signal)
+    if (!publication.success) return yield* Effect.fail(new RefreshFenceLostError())
   }
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
 
   // Merge across providers by normalised project path so the same repository
   // is not double-counted when it was worked on with more than one tool
@@ -4508,17 +4735,17 @@ async function runParse(
   //    function only operates on call.projectPath, which Codex doesn't set.
   //    Resolve at the ProjectSummary level here: prepend '/' if needed to get
   //    an absolute path, then run the same worktree-detection logic.
-  const resolvedOtherProjects = await Promise.all(
-    otherProjects.map(async p => {
+  const resolvedOtherProjects = yield* Effect.forEach(otherProjects, p =>
+    Effect.gen(function* () {
       const absPath =
         p.projectPath.startsWith('/') || p.projectPath.startsWith('\\') ? p.projectPath : '/' + p.projectPath
-      const canonical = await resolveCanonicalProjectPath(absPath)
+      const canonical = yield* resolveCanonicalProjectPathEffect(absPath, signal)
       // Skip if path is unchanged: same location, not a worktree, not a subdir
       if (!canonical.isWorktree && canonical.path === absPath.replace(/[/\\]+$/, '')) return p
       return { ...p, project: projectNameFromPath(canonical.path, p.project), projectPath: canonical.path }
     }),
   )
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
 
   const mergedMap = mergeProjectsByCrossProviderKey([...claudeProjects, ...resolvedOtherProjects])
 
@@ -4534,10 +4761,11 @@ async function runParse(
   }
 
   const result = Array.from(mergedMap.values()).sort((a, b) => b.totalCostUSD - a.totalCostUSD)
-  throwIfScanAborted(signal)
+  yield* checkScanAbort(signal)
   correlateCrossProviderPrSessions(result)
-  throwIfScanAborted(signal)
-  cachePut(key, result)
+  yield* checkScanAbort(signal)
+  const cachedAtMs = yield* Clock.currentTimeMillis
+  cachePut(key, result, cachedAtMs)
   sessionHydrationComplete = true
   return result
-}
+})

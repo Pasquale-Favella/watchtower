@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -7,6 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 
 import { type AppPaths, appPaths, type PlatformPaths, type ProviderOverrides } from '../src/main/env.js'
 import { createCrushProvider, crush, getRegistryPath } from '../src/main/pipeline/providers/crush.js'
+import { createOpenDesignProvider, getOpenDesignDir } from '../src/main/pipeline/providers/open-design.js'
 import { createOpenCodeProvider, opencode } from '../src/main/pipeline/providers/opencode.js'
 import type { Provider } from '../src/main/pipeline/providers/types.js'
 
@@ -167,6 +168,49 @@ function expectedForPrefix(prefix: string): string[] {
 
 afterAll(() => {
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true })
+})
+
+describe('Open Design AppPaths seam', () => {
+  const defaultRoot =
+    process.platform === 'darwin'
+      ? join(homedir(), 'Library', 'Application Support', 'Open Design')
+      : process.platform === 'win32'
+        ? join(homedir(), 'AppData', 'Roaming', 'Open Design')
+        : join(homedir(), '.config', 'Open Design')
+
+  it('uses the registered snapshot override ahead of platform roots', () => {
+    const paths = pathsWith({ WATCHTOWER_OPEN_DESIGN_DIR: '/snapshot/design' }, NO_PLATFORM)
+    expect(getOpenDesignDir(paths)).toBe('/snapshot/design')
+  })
+
+  it('preserves the defined-empty override fallback', () => {
+    const paths = pathsWith({ WATCHTOWER_OPEN_DESIGN_DIR: '' }, NO_PLATFORM)
+    expect(getOpenDesignDir(paths)).toBe(defaultRoot)
+  })
+
+  it('uses the threaded Windows platform root and retains other platform defaults', () => {
+    const paths = pathsWith({}, { ...NO_PLATFORM, appData: '/snapshot/roaming' })
+    expect(getOpenDesignDir(paths)).toBe(isWindows ? join('/snapshot/roaming', 'Open Design') : defaultRoot)
+  })
+
+  it('discovers through the threaded snapshot and keeps an explicit factory root first', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'tr-open-design-paths-'))
+    tempDirs.push(base)
+    const snapshotRoot = join(base, 'snapshot')
+    const factoryRoot = join(base, 'factory')
+    for (const root of [snapshotRoot, factoryRoot]) {
+      const run = join(root, 'runs', 'session')
+      mkdirSync(run, { recursive: true })
+      writeFileSync(join(run, 'events.jsonl'), '')
+    }
+    const paths = pathsWith({ WATCHTOWER_OPEN_DESIGN_DIR: snapshotRoot }, NO_PLATFORM)
+    await expect(createOpenDesignProvider(undefined, paths).discoverSessions()).resolves.toEqual([
+      { path: join(snapshotRoot, 'runs', 'session', 'events.jsonl'), project: 'snapshot', provider: 'open-design' },
+    ])
+    await expect(createOpenDesignProvider(factoryRoot, paths).discoverSessions()).resolves.toEqual([
+      { path: join(factoryRoot, 'runs', 'session', 'events.jsonl'), project: 'factory', provider: 'open-design' },
+    ])
+  })
 })
 
 describe('createOpenCodeProvider (OPENCODE_DB_PREFIX seam, || default)', () => {

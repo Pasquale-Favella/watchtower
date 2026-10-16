@@ -2,6 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
@@ -20,6 +21,7 @@ import {
 import {
   closeOperationalLog,
   initOperationalLog,
+  OperationalLog,
   OperationalLogLoggerLayer,
   PROBE_OUTCOME_COUNTER,
 } from '../src/main/operational-log.js'
@@ -57,18 +59,28 @@ afterEach(async () => {
 })
 
 function makeStore(
-  detect: () => Promise<HarnessInfo[]>,
+  detect: (pathEnv: string | undefined) => Promise<HarnessInfo[]>,
   probe: (info: HarnessInfo) => Effect.Effect<ProbeResult, never>,
   onChange: (rows: CoachHarnessRow[]) => void = () => {},
   counters?: HarnessSnapshotCounters,
 ): HarnessSnapshotStore {
+  const configProvider = ConfigProvider.fromEnv({
+    env: process.env as Record<string, string>,
+    preserveEmptyStrings: true,
+  })
   const runtime = ManagedRuntime.make(
     Layer.mergeAll(
       OperationalLogLoggerLayer,
       harnessSnapshotLayer({ detect, onChange, ...(counters ? { counters } : {}) }).pipe(
-        Layer.provideMerge(HarnessProbe.layerWithProbe(probe)),
+        Layer.provideMerge(
+          Layer.mergeAll(
+            OperationalLog.layer,
+            Layer.succeed(ConfigProvider.ConfigProvider, configProvider),
+            HarnessProbe.layerWithProbe(probe),
+          ),
+        ),
       ),
-    ),
+    ) as unknown as Layer.Layer<OperationalLog | HarnessSnapshot | HarnessProbe>,
   )
   const use = <A>(effect: (service: HarnessSnapshotService) => Effect.Effect<A, unknown>) =>
     runtime.runPromise(Effect.flatMap(HarnessSnapshot, service => effect(service)))

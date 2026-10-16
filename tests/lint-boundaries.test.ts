@@ -59,14 +59,14 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
     expect(globalRules).toContain('no-restricted-globals')
   })
 
-  it('allows preload type imports from main but rejects value imports', async () => {
+  it('allows preload shared type imports but rejects value imports from main', async () => {
     const typeRules = await errorRules(
-      `import type { OverviewScope } from '../main/overview.js'\nexport type Probe = OverviewScope\n`,
+      `import type { OverviewScope } from '../../shared/schemas/overview.js'\nexport type Probe = OverviewScope\n`,
       preloadProbe,
     )
     expect(typeRules).not.toContain('no-restricted-imports')
     const valueRules = await errorRules(
-      `import { overviewDateRange } from '../main/overview.js'\nexport const probe = typeof overviewDateRange\n`,
+      `import { overviewDateRange } from '../main/overview-scope.js'\nexport const probe = typeof overviewDateRange\n`,
       preloadProbe,
     )
     expect(valueRules).toContain('no-restricted-imports')

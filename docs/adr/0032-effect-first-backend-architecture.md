@@ -111,3 +111,24 @@ them a permanent second API.
   stay simple until an actual effectful workflow benefits from the runtime.
 
 Related: ADR 0003, ADR 0005, ADR 0023, ADR 0030, ADR 0031, ADR 0034.
+
+## Focused session reads, 2026-10-06
+
+`LedgerSessionReads` supplies project/session summaries, targeted session detail,
+and text search. It shares `LedgerImplementation` and the worker's existing
+`SqlClient` with the ingest, general query and config capabilities. A separate
+read capability keeps these purpose-specific operations out of the general
+snapshot port and permits focused test substitution.
+
+Summary and search projections omit transcript inventories and unrelated
+billing fields. Detail reads the requested public session ID while retaining
+composite source/session identity. Each operation materializes its facts and
+current config inside one synchronous transaction, then decodes after commit.
+Application queries perform orchestration and wire validation; plain TypeScript
+calculations receive decoded facts and explicit pricing inputs.
+
+The four legacy project/session/detail/search builders are removed once their
+callers use those queries. The remaining synchronous ledger facade and other
+compatibility builders retain their existing removal conditions. This does not
+add a runtime or database connection to a request. Renderer state continues to
+use its existing scope key and direct refresh flow.

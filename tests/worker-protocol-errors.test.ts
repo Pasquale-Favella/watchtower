@@ -14,9 +14,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { DbWorkerData } from '../src/main/db-worker/protocol.js'
 import { workerProtocolError } from '../src/main/db-worker/protocol-errors.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
 import { UnsupportedLedgerSchemaVersion } from '../src/main/store/ledger-initialization.js'
-import { LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { openWorkerRuntime } from '../src/main/worker-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
 const directories: string[] = []
@@ -28,6 +28,12 @@ const workerFailureResponseSchema = Schema.Struct({
   ok: Schema.Literal(false),
   error: Schema.String,
 })
+const workerQueryErrorSchema = Schema.Struct({
+  event: Schema.Literal('oplog'),
+  level: Schema.Literal('error'),
+  logEvent: Schema.Literal('ledger.query.error'),
+  fields: Schema.Struct({ op: Schema.Literal('ledger.query'), code: Schema.String }),
+})
 
 function tempDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-protocol-'))
@@ -35,31 +41,36 @@ function tempDirectory(): string {
   return directory
 }
 
-function seedLedger(directory: string): string {
+async function seedLedger(directory: string): Promise<string> {
   const dbPath = join(directory, 'ledger.db')
-  const store = new LedgerStore(dbPath)
-  store.portIn({
-    provider: 'opencode',
-    envFingerprint: 'worker-protocol-errors',
-    filePath: FIXTURE_SOURCE_PATH,
-    verdict: 'new',
-    cachedFile: buildFixtureCachedFile(),
-  })
-  store.close()
+  const runtime = openWorkerRuntime(dbPath)
+  try {
+    await runtime.runPromise(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          provider: 'opencode',
+          envFingerprint: 'worker-protocol-errors',
+          filePath: FIXTURE_SOURCE_PATH,
+          verdict: 'new',
+          cachedFile: buildFixtureCachedFile(),
+        }),
+      ),
+    )
+  } finally {
+    await runtime.dispose()
+  }
   return dbPath
 }
 
 async function rejectedSnapshot(dbPath: string): Promise<unknown> {
-  const store = new LedgerStore(dbPath)
+  const runtime = openWorkerRuntime(dbPath)
   try {
-    return await Effect.runPromise(
-      Effect.flatMap(LedgerQueries, queries => queries.getRequestSnapshotData()).pipe(Effect.provide(store.portsLayer)),
-    ).then(
+    return await runtime.runPromise(Effect.flatMap(LedgerQueries, queries => queries.getRequestSnapshotData())).then(
       () => undefined,
       error => error,
     )
   } finally {
-    store.close()
+    await runtime.dispose()
   }
 }
 
@@ -90,7 +101,18 @@ function waitForWorkerMessage<A>(
   })
 }
 
-async function runRealWorker(dbPath: string, op = 'store:views'): Promise<unknown> {
+interface RealWorkerResult {
+  readonly response: unknown
+  readonly events: readonly unknown[]
+}
+
+function workerQueryErrorEvents(
+  events: readonly unknown[],
+): readonly Schema.Schema.Type<typeof workerQueryErrorSchema>[] {
+  return events.filter(Schema.is(workerQueryErrorSchema))
+}
+
+async function runRealWorker(dbPath: string, op = 'store:views'): Promise<RealWorkerResult> {
   const directory = join(process.cwd(), 'node_modules', '.cache')
   mkdirSync(directory, { recursive: true })
   const workerDirectory = mkdtempSync(join(directory, 'watchtower-worker-protocol-entry-'))
@@ -112,6 +134,11 @@ async function runRealWorker(dbPath: string, op = 'store:views'): Promise<unknow
     cacheDir: join(workerDirectory, 'cache'),
   }
   const worker = new Worker(workerPath, { workerData: init })
+  const events: unknown[] = []
+  const captureEvent = (event: unknown): void => {
+    events.push(event)
+  }
+  worker.on('message', captureEvent)
   try {
     const bootMessage = await waitForWorkerMessage(
       worker,
@@ -122,13 +149,15 @@ async function runRealWorker(dbPath: string, op = 'store:views'): Promise<unknow
     if (bootMessage.event === 'init-error') throw new Error(`worker boot failed: ${bootMessage.error}`)
 
     worker.postMessage({ id: 1, op, args: [] })
-    return await waitForWorkerMessage(
+    const response = await waitForWorkerMessage(
       worker,
       raw => Schema.decodeUnknownResult(workerFailureResponseSchema)(raw),
       response => response.id === 1,
       'worker response timeout',
     )
+    return { response, events }
   } finally {
+    worker.off('message', captureEvent)
     await worker.terminate()
   }
 }
@@ -140,7 +169,7 @@ afterEach(() => {
 describe('worker protocol error mapping', () => {
   it('maps actual Effect.runPromise SQL and Schema rejections to bounded categories', async () => {
     const schemaDirectory = tempDirectory()
-    const schemaPath = seedLedger(schemaDirectory)
+    const schemaPath = await seedLedger(schemaDirectory)
     const schemaWriter = new DatabaseSync(schemaPath)
     schemaWriter.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
     schemaWriter.close()
@@ -151,7 +180,7 @@ describe('worker protocol error mapping', () => {
     expect(workerProtocolError(schemaFailure)).not.toContain('hyperdrive')
 
     const sqlDirectory = tempDirectory()
-    const sqlPath = seedLedger(sqlDirectory)
+    const sqlPath = await seedLedger(sqlDirectory)
     const sqlWriter = new DatabaseSync(sqlPath)
     sqlWriter.exec('DROP TABLE ledger_turn')
     sqlWriter.close()
@@ -163,22 +192,49 @@ describe('worker protocol error mapping', () => {
 
   it('sends real SQLite and row-schema failures as failed worker responses', async () => {
     const schemaDirectory = tempDirectory()
-    const schemaPath = seedLedger(schemaDirectory)
+    const schemaPath = await seedLedger(schemaDirectory)
     const schemaWriter = new DatabaseSync(schemaPath)
     schemaWriter.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
     schemaWriter.close()
 
-    const schemaResponse = await runRealWorker(schemaPath)
-    expect(schemaResponse).toEqual({ id: 1, ok: false, error: 'Stored ledger data is invalid.' })
+    const schemaResult = await runRealWorker(schemaPath)
+    expect(schemaResult.response).toEqual({ id: 1, ok: false, error: 'Stored ledger data is invalid.' })
+    const schemaLogs = workerQueryErrorEvents(schemaResult.events)
+    expect(schemaLogs).toHaveLength(1)
+    expect(schemaLogs[0]).toEqual({
+      event: 'oplog',
+      level: 'error',
+      logEvent: 'ledger.query.error',
+      fields: { op: 'ledger.query', code: 'schema' },
+    })
+    expect(schemaResult.events.findIndex(Schema.is(workerQueryErrorSchema))).toBeLessThan(
+      schemaResult.events.findIndex(Schema.is(workerFailureResponseSchema)),
+    )
+    expect(JSON.stringify(schemaLogs)).not.toContain('hyperdrive')
+    expect(JSON.stringify(schemaLogs)).not.toContain('ledger_call')
+    expect(JSON.stringify(schemaLogs)).not.toContain(schemaPath)
 
     const sqlDirectory = tempDirectory()
-    const sqlPath = seedLedger(sqlDirectory)
+    const sqlPath = await seedLedger(sqlDirectory)
     const sqlWriter = new DatabaseSync(sqlPath)
     sqlWriter.exec('DROP TABLE ledger_turn')
     sqlWriter.close()
 
-    const sqlResponse = await runRealWorker(sqlPath)
-    expect(sqlResponse).toEqual({ id: 1, ok: false, error: 'The ledger database operation failed.' })
+    const sqlResult = await runRealWorker(sqlPath)
+    expect(sqlResult.response).toEqual({ id: 1, ok: false, error: 'The ledger database operation failed.' })
+    const sqlLogs = workerQueryErrorEvents(sqlResult.events)
+    expect(sqlLogs).toHaveLength(1)
+    expect(sqlLogs[0]).toEqual({
+      event: 'oplog',
+      level: 'error',
+      logEvent: 'ledger.query.error',
+      fields: { op: 'ledger.query', code: 'effect-sql-sql' },
+    })
+    expect(sqlResult.events.findIndex(Schema.is(workerQueryErrorSchema))).toBeLessThan(
+      sqlResult.events.findIndex(Schema.is(workerFailureResponseSchema)),
+    )
+    expect(JSON.stringify(sqlLogs)).not.toContain('ledger_turn')
+    expect(JSON.stringify(sqlLogs)).not.toContain(sqlPath)
   })
 
   it('preserves known validation text and maps defects and interruption causes safely', () => {

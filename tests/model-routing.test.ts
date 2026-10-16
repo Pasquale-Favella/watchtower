@@ -1,14 +1,17 @@
+import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
   describeCatalog,
   executeSelectionPlan,
-  MODEL_ROUTING,
-  planModeSelection,
-  planModelSelection,
-  routingPolicyFor,
   type HarnessCatalog,
+  MODEL_ROUTING,
+  planModelSelection,
+  planModeSelection,
+  routingPolicyFor,
   type SelectionProvider,
+  SelectionUnavailableError,
 } from '../src/main/agents/model-routing.js'
 
 function select(id: string, category: string, currentValue: string, values: string[]) {
@@ -218,11 +221,12 @@ describe('model-routing catalogs and policies', () => {
 
 describe('model-routing executor', () => {
   it('runs the next alternative after a failed primary write', async () => {
+    const events: string[] = []
     const provider: SelectionProvider = {
-      setConfigOption: vi.fn(async () => {
-        throw new Error('config unavailable')
-      }),
-      setModel: vi.fn(async () => ({})),
+      setConfigOption: vi.fn(() =>
+        Effect.sync(() => events.push('config')).pipe(Effect.andThen(Effect.fail(new Error('config unavailable')))),
+      ),
+      setModel: vi.fn(() => Effect.sync(() => events.push('model'))),
     }
     const plan = planModelSelection(
       routingPolicyFor('default'),
@@ -232,7 +236,9 @@ describe('model-routing executor', () => {
       }),
       'a',
     )
-    await expect(executeSelectionPlan(provider, 'sess', plan)).resolves.toBe('a')
+    await expect(Effect.runPromise(executeSelectionPlan(provider, 'sess', plan))).resolves.toBe('a')
+    expect(events).toEqual(['config', 'model'])
+    expect(provider.setConfigOption).toHaveBeenCalledOnce()
     expect(provider.setModel).toHaveBeenCalledWith('a')
   })
 
@@ -242,32 +248,26 @@ describe('model-routing executor', () => {
       catalog({ configOptions: [select('model', 'model', 'a', ['a', 'b'])] }),
       'b',
     )
-    await expect(executeSelectionPlan({}, 'sess', plan)).resolves.toBe('b')
+    await expect(Effect.runPromise(executeSelectionPlan({}, 'sess', plan))).resolves.toBe('b')
   })
 
   it('rethrows the primary provider error when all alternatives fail', async () => {
     const error = new Error('Invalid params')
     const provider: SelectionProvider = {
-      setConfigOption: vi.fn(async () => {
-        throw error
-      }),
+      setConfigOption: vi.fn(() => Effect.fail(error)),
     }
     const plan = planModelSelection(
       routingPolicyFor('default'),
       catalog({ configOptions: [select('model', 'model', 'old', ['a'])] }),
       'a',
     )
-    await expect(executeSelectionPlan(provider, 'sess', plan)).rejects.toBe(error)
+    await expect(Effect.runPromise(executeSelectionPlan(provider, 'sess', plan))).rejects.toBe(error)
   })
 
   it('surfaces the fallback error when the primary and its fallback both fail', async () => {
     const provider: SelectionProvider = {
-      setConfigOption: vi.fn(async () => {
-        throw new Error('config rejected')
-      }),
-      setModel: vi.fn(async () => {
-        throw new Error('legacy rejected')
-      }),
+      setConfigOption: vi.fn(() => Effect.fail(new Error('config rejected'))),
+      setModel: vi.fn(() => Effect.fail(new Error('legacy rejected'))),
     }
     const plan = planModelSelection(
       routingPolicyFor('default'),
@@ -277,6 +277,69 @@ describe('model-routing executor', () => {
       }),
       'a',
     )
-    await expect(executeSelectionPlan(provider, 'sess', plan)).rejects.toThrow('legacy rejected')
+    await expect(Effect.runPromise(executeSelectionPlan(provider, 'sess', plan))).rejects.toThrow('legacy rejected')
+  })
+
+  it('tags a valid but unavailable selection separately from SDK setter rejection', async () => {
+    const plan = planModelSelection(
+      routingPolicyFor('default'),
+      catalog({ models: { availableModels: [{ modelId: 'a', name: 'A' }], currentModelId: 'a' } }),
+      'missing-model',
+    )
+
+    await expect(Effect.runPromise(executeSelectionPlan({}, 'sess', plan))).rejects.toMatchObject({
+      _tag: 'SelectionUnavailableError',
+      message: 'Model "missing-model" is not available',
+    })
+    await expect(Effect.runPromise(executeSelectionPlan({}, 'sess', plan))).rejects.toBeInstanceOf(
+      SelectionUnavailableError,
+    )
+  })
+
+  it('applies the two writes in a bracketed model attempt sequentially', async () => {
+    const events: string[] = []
+    const provider: SelectionProvider = {
+      setConfigOption: vi.fn(({ configId }) => Effect.sync(() => events.push(configId))),
+    }
+    const plan = planModelSelection(
+      routingPolicyFor('codex'),
+      catalog({
+        configOptions: [
+          select('model', 'model', 'other', ['gpt-5.5', 'other']),
+          select('reasoning_effort', 'thought_level', 'high', ['high', 'low']),
+        ],
+      }),
+      'gpt-5.5[low]',
+    )
+
+    await expect(Effect.runPromise(executeSelectionPlan(provider, 'sess', plan))).resolves.toBe('gpt-5.5')
+    expect(events).toEqual(['model', 'reasoning_effort'])
+    expect(provider.setConfigOption).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not run a fallback after the active write is interrupted', async () => {
+    let signalStarted!: () => void
+    const started = new Promise<void>(resolve => {
+      signalStarted = resolve
+    })
+    const provider: SelectionProvider = {
+      setConfigOption: vi.fn(() => Effect.sync(signalStarted).pipe(Effect.andThen(Effect.never))),
+      setModel: vi.fn(() => Effect.succeed(undefined)),
+    }
+    const plan = planModelSelection(
+      routingPolicyFor('default'),
+      catalog({
+        models: { availableModels: [{ modelId: 'a', name: 'A' }], currentModelId: 'old' },
+        configOptions: [select('model', 'model', 'old', ['a'])],
+      }),
+      'a',
+    )
+    const fiber = Effect.runFork(executeSelectionPlan(provider, 'sess', plan))
+
+    await started
+    await Effect.runPromise(Fiber.interrupt(fiber))
+
+    expect(provider.setConfigOption).toHaveBeenCalledOnce()
+    expect(provider.setModel).not.toHaveBeenCalled()
   })
 })

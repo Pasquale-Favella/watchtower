@@ -95,19 +95,13 @@ describe('native read ordering evidence', () => {
       if (!firstRequest) throw new Error('initial worker read was not recorded')
       const oldReadId = firstRequest.id
       releaseFixture()
-      const oldPayload = await repeatedRead
+      const refreshedPayload = await repeatedRead
       const oldResponseIndex = rawMessages.findIndex(message => {
         const response = Schema.decodeUnknownResult(responseSchema)(message)
         return Result.isSuccess(response) && response.success.id === oldReadId
       })
       expect(configEventIndex).toBeLessThan(oldResponseIndex)
-
-      const freshPayload = await client.request('store:views')
       expect(requests.map(request => request.op)).toEqual(['store:views', 'models:setPrice', 'store:views'])
-      const oldViews = Schema.decodeUnknownSync(dashboardViewsSchema)(oldPayload)
-      const freshViews = Schema.decodeUnknownSync(dashboardViewsSchema)(freshPayload)
-      expect(oldViews.kpis.totalCost).not.toEqual(freshViews.kpis.totalCost)
-      expect(freshViews.byModel).toContainEqual(expect.objectContaining({ name: 'demo-model' }))
 
       const oldResponse = Schema.decodeUnknownSync(responseSchema)(
         rawMessages.find(message => {
@@ -115,7 +109,11 @@ describe('native read ordering evidence', () => {
           return Result.isSuccess(response) && response.success.id === oldReadId
         }),
       )
-      expect(oldResponse).toMatchObject({ id: oldReadId, ok: true, data: oldPayload })
+      const staleViews = Schema.decodeUnknownSync(dashboardViewsSchema)(oldResponse.data)
+      const refreshedViews = Schema.decodeUnknownSync(dashboardViewsSchema)(refreshedPayload)
+      expect(oldResponse).toMatchObject({ id: oldReadId, ok: true })
+      expect(staleViews.kpis.totalCost).not.toEqual(refreshedViews.kpis.totalCost)
+      expect(refreshedViews.byModel).toContainEqual(expect.objectContaining({ name: 'demo-model' }))
       expect(
         rawMessages.filter(message => {
           const event = Schema.decodeUnknownResult(eventSchema)(message)

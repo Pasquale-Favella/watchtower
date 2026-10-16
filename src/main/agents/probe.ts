@@ -12,6 +12,7 @@ import {
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 
 import { probeClaudeAuthStatus, runClaudeAuthProbe } from './auth-probe.js'
 import type { CommandRunner } from './command-runner.js'
@@ -66,6 +67,12 @@ export interface ProbeDeps {
   platform?: NodeJS.Platform
 }
 
+/** Expected transport outcomes that can safely cross the Coach probe boundary. */
+export class ProbeOperationalFailure extends Schema.TaggedError<ProbeOperationalFailure>()('ProbeOperationalFailure', {
+  reason: Schema.Literals(['spawn', 'connect', 'handshake', 'child-exit', 'deadline', 'auth']),
+  timeoutMs: Schema.optional(Schema.Number),
+}) {}
+
 function defaultSpawn(
   command: string,
   args: readonly string[],
@@ -98,11 +105,28 @@ function killProbeChild(child: ProbeChild, platform: NodeJS.Platform, runExecFil
   child.kill('SIGTERM')
 }
 
-function errorResult(info: HarnessInfo, detail: string): ProbeResult {
+function failureMessage(info: HarnessInfo, failure: ProbeOperationalFailure): string {
+  switch (failure.reason) {
+    case 'spawn':
+      return `${info.displayName} could not be started. Check that it is installed and available on PATH.`
+    case 'connect':
+      return `${info.displayName} could not connect to its ACP process. Check the installation and try again.`
+    case 'handshake':
+      return `${info.displayName} did not complete the ACP handshake. Check the installation and try again.`
+    case 'child-exit':
+      return `${info.displayName} exited before completing the ACP handshake. Try restarting it.`
+    case 'deadline':
+      return `${info.displayName} did not answer the ACP handshake within ${(failure.timeoutMs ?? 0) / 1000}s.`
+    case 'auth':
+      return `${info.displayName} sign-in could not be verified. Run \`claude auth status\` and sign in if needed.`
+  }
+}
+
+function errorResult(info: HarnessInfo, failure: ProbeOperationalFailure): ProbeResult {
   return {
     status: 'error',
     auth: { status: 'unknown' },
-    message: `${info.displayName} ${detail} (${info.bin})`,
+    message: failureMessage(info, failure),
   }
 }
 
@@ -117,11 +141,14 @@ function handshakeResult(info: HarnessInfo, auth: ProbeAuthStatus, version?: str
   }
 }
 
-function authFromInitialize(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<ProbeAuthStatus, unknown> {
+function authFromInitialize(
+  info: HarnessInfo,
+  deps: ProbeDeps,
+): Effect.Effect<ProbeAuthStatus, ProbeOperationalFailure> {
   if (info.kind === 'claude') {
     return Effect.tryPromise({
       try: () => (deps.claudeAuthProbe ?? probeClaudeAuthStatus)(),
-      catch: error => error,
+      catch: () => new ProbeOperationalFailure({ reason: 'auth' }),
     })
   }
   // ACP agents advertise `authMethods` whether or not the user is signed in, so it proves nothing.
@@ -131,8 +158,11 @@ function authFromInitialize(info: HarnessInfo, deps: ProbeDeps): Effect.Effect<P
 function initializeProbe<R = never>(
   info: HarnessInfo,
   deps: ProbeDeps,
-  authenticate: (info: HarnessInfo, deps: ProbeDeps) => Effect.Effect<ProbeAuthStatus, unknown, R> = authFromInitialize,
-): Effect.Effect<ProbeResult, unknown, R> {
+  authenticate: (
+    info: HarnessInfo,
+    deps: ProbeDeps,
+  ) => Effect.Effect<ProbeAuthStatus, ProbeOperationalFailure, R> = authFromInitialize,
+): Effect.Effect<ProbeResult, ProbeOperationalFailure, R> {
   const timeoutMs = deps.timeoutMs ?? probeTimeoutFor(info.kind)
   const platform = deps.platform ?? process.platform
   return Effect.scoped(
@@ -145,7 +175,7 @@ function initializeProbe<R = never>(
             stdio: ['pipe', 'pipe', 'pipe'],
           })
         },
-        catch: error => error,
+        catch: () => new ProbeOperationalFailure({ reason: 'spawn' }),
       }),
       child =>
         Effect.sync(() => {
@@ -160,16 +190,16 @@ function initializeProbe<R = never>(
         child.stdin?.on('error', () => {})
         let settled = false
         const childFailure = new Promise<never>((_, reject) => {
-          child.on('error', error => reject(error))
-          child.on('exit', (code, signal) => {
-            if (!settled) reject(new Error(`ACP child exited before handshake (${code ?? signal ?? 'unknown'})`))
+          child.on('error', () => reject(new ProbeOperationalFailure({ reason: 'spawn' })))
+          child.on('exit', () => {
+            if (!settled) reject(new ProbeOperationalFailure({ reason: 'child-exit' }))
           })
         })
         // Late child errors (after success, timeout, or teardown) must never surface as unhandled rejections.
         childFailure.catch(() => {})
         return Effect.try({
           try: () => (deps.connectionFactory ?? defaultConnectionFactory)(child),
-          catch: error => error,
+          catch: () => new ProbeOperationalFailure({ reason: 'connect' }),
         }).pipe(
           Effect.flatMap(connection =>
             Effect.tryPromise({
@@ -182,7 +212,8 @@ function initializeProbe<R = never>(
                   }),
                   childFailure,
                 ]),
-              catch: error => error,
+              catch: error =>
+                error instanceof ProbeOperationalFailure ? error : new ProbeOperationalFailure({ reason: 'handshake' }),
             }).pipe(
               Effect.tap(() =>
                 Effect.sync(() => {
@@ -199,7 +230,7 @@ function initializeProbe<R = never>(
           Effect.timeoutOption(Duration.millis(timeoutMs)),
           Effect.flatMap(outcome =>
             Option.match(outcome, {
-              onNone: () => Effect.fail(new Error(`did not answer the ACP handshake within ${timeoutMs / 1000}s`)),
+              onNone: () => Effect.fail(new ProbeOperationalFailure({ reason: 'deadline', timeoutMs })),
               onSome: Effect.succeed,
             }),
           ),
@@ -209,14 +240,10 @@ function initializeProbe<R = never>(
   )
 }
 
-/** Runs only ACP initialize and always degrades failures to an honest row. */
+/** Runs ACP initialize and maps expected operational failures to a probe row. */
 export function probeHarness(info: HarnessInfo, deps: ProbeDeps = {}): Effect.Effect<ProbeResult, never> {
   return initializeProbe(info, deps).pipe(
-    Effect.catchIf(
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the type predicate exhausts the unknown error channel
-      (_error): _error is unknown => true,
-      error => Effect.succeed(errorResult(info, error instanceof Error ? error.message : String(error))),
-    ),
+    Effect.catchTag('ProbeOperationalFailure', failure => Effect.succeed(errorResult(info, failure))),
   )
 }
 
@@ -227,11 +254,5 @@ export function probeHarnessWithCommandRunner(
 ): Effect.Effect<ProbeResult, never, CommandRunner> {
   return initializeProbe(info, { clientVersion }, harness =>
     harness.kind === 'claude' ? runClaudeAuthProbe('claude', ['auth', 'status', '--json']) : Effect.succeed('unknown'),
-  ).pipe(
-    Effect.catchIf(
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the type predicate exhausts the unknown error channel
-      (_error): _error is unknown => true,
-      error => Effect.succeed(errorResult(info, error instanceof Error ? error.message : String(error))),
-    ),
-  )
+  ).pipe(Effect.catchTag('ProbeOperationalFailure', failure => Effect.succeed(errorResult(info, failure))))
 }

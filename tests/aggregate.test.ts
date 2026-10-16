@@ -1,35 +1,30 @@
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
-import { afterEach, describe, expect, it } from 'vitest'
+import * as Effect from 'effect/Effect'
+import { describe, expect, it } from 'vitest'
 
 import { calculateCost } from '../src/main/pipeline/models.js'
 import { buildSessionSummary, cachedTurnToClassified } from '../src/main/pipeline/parser.js'
 import { aggregateSessions } from '../src/main/pipeline/sessions-report.js'
-import type { ClassifiedTurn } from '../src/main/pipeline/types.js'
+import type { ClassifiedTurn, SessionSummary } from '../src/main/pipeline/types.js'
 import {
-  buildSessionRows,
-  buildSessionSummaries,
+  buildSessionRowsFromSnapshot,
   buildSessionSummariesFromSnapshot,
   defaultRange,
-  queryScope,
-} from '../src/main/store/aggregate.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
-import { loadLedgerQuerySnapshot } from '../src/main/store/query-snapshot.js'
+  queryScopeFromSnapshot,
+} from '../src/main/store/aggregate-calculation.js'
+import { LedgerConfig, LedgerIngest, type LedgerIngestPort } from '../src/main/store/ledger-ports.js'
+import { type LedgerQuerySnapshot, loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
+import { openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
-const tempDirs: string[] = []
+type TestRuntime = ReturnType<typeof openLedgerFixture>['runtime']
 
-function makeStore(): LedgerStore {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-agg-'))
-  tempDirs.push(dir)
-  return new LedgerStore(join(dir, 'data.db'))
+function portIn(runtime: TestRuntime, input: Parameters<LedgerIngestPort['portIn']>[0]): void {
+  runtime.runSync(Effect.flatMap(LedgerIngest, ingest => ingest.portIn(input)))
 }
 
-afterEach(() => {
-  tempDirs.splice(0)
-})
+function loadSnapshot(runtime: TestRuntime): LedgerQuerySnapshot {
+  return runtime.runSync(loadLedgerQuerySnapshotEffect(viewInputs({ period: 'lifetime' })))
+}
 
 const baseInput = {
   provider: 'opencode',
@@ -41,9 +36,7 @@ const FULL_RANGE = defaultRange(new Date('2026-08-01T00:00:00.000Z'), 60)
 
 // The OLD path's reference assembly for the same classified facts, mirroring the
 // parser's post-assembly attachments (title, prLinks, workingDirectory).
-function oldPathSummaries(
-  cachedFile: ReturnType<typeof buildFixtureCachedFile>,
-): ReturnType<typeof buildSessionSummaries> {
+function oldPathSummaries(cachedFile: ReturnType<typeof buildFixtureCachedFile>): SessionSummary[] {
   const project = cachedFile.canonicalProjectName ?? 'demo-project'
   let carriedBranch: string | undefined
   const turns: ClassifiedTurn[] = cachedFile.turns.map(turn => {
@@ -65,11 +58,11 @@ function oldPathSummaries(
 
 describe('aggregation seam (T2): flat rows → byte-compatible session aggregates', () => {
   it('assembles the single-turn fixture byte-identically to the old parser assembly', () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
     const file = buildFixtureCachedFile()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: file })
 
-    const actual = buildSessionSummaries(store, { range: FULL_RANGE })
+    const actual = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     const expected = oldPathSummaries(file)
 
     expect(actual).toEqual(expected)
@@ -90,12 +83,10 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
       estimatedCostUSD: 0,
     })
     expect(actual[0]!.toolBreakdown).toEqual({ Edit: { calls: 1 } })
-
-    store.close()
   })
 
   it('aggregates a multi-turn, multi-call, PR-carrying session identically to the old path', () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
     const file = buildFixtureCachedFile()
     const turn1 = buildFixtureCachedTurn(1, 'Add the new endpoint')
     turn1.calls[0]!.bashCommands = ['npm test']
@@ -104,9 +95,9 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     file.turns.push(turn1)
     file.turns[0]!.prRefs = ['https://github.com/acme/demo-project/pull/6']
 
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: file })
 
-    const actual = buildSessionSummaries(store, { range: FULL_RANGE })
+    const actual = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     const expected = oldPathSummaries(file)
 
     expect(actual).toEqual(expected)
@@ -124,29 +115,25 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     expect(session.totalInputTokens).toBe(200)
     expect(session.totalOutputTokens).toBe(100)
     expect(session.apiCalls).toBe(2)
-
-    store.close()
   })
 
   it('carries a git branch forward across turns from the ledger (Claude-style branch data)', () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
     const file = buildFixtureCachedFile()
     const turn1 = buildFixtureCachedTurn(1, 'Add the new endpoint')
     turn1.gitBranch = 'feature/auth'
     file.turns.push(turn1)
 
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: file })
 
-    const sessions = buildSessionSummaries(store, { range: FULL_RANGE })
+    const sessions = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     expect(sessions).toHaveLength(1)
     expect(sessions[0]!.turns[1]!.gitBranch).toBe('feature/auth')
     expect(sessions[0]!.everHadBranch).toBe(true)
-
-    store.close()
   })
 
   it('slices by date range: only in-range turns contribute, carrying PR state across the boundary', () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
     const file = buildFixtureCachedFile()
     // Turn 0 lands BEFORE the range with a PR reference; turn 1 is in-range and
     // ref-less, so the range-start seeding must carry pull/6 into it.
@@ -156,10 +143,10 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     const inRange = buildFixtureCachedTurn(1, 'Add the new endpoint')
     file.turns.push(inRange)
 
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: file })
 
     const narrow = { range: defaultRange(new Date('2026-07-06T00:00:00.000Z'), 7) }
-    const actual = buildSessionSummaries(store, narrow)
+    const actual = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), narrow)
     expect(actual).toHaveLength(1)
     const session = actual[0]!
     expect(session.turns).toHaveLength(1)
@@ -168,16 +155,16 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     expect(session.totalInputTokens).toBe(100)
     expect(session.firstTimestamp).toBe('2026-07-01T09:11:00.000Z')
 
-    const empty = buildSessionSummaries(store, { range: defaultRange(new Date('2026-06-01T00:00:00.000Z'), 7) })
+    const empty = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), {
+      range: defaultRange(new Date('2026-06-01T00:00:00.000Z'), 7),
+    })
     expect(empty).toEqual([])
-
-    store.close()
   })
 
-  it('filters by provider at the SQL read: only that provider’s sessions survive', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    store.portIn({
+  it('filters by provider from the request snapshot: only that provider’s sessions survive', () => {
+    const { runtime } = openLedgerFixture()
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    portIn(runtime, {
       ...baseInput,
       provider: 'codex',
       envFingerprint: 'env-demo',
@@ -186,57 +173,58 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
       cachedFile: buildFixtureCachedFile(),
     })
 
-    const opencode = buildSessionSummaries(store, { range: FULL_RANGE, provider: 'opencode' })
-    const codex = buildSessionSummaries(store, { range: FULL_RANGE, provider: 'codex' })
-    const all = buildSessionSummaries(store, { range: FULL_RANGE })
+    const opencode = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), {
+      range: FULL_RANGE,
+      provider: 'opencode',
+    })
+    const codex = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE, provider: 'codex' })
+    const all = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
 
     expect(opencode).toHaveLength(1)
     expect(codex).toHaveLength(1)
     expect(all).toHaveLength(2)
     // Same session_id across providers stays distinct (keyed by source + id).
     expect(opencode[0]!.sessionId).toBe(codex[0]!.sessionId)
-
-    store.close()
   })
 
   it('a configured price override reprices display cost on read without touching stored rows', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const { runtime } = openLedgerFixture()
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
 
-    store.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+    runtime.runSync(
+      Effect.flatMap(LedgerConfig, config =>
+        config.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 }),
+      ),
+    )
 
     // Session summaries carry the display (repriced) cost, mirroring the
     // Models lens (override on the effective model; input+output only).
-    const scope = buildSessionSummaries(store, { range: FULL_RANGE })
+    const scope = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     expect(scope[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
 
-    const calls = queryScope(store, { range: FULL_RANGE }).calls
+    const calls = queryScopeFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE }).calls
     expect(calls).toHaveLength(1)
     // Models-lens override: input 100 @ $3/M + output 50 @ $15/M = 0.0003 + 0.00075
     expect(calls[0]!.displayCostUSD).toBeCloseTo(0.00105, 9)
     expect(calls[0]!.baseCostUSD).toBeCloseTo(0.42, 6)
-
-    store.close()
   })
 
   it('a configured model alias rewrites the model identity on read', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    store.setModelAlias('demo-model', 'claude-sonnet-4.5')
+    const { runtime } = openLedgerFixture()
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    runtime.runSync(Effect.flatMap(LedgerConfig, config => config.setModelAlias('demo-model', 'claude-sonnet-4.5')))
 
-    const calls = queryScope(store, { range: FULL_RANGE }).calls
+    const calls = queryScopeFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE }).calls
     expect(calls[0]!.resolvedModel).toBe('claude-sonnet-4.5')
     expect(calls[0]!.model).toBe('demo-model')
-
-    store.close()
   })
 
   it('an Alias merges identity and reprices the session summary (no rescan)', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
+    const { runtime } = openLedgerFixture()
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    runtime.runSync(Effect.flatMap(LedgerConfig, config => config.setModelAlias('demo-model', 'claude-sonnet-4-6')))
 
-    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    const summaries = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     expect(summaries).toHaveLength(1)
     const summary = summaries[0]!
     // Identity merges into the target everywhere except Compare/audit.
@@ -246,95 +234,110 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
     // name at its stored base); the stored row is untouched.
     expect(summary.totalCostUSD).not.toBeCloseTo(0.42, 6)
     expect(summary.totalCostUSD).toBeGreaterThan(0)
-    expect(summary.totalCostUSD).toBeCloseTo(queryScope(store, { range: FULL_RANGE }).calls[0]!.displayCostUSD, 9)
+    expect(summary.totalCostUSD).toBeCloseTo(
+      queryScopeFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE }).calls[0]!.displayCostUSD,
+      9,
+    )
     // Provenance survives on the merged breakdown row.
     const keys = Object.keys(summary.modelBreakdown)
     expect(keys).toHaveLength(1)
     expect(summary.modelBreakdown[keys[0]!]!.sourceModels).toEqual(['demo-model'])
 
-    const rows = buildSessionRows(store, { range: FULL_RANGE })
+    const rows = buildSessionRowsFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     expect(rows[0]!.cost).toBeCloseTo(summary.totalCostUSD, 9)
     expect(rows[0]!.models).toEqual(keys)
-
-    store.close()
   })
 
   it('a Price override on the effective model wins over the Alias', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
-    store.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+    const { runtime } = openLedgerFixture()
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    runtime.runSync(Effect.flatMap(LedgerConfig, config => config.setModelAlias('demo-model', 'claude-sonnet-4-6')))
+    runtime.runSync(
+      Effect.flatMap(LedgerConfig, config =>
+        config.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 }),
+      ),
+    )
 
     // Fixture usage: input 100, output 50 → 0.0003 + 0.00075.
-    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    const summaries = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
-    expect(queryScope(store, { range: FULL_RANGE }).calls[0]!.displayCostUSD).toBeCloseTo(0.00105, 9)
-
-    store.close()
+    expect(queryScopeFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE }).calls[0]!.displayCostUSD).toBeCloseTo(
+      0.00105,
+      9,
+    )
   })
 
   it('an Alias matches provider-prefixed, pinned and cased variants of the stored id', () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
     const variants = ['Opencode/Demo-Model@20250929', 'openrouter/opencode/demo-model', 'demo-model:thinking']
     variants.forEach((model, i) => {
       const file = buildFixtureCachedFile()
       file.turns[0]!.calls[0]!.model = model
-      store.portIn({ ...baseInput, filePath: `/cache/opencode/variant-${i}.jsonl`, verdict: 'new', cachedFile: file })
+      portIn(runtime, {
+        ...baseInput,
+        filePath: `/cache/opencode/variant-${i}.jsonl`,
+        verdict: 'new',
+        cachedFile: file,
+      })
     })
-    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
+    runtime.runSync(Effect.flatMap(LedgerConfig, config => config.setModelAlias('demo-model', 'claude-sonnet-4-6')))
 
     // Fixture usage: input 100, output 50, cache-read 20, repriced at the target's rates.
     const expected = calculateCost('claude-sonnet-4-6', 100, 50, 0, 20, 0, 'standard')
     expect(expected).toBeGreaterThan(0)
-    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    const summaries = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     expect(summaries).toHaveLength(variants.length)
     for (const summary of summaries) {
       expect(summary.totalCostUSD).toBeCloseTo(expected, 9)
       expect(summary.turns[0]!.assistantCalls[0]!.model).toBe('claude-sonnet-4-6')
     }
     expect(summaries.map(s => s.turns[0]!.assistantCalls[0]!.rawModel).sort()).toEqual([...variants].sort())
-
-    store.close()
   })
 
   it('a Price override matches variant spellings of the effective model', () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
     const file = buildFixtureCachedFile()
     file.turns[0]!.calls[0]!.model = 'DEMO-MODEL'
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
-    store.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: file })
+    runtime.runSync(
+      Effect.flatMap(LedgerConfig, config =>
+        config.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 }),
+      ),
+    )
 
     // Fixture usage: input 100, output 50 → 0.0003 + 0.00075 (input+output only).
-    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    const summaries = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
-
-    store.close()
   })
 
   it('removing custom pricing reverts honestly to the unpriced treatment', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    store.setModelAlias('demo-model', 'claude-sonnet-4-6')
-    store.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+    const { runtime } = openLedgerFixture()
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    runtime.runSync(Effect.flatMap(LedgerConfig, config => config.setModelAlias('demo-model', 'claude-sonnet-4-6')))
+    runtime.runSync(
+      Effect.flatMap(LedgerConfig, config =>
+        config.setPriceOverride('claude-sonnet-4-6', { inputPricePerMillion: 3, outputPricePerMillion: 15 }),
+      ),
+    )
 
-    expect(buildSessionSummaries(store, { range: FULL_RANGE })[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
+    expect(
+      buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })[0]!.totalCostUSD,
+    ).toBeCloseTo(0.00105, 9)
 
-    store.removePriceOverride('claude-sonnet-4-6')
-    store.removeModelAlias('demo-model')
+    runtime.runSync(Effect.flatMap(LedgerConfig, config => config.removePriceOverride('claude-sonnet-4-6')))
+    runtime.runSync(Effect.flatMap(LedgerConfig, config => config.removeModelAlias('demo-model')))
 
-    const summaries = buildSessionSummaries(store, { range: FULL_RANGE })
+    const summaries = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     expect(summaries[0]!.totalCostUSD).toBeCloseTo(0.42, 6)
     expect(summaries[0]!.turns[0]!.assistantCalls[0]!.model).toBe('demo-model')
     expect(summaries[0]!.turns[0]!.assistantCalls[0]!.rawModel).toBeUndefined()
     expect(Object.keys(summaries[0]!.modelBreakdown)).toEqual(['demo-model'])
-
-    store.close()
   })
 
   it('Scope filtering still applies under custom pricing', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
-    store.portIn({
+    const { runtime } = openLedgerFixture()
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    portIn(runtime, {
       ...baseInput,
       provider: 'codex',
       envFingerprint: 'env-demo',
@@ -342,24 +345,29 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
       verdict: 'new',
       cachedFile: buildFixtureCachedFile(),
     })
-    store.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 })
+    runtime.runSync(
+      Effect.flatMap(LedgerConfig, config =>
+        config.setPriceOverride('demo-model', { inputPricePerMillion: 3, outputPricePerMillion: 15 }),
+      ),
+    )
 
-    const opencode = buildSessionSummaries(store, { range: FULL_RANGE, provider: 'opencode' })
-    const codex = buildSessionSummaries(store, { range: FULL_RANGE, provider: 'codex' })
+    const opencode = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), {
+      range: FULL_RANGE,
+      provider: 'opencode',
+    })
+    const codex = buildSessionSummariesFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE, provider: 'codex' })
     expect(opencode).toHaveLength(1)
     expect(codex).toHaveLength(1)
     expect(opencode[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
     expect(codex[0]!.totalCostUSD).toBeCloseTo(0.00105, 9)
-
-    store.close()
   })
 
   it('the Sessions payload (`SessionRow[]`) is byte-identical to the old `aggregateSessions` rows', () => {
-    const store = makeStore()
+    const { runtime } = openLedgerFixture()
     const file = buildFixtureCachedFile()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: file })
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: file })
 
-    const actual = buildSessionRows(store, { range: FULL_RANGE })
+    const actual = buildSessionRowsFromSnapshot(loadSnapshot(runtime), { range: FULL_RANGE })
     // The report-shaped reference: the old view path projects the old-path
     // summaries (already proven byte-equal to the seam) into SessionRow[].
     const expected = aggregateSessions([
@@ -388,26 +396,31 @@ describe('aggregation seam (T2): flat rows → byte-compatible session aggregate
       startedAt: '2026-07-01T09:00:00.000Z',
       endedAt: '2026-07-01T09:00:00.000Z',
     })
-
-    store.close()
   })
 })
 
 describe('query-time pricing snapshots', () => {
   it('keeps each request on the aliases and overrides it captured', () => {
-    const store = makeStore()
-    store.portIn({ ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
+    const { runtime } = openLedgerFixture()
+    portIn(runtime, { ...baseInput, verdict: 'new', cachedFile: buildFixtureCachedFile() })
 
-    store.setPriceOverride('demo-model', { inputPricePerMillion: 1_000_000, outputPricePerMillion: 0 })
-    const firstSnapshot = loadLedgerQuerySnapshot(store)
+    runtime.runSync(
+      Effect.flatMap(LedgerConfig, config =>
+        config.setPriceOverride('demo-model', { inputPricePerMillion: 1_000_000, outputPricePerMillion: 0 }),
+      ),
+    )
+    const firstSnapshot = loadSnapshot(runtime)
     const firstSummary = buildSessionSummariesFromSnapshot(firstSnapshot, { range: FULL_RANGE })
 
-    store.setPriceOverride('demo-model', { inputPricePerMillion: 2_000_000, outputPricePerMillion: 0 })
-    const secondSnapshot = loadLedgerQuerySnapshot(store)
+    runtime.runSync(
+      Effect.flatMap(LedgerConfig, config =>
+        config.setPriceOverride('demo-model', { inputPricePerMillion: 2_000_000, outputPricePerMillion: 0 }),
+      ),
+    )
+    const secondSnapshot = loadSnapshot(runtime)
     const secondSummary = buildSessionSummariesFromSnapshot(secondSnapshot, { range: FULL_RANGE })
 
     expect(buildSessionSummariesFromSnapshot(firstSnapshot, { range: FULL_RANGE })).toEqual(firstSummary)
     expect(secondSummary[0]!.totalCostUSD).toBeCloseTo(firstSummary[0]!.totalCostUSD * 2, 9)
-    store.close()
   })
 })

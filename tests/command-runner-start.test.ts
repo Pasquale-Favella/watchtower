@@ -18,6 +18,7 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
+import { Readable } from 'node:stream'
 
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -495,6 +496,41 @@ describe('CommandRunner.start live layer (real child, scope-bound lifetime)', ()
 })
 
 describe('the stdio declaration reaches the OS (shared transport)', () => {
+  it('captures buffered chunks and EOF between pump fiber turns', async () => {
+    const chunks = Array.from({ length: 100 }, (_, index) => Buffer.from(`chunk-${index}\n`))
+    const stdout = Readable.from(chunks, { objectMode: false, highWaterMark: 1 })
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+      stderr: null,
+      pid: 17,
+      exitCode: null as number | null,
+      signalCode: null,
+      kill: vi.fn(() => true),
+    })
+    stdout.once('end', () => {
+      child.exitCode = 0
+      child.emit('close', 0)
+    })
+    spawnControl.child = child
+    try {
+      const result = Effect.runPromise(
+        Effect.gen(function* () {
+          const runner = yield* CommandRunner
+          const run = yield* Effect.forkChild(runner.run('watchtower-buffered-output', []), { startImmediately: true })
+          child.emit('spawn')
+          return yield* Fiber.join(run)
+        }).pipe(Effect.provide(CommandRunner.layer)),
+      )
+      await expect(result).resolves.toEqual({ stdout: Buffer.concat(chunks).toString('utf8'), exitCode: 0 })
+      expect(child.kill).not.toHaveBeenCalled()
+      expect(stdout.listenerCount('readable')).toBe(0)
+      expect(stdout.listenerCount('error')).toBe(0)
+    } finally {
+      spawnControl.child = undefined
+      stdout.destroy()
+    }
+  })
+
   // These two guard `toSpawnOptions`: the port DECLARES `stdin: 'ignore'` and
   // (by default) `stderr: 'ignore'`, and the declaration is the only thing
   // `node:child_process` has. Before the stdio was translated, a `run` child

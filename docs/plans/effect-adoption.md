@@ -1,16 +1,12 @@
 # Effect adoption: second precise evaluation
 
-> **Current assessment, 2026-09-30:** use [the updated assessment](../research/effect-adoption-assessment-2026-09-30.md)
-> and [section 6](#6-current-execution-order) for status and execution order.
-> They start from issue #148's penultimate comment and incorporate the latest
-> comment and commits through `a917305`. The September 29 findings below are
-> historical evidence; their counts, open decisions, and completion claims are
-> not the current schedule. Query and ledger Schema edits in the working tree
-> are still in flight. Later owner decisions authorize Schema in the renderer,
-> replace pino with the Effect logging API and local writer, decline RPC and
-> SqlModel, and leave Windows CI recorded but unscheduled.
+> **Historical assessment, 2026-09-30:** this document preserves the original
+> findings, decisions, and execution queue. For current source status, see the
+> [target architecture](./effect-target-architecture.md) and [section 6](#6-current-execution-order).
+> The dated findings and owner decisions below remain historical evidence;
+> their counts and completion claims do not describe the current source.
 
-> Plan only, no implementation. Measured 2026-09-29 against
+> Original scope: plan only, no implementation. Measured 2026-09-29 against
 > `146-ledger-schema-migrations` @ `aa81aa5`; companion to
 > [`docs/research/effect-v4-electron.md`](../research/effect-v4-electron.md),
 > which adjudicates the external Effect + Electron references against the
@@ -773,23 +769,23 @@ surface unchanged — which is the correct shape for this product.
 
 ## 6. Current execution order
 
-The expanded [target architecture](./effect-target-architecture.md) makes full
-Schema replacement, dependency direction, request reuse and refresh freshness
-explicit completion criteria. ADR 0034 now records the authorized Schema target;
-ADRs 0003, 0005 and 0032 are amended. Further findings F33-F37 extend the assessment, including the SDK registration dependency.
+The agreed backend Effect and owned Schema port is complete at frozen product source `210da5b`, including query operational-code correction `5a8afc4`. The [completion audit](../research/effect-adoption-assessment-2026-09-30.md#completion-audit-of-the-implemented-source-2026-10-15) maps original requirements to source and actual assertions. The [target architecture](./effect-target-architecture.md) retains the full execution record.
 
-This schedule supersedes the original table and the penultimate issue comment's
-queue. Finding identifiers remain stable. Numbers 6 and 7 below use that issue
-comment's order, where the context split precedes facade retirement. The source
-assessment and rationale are in [the September 30 assessment](../research/effect-adoption-assessment-2026-09-30.md).
+- Main owns the control plane; the worker owns one initialized scan/SQL graph and writer connection; MCP queries own a separate read-only runtime. Named application workflows compose ports, and pure calculations receive explicit inputs.
+- All 23 baseline modules have left owned Zod: 22 use Effect Schema and one UI-only module uses TypeScript. Renderer decoding is synchronous Schema validation without an Effect runtime; both stores still match `ce81593`.
+- Config, Clock, Logger, native Metric and Tracer have actual producers and explicit isolate/resource ownership. External Node, Electron, SDK and synchronous SQLite APIs retain their documented leaves.
+- All ten local gates pass across the retained initial run and unchanged complete product retry: 3,057 units with two skips, four Electron checks in 6.9 minutes, types/format/build/lint with zero errors, fresh Windows directory package and actual IPC/MCP. Source-matched CI passes every actual step, including NSIS, DMG/ZIP, AppImage and deb.
+- The first local smoke/worker teardown timeout remains recorded; the unchanged diagnostic and complete retry pass, without a cause or product fix claimed. Packaging uses the installed matching Electron distribution after download EACCES. Profiling remains stopped.
 
-The implementation baseline is local commit `ce81593`, which includes the
-ledger Schema conversion after the call projection in `b7f47e7`. Current wave
-ownership and verification are recorded in the target architecture's execution
-record. Coordinate shared ledger files between sequential slices. Historical
-gate results in issue comments do not verify the current working tree.
+Windows runs in e2e and artifact/release workflows; the default unit/lint/typecheck workflow remains Linux-only. Native boundaries do not promise bounded drainage of uncooperative Promises. Later documentation commits leave accepted product code unchanged. Issue #148 remains open; PR #147 retains Closes #146.
 
-### Completed or decided
+### Historical execution queue (superseded)
+
+The tables below preserve the September 30 execution snapshot and its findings;
+they are not a current work queue. See the status above and the target
+architecture for current ownership, gates, and verification.
+
+#### Completed or decided at the time
 
 | Item                 | Disposition                                                                            |
 | -------------------- | -------------------------------------------------------------------------------------- |
@@ -804,7 +800,7 @@ gate results in issue comments do not verify the current working tree.
 | SqlModel/RPC         | Declined under recorded decisions; not prerequisites for Schema                        |
 | 14, Windows CI       | Finding retained, intentionally unscheduled                                            |
 
-### Work to execute
+#### Work listed at the time
 
 | Order               | Work                                                                                       | Depends on                                                                     | Acceptance                                                                                                                                                                                                                |
 | ------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -849,11 +845,12 @@ open work, tracker maintenance should remove the PR's existing `Closes #148` lin
 
 ---
 
-## 7. Decisions needed from the owner
+## 7. Historical decisions and findings
 
 > This section preserves the historical discussion and schema parity rules.
-> Current decisions and dependencies are in section 6. Schema Wave B is
-> authorized; RPC and SqlModel are declined; Windows CI is unscheduled.
+> Current source status and verification are in section 6 and the target
+> architecture. Windows runs in e2e and release workflows; the default test,
+> lint, and typecheck workflow remains Linux-only.
 
 0. **Schema consolidation (Zod → Effect Schema): HELD pending the `unstable/rpc`
    verdict — 2026-09-30.** The owner authorised replacing Zod outright, so the

@@ -2,9 +2,13 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
+import * as ManagedRuntime from 'effect/ManagedRuntime'
 import type { Mock } from 'vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CoachSdkFailure } from '../src/main/agents/coach-errors.js'
 import type { HarnessInfo } from '../src/main/agents/detect.js'
 import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
 import {
@@ -12,6 +16,7 @@ import {
   createCoachRunner,
   type HarnessSource,
   type LedgerMcpAttachment,
+  type NativeHarnessSource,
 } from '../src/main/agents/ipc.js'
 import { encodeResumeCursor } from '../src/main/agents/resume-cursor.js'
 import type {
@@ -21,7 +26,10 @@ import type {
   HarnessProviderInput,
   HarnessRunInput,
   HarnessRuntime,
+  NativeHarnessRun,
 } from '../src/main/agents/runtime.js'
+import { CoachHarnessExecution, type HarnessSdk } from '../src/main/agents/runtime.js'
+import { type MainRuntime, makeMainRuntime } from '../src/main/main-runtime.js'
 import { closeOperationalLog, initOperationalLog } from '../src/main/operational-log.js'
 import type { CoachEvent } from '../src/shared/schemas/agents.js'
 
@@ -118,9 +126,106 @@ function streamingRuntime(): {
 }
 
 const ownedRunners = new Set<CoachRunner>()
+const ownedEffectHosts = new Set<ManagedRuntime.ManagedRuntime<never, never>>()
+type TestRunnerOptions = {
+  harnesses: HarnessSource
+  ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
+  getRuntime: () => Promise<HarnessRuntime>
+}
 
-function ownRunner(options: Parameters<typeof createCoachRunner>[0]): CoachRunner {
-  const runner = createCoachRunner(options)
+function nativeHarnesses(source: HarnessSource): NativeHarnessSource {
+  return {
+    list: () => Effect.tryPromise({ try: () => source.list(), catch: error => error }),
+    refresh: () => Effect.tryPromise({ try: () => source.refresh(), catch: error => error }),
+    get: instanceId => Effect.tryPromise({ try: () => source.get(instanceId), catch: error => error }),
+    reportAuth: (instanceId, status) => Effect.sync(() => source.reportAuth?.(instanceId, status)),
+  }
+}
+
+function bounded<T>(promise: Promise<T>): Promise<T | undefined> {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(undefined), 3_000)
+    void promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        clearTimeout(timer)
+        resolve(undefined)
+      },
+    )
+  })
+}
+
+function ownRunner(options: TestRunnerOptions): CoachRunner {
+  const host = ManagedRuntime.make(Layer.empty)
+  ownedEffectHosts.add(host)
+  const nativeDeps = {
+    harnesses: nativeHarnesses(options.harnesses),
+    ledgerMcpServer: (kind: string) =>
+      Effect.tryPromise({ try: () => options.ledgerMcpServer(kind), catch: error => error }),
+    effectHost: host as unknown as MainRuntime,
+    startRun: (input: HarnessRunInput) =>
+      Effect.tryPromise({
+        try: async (): Promise<NativeHarnessRun> => {
+          const runtime = await options.getRuntime()
+          const controlled = runtime.runControlled?.(input)
+          const source = controlled?.events ?? runtime.run(input)
+          const iterator = source[Symbol.asyncIterator]()
+          let stopping: Promise<void> | undefined
+          return {
+            events: {
+              [Symbol.asyncIterator]: () => ({
+                next: () => iterator.next(),
+                return: async () => ({ done: true, value: undefined }),
+              }),
+            },
+            stop: Effect.tryPromise({
+              try: () =>
+                (stopping ??= bounded(
+                  controlled ? controlled.stop() : Promise.resolve(iterator.return?.(undefined)).then(() => undefined),
+                )),
+              catch: error => error as Error,
+            }).pipe(
+              Effect.asVoid,
+              Effect.catchCause(() => Effect.void),
+            ),
+          }
+        },
+        catch: error => error as Error,
+      }),
+    startInspection: (input: HarnessProviderInput) =>
+      Effect.sync(() => {
+        let cancelled = false
+        let controlled: ControlledHarnessInspection | undefined
+        return {
+          result: Effect.tryPromise({
+            try: async () => {
+              const runtime = await options.getRuntime()
+              if (cancelled) return {}
+              controlled = runtime.inspectControlled?.(input)
+              return controlled ? controlled.result : runtime.inspect(input)
+            },
+            catch: error => error as Error,
+          }),
+          stop: Effect.sync(() => {
+            cancelled = true
+          }).pipe(
+            Effect.andThen(
+              Effect.tryPromise({
+                try: () => (controlled ? bounded(controlled.stop()) : Promise.resolve(undefined)),
+                catch: error => error as Error,
+              }).pipe(
+                Effect.asVoid,
+                Effect.catchCause(() => Effect.void),
+              ),
+            ),
+          ),
+        }
+      }),
+  }
+  const runner = createCoachRunner(nativeDeps)
   ownedRunners.add(runner)
   return runner
 }
@@ -137,6 +242,9 @@ afterEach(async () => {
   const runners = [...ownedRunners]
   ownedRunners.clear()
   await Promise.all(runners.map(runner => runner.reset()))
+  const hosts = [...ownedEffectHosts]
+  ownedEffectHosts.clear()
+  await Promise.all(hosts.map(host => host.dispose()))
 })
 
 /** A valid run request — no workspace path anymore (map 53). */
@@ -417,7 +525,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     releaseLedgerMcp.mockClear()
     const runner = ownRunner({
       getRuntime: async () => {
-        throw new Error('no sdk')
+        throw new CoachSdkFailure({ stage: 'provider-create', reason: 'rejected', authentication: false })
       },
       harnesses: harnessSource,
       ledgerMcpServer,
@@ -426,6 +534,20 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     const result = await runner.start(request, () => {})
 
     expect(result.ok).toBe(false)
+    expect(releaseLedgerMcp).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves an unexpected launch rejection and releases the attachment', async () => {
+    releaseLedgerMcp.mockClear()
+    const defect = new Error('private launch defect')
+    const runner = ownRunner({
+      getRuntime: async () => {
+        throw defect
+      },
+      harnesses: harnessSource,
+      ledgerMcpServer,
+    })
+    await expect(runner.start(request, () => {})).rejects.toBe(defect)
     expect(releaseLedgerMcp).toHaveBeenCalledTimes(1)
   })
 
@@ -446,6 +568,30 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     const input = run.mock.calls[0]?.[0] as { mcpServers: AcpMcpServer[]; prompt: string }
     expect(input.mcpServers).toHaveLength(0)
     expect(input.prompt).toBe('Summarise my spend')
+  })
+
+  it('releases a late attachment safely when reset wins during acquisition', async () => {
+    let resolveAttachment!: (attachment: LedgerMcpAttachment) => void
+    const release = vi.fn(() => {
+      throw new Error('release failed')
+    })
+    const runner = ownRunner({
+      getRuntime: async () => scriptedRuntime([]),
+      harnesses: harnessSource,
+      ledgerMcpServer: () => new Promise(resolve => (resolveAttachment = resolve)),
+    })
+
+    const pending = runner.start(request, () => {})
+    await vi.waitFor(() => expect(resolveAttachment).toBeTypeOf('function'))
+    const reset = runner.reset()
+    resolveAttachment({
+      server: { name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js'], env: [] },
+      release,
+    })
+
+    await expect(pending).resolves.toEqual({ ok: false, error: 'conversation reset' })
+    await reset
+    expect(release).toHaveBeenCalledOnce()
   })
 
   it('forwards the decoded resume session id AND reuses the same temp workspace', async () => {
@@ -855,6 +1001,66 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
   })
 })
 
+describe('Coach app-scope ownership', () => {
+  it('stops a run, releases its attachment, and deletes its workspace when MainRuntime closes without runner.dispose', async () => {
+    let resolveSdk!: (sdk: HarnessSdk) => void
+    const pendingSdk = new Promise<HarnessSdk>(resolve => {
+      resolveSdk = resolve
+    })
+    const sdk = {
+      createACPProvider: vi.fn(() => ({
+        languageModel: vi.fn(() => ({})),
+        tools: {},
+        initSession: vi.fn(async () => ({ sessionId: 'late-session' })),
+        cleanup: vi.fn(),
+      })),
+      streamText: vi.fn(async function* () {}),
+    } as unknown as HarnessSdk & { createACPProvider: Mock; streamText: Mock }
+    const loadSdk = vi.fn(() => pendingSdk)
+    const runtime = makeMainRuntime(
+      { clientVersion: 'test', appPath: '/app', onHarnessChange: () => {} },
+      { detect: async () => [], coachSdk: loadSdk },
+    )
+    const release = vi.fn()
+    let workspace = ''
+    const source: HarnessSource = {
+      list: async () => [],
+      refresh: async () => [],
+      get: async instanceId =>
+        instanceId === 'claude'
+          ? { instanceId, info: harnesses[0]!, status: 'ready', auth: { status: 'configured' } }
+          : undefined,
+    }
+    const runner = createCoachRunner({
+      effectHost: runtime,
+      harnesses: nativeHarnesses(source),
+      ledgerMcpServer: () =>
+        Effect.succeed({
+          server: { name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js'], env: [] },
+          release,
+        }),
+      startRun: input => {
+        workspace = input.workspacePath
+        return Effect.flatMap(CoachHarnessExecution, execution => execution.startRun(input))
+      },
+      startInspection: input => Effect.flatMap(CoachHarnessExecution, execution => execution.startInspection(input)),
+    })
+    try {
+      await expect(runner.start(request, () => {})).resolves.toMatchObject({ ok: true })
+      await vi.waitFor(() => expect(loadSdk).toHaveBeenCalledOnce())
+      await runtime.dispose()
+      expect(release).toHaveBeenCalledOnce()
+      expect(existsSync(workspace)).toBe(false)
+      resolveSdk(sdk)
+      await flush()
+      expect(sdk.createACPProvider).not.toHaveBeenCalled()
+      expect(sdk.streamText).not.toHaveBeenCalled()
+    } finally {
+      await runtime.dispose()
+    }
+  })
+})
+
 describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe for the pickers', () => {
   it('returns the agent-declared models/modes from the runtime probe', async () => {
     const inspect = vi.fn(async (_input: HarnessProviderInput) => ({
@@ -941,9 +1147,9 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
     expect(inspect).not.toHaveBeenCalled()
   })
 
-  it('wraps a runtime probe failure into the ok:false arm (pickers stay absent, chat unaffected)', async () => {
+  it('maps an expected runtime probe failure to a bounded ok:false arm', async () => {
     const inspect = vi.fn(async (_input: HarnessProviderInput) => {
-      throw new Error('agent binary not found')
+      throw new CoachSdkFailure({ stage: 'session-init', reason: 'rejected', authentication: false })
     })
     const runner = makeRunner({
       run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
@@ -954,7 +1160,10 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
 
     const result = await runner.inspect('claude')
 
-    expect(result).toEqual({ ok: false, error: 'agent binary not found' })
+    expect(result).toEqual({
+      ok: false,
+      error: 'The agent could not complete its session handshake. Check the installation and try again.',
+    })
   })
 })
 
@@ -1281,8 +1490,77 @@ describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () 
     expect(gemini.ok).toBe(true)
   })
 
-  it('a detect failure settles as ok:false and FREES the probe slot (the chain cannot wedge)', async () => {
-    detect.mockRejectedValueOnce(new Error('fs boom'))
+  it('settles a superseded queued caller before the active inspection finishes', async () => {
+    let finish!: () => void
+    const gate = new Promise<void>(resolve => {
+      finish = resolve
+    })
+    const inspect = vi.fn(async () => {
+      await gate
+      return {}
+    })
+    const runner = makeRunner({ run: scriptedRuntime([]).run, inspect })
+    const active = runner.inspect('claude')
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledOnce())
+    let superseded: unknown
+    const middle = runner.inspect('codex').then(result => {
+      superseded = result
+      return result
+    })
+    const newest = runner.inspect('gemini')
+    try {
+      await vi.waitFor(() => expect(superseded).toEqual({ ok: false, error: 'superseded' }))
+      expect(inspect).toHaveBeenCalledOnce()
+    } finally {
+      finish()
+      await Promise.all([active, middle, newest])
+    }
+  })
+
+  it('preserves a new inspection admitted by an attachment release during reset', async () => {
+    let finish!: () => void
+    const gate = new Promise<void>(resolve => {
+      finish = resolve
+    })
+    const inspect = vi.fn(async () => {
+      if (inspect.mock.calls.length === 1) await gate
+      return {}
+    })
+    let newResult: unknown
+    const release = vi.fn(() => {
+      void runner.inspect('gemini').then(
+        result => {
+          newResult = result
+        },
+        () => {},
+      )
+    })
+    const runner = ownRunner({
+      harnesses: harnessSource,
+      getRuntime: async () => ({ ...streamingRuntime().runtime, inspect }),
+      ledgerMcpServer: async kind => {
+        const attachment = await ledgerMcpServer(kind)
+        return attachment && { ...attachment, release }
+      },
+    })
+    await runner.start(request, () => {})
+    const active = runner.inspect('claude')
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledOnce())
+    const queued = runner.inspect('codex')
+    try {
+      await runner.reset()
+      await expect(active).resolves.toEqual({ ok: false, error: 'conversation reset' })
+      await expect(queued).resolves.toEqual({ ok: false, error: 'conversation reset' })
+      await vi.waitFor(() => expect(newResult).toEqual({ ok: true }))
+      expect(release).toHaveBeenCalledOnce()
+    } finally {
+      finish()
+    }
+  })
+
+  it('preserves an unexpected detect failure and frees the probe slot for the queued caller', async () => {
+    const defect = new Error('fs boom')
+    detect.mockRejectedValueOnce(defect)
     const { inspect, order } = trackedRuntime()
     const runner = makeRunner({
       run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
@@ -1291,13 +1569,24 @@ describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () 
       inspect,
     })
 
-    const [failed, next] = await Promise.all([runner.inspect('claude'), runner.inspect('codex')])
-
-    // The failed probe resolves (never rejects) and the queued one still runs
-    // — had the rejection wedged the slot, `next` would hang forever.
-    expect(failed).toEqual({ ok: false, error: 'fs boom' })
-    expect(next.ok).toBe(true)
+    const [failed, next] = await Promise.allSettled([runner.inspect('claude'), runner.inspect('codex')])
+    expect(failed).toEqual({ status: 'rejected', reason: defect })
+    expect(next).toMatchObject({ status: 'fulfilled', value: { ok: true } })
     expect(order).toEqual(['codex'])
+  })
+
+  it('rejects a failed queued inspection and releases its slot for a later caller', async () => {
+    const defect = new Error('queued inspection defect')
+    const inspect = vi.fn(async ({ harness }: HarnessProviderInput) => {
+      if (harness.kind === 'codex') throw defect
+      return {}
+    })
+    const runner = makeRunner({ ...scriptedRuntime([]), inspect })
+    const [first, queued] = await Promise.allSettled([runner.inspect('claude'), runner.inspect('codex')])
+    expect(first).toMatchObject({ status: 'fulfilled', value: { ok: true } })
+    expect(queued).toEqual({ status: 'rejected', reason: defect })
+    await expect(runner.inspect('gemini')).resolves.toEqual({ ok: true })
+    expect(inspect.mock.calls.map(([input]) => input.harness.kind)).toEqual(['claude', 'codex', 'gemini'])
   })
 })
 
@@ -1391,7 +1680,7 @@ describe('Harness lifecycle records (#130) — kind only, never prompts', () => 
     await vi.waitFor(() => {
       expect(readRecords().filter(r => r['event'] === 'harness.error')).toHaveLength(1)
     })
-    expect(events).toContainEqual({ kind: 'error', message: 'boom' })
+    expect(events).toContainEqual({ kind: 'error', message: 'An unexpected Coach failure occurred. Please retry.' })
     const record = readRecords().find(r => r['event'] === 'harness.error')!
     expect(record['kind']).toBe('claude')
     expect(record['code']).toBe('failed')

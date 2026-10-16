@@ -139,3 +139,23 @@ Each stateless HTTP request closes its server and transport. The process retains
 ownership of the borrowed read-only ledger. Application tool errors remain error
 tool results; resource/prompt lookup and malformed protocol failures use SDK error
 categories. Scoped tool inputs retain the lifetime default when omitted.
+
+## Application query ownership, 2026-10-06
+
+The sidecar owns one persistent Effect runtime and one read-only SQLite
+connection. Its entry acquires the connection before announcing readiness and
+disposes the runtime after its serving scope has released transports and process
+listeners. A stateless HTTP request borrows the query methods and closes only its
+own SDK server and transport.
+
+Tools and query-backed resources call named application queries. Overview,
+Sessions, Models and Skills share the queries used by the worker. Scope and raw
+calls have named queries over the same canonical snapshot and pure calculations.
+Models uses the aliases and price overrides in that snapshot instead of reading
+them separately. Each request captures its pricing inputs and current time; the
+next request rereads ledger facts and settings.
+
+The SDK still owns protocol framing and error categories. Tool argument schemas,
+names and payloads retain their existing contracts. Expected argument failures
+keep their validation message; unexpected query failures produce bounded protocol
+messages. Resources compute current data when read.

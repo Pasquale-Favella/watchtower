@@ -1,4 +1,14 @@
-import type { CoachSessionModes, CoachSessionModels } from '../../shared/schemas/agents.js'
+import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
+
+import type { CoachSessionModels, CoachSessionModes } from '../../shared/schemas/agents.js'
+
+/** A valid UI selection that the advertised session cannot apply because the
+ *  agent exposed no matching setter. This is separate from SDK rejection. */
+export class SelectionUnavailableError extends Schema.TaggedError<SelectionUnavailableError>()(
+  'SelectionUnavailableError',
+  { message: Schema.String },
+) {}
 
 interface AcpSessionResponse {
   models?: unknown
@@ -290,9 +300,9 @@ export interface SelectionPlan {
 }
 
 export interface SelectionProvider {
-  setConfigOption?: (args: { sessionId: string; configId: string; value: string }) => Promise<unknown>
-  setModel?: (modelId: string) => Promise<unknown>
-  setMode?: (modeId: string) => Promise<unknown>
+  setConfigOption?: (args: { sessionId: string; configId: string; value: string }) => Effect.Effect<unknown, unknown>
+  setModel?: (modelId: string) => Effect.Effect<unknown, unknown>
+  setMode?: (modeId: string) => Effect.Effect<unknown, unknown>
 }
 
 function configWrite(select: ConfigSelectInfo, value: string): ConfigSelectionWrite {
@@ -443,40 +453,45 @@ export function planModeSelection(policy: RoutingPolicy, catalog: HarnessCatalog
   return { kind: 'mode', attempts: [attempt([legacyWrite(modeId)], modeId, 'fail')], unavailableMessage }
 }
 
-/** Runs attempts in order; the first whose writes all succeed wins. When all
- *  fail, the LAST agent error surfaces (the fallback's own rejection). */
-export async function executeSelectionPlan(
+function selectionWriteEffect(
+  provider: SelectionProvider,
+  sessionId: string,
+  kind: SelectionPlan['kind'],
+  write: SelectionWrite,
+): Effect.Effect<unknown, unknown> | undefined {
+  if (write.via === 'config') {
+    return provider.setConfigOption?.({ sessionId, configId: write.configId, value: write.value })
+  }
+  const setter = kind === 'model' ? provider.setModel : provider.setMode
+  return setter?.(write.value)
+}
+
+/** Runs fallback writes in order; the last SDK failure surfaces if all fail. */
+export const executeSelectionPlan = Effect.fnUntraced(function* (
   provider: SelectionProvider,
   sessionId: string,
   plan: SelectionPlan,
-): Promise<string | undefined> {
+): Effect.fn.Return<string | undefined, unknown> {
   let lastError: unknown
   for (const candidate of plan.attempts) {
     let failed = false
     for (const write of candidate.writes) {
-      try {
-        if (write.via === 'config') {
-          if (!provider.setConfigOption) {
-            if (candidate.missingSetter !== 'success') failed = true
-            break
-          }
-          await provider.setConfigOption({ sessionId, configId: write.configId, value: write.value })
-        } else {
-          const setter = plan.kind === 'model' ? provider.setModel : provider.setMode
-          if (!setter) {
-            if (candidate.missingSetter !== 'success') failed = true
-            break
-          }
-          await setter(write.value)
-        }
-      } catch (error) {
-        lastError = error
+      const writeEffect = selectionWriteEffect(provider, sessionId, plan.kind, write)
+      if (!writeEffect) {
+        if (candidate.missingSetter !== 'success') failed = true
+        break
+      }
+
+      const result = yield* Effect.result(writeEffect)
+      if (result._tag === 'Failure') {
+        lastError = result.failure
         failed = true
         break
       }
     }
     if (!failed) return candidate.appliedId
   }
-  if (lastError) throw lastError
-  throw new Error(plan.unavailableMessage)
-}
+  // Preserve the Promise executor's truthiness guard for non-Error rejection reasons.
+  if (lastError) return yield* Effect.fail(lastError)
+  return yield* new SelectionUnavailableError({ message: plan.unavailableMessage })
+})

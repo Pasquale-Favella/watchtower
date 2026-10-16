@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as Metric from 'effect/Metric'
 import * as TestClock from 'effect/testing/TestClock'
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient'
 import { describe, expect, it, vi } from 'vitest'
@@ -420,13 +421,22 @@ describe('HttpFetch timeout counter (Wave 5, issue #148)', () => {
   it('files FETCH_TIMEOUT_COUNTER on the platform path via the live singleton (allowlisted reason, no URL)', async () => {
     const base = mkdtempSync(join(tmpdir(), 'watchtower-fetch-counter-'))
     const logDir = join(base, 'logs')
+    const registry: Metric.MetricRegistry = new Map()
     try {
       await initOperationalLog({ logDir, isPackaged: true })
       const error = await runTimeoutWithClock(
-        provideLiveFetch(slowFetchProgram('https://example.test/slow?secret=abc'), hangingFetch()),
+        provideLiveFetch(slowFetchProgram('https://example.test/slow?secret=abc'), hangingFetch()).pipe(
+          Effect.provideService(Metric.MetricRegistry, registry),
+        ),
       )
       expect(error).toBeInstanceOf(HttpFetchError)
       expect(error.reason).toBe('timeout')
+      const state = await Effect.runPromise(
+        Metric.value(Metric.counter(FETCH_TIMEOUT_COUNTER)).pipe(
+          Effect.provideService(Metric.MetricRegistry, registry),
+        ),
+      )
+      expect(state.count).toBe(1)
       await vi.waitFor(() => {
         const { records, text } = readOperationalLog(logDir)
         const counter = records.filter(record => record['event'] === FETCH_TIMEOUT_COUNTER)

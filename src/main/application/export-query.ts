@@ -5,18 +5,15 @@ import type { SqlError } from 'effect/unstable/sql/SqlError'
 
 import { type ExportResult, exportResultSchema } from '../../shared/schemas/export.js'
 import type { ActiveCurrency } from '../../shared/schemas/fx.js'
-import { buildCsvExportFiles, buildJsonExport } from '../export-calculation.js'
+import { buildCsvExportFilesFromRows, buildJsonExportFromRows } from '../export-calculation.js'
+import { buildExportRows, calculateExportData } from '../export-rows-calculation.js'
 import { activeFromCachedRate, isValidCurrencyCode, USD_CURRENCY } from '../fx-calculation.js'
 import type { PricingCatalogue } from '../pipeline/pricing-calculation.js'
 import type { ProxyPathConfig } from '../pipeline/proxy-paths.js'
-import { buildSessionSummariesFromSnapshotResult, groupSummariesIntoProjects } from '../store/aggregate-calculation.js'
-import type { LedgerQueries } from '../store/ledger-ports.js'
+import { LedgerExportReads } from '../store/ledger-export-reads.js'
 import { LedgerConfig } from '../store/ledger-ports.js'
-import { loadLedgerQuerySnapshotEffect } from '../store/ledger-query-snapshot.js'
 import { exportFileErrorMessage, ExportFiles } from './export-files.js'
 import { PricingDiagnostics } from './pricing-diagnostics.js'
-
-const ALL_TIME_RANGE = { start: new Date(-8640000000000000), end: new Date(8640000000000000) } as const
 
 export type ExportQueryInputs = {
   readonly kind: 'csv' | 'json'
@@ -43,16 +40,16 @@ export const queryExport = Effect.fn('queryExport')(function* (
 ): Effect.fn.Return<
   ExportResult,
   SqlError | Schema.SchemaError,
-  LedgerQueries | LedgerConfig | PricingDiagnostics | ExportFiles
+  LedgerExportReads | LedgerConfig | PricingDiagnostics | ExportFiles
 > {
   const generated = DateTime.toDateUtc(yield* DateTime.now).toISOString()
-  const snapshot = yield* loadLedgerQuerySnapshotEffect({ catalogue: input.catalogue, proxyPaths: input.proxyPaths })
-  const aggregation = buildSessionSummariesFromSnapshotResult(snapshot, { range: ALL_TIME_RANGE })
+  const reads = yield* LedgerExportReads
+  const data = yield* reads.getExportData()
+  const calculation = calculateExportData(data, input.catalogue)
   const diagnostics = yield* PricingDiagnostics
-  yield* diagnostics.reportUnpricedModels(aggregation.unpricedModels)
+  yield* diagnostics.reportUnpricedModels(calculation.unpricedModels)
 
-  const projects = groupSummariesIntoProjects(aggregation.summaries)
-  if (projects.length === 0) {
+  if (calculation.sessionCount === 0) {
     return yield* Schema.decodeUnknownEffect(exportResultSchema)({
       ok: false,
       error: 'no data to export yet — scan first',
@@ -60,11 +57,12 @@ export const queryExport = Effect.fn('queryExport')(function* (
   }
 
   const currency = yield* captureActiveCurrency()
+  const rows = buildExportRows(calculation.data, currency)
   const files = yield* ExportFiles
   const writing =
     input.kind === 'csv'
-      ? files.writeCsvFolder(input.outputPath, buildCsvExportFiles(projects, currency, generated))
-      : files.writeJsonFile(input.outputPath, buildJsonExport(projects, currency, generated))
+      ? files.writeCsvFolder(input.outputPath, buildCsvExportFilesFromRows(rows, currency, generated))
+      : files.writeJsonFile(input.outputPath, buildJsonExportFromRows(rows, currency, generated))
   return yield* writing.pipe(
     Effect.map(path => ({ ok: true as const, path })),
     Effect.catchTag('ExportFileError', error =>

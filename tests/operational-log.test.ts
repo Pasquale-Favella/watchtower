@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import * as Effect from 'effect/Effect'
+import * as Metric from 'effect/Metric'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { makeMainRuntime } from '../src/main/main-runtime.js'
 import {
   closeOperationalLog,
   FETCH_TIMEOUT_COUNTER,
@@ -351,7 +353,7 @@ describe('OperationalLog Effect bridge (Wave 2 §4.4/§5.4)', () => {
     return { sink, records }
   }
 
-  it('defines the three counter keys for the later call-site wiring slice', () => {
+  it('defines the three native counter names', () => {
     expect(SCAN_DURATION_COUNTER).toBe('scan.duration')
     expect(FETCH_TIMEOUT_COUNTER).toBe('fetch.timeout')
     expect(PROBE_OUTCOME_COUNTER).toBe('probe.outcome')
@@ -387,6 +389,57 @@ describe('OperationalLog Effect bridge (Wave 2 §4.4/§5.4)', () => {
     expect(records[1]!.fields).toMatchObject({ count: 1 })
     expect(records[2]).toMatchObject({ level: 'info', event: PROBE_OUTCOME_COUNTER })
     expect(records[2]!.fields).toMatchObject({ op: 'probe', count: 2 })
+  })
+
+  it('updates native metrics while forwarding each original delta exactly once', async () => {
+    const { sink, records } = makeFakeSink()
+    const state = await Effect.runPromise(
+      Effect.gen(function* () {
+        const oplog = yield* OperationalLog
+        yield* oplog.incrementCounter(SCAN_DURATION_COUNTER, 2)
+        yield* oplog.incrementCounter(SCAN_DURATION_COUNTER, 3)
+        yield* oplog.incrementCounter(FETCH_TIMEOUT_COUNTER)
+        yield* oplog.incrementCounter(PROBE_OUTCOME_COUNTER)
+        yield* oplog.recordGauge('worker.pending', 2)
+        yield* oplog.recordGauge('worker.pending', 5)
+        return {
+          scan: yield* Metric.value(Metric.counter(SCAN_DURATION_COUNTER)),
+          timeout: yield* Metric.value(Metric.counter(FETCH_TIMEOUT_COUNTER)),
+          probe: yield* Metric.value(Metric.counter(PROBE_OUTCOME_COUNTER)),
+          pending: yield* Metric.value(Metric.gauge('worker.pending')),
+        }
+      }).pipe(
+        Effect.provide(OperationalLog.layerWithSink(sink)),
+        Effect.provideService(Metric.MetricRegistry, new Map()),
+      ),
+    )
+    expect(state.scan.count).toBe(5)
+    expect(state.timeout.count).toBe(1)
+    expect(state.probe.count).toBe(1)
+    expect(state.pending.value).toBe(5)
+    expect(records.map(record => [record.event, record.fields.count])).toEqual([
+      [SCAN_DURATION_COUNTER, 2],
+      [SCAN_DURATION_COUNTER, 3],
+      [FETCH_TIMEOUT_COUNTER, 1],
+      [PROBE_OUTCOME_COUNTER, 1],
+      ['worker.pending', 2],
+      ['worker.pending', 5],
+    ])
+  })
+
+  it('keeps metric state inside each main runtime', async () => {
+    const options = { clientVersion: 'test', appPath: '/app', onHarnessChange: () => {} }
+    const overrides = { detect: async () => [] }
+    const first = makeMainRuntime(options, overrides)
+    const second = makeMainRuntime(options, overrides)
+    const counter = Metric.counter(SCAN_DURATION_COUNTER)
+    try {
+      await first.runPromise(Metric.update(counter, 4))
+      expect((await first.runPromise(Metric.value(counter))).count).toBe(4)
+      expect((await second.runPromise(Metric.value(counter))).count).toBe(0)
+    } finally {
+      await Promise.all([first.dispose(), second.dispose()])
+    }
   })
 
   it('service never throws when the sink throws (never-throws preserved)', async () => {

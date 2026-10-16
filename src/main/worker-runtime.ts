@@ -10,29 +10,42 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient'
 import { CommandRunner } from './agents/command-runner.js'
 import { AssistantSetup } from './application/assistant-setup.js'
 import { ExportFiles } from './application/export-files.js'
+import { GatewayReports } from './application/gateway-reports.js'
+import { LedgerMaintenance } from './application/ledger-maintenance.js'
 import { PricingDiagnostics } from './application/pricing-diagnostics.js'
 import { RepositoryInspection } from './application/repository-inspection.js'
 import { AssistantSetupLive } from './assistant-setup-live.js'
 import { Env } from './env.js'
 import { ExportFilesLive } from './export-files-live.js'
 import { FxRates } from './fx.js'
+import { GatewayReportsLive } from './gateway-reports-live.js'
+import { LedgerMaintenanceLive } from './ledger-maintenance-live.js'
 import {
   OperationalLog,
   OperationalLogLoggerLayer,
   operationalLogLoggerLayerWithSink,
+  OperationalLogMetricLayer,
   type OperationalLogSink,
   OperationalLogTracerLayer,
 } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 import { PricingDiagnosticsLive } from './pipeline/pricing-diagnostics.js'
 import { RepositoryInspectionLive } from './repository-inspection-live.js'
-import { LedgerStore } from './store/ledger.js'
 import { initializeLedger } from './store/ledger-initialization.js'
-import { LedgerConfig, LedgerIngest, LedgerPortsLayer, LedgerQueries } from './store/ledger-repository.js'
+import {
+  LedgerConfig,
+  LedgerExportReads,
+  LedgerIngest,
+  LedgerPortsLayer,
+  LedgerQueries,
+  LedgerSessionReads,
+  LedgerViewReads,
+} from './store/ledger-repository.js'
 
 export type WorkerServices =
   | AssistantSetup
   | ExportFiles
+  | GatewayReports
   | RepositoryInspection
   | CommandRunner
   | PricingDiagnostics
@@ -42,7 +55,11 @@ export type WorkerServices =
   | FxRates
   | LedgerIngest
   | LedgerQueries
+  | LedgerSessionReads
+  | LedgerViewReads
+  | LedgerExportReads
   | LedgerConfig
+  | LedgerMaintenance
   | Sqlite.SqliteClient.SqliteClient
   | SqlClient.SqlClient
 export type WorkerOverrides =
@@ -52,12 +69,17 @@ export type WorkerOverrides =
   | FxRates
   | LedgerIngest
   | LedgerQueries
+  | LedgerSessionReads
+  | LedgerViewReads
+  | LedgerExportReads
   | LedgerConfig
   | PricingDiagnostics
   | AssistantSetup
   | RepositoryInspection
   | CommandRunner
   | ExportFiles
+  | GatewayReports
+  | LedgerMaintenance
 export type WorkerSqlLayer = Layer.Layer<Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient>
 export type WorkerRuntime = ManagedRuntime.ManagedRuntime<WorkerServices, never>
 
@@ -69,21 +91,31 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
   sqliteLayer: WorkerSqlLayer = Sqlite.SqliteClient.layer({ filename: dbPath }),
 ): Layer.Layer<WorkerServices> {
   const ledger = LedgerPortsLayer.pipe(Layer.provideMerge(sqliteLayer))
-  const capabilities = Layer.mergeAll(ledger, AssistantSetupLive, ExportFilesLive, CommandRunner.layer)
+  const liveFetch = HttpFetch.layerWithFetch((input, init) => globalThis.fetch(input, init))
+  const capabilities = Layer.mergeAll(
+    ledger,
+    AssistantSetupLive,
+    ExportFilesLive,
+    CommandRunner.layer,
+    Env.layer,
+    liveFetch,
+  )
   const dependencies = overrides ? Layer.mergeAll(capabilities, overrides) : capabilities
   const fxRates = FxRates.layer.pipe(Layer.provide(dependencies))
   const repositoryInspection = RepositoryInspectionLive.pipe(Layer.provide(dependencies))
-  const liveFetch = HttpFetch.layerWithFetch((input, init) => globalThis.fetch(input, init))
+  const gatewayReports = GatewayReportsLive.pipe(Layer.provide(dependencies))
+  const maintenance = LedgerMaintenanceLive.pipe(Layer.provide(dependencies))
 
   const live = Layer.mergeAll(
+    OperationalLogMetricLayer,
     sink ? operationalLogLoggerLayerWithSink(sink, 'worker') : OperationalLogLoggerLayer,
     OperationalLogTracerLayer('worker', sink),
-    Env.layer,
     sink ? OperationalLog.layerWithSink(sink, 'worker') : OperationalLog.layer,
-    liveFetch,
     PricingDiagnosticsLive,
     fxRates,
     repositoryInspection,
+    gatewayReports,
+    maintenance,
     dependencies,
   )
   return overrides ? Layer.mergeAll(live, overrides) : live
@@ -97,13 +129,10 @@ export function makeWorkerRuntime(
 }
 
 /**
- * The db-worker's one-owner factory. LedgerStore is a temporary synchronous
- * facade over the runtime's very same SqliteClient; it owns neither another
- * connection nor another runtime. The root runs the shared schema initializer
- * before constructing the facade, so callers cannot publish `ready` early.
- * On failed boot the runtime scope closes the real driver exactly once.
+ * Initializes the worker's one SQL client before the worker can publish ready.
+ * Failed boot disposes that runtime and preserves the initialization failure.
  */
-export function openWorkerOwner<Overrides extends WorkerOverrides = never>(
+export function openWorkerRuntime<Overrides extends WorkerOverrides = never>(
   dbPath: string,
   sink?: OperationalLogSink,
   overrides?: Layer.Layer<Overrides>,
@@ -111,14 +140,13 @@ export function openWorkerOwner<Overrides extends WorkerOverrides = never>(
     readonly sqliteLayer?: WorkerSqlLayer
     readonly makeRuntime?: typeof makeWorkerRuntime
   } = {},
-): { ledger: LedgerStore; runtime: WorkerRuntime } {
+): WorkerRuntime {
   mkdirSync(dirname(dbPath), { recursive: true })
   const layer = makeWorkerLive(dbPath, sink, overrides, options.sqliteLayer)
   const runtime = (options.makeRuntime ?? makeWorkerRuntime)(dbPath, layer)
   try {
     runtime.runSync(initializeLedger)
-    const ledger = new LedgerStore(dbPath, { runtime, initialize: false })
-    return { ledger, runtime }
+    return runtime
   } catch (error) {
     try {
       Effect.runSync(runtime.disposeEffect)

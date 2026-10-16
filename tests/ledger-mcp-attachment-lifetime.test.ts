@@ -1,3 +1,6 @@
+import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
+import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/main/agents/detect.js'
@@ -7,11 +10,19 @@ import {
   createCoachRunner,
   type HarnessSource,
   type LedgerMcpAttachment,
+  type NativeHarnessSource,
 } from '../src/main/agents/ipc.js'
 import type { LedgerMcpSpawnContext } from '../src/main/agents/ledger-mcp/config.js'
 import { createSidecarPool } from '../src/main/agents/ledger-mcp/pool.js'
 import type { StartedLedgerMcpHttp } from '../src/main/agents/ledger-mcp/sidecar.js'
-import type { HarnessRuntime } from '../src/main/agents/runtime.js'
+import type {
+  ControlledHarnessInspection,
+  HarnessProviderInput,
+  HarnessRunInput,
+  HarnessRuntime,
+  NativeHarnessRun,
+} from '../src/main/agents/runtime.js'
+import type { MainRuntime } from '../src/main/main-runtime.js'
 import type { CoachEvent } from '../src/shared/schemas/agents.js'
 
 /**
@@ -141,9 +152,106 @@ function countingAttachmentSource(counter: { released: number }): {
 }
 
 const ownedRunners = new Set<CoachRunner>()
+const ownedEffectHosts = new Set<ManagedRuntime.ManagedRuntime<never, never>>()
+type TestRunnerOptions = {
+  harnesses: HarnessSource
+  ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
+  getRuntime: () => Promise<HarnessRuntime>
+}
 
-function ownRunner(options: Parameters<typeof createCoachRunner>[0]): CoachRunner {
-  const runner = createCoachRunner(options)
+function nativeHarnesses(source: HarnessSource): NativeHarnessSource {
+  return {
+    list: () => Effect.tryPromise({ try: () => source.list(), catch: error => error }),
+    refresh: () => Effect.tryPromise({ try: () => source.refresh(), catch: error => error }),
+    get: instanceId => Effect.tryPromise({ try: () => source.get(instanceId), catch: error => error }),
+    reportAuth: (instanceId, status) => Effect.sync(() => source.reportAuth?.(instanceId, status)),
+  }
+}
+
+function bounded<T>(promise: Promise<T>): Promise<T | undefined> {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(undefined), 3_000)
+    void promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        clearTimeout(timer)
+        resolve(undefined)
+      },
+    )
+  })
+}
+
+function ownRunner(options: TestRunnerOptions): CoachRunner {
+  const host = ManagedRuntime.make(Layer.empty)
+  ownedEffectHosts.add(host)
+  const nativeDeps = {
+    harnesses: nativeHarnesses(options.harnesses),
+    ledgerMcpServer: (kind: string) =>
+      Effect.tryPromise({ try: () => options.ledgerMcpServer(kind), catch: error => error }),
+    effectHost: host as unknown as MainRuntime,
+    startRun: (input: HarnessRunInput) =>
+      Effect.tryPromise({
+        try: async (): Promise<NativeHarnessRun> => {
+          const runtime = await options.getRuntime!()
+          const controlled = runtime.runControlled?.(input)
+          const source = controlled?.events ?? runtime.run(input)
+          const iterator = source[Symbol.asyncIterator]()
+          let stopping: Promise<void> | undefined
+          return {
+            events: {
+              [Symbol.asyncIterator]: () => ({
+                next: () => iterator.next(),
+                return: async () => ({ done: true, value: undefined }),
+              }),
+            },
+            stop: Effect.tryPromise({
+              try: () =>
+                (stopping ??= bounded(
+                  controlled ? controlled.stop() : Promise.resolve(iterator.return?.(undefined)).then(() => undefined),
+                )),
+              catch: error => error as Error,
+            }).pipe(
+              Effect.asVoid,
+              Effect.catchCause(() => Effect.void),
+            ),
+          }
+        },
+        catch: error => error as Error,
+      }),
+    startInspection: (input: HarnessProviderInput) =>
+      Effect.sync(() => {
+        let cancelled = false
+        let controlled: ControlledHarnessInspection | undefined
+        return {
+          result: Effect.tryPromise({
+            try: async () => {
+              const runtime = await options.getRuntime!()
+              if (cancelled) return {}
+              controlled = runtime.inspectControlled?.(input)
+              return controlled ? controlled.result : runtime.inspect(input)
+            },
+            catch: error => error as Error,
+          }),
+          stop: Effect.sync(() => {
+            cancelled = true
+          }).pipe(
+            Effect.andThen(
+              Effect.tryPromise({
+                try: () => (controlled ? bounded(controlled.stop()) : Promise.resolve(undefined)),
+                catch: error => error as Error,
+              }).pipe(
+                Effect.asVoid,
+                Effect.catchCause(() => Effect.void),
+              ),
+            ),
+          ),
+        }
+      }),
+  }
+  const runner = createCoachRunner(nativeDeps)
   ownedRunners.add(runner)
   return runner
 }
@@ -152,6 +260,9 @@ afterEach(async () => {
   const runners = [...ownedRunners]
   ownedRunners.clear()
   await Promise.all(runners.map(runner => runner.reset()))
+  const hosts = [...ownedEffectHosts]
+  ownedEffectHosts.clear()
+  await Promise.all(hosts.map(host => host.dispose()))
 })
 
 describe('ledger MCP attachment lifetime — a run the app stopped waiting for cannot keep its claim', () => {

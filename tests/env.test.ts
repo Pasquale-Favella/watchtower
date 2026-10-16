@@ -1,9 +1,11 @@
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
+import ts from 'typescript'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
@@ -18,6 +20,7 @@ import {
   type PlatformPaths,
   PROVIDER_ENV_KEYS,
   type ProviderOverrides,
+  readAppPathsEffect,
   REMAINING_DIRECT_ENV_READS,
   resolveCacheDir,
   resolveCodexHome,
@@ -414,32 +417,111 @@ describe('resolveProviderOverrides + overrideFor/platformFor (rollout step 1)', 
     for (const key of [
       'CODEWHALE_HOME',
       'FACTORY_DIR',
+      'GROK_HOME',
       'HERMES_HOME',
       'KIMI_CODE_HOME',
+      'KIMI_SHARE_DIR',
+      'KIRO_HOME',
       'LINGTAI_HOME',
       'LINGTAI_TUI_GLOBAL_DIR',
       'LINGTAI_TUI_HOME',
       'QWEN_DATA_DIR',
       'QUICKWORK_HOME',
       'WARP_DB_PATH',
+      'VIBE_HOME',
+      'ZS_DATA_DIR',
     ] as const) {
       expect(PROVIDER_ENV_KEYS).toContain(key)
       expect(ENV_VAR_SOURCES[key]).toEqual({ kind: 'override' })
     }
   })
 
-  it('every listed remaining direct read really is a direct read (the list is not a wish)', () => {
-    // The registry is the seam's honesty check: an entry that no longer matches
-    // the file makes this fail, so the snapshot can never quietly stop being
-    // the single source of truth for a key it claims to own.
-    for (const [relativePath, keys] of Object.entries(REMAINING_DIRECT_ENV_READS)) {
-      const source = readFileSync(join(repoRoot, 'src', 'main', 'pipeline', relativePath), 'utf8')
-      for (const key of keys) {
-        expect(source, `${relativePath} must still read ${key} directly`).toContain(`process.env['${key}']`)
-        // A key the snapshot already carries must never appear here.
-        expect(PROVIDER_ENV_KEYS).toContain(key)
+  it('providers do not read process.env directly', () => {
+    expect(REMAINING_DIRECT_ENV_READS).toEqual({})
+    const providerDir = join(repoRoot, 'src', 'main', 'pipeline', 'providers')
+    for (const name of readdirSync(providerDir).filter(name => name.endsWith('.ts'))) {
+      const source = ts.createSourceFile(name, readFileSync(join(providerDir, name), 'utf8'), ts.ScriptTarget.Latest)
+      const reads: string[] = []
+      function visit(node: ts.Node): void {
+        if (
+          (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) &&
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === 'process'
+        ) {
+          const isEnvironmentRead = ts.isPropertyAccessExpression(node)
+            ? node.name.text === 'env'
+            : node.argumentExpression !== undefined &&
+              ts.isStringLiteral(node.argumentExpression) &&
+              node.argumentExpression.text === 'env'
+          if (isEnvironmentRead) reads.push(node.getText(source))
+        }
+        ts.forEachChild(node, visit)
       }
+      visit(source)
+      expect(reads, `providers/${name} must use Config or the AppPaths seam`).toEqual([])
     }
+  })
+
+  it('captures full AppPaths through Effect Config and keeps raw empty values', async () => {
+    const paths = await Effect.runPromise(
+      readAppPathsEffect('/default/cache').pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromEnvRecord(
+            {
+              WATCHTOWER_CACHE_DIR: '',
+              CODEX_HOME: '',
+              WATCHTOWER_SUPPRESS_CACHE_WRITES: '',
+              APPDATA: '',
+              LOCALAPPDATA: '/local',
+              XDG_CONFIG_HOME: '/xdg/config',
+              XDG_DATA_HOME: '/xdg/data',
+              FACTORY_DIR: '',
+              GROK_HOME: '',
+              HERMES_HOME: '/hermes',
+              KIMI_CODE_HOME: '/kimi',
+              KIMI_SHARE_DIR: '/kimi/share',
+              KIRO_HOME: '/kiro',
+              LINGTAI_HOME: '/lingtai',
+              LINGTAI_TUI_GLOBAL_DIR: '/lingtai/global',
+              LINGTAI_TUI_HOME: '/lingtai/legacy',
+              QUICKWORK_HOME: '/quickwork',
+              QWEN_DATA_DIR: '/qwen',
+              VIBE_HOME: '/vibe',
+              ZS_DATA_DIR: '/zerostack',
+            },
+            { preserveEmptyStrings: true },
+          ),
+        ),
+      ),
+    )
+
+    expect(paths).toEqual({
+      cacheDir: '',
+      codexHome: '',
+      suppressCacheWrites: false,
+      platform: {
+        appData: '',
+        localAppData: '/local',
+        xdgConfigHome: '/xdg/config',
+        xdgDataHome: '/xdg/data',
+      },
+      overrides: {
+        FACTORY_DIR: '',
+        GROK_HOME: '',
+        HERMES_HOME: '/hermes',
+        KIMI_CODE_HOME: '/kimi',
+        KIMI_SHARE_DIR: '/kimi/share',
+        KIRO_HOME: '/kiro',
+        LINGTAI_HOME: '/lingtai',
+        LINGTAI_TUI_GLOBAL_DIR: '/lingtai/global',
+        LINGTAI_TUI_HOME: '/lingtai/legacy',
+        QUICKWORK_HOME: '/quickwork',
+        QWEN_DATA_DIR: '/qwen',
+        VIBE_HOME: '/vibe',
+        ZS_DATA_DIR: '/zerostack',
+      },
+    })
   })
 })
 

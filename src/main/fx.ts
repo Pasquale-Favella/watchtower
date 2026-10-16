@@ -3,13 +3,13 @@ import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import type { SchemaError } from 'effect/Schema'
+import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/unstable/sql/SqlError'
 
 import type { ActiveCurrency } from '../shared/schemas/fx.js'
 import type { CurrencyRate } from '../shared/schemas/ledger.js'
 import { activeFromCachedRate, isValidCurrencyCode, resolveSymbol, USD_CURRENCY } from './fx-calculation.js'
 import { HttpFetch, retryTransientFetch } from './pipeline/fetch-utils.js'
-import type { LedgerStore } from './store/ledger.js'
 import { LedgerConfig } from './store/ledger-repository.js'
 
 export type { ActiveCurrency, CurrencyOption } from '../shared/schemas/fx.js'
@@ -46,37 +46,15 @@ const FRANKFURTER_URL = 'https://api.frankfurter.app/latest?from=USD&to='
 const MIN_VALID_FX_RATE = 0.0001
 const MAX_VALID_FX_RATE = 1_000_000
 
-function isValidRate(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= MIN_VALID_FX_RATE && value <= MAX_VALID_FX_RATE
-}
-
-/** The persisted display-currency code (always valid; USD default). */
-function displayCurrencyCode(store: LedgerStore): string {
-  const code = store.getDisplayCurrency()
-  return isValidCurrencyCode(code) ? code : 'USD'
-}
+const frankfurterResponseSchema = Schema.Struct({
+  rates: Schema.Record(Schema.String, Schema.Unknown),
+})
+const fxRateSchema = Schema.Finite.check(Schema.isBetween({ minimum: MIN_VALID_FX_RATE, maximum: MAX_VALID_FX_RATE }))
 
 /** Write-side display-code sanitization (uppercase a 3-letter code, else
- * `USD`) — the rule the now-deleted `LedgerStore.setDisplayCurrency` used to
- * own, so the write stays byte-identical across the live port and the
- * temporary standalone adapter. */
+ * `USD`) at the native persistence boundary. */
 function sanitizeDisplayCurrencyCode(code: string): string {
   return /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'
-}
-
-/** The active display currency: the persisted code plus its cached rate.
- * Falls back to the last successfully cached rate whenever one exists (even
- * if stale — a stale rate beats no rate), or to the USD-equivalent rate 1
- * when nothing has ever been cached. Never fetches; this is the renderer's
- * single read path.
- *
- * Temporary synchronous adapter for dispatch, cadence and export callers.
- * Remove it when those application workflows read through the composed FX
- * port. Their IPC result remains an ordinary serializable value. */
-export function getActiveCurrency(store: LedgerStore): ActiveCurrency {
-  const code = displayCurrencyCode(store)
-  if (code === 'USD') return { ...USD_CURRENCY }
-  return activeFromCachedRate(code, store.getCurrencyRate(code))
 }
 
 export function isRateStale(updatedAt: string | undefined, now = Date.now()): boolean {
@@ -91,15 +69,6 @@ export interface RefreshFxRateEffectOptions {
   now?: () => number
   /** Fetch timeout override; defaults to the shared HTTP ceiling. */
   timeoutMs?: number
-}
-
-/**
- * Temporary runner seam for `layerWithRepository` callers that still use
- * `LedgerStore.runRepositorySync`. Delete it with that adapter once the
- * remaining standalone and test callers compose `FxRates.layer` directly.
- */
-export interface FxRatesRepositoryRunner {
-  runRepositorySync<A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError | SchemaError>): A
 }
 
 /**
@@ -135,24 +104,6 @@ export class FxRates extends Context.Service<
 
   static readonly layerWithRates = (rates: FxRates['Service']): Layer.Layer<FxRates> =>
     Layer.succeed(FxRates, FxRates.of(rates))
-
-  /**
-   * Temporary standalone adapter for callers that still own a LedgerStore.
-   * Production composition uses `FxRates.layer` with `LedgerConfig`.
-   * Remove this adapter and its runner seam once all test/standalone callers
-   * compose the canonical port layer.
-   */
-  static readonly layerWithRepository = (runner: FxRatesRepositoryRunner): Layer.Layer<FxRates> => {
-    const run = <A>(operation: (config: LedgerConfig['Service']) => Effect.Effect<A, SqlError | SchemaError>) =>
-      Effect.sync(() => runner.runRepositorySync(operation))
-
-    return FxRates.layerWithRates({
-      getCurrencyRate: code => run(repository => repository.getCurrencyRate(code)),
-      setCurrencyRate: rate => run(repository => repository.setCurrencyRate(rate)),
-      getDisplayCurrency: () => run(repository => repository.getDisplayCurrency()),
-      setDisplayCurrency: code => run(repository => repository.setDisplayCurrency(sanitizeDisplayCurrencyCode(code))),
-    })
-  }
 }
 
 /** Port-based USD→code refresh core (ADR 0032 slice 2).
@@ -191,12 +142,15 @@ export const refreshFxRateWithRates = Effect.fnUntraced(function* (
     // rate" degrade — it just runs after the retries are spent.
     const response = yield* http.fetch(`${FRANKFURTER_URL}${safe}`, {}, options.timeoutMs).pipe(retryTransientFetch)
     if (!response.ok) return fallback()
-    const data = yield* Effect.tryPromise({
-      try: () => response.json() as Promise<{ rates?: Record<string, unknown> }>,
+    const payload = yield* Effect.tryPromise({
+      try: async (): Promise<unknown> => response.json(),
       catch: cause => cause,
     }).pipe(Effect.orElseSucceed(() => null))
-    const rate = data?.rates?.[safe]
-    if (!isValidRate(rate)) return fallback()
+    const responseData = yield* Effect.result(Schema.decodeUnknownEffect(frankfurterResponseSchema)(payload))
+    if (responseData._tag === 'Failure') return fallback()
+    const decodedRate = yield* Effect.result(Schema.decodeUnknownEffect(fxRateSchema)(responseData.success.rates[safe]))
+    if (decodedRate._tag === 'Failure') return fallback()
+    const rate = decodedRate.success
     yield* rates.setCurrencyRate({
       code: safe,
       symbol: resolveSymbol(safe),

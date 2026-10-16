@@ -35,8 +35,8 @@ function launch(
     attachErrorListener(child)
     child.unref()
     return { ok: true }
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  } catch {
+    return { ok: false, error: 'The login terminal could not be opened. Run the harness login command in a terminal.' }
   }
 }
 

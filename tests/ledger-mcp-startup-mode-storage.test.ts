@@ -3,9 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { LedgerStore } from '../src/main/store/ledger.js'
+import { setLedgerMcpStartupMode } from '../src/main/application/ledger-config-commands.js'
+import { LedgerConfig } from '../src/main/store/ledger-repository.js'
+import { openWorkerRuntime } from '../src/main/worker-runtime.js'
 
 const tempDirs: string[] = []
 
@@ -14,18 +17,19 @@ describe('ledger MCP startup mode storage', () => {
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
   })
 
-  it('falls back for invalid writes and corrupt persisted values', () => {
+  it('falls back for invalid writes and corrupt persisted values', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'tr-ledger-mcp-mode-'))
     tempDirs.push(dir)
     const dbPath = join(dir, 'data.db')
-    const store = new LedgerStore(dbPath)
+    const runtime = openWorkerRuntime(dbPath)
     try {
-      expect(store.setLedgerMcpStartupMode('invalid')).toBe('on-demand')
-      expect(store.getLedgerMcpStartupMode()).toBe('on-demand')
-      store.setLedgerMcpStartupMode('at-launch')
-      expect(store.getLedgerMcpStartupMode()).toBe('at-launch')
+      const config = runtime.runSync(LedgerConfig)
+      expect(runtime.runSync(setLedgerMcpStartupMode('invalid'))).toBe('on-demand')
+      expect(runtime.runSync(config.getLedgerMcpStartupMode())).toBe('on-demand')
+      runtime.runSync(config.setLedgerMcpStartupMode('at-launch'))
+      expect(runtime.runSync(config.getLedgerMcpStartupMode())).toBe('at-launch')
     } finally {
-      store.close()
+      await runtime.dispose()
     }
 
     const db = new DatabaseSync(dbPath)
@@ -35,11 +39,13 @@ describe('ledger MCP startup mode storage', () => {
       db.close()
     }
 
-    const reopenedStore = new LedgerStore(dbPath)
+    const reopened = openWorkerRuntime(dbPath)
     try {
-      expect(reopenedStore.getLedgerMcpStartupMode()).toBe('on-demand')
+      expect(reopened.runSync(Effect.flatMap(LedgerConfig, config => config.getLedgerMcpStartupMode()))).toBe(
+        'on-demand',
+      )
     } finally {
-      reopenedStore.close()
+      await reopened.dispose()
     }
   })
 })

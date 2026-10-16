@@ -1,7 +1,3 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
@@ -11,8 +7,8 @@ import { describe, expect, it } from 'vitest'
 
 import { FxRates, refreshFxRateWithRates } from '../src/main/fx.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
-import { LedgerStore } from '../src/main/store/ledger.js'
 import { LedgerConfig } from '../src/main/store/ledger-repository.js'
+import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 function configLayer(overrides: Partial<LedgerConfig['Service']> = {}): Layer.Layer<LedgerConfig> {
   const noop = Effect.void
@@ -45,29 +41,27 @@ function liveRatesLayer(config: Layer.Layer<LedgerConfig>): Layer.Layer<FxRates>
 }
 
 describe('FxRates.layer (LedgerConfig adapter)', () => {
-  it('composes with the live LedgerStore config port', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'tr-fx-layer-'))
-    const store = new LedgerStore(join(directory, 'data.db'))
-    const ratesLayer = Layer.provide(FxRates.layer, store.portsLayer)
-    try {
-      await Effect.runPromise(
-        Effect.gen(function* () {
-          const rates = yield* FxRates
-          yield* rates.setDisplayCurrency('eur')
-          yield* rates.setCurrencyRate({
-            code: 'EUR',
-            symbol: '€',
-            rate: 0.9,
-            updatedAt: '2026-10-01T00:00:00.000Z',
-          })
-        }).pipe(Effect.provide(ratesLayer)),
-      )
-      expect(store.getDisplayCurrency()).toBe('EUR')
-      expect(store.getCurrencyRate('EUR')).toMatchObject({ rate: 0.9 })
-    } finally {
-      store.close()
-      rmSync(directory, { recursive: true, force: true })
-    }
+  it('composes with the native worker config port', async () => {
+    const fixture = openLedgerFixture()
+    await fixture.runtime.runPromise(
+      Effect.gen(function* () {
+        const rates = yield* FxRates
+        yield* rates.setDisplayCurrency('eur')
+        yield* rates.setCurrencyRate({
+          code: 'EUR',
+          symbol: '€',
+          rate: 0.9,
+          updatedAt: '2026-10-01T00:00:00.000Z',
+        })
+      }),
+    )
+    const saved = await fixture.runtime.runPromise(
+      Effect.gen(function* () {
+        const rates = yield* FxRates
+        return [yield* rates.getDisplayCurrency(), yield* rates.getCurrencyRate('EUR')] as const
+      }),
+    )
+    expect(saved).toEqual(['EUR', { code: 'EUR', symbol: '€', rate: 0.9, updatedAt: '2026-10-01T00:00:00.000Z' }])
   })
 
   it('forwards reads, writes, and display-code sanitization to LedgerConfig', async () => {

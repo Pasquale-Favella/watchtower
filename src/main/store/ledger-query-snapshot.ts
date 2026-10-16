@@ -1,12 +1,12 @@
 import * as Effect from 'effect/Effect'
 
+import type { LedgerSessionRow, LedgerSourceRow, LedgerTurnRow } from '../../shared/schemas/ledger.js'
 import {
   createPricingConfigLookup,
   type PricingCatalogue,
   type PricingConfigLookup,
 } from '../pipeline/pricing-calculation.js'
 import type { ProxyPathConfig } from '../pipeline/proxy-paths.js'
-import type { LedgerSessionRow, LedgerSourceRow, LedgerTurnRow } from './ledger.js'
 import { LedgerQueries, type LedgerRequestSnapshotData } from './ledger-ports.js'
 import type { LedgerCallFactsRow } from './read-projections.js'
 

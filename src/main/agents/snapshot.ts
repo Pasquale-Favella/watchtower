@@ -1,11 +1,14 @@
+import * as Config from 'effect/Config'
+import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as FiberHandle from 'effect/FiberHandle'
 import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
 
 import type { CoachHarnessRow } from '../../shared/schemas/agents.js'
-import { type OperationalLogCounter, PROBE_OUTCOME_COUNTER } from '../operational-log.js'
+import { OperationalLog, type OperationalLogCounter, PROBE_OUTCOME_COUNTER } from '../operational-log.js'
 import { CommandRunner } from './command-runner.js'
 import type { HarnessInfo } from './detect.js'
 import { harnessSpecs } from './harnesses/index.js'
@@ -37,7 +40,7 @@ export interface HarnessSnapshotService {
 }
 
 export interface HarnessSnapshotOptions {
-  readonly detect: () => Promise<HarnessInfo[]>
+  readonly detect: (pathEnv: string | undefined) => Promise<HarnessInfo[]>
   readonly onChange: (rows: CoachHarnessRow[]) => void
   readonly readPath?: () => string | undefined
   readonly concurrency?: number
@@ -70,11 +73,6 @@ export class HarnessProbe extends Context.Service<
   ): Layer.Layer<HarnessProbe> => Layer.succeed(HarnessProbe, HarnessProbe.of({ probe: probeImpl }))
 }
 
-const liveSnapshotCounters: HarnessSnapshotCounters = {
-  incrementCounter: (name, amount = 1, fields = {}) =>
-    Effect.logInfo(name).pipe(Effect.annotateLogs({ event: name, context: 'main', ...fields, count: amount })),
-}
-
 function instanceIdFor(info: HarnessInfo): string {
   return info.instanceId ?? info.kind
 }
@@ -104,12 +102,20 @@ function toRow(instance: HarnessInstance): CoachHarnessRow {
 function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
   return Effect.gen(function* () {
     const probe = yield* HarnessProbe
+    const operationalLog = yield* OperationalLog
+    const configProvider = yield* ConfigProvider.ConfigProvider
     const probeHandle = yield* FiberHandle.make<unknown, never>()
     const detectionHandle = yield* FiberHandle.make<unknown, unknown>()
     const instances = new Map<string, HarnessInstance>()
     const concurrency = options.concurrency ?? 4
-    const counters = options.counters ?? liveSnapshotCounters
-    const readPath = options.readPath ?? (() => process.env.PATH)
+    const counters = options.counters ?? operationalLog
+    const readPath = options.readPath
+      ? Effect.sync(options.readPath)
+      : Config.option(Config.String('PATH')).pipe(
+          Effect.provideService(ConfigProvider.ConfigProvider, configProvider),
+          Effect.map(Option.getOrUndefined),
+          Effect.orElseSucceed(() => undefined),
+        )
     let detected = false
     let lastPath: string | undefined
     let flight: Deferred.Deferred<CoachHarnessRow[], unknown> | null = null
@@ -150,11 +156,11 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
         yield* publish()
       })
 
-    const completeDetection = (deferred: Deferred.Deferred<CoachHarnessRow[], unknown>) =>
+    const completeDetection = (deferred: Deferred.Deferred<CoachHarnessRow[], unknown>, pathEnv: string | undefined) =>
       Effect.gen(function* () {
         yield* FiberHandle.clear(probeHandle)
-        const infos = yield* Effect.tryPromise({ try: options.detect, catch: error => error })
-        lastPath = readPath()
+        const infos = yield* Effect.tryPromise({ try: () => options.detect(pathEnv), catch: error => error })
+        lastPath = pathEnv
         detected = true
         instances.clear()
         for (const info of infos) {
@@ -185,11 +191,12 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
     const requestDetection = (always: boolean): Effect.Effect<CoachHarnessRow[], unknown> =>
       Effect.gen(function* () {
         if (flight) return yield* Deferred.await(flight)
-        if (!always && detected && lastPath === readPath()) return rows()
+        const pathEnv = yield* readPath
+        if (!always && detected && lastPath === pathEnv) return rows()
 
         const deferred = yield* Deferred.make<CoachHarnessRow[], unknown>()
         flight = deferred
-        yield* FiberHandle.run(detectionHandle, completeDetection(deferred))
+        yield* FiberHandle.run(detectionHandle, completeDetection(deferred, pathEnv))
         return yield* Deferred.await(deferred)
       })
 
@@ -218,4 +225,5 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
 
 export const harnessSnapshotLayer = (
   options: HarnessSnapshotOptions,
-): Layer.Layer<HarnessSnapshot, never, HarnessProbe> => Layer.effect(HarnessSnapshot, makeHarnessSnapshot(options))
+): Layer.Layer<HarnessSnapshot, never, HarnessProbe | OperationalLog> =>
+  Layer.effect(HarnessSnapshot, makeHarnessSnapshot(options))

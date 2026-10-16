@@ -1,13 +1,20 @@
+import { Effect, Result, Schema, Stream } from 'effect'
 import { readdir, readFile, stat } from 'fs/promises'
-import { basename, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
+import { basename, dirname, join, resolve } from 'path'
 
-import { billableOutputTokens } from '../billable-output.js'
-import { readSessionLines } from '../fs-utils.js'
-import { calculateCost, getShortModelName } from '../models.js'
+import { type AppPaths, overrideFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
-import type { Provider, SessionSource, SessionParser, ParsedProviderCall } from './types.js'
-import { safeNumber } from '../parser.js'
+import { billableOutputTokens } from '../billable-output.js'
+import { readSessionLinesStream } from '../fs-utils.js'
+import { captureScanPricing, getShortModelName } from '../models.js'
+import { isScanAbortedError } from '../scan-control.js'
+import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '../scan-io.js'
+import type { DateRange } from '../types.js'
+import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+
+const MUX_DIR_ENV = 'WATCHTOWER_MUX_DIR'
+const MUX_ROOT_ENV = 'MUX_ROOT'
 
 const toolNameMap: Record<string, string> = {
   bash: 'Bash',
@@ -22,38 +29,70 @@ const toolNameMap: Record<string, string> = {
   todo: 'TodoWrite',
 }
 
-type MuxPart = {
-  type?: string
-  text?: string
-  toolName?: string
-  input?: unknown
+const unknownField = Schema.optional(Schema.Unknown)
+const muxConfigSchema = Schema.Struct({ projects: unknownField })
+const projectPairSchema = Schema.Array(Schema.Unknown)
+const projectConfigSchema = Schema.Struct({ workspaces: unknownField })
+const workspaceConfigSchema = Schema.Struct({ id: unknownField })
+const messageSchema = Schema.Struct({
+  id: unknownField,
+  role: unknownField,
+  parts: unknownField,
+  createdAt: unknownField,
+  metadata: unknownField,
+})
+const metadataSchema = Schema.Struct({
+  model: unknownField,
+  timestamp: unknownField,
+  usage: unknownField,
+  providerMetadata: unknownField,
+})
+const usageSchema = Schema.Struct({
+  inputTokens: unknownField,
+  outputTokens: unknownField,
+  reasoningTokens: unknownField,
+  cachedInputTokens: unknownField,
+})
+const providerMetadataSchema = Schema.Struct({ anthropic: unknownField })
+const anthropicMetadataSchema = Schema.Struct({ cacheCreationInputTokens: unknownField })
+const partSchema = Schema.Struct({
+  type: unknownField,
+  text: unknownField,
+  toolName: unknownField,
+  input: unknownField,
+})
+const bashInputSchema = Schema.Struct({ script: unknownField, command: unknownField })
+const decodeJson = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))
+const decodeConfig = Schema.decodeUnknownResult(muxConfigSchema)
+const decodeProjectPair = Schema.decodeUnknownResult(projectPairSchema)
+const decodeProjectConfig = Schema.decodeUnknownResult(projectConfigSchema)
+const decodeWorkspaceConfig = Schema.decodeUnknownResult(workspaceConfigSchema)
+const decodeMessage = Schema.decodeUnknownResult(messageSchema)
+const decodeMetadata = Schema.decodeUnknownResult(metadataSchema)
+const decodeUsage = Schema.decodeUnknownResult(usageSchema)
+const decodeProviderMetadata = Schema.decodeUnknownResult(providerMetadataSchema)
+const decodeAnthropicMetadata = Schema.decodeUnknownResult(anthropicMetadataSchema)
+const decodeParts = Schema.decodeUnknownResult(Schema.Array(Schema.Unknown))
+const decodePart = Schema.decodeUnknownResult(partSchema)
+const decodeBashInput = Schema.decodeUnknownResult(bashInputSchema)
+const decodeString = Schema.decodeUnknownResult(Schema.String)
+const decodeFinite = Schema.decodeUnknownResult(Schema.Finite)
+
+type MuxMessage = Schema.Schema.Type<typeof messageSchema>
+type MuxMetadata = Schema.Schema.Type<typeof metadataSchema>
+type MuxUsage = Schema.Schema.Type<typeof usageSchema>
+
+function expandHome(path: string): string {
+  if (path === '~') return homedir()
+  if (path.startsWith('~/') || path.startsWith('~\\')) return join(homedir(), path.slice(2))
+  return path
 }
 
-type MuxMessage = {
-  id?: string
-  role?: string
-  parts?: MuxPart[]
-  createdAt?: string
-  metadata?: {
-    model?: string
-    timestamp?: number
-    historySequence?: number
-    usage?: unknown
-    providerMetadata?: Record<string, unknown>
-  }
-}
-
-function expandHome(p: string): string {
-  if (p === '~') return homedir()
-  if (p.startsWith('~/') || p.startsWith('~\\')) return join(homedir(), p.slice(2))
-  return p
-}
-
-function getMuxRoot(override?: string): string {
+function getMuxRoot(override?: string, paths?: AppPaths): string {
   if (override) return resolve(expandHome(override))
-  const watchtowerOverride = process.env['WATCHTOWER_MUX_DIR']
+  const watchtowerOverride = overrideFor(paths, MUX_DIR_ENV)
   if (watchtowerOverride) return resolve(expandHome(watchtowerOverride))
-  const muxRoot = process.env['MUX_ROOT']
+  const muxRoot = overrideFor(paths, MUX_ROOT_ENV)
   if (muxRoot) return resolve(expandHome(muxRoot))
   return join(homedir(), '.mux')
 }
@@ -64,203 +103,280 @@ function stripProvider(model: string): string {
   return i >= 0 ? model.slice(i + 1) : model
 }
 
-function asRecord(v: unknown): Record<string, unknown> | undefined {
-  return v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : undefined
+function stringField(value: unknown): string | undefined {
+  const result = decodeString(value)
+  return Result.isSuccess(result) ? result.success : undefined
+}
+
+function safeTokenCount(value: unknown): number {
+  const result = decodeFinite(value)
+  return Result.isSuccess(result) && result.success > 0 ? result.success : 0
+}
+
+function asMuxMessage(value: unknown): MuxMessage | undefined {
+  const result = decodeMessage(value)
+  return Result.isSuccess(result) ? result.success : undefined
+}
+
+function asMetadata(value: unknown): MuxMetadata | undefined {
+  const result = decodeMetadata(value)
+  return Result.isSuccess(result) ? result.success : undefined
+}
+
+function asUsage(value: unknown): MuxUsage | undefined {
+  const result = decodeUsage(value)
+  return Result.isSuccess(result) ? result.success : undefined
 }
 
 // Guard against non-finite / out-of-range ms, which make toISOString() throw.
-function toIsoTimestamp(ts: unknown, createdAt: unknown): string {
-  if (typeof ts === 'number' && Number.isFinite(ts)) {
-    const d = new Date(ts)
-    if (!Number.isNaN(d.getTime())) return d.toISOString()
+function toIsoTimestamp(timestamp: unknown, createdAt: unknown): string {
+  const parsedTimestamp = decodeFinite(timestamp)
+  if (Result.isSuccess(parsedTimestamp)) {
+    const date = new Date(parsedTimestamp.success)
+    if (!Number.isNaN(date.getTime())) return date.toISOString()
   }
-  return typeof createdAt === 'string' ? createdAt : ''
+  return stringField(createdAt) ?? ''
 }
 
-// config.json shape: { projects: [[projectPath, { workspaces: [{ id }] }], ...] }
-async function loadProjectMap(root: string): Promise<Map<string, string>> {
+const loadProjectMap = Effect.fnUntraced(function* (
+  root: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<Map<string, string>, Error> {
   const map = new Map<string, string>()
-  let data: unknown
-  try {
-    data = JSON.parse(await readFile(join(root, 'config.json'), 'utf-8'))
-  } catch {
-    return map
-  }
-  const projects = asRecord(data)?.['projects']
-  if (!Array.isArray(projects)) return map
-  for (const pair of projects) {
-    if (!Array.isArray(pair) || pair.length < 2) continue
-    const projectPath = pair[0]
-    if (typeof projectPath !== 'string') continue
+  const raw = yield* scanIo(() => readFile(join(root, 'config.json'), 'utf-8'), signal).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
+  if (raw === null) return map
+
+  const json = decodeJson(raw)
+  if (Result.isFailure(json)) return map
+  const config = decodeConfig(json.success)
+  if (Result.isFailure(config) || !Array.isArray(config.success.projects)) return map
+
+  for (const candidate of config.success.projects) {
+    const pair = decodeProjectPair(candidate)
+    if (Result.isFailure(pair) || pair.success.length < 2) continue
+    const projectPath = stringField(pair.success[0])
+    if (projectPath === undefined) continue
     const label = basename(projectPath) || projectPath
-    const workspaces = asRecord(pair[1])?.['workspaces']
-    if (!Array.isArray(workspaces)) continue
-    for (const ws of workspaces) {
-      const id = asRecord(ws)?.['id']
-      if (typeof id === 'string' && id) map.set(id, label)
+    const projectConfig = decodeProjectConfig(pair.success[1])
+    if (Result.isFailure(projectConfig) || !Array.isArray(projectConfig.success.workspaces)) continue
+
+    for (const workspace of projectConfig.success.workspaces) {
+      const decodedWorkspace = decodeWorkspaceConfig(workspace)
+      if (Result.isFailure(decodedWorkspace)) continue
+      const id = stringField(decodedWorkspace.success.id)
+      if (id) map.set(id, label)
     }
   }
   return map
-}
+})
 
-async function pushChatSource(sources: SessionSource[], chatPath: string, project: string): Promise<void> {
-  const s = await stat(chatPath).catch(() => null)
-  if (s?.isFile()) sources.push({ path: chatPath, project, provider: 'mux' })
-}
+const isFile = Effect.fnUntraced(function* (path: string, signal?: AbortSignal): Effect.fn.Return<boolean, Error> {
+  return yield* scanIo(() => stat(path), signal).pipe(
+    Effect.map(info => info.isFile()),
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(false))),
+  )
+})
 
-async function discoverSessions(root: string): Promise<SessionSource[]> {
+const pushChatSource = Effect.fnUntraced(function* (
+  sources: SessionSource[],
+  chatPath: string,
+  project: string,
+  signal?: AbortSignal,
+): Effect.fn.Return<void, Error> {
+  if (yield* isFile(chatPath, signal)) sources.push({ path: chatPath, project, provider: 'mux' })
+})
+
+const discoverSessionsEffect = Effect.fn('discoverMuxSessions')(function* (
+  root: string,
+  context?: ProviderScanContext,
+): Effect.fn.Return<SessionSource[], Error> {
+  const signal = context?.signal
+  yield* checkScanAbort(signal)
   const sessionsDir = join(root, 'sessions')
-
-  let workspaceIds: string[]
-  try {
-    workspaceIds = await readdir(sessionsDir)
-  } catch {
+  const workspaceResult = yield* Effect.result(scanIo(() => readdir(sessionsDir), signal))
+  if (Result.isFailure(workspaceResult)) {
+    if (isScanAbortedError(workspaceResult.failure)) return yield* Effect.fail(workspaceResult.failure)
     return []
   }
-
-  const projectMap = await loadProjectMap(root)
+  const workspaceIds = workspaceResult.success
+  const projectMap = yield* loadProjectMap(root, signal)
   const sources: SessionSource[] = []
+
   for (const workspaceId of workspaceIds) {
+    yield* checkScanAbort(signal)
     const workspaceDir = join(sessionsDir, workspaceId)
     const project = projectMap.get(workspaceId) ?? workspaceId
+    yield* pushChatSource(sources, join(workspaceDir, 'chat.jsonl'), project, signal)
 
-    // The workspace's own turns.
-    await pushChatSource(sources, join(workspaceDir, 'chat.jsonl'), project)
-
-    // Sub-agent turns. Each spawned sub-agent is a separate LLM-client session
-    // recorded at subagent-transcripts/<childTaskId>/chat.jsonl — mux does NOT
-    // mirror these into a top-level sessions/<id> dir, so they are only
-    // reachable here. They carry real token usage (often the bulk of a
-    // session's spend) and are attributed to the parent workspace's project.
-    // Dedup stays correct: the parser keys off the child-task dir name, which
-    // is distinct from every workspace id, so each call is still counted once.
-    const subagentDir = join(workspaceDir, 'subagent-transcripts')
-    let childTaskIds: string[]
-    try {
-      childTaskIds = await readdir(subagentDir)
-    } catch {
-      continue
-    }
+    // Child sessions are stored separately and attributed to their workspace.
+    const childTaskIds = yield* readDirectoryOrEmpty(join(workspaceDir, 'subagent-transcripts'), signal)
     for (const childTaskId of childTaskIds) {
-      await pushChatSource(sources, join(subagentDir, childTaskId, 'chat.jsonl'), project)
+      yield* checkScanAbort(signal)
+      yield* pushChatSource(
+        sources,
+        join(workspaceDir, 'subagent-transcripts', childTaskId, 'chat.jsonl'),
+        project,
+        signal,
+      )
     }
   }
   return sources
+})
+
+function parseUserMessage(parts: unknown): string | undefined {
+  const decodedParts = decodeParts(parts)
+  if (Result.isFailure(decodedParts)) return undefined
+  const texts: string[] = []
+
+  for (const candidate of decodedParts.success) {
+    const result = decodePart(candidate)
+    if (Result.isFailure(result) || result.success.type !== 'text') continue
+    const text = stringField(result.success.text)
+    if (text) texts.push(text)
+  }
+  return texts.length > 0 ? texts.join(' ').slice(0, 500) : undefined
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-  return {
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const workspaceId = basename(dirname(source.path))
-      let pendingUserMessage = ''
-      let lineIdx = 0
+function parseTools(parts: unknown): { tools: string[]; bashCommands: string[] } {
+  const decodedParts = decodeParts(parts)
+  if (Result.isFailure(decodedParts)) return { tools: [], bashCommands: [] }
+  const tools: string[] = []
+  const bashCommands: string[] = []
 
-      for await (const line of readSessionLines(source.path)) {
-        lineIdx++
-        let msg: MuxMessage
-        try {
-          msg = JSON.parse(line) as MuxMessage
-        } catch {
-          continue
-        }
-        if (!msg || typeof msg !== 'object') continue
+  for (const candidate of decodedParts.success) {
+    const result = decodePart(candidate)
+    if (Result.isFailure(result) || result.success.type !== 'dynamic-tool') continue
+    const toolName = stringField(result.success.toolName)
+    if (toolName === undefined) continue
+    tools.push(toolNameMap[toolName] ?? toolName)
+    if (toolName !== 'bash') continue
 
-        if (msg.role === 'user') {
-          const texts = (Array.isArray(msg.parts) ? msg.parts : [])
-            .filter(p => p?.type === 'text' && typeof p.text === 'string')
-            .map(p => p.text as string)
-            .filter(Boolean)
-          if (texts.length > 0) pendingUserMessage = texts.join(' ').slice(0, 500)
-          continue
-        }
+    const input = decodeBashInput(result.success.input)
+    if (Result.isFailure(input)) continue
+    const script = input.success.script ?? input.success.command
+    const command = stringField(script)
+    if (command) bashCommands.push(...extractBashCommands(command))
+  }
+  return { tools, bashCommands }
+}
 
-        if (msg.role !== 'assistant') continue
-        const meta = msg.metadata
-        const usage = asRecord(meta?.usage)
-        if (!meta || !usage) continue
+function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+  const pricing = context?.pricing ?? captureScanPricing()
+  const signal = context?.signal
+  const parseEffect = Effect.fnUntraced(function* (): Effect.fn.Return<
+    Stream.Stream<ParsedProviderCall, Error>,
+    Error
+  > {
+    yield* checkScanAbort(signal)
+    const workspaceId = basename(dirname(source.path))
+    let pendingUserMessage = ''
+    let lineIdx = 0
 
-        const pm = meta.providerMetadata ?? {}
-        const anthropic = asRecord(pm['anthropic'])
+    return readSessionLinesStream(source.path, undefined, signal ? { signal } : {}).pipe(
+      Stream.mapEffect(line =>
+        Effect.gen(function* () {
+          yield* checkScanAbort(signal)
+          // The shared line reader omits blank lines, so this remains the count
+          // of yielded rows (including malformed nonblank rows), as before.
+          lineIdx++
+          const json = decodeJson(typeof line === 'string' ? line : line.toString('utf-8'))
+          if (Result.isFailure(json)) return Result.fail(undefined)
+          const message = asMuxMessage(json.success)
+          if (!message) return Result.fail(undefined)
 
-        // mux reports inputTokens inclusive of cache read+creation and
-        // outputTokens inclusive of reasoning; decompose to the pipeline's
-        // cache/reasoning-exclusive convention. Cache creation is Anthropic-only.
-        // The AI SDK v6 normalizes reasoning into usage.reasoningTokens across
-        // every provider family, so that field is the single source of truth.
-        const cacheRead = safeNumber(usage['cachedInputTokens'])
-        const cacheCreate = safeNumber(anthropic?.['cacheCreationInputTokens'])
-        const reasoning = safeNumber(usage['reasoningTokens'])
-        const inputTokens = Math.max(0, safeNumber(usage['inputTokens']) - cacheRead - cacheCreate)
-        const outputTokens = Math.max(0, safeNumber(usage['outputTokens']) - reasoning)
+          if (message.role === 'user') {
+            const userMessage = parseUserMessage(message.parts)
+            if (userMessage !== undefined) pendingUserMessage = userMessage
+            return Result.fail(undefined)
+          }
+          if (message.role !== 'assistant') return Result.fail(undefined)
 
-        if (inputTokens === 0 && outputTokens === 0 && cacheRead === 0 && cacheCreate === 0 && reasoning === 0) {
-          continue
-        }
+          const metadata = asMetadata(message.metadata)
+          const usage = metadata ? asUsage(metadata.usage) : undefined
+          if (!metadata || !usage) return Result.fail(undefined)
 
-        // Strip the "provider:" prefix — getCanonicalName only strips
-        // slash prefixes, so a colon-prefixed model would price at $0.
-        const rawModel = typeof meta.model === 'string' && meta.model ? meta.model : 'unknown'
-        const model = stripProvider(rawModel)
-        const id = typeof msg.id === 'string' && msg.id ? msg.id : `L${lineIdx}`
-        const dedupKey = `mux:${workspaceId}:${id}`
-        if (seenKeys.has(dedupKey)) continue
-        seenKeys.add(dedupKey)
+          const providerMetadata = decodeProviderMetadata(metadata.providerMetadata)
+          const anthropicValue = Result.isSuccess(providerMetadata) ? providerMetadata.success.anthropic : undefined
+          const anthropic = decodeAnthropicMetadata(anthropicValue)
+          const cacheRead = safeTokenCount(usage.cachedInputTokens)
+          const cacheCreate = Result.isSuccess(anthropic)
+            ? safeTokenCount(anthropic.success.cacheCreationInputTokens)
+            : 0
+          const reasoning = safeTokenCount(usage.reasoningTokens)
+          const inputTokens = Math.max(0, safeTokenCount(usage.inputTokens) - cacheRead - cacheCreate)
+          const outputTokens = Math.max(0, safeTokenCount(usage.outputTokens) - reasoning)
 
-        const toolParts = (Array.isArray(msg.parts) ? msg.parts : []).filter(
-          p => p?.type === 'dynamic-tool' && typeof p.toolName === 'string',
-        )
-        const tools = toolParts.map(p => toolNameMap[p.toolName!] ?? p.toolName!)
-        const bashCommands = toolParts
-          .filter(p => p.toolName === 'bash')
-          .flatMap(p => {
-            const input = asRecord(p.input)
-            const script = input?.['script'] ?? input?.['command']
-            return typeof script === 'string' ? extractBashCommands(script) : []
+          if (inputTokens === 0 && outputTokens === 0 && cacheRead === 0 && cacheCreate === 0 && reasoning === 0) {
+            return Result.fail(undefined)
+          }
+
+          // getCanonicalName strips slash prefixes, not provider prefixes.
+          const rawModel = stringField(metadata.model) || 'unknown'
+          const model = stripProvider(rawModel)
+          const id = stringField(message.id) || `L${lineIdx}`
+          const deduplicationKey = `mux:${workspaceId}:${id}`
+          if (seenKeys.has(deduplicationKey)) return Result.fail(undefined)
+          seenKeys.add(deduplicationKey)
+
+          const { tools, bashCommands } = parseTools(message.parts)
+          const costUSD = yield* Effect.try({
+            try: () =>
+              pricing.calculateCost(
+                model,
+                inputTokens,
+                billableOutputTokens('mux', outputTokens, reasoning),
+                cacheCreate,
+                cacheRead,
+                0,
+              ),
+            catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
           })
+          const call: ParsedProviderCall = {
+            provider: 'mux',
+            model,
+            inputTokens,
+            outputTokens,
+            cacheCreationInputTokens: cacheCreate,
+            cacheReadInputTokens: cacheRead,
+            cachedInputTokens: cacheRead,
+            reasoningTokens: reasoning,
+            webSearchRequests: 0,
+            costUSD,
+            tools,
+            bashCommands,
+            timestamp: toIsoTimestamp(metadata.timestamp, message.createdAt),
+            speed: 'standard',
+            deduplicationKey,
+            userMessage: pendingUserMessage,
+            sessionId: workspaceId,
+          }
+          pendingUserMessage = ''
+          return Result.succeed(call)
+        }),
+      ),
+      Stream.filterMap(call => call),
+    )
+  })
+  const parseStream = (): Stream.Stream<ParsedProviderCall, Error> => Stream.unwrap(parseEffect())
 
-        // `outputTokens` was made reasoning-exclusive above, so re-adding
-        // `reasoning` restores the provider's own inclusive output figure.
-        // mux is not in the output-inclusive set because it already decomposed
-        // the field itself; the helper makes that decision explicit.
-        const costUSD = calculateCost(
-          model,
-          inputTokens,
-          billableOutputTokens('mux', outputTokens, reasoning),
-          cacheCreate,
-          cacheRead,
-          0,
-        )
-
-        const timestamp = toIsoTimestamp(meta.timestamp, msg.createdAt)
-
-        yield {
-          provider: 'mux',
-          model,
-          inputTokens,
-          outputTokens,
-          cacheCreationInputTokens: cacheCreate,
-          cacheReadInputTokens: cacheRead,
-          cachedInputTokens: cacheRead,
-          reasoningTokens: reasoning,
-          webSearchRequests: 0,
-          costUSD,
-          tools,
-          bashCommands,
-          timestamp,
-          speed: 'standard',
-          deduplicationKey: dedupKey,
-          userMessage: pendingUserMessage,
-          sessionId: workspaceId,
-        }
-
-        pendingUserMessage = ''
-      }
+  return {
+    parseStream,
+    // Remove when direct parser callers consume parseStream.
+    async *parse(): AsyncGenerator<ParsedProviderCall> {
+      yield* Stream.toAsyncIterable(parseStream())
     },
   }
 }
 
-export function createMuxProvider(muxRoot?: string): Provider {
-  const root = getMuxRoot(muxRoot)
+export function createMuxProvider(muxRoot?: string, paths?: AppPaths): Provider {
+  const root = getMuxRoot(muxRoot, paths)
+  const discoverEffect = Effect.fn('discoverMuxSessions')(function* (
+    context?: ProviderScanContext,
+  ): Effect.fn.Return<SessionSource[], Error> {
+    return yield* discoverSessionsEffect(root, context)
+  })
 
   return {
     name: 'mux',
@@ -274,12 +390,20 @@ export function createMuxProvider(muxRoot?: string): Provider {
       return toolNameMap[rawTool] ?? rawTool
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      return discoverSessions(root)
+    discoverSessionsEffect: discoverEffect,
+    // Remove this Promise edge when external callers consume native discovery.
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      // eslint-disable-next-line no-restricted-syntax
+      return Effect.runPromise(discoverEffect(context))
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
-      return createParser(source, seenKeys)
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      return createParser(source, seenKeys, context)
     },
   }
 }

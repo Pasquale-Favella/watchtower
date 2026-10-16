@@ -1,7 +1,9 @@
 import * as Context from 'effect/Context'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
+import * as Metric from 'effect/Metric'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 import * as Schema from 'effect/Schema'
@@ -191,19 +193,17 @@ export interface HttpFetchCounters {
   ) => Effect.Effect<void>
 }
 
-/**
- * Live counter delegation for the fetch-timeout slice (Wave 5, issue #148):
- * files `FETCH_TIMEOUT_COUNTER` through the main-owned writer via
- * `Effect.log*` + `annotateLogs` — same sink, same allowlist, same `main`
- * context, never a second sink, never OTLP. `event` and `context` ride the
- * annotation bag because they are not Effect concepts. The never-throw guard
- * lives in ONE place (inside the `Logger`) rather than being re-declared here,
- * so every call site that omits `counters` files counters with zero edits and
- * no duplicated try/`catch`.
- */
+/** Updates the runtime's native counter and forwards one delta through the
+ * existing Logger and sanitized operational sink. No separate exporter. */
 const liveFetchCounters: HttpFetchCounters = {
-  incrementCounter: (name, amount = 1, fields = {}) =>
-    Effect.logInfo(name).pipe(Effect.annotateLogs({ event: name, context: 'main', ...fields, count: amount })),
+  incrementCounter: Effect.fnUntraced(function* (
+    name: OperationalLogCounter,
+    amount = 1,
+    fields: Record<string, unknown> = {},
+  ) {
+    yield* Metric.update(Metric.counter(name), amount)
+    yield* Effect.logInfo(name).pipe(Effect.annotateLogs({ event: name, context: 'main', ...fields, count: amount }))
+  }),
 }
 
 // Timeout-only counter: filed AFTER the deadline race resolves (the race
@@ -242,20 +242,39 @@ function makeFetch(
     init: RequestInit = {},
     timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
   ): Effect.fn.Return<Response, HttpFetchError> {
-    const attempt = Effect.tryPromise({
-      try: signal => {
-        const combined = init.signal ? AbortSignal.any([init.signal, signal]) : signal
-        return fetchImpl(url, { ...init, signal: combined })
-      },
-      catch: cause => {
-        const message = errorMessage(cause)
-        return new HttpFetchError({
-          reason: isAbortError(cause) ? 'abort' : 'network',
-          message,
-          url,
-        })
-      },
-    })
+    const attempt = Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const controller = new AbortController()
+        const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal
+        const promise = (async () => fetchImpl(url, { ...init, signal }))()
+        return {
+          controller,
+          promise,
+          drain: promise.then(
+            () => undefined,
+            () => undefined,
+          ),
+        }
+      }),
+      owned =>
+        Effect.tryPromise({
+          try: () => owned.promise,
+          catch: cause =>
+            new HttpFetchError({
+              reason: init.signal?.aborted || isAbortError(cause) ? 'abort' : 'network',
+              message: errorMessage(cause),
+              url,
+            }),
+        }),
+      (owned, exit) =>
+        Effect.promise(() => {
+          if (Exit.isSuccess(exit)) return Promise.resolve()
+          owned.controller.abort()
+          // A caller stopping its producer waits for the native Promise. The
+          // existing HTTP deadline retains bounded recovery for a stuck transport.
+          return init.signal?.aborted ? owned.drain : Promise.resolve()
+        }),
+    )
     const outcome = yield* attempt.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)))
     if (Option.isNone(outcome)) {
       return yield* fileFetchTimeout(counters, timeoutMs, url)

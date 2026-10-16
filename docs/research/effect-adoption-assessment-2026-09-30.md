@@ -4,6 +4,79 @@ The baseline is the [penultimate comment on #148](https://github.com/Pasquale-Fa
 
 The assessment began at `a917305`. Local commit `ce81593` subsequently landed the ledger row Schema conversion and typed repository decode failures. PR #147 still pointed to `a917305` when the assessment was published. This is a source and architecture assessment; its census and conclusions were [published on issue #148](https://github.com/Pasquale-Favella/watchtower/issues/148#issuecomment-5913654224). No tests, build or benchmarks were run for the assessment. Implementation and its verification are recorded separately in the target architecture's execution record.
 
+## Current migration status, 2026-10-15
+
+The agreed backend Effect port and owned Schema migration are complete and accepted at frozen product source `210da5b`. Later documentation commits leave product code unchanged. The completion audit below preserves the original scope. Profiling is stopped. Profiling JSON files were removed in `223c928`; recursive inspection finds zero JSON files under docs. Historical measurements do not create new profiling work.
+
+| Area                                |        Accepted coverage | Percentage |
+| ----------------------------------- | -----------------------: | ---------: |
+| Owned Zod removal                   |   23/23 baseline modules |       100% |
+| Native Effect Schema                |   22/23 baseline modules |      95.7% |
+| Section application queries         |             11/11 routes |       100% |
+| Scoped application queries          |               9/9 routes |       100% |
+| Former worker compatibility reads   |               4/4 routes |       100% |
+| Export application routes           |               2/2 routes |       100% |
+| MCP tools / data resources          | 6/6 tools, 2/2 resources |       100% |
+| Native provider discovery           |          38/38 providers |       100% |
+| Native per-session provider Streams |          37/38 providers |      97.4% |
+
+The remaining schema module contains UI-only plain TypeScript types. Claude uses a separate native aggregate scan path. These denominators describe individual areas, not overall completion.
+
+The production worker owns one initialized Effect/SQL graph. LedgerStore and NodeSqliteDatabase are retired. Application queries use focused transactional facts; calculations receive captured pricing inputs. Main owns native Coach execution, coordination and pooled MCP sidecars. Scan lifetimes own provider IO and completion. Both renderer stores remain Git-identical to `ce81593`, without request IDs, coalescing or additional mutable coordination. Framework, SDK and test adapters call the same native implementations. Pure calculations and React remain TypeScript.
+
+### Accepted product evidence
+
+At `4e03e68`, all ten local product gates pass, including 3,031 unit tests with two skips, all four Electron checks, Windows directory packaging and actual packaged IPC/MCP. Its [types/unit/lint CI](https://github.com/Pasquale-Favella/watchtower/actions/runs/38564775782) and actual [Windows/Linux Electron and Linux/macOS directory-package checks](https://github.com/Pasquale-Favella/watchtower/actions/runs/38564775712) pass.
+
+The later `bfc4429` checkpoint also passes all ten local gates, with 3,036 unit tests and two skips, four Electron checks and actual Windows packaged IPC/MCP. Its [ordinary CI](https://github.com/Pasquale-Favella/watchtower/actions/runs/38568836424) passes 3,031 tests with seven platform skips. In its [artifact workflow](https://github.com/Pasquale-Favella/watchtower/actions/runs/38568836481), actual Windows/Linux Electron, Linux/macOS directory packages, NSIS install/uninstall and DMG/ZIP checks pass. Linux AppImage UI/IPC passes, then MCP stdio fails with connection closed. This source therefore does not pass every installer gate.
+
+`391d171` changes SDK child launch to the running app's actual `process.execPath`, retaining AppRun for the UI. At `bf3aa91`, [all seven artifact workflow jobs](https://github.com/Pasquale-Favella/watchtower/actions/runs/38706017801) pass. Actual NSIS install/uninstall, DMG/ZIP payloads, AppImage and deb install/purge each pass packaged IPC and official SDK stdio/HTTP. Actual Windows/Linux Electron and Linux/macOS directory-package checks pass. [Ordinary CI](https://github.com/Pasquale-Favella/watchtower/actions/runs/38706017835) passes 250 files with 3,052 tests and seven platform skips. The local immutable run passes 3,057 tests and two skips in 390.52 seconds and four Electron checks in 7.1 minutes, then packaging fails with `connect EACCES` during a build-dependency download. Packaging then passes using the installed, version-matched Electron 43.2.0 distribution through the supported electronDist option. Actual packaged Windows IPC/MCP also passes. All ten local gates are therefore covered with that explicit packaging retry; its original download failure remains recorded. The precise cause of the older AppImage failure is unproven; the corrected verifier passes those real artifacts. This frozen proof excludes the later query-error operational-code correction.
+
+### Final source integration
+
+The latest source audit closes provider environment reads through Effect Config and full startup AppPaths snapshots. An AST regression scans every provider for direct `process.env` access. Native probe configuration uses one provider and one PATH value for cache identity and detection. Main provides its configurable ConfigProvider to Env during Layer construction without casts. Worker Env uses Effect's native environment default; startup path capture preserves raw empty values where path precedence requires them.
+
+Clock now governs parser/pricing cache policies, refresh-lock deadlines, crash-streak reset, Cursor lookback and Goose timestamp fallback. Main startup, MCP parent polling and worker crash backoff have owned, interrupted and joined fibers. Native counters and gauges use per-runtime registries and preserve the existing operational-log records, including actual probe and HTTP-timeout producers. No extra runtime or metrics exporter is introduced.
+
+Independent reviews have no remaining blockers. Root integration passed 417 tests across 30 files before the final Cursor/Goose and shutdown-interruption regressions. The final seven-suite regression run passes 161 tests. The final completion audit identified one missing operational-code record on typed query failures. The correction uses inline Effect.tapError in the existing worker runtime and preserves the original failed response. Real worker tests assert exactly one raw, sanitized record before the response, with no dynamic row, SQL or path data. Both review axes pass; root integration passes 85 tests across four files. Complete product/CI verification of this correction is now accepted through the evidence below. Original assertions and timeouts remain unchanged. No billed Coach prompt, local installation or release occurs.
+
+F31 retains native stream ownership and drain barriers, with no bounded-drain claim for uncooperative Promises. F35 preserves ADR 0011 and the original renderer flow. F36 retries a shared worker read overtaken by a data/config event before resolving the same Promise, with captured inputs and shutdown admission checks after recovery.
+
+Issue #148 remains open. The [target architecture execution record](../plans/effect-target-architecture.md) retains the chronological implementation and verification evidence.
+
+### Final accepted verification, 2026-10-15
+
+All ten local gates are covered on exact source `210da5b`: node/web/test typechecks, full formatting, lint, production build, full units, complete Electron suite, fresh Windows directory packaging and actual packaged IPC/MCP. Units pass 250 files with 3,057 tests and two skips in 397.49 seconds. Lint has zero errors and 1,098 advisory warnings. The unchanged complete Electron retry passes four tests in 6.9 minutes. The Windows package passes query/config/export/currency/clear checks, protected destinations, bounded Coach inspection and official SDK stdio/HTTP. App/SDK children close and its isolated profile is removed.
+
+[Ordinary CI](https://github.com/Pasquale-Favella/watchtower/actions/runs/38711690706) passes 250 files with 3,052 tests and seven platform skips. All seven [artifact jobs](https://github.com/Pasquale-Favella/watchtower/actions/runs/38711690695) pass their actual steps: Windows/Linux Electron, Linux/macOS directory packages, NSIS install/uninstall, DMG/ZIP, AppImage and deb install/purge. Each payload passes IPC and official SDK stdio/HTTP. Documentation-only `9b33ed0` also passes [ordinary CI](https://github.com/Pasquale-Favella/watchtower/actions/runs/38717586996) and [all artifact jobs](https://github.com/Pasquale-Favella/watchtower/actions/runs/38717586991).
+
+The first local Electron run passes three tests, then smoke and worker teardown hit their unchanged 300,000 ms limits. That failed run is retained. One unchanged smoke reproduction passes in 2.2 minutes and closes the app in three seconds. A subsequent complete four-test retry and both package stages pass without changing source, assertions or timeouts. The initial cause remains unproven; no product fix is claimed. Local packaging uses the installed matching Electron 43.2.0 distribution via electronDist after an earlier download EACCES; default artifact builds pass in hosted CI.
+
+Documentation-only `667d53f` passes eight CI jobs, but its [Windows NSIS artifact acceptance](https://github.com/Pasquale-Favella/watchtower/actions/runs/38721973924/job/116378479494) fails after all packaged IPC/MCP checks: the post-uninstall HKCU entry remains. The verifier now copies the uninstaller outside the installed tree and launches that owned copy with `/S /currentuser` and final, unquoted `_?=<installPath>`. This follows the [documented NSIS wait contract](https://nsis.sourceforge.io/Docs/Chapter3.html#installerusage) and electron-builder's own copy-out pattern. Registry, shortcut and file-removal assertions remain immediate and unchanged. The first failure's cause remains unproven. This is an acceptance-verifier correction, with no application-code change; subsequent exact-head results are maintained in the [living issue assessment](https://github.com/Pasquale-Favella/watchtower/issues/148#issuecomment-5913654224).
+
+No billed Coach prompt, local installer execution, release or merge occurs. Issue #148 remains open; PR #147 retains Closes #146. These final results supersede the earlier dated progress states without changing the historical evidence.
+
+## Completion audit of the implemented source, 2026-10-15
+
+The audit uses the original issue baseline and expanded target architecture. Accepted product source is `210da5b`; later documentation edits do not change that code. Source, original assertions and complete verification establish the requirements below. The initial local timeout remains recorded; the unchanged complete product retry passes.
+
+| Requirement                                                                | Source and assertion evidence                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F10-F12, F27: one runtime and SQL owner per isolate; retire nested facades | `worker-runtime.ts` and worker entry compose one initialized writer graph. `worker-sql-ownership.test.ts` counts one driver acquisition/finalizer and covers boot failure and SQL release after scan completion. Main and the separate read-only MCP query process own their own graphs. No LedgerStore or NodeSqliteDatabase remains under src.                                                                                        |
+| F13, F16-F18: native application and harness composition                   | Dedicated application queries and config dispatch replace the large mixed dispatch arms. MainRuntime supplies the actual client version and scoped probe/snapshot, Coach execution/coordinator and MCP pool. Main probe, Coach, IPC and pool tests exercise the real graph, admission, disposal and late-result suppression.                                                                                                            |
+| F14/F28: active logging, tracing and native metrics                        | Actual main/worker registries, Logger and Tracer feed the sanitized operational log. `worker-operational-log.test.ts` proves one forwarded log/counter/span and real repository tracing; operational log/forwarding and main probe tests cover cumulative metrics, runtime isolation and producer wiring. HTTP timeout tests retain one delta and no URL.                                                                               |
+| F15/F21: resilience and dependency inputs                                  | All four FX/pricing/update/Gateway callers use the bounded, abort-guarded transient retry. Config captures production paths; provider AST checks reject direct environment reads. Env, fetch-retry, cache TTL and refresh-lock tests substitute Config and Clock, including raw blank paths, monotonic wait deadlines and operation-time inputs.                                                                                        |
+| F19/F22/F24/F26: test support and enforceable boundaries                   | Dedicated test tsconfig runs in CI. Native TestClock tests use the compatible local helper where a real-time deadline is required; a deliberately parked program proves failure and cleanup. Lint checks the documented composition/throw rules at their agreed advisory level. Tests for framework or pure TypeScript boundaries remain ordinary Vitest tests.                                                                         |
+| F20: preserve pure payload handling                                        | Predicate is used where its semantics match. The two private ACP record refinements remain plain TypeScript because they accept arrays and provide the exact indexable type used by existing tolerant SDK consumers. Replacing them with the rc.115 predicates would change accepted values or require assertions and scattered checks. No blanket conversion of trusted calculations is required.                                      |
+| F25/F30/F31: cancellation, drain and resource lifetime                     | Runtime/IPC tests cover stop while next is pending, hanging iterator return, independent stop and provider cleanup, reset/new-run ownership and no late events. Scan lifetime, parser/provider stop, SQL ownership and actual worker abort-recovery tests prove that callbacks and IO drain before replacement or SQL release. No bounded drain is claimed for an uncooperative never-settling Promise.                                 |
+| F29/F33: fewer reads with explicit calculation inputs                      | Application queries use named ports and focused transactional projections; pure import-graph tests reject runtime/IO/repository dependencies. Actual statement-count tests prove one view projection, five sufficient Overview reads, fixed session/detail/search reads on the writer connection, no blank-search read and no source-count N+1. Independent calculation oracles preserve totals, ordering, identity, scope and pricing. |
+| F32: typed failures reach safe protocol boundaries                         | SQL and Schema failures remain typed through query loading. Real worker tests corrupt actual selected rows/tables, assert the exact failed response and one raw sanitized operational-code record before it, and reject value/SQL/path leakage. Defect and interruption mappings retain their separate responses; corruption never becomes empty success.                                                                               |
+| F34/F37: one owned Schema authority and real SDK compatibility             | The schema-authority AST/dependency guard covers src/tests/scripts/e2e and the root dependency declarations. Recorded parity suites cover decoded values and invalid input. The real official SDK verifies tool metadata generated from Effect contracts, tools/resources/prompt, bounded protocol errors, authentication and repeated stateless requests. SDK-internal Zod is outside the owned contracts.                             |
+| F35/F36: freshness with the original renderer flow                         | Both protected stores match `ce81593`. Native SQL ordering and worker-client tests prove that a data/config event overtaking a shared read causes a retry before the same Promise resolves, without replaying failure or reopening teardown admission. Eager hydration stays under ADR 0011; a different shell metadata contract is a separate product change.                                                                          |
+| Existing product behavior and delivery                                     | Ledger/migration/boot tests retain rollback, future-version rejection, warm-cache backfill and idempotence. Pricing/currency tests retain offline fallbacks. Native export tests and packaged checks cover full history, CSV/JSON parity, currency and protected destinations. Source-matched full units, Electron and every packaging target pass through the verification above.                                                      |
+
+Sync Node discovery and foreign SDK/driver leaves retain their explicit boundaries. FileSystem, RcMap/Pool replacement, SqlModel and RPC rewrites keep their recorded decisions. Profiling and new performance measurements were explicitly stopped; no speedup, memory or universal latency claim is used to establish completion.
+
 ## Scope and completion criteria
 
 Full adoption means Effect composes the backend's owned IO, dependencies, failures, and lifetimes. Each long-lived isolate owns its runtime and resources. Framework callbacks enter that runtime at explicit boundaries.
@@ -15,13 +88,13 @@ Completion requires observable properties:
 - Each runtime owns its layer graph, child scopes, and shutdown. The worker has one writable connection; the MCP isolate owns its own read-only connection.
 - Migrated workflows compose service Effects without calling a second runtime to obtain values. Remaining Promise adapters have owners, cancellation contracts, and removal conditions.
 - Expected SQL, decode, fetch, and process failures stay typed until the protocol boundary maps them to existing responses.
-- Cancellation stops underlying work and releases resources under a bounded drain policy, including when an iterator or Promise never settles.
+- Cancellation requests stop and drains underlying work before releasing resources. An uncooperative iterator or Promise that never settles remains a limitation; a bounded stop guarantee requires cooperation from that API.
 - Records from each emitting isolate reach the main-owned operational log through the validated forwarding path.
 - Schema changes preserve accepted inputs and decoded outputs. Deliberate behavior changes are documented. Each contract has one authoritative schema.
 
 Import counts and Effect LOC share do not establish these properties.
 
-## Status against the baseline
+## Historical baseline status, 2026-09-30
 
 | Baseline item                                | Current disposition                                                 | Evidence                                                                  |
 | -------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -42,7 +115,7 @@ Import counts and Effect LOC share do not establish these properties.
 
 At the assessment baseline, [PR #147](https://github.com/Pasquale-Favella/watchtower/pull/147) described a narrow migration foundation and contained `Closes #148`. Its September 24 rollout comment also said work was complete. The current PR description and living assessment now track the expanded programme and leave #148 open.
 
-## Architectural findings and corrections
+## Historical architectural findings and corrections
 
 ### F27. The worker borrows services from a separate runtime
 
@@ -305,3 +378,221 @@ F31 remains partial. Each scan owns an AbortSignal before parser work begins; in
 Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module. The six canonical snapshot SELECTs are unchanged. No speedup, SQL reduction or memory improvement is claimed. Other application queries, purpose-specific detail/search reads, persistent MCP read-only root adoption, compatibility facade retirement, one pricing catalogue per scan, main/Coach failure mapping, comparable 1k/50k/500k measurements and installer/macOS/Linux packaged acceptance remain open.
 
 Both renderer stores remain byte-identical to `ce81593`. Their original scope key and direct applyChange flow are preserved, without added `let` variables, request IDs or coalescing.
+
+## Current census after captured scan pricing, 2026-10-05
+
+This snapshot covers production and test source `4638bfa`, following `2f504fa`. The TypeScript AST runtime-import and nonblank-line method is unchanged. Import percentages measure library use, not architectural completion.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,515 / 1,625 |         93.2% |
+| Store                              |                   10 / 12 |         83.3% |                     1,809 / 2,423 |         74.7% |
+| Agents                             |                   12 / 44 |         27.3% |                     3,802 / 5,818 |         65.3% |
+| Pipeline                           |                    8 / 77 |         10.4% |                    2,689 / 28,688 |          9.4% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                         380 / 380 |        100.0% |
+| All main-process code              |                  71 / 192 |         37.0% |                   13,836 / 47,273 |         29.3% |
+| Shared schema modules              |                   23 / 24 |         95.8% |                     1,868 / 1,926 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+Captured scan pricing now covers all 32/32 provider modules that previously called the live cost calculator, 100% of that fixed producer denominator. An AST comparison against `2f504fa` finds 47/47 cost calls with unchanged ordered billing argument expressions. This is separate from Effect import coverage. Pure price arithmetic remains ordinary TypeScript.
+
+The scan captures one catalogue, aliases, overrides and local savings map after loading pricing. Discovery, provider factories, Claude call/advisor grouping, cached call reconstruction and ledger ingest use that capture. A real worker/SQLite test changes pricing and the savings mapping while repository lookup waits, verifies the same pricing identity reaches ingest, and checks persisted old costs and savings. The next scan observes the edits. Recorded cost, including zero, retains its previous precedence; cache hits retain their previously recorded base cost.
+
+Actual provider fixtures verify explicit scan pricing, factory capture before IO and next-factory freshness. They cover file, SQLite, binary generator metadata and local RPC routes. The Antigravity fixture also exposed a native database leak when its optional workspace table was absent. The lookup now closes in finally before falling back, with matching real open/close assertions and successful native Windows directory cleanup.
+
+Direct standalone factory, parser-helper and ingest callers still have capture defaults. Remove those compatibility defaults after every direct caller supplies the scan-owned capture. The removal condition is documented on ProviderScanServices and captureScanPricing.
+
+Section-query ownership remains 11/11, 100%; scoped dedicated queries remain 9/9, 100%; export remains a separate 2/2 route slice. Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23 baseline modules, 95.7%, with one UI-only plain TypeScript module. The Gateway Schema is outside that baseline denominator. Six canonical snapshot SELECTs remain unchanged. No speedup, SQL reduction or memory improvement is claimed.
+
+F31 remains partial for other provider IO. Cooperative Codex/Copilot streams and Gateway fetch/body work retain their stop/drain checks; filesystem operations without native cancellation and synchronous SQLite statements still drain before checkpoints can stop further work. Existing host recovery remains.
+
+Other application queries, purpose-specific detail/search reads, persistent MCP query ownership, facade and compatibility retirement, main/Coach failure mapping, comparable 1k/50k/500k measurements, installer acceptance and macOS/Linux packaged execution remain open. Both renderer stores remain byte-identical to `ce81593`, without added let variables, request identities or applyChange coalescing. Full verification and exact-head CI evidence are maintained in the living issue #148 assessment.
+
+## Current census after MCP query ownership, 2026-10-06
+
+This snapshot covers production and test source `76ddfc6`, following `6923063`. The TypeScript AST runtime-import and nonblank-line method is unchanged. These percentages measure library imports, not architectural completion. Pure calculations remain ordinary TypeScript.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,515 / 1,625 |         93.2% |
+| Store                              |                   10 / 12 |         83.3% |                     1,809 / 2,423 |         74.7% |
+| Agents                             |                   14 / 46 |         30.4% |                     3,993 / 5,898 |         67.7% |
+| Pipeline                           |                    8 / 77 |         10.4% |                    2,689 / 28,688 |          9.4% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                         380 / 380 |        100.0% |
+| All main-process code              |                  74 / 196 |         37.8% |                   14,083 / 47,491 |         29.7% |
+| Shared schema modules              |                   24 / 25 |         96.0% |                     1,903 / 1,961 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+MCP tools now use named application queries, 6/6, and query-backed resources use those queries when read, 2/2. Both stdio and HTTP share one persistent read-only runtime per process. The SDK remains responsible for protocol framing, request validation and transports; only application arguments and payloads use Watchtower's Effect Schemas. The third resource remains static schema documentation.
+
+Models reuses aliases and price overrides in its snapshot. Instrumented native SELECT execution counts six statements on both cold and warm requests, versus eight in the legacy path. The canonical snapshot still has six reads. No broad latency or memory gain is claimed. Fresh external edits and schema/read failures are tested; scoped transports close before their borrowed runtime is disposed.
+
+Section-query ownership remains 11/11, scoped dedicated queries 9/9, and export routes 2/2. Captured scan pricing remains 32/32 producer modules with 47/47 billing argument expressions preserved. Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module. Gateway and MCP result schemas are outside that baseline denominator.
+
+Final focused verification passes 56 tests across six files, including nine lifetime tests. The final review fixed ineffective cleanup recovery around Effect.promise and direct EOF stop signaling. Node/web and strict test types, full formatting and the production build pass. Lint has zero errors and 1,104 advisory warnings. The final full unit suite passes 166 files, with 2,292 passed and two skipped in 219.98 seconds, one worker and unchanged existing assertions/timeouts. Packaging and exact-head CI evidence are maintained in the [living assessment](https://github.com/Pasquale-Favella/watchtower/issues/148#issuecomment-5913654224).
+
+Remaining work includes the four worker compatibility reads, purpose-specific detail/search SQL, commands, facade and compatibility retirement, cooperative provider IO, main/Coach failure mapping, comparable scaled measurements and installer/macOS/Linux packaged acceptance. Both renderer stores remain byte-identical to `ce81593`. Issue #148 remains open.
+
+## Current census after focused session queries, 2026-10-06
+
+This snapshot covers production and test source `32fafe8`, following `05d56de`. The TypeScript AST runtime-import/nonblank-line method is unchanged. These percentages measure library imports, not architectural completion. Pure calculations remain ordinary TypeScript.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,514 / 1,624 |         93.2% |
+| Store                              |                   12 / 14 |         85.7% |                     2,067 / 2,658 |         77.8% |
+| Agents                             |                   14 / 46 |         30.4% |                     4,012 / 5,917 |         67.8% |
+| Pipeline                           |                    8 / 77 |         10.4% |                    2,689 / 28,691 |          9.4% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                         380 / 380 |        100.0% |
+| All main-process code              |                  79 / 205 |         38.5% |                   14,261 / 48,076 |         29.7% |
+| Shared schema modules              |                   24 / 25 |         96.0% |                     1,903 / 1,961 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+The four previously compatible worker read routes now use named application queries, 4/4. `LedgerSessionReads` provides focused summary, targeted detail and text-search facts through the existing worker SQL root. Projects/session rows execute five SELECTs, detail six filtered SELECTs, and search four on both cold and warm requests. Blank search executes zero. The previous builders used six full snapshot reads. Smaller projections and fewer statements are verified; broad speed or memory gains remain unmeasured.
+
+The new calculations preserve canonical project/source identity, whole-turn admission, first matching public session ID, query-time pricing, optional fields, model provenance, date/order rules, first-hit search and its 500 limit. Their four production compatibility builders are retired, and all test callers use the application queries. A test-only baseline reference and hardcoded payload assertions provide parity evidence. The separate project-summary adapter and synchronous ledger facade remain until their callers migrate.
+
+Expected harness probe failures now have bounded messages and an explicit error tag. Defects and interruption retain their failure causes. Main-owned probe lifetime, status/auth/version fields and known sign-out behavior remain.
+
+Section-query ownership remains 11/11, scoped dedicated queries 9/9, export routes 2/2 and MCP tools/data resources 6/6 and 2/2. Captured scan pricing remains 32/32 producers with 47/47 billing arguments preserved. Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module.
+
+Final focused verification passes 160 tests across 14 files. Node/web and strict test types, full formatting and build pass. Lint has zero errors and 1,099 advisory warnings. Final reviews have no blocking findings. Full verification and published-head evidence are maintained in the living assessment.
+
+The programme remains open for commands, facade/compatibility retirement, cooperative provider IO, Coach failure mapping, comparable scaled measurements and installer/macOS/Linux packaged acceptance. Both renderer stores remain byte-identical to `ce81593`, without added let variables, request IDs or applyChange coalescing.
+
+The final full unit suite passes 170 files, with 2,325 passed and two skipped in 209.63 seconds, one worker and unchanged existing assertions/timeouts. Electron, fresh Windows packaging, actual packaged IPC/MCP and published-head CI evidence are maintained in the living assessment after terminal results are inspected.
+
+## Current census after worker configuration and Coach failures, 2026-10-06
+
+This snapshot covers production and test source `d19b1b6`, following `75a4964`. The TypeScript AST runtime-import/nonblank-line method is unchanged. These percentages measure library imports, not architectural completion. Pure calculations remain ordinary TypeScript.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,487 / 1,597 |         93.1% |
+| Store                              |                   12 / 14 |         85.7% |                     2,075 / 2,666 |         77.8% |
+| Agents                             |                   17 / 48 |         35.4% |                     4,587 / 6,056 |         75.7% |
+| Pipeline                           |                    8 / 77 |         10.4% |                    2,689 / 28,691 |          9.4% |
+| View builders ending in `-view.ts` |                     8 / 8 |        100.0% |                         380 / 380 |        100.0% |
+| All main-process code              |                  83 / 208 |         39.9% |                   14,908 / 48,287 |         30.9% |
+| Shared schema modules              |                   24 / 25 |         96.0% |                     1,903 / 1,961 |         97.0% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,053 |          2.9% |
+| Preload                            |                     0 / 1 |          0.0% |                           0 / 217 |          0.0% |
+
+Eleven worker configuration routes and cadence scheduling now use `LedgerConfig` in the existing runtime. Seven named write commands preserve validation/fallbacks and await persistence before broadcasting. Scan status uses an existence query on the same writer connection, one SELECT and at most one returned row for cold and warm requests. It preserves completed zero-source metadata and avoids unrelated source decoding. This is reduced materialization, without a general performance claim.
+
+Coach SDK imports, construction, handshake, selection and stream calls now classify expected failures with a finite tagged error. Local programming failures retain their internal failure identity. IPC and background events publish bounded guidance without native error text; rejected probes release their queue slots. Existing stop/drain, attachment ownership and authentication guidance remain. Native login-terminal errors are bounded too.
+
+Ownership denominators remain section queries 11/11, scoped queries 9/9, former worker compatibility reads 4/4, exports 2/2 and MCP tools/data resources 6/6 and 2/2. Captured scan pricing remains 32/32 producers with 47/47 billing arguments preserved. Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema remains 22/23, 95.7%, with one UI-only plain TypeScript module. New schemas outside that baseline do not change its denominator.
+
+Both renderer stores remain byte-identical to `ce81593`, without added `let` variables, request IDs, promise tracking or `applyChange` coalescing. The programme remains open for scan ingest/clear/currency facade callers, compatibility retirement, remaining cooperative provider IO, comparable scaled measurements and installer/macOS/Linux packaged acceptance. Full local and published-head verification is recorded in the living issue assessment.
+
+Node/web and strict test types, full formatting and build pass. Lint has zero errors and 1,118 advisory warnings. The final full unit suite passes 177 files, with 2,386 passed and two skipped in 461.82 seconds, one worker and unchanged existing assertions/timeouts. Standards and Spec reviews have no unresolved findings.
+
+## Current census after worker facade retirement, 2026-10-06
+
+This snapshot covers production and test source `042ea33`, following `e908282`. The TypeScript AST runtime-import/nonblank-line method is unchanged. These percentages measure library imports, not architectural completion. Pure calculations remain ordinary TypeScript.
+
+| Area                               | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| ---------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                          |                     4 / 6 |         66.7% |                     1,441 / 1,551 |         92.9% |
+| Store                              |                   12 / 14 |         85.7% |                     2,075 / 2,666 |         77.8% |
+| Agents                             |                   17 / 48 |         35.4% |                     4,587 / 6,056 |         75.7% |
+| Pipeline                           |                    8 / 77 |         10.4% |                    2,689 / 28,691 |          9.4% |
+| View builders ending in `-view.ts` |                     8 / 8 |          100% |                         380 / 380 |          100% |
+| All main-process code              |                  87 / 212 |           41% |                   14,943 / 48,322 |         30.9% |
+| Shared schema modules              |                   24 / 25 |           96% |                     1,903 / 1,961 |           97% |
+| Renderer                           |                   2 / 123 |          1.6% |                      379 / 13,066 |          2.9% |
+| Preload                            |                     0 / 1 |            0% |                           0 / 217 |            0% |
+
+The production worker now owns one initialized runtime without constructing LedgerStore. Scan writes, clear/reclaim and cached currency commands use that runtime's services. SQL reclamation runs after fact deletion, outside its transaction, on the same SQL client. Expected reclamation SQL errors preserve successful clear behavior; defects and interruption remain failures. Worker boot failure cleanup and callback drainage before native SQL close retain their existing checks. Remaining compatibility fixture calls live under tests, with removal conditioned on migrating their setup/assertions to ledger ports.
+
+Compare commits the report's default pair with the payload and its scope/pair key, avoiding the redundant first-pair fetch. Explicit pairs remain unchanged. Both shared renderer stores remain byte-identical to `ce81593`, without added let variables, request IDs, promise tracking or applyChange coalescing. No general speedup or local Compare timeout fix is claimed.
+
+Ownership denominators remain section queries 11/11, scoped queries 9/9, former compatibility reads 4/4, exports 2/2, MCP tools/data resources 6/6 and 2/2; scan pricing 32/32 producers and 47/47 preserved billing arguments. Owned Zod removal remains 23/23 baseline modules, 100%; native Effect Schema 22/23, 95.7%, plus one UI-only plain TypeScript module.
+
+Standards review's stale runtime comments are corrected. Final Standards and Spec reviews have no unresolved findings. Focused integration verification passes 107 tests across ten files. Node/web and strict test types, full formatting and build pass. Lint has zero errors and 1,114 advisory warnings. Full local and published-head evidence is maintained in the living assessment.
+
+The programme remains open for remaining compatibility builders and test/script callers, cooperative provider IO, worker decomposition, comparable 1k/50k/500k refresh/detail/search measurements, installers and macOS/Linux packaged acceptance. The legacy measurement script still constructs LedgerStore; it must migrate to measure the new application path.
+
+## Current census after section adapter retirement, 2026-10-07
+
+Production and test source is `2b844f5`, following `76cf31c`. The unchanged AST runtime-import/nonblank-line method measures library imports, not architecture completion. Removing five adapters lowers the main-process import percentage because their Effect Schema imports disappear with the unused code.
+
+| Area                                    | Files with Effect imports | File coverage | Lines in those files / area lines | Line coverage |
+| --------------------------------------- | ------------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                               |                     4 / 6 |         66.7% |                     1,441 / 1,551 |         92.9% |
+| Store                                   |                   12 / 14 |         85.7% |                     2,075 / 2,666 |         77.8% |
+| Agents                                  |                   17 / 48 |         35.4% |                     4,587 / 6,056 |         75.7% |
+| Pipeline                                |                    8 / 77 |         10.4% |                    2,689 / 28,691 |          9.4% |
+| Remaining builders ending in `-view.ts` |                     3 / 3 |          100% |                         245 / 245 |          100% |
+| All main-process code                   |                  82 / 207 |         39.6% |                   14,808 / 48,187 |         30.7% |
+| Shared schema modules                   |                   24 / 25 |           96% |                     1,903 / 1,961 |           97% |
+| Renderer                                |                   2 / 123 |          1.6% |                      379 / 13,066 |          2.9% |
+| Preload                                 |                     0 / 1 |            0% |                           0 / 217 |            0% |
+
+Models, Compare, Sessions, Spend and Pull Requests no longer have synchronous section adapters. Their test callers use native ledger ports and the application queries, with one fixture-owned worker runtime. Custom-pricing tests retain a borrowed facade only for the other builders that still need it. Worker parity tests calculate expectations from decoded native snapshots and preserve the one-read and facade-bypass checks. Preload and main-process types come directly from the shared schemas.
+
+The ownership and owned-schema baseline denominators remain unchanged: section queries 11/11, scoped queries 9/9, former compatibility reads 4/4, exports 2/2, MCP tools/resources 6/6 and 2/2; scan pricing 32/32 producers and 47/47 preserved billing arguments; owned Zod removal 23/23, 100%; native Effect Schema 22/23, 95.7%, plus one UI-only plain TypeScript module.
+
+Both renderer stores remain identical to `ce81593`, without added let variables, request IDs, promise tracking or applyChange coalescing. Focused verification passes 268 tests across twelve files. Node/web and strict test types pass. Reviews have no unresolved findings in this adapter retirement. Full verification, measurement work and remaining programme scope are recorded in the living assessment.
+
+`e65ad24` measures the actual application path through one persistent worker runtime per operation child. The [measurement record and raw artifacts](./effect-query-path-2026-10-07.md) report first-request/warm latency, native statement executions and rows, connection identity and memory observations at 1k/50k/500k. The source census above is unchanged by the script update. Import coverage, ownership coverage and performance acceptance remain separate measurements.
+
+The optional legacy engine is current compatibility code, not a historical baseline; export workloads and retained-result memory baselines differ. Synthetic ingest and local FX refresh do not measure a complete provider scan/refresh cycle. Materialized rows are not selected/decoded bytes, and export cloneBytes is only its returned acknowledgment. A raw legacy aggregation note claiming an extra source read is stale; the current compatibility snapshot reads sources once. These limits and remaining historical comparisons stay open. Dashboard/analytics purpose-shaped projections and direct accumulators are the next performance candidate, with pricing, identity and configuration parity required. Broad LedgerStore test retirement, remaining cooperative provider IO, worker decomposition, installers and macOS/Linux packaged acceptance also remain open.
+
+The subsequent aggregate, views, Skills, Optimize, Yield and custom-pricing test migration removes the borrowed facade from all six files. They use the shared native fixture and ledger ports; MCP pricing checks retain a separately owned read-only runtime. The current test inventory has 31 LedgerStore-mentioning files and 28 construction files, compared with 37 and 33 at the measured revision. Two row-type imports now depend directly on shared schemas. Ownership and schema denominators above remain unchanged.
+
+The benchmark reliability follow-up waits for native child closure on timeout and rejects incomplete/malformed results, spawn errors and nonzero exits. Controlled checks, a real native-query smoke run and forced aggregate timeout reporting pass. Original scaled artifacts retain their measured source and semantic content. Node/web/test types and the 216-test focused suite pass; final integration evidence is maintained in the execution record and living assessment.
+
+## Current census after dashboard and analytics projections, 2026-10-07
+
+Source is `f91efe1`, following `ab983bd`. The unchanged TypeScript AST runtime-import/nonblank-line method measures library imports, not architectural completion. Pure calculation code remains TypeScript.
+
+| Area                     | Effect imports / files | File coverage | Lines in those files / area lines | Line coverage |
+| ------------------------ | ---------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                |                    4/6 |         66.7% |                         1441/1551 |         92.9% |
+| Store                    |                  14/16 |         87.5% |                         2186/2777 |         78.7% |
+| Agents                   |                  17/48 |         35.4% |                         4589/6058 |         75.8% |
+| Pipeline                 |                   8/77 |         10.4% |                        2689/28691 |          9.4% |
+| Remaining -view adapters |                    3/3 |          100% |                           245/245 |          100% |
+| All main                 |                 84/210 |           40% |                       14927/48682 |         30.7% |
+| Shared schemas           |                  24/25 |           96% |                         1903/1961 |           97% |
+| Renderer                 |                  2/123 |          1.6% |                         379/13066 |          2.9% |
+| Preload                  |                    0/1 |            0% |                             0/217 |            0% |
+
+Dashboard and Analytics now use sufficient typed reads and direct accumulators, with five SELECTs instead of the broad snapshot's six. No production runtime or SQL client is added. Current aliases and strict overrides remain inside the request transaction. Analytics avoids calculating unused dashboard arrays. Composite source/session identity corrects duplicate public-ID project and proxy attribution; tests specify the changed result.
+
+The [measurement record and artifact](./effect-view-projections-2026-10-07.md) report cold/five-warm timings and untimed V8 input size proxies at all three fixture sizes. Method version 2 removes retained operation results between samples, so the earlier artifacts are not a clean speedup or memory comparison. Full scan/refresh measurements, controlled historical comparisons, sufficient Overview/export projections and profiling remain open.
+
+Owned Zod removal remains 23/23, 100%; native Effect Schema 22/23, 95.7%, plus one UI-only plain type. Ownership remains sections 11/11, scoped queries 9/9, former worker reads 4/4, exports 2/2 and MCP tools/resources 6/6 and 2/2. Scan pricing remains 32/32 producers with 47/47 billing arguments preserved. LedgerStore still appears in 31 test files, with 28 construction files.
+
+Node/web and strict test types, full formatting, build and lint pass. Lint has zero errors and 1,109 advisory warnings. Focused integration passes 156 tests across ten files; the native ordering follow-up passes 59 across two. Full units pass 183 files, 2423 tests and 2 skips in 356.15s with one worker. Existing assertions and timeouts remain. All four Electron checks pass in 7.8m. Fresh Windows x64 directory packaging and the full actual-package IPC/SDK gate exit zero. No renderer errors occur; app and SDK children close and the isolated profile is removed. Installer and macOS/Linux packaged acceptance remain open.
+
+Reviews have no unresolved blockers. Both renderer stores remain identical to ce81593, without added let variables, request IDs, promise tracking or applyChange coalescing. Remaining compatibility callers, cooperative provider IO, worker decomposition, performance acceptance, installers and cross-platform packaged execution keep the programme open.
+
+## Export migration census, 2026-10-07
+
+Source is `7387a617f848b72fc918cb7710e88ebdafaf780b`. The unchanged TypeScript AST method counts runtime Effect imports and nonblank lines. This measures library coverage, not architectural completion; pure calculations remain TypeScript.
+
+| Area                     | Effect imports / files | File coverage | Lines in those files / area lines | Line coverage |
+| ------------------------ | ---------------------: | ------------: | --------------------------------: | ------------: |
+| DB worker                |                    4/6 |         66.7% |                         1441/1551 |         92.9% |
+| Store                    |                  16/18 |         88.9% |                         2289/2880 |         79.5% |
+| Agents                   |                  17/48 |         35.4% |                         4591/6060 |         75.8% |
+| Pipeline                 |                   8/77 |         10.4% |                        2689/28691 |          9.4% |
+| Remaining -view adapters |                    3/3 |          100% |                           245/245 |          100% |
+| All main                 |                 86/213 |         40.4% |                       15034/49243 |         30.5% |
+| Shared schemas           |                  24/25 |           96% |                         1903/1961 |           97% |
+| Renderer                 |                  2/123 |          1.6% |                         379/13066 |          2.9% |
+| Preload                  |                    0/1 |            0% |                             0/217 |            0% |
+
+Both export routes now use sufficient transactional reads and pure table calculations. The [migration record](./effect-export-migration-2026-10-07.md) describes the implemented boundary and verification. The user stopped profiling work and requested deletion of the profiling JSON files from docs. Provider IO, cancellation, compatibility retirement and worker responsibilities are the current migration priorities.
+
+Owned Zod removal remains 23/23, 100%; native Effect Schema 22/23, 95.7%, plus one UI-only plain type. Ownership remains sections 11/11, scoped queries 9/9, former worker reads 4/4, exports 2/2 and MCP tools/resources 6/6 and 2/2. Scan pricing remains 32/32 producers with 47/47 billing arguments preserved. Export-query tests now own the actual worker runtime through the shared native fixture. The test tree has 30 TypeScript files mentioning LedgerStore and 27 construction files, including fixtures; the *.test.ts-only counts are 27 and 26. The previous 31/28 inventory included fixtures.
+
+Node/web and strict test types, full formatting, build and lint pass. Lint has zero errors and 1,109 advisory warnings. Final focused integration passes 163 tests across 13 files. Full units pass 185 files, 2448 tests and 2 skips in 315.81s with one worker. Existing assertions and timeouts remain. All four Electron checks pass in 8.8m. Fresh Windows x64 directory packaging and the full actual-package IPC/SDK gate exit zero. No renderer errors occur; app and SDK children close and the isolated profile is removed. Installer and macOS/Linux packaged acceptance remain open.
+
+Reviews have no unresolved blockers; temporary legacy export row-rule duplication remains a follow-up until callers migrate. Both renderer stores remain identical to ce81593. Sufficient Overview reads, compatibility retirement, cooperative provider IO, worker decomposition, performance acceptance, installers and actual cross-platform packaged execution keep the full programme open.

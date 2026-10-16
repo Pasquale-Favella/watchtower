@@ -11,7 +11,9 @@ import {
   type MappedTurn,
   type PortInput,
 } from '../../shared/schemas/port.js'
+import { captureScanPricing } from '../pipeline/models.js'
 import { cachedTurnToClassified } from '../pipeline/parser.js'
+import type { ScanPricing } from '../pipeline/scan-pricing.js'
 import type { CachedCall } from '../pipeline/session-cache.js'
 import type { ParsedApiCall } from '../pipeline/types.js'
 
@@ -35,7 +37,7 @@ export type {
  * every read.
  */
 
-export function mapFileToLedgerRows(input: PortInput): MappedFile {
+export function mapFileToLedgerRows(input: PortInput, pricing: ScanPricing = captureScanPricing()): MappedFile {
   const { provider, envFingerprint, filePath, cachedFile, repoUrl, project, workingDirectory } = input
 
   // Branch carry-forward across the full turn list, mirroring the pipeline so
@@ -43,7 +45,7 @@ export function mapFileToLedgerRows(input: PortInput): MappedFile {
   let carriedBranch: string | undefined
   const classifiedTurns = cachedFile.turns.map(turn => {
     if (turn.gitBranch) carriedBranch = turn.gitBranch
-    return cachedTurnToClassified(turn, carriedBranch)
+    return cachedTurnToClassified(turn, carriedBranch, pricing)
   })
   const everHadBranch = carriedBranch !== undefined
 

@@ -1,39 +1,35 @@
-// Measures the ledger query path on synthetic ledgers at the real schema, so
-// the §3 finding in docs/research/effect-v4-electron.md ("roughly seven
-// full-lifetime table reads per Section render, each structured-cloned and
-// Zod-validated in full") stops being an argument and becomes a number.
+// Measures current Effect application queries on
+// the same deterministic synthetic ledger. The current engine uses one
+// persistent worker runtime and native SQLite client per child process.
 //
 // What is REAL here (not a reproduction):
-//   - the schema: `new LedgerStore(path)` runs the shared initializer in
-//     src/main/store/ledger-initialization.ts through the actual Migrator.
+//   - the schema: the shared worker runtime runs the actual ledger initializer
+//     in src/main/store/ledger-initialization.ts through the actual Migrator.
 //     No DDL is transcribed into this file. A drift guard compares the live
-//     `PRAGMA table_info` against the column names named in EXPECTED_COLUMNS
-//     (transcribed from that DDL, with the line ranges) and aborts on drift.
-//   - the data: rows are produced by the real `portIn` write path
-//     (src/main/store/ledger.ts:227) from synthetic session-cache files, so
+//     schema against EXPECTED_COLUMNS and aborts on drift.
+//   - the data: rows are produced by the real `LedgerIngest.portIn` write path
+//     from synthetic session-cache files, so
 //     every column, every `*_json` blob and `base_cost_usd` is whatever the
 //     pipeline's own mapper emits. Only the *content* is synthetic.
-//   - the read path: `LedgerStore.getCalls()` etc. run ledger-repository.ts,
-//     SqlClient over node:sqlite, and the authoritative Effect row codecs.
-//   - the aggregation path: the real compatibility builders in aggregate.ts,
-//     views.ts and overview.ts. This harness does not yet measure the direct
-//     Effect application queries, detail/search, or a complete refresh cycle.
+//   - the current read path: named Effect application queries over the shared
+//     worker runtime, canonical ports and Effect Schema payload codecs.
 //
 // The real TypeScript is loaded by installing a CommonJS transpile hook
 // (typescript.transpileModule, with a `.js` -> `.ts` resolver). This repo has
 // no tsx/ts-node and this script adds no dependency. Two deliberate shims, both
 // outside the measured code:
 //   - `import.meta.url` -> `require('node:url').pathToFileURL(__filename).href`
-//     (src/main/pipeline/sqlite.ts:8). TypeScript emits `import.meta` verbatim
+//     (src/main/pipeline/sqlite.ts). TypeScript emits `import.meta` verbatim
 //     into CommonJS, which Node then misreads as ES-module syntax; the
 //     substitution is the exact CJS equivalent of the ESM one.
 //   - compiler options mirror tsconfig.node.json (ES2022 target, esModuleInterop,
 //     useDefineForClassFields at its ES2022 default).
 //
 // Deterministic: fixed PRNG seed, fixed timestamp base, fixed shapes. The only
-// non-determinism is wall-clock. The defaults use five measured runs per size.
+// non-determinism is wall-clock. Results separate the first request after
+// runtime open from warmed requests. The OS file cache is not flushed.
 // Ledger files live in a mkdtemp directory that is removed on exit; the
-// script never opens a path outside that directory (asserted in openLedger).
+// script never opens a path outside that directory (asserted in openEffectRuntime).
 //
 // Usage: node scripts/measure-query-path.cjs --help
 
@@ -45,20 +41,12 @@ const os = require('node:os')
 const path = require('node:path')
 const v8 = require('node:v8')
 const { performance } = require('node:perf_hooks')
-const { extractReadSql: extractReadSqlFromSource } = require('./query-sql-source.cjs')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
 const SCRIPT_PATH = __filename
 
-// ── Provenance ────────────────────────────────────────────────────────────
-// Every path below names the file:line it was taken from, so a reviewer can
-// re-derive the measurement inputs from the tree.
-
-const REPOSITORY_SOURCE = path.join(REPO_ROOT, 'src', 'main', 'store', 'ledger-repository.ts')
-const BULK_READS = ['getSources', 'getSessions', 'getTurns', 'getCalls']
-
-// src/main/store/ledger.ts:71-162 (migration 1 `initial_ledger_schema`).
-// Transcribed for the drift guard only — never executed.
+// Transcribed from the shared initializer for the drift guard only — never
+// executed. Avoid source line references because the schema is evolving.
 const EXPECTED_COLUMNS = {
   ledger_source: [
     'id',
@@ -105,9 +93,8 @@ const EXPECTED_COLUMNS = {
     'retries',
     'has_edits',
   ],
-  // src/main/store/ledger.ts:86-126. `call_key` is the stored generated column
-  // (ledger.ts:124) and is selected by getCalls but is not part of the DDL
-  // list above — it is included here because the guard checks the live table.
+  // `call_key` is a stored generated column selected by getCalls; it is
+  // included because table_info does not report it.
   ledger_call: [
     'source_id',
     'session_id',
@@ -162,6 +149,7 @@ const EXPECTED_CALL_INDEXES = [
 
 const DEFAULTS = {
   sizes: [1000, 50000, 500000],
+  engine: 'effect',
   runs: 5,
   seed: 20260929,
   turnsPerSession: 12,
@@ -177,7 +165,7 @@ const DEFAULTS = {
   maxOldSpaceMb: 12288,
 }
 
-// Real provider identifiers from src/main/pipeline/providers/index.ts:194-238.
+// Provider identifiers follow src/main/pipeline/providers/index.ts.
 const PROVIDERS = [
   {
     name: 'claude',
@@ -280,10 +268,11 @@ const FILLER = [
 
 const HELP = `measure-query-path — sizes the ledger query path (slice 0).
 
-Builds a synthetic ledger.db at the REAL schema through the REAL portIn write
-path, then times the REAL read and view paths at each size and reports the
-median wall-clock, the peak RSS delta and the estimated structured-clone
-bytes for every operation.
+Builds a synthetic ledger.db at the real schema through the Effect portIn
+path, then measures current application queries by default. Each child keeps
+one worker runtime and SQLite client open for the operation. Results include
+first-request and warmed timing, heap/RSS changes, native statement executions,
+materialized rows and serialized result bytes where available.
 
 USAGE
   node scripts/measure-query-path.cjs [options]
@@ -294,8 +283,8 @@ SIZING
                          A future run may pass --sizes=5m.
   --runs=5               Measured iterations per operation per size; the
                          reported figure is the MEDIAN. Minimum 5. Default 5.
-  --warmup=1             Unmeasured warm-up iterations before the timed ones
-                         (page-cache warm). Default 1.
+  --warmup=1             Unmeasured calls before warmed samples. Default 1.
+  --engine=effect        Current application queries (default).
 
 SYNTHETIC-LEDGER SHAPE (every value is reported back in the output)
   --seed=20260929        PRNG seed. Fixed -> identical ledgers across runs.
@@ -311,6 +300,11 @@ OUTPUT
   --out=FILE             Also write the result object to FILE.
   --ops=a,b,c            Comma-separated subset of the operations to run.
                          Default: all of them.
+                         Current operations: ingest:portIn, fx:refresh-rate,
+                         store:projects, store:sessions, store:session,
+                         store:session:missing,
+                         store:search, store:search:blank, overview:query,
+                         store:analytics, store:views, export:read.
 
 EXECUTION
   --keep                 Do not delete the temporary directory (prints its path).
@@ -329,7 +323,16 @@ NOTES
 `
 
 function parseArgs(argv) {
-  const options = { ...DEFAULTS, ops: null, json: false, out: null, keep: false, tmp: null, db: null, help: false }
+  const options = {
+    ...DEFAULTS,
+    ops: null,
+    json: false,
+    out: null,
+    keep: false,
+    tmp: null,
+    db: null,
+    help: false,
+  }
   for (const arg of argv) {
     const eq = arg.indexOf('=')
     const flag = eq === -1 ? arg : arg.slice(0, eq)
@@ -339,6 +342,11 @@ function parseArgs(argv) {
       return value
     }
     switch (flag) {
+      case '--engine':
+        options.engine = need('engine')
+        if (options.engine !== 'effect')
+          throw new Error('--engine must be effect; the compatibility engine has been retired')
+        break
       case '--sizes':
         options.sizes = need('sizes')
           .split(',')
@@ -380,7 +388,7 @@ function parseArgs(argv) {
         break
       case '--db':
         // Child mode only (see runAsChild). Never set by hand: a real user
-        // ledger is refused by openLedger, which requires the path to sit
+        // ledger is refused by openEffectRuntime, which requires the path to sit
         // inside the measurement temp directory.
         options.db = path.resolve(need('db'))
         break
@@ -468,66 +476,39 @@ function rewriteImportMeta(source) {
     .replace(/import\.meta\.dirname/g, '__dirname')
     .replace(/import\.meta\.filename/g, '__filename')
 }
+let cachedEffectModules = null
 
-let cachedRealModules = null
-
-function loadRealModules() {
-  if (cachedRealModules) return cachedRealModules
+function loadEffectModules() {
+  if (cachedEffectModules) return cachedEffectModules
   installTypeScriptHook()
   const load = relative => require(path.join(REPO_ROOT, relative))
-  cachedRealModules = {
-    ledger: load('src/main/store/ledger.ts'),
-    repository: load('src/main/store/ledger-repository.ts'),
-    sqlite: load('src/main/store/node-sqlite-client.ts'),
-    aggregate: load('src/main/store/aggregate.ts'),
-    views: load('src/main/views.ts'),
-    overview: load('src/main/overview.ts'),
+  cachedEffectModules = {
+    Effect: require('effect/Effect'),
+    Layer: require('effect/Layer'),
+    worker: load('src/main/worker-runtime.ts'),
+    ledger: load('src/main/store/ledger-repository.ts'),
+    sessionReads: load('src/main/store/ledger-session-reads.ts'),
+    models: load('src/main/pipeline/models.ts'),
+    fetch: load('src/main/pipeline/fetch-utils.ts'),
+    fx: load('src/main/fx.ts'),
+    rowQueries: load('src/main/application/store-row-queries.ts'),
+    sessionDetail: load('src/main/application/session-detail-query.ts'),
+    sessionSearch: load('src/main/application/session-search-query.ts'),
+    overview: load('src/main/application/overview-query.ts'),
+    views: load('src/main/application/view-queries.ts'),
+    viewReads: load('src/main/store/ledger-view-reads.ts'),
+    viewCalculation: load('src/main/view-aggregate-calculation.ts'),
+    exportQuery: load('src/main/application/export-query.ts'),
+    exportFiles: load('src/main/application/export-files.ts'),
+    pricingDiagnostics: load('src/main/application/pricing-diagnostics.ts'),
   }
-  return cachedRealModules
-}
-
-// ── Static facts read out of the repository source ────────────────────────
-
-/** Pulls the SQL template literal out of a repository read verbatim, so the
- * "no WHERE / no LIMIT / N columns" facts are measured from the tree rather
- * than transcribed, and the SQL-only attribution runs use the real text.
- *
- * The syntax tree locates the method's Effect.fn body, then resolves its SQL
- * argument. It accepts the historical inline template and shared constants.
- * Missing, dynamic or ambiguous reads stop measurement, rather than choosing
- * a template from a later method. The ledger port prefix may change. */
-function extractReadSql(name) {
-  const source = readFileSync(REPOSITORY_SOURCE, 'utf8')
-  return extractReadSqlFromSource(source, name)
-}
-
-function countSelectedColumns(sql) {
-  const list = sql.slice(sql.indexOf('SELECT') + 'SELECT'.length, sql.lastIndexOf('FROM'))
-  return list
-    .split(',')
-    .map(part => part.trim())
-    .filter(Boolean).length
-}
-
-function readBulkReadFacts() {
-  const facts = {}
-  for (const name of BULK_READS) {
-    const sql = extractReadSql(name)
-    facts[name] = {
-      sql,
-      hasWhere: /\bwhere\b/i.test(sql),
-      hasLimit: /\blimit\b/i.test(sql),
-      selectedColumns: countSelectedColumns(sql),
-      jsonColumns: (sql.match(/\w+_json\b/gi) || []).length,
-    }
-  }
-  return facts
+  return cachedEffectModules
 }
 
 // ── Schema drift guard ────────────────────────────────────────────────────
 
 /** Compares the live schema against EXPECTED_COLUMNS (transcribed from
- * src/main/store/ledger.ts:71-162). A mismatch means the ledger DDL moved and
+ * the shared ledger initializer). A mismatch means the ledger DDL moved and
  * every number this script produces describes a schema that no longer exists,
  * so it aborts rather than reporting stale-shape figures. */
 function assertSchemaMatchesSource(dbPath) {
@@ -540,12 +521,10 @@ function assertSchemaMatchesSource(dbPath) {
       .map(row => String(row.name))
     for (const table of Object.keys(EXPECTED_COLUMNS)) {
       if (!tables.includes(table)) {
-        throw new Error(
-          `schema drift: table '${table}' is missing — the ledger DDL in src/main/store/ledger.ts changed`,
-        )
+        throw new Error(`schema drift: table '${table}' is missing — the shared ledger initializer changed`)
       }
-      // table_xinfo, not table_info: `call_key` is a STORED generated column
-      // (ledger.ts:124, reported with hidden=3) and table_info omits it.
+      // table_xinfo reports the stored generated `call_key` column, which
+      // table_info omits.
       // hidden=1 is a virtual-table column; 0/2/3 are all real columns.
       const live = db
         .prepare(`PRAGMA table_xinfo(${table})`)
@@ -555,7 +534,7 @@ function assertSchemaMatchesSource(dbPath) {
       const expected = EXPECTED_COLUMNS[table]
       if (live.join(',') !== expected.join(',')) {
         throw new Error(
-          `schema drift in '${table}'.\n  expected (src/main/store/ledger.ts): ${expected.join(',')}\n  live (PRAGMA table_xinfo): ${live.join(',')}`,
+          `schema drift in '${table}'.\n  expected (src/main/store/ledger-initialization.ts): ${expected.join(',')}\n  live (PRAGMA table_xinfo): ${live.join(',')}`,
         )
       }
     }
@@ -572,21 +551,45 @@ function assertSchemaMatchesSource(dbPath) {
   }
 }
 
-function openLedger(context, dbPath) {
+function resolveMeasurementPath(context, dbPath) {
   const resolved = path.resolve(dbPath)
   const root = path.resolve(context) + path.sep
   if (!resolved.startsWith(root)) {
     throw new Error(`refusing to open ${resolved}: outside the measurement temp directory ${root}`)
   }
-  const { ledger } = loadRealModules()
-  const store = new ledger.LedgerStore(resolved)
+  return resolved
+}
+
+function openEffectRuntime(context, dbPath, overrides) {
+  const resolved = resolveMeasurementPath(context, dbPath)
+  const modules = loadEffectModules()
+  const runtime = modules.worker.openWorkerRuntime(resolved, undefined, overrides)
   try {
     assertSchemaMatchesSource(resolved)
+    return runtime
   } catch (error) {
-    store.close()
+    modules.Effect.runSync(runtime.disposeEffect)
     throw error
   }
-  return store
+}
+
+function effectOverrides(modules) {
+  const { Effect, Layer } = modules
+  const diagnostics = Layer.succeed(
+    modules.pricingDiagnostics.PricingDiagnostics,
+    modules.pricingDiagnostics.PricingDiagnostics.of({ reportUnpricedModels: () => Effect.void }),
+  )
+  const exports = Layer.succeed(
+    modules.exportFiles.ExportFiles,
+    modules.exportFiles.ExportFiles.of({
+      writeCsvFolder: outputPath => Effect.succeed(outputPath),
+      writeJsonFile: outputPath => Effect.succeed(outputPath),
+    }),
+  )
+  const fetch = modules.fetch.HttpFetch.layerWithFetch(
+    async () => new Response(JSON.stringify({ date: '2026-10-06', rates: { EUR: 0.91 } }), { status: 200 }),
+  )
+  return Layer.mergeAll(diagnostics, exports, fetch)
 }
 
 // ── Deterministic synthetic data ──────────────────────────────────────────
@@ -609,8 +612,7 @@ function padMessage(base, targetBytes, rng) {
 }
 
 /** One session-cache file, i.e. one `ledger_source` + `ledger_session` row plus
- * its turns and calls. The shape is `cachedFileSchema` (src/shared/schemas/
- * session-cache.ts:70-86) because that is what the real port-in consumes. */
+ * its turns and calls. The real port-in consumes this session-cache shape. */
 function makeCachedFile(index, shape, rng) {
   const provider = PROVIDERS[index % PROVIDERS.length]
   const project = PROJECTS[Math.floor(rng() * PROJECTS.length)]
@@ -647,8 +649,8 @@ function makeCachedFile(index, shape, rng) {
           webSearchRequests: 0,
           cacheCreationOneHourTokens: 0,
         },
-        // A plausible figure; the pipeline's own `calculateCost` is bypassed
-        // here (cachedCallToApiCall prefers the cached value, parser.ts:3033).
+        // A plausible synthetic figure. Port-in preserves the supplied cached
+        // cost rather than calling the live pricing calculator.
         costUSD: Number(((inputTokens / 1e6) * 3 + (outputTokens / 1e6) * 15 + (cacheRead / 1e6) * 0.3).toFixed(8)),
         isEstimated: rng() < 0.05 ? true : undefined,
         speed: rng() < 0.12 ? 'fast' : 'standard',
@@ -674,9 +676,7 @@ function makeCachedFile(index, shape, rng) {
         interrupted: rng() < 0.04 ? true : undefined,
         userModified: rng() < 0.06 ? true : undefined,
         toolErrors: rng() < 0.12 ? Math.floor(rng() * 3) : undefined,
-        // cachedCallSchema types this as a number (src/shared/schemas/
-        // session-cache.ts:44) even though the name reads as a flag; the real
-        // port-in validator rejects a boolean here, so the generator emits 0/1.
+        // The cache schema expects a number here, so the generator emits 0/1.
         editFailed: rng() < 0.05 ? 1 : undefined,
       })
     }
@@ -730,12 +730,15 @@ function buildLedger(context, dbPath, callTarget, options, log) {
   const callsPerSession = shape.turnsPerSession * shape.callsPerTurn
   const sessions = Math.max(1, Math.ceil(callTarget / callsPerSession))
   const rng = makeRng(options.seed + callTarget)
-  const store = openLedger(context, dbPath)
+  const modules = loadEffectModules()
+  const runtime = openEffectRuntime(context, dbPath, effectOverrides(modules))
   const started = performance.now()
   try {
+    const ingest = runtime.runSync(modules.ledger.LedgerIngest)
+    const scanPricing = modules.models.captureScanPricing()
     for (let index = 0; index < sessions; index++) {
       const file = makeCachedFile(index, shape, rng)
-      store.portIn({
+      const input = {
         provider: file.provider,
         envFingerprint: file.envFingerprint,
         filePath: file.filePath,
@@ -744,11 +747,12 @@ function buildLedger(context, dbPath, callTarget, options, log) {
         repoUrl: `https://github.com/acme/${file.project}`,
         project: file.project,
         workingDirectory: file.cachedFile.workingDirectory,
-      })
+      }
+      runtime.runSync(ingest.portIn(input, scanPricing))
       if (log && (index + 1) % 2000 === 0) log(`    ported ${index + 1}/${sessions} files`)
     }
   } finally {
-    store.close()
+    modules.Effect.runSync(runtime.disposeEffect)
   }
   const elapsedMs = performance.now() - started
   const dbBytes = statSync(dbPath).size
@@ -808,39 +812,336 @@ function cloneBytes(value) {
   return { bytes: v8.serialize(value).byteLength, method: 'exact: v8.serialize' }
 }
 
-/** Per-column mean serialized size over a prefix, so the write-up can attribute
- * a row's bytes to its columns instead of guessing. Derived, not measured. */
-function columnByteBreakdown(rows) {
-  if (!Array.isArray(rows) || rows.length === 0) return null
-  const sample = rows.slice(0, CLONE_SAMPLE_ROWS)
-  const keys = Object.keys(sample[0])
-  const perColumn = {}
-  for (const key of keys) {
-    let total = 0
-    for (const row of sample) total += v8.serialize([row[key]]).byteLength
-    perColumn[key] = Number((total / sample.length).toFixed(1))
+function watchNativeStatements() {
+  const { DatabaseSync, StatementSync } = require('node:sqlite')
+  const sqlByStatement = new WeakMap()
+  const connectionByStatement = new WeakMap()
+  const connectionIds = new WeakMap()
+  let nextConnectionId = 1
+  const executions = []
+  const restorers = []
+  let activeCapture = null
+
+  const connectionId = connection => {
+    let id = connectionIds.get(connection)
+    if (id === undefined) {
+      id = nextConnectionId++
+      connectionIds.set(connection, id)
+    }
+    return id
   }
-  return { sampledRows: sample.length, bytesPerColumnMean: perColumn }
+  const record = (sql, connection, method, result, nativeSqlMs = 0) => {
+    const select = /^\s*(?:\/\*[\s\S]*?\*\/\s*)*SELECT\b/i.test(sql)
+    const materializedRows = select
+      ? method === 'all'
+        ? (result?.length ?? 0)
+        : method === 'get'
+          ? result === undefined
+            ? 0
+            : 1
+          : null
+      : 0
+    executions.push({
+      sql: sql.trim().replace(/\s+/g, ' '),
+      connection: connectionId(connection),
+      method,
+      select,
+      materializedRows,
+    })
+    if (activeCapture) {
+      activeCapture.nativeSqlMs += nativeSqlMs
+      if (select && method === 'all') activeCapture.rows.push(result)
+    }
+  }
+  const replace = (prototype, name, wrap) => {
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, name)
+    const original = descriptor.value
+    Object.defineProperty(prototype, name, { ...descriptor, value: wrap(original) })
+    restorers.push(() => Object.defineProperty(prototype, name, descriptor))
+  }
+
+  replace(
+    DatabaseSync.prototype,
+    'prepare',
+    original =>
+      function (sql) {
+        const statement = Reflect.apply(original, this, [sql])
+        sqlByStatement.set(statement, sql)
+        connectionByStatement.set(statement, this)
+        return statement
+      },
+  )
+  replace(
+    DatabaseSync.prototype,
+    'exec',
+    original =>
+      function (sql) {
+        const started = activeCapture ? performance.now() : null
+        let result
+        try {
+          result = Reflect.apply(original, this, [sql])
+        } finally {
+          if (started !== null) record(sql, this, 'exec', result, performance.now() - started)
+        }
+        if (started === null) record(sql, this, 'exec', result)
+        return result
+      },
+  )
+  for (const method of ['all', 'get', 'run', 'iterate']) {
+    replace(
+      StatementSync.prototype,
+      method,
+      original =>
+        function (...parameters) {
+          const started = activeCapture && method !== 'iterate' ? performance.now() : null
+          let result
+          try {
+            result = Reflect.apply(original, this, parameters)
+          } finally {
+            if (started !== null) {
+              const sql = sqlByStatement.get(this)
+              const connection = connectionByStatement.get(this)
+              if (sql !== undefined && connection !== undefined) {
+                record(sql, connection, method, result, performance.now() - started)
+              }
+            }
+          }
+          const sql = sqlByStatement.get(this)
+          const connection = connectionByStatement.get(this)
+          if (started === null && sql !== undefined && connection !== undefined) record(sql, connection, method, result)
+          return result
+        },
+    )
+  }
+
+  return {
+    reset() {
+      executions.length = 0
+    },
+    beginSelectRowCapture() {
+      if (activeCapture) throw new Error('native SELECT row capture is already active')
+      executions.length = 0
+      activeCapture = { rows: [], nativeSqlMs: 0 }
+    },
+    endSelectRowCapture() {
+      if (!activeCapture) throw new Error('native SELECT row capture is not active')
+      const capture = activeCapture
+      activeCapture = null
+      return { nativeStatements: this.snapshot(), rows: capture.rows, nativeSqlMs: capture.nativeSqlMs }
+    },
+    snapshot() {
+      const selects = executions.filter(execution => execution.select)
+      return {
+        statementCount: executions.length,
+        selectCount: selects.length,
+        materializedRows: selects.every(execution => execution.materializedRows !== null)
+          ? selects.reduce((sum, execution) => sum + execution.materializedRows, 0)
+          : null,
+        connectionIds: [...new Set(executions.map(execution => execution.connection))],
+        statements: executions.map(({ sql, method, select, materializedRows }) => ({
+          sql,
+          method,
+          select,
+          materializedRows,
+        })),
+      }
+    },
+    restore() {
+      for (const restore of restorers.reverse()) restore()
+    },
+  }
+}
+
+async function measureAsync(
+  label,
+  run,
+  { runs, warmup, crossesWorkerBoundary, note },
+  engine,
+  instrumentation,
+  prepare,
+) {
+  const measureOne = async (isCold, includeCloneMetadata = false) => {
+    if (prepare) await prepare()
+    if (typeof global.gc === 'function') global.gc()
+    instrumentation.reset()
+    const before = process.memoryUsage()
+    const t0 = performance.now()
+    const value = await run()
+    const t1 = performance.now()
+    const after = process.memoryUsage()
+    const rows = Array.isArray(value) ? value.length : null
+    const clone = includeCloneMetadata ? cloneBytes(value) : null
+    return {
+      rows,
+      cloneBytes: clone?.bytes ?? null,
+      cloneBytesMethod: clone?.method ?? null,
+      ms: t1 - t0,
+      rssDeltaBytes: after.rss - before.rss,
+      heapDeltaBytes: after.heapUsed - before.heapUsed,
+      nativeStatements: instrumentation.snapshot(),
+      isCold,
+    }
+  }
+
+  const cold = await measureOne(true)
+  for (let index = 0; index < warmup; index++) await measureOne(false)
+  const samples = []
+  for (let index = 0; index < runs; index++) samples.push(await measureOne(false, index === runs - 1))
+  const times = samples.map(sample => sample.ms)
+  const rss = samples.map(sample => sample.rssDeltaBytes)
+  const heap = samples.map(sample => sample.heapDeltaBytes)
+  return {
+    op: label,
+    engine,
+    runs,
+    coldMs: Number(cold.ms.toFixed(2)),
+    coldNative: cold.nativeStatements,
+    coldHeapDeltaBytes: cold.heapDeltaBytes,
+    coldRssDeltaBytes: cold.rssDeltaBytes,
+    medianMs: Number(median(times).toFixed(2)),
+    minMs: Number(Math.min(...times).toFixed(2)),
+    maxMs: Number(Math.max(...times).toFixed(2)),
+    maxRssDeltaBytes: Math.max(...rss),
+    medianRssDeltaBytes: Math.round(median(rss)),
+    maxHeapDeltaBytes: Math.max(...heap),
+    medianHeapDeltaBytes: Math.round(median(heap)),
+    rows: samples.at(-1)?.rows ?? null,
+    cloneBytes: samples.at(-1)?.cloneBytes,
+    cloneBytesMethod: samples.at(-1)?.cloneBytesMethod,
+    warmNative: samples.map(sample => sample.nativeStatements),
+    crossesWorkerBoundary,
+    note: note ?? null,
+    samplesMs: times.map(ms => Number(ms.toFixed(2))),
+    coldMeaning: 'first request after runtime open; OS file cache is not flushed',
+  }
+}
+
+const MEASUREMENT_VERSION = 2
+const MEASUREMENT_METHOD = {
+  viewInputProbeVersion: 2,
+  resultRetention:
+    'Both engines reduce each operation result to scalar rows/clone metadata after its memory snapshot; samples retain timing, memory deltas and native metadata only.',
+  cloneMetadata: 'Computed from the last warm result after the operation timer and memory snapshot.',
+  childMaxRssBytes:
+    'Process high-water mark through the timed samples, including module/runtime startup; the views/analytics value is captured before and excludes the untimed input probe.',
+  viewInputProbe:
+    'After timed samples, the same runtime/client probe times LedgerViewReads.getViewData wall time and native .all/.get/.run/.exec calls. Native timing is active only during this untimed capture; prepare/cache work is excluded. The residual read time includes Schema decoding, Effect/client/transaction overhead and other non-native work; it is not decoder-only. The same decoded DTO is passed directly to the actual dashboard/analytics calculator with the catalogue and proxy inputs captured for the timed query. Calculation excludes diagnostics and wire-schema validation. Heap/RSS values are process deltas around each phase, after explicit GC; the read phase includes temporary raw row capture, and calculation starts with the decoded DTO retained after captured raw arrays are released.',
+}
+
+function memorySnapshot() {
+  const { rss, heapUsed } = process.memoryUsage()
+  return { rss, heapUsed }
+}
+
+function memoryDelta(before, after) {
+  return { rssBytes: after.rss - before.rss, heapBytes: after.heapUsed - before.heapUsed }
+}
+
+function releaseForProbePhase() {
+  if (typeof global.gc === 'function') global.gc()
+}
+
+async function measureViewInputProbe(runtime, modules, instrumentation, id, calculationInputs) {
+  releaseForProbePhase()
+  const readBefore = memorySnapshot()
+  const readStarted = performance.now()
+  instrumentation.beginSelectRowCapture()
+  let viewData
+  let captured
+  let readMs
+  let readAfter
+  try {
+    viewData = await runtime.runPromise(
+      modules.Effect.flatMap(modules.viewReads.LedgerViewReads, reads => reads.getViewData()),
+    )
+  } finally {
+    readMs = performance.now() - readStarted
+    captured = instrumentation.endSelectRowCapture()
+    readAfter = memorySnapshot()
+  }
+  const rawSelectedSerializedBytes = v8.serialize(captured.rows).byteLength
+  const decodedDtoSerializedBytes = v8.serialize(viewData).byteLength
+  const selectedRows = captured.rows.reduce((sum, rows) => sum + rows.length, 0)
+  captured.rows = null
+
+  releaseForProbePhase()
+  const calculationBefore = memorySnapshot()
+  const calculationStarted = performance.now()
+  const calculator =
+    id === 'store:views'
+      ? modules.viewCalculation.calculateDashboardViews
+      : modules.viewCalculation.calculateAnalyticalViews
+  let calculationResult = calculator(viewData, calculationInputs)
+  const calculationMs = performance.now() - calculationStarted
+  const calculationAfter = memorySnapshot()
+  const calculationOutput = {
+    resultKeys: Object.keys(calculationResult).sort(),
+    valueKeys: Object.keys(calculationResult.value).sort(),
+    unpricedModels: calculationResult.unpricedModels.length,
+  }
+  calculationResult = null
+  return {
+    outsideTimedSamples: true,
+    method: 'same runtime/client read, then direct calculation on the exact decoded DTO returned by that read',
+    phases: {
+      read: {
+        label: 'getViewData wall time (transaction + Schema decode + Effect/client overhead)',
+        wallMs: Number(readMs.toFixed(2)),
+        nativeSqlMs: Number(captured.nativeSqlMs.toFixed(2)),
+        nonSqlReadMs: Number(Math.max(0, readMs - captured.nativeSqlMs).toFixed(2)),
+        nativeSqlTiming:
+          'actual .all/.get/.run/.exec calls while untimed capture is active; excludes prepare/cache work',
+        memory: memoryDelta(readBefore, readAfter),
+        gcBefore:
+          typeof global.gc === 'function'
+            ? 'global.gc() called; no post-phase GC'
+            : 'GC unavailable; no forced collection',
+      },
+      calculation: {
+        label: id === 'store:views' ? 'calculateDashboardViews' : 'calculateAnalyticalViews',
+        wallMs: Number(calculationMs.toFixed(2)),
+        memory: memoryDelta(calculationBefore, calculationAfter),
+        inputs: 'DTO returned by the probe; catalogue and proxy paths captured for the timed query',
+        excludes: ['pricing diagnostics', 'wire-schema validation'],
+        output: calculationOutput,
+        gcBefore:
+          typeof global.gc === 'function'
+            ? 'global.gc() called with decoded DTO retained; no post-phase GC'
+            : 'GC unavailable; decoded DTO retained',
+      },
+    },
+    nativeStatements: captured.nativeStatements,
+    selectedRows,
+    rawSelectedSerializedBytes,
+    decodedDtoSerializedBytes,
+    serializationProxy: 'node:v8.serialize; not physical SQLite bytes',
+  }
 }
 
 function measure(label, fn, { runs, warmup, crossesWorkerBoundary, note }) {
   for (let i = 0; i < warmup; i++) fn()
   const samples = []
-  let value
-  for (let i = 0; i < runs; i++) {
+  const measureOne = includeCloneMetadata => {
     if (typeof global.gc === 'function') global.gc()
     const before = process.memoryUsage()
     const t0 = performance.now()
-    value = fn()
+    const value = fn()
     const t1 = performance.now()
     const after = process.memoryUsage()
-    samples.push({
+    const rows = Array.isArray(value) ? value.length : null
+    const clone = includeCloneMetadata ? cloneBytes(value) : null
+    return {
       ms: t1 - t0,
       rssDeltaBytes: after.rss - before.rss,
       heapDeltaBytes: after.heapUsed - before.heapUsed,
-    })
+      rows,
+      cloneBytes: clone?.bytes ?? null,
+      cloneBytesMethod: clone?.method ?? null,
+    }
   }
-  const clone = cloneBytes(value)
+  for (let i = 0; i < runs; i++) {
+    samples.push(measureOne(i === runs - 1))
+  }
   const times = samples.map(sample => sample.ms)
   const rss = samples.map(sample => sample.rssDeltaBytes)
   const heap = samples.map(sample => sample.heapDeltaBytes)
@@ -856,177 +1157,230 @@ function measure(label, fn, { runs, warmup, crossesWorkerBoundary, note }) {
     medianRssDeltaBytes: Math.round(median(rss)),
     maxHeapDeltaBytes: Math.max(...heap),
     medianHeapDeltaBytes: Math.round(median(heap)),
-    rows: Array.isArray(value) ? value.length : null,
-    cloneBytes: clone.bytes,
-    cloneBytesMethod: clone.method,
+    rows: samples.at(-1)?.rows ?? null,
+    cloneBytes: samples.at(-1)?.cloneBytes,
+    cloneBytesMethod: samples.at(-1)?.cloneBytesMethod,
     crossesWorkerBoundary,
     note: note ?? null,
     samplesMs: times.map(ms => Number(ms.toFixed(2))),
   }
 }
 
-// ── Operations ────────────────────────────────────────────────────────────
-
-// views.ts:41 — the all-time window every ledger-backed Section builder passes.
-const ALL_TIME_RANGE = { start: new Date(-8640000000000000), end: new Date(8640000000000000) }
-
-// `db-worker/context.ts` is cited by dispatch-arm name rather than by line: it
-// is being edited by other slices in this tree, and these are the thin arms
-// that call each builder. The line numbers observed at commit 9756030 are in
-// the study document.
-const OPERATIONS = [
-  {
-    id: 'reads',
-    kind: 'bundle',
-    description: 'the four bulk reads + their SQL-only counterparts + the aggregation seam',
-  },
-  {
-    id: 'export:read',
-    kind: 'single',
-    description: 'views.ts:277 buildProjectsFromLedger — the read half of the `export:csv` arm',
-  },
-  {
-    id: 'store:views',
-    kind: 'single',
-    description: "the `store:views` arm's builder: views.ts:381 buildDashboardViewsFromLedger",
-  },
-  {
-    id: 'store:analytics',
-    kind: 'single',
-    description: "the `store:analytics` arm's builder: views.ts:84 buildAnalyticalViewsFromLedger",
-  },
-  {
-    id: 'overview:query',
-    kind: 'single',
-    description:
-      "the `overview:query` arm's builder: overview.ts:725 buildOverviewFromLedger (two buildSessionSummaries calls)",
-  },
-  {
-    id: 'aggregate:buildSessionSummaries',
-    kind: 'single',
-    description: 'store/aggregate.ts:493 buildSessionSummaries in isolation',
-  },
+const EFFECT_OPERATIONS = [
+  { id: 'ingest:portIn', description: 'LedgerIngest.portIn over the worker runtime and its writer connection' },
+  { id: 'fx:refresh-rate', description: 'refreshFxRateWithRates with a controlled local HTTP response' },
+  { id: 'store:projects', description: 'queryProjectRows with explicit captured pricing inputs' },
+  { id: 'store:sessions', description: 'querySessionRows with an unfiltered scope' },
+  { id: 'store:session', description: 'querySessionDetail for one fixture session ID' },
+  { id: 'store:session:missing', description: 'querySessionDetail for a session ID absent from the fixture' },
+  { id: 'store:search', description: 'querySessionSearch with a term taken from the fixture' },
+  { id: 'store:search:blank', description: 'querySessionSearch with blank input' },
+  { id: 'overview:query', description: 'queryOverview with an all-time scope and explicit local savings' },
+  { id: 'store:analytics', description: 'queryAnalyticalViews over the purpose-shaped view read' },
+  { id: 'store:views', description: 'queryDashboardViews over the purpose-shaped view read' },
+  { id: 'export:read', description: 'queryExport with in-memory output files' },
 ]
 
-function singleOperation(context, id) {
-  const { views, overview, aggregate } = loadRealModules()
+const MEASUREMENT_LIMITS = [
+  'All ledger content is synthetic; cached costs are plausible fixture values, not live provider pricing.',
+  'FX refresh uses a controlled local HTTP response and does not contact Frankfurter or measure network latency.',
+  'Export reads and builds the JSON payload, but the file writer is an in-memory stub; disk output and disk space are not measured.',
+  'RSS and heap deltas are process observations. childMaxRssBytes includes module/runtime startup and timed samples; for views and analytics it excludes the later untimed input probe.',
+  'Method version 2 reduces operation results to scalar metadata before the next sample. Archived e65ad24 artifacts used a different result-retention pattern, so compare their heap/RSS and clone metrics only with that limitation in view; cold/warm timing definitions and sample counts are unchanged.',
+  'Dashboard and Analytics input probes run after timed samples on the same worker runtime and SQL client. Raw selected rows and decoded DTOs use node:v8 serialization as a size proxy, not SQLite page or physical bytes.',
+  'The untimed view probe reports getViewData wall time, native .all/.get/.run/.exec call time, and the non-native residual. The residual includes Schema decoding and Effect/client/transaction overhead; it is not decoder-only. Direct calculation excludes diagnostics and wire-schema validation. Probe heap/RSS deltas are process deltas, with explicit GC calls before phases when --expose-gc is available; they are not production peak-memory figures.',
+]
+
+function effectOperation(context, id, options, callTarget) {
+  const { modules, runtime } = context
+  const { Effect } = modules
+  const models = modules.models
+  const catalogue = models.captureModelPricingCatalogue()
+  const proxyPaths = models.captureProxyPaths()
+  const localSavings = models.captureLocalModelSavings()
+  const shape = {
+    turnsPerSession: options.turnsPerSession,
+    callsPerTurn: options.callsPerTurn,
+    msgBytes: options.msgBytes,
+    toolsPerCall: options.toolsPerCall,
+    historyDays: DEFAULTS.historyDays,
+    epochEndMs: DEFAULTS.epochEndMs,
+  }
+  const probe = makeCachedFile(0, shape, makeRng(options.seed + callTarget))
+  const firstCall = probe.cachedFile.turns[0]?.calls[0]
+  const sessionId = firstCall?.deduplicationKey.split(':')[0]
+  const searchTerm = probe.cachedFile.turns[0]?.userMessage.split(/\s+/)[0] ?? 'dashboard'
+  const scanPricing = models.captureScanPricing()
+  const ingest = runtime.runSync(modules.ledger.LedgerIngest)
+
   switch (id) {
-    case 'export:read':
-      return () => views.buildProjectsFromLedger(context.store)
-    case 'store:views':
-      return () => views.buildDashboardViewsFromLedger(context.store)
-    case 'store:analytics':
-      return () => views.buildAnalyticalViewsFromLedger(context.store)
-    case 'overview:query':
-      return () => overview.buildOverviewFromLedger(context.store, { period: 'lifetime' })
-    case 'aggregate:buildSessionSummaries':
-      return () => aggregate.buildSessionSummaries(context.store, { range: ALL_TIME_RANGE })
-    default:
-      throw new Error(`unknown operation: ${id}`)
-  }
-}
-
-/** Does this operation's RETURN VALUE cross the `worker_threads` boundary?
- *
- * Be precise about what this is: the predicate below is a HAND-WRITTEN LABEL
- * per operation, not a measurement. What IS measured is `cloneBytes`
- * (`v8.serialize` of the return value), and the label only says which value to
- * attribute that measurement to. So the answer is an ASSERTION about the code's
- * shape, backed by a real byte count - not a probe of the boundary itself.
- *
- * The assertion is `no` for almost everything, and it is checkable by reading
- * the arm rather than by running it: the worker posts `{id, op, args}` inward
- * and the op's return value outward (`db-worker/client.ts:253`), so the four
- * bulk reads and the 447 MiB `ProjectSummary[]` never travel - they are built,
- * Zod-validated and aggregated on the same thread that read them. Only the
- * finished view payload is cloned back to the main process, and that payload
- * measures in the single-digit-to-low-tens KiB.
- *
- * The label is per operation, not per value: `export:read` times
- * `buildProjectsFromLedger` in isolation (that is the expensive half of the
- * export arm), but the arm itself at `db-worker/context.ts:816` returns
- * `{ok, path}` after writing the file, so nothing of that size is posted. */
-function crossesBoundary(id) {
-  return id === 'store:views' || id === 'store:analytics' || id === 'overview:query'
-}
-
-function runReadsBundle(context, facts, options) {
-  const { sqlite } = loadRealModules()
-  const store = context.store
-  const raw = new sqlite.NodeSqliteDatabase(context.dbPath)
-  const results = []
-  let maxRssBytes
-  // Everything in this bundle is in-process on the worker thread, so the
-  // `crossesWorkerBoundary` answer is the same for all three shapes and is
-  // stated once here rather than three times below.
-  const shape = { runs: options.runs, warmup: options.warmup, crossesWorkerBoundary: false }
-  try {
-    for (const name of BULK_READS) {
-      results.push(
-        measure(`read:${name}`, () => store[name](), {
-          ...shape,
-          note: 'LedgerStore -> runRepositorySync -> LedgerRepository -> SqlClient -> node:sqlite -> z.array(rowSchema).parse',
-        }),
-      )
-      results.push(
-        measure(`sql:${name}`, () => raw.prepare(facts[name].sql).all(), {
-          ...shape,
-          note: 'same SELECT text, same SqlClient, no repository layer and no Zod parse (attribution only)',
-        }),
-      )
+    case 'ingest:portIn': {
+      const input = {
+        provider: probe.provider,
+        envFingerprint: probe.envFingerprint,
+        filePath: probe.filePath,
+        verdict: 'modified',
+        cachedFile: probe.cachedFile,
+        repoUrl: `https://github.com/acme/${probe.project}`,
+        project: probe.project,
+        workingDirectory: probe.cachedFile.workingDirectory,
+      }
+      return { makeEffect: () => ingest.portIn(input, scanPricing), crossesWorkerBoundary: false }
     }
-    // aggregate.ts:520 reads sources a second time inside buildSessionSummaries.
-    const aggregation = measure(
-      'agg:buildSessionSummaries',
-      singleOperation(context, 'aggregate:buildSessionSummaries'),
-      {
-        ...shape,
-        note: 'store/aggregate.ts:493 — all four reads plus a fifth getSources at :520',
-      },
-    )
-    results.push(aggregation)
-    // Captured before the two extra reads below, so the process high-water mark
-    // reported for this child belongs to the measured operations only.
-    maxRssBytes = process.resourceUsage().maxRSS * 1024
-    aggregation.turnColumnBytes = columnByteBreakdown(store.getTurns())
-    aggregation.callColumnBytes = columnByteBreakdown(store.getCalls())
-  } finally {
-    raw.close()
+    case 'fx:refresh-rate': {
+      const rates = modules.ledger.LedgerConfig
+      const prepare = () =>
+        runtime.runPromise(
+          Effect.gen(function* () {
+            const config = yield* rates
+            yield* config.setDisplayCurrency('EUR')
+            yield* config.setCurrencyRate({
+              code: 'EUR',
+              symbol: '€',
+              rate: 0.9,
+              updatedAt: '2000-01-01T00:00:00.000Z',
+            })
+          }),
+        )
+      return {
+        makeEffect: () => modules.fx.refreshFxRateWithRates('EUR'),
+        prepare,
+        crossesWorkerBoundary: true,
+      }
+    }
+    case 'store:projects':
+      return {
+        makeEffect: () => modules.rowQueries.queryProjectRows({ catalogue }),
+        crossesWorkerBoundary: true,
+      }
+    case 'store:sessions':
+      return {
+        makeEffect: () => modules.rowQueries.querySessionRows({ catalogue, filter: {} }),
+        crossesWorkerBoundary: true,
+      }
+    case 'store:session':
+      if (!sessionId) throw new Error('fixture has no session ID for detail query')
+      return {
+        makeEffect: () => modules.sessionDetail.querySessionDetail({ catalogue, proxyPaths, sessionId }),
+        crossesWorkerBoundary: true,
+      }
+    case 'store:session:missing':
+      return {
+        makeEffect: () =>
+          modules.sessionDetail.querySessionDetail({
+            catalogue,
+            proxyPaths,
+            sessionId: 'measurement-missing-session',
+          }),
+        crossesWorkerBoundary: true,
+      }
+    case 'store:search':
+      return {
+        makeEffect: () => modules.sessionSearch.querySessionSearch({ catalogue, query: searchTerm }),
+        crossesWorkerBoundary: true,
+      }
+    case 'store:search:blank':
+      return {
+        makeEffect: () => modules.sessionSearch.querySessionSearch({ catalogue, query: '   ' }),
+        crossesWorkerBoundary: true,
+      }
+    case 'overview:query':
+      return {
+        makeEffect: () =>
+          modules.overview.queryOverview({ scope: { period: 'lifetime' }, catalogue, proxyPaths, localSavings }),
+        crossesWorkerBoundary: true,
+      }
+    case 'store:analytics':
+      return {
+        makeEffect: () => modules.views.queryAnalyticalViews({ catalogue, proxyPaths }),
+        calculationInputs: { catalogue, proxyPaths },
+        crossesWorkerBoundary: true,
+      }
+    case 'store:views':
+      return {
+        makeEffect: () => modules.views.queryDashboardViews({ catalogue, proxyPaths }),
+        calculationInputs: { catalogue, proxyPaths },
+        crossesWorkerBoundary: true,
+      }
+    case 'export:read':
+      return {
+        makeEffect: () =>
+          modules.exportQuery.queryExport({
+            kind: 'json',
+            outputPath: 'measurement-output.json',
+            catalogue,
+            proxyPaths,
+          }),
+        crossesWorkerBoundary: true,
+      }
+    default:
+      throw new Error(`unknown Effect operation: ${id}`)
   }
-  return { results, maxRssBytes }
 }
 
 // ── Child mode (one operation per process) ────────────────────────────────
 
 const RESULT_PREFIX = '@@measure-query-path@@'
 
-function runAsChild(options) {
-  const facts = readBulkReadFacts()
-  const context = { store: openLedger(options.tmp, options.db), dbPath: options.db }
-  const operation = OPERATIONS.find(candidate => candidate.id === options.ops[0]) || { kind: 'single' }
+async function runAsChild(options) {
+  const id = options.ops[0]
   let payload
+  const instrumentation = watchNativeStatements()
+  const modules = loadEffectModules()
+  const runtime = openEffectRuntime(options.tmp, options.db, effectOverrides(modules))
   try {
-    if (operation.kind === 'bundle') {
-      payload = runReadsBundle(context, facts, options)
-    } else {
-      payload = {
-        results: [
-          measure(options.ops[0], singleOperation(context, options.ops[0]), {
-            runs: options.runs,
-            warmup: options.warmup,
-            crossesWorkerBoundary: crossesBoundary(options.ops[0]),
-            note: operation.description,
-          }),
-        ],
-        maxRssBytes: process.resourceUsage().maxRSS * 1024,
-      }
+    const context = { modules, runtime }
+    const operation = effectOperation(
+      context,
+      id,
+      options,
+      Number(path.basename(options.db).match(/(\d+)/)?.[1] ?? 1000),
+    )
+    instrumentation.reset()
+    const measured = await measureAsync(
+      id,
+      () => runtime.runPromise(operation.makeEffect()),
+      {
+        runs: options.runs,
+        warmup: options.warmup,
+        crossesWorkerBoundary: operation.crossesWorkerBoundary,
+        note: operation.description ?? EFFECT_OPERATIONS.find(candidate => candidate.id === id)?.description,
+      },
+      'effect',
+      instrumentation,
+      operation.prepare,
+    )
+    const maxRssBytes = process.resourceUsage().maxRSS * 1024
+    if (id === 'store:views' || id === 'store:analytics') {
+      measured.viewInputProbe = await measureViewInputProbe(
+        runtime,
+        modules,
+        instrumentation,
+        id,
+        operation.calculationInputs,
+      )
+      const timedConnectionIds = new Set([
+        ...measured.coldNative.connectionIds,
+        ...measured.warmNative.flatMap(sample => sample.connectionIds),
+      ])
+      measured.viewInputProbe.connectionIdsMatchTimedSamples =
+        measured.viewInputProbe.nativeStatements.connectionIds.length > 0 &&
+        measured.viewInputProbe.nativeStatements.connectionIds.every(connectionId =>
+          timedConnectionIds.has(connectionId),
+        )
     }
+    payload = { results: [measured], maxRssBytes }
   } finally {
-    context.store.close()
+    modules.Effect.runSync(runtime.disposeEffect)
+    instrumentation.restore()
   }
   // `childMaxRssBytes` is the whole process high-water mark, so for a bundle it
   // covers every operation in the bundle, not one of them.
-  for (const result of payload.results) result.childMaxRssBytes = payload.maxRssBytes
+  for (const result of payload.results) {
+    result.engine ??= options.engine
+    result.childMaxRssBytes = payload.maxRssBytes
+    result.childMaxRssScope = MEASUREMENT_METHOD.childMaxRssBytes
+  }
   process.stdout.write(`${RESULT_PREFIX}${JSON.stringify({ op: options.ops[0], ...payload })}\n`)
   return 0
 }
@@ -1038,6 +1392,7 @@ function childArgs(options, opId, dbPath) {
     SCRIPT_PATH,
     `--db=${dbPath}`,
     `--ops=${opId}`,
+    `--engine=${options.engine}`,
     `--runs=${options.runs}`,
     `--warmup=${options.warmup}`,
     `--tmp=${path.dirname(dbPath)}`,
@@ -1047,12 +1402,22 @@ function childArgs(options, opId, dbPath) {
 function runChild(options, opId, dbPath, log) {
   return new Promise(resolve => {
     const started = performance.now()
-    const child = spawn(process.execPath, childArgs(options, opId, dbPath), {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    let child
+    try {
+      child = spawn(process.execPath, childArgs(options, opId, dbPath), {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      resolve({ op: opId, engine: options.engine, error: `child spawn failed: ${error.message}` })
+      return
+    }
+
     let stdout = ''
     let stderr = ''
     let settled = false
+    let timedOut = false
+    let spawnError
+    let killError
     const settle = value => {
       if (settled) return
       settled = true
@@ -1060,13 +1425,12 @@ function runChild(options, opId, dbPath, log) {
       resolve(value)
     }
     const timer = setTimeout(() => {
-      child.kill('SIGKILL')
-      settle({
-        op: opId,
-        timeout: true,
-        childProcessMs: Math.round(performance.now() - started),
-        stderr: stderr.slice(-800),
-      })
+      timedOut = true
+      try {
+        if (!child.kill('SIGKILL')) killError = 'kill returned false'
+      } catch (error) {
+        killError = String(error.message ?? error).slice(0, 200)
+      }
     }, options.childTimeoutMs)
     child.stdout.on('data', chunk => {
       stdout += chunk
@@ -1074,16 +1438,73 @@ function runChild(options, opId, dbPath, log) {
     child.stderr.on('data', chunk => {
       stderr += chunk
     })
-    child.on('error', error => settle({ op: opId, error: error.message }))
+    child.on('error', error => {
+      if (timedOut) killError ??= String(error.message ?? error).slice(0, 200)
+      else spawnError = error
+    })
     child.on('close', code => {
+      if (spawnError) {
+        settle({
+          op: opId,
+          engine: options.engine,
+          error: `child spawn failed: ${String(spawnError.message ?? spawnError).slice(0, 800)}`,
+          stderr: stderr.slice(-800),
+        })
+        return
+      }
+      if (timedOut) {
+        settle({
+          op: opId,
+          engine: options.engine,
+          timeout: true,
+          childProcessMs: Math.round(performance.now() - started),
+          ...(killError ? { killError } : {}),
+          stderr: stderr.slice(-800),
+        })
+        return
+      }
+      if (code !== 0) {
+        settle({ op: opId, engine: options.engine, error: `child exited ${code}`, stderr: stderr.slice(-800) })
+        return
+      }
       const line = stdout.split('\n').find(entry => entry.startsWith(RESULT_PREFIX))
       if (!line) {
         log(`    ${opId} produced no result (exit ${code})`)
-        settle({ op: opId, error: `no result (exit ${code})`, stderr: stderr.slice(-800) })
+        settle({ op: opId, engine: options.engine, error: `no result (exit ${code})`, stderr: stderr.slice(-800) })
+        return
+      }
+      const parsed = (() => {
+        try {
+          const payload = JSON.parse(line.slice(RESULT_PREFIX.length))
+          const invalidPayload =
+            payload === null ||
+            typeof payload !== 'object' ||
+            Array.isArray(payload) ||
+            payload.op !== opId ||
+            !Array.isArray(payload.results) ||
+            payload.results.length === 0 ||
+            payload.results.some(
+              result =>
+                result === null ||
+                typeof result !== 'object' ||
+                Array.isArray(result) ||
+                typeof result.op !== 'string' ||
+                !Number.isFinite(result.medianMs) ||
+                !Number.isFinite(result.minMs) ||
+                !Number.isFinite(result.maxMs) ||
+                (result.coldMs !== undefined && result.coldMs !== null && !Number.isFinite(result.coldMs)),
+            )
+          return invalidPayload ? { error: `invalid result payload for ${opId}` } : { payload }
+        } catch (error) {
+          return { error: `invalid result JSON: ${error.message}` }
+        }
+      })()
+      if (parsed.error) {
+        settle({ op: opId, engine: options.engine, error: parsed.error, stderr: stderr.slice(-800) })
         return
       }
       settle({
-        ...JSON.parse(line.slice(RESULT_PREFIX.length)),
+        ...parsed.payload,
         childProcessMs: Math.round(performance.now() - started),
       })
     })
@@ -1129,21 +1550,6 @@ function formatMs(ms) {
   return `${ms.toFixed(1)} ms`
 }
 
-function staticFactNotes(facts) {
-  const notes = []
-  for (const [name, fact] of Object.entries(facts)) {
-    if (fact.hasWhere) notes.push(`${name} now has a WHERE clause — the "zero WHERE" claim no longer holds`)
-    if (fact.hasLimit) notes.push(`${name} now has a LIMIT — the "zero LIMIT" claim no longer holds`)
-  }
-  if (facts.getCalls.selectedColumns !== 37) {
-    notes.push(`getCalls selects ${facts.getCalls.selectedColumns} columns, not the 37 this study recorded`)
-  }
-  if (facts.getTurns.jsonColumns !== 2) {
-    notes.push(`getTurns carries ${facts.getTurns.jsonColumns} *_json columns, not the 2 this study recorded`)
-  }
-  return notes
-}
-
 function renderReport(result) {
   const lines = []
   lines.push('measure-query-path — ledger query path, measured on the real code')
@@ -1152,13 +1558,21 @@ function renderReport(result) {
   lines.push(
     `node     ${result.machine.node} · ${formatBytes(result.machine.totalMemoryBytes)} RAM · db on ${result.machine.tempDir}`,
   )
-  lines.push(`git      HEAD ${result.git.commit}${result.git.dirty ? ' (src/ modified in the working tree)' : ''}`)
+  lines.push(
+    `git      HEAD ${result.git.commit}${result.git.dirty ? ' (measured files are modified in the working tree)' : ''}`,
+  )
+  lines.push(`engine   ${result.engines.join(', ')}`)
+  lines.push(`method   v${result.measurementVersion} · ${result.measurementMethod.resultRetention}`)
+  lines.push(`RSS      ${result.measurementMethod.childMaxRssBytes}`)
+  for (const note of result.measurementLimits) lines.push(`LIMIT    ${note}`)
   lines.push(
     `shape    seed=${result.shape.seed} turnsPerSession=${result.shape.turnsPerSession} callsPerTurn=${result.shape.callsPerTurn} msgBytes=${result.shape.msgBytes} toolsPerCall=${result.shape.toolsPerCall} runs=${result.shape.runs} warmup=${result.shape.warmup}`,
   )
-  lines.push(
-    `static   getCalls selects ${result.staticFacts.getCalls.selectedColumns} columns (${result.staticFacts.getCalls.jsonColumns} *_json); no WHERE and no LIMIT in any of the four bulk reads`,
-  )
+  if (result.staticFacts) {
+    lines.push(
+      `legacy   getCalls selects ${result.staticFacts.getCalls.selectedColumns} columns (${result.staticFacts.getCalls.jsonColumns} *_json); static SQL facts apply to legacy comparisons only`,
+    )
+  }
   for (const note of result.staticFactNotes) lines.push(`NOTE     ${note}`)
   lines.push('')
 
@@ -1169,7 +1583,7 @@ function renderReport(result) {
     )
     lines.push('')
     lines.push(
-      '   operation                       median (ms)     min .. max (ms)     peak RSS Δ   peak heap Δ    clone bytes      rows  wire',
+      '   engine:operation                cold ms   median (ms)     min .. max (ms)     peak RSS Δ   peak heap Δ    clone bytes      rows  SQL',
     )
     lines.push(`   ${'-'.repeat(128)}`)
     for (const entry of size.operations) {
@@ -1184,6 +1598,8 @@ function renderReport(result) {
       // One cell per column of the header above, so the padding widths are
       // readable next to the labels they align with instead of buried in a
       // single template literal.
+      const coldCell =
+        entry.coldMs === null || entry.coldMs === undefined ? 'n/a'.padStart(8) : entry.coldMs.toFixed(1).padStart(8)
       const medianCell = entry.medianMs.toFixed(1).padStart(11)
       const rangeCell = `${entry.minMs.toFixed(1).padStart(8)} .. ${entry.maxMs.toFixed(1).padStart(8)}`
       const rssCell = formatBytes(entry.maxRssDeltaBytes).padStart(9)
@@ -1191,11 +1607,23 @@ function renderReport(result) {
       const cloneCell = formatBytes(entry.cloneBytes).padStart(11)
       const rowsCell = String(entry.rows ?? '-').padStart(9)
       lines.push(
-        `   ${entry.op.padEnd(30)} ${medianCell}    ${rangeCell}   ${rssCell}  ${heapCell}   ${cloneCell}  ${rowsCell}   ${entry.crossesWorkerBoundary ? 'yes' : 'no'}`,
+        `   ${`${entry.engine ?? 'legacy'}:${entry.op}`.padEnd(30)} ${coldCell} ${medianCell}    ${rangeCell}   ${rssCell}  ${heapCell}   ${cloneCell}  ${rowsCell}   ${entry.warmNative ? entry.warmNative.at(-1).statementCount : 'n/a'}`,
       )
+      if (entry.viewInputProbe) {
+        const probe = entry.viewInputProbe
+        lines.push(
+          `      untimed view input probe: ${probe.nativeStatements.selectCount} SELECTs, ${probe.selectedRows.toLocaleString('en-US')} rows, ${formatBytes(probe.rawSelectedSerializedBytes)} raw / ${formatBytes(probe.decodedDtoSerializedBytes)} decoded, connection match=${probe.connectionIdsMatchTimedSamples}`,
+        )
+        lines.push(
+          `      read phase: ${probe.phases.read.wallMs.toFixed(2)} ms wall = ${probe.phases.read.nativeSqlMs.toFixed(2)} ms native + ${probe.phases.read.nonSqlReadMs.toFixed(2)} ms residual; heap Δ ${formatBytes(probe.phases.read.memory.heapBytes)}, RSS Δ ${formatBytes(probe.phases.read.memory.rssBytes)}`,
+        )
+        lines.push(
+          `      calculation phase (${probe.phases.calculation.label}): ${probe.phases.calculation.wallMs.toFixed(2)} ms; heap Δ ${formatBytes(probe.phases.calculation.memory.heapBytes)}, RSS Δ ${formatBytes(probe.phases.calculation.memory.rssBytes)}; excludes diagnostics and wire validation`,
+        )
+      }
     }
     lines.push('')
-    const column = size.operations.find(entry => entry.op === 'agg:buildSessionSummaries')
+    const column = size.operations.find(entry => entry.engine === 'legacy' && entry.op === 'agg:buildSessionSummaries')
     if (column && column.turnColumnBytes) {
       const top = entries =>
         Object.entries(entries)
@@ -1220,7 +1648,6 @@ function renderReport(result) {
 }
 
 async function runAsParent(options, log) {
-  const facts = readBulkReadFacts()
   const machine = machineInfo()
   const git = readGitState()
   const tempRoot = path.resolve(options.tmp || os.tmpdir())
@@ -1228,6 +1655,9 @@ async function runAsParent(options, log) {
   const parent = mkdtempSync(path.join(tempRoot, 'wt-query-path-'))
   const result = {
     generatedAt: new Date().toISOString(),
+    measurementVersion: MEASUREMENT_VERSION,
+    measurementMethod: MEASUREMENT_METHOD,
+    measurementLimits: MEASUREMENT_LIMITS,
     machine,
     git,
     shape: {
@@ -1240,15 +1670,29 @@ async function runAsParent(options, log) {
       msgBytes: options.msgBytes,
       toolsPerCall: options.toolsPerCall,
     },
-    staticFacts: Object.fromEntries(Object.entries(facts).map(([name, fact]) => [name, { ...fact, sql: undefined }])),
+    engines: ['effect'],
+    staticFacts: null,
     sizes: [],
   }
-  result.staticFactNotes = staticFactNotes(facts)
-  const selected = options.ops ? OPERATIONS.filter(operation => options.ops.includes(operation.id)) : OPERATIONS
+  result.staticFactNotes = []
+  const operationsByEngine = { effect: EFFECT_OPERATIONS }
+  const engines = result.engines
+  const selectedByEngine = Object.fromEntries(
+    engines.map(engine => [
+      engine,
+      options.ops
+        ? operationsByEngine[engine].filter(operation => options.ops.includes(operation.id))
+        : operationsByEngine[engine],
+    ]),
+  )
+  const selected = engines.flatMap(engine => selectedByEngine[engine].map(operation => ({ ...operation, engine })))
   if (selected.length === 0) {
-    throw new Error(`--ops matched nothing; available: ${OPERATIONS.map(o => o.id).join(', ')}`)
+    const available = engines.flatMap(engine =>
+      operationsByEngine[engine].map(operation => `${engine}:${operation.id}`),
+    )
+    throw new Error(`--ops matched nothing; available: ${available.join(', ')}`)
   }
-  result.selectedOps = selected.map(operation => operation.id)
+  result.selectedOps = selected.map(operation => ({ engine: operation.engine, id: operation.id }))
 
   try {
     for (const calls of options.sizes) {
@@ -1257,8 +1701,8 @@ async function runAsParent(options, log) {
       const built = buildLedger(parent, dbPath, calls, options, log)
       const entry = { ...built, operations: [] }
       for (const operation of selected) {
-        log(`  measuring ${operation.id} at ${calls.toLocaleString('en-US')} rows …`)
-        const outcome = await runChild(options, operation.id, dbPath, log)
+        log(`  measuring ${operation.engine}:${operation.id} at ${calls.toLocaleString('en-US')} rows …`)
+        const outcome = await runChild({ ...options, engine: operation.engine }, operation.id, dbPath, log)
         entry.operations.push(...(outcome.results ?? [outcome]))
         entry.maxRssBytes = Math.max(entry.maxRssBytes ?? 0, outcome.maxRssBytes ?? 0)
       }
@@ -1279,6 +1723,19 @@ async function runAsParent(options, log) {
       }
     }
   }
+  result.failures = result.sizes.flatMap(size =>
+    size.operations.flatMap(operation => {
+      if (!operation.error && !operation.timeout) return []
+      return [
+        {
+          size: size.rows.ledger_call,
+          engine: operation.engine,
+          op: operation.op,
+          error: operation.error ?? 'timeout',
+        },
+      ]
+    }),
+  )
   return result
 }
 
@@ -1287,24 +1744,43 @@ async function runAsParent(options, log) {
 // measures something else and the previous table is stale.
 const MEASURED_SOURCES = [
   'scripts/measure-query-path.cjs',
-  'scripts/query-sql-source.cjs',
-  'src/main/store/ledger.ts',
   'src/main/store/ledger-initialization.ts',
   'src/main/store/ledger-ports.ts',
   'src/main/store/ledger-repository.ts',
-  'src/main/store/aggregate.ts',
+  'src/main/store/ledger-session-reads.ts',
+  'src/main/store/session-read-projections.ts',
+  'src/main/store/ledger-view-reads.ts',
+  'src/main/store/view-read-projections.ts',
+  'src/main/store/export-read-projections.ts',
+  'src/main/store/ledger-export-reads.ts',
+  'src/main/export-rows-calculation.ts',
   'src/main/store/aggregate-calculation.ts',
-  'src/main/store/query-snapshot.ts',
   'src/main/store/ledger-query-snapshot.ts',
   'src/main/store/port.ts',
-  'src/main/store/node-sqlite-client.ts',
-  'src/main/views.ts',
+  'src/main/store-rows-calculation.ts',
+  'src/main/canonical-session-project.ts',
+  'src/main/session-detail-calculation.ts',
+  'src/main/session-search-calculation.ts',
+  'src/main/export-calculation.ts',
+  'src/main/fx-calculation.ts',
+  'src/main/worker-runtime.ts',
+  'src/main/application/store-row-queries.ts',
+  'src/main/application/session-detail-query.ts',
+  'src/main/application/session-search-query.ts',
+  'src/main/application/overview-query.ts',
   'src/main/views-calculation.ts',
+  'src/main/view-aggregate-calculation.ts',
   'src/main/application/view-queries.ts',
+  'src/main/application/export-query.ts',
+  'src/main/application/export-files.ts',
   'src/main/application/pricing-diagnostics.ts',
-  'src/main/overview.ts',
+  'src/main/fx.ts',
+  'src/main/pipeline/fetch-utils.ts',
+  'src/main/export-files-live.ts',
   'src/main/db-worker/context.ts',
   'src/main/pipeline/models.ts',
+  'src/main/pipeline/types.ts',
+  'src/main/pipeline/scan-pricing.ts',
   'src/main/pipeline/pricing-calculation.ts',
   'src/main/pipeline/pricing-diagnostics.ts',
   'src/main/pipeline/model-names.ts',
@@ -1312,7 +1788,11 @@ const MEASURED_SOURCES = [
   'src/main/pipeline/parser-calculations.ts',
   'src/main/pipeline/session-row.ts',
   'src/main/pipeline/parser.ts',
+  'src/shared/schemas/session-cache.ts',
+  'src/shared/schemas/export.ts',
+  'src/shared/schemas/fx.ts',
   'src/shared/schemas/ledger.ts',
+  'src/shared/schemas/views.ts',
 ]
 
 function readGitState() {
@@ -1320,7 +1800,7 @@ function readGitState() {
   for (const relative of MEASURED_SOURCES) {
     const file = path.join(REPO_ROOT, relative)
     measuredSources[relative] = existsSync(file)
-      ? require('node:crypto').createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 16)
+      ? require('node:crypto').createHash('sha256').update(readFileSync(file)).digest('hex')
       : 'missing'
   }
   try {
@@ -1348,7 +1828,7 @@ async function main() {
     return 0
   }
   // Child mode is reached only with an explicit --db, which the parent sets and
-  // openLedger then confines to the measurement temp directory.
+  // openEffectRuntime then confines to the measurement temp directory.
   if (options.db) return runAsChild(options)
 
   const log = line => {
@@ -1366,15 +1846,19 @@ async function main() {
     writeFileSync(options.out, `${JSON.stringify(result, null, 2)}\n`)
     log(`  wrote ${options.out}`)
   }
-  return 0
+  return result.failures.length > 0 ? 1 : 0
 }
 
-main().then(
-  code => {
-    process.exitCode = code
-  },
-  error => {
-    process.stderr.write(`measure-query-path: ${error && error.stack ? error.stack : error}\n`)
-    process.exitCode = 1
-  },
-)
+if (require.main === module) {
+  main().then(
+    code => {
+      process.exitCode = code
+    },
+    error => {
+      process.stderr.write(`measure-query-path: ${error && error.stack ? error.stack : error}\n`)
+      process.exitCode = 1
+    },
+  )
+} else {
+  module.exports = { measure, measureAsync, measureViewInputProbe, watchNativeStatements }
+}

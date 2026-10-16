@@ -1,9 +1,11 @@
 import { Worker } from 'node:worker_threads'
 
 import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 
@@ -146,6 +148,8 @@ export class DbWorkerClient {
   private nextId = 1
   private pending = new Map<number, { resolve: (data: unknown) => void; reject: (err: Error) => void }>()
   private inflightReads = new Map<string, Promise<unknown>>()
+  /** Advances when a broadcast means an in-flight read may have gone stale. */
+  private dataRevision = 0
   private eventListeners = new Set<(event: DbWorkerEvent) => void>()
   private intentionalTeardown = false
   /** Non-null while a stuck abort is terminating the old worker and booting
@@ -154,6 +158,9 @@ export class DbWorkerClient {
   /** The incarnation being forcibly retired; its late events are ignored. */
   private retiringWorker: DbWorkerPort | null = null
   private termination: { worker: DbWorkerPort; promise: Promise<void> } | null = null
+  /** The crash backoff started by the native exit callback, interrupted and
+   * joined before this client's shutdown completes. */
+  private respawnFiber: Fiber.Fiber<void, never> | null = null
   private currentReady: ReadyHandshake
   /** True once the CURRENT worker incarnation posted `ready`. Gates respawn:
    * only a worker that once lived is recreated. */
@@ -190,7 +197,7 @@ export class DbWorkerClient {
     worker.on('message', (raw: unknown) => this.onMessage(raw, worker, handshake))
     worker.on('error', (raw: unknown) => {
       if (this.worker !== worker || this.retiringWorker === worker) return
-      const err = raw instanceof Error ? raw : new Error(String(raw))
+      const err = raw instanceof Error ? raw : new Error('The database worker failed.')
       for (const { reject } of this.pending.values()) reject(err)
       this.pending.clear()
       this.inflightReads.clear()
@@ -231,14 +238,10 @@ export class DbWorkerClient {
       // (TestClock in tests — no raw `setTimeout`). In-flight calls are
       // already rejected above: no replay, exactly as before. Never-lived
       // workers return early above and never enter this path.
-      const nowMs = Date.now()
       this.currentReady = createReadyHandshake()
-      const attempt = nextRespawnAttempt(this.consecutiveCrashes, nowMs, this.lastCrashAtMs)
-      this.consecutiveCrashes = attempt
-      this.lastCrashAtMs = nowMs
       // Recreate so the app keeps serving reads; the renderer already shows
       // error states for the rejected in-flight calls.
-      void Effect.runPromise(this.respawnAfterCrashEffect(attempt, code))
+      this.respawnFiber = Effect.runFork(this.respawnAfterExitEffect(code))
     })
   }
 
@@ -264,14 +267,41 @@ export class DbWorkerClient {
         handshake.reject(new Error(raw.error))
         return
       }
+      if (raw.event === 'store:changed' || raw.event === 'config:changed') this.dataRevision++
       for (const listener of this.eventListeners) listener(raw)
     }
   }
 
   private send(op: string, args: unknown[] = []): Promise<unknown> {
+    const isShutdown = op === 'shutdown'
+    if (this.intentionalTeardown && !isShutdown && this.worker)
+      return Promise.reject(new Error('data worker shut down'))
     const recovery = this.recovery
-    if (recovery) return recovery.then(() => this.sendTo(this.worker, op, args))
+    if (recovery)
+      return recovery.then(() => {
+        if (this.intentionalTeardown && !isShutdown && this.worker)
+          return Promise.reject(new Error('data worker shut down'))
+        return this.sendTo(this.worker, op, args)
+      })
     return this.sendTo(this.worker, op, args)
+  }
+
+  /** Repeat a read if a mutation broadcast overtook its worker response. */
+  private stableReadEffect(op: string, args: unknown[]): Effect.Effect<unknown, unknown> {
+    const isShuttingDown = (): boolean => this.intentionalTeardown
+    const revision = (): number => this.dataRevision
+    const send = (): Promise<unknown> => this.send(op, args)
+    return Effect.gen(function* () {
+      while (true) {
+        if (isShuttingDown()) return yield* Effect.fail(new Error('data worker shut down'))
+        const requestedRevision = revision()
+        const value = yield* Effect.tryPromise({
+          try: send,
+          catch: cause => cause,
+        })
+        if (requestedRevision === revision()) return value
+      }
+    })
   }
 
   private sendTo(worker: DbWorkerPort | null, op: string, args: unknown[] = []): Promise<unknown> {
@@ -283,21 +313,22 @@ export class DbWorkerClient {
     })
   }
 
-  /** Invoke one worker op. Identical pure-read ops already in flight share a
-   * single execution; everything else always runs. Fire-and-forget callers
-   * pass no args and ignore the (null) resolution. */
+  /** Invoke one worker op. Identical pure-read ops share one flight; if a
+   * mutation overtakes its response, that flight re-reads before resolving. */
   request(op: string, ...args: unknown[]): Promise<unknown> {
     if (op === 'scan:abort') return this.abortScan(args)
     if (!DEDUPABLE_OPS.has(op)) return this.send(op, args)
-    let key: string | null = null
+    let flightArgs: unknown[]
+    let key: string
     try {
-      key = `${op}\n${JSON.stringify(args)}`
+      flightArgs = structuredClone(args)
+      key = `${op}\n${JSON.stringify(flightArgs)}`
     } catch {
       return this.send(op, args)
     }
     const hit = this.inflightReads.get(key)
     if (hit) return hit
-    const flight = this.send(op, args)
+    const flight = Effect.runPromise(this.stableReadEffect(op, flightArgs))
     this.inflightReads.set(key, flight)
     const forget = (): void => {
       if (this.inflightReads.get(key) === flight) this.inflightReads.delete(key)
@@ -474,22 +505,34 @@ export class DbWorkerClient {
    * this deadline — no second runtime, no shared SQLite state.
    */
   shutdownEffect(timeoutMs = 2000): Effect.Effect<void> {
-    return awaitGracefulShutdown(() => this.send('shutdown'), timeoutMs).pipe(
-      Effect.ensuring(this.terminateWorkerEffect()),
+    const teardown = this.interruptRespawnEffect().pipe(Effect.andThen(this.terminateWorkerEffect()))
+    return Effect.sync(() => {
+      this.intentionalTeardown = true
+    }).pipe(
+      Effect.andThen(this.interruptRespawnEffect()),
+      Effect.andThen(awaitGracefulShutdown(() => this.send('shutdown'), timeoutMs)),
+      Effect.ensuring(teardown),
     )
   }
 
   /**
-   * Delayed crash-respawn behind `worker.on('exit')` (ADR 0023 + Wave 7 §4.4):
-   * files the scheduling record, sleeps the attempt's capped+jittered
-   * exponential backoff on the Effect Clock, then recreates the worker —
-   * unless torn down meanwhile. attempt/backoff ride the allowlisted `count`
-   * + `label` fields (the sanitizer drops any other key, so no bespoke field
-   * names here). Exposed (additive) so tests run it under `TestClock`;
-   * production runs it via the exit handler with the live Clock — the same
-   * seam shape as `shutdownEffect`. Never fails: a respawn that cannot sleep
-   * or spawn must not surface as a rejection.
+   * Captures the crash time on the Effect Clock, updates the streak/reset
+   * policy, then runs the delayed respawn. Production enters from the worker's
+   * exit handler; exposed so the clock-dependent policy is testable under
+   * `TestClock`.
    */
+  respawnAfterExitEffect(exitCode: string): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const nowMs = yield* Clock.currentTimeMillis
+      const attempt = nextRespawnAttempt(this.consecutiveCrashes, nowMs, this.lastCrashAtMs)
+      this.consecutiveCrashes = attempt
+      this.lastCrashAtMs = nowMs
+      yield* this.respawnAfterCrashEffect(attempt, exitCode)
+    })
+  }
+
+  /** Sleeps the attempt's capped+jittered backoff, logs it and respawns unless
+   * torn down meanwhile. Never fails: sleep and spawn failures stay contained. */
   respawnAfterCrashEffect(attempt: number, exitCode: string): Effect.Effect<void> {
     // Arrow closure (NOT a `self` alias): lexical `this`, same shape as
     // `terminateWorkerEffect`'s `takeWorker` below. Returns an Effect rather
@@ -560,6 +603,21 @@ export class DbWorkerClient {
           Effect.ignore,
         )
       }
+    })
+  }
+
+  private interruptRespawnEffect(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      const fiber = this.respawnFiber
+      if (!fiber) return Effect.void
+      return Fiber.interrupt(fiber).pipe(
+        Effect.asVoid,
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (this.respawnFiber === fiber) this.respawnFiber = null
+          }),
+        ),
+      )
     })
   }
 

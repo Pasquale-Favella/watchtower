@@ -5,7 +5,13 @@ import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 
 const roots = [
+  'src/main/view-aggregate-calculation.ts',
   'src/main/views-calculation.ts',
+  'src/main/canonical-session-project.ts',
+  'src/main/store-rows-calculation.ts',
+  'src/main/session-search-calculation.ts',
+  'src/main/session-detail-calculation.ts',
+  'src/main/ledger-mcp-calculation.ts',
   'src/main/sessions-calculation.ts',
   'src/main/models-calculation.ts',
   'src/main/overview-calculation.ts',
@@ -16,6 +22,7 @@ const roots = [
   'src/main/yield-calculation.ts',
   'src/main/optimize-calculation.ts',
   'src/main/export-calculation.ts',
+  'src/main/export-rows-calculation.ts',
   'src/main/fx-calculation.ts',
   'src/main/pipeline/pr-attribution.ts',
   'src/main/overview-scope.ts',
@@ -98,6 +105,10 @@ describe('pure view calculation boundary', () => {
         'src/main/application/yield-query.ts',
         'src/main/application/optimize-query.ts',
         'src/main/application/export-query.ts',
+        'src/main/application/store-row-queries.ts',
+        'src/main/application/session-search-query.ts',
+        'src/main/application/session-detail-query.ts',
+        'src/main/application/ledger-mcp-query.ts',
       ]),
     ).toEqual([])
   })

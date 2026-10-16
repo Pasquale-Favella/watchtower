@@ -1,17 +1,20 @@
-import { join } from 'path'
+import { Effect } from 'effect'
 import { homedir } from 'os'
+import { join } from 'path'
 
 import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { getShortModelName } from '../models.js'
+import { captureScanPricing } from '../models.js'
+import type { DateRange } from '../types.js'
 import {
-  discoverSqliteSessions,
   createSqliteSessionParser,
+  discoverSqliteSessionsEffect,
   OPENCODE_FAMILY_1X,
   OPENCODE_FAMILY_2X,
   type SqliteProviderConfig,
 } from './opencode-family-sqlite.js'
-import { discoverOpenCodeFileSessions, createOpenCodeFileSessionParser } from './opencode-file-parser.js'
-import type { Provider, ProbeRoot, SessionSource, SessionParser } from './types.js'
+import { createOpenCodeFileSessionParser, discoverOpenCodeFileSessionsEffect } from './opencode-file-parser.js'
+import type { ProbeRoot, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
 
 const toolNameMap: Record<string, string> = {
   bash: 'Bash',
@@ -79,6 +82,12 @@ export function getSqliteConfig(dataDir?: string, paths?: AppPaths): SqliteProvi
 export function createOpenCodeProvider(dataDir?: string, paths?: AppPaths): Provider {
   const sqliteConfig = getSqliteConfig(dataDir, paths)
   const resolvedDataDir = getDataDir(dataDir, paths)
+  const discoverEffect = (context?: ProviderScanContext) =>
+    Effect.gen(function* () {
+      const fileSessions = yield* discoverOpenCodeFileSessionsEffect(resolvedDataDir, 'opencode', context)
+      const sqliteSessions = yield* discoverSqliteSessionsEffect(sqliteConfig, context)
+      return [...fileSessions, ...sqliteSessions]
+    })
 
   return {
     name: 'opencode',
@@ -106,21 +115,30 @@ export function createOpenCodeProvider(dataDir?: string, paths?: AppPaths): Prov
       return [{ path: resolvedDataDir, label: 'data' }]
     },
 
-    async discoverSessions(): Promise<SessionSource[]> {
-      const fileSessions = await discoverOpenCodeFileSessions(resolvedDataDir, 'opencode')
-      const sqliteSessions = await discoverSqliteSessions(sqliteConfig)
-      return [...fileSessions, ...sqliteSessions]
+    discoverSessionsEffect(context?: ProviderScanContext) {
+      return discoverEffect(context)
     },
 
-    createSessionParser(source: SessionSource, seenKeys: Set<string>): SessionParser {
+    // Remove after external callers use discoverSessionsEffect.
+    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
+      return Effect.runPromise(discoverEffect(context))
+    },
+
+    createSessionParser(
+      source: SessionSource,
+      seenKeys: Set<string>,
+      _dateRange?: DateRange,
+      context?: ProviderScanContext,
+    ): SessionParser {
+      const pricing = context?.pricing ?? captureScanPricing(paths)
       if (source.path.endsWith('.json')) {
-        return createOpenCodeFileSessionParser(source, seenKeys, resolvedDataDir, 'opencode')
+        return createOpenCodeFileSessionParser(source, seenKeys, resolvedDataDir, 'opencode', pricing, context)
       }
       // `paths` threads straight through to the shared reader's verbose gate:
       // one trailing seam slot, no second override argument. A caller that
       // omitted it (`kilo-code.ts`) resolves `appPaths()` there instead — the
       // same lookup, at the reader rather than at the root.
-      return createSqliteSessionParser(source, seenKeys, sqliteConfig, paths)
+      return createSqliteSessionParser(source, seenKeys, sqliteConfig, paths, pricing, context)
     },
   }
 }

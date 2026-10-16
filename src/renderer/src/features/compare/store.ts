@@ -1,9 +1,11 @@
 import { create } from 'zustand'
+
 import { fetchCompare } from '@/shared/lib/api'
-import { keyOfScope, EMPTY_SCOPE, type DataStatus } from '../../app/stores/data-store'
-import { subscribeToRefresh } from '../../app/stores/scan-store'
-import type { ComparePayload, ComparePair } from '../../../../shared/schemas/compare.js'
+
+import type { ComparePair, ComparePayload } from '../../../../shared/schemas/compare.js'
 import type { OverviewScope } from '../../../../shared/schemas/overview.js'
+import { type DataStatus, EMPTY_SCOPE, keyOfScope } from '../../app/stores/data-store'
+import { subscribeToRefresh } from '../../app/stores/scan-store'
 
 /** Compare's payload: scope-keyed AND pair-keyed (a pair change is a fresh
  * load, not a SWR refresh). The pair itself stays view-local transient UI —
@@ -37,8 +39,21 @@ export const useCompareStore = create<CompareState>()((set, get) => ({
     }
     const result = await fetchCompare(scope, pair)
     if (get().dataKey !== dataKey) return
-    if (result.ok) set({ data: result.data, error: null, status: 'ready' })
-    else set({ error: result.error, status: 'ready' })
+    if (result.ok) {
+      const report = result.data?.report
+      if (pair === undefined && report) {
+        const selectedPair = { modelA: report.modelA.model, modelB: report.modelB.model }
+        set({
+          data: result.data,
+          error: null,
+          status: 'ready',
+          pair: selectedPair,
+          dataKey: keyOf(scope, selectedPair),
+        })
+      } else {
+        set({ data: result.data, error: null, status: 'ready' })
+      }
+    } else set({ error: result.error, status: 'ready' })
   },
   reload: async () => {
     if (get().dataKey === '') return

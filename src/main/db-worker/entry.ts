@@ -1,9 +1,10 @@
 import { parentPort, workerData } from 'node:worker_threads'
 
+import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 
-import { initAppPaths } from '../env.js'
-import { openWorkerOwner } from '../worker-runtime.js'
+import { initAppPaths, readAppPathsEffect } from '../env.js'
+import { openWorkerRuntime } from '../worker-runtime.js'
 import { DbWorkerContext } from './context.js'
 import { makeWorkerOperationalLogSink } from './operational-log-sink.js'
 import type { DbWorkerData, DbWorkerRequest, DbWorkerResponse } from './protocol.js'
@@ -30,20 +31,27 @@ const init = workerData as DbWorkerData
 // DB) reports and exits instead of serving errors forever — the client never
 // respawns a worker that never lived.
 try {
-  // The sync discovery paths (provider homes, platform roots, caches) still
-  // arrive via `init` — captured as the `AppPaths` startup snapshot instead of
-  // ambient env mutation. Only `cacheDir` is threaded today; the rest fall
-  // back to the same pure resolvers the `process.env` readers already use.
-  initAppPaths({ cacheDir: init.cacheDir })
+  // Capture the full sync-path snapshot before constructing the worker's
+  // provider/runtime graph. The cache root is inherited from main, keeping
+  // both isolates on the same configured location.
+  initAppPaths(
+    // This is the worker composition root, before its application runtime exists.
+    // eslint-disable-next-line no-restricted-syntax
+    Effect.runSync(
+      readAppPathsEffect(init.cacheDir).pipe(
+        Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ preserveEmptyStrings: true })),
+      ),
+    ),
+  )
 
   const logSink = makeWorkerOperationalLogSink(event => port.postMessage(event))
-  const owner = openWorkerOwner(init.dbPath, logSink)
+  const runtime = openWorkerRuntime(init.dbPath, logSink)
   let ctx: DbWorkerContext
   try {
-    ctx = new DbWorkerContext(init, event => port.postMessage(event), owner)
+    ctx = new DbWorkerContext(init, event => port.postMessage(event), { runtime })
   } catch (error) {
     try {
-      Effect.runSync(owner.runtime.disposeEffect)
+      Effect.runSync(runtime.disposeEffect)
     } catch {
       // Keep the context-construction failure as the boot error.
     }
