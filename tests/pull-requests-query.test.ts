@@ -3,7 +3,7 @@ import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
-import * as SqlError from 'effect/unstable/sql/SqlError'
+import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'

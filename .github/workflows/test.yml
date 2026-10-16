@@ -40,6 +40,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm run lint:effect
       - run: npm run format:check
 
   test:
@@ -56,3 +57,22 @@ jobs:
       - run: npm run typecheck
       - run: npm run typecheck:test
       - run: npm test -- --run
+
+  windows-process-regression:
+    name: Windows process source regressions
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Exercise Windows process cleanup and command shims
+        run: >-
+          npm test -- --run
+          tests/agents-process-tree.test.ts
+          tests/command-runner.test.ts
+          tests/command-runner-start.test.ts
+          tests/command-runner-fast-exit.test.ts

@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url'
 
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import type { SqlError } from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { GatewayReports } from '../src/main/application/gateway-reports.js'
@@ -215,7 +216,7 @@ describe('WorkerLive: Env is constructed once per worker lifetime', () => {
     const live = makeWorkerLive(join(dir, 'ledger.db'))
     // `Layer.Layer<WorkerServices>` has `never` in the R slot, so this only
     // compiles if the flat merge needs nothing from the outside.
-    const services: Layer.Layer<WorkerServices, never, never> = live
+    const services: Layer.Layer<WorkerServices, SqlError, never> = live
     const resolved = await Effect.runPromise(
       Effect.gen(function* () {
         const env = yield* Env
@@ -477,7 +478,7 @@ describe('F14: the operational Effect logger is installed in a production root',
     // structural: the live graph is still exactly `WorkerServices`, and the
     // layer is in the merge. A comment cannot prove that; the exported symbol
     // list and the `R` type can.
-    const live: Layer.Layer<WorkerServices, never, never> = makeWorkerLive(join(dir, 'ledger.db'))
+    const live: Layer.Layer<WorkerServices, SqlError, never> = makeWorkerLive(join(dir, 'ledger.db'))
     const source = readFileSync(join(repoRoot, 'src', 'main', 'worker-runtime.ts'), 'utf8')
     removeTempDir(dir)
 

@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import * as Effect from 'effect/Effect'
 import * as SchemaAST from 'effect/SchemaAST'
-import * as SqlError from 'effect/unstable/sql/SqlError'
+import * as SqlError from 'effect/sql/SqlError'
 import { describe, expect, it } from 'vitest'
 
 import { clearLedger } from '../src/main/application/clear-ledger.js'

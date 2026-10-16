@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite'
 import * as Sqlite from '@effect/sql-sqlite-node'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import * as SqlClient from 'effect/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DbWorkerContext } from '../src/main/db-worker/context.js'

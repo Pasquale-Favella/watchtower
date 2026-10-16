@@ -1,56 +1,75 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
+import * as PlatformError from 'effect/PlatformError'
+import { afterEach, describe, expect, it } from 'vitest'
 
-const fsControls = vi.hoisted(() => ({
+const fsControls = {
   interceptedPath: null as string | null,
   readStarted: null as (() => void) | null,
   readGate: null as Promise<void> | null,
   readFailurePath: null as string | null,
-  closeFailurePath: null as string | null,
-  closeCalls: 0,
-}))
-
-vi.mock('node:fs/promises', async importOriginal => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>()
-  return {
-    ...actual,
-    open: async (...args: Parameters<typeof actual.open>) => {
-      const handle = await actual.open(...args)
-      const path = args[0]
-      if (path !== fsControls.interceptedPath) return handle
-
-      return new Proxy(handle, {
-        get(target, property, receiver) {
-          if (property === 'read') {
-            return async (buffer: Buffer, offset: number, length: number, position: number) => {
-              fsControls.readStarted?.()
-              if (fsControls.readGate) await fsControls.readGate
-              if (path === fsControls.readFailurePath) throw new Error('test read failure')
-              return target.read(buffer, offset, length, position)
-            }
-          }
-          if (property === 'close') {
-            return async () => {
-              fsControls.closeCalls += 1
-              await target.close()
-              if (path === fsControls.closeFailurePath) throw new Error('test close failure')
-            }
-          }
-          const value = Reflect.get(target, property, receiver)
-          return typeof value === 'function' ? value.bind(target) : value
-        },
-      })
-    },
-  }
-})
+  missingStatPath: null as string | null,
+}
 
 import { ExportFiles } from '../src/main/application/export-files.js'
 import { ExportFilesLive } from '../src/main/export-files-live.js'
+
+const testFileSystem = Layer.effect(
+  FileSystem.FileSystem,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    return FileSystem.FileSystem.of({
+      ...fs,
+      stat: path =>
+        path === fsControls.missingStatPath
+          ? Effect.fail(PlatformError.systemError({ _tag: 'NotFound', module: 'FileSystem', method: 'stat' }))
+          : fs.stat(path),
+      open: (path, options) =>
+        fs.open(path, options).pipe(
+          Effect.map(
+            file =>
+              new Proxy(file, {
+                get(target, property, receiver) {
+                  if (property === 'read' && path === fsControls.interceptedPath) {
+                    return (buffer: Uint8Array) =>
+                      Effect.suspend(() => {
+                        fsControls.readStarted?.()
+                        const readGate = fsControls.readGate
+                        const wait = readGate ? Effect.promise(() => readGate) : Effect.void
+                        return wait.pipe(
+                          Effect.flatMap(() =>
+                            path === fsControls.readFailurePath
+                              ? Effect.fail(
+                                  PlatformError.systemError({
+                                    _tag: 'Unknown',
+                                    module: 'FileSystem',
+                                    method: 'read',
+                                    cause: new Error('test read failure'),
+                                  }),
+                                )
+                              : target.read(buffer),
+                          ),
+                        )
+                      })
+                  }
+                  const value = Reflect.get(target, property, receiver)
+                  return typeof value === 'function' ? value.bind(target) : value
+                },
+              }),
+          ),
+        ),
+    })
+  }),
+).pipe(Layer.provideMerge(NodeFileSystem.layer))
+const exportFilesLayer = ExportFilesLive.pipe(Layer.provide(testFileSystem))
 
 const directories: string[] = []
 
@@ -65,8 +84,7 @@ afterEach(() => {
   fsControls.readStarted = null
   fsControls.readGate = null
   fsControls.readFailurePath = null
-  fsControls.closeFailurePath = null
-  fsControls.closeCalls = 0
+  fsControls.missingStatPath = null
   const expectedParent = resolve(tmpdir())
   for (const directory of directories.splice(0)) {
     const target = resolve(directory)
@@ -85,7 +103,7 @@ function writeJsonWithLivePort(target: string, contents: string): Effect.Effect<
   return Effect.gen(function* () {
     const files = yield* ExportFiles
     return yield* files.writeJsonFile(target, contents)
-  }).pipe(Effect.provide(ExportFilesLive))
+  }).pipe(Effect.provide(exportFilesLayer))
 }
 
 function writeCsvWithLivePort(
@@ -96,7 +114,7 @@ function writeCsvWithLivePort(
     Effect.gen(function* () {
       const exportFiles = yield* ExportFiles
       return yield* exportFiles.writeCsvFolder(outputPath, files)
-    }).pipe(Effect.provide(ExportFilesLive)),
+    }).pipe(Effect.provide(exportFilesLayer)),
   )
 }
 
@@ -105,6 +123,16 @@ function writeJsonFileWithLivePort(target: string, contents: string): Promise<st
 }
 
 describe('export file ownership and overwrite checks', () => {
+  it('accepts a normalized missing destination without depending on a native errno cause', async () => {
+    const root = tempDirectory()
+    const target = join(root, 'new.json')
+    const contents = '{"schema":"watchtower.export.v1"}'
+    fsControls.missingStatPath = target
+
+    await expect(writeJsonFileWithLivePort(target, contents)).resolves.toBe(target)
+    expect(readFileSync(target, 'utf8')).toBe(contents)
+  })
+
   it('writes the marker, README and all nine CSV files into the resolved folder', async () => {
     const root = tempDirectory()
     const target = join(root, 'usage.csv')
@@ -155,6 +183,31 @@ describe('export file ownership and overwrite checks', () => {
     expect(readFileSync(target, 'utf-8')).toBe('keep')
   })
 
+  it('refuses symbolic link destinations without changing their targets', async () => {
+    const root = tempDirectory()
+    const markedFolder = join(root, 'marked')
+    mkdirSync(markedFolder)
+    writeFileSync(join(markedFolder, '.watchtower-export'), '')
+    writeFileSync(join(markedFolder, 'keep.txt'), 'user data')
+    const csvLink = join(root, 'linked-export')
+    await symlink(markedFolder, csvLink, 'junction')
+
+    await expect(writeCsvWithLivePort(csvLink, [])).rejects.toMatchObject({ reason: 'io-failure' })
+    expect(readFileSync(join(markedFolder, 'keep.txt'), 'utf-8')).toBe('user data')
+    if (process.platform !== 'win32') {
+      const jsonTarget = join(root, 'owned.json')
+      const original = '{"schema": "watchtower.export.v1", "old": true}'
+      writeFileSync(jsonTarget, original)
+      const jsonLink = join(root, 'linked.json')
+      await symlink(jsonTarget, jsonLink)
+
+      await expect(writeJsonFileWithLivePort(jsonLink, '{"schema":"watchtower.export.v1"}')).rejects.toMatchObject({
+        reason: 'io-failure',
+      })
+      expect(readFileSync(jsonTarget, 'utf-8')).toBe(original)
+    }
+  })
+
   it('maps filesystem failures to a typed error without exposing the target path', async () => {
     const root = tempDirectory()
     const blocker = join(root, 'file')
@@ -188,7 +241,7 @@ describe('export file ownership and overwrite checks', () => {
     expect(readFileSync(`${target}.json`, 'utf-8')).toBe('{"schema":"watchtower.export.v1"}')
   })
 
-  it('closes a pending JSON header read before honoring interruption and skips overwrite', async () => {
+  it('drains a pending JSON header read before honoring interruption and skips overwrite', async () => {
     const root = tempDirectory()
     const target = join(root, 'report.json')
     const original = '{"schema": "watchtower.export.v1", "old": true}'
@@ -211,36 +264,16 @@ describe('export file ownership and overwrite checks', () => {
     finishRead()
     await interrupted
 
-    expect(fsControls.closeCalls).toBe(1)
     expect(readFileSync(target, 'utf-8')).toBe(original)
   })
 
-  it('maps JSON close failure to io-failure and does not retry the close', async () => {
-    const root = tempDirectory()
-    const target = join(root, 'report.json')
-    const original = '{"schema": "watchtower.export.v1", "old": true}'
-    writeFileSync(target, original)
-    fsControls.interceptedPath = target
-    fsControls.closeFailurePath = target
-
-    await expect(
-      Effect.runPromise(writeJsonWithLivePort(target, '{"schema":"watchtower.export.v1"}')),
-    ).rejects.toMatchObject({
-      _tag: 'ExportFileError',
-      reason: 'io-failure',
-    })
-    expect(fsControls.closeCalls).toBe(1)
-    expect(readFileSync(target, 'utf-8')).toBe(original)
-  })
-
-  it('keeps JSON header read and close failures typed without a second close', async () => {
+  it('maps JSON header read failure to io-failure and skips overwrite', async () => {
     const root = tempDirectory()
     const target = join(root, 'report.json')
     const original = '{"schema": "watchtower.export.v1", "old": true}'
     writeFileSync(target, original)
     fsControls.interceptedPath = target
     fsControls.readFailurePath = target
-    fsControls.closeFailurePath = target
 
     await expect(
       Effect.runPromise(writeJsonWithLivePort(target, '{"schema":"watchtower.export.v1"}')),
@@ -248,7 +281,6 @@ describe('export file ownership and overwrite checks', () => {
       _tag: 'ExportFileError',
       reason: 'io-failure',
     })
-    expect(fsControls.closeCalls).toBe(1)
     expect(readFileSync(target, 'utf-8')).toBe(original)
   })
 })

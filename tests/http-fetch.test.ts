@@ -5,9 +5,9 @@ import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 import * as Metric from 'effect/Metric'
 import * as TestClock from 'effect/testing/TestClock'
-import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient'
 import { describe, expect, it, vi } from 'vitest'
 
 import {

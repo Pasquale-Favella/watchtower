@@ -1,7 +1,11 @@
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 
-import { Clock, Effect, Result, Schema, Stream } from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 
 import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'

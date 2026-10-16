@@ -1,7 +1,7 @@
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import type { SqlError } from 'effect/unstable/sql/SqlError'
+import type { SqlError } from 'effect/sql/SqlError'
 
 import { type ComparePair, type ComparePayload, comparePayloadSchema } from '../../shared/schemas/compare.js'
 import { calculateComparePayload } from '../compare-calculation.js'

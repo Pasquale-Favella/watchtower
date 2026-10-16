@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
 
-import { Predicate } from 'effect'
+import * as Predicate from 'effect/Predicate'
 
 /// Thin SQLite read-only wrapper over Node's built-in `node:sqlite` module (stable in
 /// Node 24, experimental in Node 22 / 23). Replaces the earlier `better-sqlite3` binding

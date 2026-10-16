@@ -4,7 +4,7 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import type { SchemaError } from 'effect/Schema'
 import * as Schema from 'effect/Schema'
-import type { SqlError } from 'effect/unstable/sql/SqlError'
+import type { SqlError } from 'effect/sql/SqlError'
 
 import type { ActiveCurrency } from '../shared/schemas/fx.js'
 import type { CurrencyRate } from '../shared/schemas/ledger.js'

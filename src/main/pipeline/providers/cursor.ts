@@ -1,6 +1,10 @@
 import * as fsPromises from 'node:fs/promises'
 
-import { Clock, Effect, Result, Schema, Stream } from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'

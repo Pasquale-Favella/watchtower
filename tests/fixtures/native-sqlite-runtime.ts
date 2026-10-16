@@ -1,10 +1,11 @@
 import * as Sqlite from '@effect/sql-sqlite-node'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import * as SqlClient from 'effect/sql/SqlClient'
+import type { SqlError } from 'effect/sql/SqlError'
 
 export type NativeSqliteRuntime = ManagedRuntime.ManagedRuntime<
   Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient,
-  never
+  SqlError
 >
 
 export function openNativeSqliteRuntime(filename: string): NativeSqliteRuntime {

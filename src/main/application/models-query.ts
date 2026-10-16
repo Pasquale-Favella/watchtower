@@ -1,7 +1,7 @@
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import type { SqlError } from 'effect/unstable/sql/SqlError'
+import type { SqlError } from 'effect/sql/SqlError'
 
 import { type ModelsConfig, type ModelsPayload, modelsPayloadSchema } from '../../shared/schemas/models.js'
 import { calculateModelsPayload } from '../models-calculation.js'

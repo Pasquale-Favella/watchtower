@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnosticSeverity": { "floatingEffect": "error" }
+      }
+    ]
+  },
+  "files": ["tests/lint/effect-fixtures/positive.ts"],
+  "include": []
+}

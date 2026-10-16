@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Metric from 'effect/Metric'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import * as SqlClient from 'effect/sql/SqlClient'
 import { describe, expect, it, vi } from 'vitest'
 
 import { DbWorkerContext } from '../src/main/db-worker/context.js'

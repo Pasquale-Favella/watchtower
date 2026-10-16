@@ -2,7 +2,7 @@ import * as Sqlite from '@effect/sql-sqlite-node'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import * as SqlClient from 'effect/sql/SqlClient'
 
 import { AssistantSetup } from '../../application/assistant-setup.js'
 import { queryLedgerMcpCalls, queryLedgerMcpScope } from '../../application/ledger-mcp-query.js'

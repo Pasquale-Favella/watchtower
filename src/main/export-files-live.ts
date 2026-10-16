@@ -1,131 +1,136 @@
-import { lstat, mkdir, open, readdir, rm, writeFile } from 'node:fs/promises'
+import { lstat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 
 import * as Effect from 'effect/Effect'
-import * as Exit from 'effect/Exit'
+import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
+import * as PlatformError from 'effect/PlatformError'
 
 import { ExportFileError, type ExportFileErrorReason, ExportFiles } from './application/export-files.js'
 import type { ExportFileContent } from './export-calculation.js'
 
 const EXPORT_MARKER_FILE = '.watchtower-export'
 
-function isMissing(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
-}
-
 function fileError(reason: ExportFileErrorReason): ExportFileError {
   return new ExportFileError({ reason })
 }
 
-function toFileError(error: unknown): ExportFileError {
-  return error instanceof ExportFileError ? error : fileError('io-failure')
+function isMissingNative(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
 }
 
-function io<A>(run: () => Promise<A>): Effect.Effect<A, ExportFileError> {
-  // Drain one filesystem operation if interrupted; the next composed operation remains interruptible.
-  return Effect.uninterruptible(Effect.tryPromise({ try: run, catch: toFileError }))
+function isMissingPlatform(error: PlatformError.PlatformError): boolean {
+  return error.reason._tag === 'NotFound'
 }
 
-function existingPath(path: string): Effect.Effect<Awaited<ReturnType<typeof lstat>> | null, ExportFileError> {
-  return Effect.tryPromise({ try: () => lstat(path), catch: error => error }).pipe(
-    Effect.catchIf(isMissing, () => Effect.succeed(null)),
+function toFileError(): ExportFileError {
+  return fileError('io-failure')
+}
+
+function io<A, R>(operation: Effect.Effect<A, PlatformError.PlatformError, R>): Effect.Effect<A, ExportFileError, R> {
+  // Each native operation drains on interruption; the next composed operation remains interruptible.
+  return Effect.uninterruptible(operation).pipe(Effect.mapError(toFileError))
+}
+
+/** The portable FileSystem service has no lstat operation; keep no-follow policy at this narrow leaf. */
+const isSymbolicLink = Effect.fnUntraced(function* (path: string): Effect.fn.Return<boolean, ExportFileError> {
+  return yield* Effect.uninterruptible(
+    Effect.tryPromise({
+      try: () => lstat(path),
+      catch: error => error,
+    }),
+  ).pipe(
+    Effect.map(stats => stats.isSymbolicLink()),
+    Effect.catchIf(isMissingNative, () => Effect.succeed(false)),
     Effect.mapError(toFileError),
   )
+})
+
+type ExistingInfo = FileSystem.File.Info | { readonly type: 'SymbolicLink' }
+
+function existingInfo(path: string, fs: FileSystem.FileSystem): Effect.Effect<ExistingInfo | null, ExportFileError> {
+  return Effect.gen(function* () {
+    if (yield* isSymbolicLink(path)) return { type: 'SymbolicLink' }
+    return yield* Effect.uninterruptible(fs.stat(path)).pipe(
+      Effect.catchIf(isMissingPlatform, () => Effect.succeed(null)),
+      Effect.mapError(toFileError),
+    )
+  })
 }
 
-const clearMarkedFolder = Effect.fnUntraced(function* (folder: string): Effect.fn.Return<void, ExportFileError> {
-  const entries = yield* io(() => readdir(folder))
+const clearMarkedFolder = Effect.fnUntraced(function* (
+  folder: string,
+  fs: FileSystem.FileSystem,
+): Effect.fn.Return<void, ExportFileError> {
+  const entries = yield* io(fs.readDirectory(folder))
   for (const entry of entries) {
     const child = resolve(folder, entry)
     if (dirname(child) !== folder) return yield* Effect.fail(fileError('io-failure'))
-    yield* io(() => rm(child, { recursive: true, force: true }))
+    yield* io(fs.remove(child, { recursive: true, force: true }))
   }
 })
 
 const writeCsvExportFilesEffect = Effect.fnUntraced(function* (
   outputPath: string,
   files: readonly ExportFileContent[],
+  fs: FileSystem.FileSystem,
 ): Effect.fn.Return<string, ExportFileError> {
   let folder = resolve(outputPath)
   if (folder.toLowerCase().endsWith('.csv')) folder = folder.slice(0, -4)
 
-  const current = yield* existingPath(folder)
-  if (current?.isSymbolicLink()) return yield* Effect.fail(fileError('io-failure'))
-  if (current?.isFile()) return yield* Effect.fail(fileError('csv-file-target'))
-  if (current?.isDirectory()) {
-    const marker = yield* existingPath(resolve(folder, EXPORT_MARKER_FILE))
-    if (!marker?.isFile() || marker.isSymbolicLink()) return yield* Effect.fail(fileError('csv-unmarked-directory'))
-    yield* clearMarkedFolder(folder)
+  const current = yield* existingInfo(folder, fs)
+  if (current?.type === 'SymbolicLink') return yield* Effect.fail(fileError('io-failure'))
+  if (current?.type === 'File') return yield* Effect.fail(fileError('csv-file-target'))
+  if (current?.type === 'Directory') {
+    const marker = yield* existingInfo(resolve(folder, EXPORT_MARKER_FILE), fs)
+    if (marker?.type !== 'File') return yield* Effect.fail(fileError('csv-unmarked-directory'))
+    yield* clearMarkedFolder(folder, fs)
   }
 
-  yield* io(() => mkdir(folder, { recursive: true }))
-  yield* io(() => writeFile(resolve(folder, EXPORT_MARKER_FILE), '', 'utf-8'))
-  for (const file of files) yield* io(() => writeFile(join(folder, file.name), file.contents, 'utf-8'))
+  yield* io(fs.makeDirectory(folder, { recursive: true }))
+  yield* io(fs.writeFileString(resolve(folder, EXPORT_MARKER_FILE), ''))
+  for (const file of files) yield* io(fs.writeFileString(join(folder, file.name), file.contents))
   return folder
 })
 
-interface OpenExportFile {
-  readonly handle: Awaited<ReturnType<typeof open>>
-  closed: boolean
-}
-
-function closeHandle(resource: OpenExportFile): Effect.Effect<void, ExportFileError> {
-  return Effect.suspend(() => {
-    if (resource.closed) return Effect.void
-    resource.closed = true
-    return io(() => resource.handle.close())
-  })
-}
-
-function readExistingJsonHeader(target: string): Effect.Effect<void, ExportFileError> {
-  return Effect.scoped(
-    Effect.acquireRelease(
-      io(() => open(target, 'r')).pipe(Effect.map(handle => ({ handle, closed: false }))),
-      resource => closeHandle(resource).pipe(Effect.orDie),
-    ).pipe(
-      Effect.flatMap(resource =>
-        Effect.uninterruptibleMask(restore =>
-          Effect.gen(function* () {
-            const result = yield* Effect.exit(restore(readJsonHeaderEffect(resource)))
-            const closeResult = yield* Effect.exit(closeHandle(resource))
-            if (!Exit.isSuccess(closeResult)) return yield* Effect.failCause(closeResult.cause)
-            if (!Exit.isSuccess(result)) return yield* Effect.failCause(result.cause)
-          }),
-        ),
-      ),
-    ),
-  )
-}
-
-const readJsonHeaderEffect = Effect.fnUntraced(function* (
-  resource: OpenExportFile,
+const readExistingJsonHeader = Effect.fnUntraced(function* (
+  target: string,
+  fs: FileSystem.FileSystem,
 ): Effect.fn.Return<void, ExportFileError> {
-  const buffer = Buffer.alloc(4096)
-  const { bytesRead } = yield* io(() => resource.handle.read(buffer, 0, buffer.length, 0))
-  if (!buffer.toString('utf-8', 0, bytesRead).includes('"schema": "watchtower.export.v')) {
-    return yield* Effect.fail(fileError('json-unmarked-file'))
-  }
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* io(fs.open(target, { flag: 'r', noFollow: process.platform !== 'win32' }))
+      const buffer = Buffer.alloc(4096)
+      const bytesRead = yield* io(handle.read(buffer))
+      if (!buffer.toString('utf-8', 0, bytesRead).includes('"schema": "watchtower.export.v')) {
+        return yield* Effect.fail(fileError('json-unmarked-file'))
+      }
+    }),
+  )
 })
 
 const writeJsonExportFileEffect = Effect.fnUntraced(function* (
   outputPath: string,
   contents: string,
+  fs: FileSystem.FileSystem,
 ): Effect.fn.Return<string, ExportFileError> {
   const target = resolve(outputPath.toLowerCase().endsWith('.json') ? outputPath : `${outputPath}.json`)
-  const current = yield* existingPath(target)
-  if (current?.isSymbolicLink()) return yield* Effect.fail(fileError('io-failure'))
-  if (current?.isFile()) yield* readExistingJsonHeader(target)
-  if (current?.isDirectory()) return yield* Effect.fail(fileError('json-directory-target'))
-  yield* io(() => mkdir(dirname(target), { recursive: true }))
-  yield* io(() => writeFile(target, contents, 'utf-8'))
+  const current = yield* existingInfo(target, fs)
+  if (current?.type === 'SymbolicLink') return yield* Effect.fail(fileError('io-failure'))
+  if (current?.type === 'File') yield* readExistingJsonHeader(target, fs)
+  if (current?.type === 'Directory') return yield* Effect.fail(fileError('json-directory-target'))
+  yield* io(fs.makeDirectory(dirname(target), { recursive: true }))
+  yield* io(fs.writeFileString(target, contents))
   return target
 })
 
-export const ExportFilesLive = Layer.succeed(
+export const ExportFilesLive = Layer.effect(
   ExportFiles,
-  ExportFiles.of({
-    writeCsvFolder: writeCsvExportFilesEffect,
-    writeJsonFile: writeJsonExportFileEffect,
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    return ExportFiles.of({
+      writeCsvFolder: (outputPath, files) => writeCsvExportFilesEffect(outputPath, files, fs),
+      writeJsonFile: (outputPath, contents) => writeJsonExportFileEffect(outputPath, contents, fs),
+    })
   }),
 )

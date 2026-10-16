@@ -1,21 +1,16 @@
-import { type ChildProcess as NodeChildProcess, spawn as spawnProcess } from 'node:child_process'
-import { Readable } from 'node:stream'
-
 import type * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
-import * as Deferred from 'effect/Deferred'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as PlatformError from 'effect/PlatformError'
+import * as ChildProcess from 'effect/process/ChildProcess'
+import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
-import * as Sink from 'effect/Sink'
 import * as Stream from 'effect/Stream'
-import * as ChildProcess from 'effect/unstable/process/ChildProcess'
-import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner'
 
 import { which } from './detect.js'
 import { acpSpawnCommand } from './runtime.js'
@@ -24,33 +19,12 @@ import { acpSpawnCommand } from './runtime.js'
  * `CommandRunner` — the `Command` step of the sequenced platform adoption
  * (HttpClient → FileSystem → Command, `docs/architecture.md`).
  *
- * Why this shape and not a `@effect/platform` Command: the pinned
- * `effect@4.0.0-rc.115` ships the `ChildProcess`/`FileSystem` SERVICES and
- * their `make` constructors but NO platform implementation for either (those
- * live in `@effect/platform-node`, and every `@effect/platform*` release is
- * Effect-v3-only — peer `effect ^3.22.2` — so none can be added here). The
- * sequence is therefore followed in spirit and re-specified on the in-package
- * modules: `FileSystem` stays BLOCKED pending a decision about hand-writing a
- * Node fs transport the same way this slice hand-writes the child-process one,
- * and `Command` lands on `effect/unstable/process`, which the packaged app
- * already ships (asar-safe: no new externals, no new dependency).
+ * This capability uses Effect's `effect/process` modules and the official
+ * `@effect/platform-node` spawner. PATH discovery and Windows `.cmd` routing
+ * remain application policy in `which()` and `acpSpawnCommand`.
  *
- * What rc.115 DOES ship in-package is `effect/unstable/process`: the
- * `ChildProcess` command model (executable, args, env, cwd, stdio, kill
- * options) and the `ChildProcessSpawner` service boundary that starts a
- * `Command` and hands back a handle. This port is built on exactly those two
- * modules — `ChildProcess.make` describes the run, `ChildProcessSpawner.spawn`
- * starts it — so the port is a thin, honest projection of the upstream API.
- *
- * `FileSystem` — platform step 2 — is CLOSED AS "no", by owner decision
- * (issue #148, 2026-09-29). The blocker was always the same and never went away:
- * rc.115 ships the service and its `make` constructor with NO platform
- * implementation, so adoption means hand-writing a Node fs transport by hand —
- * and the inputs are ~20 SYNCHRONOUS discovery reads (`existsSync`,
- * `readFileSync`, `statSync`) on provider paths that must resolve before any
- * Effect context exists, plus the PATH walk in `which()`. A transport for those
- * would buy substitution no test uses and lifecycle no resource needs, which is
- * why `which()` still walks PATH through `node:fs` here.
+ * Synchronous provider discovery and the PATH walk in `which()` still happen
+ * before an Effect context exists, so they remain plain Node operations.
  *
  * BOUNDARY RULE, so the exception stays an exception rather than a default that
  * spreads: SYNC DISCOVERY stays plain functions on `node:fs`; effectful,
@@ -68,34 +42,23 @@ import { acpSpawnCommand } from './runtime.js'
  * process: `run` owns the scope itself, so the child dies with the call, and
  * its `CommandResult` has nowhere to put a stream.
  *
- * Contract (mirrors the proven `HttpFetch` shape in
- * `src/main/pipeline/fetch-utils.ts`):
+ * Contract:
  * - `run` returns stdout plus the exit code as a SUCCESS. A non-zero exit is
  *   NOT a failure — callers that must inspect the code read `exitCode`, and
  *   callers that only read stdout (the Claude auth probe) are unaffected by a
  *   CLI that reports a logged-out state through a non-zero exit.
- * - every failure lands in the typed error channel as `CommandError`; the
- *   layer NEVER throws and NEVER rejects out of an Effect. The two exceptions
- *   are `CommandHandle.isRunning` / `.kill`, which are typed INFAILIBLE on
- *   purpose: both are transport-local reads of the Node handle's own state (and
- *   a `try/catch` kill), so upstream's `PlatformError` channel is collapsed with
- *   `Effect.orDie` rather than forced on every caller to handle an error that
- *   cannot happen. A defect there is a transport bug, not an operational
- *   outcome.
+ * - operational failures land in the typed `CommandError` channel. A signal
+ *   exit maps to numeric code 1 to retain the existing port contract.
  * - the deadline rides the Effect Clock (`Effect.timeoutOption`), so
  *   `TestClock` governs it in tests and no raw `setTimeout` is involved. Only
  *   `run` has a deadline: a supervised child's lifetime IS its scope, so a
  *   second, hidden lifetime on `start` would be a second thing to get wrong.
  *
- * ONE DISCLOSED TRANSPORT CHANGE (Wave 10): `run`'s observable contract — what
- * it resolves, what it times out on, its typed error, and every existing test —
- * is unchanged, but its child's FILE DESCRIPTORS are now really what the port
- * always declared (`stdin: 'ignore'`, `stdout: 'pipe'`, `stderr: 'ignore'`).
- * Node's default gave every child three live pipes, so a chatty-stderr child
- * could wedge a run and a child reading stdin never saw EOF; translating the
- * declaration into `spawn`'s `stdio` fixes both. The first `run` call site was
- * `execFile`, which never closed stdin either, so no existing caller relied on
- * the old shape.
+ * The official spawner owns process-group teardown. On POSIX it waits for the
+ * group; on Windows it uses `taskkill` while the leader is running and waits
+ * for the leader only. Each declared output stream is pumped once into an
+ * unbounded queue so independent port readers cannot steal bytes from each
+ * other and an unread piped stream cannot block the child.
  */
 
 /** The spawn knobs BOTH surfaces read. Mirrors the `ChildProcess`
@@ -208,389 +171,88 @@ export type CommandStart = (
   options?: CommandStartOptions | undefined,
 ) => Effect.Effect<CommandHandle, CommandError, Scope.Scope>
 
-// ---------------------------------------------------------------------------
-// Live transport: `node:child_process` behind the in-package spawner service
-// ---------------------------------------------------------------------------
+type OutputQueue = Queue.Queue<Uint8Array, CommandError | Cause.Done<void>>
+
+interface CommandOutputStreams {
+  readonly stdout: Stream.Stream<Uint8Array, CommandError>
+  readonly stderr: Stream.Stream<Uint8Array, CommandError>
+  readonly all: Stream.Stream<Uint8Array, CommandError>
+}
 
 /**
- * `rc.115` ships the `ChildProcessSpawner` SERVICE and its `make` constructor
- * but no platform implementation — that lives in `@effect/platform-node`, which
- * is Effect-v3-only and cannot be added here (no new dependency). So the live
- * layer supplies the transport through the package's own constructor: the
- * upstream `spawn` contract, with `ChildProcess.make` describing each run.
- *
- * Handle surface actually implemented: `pid`, `exitCode`, `isRunning`, `kill`,
- * `stdout`, `stderr`, `all`. Still documented stubs: `stdin` (`Sink.drain`),
- * the additional-fd accessors (`getInputFd`/`getOutputFd`), and `unref` (a
- * no-op) — no call site writes to a child or unrefs one, and the harness
- * runtime keeps its own spawn path until the slice that needs the write
- * surface.
- *
- * DRAIN POLICY (the rule that makes a supervised child safe): the `stdin`,
- * `stdout` and `stderr` a command declares are translated VERBATIM into
- * `node:child_process`'s `stdio`, and a pipe this transport opens is pumped
- * from the moment the child starts — whether or not anybody ever reads the
- * stream. A pipe nobody reads therefore cannot wedge a chatty child, which is
- * the failure the `'ignore'` default exists to avoid in the first place. The
- * price is heap, not a hang: an unread pipe's chunks accumulate in its queue
- * until the child exits or the scope closes, so a caller that pipes a stream
- * it never reads is paying for it. `pipeStderr` defaults to `false`, so the
- * common "I never read stderr" case never opens a stderr pipe at all.
+ * Reads each official handle stream once and fans chunks out to independent
+ * queues. That lets callers read stdout, stderr, and all without competing
+ * readers while the scoped pumps keep each opened OS pipe draining.
  */
-function nodeSpawn(
-  command: ChildProcess.Command,
-): Effect.Effect<ChildProcessSpawner.ChildProcessHandle, PlatformError.PlatformError, Scope.Scope> {
+function captureOutputs(
+  handle: ChildProcessSpawner.ChildProcessHandle,
+  command: string,
+): Effect.Effect<CommandOutputStreams, never, Scope.Scope> {
   return Effect.gen(function* () {
-    if (!ChildProcess.isStandardCommand(command)) {
-      return yield* Effect.fail(
-        PlatformError.badArgument({
-          module: 'CommandRunner',
-          method: 'spawn',
-          description: 'piped commands are not supported by this transport',
+    const stdout = yield* Queue.make<Uint8Array, CommandError | Cause.Done<void>>()
+    const stderr = yield* Queue.make<Uint8Array, CommandError | Cause.Done<void>>()
+    const all = yield* Queue.make<Uint8Array, CommandError | Cause.Done<void>>()
+    let remaining = 2
+
+    const pump = (
+      source: Stream.Stream<Uint8Array, PlatformError.PlatformError>,
+      destination: OutputQueue,
+      label: 'stdout' | 'stderr',
+    ) =>
+      Stream.runForEach(source, chunk =>
+        Effect.gen(function* () {
+          yield* Queue.offer(destination, chunk).pipe(Effect.catch(() => Effect.succeed(false)))
+          yield* Queue.offer(all, chunk).pipe(Effect.catch(() => Effect.succeed(false)))
+        }),
+      ).pipe(
+        Effect.matchEffect({
+          onFailure: error => {
+            const failure = streamFailure(command, label, error)
+            return Effect.gen(function* () {
+              yield* Queue.fail(destination, failure)
+              yield* Queue.fail(all, failure)
+            })
+          },
+          onSuccess: () =>
+            Effect.gen(function* () {
+              yield* Queue.end(destination)
+              remaining -= 1
+              if (remaining === 0) yield* Queue.end(all)
+            }),
         }),
       )
+
+    yield* Effect.forkScoped(pump(handle.stdout, stdout, 'stdout'))
+    yield* Effect.forkScoped(pump(handle.stderr, stderr, 'stderr'))
+
+    return {
+      stdout: Stream.fromQueue(stdout),
+      stderr: Stream.fromQueue(stderr),
+      all: Stream.fromQueue(all),
     }
-    const executable = command.command
-    const started = yield* Deferred.make<undefined, PlatformError.PlatformError>()
-    const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode, PlatformError.PlatformError>()
-    // `acquireRelease` is what makes the deadline work: the kill is a SCOPE
-    // finalizer, so interrupting the run (Clock deadline, or the caller
-    // interrupting the fiber) closes the scope and terminates the child
-    // instead of leaking it. The event listeners are installed in the same
-    // synchronous acquisition that creates the child, before interruption can
-    // leave an unobserved `error` event behind.
-    const child = yield* Effect.acquireRelease(
-      Effect.try({
-        try: () => {
-          const spawned = spawnProcess(command.command, [...command.args], toSpawnOptions(command.options))
-          // Node resumes piped stdio after child exit. Keep each stream in
-          // readable mode until its Effect pump gets a fiber turn to attach.
-          holdReadable(spawned.stdout)
-          holdReadable(spawned.stderr)
-          observeProcess(spawned, started, exit, executable)
-          return spawned
-        },
-        catch: cause => spawnFailure(command.command, cause),
-      }),
-      spawned =>
-        Effect.sync(() => {
-          releaseReadable(spawned.stdout)
-          releaseReadable(spawned.stderr)
-          killQuietly(spawned, command.options)
-        }),
-    )
-    // Node returns a ChildProcess before the OS spawn result is known. Waiting
-    // for `spawn` keeps an asynchronous `error` in the start failure channel.
-    yield* Deferred.await(started)
-    // Built ONCE: the capture below forks a pump per pipe, so a second
-    // evaluation would be a second reader on the same pipe.
-    const outputs = yield* pipedOutputs(child, command.command)
-    return ChildProcessSpawner.makeHandle({
-      pid: ChildProcessSpawner.ProcessId(child.pid ?? -1),
-      exitCode: Deferred.await(exit),
-      isRunning: Effect.sync(() => child.exitCode === null && child.signalCode === null),
-      kill: options => Effect.sync(() => killQuietly(child, options)),
-      stdin: Sink.drain,
-      ...outputs,
-      getInputFd: () => Sink.drain,
-      getOutputFd: () => Stream.empty,
-      unref: Effect.succeed(Effect.void),
-    })
   })
 }
 
-/** Sentinel for a clean end-of-stream in the chunk pump. */
-const END_OF_STREAM: unique symbol = Symbol('watchtower/CommandRunner/endOfStream')
-
-function holdReadable(readable: Readable | null): void {
-  readable?.on('readable', noopReadable)
-}
-function releaseReadable(readable: Readable | null): void {
-  readable?.off('readable', noopReadable)
-}
-function noopReadable(): void {}
-
-/** The queue behind one reader of one pipe. The `Cause.Done` in its error
- *  channel is the end-of-stream sentinel `Queue.end` writes; `Stream.fromQueue`
- *  strips it back out. */
-type CaptureQueue = Queue.Queue<Uint8Array, PlatformError.PlatformError | Cause.Done<void>>
-
-/** One reader's view of a pipe. */
-type CaptureStream = Stream.Stream<Uint8Array, PlatformError.PlatformError>
-
-/** The shared merge, when a pipe is one of TWO: the queue `all` reads, and the
- *  countdown that says which pump ends it. Absent for a single-pipe child. */
-interface MergeTarget {
-  readonly queue: CaptureQueue
-  readonly isLast: () => boolean
-}
-
-/** The handle's three streams over the child's pipes.
- *
- *  `stdout` gets its own pump and queue. `stderr` gets its own pump and queue
- *  when it is piped, and `all` gets a THIRD queue that both pumps offer every
- *  chunk to — so the merge is real, no reader of one stream can steal another's
- *  chunks, and the interleaving is the order the two pumps dequeued their
- *  chunks (the same best-effort interleave a `PassThrough` merge would give).
- *
- *  With no stderr pipe there is genuinely nothing to merge, so `all` IS the
- *  stdout stream — the same value, now for a true reason instead of a stub's. */
-function pipedOutputs(
-  child: NodeChildProcess,
-  command: string,
-): Effect.Effect<
-  { readonly stdout: CaptureStream; readonly stderr: CaptureStream; readonly all: CaptureStream },
-  never,
-  Scope.Scope
-> {
-  return Effect.gen(function* () {
-    if (child.stdout === null) {
-      return {
-        stdout: Stream.fail(notPiped(command, 'stdout')),
-        stderr: Stream.empty,
-        all: Stream.empty,
-      }
-    }
-    if (child.stderr === null) {
-      const stdout = yield* capturePipe(child.stdout, command, 'stdout')
-      return { stdout, stderr: Stream.empty, all: stdout }
-    }
-    const merged: CaptureQueue = yield* Queue.make<Uint8Array, PlatformError.PlatformError | Cause.Done<void>>()
-    const isLast = lastToClose(2)
-    const stdout = yield* capturePipe(child.stdout, command, 'stdout', { queue: merged, isLast })
-    const stderr = yield* capturePipe(child.stderr, command, 'stderr', { queue: merged, isLast })
-    return { stdout, stderr, all: Stream.fromQueue(merged) }
+function streamFailure(command: string, label: 'stdout' | 'stderr', cause: PlatformError.PlatformError): CommandError {
+  return new CommandError({
+    reason: 'stream',
+    message: `${label}: ${cause.message}`,
+    command,
   })
 }
 
-/** Countdown for the merged queue: `all` ends when the LAST pipe ends, so a
- *  child that closes stdout early (the ledger sidecar drains stdout once it
- *  has its READY line) does not truncate the merge. Each pump calls it
- *  exactly once, on its way out. */
-function lastToClose(sources: number): () => boolean {
-  let open = sources
-  return () => {
-    open -= 1
-    return open === 0
-  }
+function spawnFailure(command: string, cause: PlatformError.PlatformError): CommandError {
+  return new CommandError({ reason: 'spawn', message: cause.message, command })
 }
 
-/** Pumps ONE piped `Readable` into its own unbounded queue (one reader) and,
- *  when `merge` is given, also offers every chunk to the shared merge queue.
- *
- * The queue hand-off (not a raw promise) is what keeps the consumer
- * interruptible, so a deadline, a scope close, or a caller interruption tears
- * the whole capture down deterministically. It is unbounded on purpose: the
- * pump must never block on a slow or absent consumer, because a blocked pump
- * is a filled OS pipe, which is a wedged child.
- *
- * `Stream.fromAsyncIterable` — the obvious conversion for a Node `Readable` —
- * is deliberately NOT used: its `Effect.tryPromise(() => iterator.next())`
- * cannot be interrupted, so an interrupted stream never completes and the
- * Clock deadline would hang instead of killing the child. */
-function capturePipe(
-  readable: Readable,
-  command: string,
-  label: 'stdout' | 'stderr',
-  merge?: MergeTarget,
-): Effect.Effect<CaptureStream, never, Scope.Scope> {
-  return Effect.gen(function* () {
-    const queue = yield* Queue.make<Uint8Array, PlatformError.PlatformError | Cause.Done<void>>()
-    const pump = Effect.gen(function* () {
-      for (;;) {
-        const chunk = yield* nextChunk(readable, command, label)
-        if (chunk === END_OF_STREAM) break
-        yield* Queue.offer(queue, chunk)
-        if (merge !== undefined) yield* Queue.offer(merge.queue, chunk)
-      }
-      yield* Queue.end(queue)
-      if (merge !== undefined && merge.isLast()) yield* Queue.end(merge.queue)
-    }).pipe(
-      // A broken pipe fails every reader it was feeding, the merged one
-      // included: half a capture is not a capture.
-      Effect.catch((error: PlatformError.PlatformError) =>
-        Effect.gen(function* () {
-          yield* Queue.fail(queue, error)
-          if (merge !== undefined) yield* Queue.fail(merge.queue, error)
-        }),
-      ),
-    )
-    yield* Effect.forkChild(pump)
-    return Stream.fromQueue(queue)
-  })
+function exitCodeOrFailure(handle: ChildProcessSpawner.ChildProcessHandle): Effect.Effect<number, never> {
+  // The official handle reports signal exits as PlatformError because Node
+  // supplies code=null. The port has always represented these as code 1.
+  return handle.exitCode.pipe(
+    Effect.map(Number),
+    Effect.catch(() => Effect.succeed(1)),
+  )
 }
-
-/** One chunk of a child's pipe, or the end sentinel, as an interruptible
- *  Effect. Pull through `readable` so bytes stay buffered between fiber turns.
- *  `Effect.callback` is what makes the deadline safe: the register returns
- *  immediately, so the fiber is suspended in Effect (not parked on a raw JS
- *  promise) and an interruption runs the returned cleanup. */
-function nextChunk(
-  readable: Readable,
-  command: string,
-  label: 'stdout' | 'stderr',
-): Effect.Effect<Uint8Array | typeof END_OF_STREAM, PlatformError.PlatformError> {
-  return Effect.callback(resume => {
-    const cleanup = (): void => {
-      readable.off('readable', onReadable)
-      readable.off('end', onEnd)
-      readable.off('error', onError)
-      readable.off('close', onReadable)
-    }
-    function onReadable(): void {
-      const chunk: Buffer | null = readable.read()
-      if (chunk !== null) {
-        cleanup()
-        resume(Effect.succeed(new Uint8Array(chunk)))
-      } else if (readable.errored) {
-        onError(readable.errored)
-      } else if (readable.readableEnded || readable.destroyed) {
-        onEnd()
-      }
-    }
-    function onEnd(): void {
-      cleanup()
-      resume(Effect.succeed(END_OF_STREAM))
-    }
-    function onError(cause: unknown): void {
-      cleanup()
-      resume(Effect.fail(streamFailure(command, label, cause)))
-    }
-    readable.on('readable', onReadable)
-    readable.once('end', onEnd)
-    readable.once('error', onError)
-    readable.once('close', onReadable)
-    onReadable()
-    return Effect.sync(cleanup)
-  })
-}
-
-function toSpawnOptions(options: ChildProcess.CommandOptions): Parameters<typeof spawnProcess>[2] {
-  const env =
-    options.env === undefined
-      ? undefined
-      : options.extendEnv === true
-        ? { ...process.env, ...options.env }
-        : options.env
-  return {
-    cwd: options.cwd,
-    env,
-    windowsHide: options.windowsHide,
-    killSignal: options.killSignal,
-    // The stdio declaration is TRANSLATED, not ignored: this is the only
-    // source `node:child_process` has for it, so without these three lines a
-    // command that declared `stderr: 'ignore'` still got a live — and
-    // unread — stderr pipe, which is the exact wedging the declaration
-    // exists to prevent. A non-string config (a `Stream` into stdin, a `Sink`
-    // out of stdout) has no channel to be wired through by this transport and
-    // falls back to `'pipe'`, the upstream default; the port only ever
-    // declares strings.
-    stdio: [stdioMode(options.stdin), stdioMode(options.stdout), stdioMode(options.stderr)],
-  }
-}
-
-/** The `stdio` entry `node:child_process` understands, or the upstream
- *  `'pipe'` default. `'overlapped'` is deliberately not special-cased: it is
- *  Windows-only, and a POSIX child given one would be handed an invalid fd
- *  rather than a loud error. */
-function stdioMode(config: unknown): 'pipe' | 'ignore' | 'inherit' {
-  const mode: unknown = typeof config === 'object' && config !== null ? (config as { stream?: unknown }).stream : config
-  return mode === 'ignore' || mode === 'inherit' ? mode : 'pipe'
-}
-
-function spawnFailure(command: string, cause: unknown): PlatformError.PlatformError {
-  return PlatformError.systemError({
-    _tag: 'Unknown',
-    module: 'CommandRunner',
-    method: 'spawn',
-    pathOrDescriptor: command,
-    description: cause instanceof Error ? cause.message : String(cause),
-    cause,
-  })
-}
-
-function streamFailure(command: string, label: 'stdout' | 'stderr', cause: unknown): PlatformError.PlatformError {
-  return PlatformError.systemError({
-    _tag: 'UnexpectedEof',
-    module: 'CommandRunner',
-    method: label,
-    pathOrDescriptor: command,
-    description: cause instanceof Error ? cause.message : String(cause),
-    cause,
-  })
-}
-
-function notPiped(command: string, label: 'stdout' | 'stderr'): PlatformError.PlatformError {
-  return PlatformError.systemError({
-    _tag: 'UnexpectedEof',
-    module: 'CommandRunner',
-    method: 'spawn',
-    pathOrDescriptor: command,
-    description: `child ${label} was not piped`,
-  })
-}
-
-/** Completes `exit` exactly once, from whichever comes first. `doneUnsafe` is
- *  the documented low-level completion: the listeners run outside a fiber, and
- *  the completion effect is already evaluated, so there is no `run*` here.
- *  A signal death reports `code: null`; the port's contract is a number, so it
- *  surfaces as `1` ("did not exit cleanly") with the signal detail in the
- *  message-free code field the callers already ignore. */
-function observeProcess(
-  child: NodeChildProcess,
-  started: Deferred.Deferred<undefined, PlatformError.PlatformError>,
-  exit: Deferred.Deferred<ChildProcessSpawner.ExitCode, PlatformError.PlatformError>,
-  command: string,
-): void {
-  const cleanup = (): void => {
-    child.off('spawn', onSpawn)
-    child.off('error', onError)
-    child.off('close', onClose)
-  }
-  function onSpawn(): void {
-    Deferred.doneUnsafe(started, Effect.succeed(undefined))
-    child.off('spawn', onSpawn)
-  }
-  function onError(cause: Error): void {
-    const failure = spawnFailure(command, cause)
-    Deferred.doneUnsafe(started, Effect.fail(failure))
-    Deferred.doneUnsafe(exit, Effect.fail(failure))
-  }
-  function onClose(code: number | null): void {
-    Deferred.doneUnsafe(exit, Effect.succeed(ChildProcessSpawner.ExitCode(code ?? 1)))
-    cleanup()
-  }
-  child.once('spawn', onSpawn)
-  child.on('error', onError)
-  child.once('close', onClose)
-}
-
-/** Teardown must never throw: a child that already exited, or a platform that
- *  rejects the signal, still has to let the scope close. `forceKillAfter` is
- *  deliberately not honored — SIGKILL escalation and the process-TREE kill are
- *  the harness runtime's existing job (`src/main/agents/process-tree.ts`), a
- *  later slice. */
-function killQuietly(child: NodeChildProcess, options: ChildProcess.KillOptions | undefined): void {
-  try {
-    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
-      child.kill(options?.killSignal ?? 'SIGTERM')
-    }
-  } catch {
-    /* teardown must not fail the run */
-  }
-}
-
-/** The live `ChildProcessSpawner`: the upstream `make` constructor over the
- *  Node transport. Exported so `CommandRunner.layer` can `provide` it, and so a
- *  later slice can hoist the ONE spawner into `MainLive` when a second call
- *  site needs it. Note it is captured by value when `CommandRunner.layer` is
- *  built — `Effect.provideService` from the outside does NOT reach it. */
-export const liveSpawner: ChildProcessSpawner.ChildProcessSpawner['Service'] = ChildProcessSpawner.make(nodeSpawn)
-
-/** The layer `CommandRunner.layer` is built from. Exported for the same reason
- *  as `liveSpawner`. */
-export const liveSpawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, liveSpawner)
-
 // ---------------------------------------------------------------------------
 // Port implementation
 // ---------------------------------------------------------------------------
@@ -620,6 +282,9 @@ function commandOptions(options: CommandSpawnOptions): ChildProcess.CommandOptio
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: options.pipeStderr === true ? 'pipe' : 'ignore',
+    // Bound both timeout interruption and scope finalization when a child
+    // ignores SIGTERM. The upstream default may await the leader forever.
+    forceKillAfter: Duration.seconds(1),
   }
 }
 
@@ -646,16 +311,14 @@ function makeCommandRun(spawner: ChildProcessSpawner.ChildProcessSpawner['Servic
     const spawn = acpSpawnCommand(bin, args, process.platform)
     const attempt = Effect.scoped(
       Effect.gen(function* () {
-        const handle = yield* spawner.spawn(ChildProcess.make(spawn.command, spawn.args, commandOptions(options)))
-        const stdout = yield* Stream.mkString(Stream.decodeText(handle.stdout))
-        const exitCode = yield* handle.exitCode
-        return { stdout, exitCode: Number(exitCode) }
+        const handle = yield* spawner
+          .spawn(ChildProcess.make(spawn.command, spawn.args, commandOptions(options)))
+          .pipe(Effect.mapError(error => spawnFailure(spawn.command, error)))
+        const outputs = yield* captureOutputs(handle, spawn.command)
+        const stdout = yield* Stream.mkString(Stream.decodeText(outputs.stdout))
+        const exitCode = yield* exitCodeOrFailure(handle)
+        return { stdout, exitCode }
       }),
-    ).pipe(
-      Effect.mapError(
-        (error: PlatformError.PlatformError) =>
-          new CommandError({ reason: 'spawn', message: error.message, command: spawn.command }),
-      ),
     )
     if (options.timeoutMs === undefined) return yield* attempt
     // `timeoutOption` is `raceFirst`: when the deadline wins it INTERRUPTS the
@@ -696,29 +359,25 @@ function makeCommandStart(spawner: ChildProcessSpawner.ChildProcessSpawner['Serv
   ): Effect.fn.Return<CommandHandle, CommandError, Scope.Scope> {
     const bin = which(command) ?? command
     const spawn = acpSpawnCommand(bin, args, process.platform)
-    // Both transport failures are `spawn`: the spawn itself, and a child that
-    // errored before it ran (the `exit` deferred the transport resolves with
-    // the same `PlatformError`). The piped streams fail as `stream` instead.
-    const asSpawnError = (error: PlatformError.PlatformError) =>
-      new CommandError({ reason: 'spawn', message: error.message, command: spawn.command })
-    const asStreamError = (error: PlatformError.PlatformError) =>
-      new CommandError({ reason: 'stream', message: error.message, command: spawn.command })
     const handle = yield* spawner
       .spawn(ChildProcess.make(spawn.command, spawn.args, commandOptions(options)))
-      .pipe(Effect.mapError(asSpawnError))
+      .pipe(Effect.mapError(error => spawnFailure(spawn.command, error)))
+    const outputs = yield* captureOutputs(handle, spawn.command)
+    const kill = Effect.flatMap(handle.isRunning, running =>
+      running ? handle.kill({ forceKillAfter: Duration.seconds(1) }) : Effect.void,
+    ).pipe(
+      // Closing the supervisor's scope must remain quiet if the leader exited
+      // between the state check and the process-group signal.
+      Effect.catch(() => Effect.void),
+    )
     return {
       pid: Number(handle.pid),
-      exitCode: handle.exitCode.pipe(Effect.map(Number), Effect.mapError(asSpawnError)),
-      // `orDie` on the two members that CANNOT fail in this transport (a
-      // synchronous read of Node's own child state, and a kill wrapped in
-      // `try/catch`): a defect here is a transport bug, not an operational
-      // outcome, and a typed `CommandError` a caller must handle for an
-      // operation that always succeeds is noise. Their types say so.
-      isRunning: Effect.orDie(handle.isRunning),
-      stdout: handle.stdout.pipe(Stream.mapError(asStreamError)),
-      stderr: handle.stderr.pipe(Stream.mapError(asStreamError)),
-      all: handle.all.pipe(Stream.mapError(asStreamError)),
-      kill: Effect.orDie(handle.kill()),
+      exitCode: exitCodeOrFailure(handle),
+      isRunning: handle.isRunning.pipe(Effect.catch(() => Effect.succeed(false))),
+      stdout: outputs.stdout,
+      stderr: outputs.stderr,
+      all: outputs.all,
+      kill,
     }
   })
 }
@@ -735,7 +394,7 @@ function makeCommandStart(spawner: ChildProcessSpawner.ChildProcessSpawner['Serv
  *  Named removal: with the last `layerWithRunner(run)` call site. It exists so
  *  the fake seam stayed a one-argument seam when the second operation landed,
  *  rather than breaking every existing fake. */
-const uninstalledStart: CommandStart = (command, _args, _options) =>
+const uninstalledStart: CommandStart = command =>
   Effect.fail(
     new CommandError({
       reason: 'spawn',
@@ -745,15 +404,12 @@ const uninstalledStart: CommandStart = (command, _args, _options) =>
   )
 
 /**
- * Effect-native `Command` boundary (ADR 0032): the third step of the
- * sequenced platform adoption, landing on the in-package
- * `effect/unstable/process` modules. One service, two operations, one typed
+ * Effect-native `Command` boundary (ADR 0032): one service, two operations, one typed
  * failure, test fakes through `layerWithRunner` — the same fake-ability as
  * `HttpFetch.layerWithFetch` and `HarnessProbe.layerWithProbe`.
  *
- * `CommandRunner.layer` is the LIVE capability; it needs no services from
- * outside its own `liveSpawnerLayer`, so composing it costs nothing until a
- * second call site exists.
+ * `CommandRunner.layer` requires the root to choose its `ChildProcessSpawner`;
+ * this keeps production composition and test substitution on the same path.
  */
 export class CommandRunner extends Context.Service<
   CommandRunner,
@@ -762,12 +418,12 @@ export class CommandRunner extends Context.Service<
     readonly start: CommandStart
   }
 >()('watchtower/agents/CommandRunner') {
-  static readonly layer: Layer.Layer<CommandRunner> = Layer.effect(
+  static readonly layer: Layer.Layer<CommandRunner, never, ChildProcessSpawner.ChildProcessSpawner> = Layer.effect(
     CommandRunner,
     Effect.map(ChildProcessSpawner.ChildProcessSpawner, spawner =>
       CommandRunner.of({ run: makeCommandRun(spawner), start: makeCommandStart(spawner) }),
     ),
-  ).pipe(Layer.provide(liveSpawnerLayer))
+  )
 
   /** Test seam: any `CommandRun` stands in for the live child process, so no
    *  test needs a harness CLI installed (the `HttpFetch.layerWithFetch` /

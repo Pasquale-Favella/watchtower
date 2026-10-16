@@ -10,6 +10,16 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnosticSeverity": {
+          "floatingEffect": "error",
+          "missingEffectError": "error",
+          "missingEffectContext": "error"
+        }
+      }
+    ],
     "types": ["node"]
   },
   "include": [

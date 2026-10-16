@@ -3,9 +3,11 @@ import { dirname } from 'node:path'
 
 import * as Sqlite from '@effect/sql-sqlite-node'
 import * as Effect from 'effect/Effect'
+import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import * as SqlClient from 'effect/sql/SqlClient'
+import type { SqlError } from 'effect/sql/SqlError'
 
 import { CommandRunner } from './agents/command-runner.js'
 import { AssistantSetup } from './application/assistant-setup.js'
@@ -31,6 +33,7 @@ import {
 import { HttpFetch } from './pipeline/fetch-utils.js'
 import { PricingDiagnosticsLive } from './pipeline/pricing-diagnostics.js'
 import { RepositoryInspectionLive } from './repository-inspection-live.js'
+import { NodePlatformLive, type NodePlatformServices } from './platform-live.js'
 import { initializeLedger } from './store/ledger-initialization.js'
 import {
   LedgerConfig,
@@ -43,6 +46,7 @@ import {
 } from './store/ledger-repository.js'
 
 export type WorkerServices =
+  | NodePlatformServices
   | AssistantSetup
   | ExportFiles
   | GatewayReports
@@ -63,6 +67,7 @@ export type WorkerServices =
   | Sqlite.SqliteClient.SqliteClient
   | SqlClient.SqlClient
 export type WorkerOverrides =
+  | NodePlatformServices
   | OperationalLog
   | Env
   | HttpFetch
@@ -80,8 +85,8 @@ export type WorkerOverrides =
   | ExportFiles
   | GatewayReports
   | LedgerMaintenance
-export type WorkerSqlLayer = Layer.Layer<Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient>
-export type WorkerRuntime = ManagedRuntime.ManagedRuntime<WorkerServices, never>
+export type WorkerSqlLayer = Layer.Layer<Sqlite.SqliteClient.SqliteClient | SqlClient.SqlClient, SqlError>
+export type WorkerRuntime = ManagedRuntime.ManagedRuntime<WorkerServices, SqlError>
 
 /** Worker root owns one SQL client and composes every ledger port over it. */
 export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
@@ -89,18 +94,14 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
   sink?: OperationalLogSink,
   overrides?: Layer.Layer<Overrides>,
   sqliteLayer: WorkerSqlLayer = Sqlite.SqliteClient.layer({ filename: dbPath }),
-): Layer.Layer<WorkerServices> {
+): Layer.Layer<WorkerServices, SqlError> {
   const ledger = LedgerPortsLayer.pipe(Layer.provideMerge(sqliteLayer))
-  const liveFetch = HttpFetch.layerWithFetch((input, init) => globalThis.fetch(input, init))
-  const capabilities = Layer.mergeAll(
-    ledger,
-    AssistantSetupLive,
-    ExportFilesLive,
-    CommandRunner.layer,
-    Env.layer,
-    liveFetch,
-  )
+  const liveFetch = HttpFetch.layer.pipe(Layer.provide(FetchHttpClient.layer))
+  const platform = overrides ? Layer.merge(NodePlatformLive, overrides) : NodePlatformLive
+  const commandRunner = CommandRunner.layer.pipe(Layer.provide(platform))
+  const capabilities = Layer.mergeAll(ledger, AssistantSetupLive, platform, commandRunner, Env.layer, liveFetch)
   const dependencies = overrides ? Layer.mergeAll(capabilities, overrides) : capabilities
+  const exportFiles = ExportFilesLive.pipe(Layer.provide(dependencies))
   const fxRates = FxRates.layer.pipe(Layer.provide(dependencies))
   const repositoryInspection = RepositoryInspectionLive.pipe(Layer.provide(dependencies))
   const gatewayReports = GatewayReportsLive.pipe(Layer.provide(dependencies))
@@ -112,6 +113,7 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
     OperationalLogTracerLayer('worker', sink),
     sink ? OperationalLog.layerWithSink(sink, 'worker') : OperationalLog.layer,
     PricingDiagnosticsLive,
+    exportFiles,
     fxRates,
     repositoryInspection,
     gatewayReports,
@@ -123,7 +125,7 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
 
 export function makeWorkerRuntime(
   dbPath: string,
-  layer: Layer.Layer<WorkerServices> = makeWorkerLive(dbPath),
+  layer: Layer.Layer<WorkerServices, SqlError> = makeWorkerLive(dbPath),
 ): WorkerRuntime {
   return ManagedRuntime.make(layer)
 }

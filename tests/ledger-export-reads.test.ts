@@ -4,7 +4,7 @@ import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Schema from 'effect/Schema'
-import * as SqlError from 'effect/unstable/sql/SqlError'
+import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { LedgerExportData } from '../src/main/store/export-read-projections.js'
@@ -70,6 +70,7 @@ describe('purpose-shaped export reads', () => {
     const sqlByStatement = new WeakMap<StatementSync, string>()
     const connectionByStatement = new WeakMap<StatementSync, DatabaseSync>()
     const executions: Array<{ sql: string; connection: DatabaseSync }> = []
+    const transactionEvents: string[] = []
     const nativePrepare = DatabaseSync.prototype.prepare
     const nativeAll = StatementSync.prototype.all
     vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function (this: DatabaseSync, sql: string) {
@@ -84,18 +85,29 @@ describe('purpose-shaped export reads', () => {
     ) {
       const rows = Reflect.apply(nativeAll, this, parameters)
       const connection = connectionByStatement.get(this)
-      if (connection) executions.push({ sql: sqlByStatement.get(this) ?? '', connection })
+      if (connection) {
+        const sql = sqlByStatement.get(this) ?? ''
+        const normalized = sql.trim().toUpperCase()
+        if (/^\s*SELECT/i.test(sql)) {
+          executions.push({ sql, connection })
+          transactionEvents.push('SELECT')
+        } else if (/^(BEGIN|COMMIT|ROLLBACK)/.test(normalized)) {
+          transactionEvents.push(normalized)
+        }
+      }
       return rows
     })
 
     port(runtime, 'export-read', 'opencode', buildFixtureCachedFile(), 'https://github.com/acme/demo')
     executions.length = 0
+    transactionEvents.length = 0
     const cold = await readExportData(runtime)
     expect(executions).toHaveLength(5)
     expect(executions.every(({ sql }) => /^\s*SELECT/i.test(sql))).toBe(true)
     const workerConnection = executions[0]?.connection
     expect(workerConnection).toBeDefined()
     expect(new Set(executions.map(({ connection }) => connection)).size).toBe(1)
+    expect(transactionEvents).toEqual(['BEGIN IMMEDIATE', 'SELECT', 'SELECT', 'SELECT', 'SELECT', 'SELECT', 'COMMIT'])
     expect(Object.keys(cold.sessions[0] ?? {}).sort()).toEqual(
       [
         'sourceId',
@@ -150,9 +162,11 @@ describe('purpose-shaped export reads', () => {
     setModelAlias(runtime, 'demo-model', 'effective-model')
     setPriceOverride(runtime, 'effective-model', 0, 24)
     executions.length = 0
+    transactionEvents.length = 0
     const warm = await readExportData(runtime)
     expect(executions).toHaveLength(5)
     expect(new Set(executions.map(({ connection }) => connection)).size).toBe(1)
+    expect(transactionEvents).toEqual(['BEGIN IMMEDIATE', 'SELECT', 'SELECT', 'SELECT', 'SELECT', 'SELECT', 'COMMIT'])
     expect(executions.every(({ connection }) => connection === workerConnection)).toBe(true)
     expect(warm.aliases).toEqual([{ model: 'demo-model', aliasOf: 'effective-model' }])
     expect(warm.overrides).toEqual([{ model: 'effective-model', inputPricePerMillion: 0, outputPricePerMillion: 24 }])
