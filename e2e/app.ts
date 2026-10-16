@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, _electron as electron, type ElectronApplication, type Locator, type Page } from '@playwright/test'
+
+import { _electron as electron, type ElectronApplication, expect, type Locator, type Page } from '@playwright/test'
 
 /**
  * Shared Electron launch + first-run helpers for `e2e/*.spec.ts` (tracks
@@ -99,6 +100,27 @@ export async function waitForAnyVisible(locators: Locator[], timeout = 30_000): 
       { timeout },
     )
     .not.toBe('waiting')
+}
+
+/** The app owns one main window; cached orb surfaces are also legitimate.
+ * They must stay hidden whenever the main window is on screen. */
+export async function expectSingleMainWindow(app: ElectronApplication): Promise<void> {
+  await expect
+    .poll(() =>
+      app.evaluate(({ BrowserWindow }) => {
+        const windows = BrowserWindow.getAllWindows()
+        const isMain = (win: Electron.BrowserWindow): boolean => win.webContents.getURL().endsWith('/index.html')
+        const isOrb = (win: Electron.BrowserWindow): boolean => /\/orb(?:-panel)?\.html$/.test(win.webContents.getURL())
+        const main = windows.find(isMain)
+        const mainOnScreen = main?.isVisible() && !main.isMinimized()
+        return {
+          mainCount: windows.filter(isMain).length,
+          unexpectedCount: windows.filter(win => !isMain(win) && !isOrb(win)).length,
+          backgroundOverMain: Boolean(mainOnScreen && windows.some(win => isOrb(win) && win.isVisible())),
+        }
+      }),
+    )
+    .toEqual({ mainCount: 1, unexpectedCount: 0, backgroundOverMain: false })
 }
 
 /**

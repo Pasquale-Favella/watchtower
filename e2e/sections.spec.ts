@@ -1,5 +1,6 @@
-import { test, expect, type Locator, type Page } from '@playwright/test'
-import { dismissOnboarding, waitForAnyVisible, withApp } from './app'
+import { expect, type Locator, type Page, test } from '@playwright/test'
+
+import { dismissOnboarding, expectSingleMainWindow, waitForAnyVisible, withApp } from './app'
 
 /**
  * Section walk (tracks #133): every sidebar destination renders its view
@@ -56,6 +57,6 @@ test('every section renders without errors', async () => {
       await waitForAnyVisible(MARKERS[nav](window))
     }
 
-    expect(app.windows().length).toBe(1)
+    await expectSingleMainWindow(app)
   })
 })
