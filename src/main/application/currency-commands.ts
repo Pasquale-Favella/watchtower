@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
 import type { SchemaError } from 'effect/Schema'
 import * as Schema from 'effect/Schema'
-import type { SqlError } from 'effect/unstable/sql/SqlError'
+import type { SqlError } from 'effect/sql/SqlError'
 
 import type { ActiveCurrency } from '../../shared/schemas/fx.js'
 import { FxRates } from '../fx.js'

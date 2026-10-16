@@ -8,7 +8,7 @@
  *    `HttpFetch.layerWithFetch` / `HarnessProbe.layerWithProbe` fake-ability):
  *    options pass-through, the "a non-zero exit is not a failure" contract, and
  *    the typed `CommandError`. No process is ever started.
- * 2. The LIVE layer, over `effect/unstable/process`'s in-package
+ * 2. The LIVE layer, over `effect/process`'s
  *    `ChildProcess`/`ChildProcessSpawner`. The child is the test runner's own
  *    `process.execPath` — no harness CLI is required or spawned (there is no
  *    `claude` binary on the box) — so the transport, the stdout capture, the
@@ -159,7 +159,7 @@ describe('CommandRunner port (fake runner — no process is started)', () => {
   })
 })
 
-describe('CommandRunner live layer (in-package effect/unstable/process, real child)', () => {
+describe('CommandRunner live layer (effect/process, real child)', () => {
   it('captures stdout and the exit code of a successful run', async () => {
     const result = await Effect.runPromise(
       liveRun(process.execPath, node('process.stdout.write(JSON.stringify({ loggedIn: true }))')),

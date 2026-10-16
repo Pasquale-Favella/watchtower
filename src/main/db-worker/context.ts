@@ -5,7 +5,7 @@ import * as Fiber from 'effect/Fiber'
 import * as Schedule from 'effect/Schedule'
 import type { SchemaError } from 'effect/Schema'
 import * as Scope from 'effect/Scope'
-import type { SqlError } from 'effect/unstable/sql/SqlError'
+import type { SqlError } from 'effect/sql/SqlError'
 
 import { clearLedger } from '../application/clear-ledger.js'
 import { queryActiveCurrency, selectDisplayCurrency } from '../application/currency-commands.js'

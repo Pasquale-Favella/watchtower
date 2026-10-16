@@ -27,7 +27,7 @@ import type { HarnessAuthStatus } from './detect.js'
  * Wave 9 (issue #148), §5.3 `Command` step: the `node:child_process.execFile`
  * call and its `timeout` option are gone, replaced by the `CommandRunner`
  * port (`src/main/agents/command-runner.ts`) built on the in-package
- * `effect/unstable/process` modules. The deadline now rides the Effect Clock
+ * `effect/process` modules. The deadline now rides the Effect Clock
  * as the port's `timeoutMs`, so a hung child is KILLED (scope finalizer) and
  * no `setTimeout` is involved. The Windows `.cmd` shim and the `which()` PATH
  * lookup are DOMAIN CODE called by that port's live layer, unchanged — so

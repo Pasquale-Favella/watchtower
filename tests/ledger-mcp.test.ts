@@ -17,7 +17,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import * as SqlClient from 'effect/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { bearerHeaderValue } from '../src/main/agents/ledger-mcp/auth.js'

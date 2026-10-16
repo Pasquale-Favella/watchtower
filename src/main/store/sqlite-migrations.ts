@@ -1,8 +1,8 @@
 import * as SqliteMigrator from '@effect/sql-sqlite-node/SqliteMigrator'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
-import { SqlError } from 'effect/unstable/sql/SqlError'
+import * as SqlClient from 'effect/sql/SqlClient'
+import { SqlError } from 'effect/sql/SqlError'
 
 export interface SqliteMigration {
   version: number

@@ -9,13 +9,13 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as PlatformError from 'effect/PlatformError'
+import * as ChildProcess from 'effect/process/ChildProcess'
+import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Sink from 'effect/Sink'
 import * as Stream from 'effect/Stream'
-import * as ChildProcess from 'effect/unstable/process/ChildProcess'
-import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner'
 
 import { which } from './detect.js'
 import { acpSpawnCommand } from './runtime.js'
@@ -24,33 +24,15 @@ import { acpSpawnCommand } from './runtime.js'
  * `CommandRunner` — the `Command` step of the sequenced platform adoption
  * (HttpClient → FileSystem → Command, `docs/architecture.md`).
  *
- * Why this shape and not a `@effect/platform` Command: the pinned
- * `effect@4.0.0-rc.115` ships the `ChildProcess`/`FileSystem` SERVICES and
- * their `make` constructors but NO platform implementation for either (those
- * live in `@effect/platform-node`, and every `@effect/platform*` release is
- * Effect-v3-only — peer `effect ^3.22.2` — so none can be added here). The
- * sequence is therefore followed in spirit and re-specified on the in-package
- * modules: `FileSystem` stays BLOCKED pending a decision about hand-writing a
- * Node fs transport the same way this slice hand-writes the child-process one,
- * and `Command` lands on `effect/unstable/process`, which the packaged app
- * already ships (asar-safe: no new externals, no new dependency).
+ * This capability uses Effect's `effect/process` modules while keeping
+ * the existing Node transport and its process-lifetime contract. The official
+ * `@effect/platform-node` implementation is available on the pinned Effect 4
+ * release; replacing this transport remains a separate, behavior-sensitive
+ * migration so its exit, cancellation, and cleanup semantics can be checked
+ * against this adapter.
  *
- * What rc.115 DOES ship in-package is `effect/unstable/process`: the
- * `ChildProcess` command model (executable, args, env, cwd, stdio, kill
- * options) and the `ChildProcessSpawner` service boundary that starts a
- * `Command` and hands back a handle. This port is built on exactly those two
- * modules — `ChildProcess.make` describes the run, `ChildProcessSpawner.spawn`
- * starts it — so the port is a thin, honest projection of the upstream API.
- *
- * `FileSystem` — platform step 2 — is CLOSED AS "no", by owner decision
- * (issue #148, 2026-09-29). The blocker was always the same and never went away:
- * rc.115 ships the service and its `make` constructor with NO platform
- * implementation, so adoption means hand-writing a Node fs transport by hand —
- * and the inputs are ~20 SYNCHRONOUS discovery reads (`existsSync`,
- * `readFileSync`, `statSync`) on provider paths that must resolve before any
- * Effect context exists, plus the PATH walk in `which()`. A transport for those
- * would buy substitution no test uses and lifecycle no resource needs, which is
- * why `which()` still walks PATH through `node:fs` here.
+ * Synchronous provider discovery and the PATH walk in `which()` still happen
+ * before an Effect context exists, so they remain plain Node operations.
  *
  * BOUNDARY RULE, so the exception stays an exception rather than a default that
  * spreads: SYNC DISCOVERY stays plain functions on `node:fs`; effectful,
@@ -746,8 +728,8 @@ const uninstalledStart: CommandStart = (command, _args, _options) =>
 
 /**
  * Effect-native `Command` boundary (ADR 0032): the third step of the
- * sequenced platform adoption, landing on the in-package
- * `effect/unstable/process` modules. One service, two operations, one typed
+ * sequenced platform adoption, using the stable `effect/process` modules. One
+ * service, two operations, one typed
  * failure, test fakes through `layerWithRunner` — the same fake-ability as
  * `HttpFetch.layerWithFetch` and `HarnessProbe.layerWithProbe`.
  *

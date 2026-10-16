@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as SqlError from 'effect/unstable/sql/SqlError'
+import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DbWorkerContext } from '../src/main/db-worker/context.js'

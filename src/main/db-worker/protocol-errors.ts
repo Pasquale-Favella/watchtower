@@ -1,6 +1,6 @@
 import * as Cause from 'effect/Cause'
 import * as Schema from 'effect/Schema'
-import * as SqlError from 'effect/unstable/sql/SqlError'
+import * as SqlError from 'effect/sql/SqlError'
 
 import { UnsupportedLedgerSchemaVersion } from '../store/ledger-initialization.js'
 
