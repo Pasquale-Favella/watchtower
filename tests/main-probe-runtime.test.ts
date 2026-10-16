@@ -5,7 +5,10 @@ import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 
 import * as ConfigProvider from 'effect/ConfigProvider'
+import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as FiberMap from 'effect/FiberMap'
+import * as Layer from 'effect/Layer'
 import * as Metric from 'effect/Metric'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -54,6 +57,40 @@ afterEach(async () => {
 })
 
 describe('main-owned harness snapshot', () => {
+  it('provides the main operational tracer while acquiring an additional callback service', async () => {
+    class Callback extends Context.Service<Callback, { run: () => void }>()('test/main/Callback') {}
+    const callbacks = Layer.effect(
+      Callback,
+      Effect.gen(function* () {
+        const fibers = yield* FiberMap.make<string>()
+        const run = yield* FiberMap.runtime(fibers)<never>()
+        return Callback.of({
+          run: () => {
+            run('callback', Effect.void.pipe(Effect.withSpan('shell.callback')))
+          },
+        })
+      }),
+    )
+    const directory = mkdtempSync(join(tmpdir(), 'watchtower-main-callback-'))
+    await initOperationalLog({ logDir: directory, isPackaged: false })
+    const runtime = makeMainRuntime(
+      { clientVersion: 'test', appPath: '/app', onHarnessChange: () => {} },
+      { detect: async () => [] },
+      callbacks,
+    )
+    try {
+      const callback = await runtime.runPromise(Callback)
+      callback.run()
+      closeOperationalLog()
+      const lines = readFileSync(join(directory, OPERATIONAL_LOG_FILE), 'utf8')
+      expect(lines).toContain('"op":"shell.callback"')
+    } finally {
+      closeOperationalLog()
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('uses one Config provider for Env and harness discovery', async () => {
     const detect = vi.fn(async () => [])
     const runtime = makeRuntime(

@@ -30,8 +30,14 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
         return win ? { visible: win.isVisible(), bounds: win.getBounds(), opacity: win.getOpacity() } : null
       }, PAGE[which])
     const visible = async (which: Surface): Promise<boolean> => (await surface(which))?.visible ?? false
-    const opened = (which: Surface): Promise<Page> =>
-      app.waitForEvent('window', { predicate: page => page.url().endsWith(PAGE[which]) })
+    const opened = async (which: Surface): Promise<Page> => {
+      // Electron may emit `window` before its Page has navigated. Discover
+      // the loaded surface instead of rejecting that one-shot event forever.
+      await expect.poll(() => app.windows().some(page => page.url().endsWith(PAGE[which]))).toBe(true)
+      const page = app.windows().find(candidate => candidate.url().endsWith(PAGE[which]))
+      if (!page) throw new Error(`${which} window disappeared after navigation`)
+      return page
+    }
 
     const orbOpened = opened('orb')
     const panelOpened = opened('panel')
