@@ -31,7 +31,7 @@ import { describe, expect, it } from 'vitest'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
 import type { PortInput } from '../src/main/store/port.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
-import { openLedgerFixture } from './fixtures/ledger-runtime.js'
+import { atTime, openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 const baseInput = {
   provider: 'opencode',
@@ -218,6 +218,25 @@ describe('each port is providable in isolation, with the other two absent', () =
 // ── 2 & 3. One connection, three tags, still schema-validated ───────────────
 
 describe('the live ports share ONE writer connection', () => {
+  it('timestamps an ingest through the runtime Clock', async () => {
+    const { runtime } = openLedgerFixture()
+    const now = new Date('2026-10-16T09:30:00.000Z')
+    const sources = await runtime.runPromise(
+      atTime(
+        Effect.gen(function* () {
+          const ingest = yield* LedgerIngest
+          yield* ingest.portIn(newPortInput())
+          const queries = yield* LedgerQueries
+          return yield* queries.getSources()
+        }),
+        now,
+      ),
+    )
+
+    expect(sources).toHaveLength(1)
+    expect(sources[0]?.lastPortedAt).toBe(now.toISOString())
+  })
+
   it('a row ported through LedgerIngest is readable through LedgerQueries and writable by LedgerConfig', async () => {
     const { runtime } = openLedgerFixture()
 

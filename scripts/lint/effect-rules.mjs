@@ -1,11 +1,5 @@
 const runMethods = /^(runSync|runPromise|runFork|runCallback)/
 
-function memberName(node) {
-  return node?.type === 'MemberExpression' && !node.computed && node.property.type === 'Identifier'
-    ? node.property.name
-    : undefined
-}
-
 function importedEffectBindings(program) {
   const namespaces = new Set()
   const effectBarrels = new Set()
@@ -45,20 +39,27 @@ function isEffectNamespace(node, bindings) {
   )
 }
 
+function calledEffectMethod(node, bindings) {
+  if (node.type !== 'CallExpression') return undefined
+  if (node.callee.type === 'Identifier') return bindings.methods.get(node.callee.name)
+  if (
+    node.callee.type === 'MemberExpression' &&
+    !node.callee.computed &&
+    node.callee.property.type === 'Identifier' &&
+    isEffectNamespace(node.callee.object, bindings)
+  ) {
+    return node.callee.property.name
+  }
+  return undefined
+}
+
 function isEffectCall(node, method, bindings) {
-  if (node.type !== 'CallExpression') return false
-  const directMethod = node.callee.type === 'Identifier' ? bindings.methods.get(node.callee.name) : undefined
-  return (
-    directMethod === method || (memberName(node.callee) === method && isEffectNamespace(node.callee.object, bindings))
-  )
+  return calledEffectMethod(node, bindings) === method
 }
 
 function isRunCall(node, bindings) {
-  if (node.type !== 'CallExpression') return false
-  const method = node.callee.type === 'Identifier' ? bindings.methods.get(node.callee.name) : memberName(node.callee)
-  if (!method || !runMethods.test(method)) return false
-  if (node.callee.type === 'Identifier') return bindings.methods.has(node.callee.name)
-  return isEffectNamespace(node.callee.object, bindings)
+  const method = calledEffectMethod(node, bindings)
+  return typeof method === 'string' && runMethods.test(method)
 }
 
 const noBareThrowInEffectSync = {

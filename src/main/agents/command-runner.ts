@@ -315,6 +315,10 @@ function makeCommandRun(spawner: ChildProcessSpawner.ChildProcessSpawner['Servic
           .spawn(ChildProcess.make(spawn.command, spawn.args, commandOptions(options)))
           .pipe(Effect.mapError(error => spawnFailure(spawn.command, error)))
         const outputs = yield* captureOutputs(handle, spawn.command)
+        // `run` only returns stdout. Keep consuming the other independent
+        // streams so their fanout queues do not retain the child's output.
+        yield* Effect.forkScoped(Stream.runDrain(outputs.stderr).pipe(Effect.catch(() => Effect.void)))
+        yield* Effect.forkScoped(Stream.runDrain(outputs.all).pipe(Effect.catch(() => Effect.void)))
         const stdout = yield* Stream.mkString(Stream.decodeText(outputs.stdout))
         const exitCode = yield* exitCodeOrFailure(handle)
         return { stdout, exitCode }

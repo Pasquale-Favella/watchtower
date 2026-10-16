@@ -1,3 +1,4 @@
+import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as SqlClient from 'effect/sql/SqlClient'
@@ -256,7 +257,7 @@ export const LedgerIngestLive = Layer.effect(
       }
 
       const mapped = mapFileToLedgerRows(input, pricing)
-      const now = new Date().toISOString()
+      const now = DateTime.formatIso(yield* DateTime.now)
 
       return yield* sql.withTransaction(
         Effect.gen(function* () {
