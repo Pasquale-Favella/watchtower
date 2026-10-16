@@ -2,6 +2,14 @@
 
 Status: accepted
 
+The migration mechanics in this ADR remain current. [ADR 0032](./0032-effect-first-backend-architecture.md)
+replaces its narrow adoption scope and synchronous store facade with composed
+Effect repository capabilities over the worker's single SQL client. Each
+repository operation still completes synchronously at the worker boundary.
+[ADR 0034](./0034-effect-schema-contract-authority.md) replaces the original
+Zod authority with Effect Schema. The backend and owned contract migration is
+complete; the original facade and schema restrictions below are historical.
+
 ## Context
 
 The writable ledger is owned by one db-worker thread and has synchronous store
@@ -16,7 +24,7 @@ APIs over Node's built-in `node:sqlite`. Watchtower uses Effect
 `4.0.0-rc.115` and the official `@effect/sql-sqlite-node` client rather than
 maintaining a custom driver port or adopting an ORM.
 
-## Decision
+## Original decision
 
 Use Effect 4 SQL for the owned ledger's prepared queries and migration history.
 `@effect/sql-sqlite-node` owns the `node:sqlite` connection, and a

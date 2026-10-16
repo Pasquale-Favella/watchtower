@@ -16,6 +16,41 @@ npm run dev        # launches the Electron app with hot reload
 The README's [Quick start](../README.md#quick-start) covers first-launch
 behavior and the macOS Full Disk Access requirement.
 
+## Effect conventions
+
+The backend uses Effect 4 for application workflows, service composition,
+typed operational failures, and scoped resources. `effect` and
+`@effect/sql-sqlite-node` are pinned to `4.0.0-rc.115`. Before writing Effect
+code, read the installed `node_modules/effect/AGENTS.md` completely and follow
+its required links, as specified in [the agent guide](./agents/effect.md).
+Use the installed source for APIs on this release line.
+
+- Compose capabilities with `Context.Service` and `Layer`. Main, db-worker,
+  and MCP query processes own separate runtimes and resource lifetimes.
+  Keep runtime construction and `run*` calls at composition roots and external
+  adapters.
+- Put query and command orchestration in `src/main/application/`. Reuse the
+  repository capabilities over the isolate's SQL client. Each SQLite operation
+  completes synchronously, with no Promise yield inside its transaction.
+- Define contracts with Effect Schema and derive their TypeScript types.
+  Distinguish stored/encoded representations from decoded values and IPC
+  payloads. Preserve unknown-key stripping and extraction skip-and-tally
+  behavior. Watchtower has no owned Zod contracts or direct Zod dependency;
+  SDK-internal protocol schemas remain the dependency's responsibility.
+- Keep calculations and transformations as plain functions. The renderer
+  keeps React, Zustand, and the Promise IPC facade; its synchronous Schema
+  decoder needs no application runtime, Layer, fiber, or backend IO.
+- Test services with substitute Layers and fakes. Use `TestClock` for
+  time-dependent behavior and real SQLite integration tests for transaction
+  and migration behavior. Check expected failure, interruption, and cleanup
+  where the workflow owns resources.
+
+See [the architecture](./architecture.md#the-effect-first-backend),
+[ADR 0032](./adr/0032-effect-first-backend-architecture.md), and
+[ADR 0034](./adr/0034-effect-schema-contract-authority.md) for the current
+boundaries. Earlier ADR adoption limits are historical where these decisions
+supersede them.
+
 ## Scripts
 
 | Command                                                 | What it does                                                                                           |
@@ -29,7 +64,7 @@ behavior and the macOS Full Disk Access requirement.
 | `npm run lint`                                          | ESLint v9 flat gate (`eslint.config.mjs`) — blocking in CI (`test.yml`)                                |
 | `npm run lint:fix`                                      | Autofix what ESLint can (import order), report the rest                                                |
 | `npm run format`                                        | Rewrite everything with Prettier (`.prettierrc.json`)                                                  |
-| `npm run format:check`                                  | Prettier check — advisory until the one-time whole-tree pass lands                                     |
+| `npm run format:check`                                  | Check formatting with Prettier; blocking in CI                                                         |
 | `npm run package`                                       | Build + package for the platform you are on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux) |
 | `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS)                                     |
 | `npm run icons`                                         | Regenerate `build/icon.png` from `assets/watchtower-logo.svg`                                          |
@@ -103,11 +138,10 @@ in #136 out of #123 (W6/W11/W14 + Phase 1 lint gate):
   char sanitizer regexes, dynamic cache deletes) reports as warnings while the
   gate stays green — each gets promoted to error with its own cleanup diff in
   the follow-up, never as one giant reformatting PR.
-- **Formatting is advisory for now.** `npm run format:check` runs in CI
-  non-blocking (same pattern as `e2e.yml`): the tree predates Prettier, so the
-  one-time `prettier --write` whole-tree pass plus promotion to blocking rides
-  the follow-up. `endOfLine` is `auto` until the repo adopts a line-ending
-  policy (no `.gitattributes` yet; blobs are LF, Windows checkouts land CRLF).
+- **Formatting blocks CI.** `npm run format:check` runs in `test.yml` alongside
+  lint. `.prettierignore` preserves hand-authored layouts such as the README
+  and excludes generated outputs and vendored skills. `endOfLine` is `auto`;
+  preserve each file's existing line endings.
 - Editor: install the ESLint + Prettier extensions — `.vscode/settings.json`
   already turns on format-on-save and fix-on-save.
 
@@ -121,45 +155,52 @@ e2e/                      # Playwright Electron specs (npm run test:e2e)
 └─ command-palette.spec.ts # Mod+K → filter → Enter navigates
 playwright.config.ts      # testDir e2e, single worker, generous first-scan ceiling
 src/
-├─ main/                    # Electron main process, owns everything
-│  ├─ index.ts              # window, IPC surface, scan orchestration, cadence
-│  ├─ cadence.ts            # background scan / FX refresh cadence
-│  ├─ views.ts              # dashboard, session, project, and search payloads
-│  ├─ overview.ts           # Overview payload (KPIs, efficiency, workflow)
-│  ├─ sessions-view.ts      # Sessions payload
-│  ├─ pull-requests-view.ts # PR spend payload
-│  ├─ spend-view.ts         # daily spend + Sankey payload
-│  ├─ models-view.ts        # by-model / by-task / audit payloads
-│  ├─ compare-view.ts       # model-pair comparison payload
-│  ├─ optimize-view.ts      # the 16 waste detectors + setup-health grade
-│  ├─ yield-view.ts         # productive / reverted / abandoned git attribution
-│  ├─ fx.ts                 # Frankfurter exchange-rate cache
-│  ├─ export.ts             # CSV/JSON export
+├─ main/                    # backend code, run in main, worker, or MCP processes
+│  ├─ index.ts              # Electron startup, windows, IPC, worker coordination
+│  ├─ main-runtime.ts       # main-process Effect service graph
+│  ├─ worker-runtime.ts     # worker Effect graph, SQL client, ledger initialization
+│  ├─ background-shell.ts   # scoped tray, orb windows, subscriptions, delayed work
+│  ├─ env.ts                # Effect Config, Env service, captured AppPaths
+│  ├─ operational-log.ts    # shared Logger/Metric/Tracer integration
+│  ├─ db-worker/
+│  │  ├─ entry.ts           # worker startup, scan fibers, cadence, shutdown
+│  │  ├─ client.ts          # main-to-worker Promise and event adapter
+│  │  ├─ query-dispatch.ts  # query routes into application workflows
+│  │  ├─ config-dispatch.ts # settings command routes
+│  │  └─ protocol.ts        # typed worker request/response/event contract
+│  ├─ application/          # Effect queries, commands, capability definitions
+│  ├─ *-calculation.ts      # pure section, export, and pricing calculations
+│  ├─ cadence.ts            # background scan / FX cadence policy
+│  ├─ fx.ts                 # Effect FX service and Frankfurter cache
 │  ├─ updates.ts            # manual update check (GitHub releases)
 │  ├─ agents/               # the Coach & Skills harness surface (ADRs 0016–0021)
 │  │  ├─ detect.ts          # harness discovery over the spec registry
 │  │  ├─ runtime.ts         # the HarnessRuntime seam (AI SDK + ACP provider)
 │  │  ├─ harnesses/         # one spec file per drivable CLI (claude, codex, …)
-│  │  ├─ ledger-mcp/        # the in-app watchtower-ledger MCP server (tools/resources/prompts)
+│  │  ├─ ledger-mcp/        # official SDK server, Schema tool inputs, read-only runtime
 │  │  ├─ prompts.ts         # the one briefing: coaching + skill authoring scopes
 │  │  ├─ events.ts          # ACP stream → CoachEvent derivation
 │  │  └─ ipc.ts             # coach:harnesses/run/inspect/cancel/reset wire
 │  ├─ pipeline/             # discovery -> extraction -> parse -> classify -> price
-│  │  ├─ scan.ts            # runScan: one scan pass, metadata out
-│  │  ├─ parser.ts          # the parse pipeline and delta seam
-│  │  ├─ session-cache.ts   # on-disk cache with per-file fingerprints
+│  │  ├─ scan.ts            # Effect scan orchestration, metadata out
+│  │  ├─ parser.ts          # native parser streams and per-file delta seam
+│  │  ├─ session-cache.ts   # Effect cache IO with per-file fingerprints
 │  │  ├─ models.ts          # LiteLLM pricing + fallbacks + aliases
 │  │  └─ providers/         # one file per tool (38 providers)
 │  └─ store/
-│     ├─ ledger.ts          # accumulating SQLite ledger (source/call/turn/session)
+│     ├─ ledger-repository.ts # Effect repository services over one SQL client
+│     ├─ ledger-ports.ts     # focused ingest, query, and settings capabilities
+│     ├─ ledger-*-reads.ts   # focused view, session, and export reads
+│     ├─ *-read-projections.ts # SQL row projections and decoders
+│     ├─ sqlite-migrations.ts # versioned ledger DDL through Effect SQL
 │     ├─ port.ts            # cache-file -> ledger-row mapping
-│     └─ aggregate.ts       # query-time aggregation helpers
+│     └─ aggregate-calculation.ts # pure query-time aggregation helpers
 ├─ preload/                 # typed contextBridge API (the renderer's only door)
-├─ shared/schemas/          # zod schemas, the single source of truth
-└─ renderer/                # React 19 + Tailwind + shadcn/ui (sandboxed)
+├─ shared/schemas/          # Effect Schema contracts and derived types; UI-only types
+└─ renderer/src/            # React 19 + Tailwind + shadcn/ui (sandboxed)
    ├─ app/                  # AppShell, sidebar/topbar, onboarding, stores, shortcuts
    ├─ features/             # one folder per section (overview, sessions, spend, coach-skills, ...)
-   └─ shared/               # UI kit, libs, and hooks
+   └─ shared/               # UI kit, hooks, Promise IPC API, synchronous Schema decoder
 ```
 
 Architecture decisions are recorded as ADRs in [`docs/adr`](./adr) and

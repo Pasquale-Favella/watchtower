@@ -37,7 +37,7 @@ Two more observations made the picker flow removable rather than replaceable:
 `skillsProseRequestSchema`/`SkillsProseResult`, and `buildProsePrompt` are deleted. Every
 run is a plain mode-less coach run: the user's own prompt streams through the harness,
 whether it is a coaching question or a skill request. A smuggled `mode`/`evidence` is
-stripped by zod, never reaching the runner.
+stripped by the shared Effect Schema under ADR 0034, never reaching the runner.
 
 ### 2. The one briefing defines both scopes
 

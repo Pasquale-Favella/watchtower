@@ -25,7 +25,7 @@ Claude Code, Codex, Cursor, Copilot, Gemini, and 30+ more tools are read straigh
 - **Incremental scans.** A background cadence ports only what changed since the last pass, so a full history builds once and stays fresh cheaply.
 - **An accumulating ledger.** Raw transcript facts land in a local SQLite store; every view is derived at query time, so changing a price or an alias repaints the dashboard instantly.
 - **A local coach.** Chat with your own coding-agent harness (Claude Code, Codex, OpenCode, …) about your usage. It reads the same local ledger the dashboard shows, so every answer — and every SKILL.md it crafts — is grounded in your real history, not guesses.
-- **Sandboxed renderer.** All data stays in the main process. The UI receives schema-validated payloads over IPC and validates them again on arrival.
+- **Sandboxed renderer.** Backend processes own file and ledger access. The UI receives Effect Schema-validated payloads over IPC and validates them again on arrival.
 - **No telemetry.** The only network traffic is the optional pricing (LiteLLM) and exchange-rate (Frankfurter) refreshes.
 
 ## Installation
@@ -64,11 +64,18 @@ Every release ships all three platforms. AppImage and `.deb` are the two Linux f
 
 | Layer | Tech |
 |-------|------|
-| **Main process** | Electron 43, Node 22+ (`node:sqlite` for the ledger), TypeScript 5.8 |
+| **Main process & db-worker** | Electron 43, Node 22+, TypeScript 5.8, Effect 4 services, Layers, and scoped runtimes |
 | **Renderer** | React 19, Tailwind CSS 4, shadcn/ui, Zustand, Recharts, GSAP, TanStack Hotkeys |
-| **Data & contracts** | SQLite (built-in `node:sqlite`), Zod 4 schemas shared between main and renderer |
+| **Data & contracts** | SQLite via `@effect/sql-sqlite-node` and built-in `node:sqlite`; Effect Schema contracts shared by backend and renderer |
 | **Build & packaging** | electron-vite 5, Vite 7, electron-builder (Windows NSIS, macOS DMG/zip universal, Linux AppImage/deb, built in CI) |
 | **Tests** | Vitest (`tests/`) + Playwright Electron smoke (`e2e/`, `npm run test:e2e`) + ESLint 9 gate (`npm run lint`) |
+
+The main process coordinates Electron and Coach resources. A dedicated db-worker
+owns scans, application queries, and the writable ledger through its own Effect
+runtime. The renderer uses synchronous Effect Schema validation with React and
+the Promise-based IPC API. Both Effect packages are pinned to `4.0.0-rc.115`.
+See the [architecture](docs/architecture.md#the-effect-first-backend) for ownership
+and contract boundaries.
 
 ## Quick start
 
@@ -112,8 +119,8 @@ Artifacts are currently **unsigned** by design: Windows shows a SmartScreen "unk
 ## Documentation
 
 - [**Usage guide**](docs/usage.md): keyboard shortcuts, the period and provider scope, and what each of the nine sections shows in detail
-- [**Development guide**](docs/development.md): prerequisites, npm scripts, project layout, environment variables
-- [**Architecture**](docs/architecture.md): the data pipeline, ledger, extraction seam, scan loop, and ADRs
+- [**Development guide**](docs/development.md): prerequisites, npm scripts, Effect conventions, project layout, environment variables
+- [**Architecture**](docs/architecture.md): Effect runtime ownership, application workflows, Schema contracts, the data pipeline, and ADRs
 
 ## Data & privacy
 

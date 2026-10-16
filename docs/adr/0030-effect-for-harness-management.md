@@ -2,6 +2,14 @@
 
 Status: accepted (spike-verified on the F8 time-box — issue #144)
 
+This ADR records the original limited adoption. [ADR 0032](./0032-effect-first-backend-architecture.md)
+supersedes its restriction to harness and ledger work; [ADR 0034](./0034-effect-schema-contract-authority.md)
+supersedes its prohibition on Effect Schema. The backend and owned contract
+migration is complete. Effect now composes main, worker, and MCP query
+workflows, including provider IO; the renderer uses synchronous Effect Schema
+validation while retaining React and its Promise IPC facade. The original
+scope limits below are historical.
+
 ## Context
 
 The Coach harness layer (`src/main/agents/*`) manages concurrency by hand:
@@ -42,7 +50,7 @@ so there is no bundle-size impact on `out/main`; the cost is ~26MB of
 `node_modules` (2700 files, incl. `fast-check`/`@standard-schema/spec`
 transitives). `typecheck:node` passes unchanged (tests are vitest-only).
 
-## Decision
+## Original decision
 
 **Targeted adoption: Effect is allowed — and expected — inside
 `src/main/agents/`**, behind the existing seams (`HarnessRuntime`,

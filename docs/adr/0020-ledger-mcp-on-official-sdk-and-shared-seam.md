@@ -10,7 +10,19 @@
   The architecture (in-app self-serve ledger MCP server, per-conversation
   temp workspace) is unchanged.
 
-## Context
+## Current implementation
+
+The official SDK owns protocol negotiation, envelope validation, framing, and
+transports through its `Server` request-handler API. Effect Schema validates
+Watchtower's tool arguments and generates advertised JSON Schema. The query
+process owns one persistent Effect runtime and a read-only SQLite connection;
+tools and query-backed resources reuse application queries through
+`LedgerMcpQueries`. The October amendments below replace the original Zod,
+`McpServer.registerTool`, and `LedgerStore` implementation described in the
+historical sections. SDK-internal Zod protocol schemas remain inside the
+dependency. See [ADR 0034](./0034-effect-schema-contract-authority.md).
+
+## Original context, 2026-08-12
 
 ADR 0019 shipped the `watchtower-ledger` MCP server with a hand-rolled ~120-line
 JSON-RPC subset and hand-rolled SQL queries in `tools.ts`. Two improvements:
@@ -25,7 +37,7 @@ JSON-RPC subset and hand-rolled SQL queries in `tools.ts`. Two improvements:
    zod schemas are the single source of truth; the MCP server should expose
    exactly those payloads, not a parallel shape.
 
-## Decision
+## Original decision, 2026-08-12
 
 ### 1. Protocol: official SDK
 
@@ -99,7 +111,7 @@ agent the ledger tools and the real-invocation rule (`ledger_skills` /
 SKILL.md shape to the harness's own conventions — the ledger is a real
 grounding source, never a license to fabricate.
 
-## Consequences
+## Original consequences
 
 - Protocol robustness (version negotiation, error codes, framing) is now the
   SDK's, maintained upstream; the entry is ~60 lines.

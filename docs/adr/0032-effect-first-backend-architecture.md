@@ -2,6 +2,12 @@
 
 Status: accepted
 
+The backend and owned Schema migration described here is complete. Current
+runtime and capability ownership is documented in
+[the architecture](../architecture.md#the-effect-first-backend). The Context
+and Migration history sections record the starting point and implementation
+sequence.
+
 ## Context
 
 Watchtower has adopted Effect 4 in two separate areas: harness lifecycle
@@ -53,15 +59,14 @@ behavior and IPC contracts remain stable while slices move.
   at that boundary; do not introduce Promise yields inside a transaction. The
   SQLite driver continues to own its connection and statement cache; do not
   add a second pool or statement registry.
-- Use Effect Schema as the target extraction, persistence and IPC contract
-  authority under ADR 0034. Migrate one contract and its consumers together;
-  each unmigrated contract continues to use its existing Zod definition until
-  that slice lands. Derive TypeScript types from the authoritative schema and
+- Use Effect Schema as the extraction, persistence and IPC contract authority
+  under ADR 0034. The owned Zod replacement is complete. Derive TypeScript
+  types from the authoritative schema and
   distinguish encoded rows from decoded domain values and wire payloads.
   Effect values, services and fibers never cross IPC.
 - Keep React and its local state/data-fetching patterns as the renderer's UI
   runtime. The renderer consumes the Promise-based validated IPC facade and
-  uses synchronous Effect Schema decoding for migrated contracts. Renderer
+  uses synchronous Effect Schema decoding for incoming contracts. Renderer
   validation needs no application runtime, layer, fiber or effectful decoder.
 - Build service tests with test Layers and fakes; use Effect's test clock for
   time-dependent behavior and test failure, interruption, cleanup, and
@@ -74,7 +79,7 @@ records of the original adoption decisions; their specific implementation
 constraints are replaced by this decision. Existing domain and wire contracts
 remain authoritative unless separately changed.
 
-## Migration
+## Migration history
 
 1. Establish the db-worker Layer/runtime composition and an Effect-native
    ledger repository. Convert the per-file port-in transaction first; retain
@@ -101,9 +106,9 @@ them a permanent second API.
 - Effect becomes a shared architectural vocabulary for effectful backend
   orchestration, dependency wiring, failure handling, resource lifetime, and
   tests, rather than a library used only by a few features.
-- The main process and db-worker gain explicit composition roots and typed
-  service graphs. The transition temporarily has compatibility adapters and
-  mixed legacy/new slices; each adapter must have a named removal condition.
+- The main process and db-worker have explicit composition roots and typed
+  service graphs. Remaining compatibility adapters support direct callers;
+  each adapter must have a named removal condition.
 - The single-worker, single-writer data model and synchronous SQLite driver
   remain. Effect improves composition and lifecycle semantics, not SQLite's
   blocking behavior or the renderer's data contract.

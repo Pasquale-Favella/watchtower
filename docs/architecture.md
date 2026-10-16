@@ -5,6 +5,128 @@ data pipeline: it discovers and parses tool session files, maintains the
 session cache, and writes per-file changes to the local SQLite ledger. Views
 derive their results from that ledger at query time.
 
+## App map
+
+Each backend isolate owns its Effect runtime and resources. Solid arrows show
+calls, data, and events; dashed arrows show lifecycle ownership. The worker
+and MCP processes share application query code, but have separate service
+instances and SQLite connections.
+
+```mermaid
+flowchart TB
+    subgraph renderer["Sandboxed renderer"]
+        ui["React views and Zustand stores"]
+        decoder["Synchronous Effect Schema decoder"]
+        ui ~~~ decoder
+    end
+
+    preload["Preload contextBridge<br/>Typed Promise API and event subscriptions"]
+
+    subgraph main["Electron main process · MainRuntime"]
+        ipc["IPC handlers and worker client"]
+        shell["BackgroundShell<br/>Tray, orb, windows, subscriptions"]
+        coach["Coach harness coordination"]
+        pool["MCP pool and sidecar lifecycle"]
+    end
+
+    subgraph worker["db-worker thread · WorkerRuntime"]
+        supervisor["Scan supervisor<br/>Cadence, coalescing, cancellation"]
+        scan["scanLedger and provider pipeline<br/>Discovery, extraction, cache, deltas"]
+        queries["Application queries and commands<br/>Schema-validated query results"]
+        calculations["Pure calculations<br/>Scope, pricing, aggregation"]
+        repository["Repository capabilities<br/>Ingest, focused reads, live settings"]
+        sql["One Effect SQL client<br/>Synchronous transactions, single writer"]
+    end
+
+    subgraph mcp["MCP query processes · read-only Effect runtime per process"]
+        sdk["Official MCP SDK<br/>Tools, resources, prompts"]
+        mcpQueries["Application queries and calculations<br/>Effect Schema tool arguments and results"]
+        mcpSql["Separate read-only SQL connection"]
+    end
+
+    harness["Coding-agent CLI<br/>ACP harness"]
+    sources[("Tool session stores<br/>SQLite, JSONL, JSON")]
+    cache[("Session cache<br/>Per-file fingerprints")]
+    ledger[("ledger.db<br/>Transcript facts and persisted settings")]
+
+    ui -->|"Requests"| preload
+    preload -->|"Invoke IPC"| ipc
+    ipc -->|"Results and events"| preload
+    preload -->|"Incoming payloads"| decoder
+    decoder -->|"Validated data or visible error state"| ui
+
+    ipc -->|"Worker messages: queries and commands"| queries
+    queries -->|"Read facts or change settings"| repository
+    queries -->|"Decoded facts and pricing inputs"| calculations
+    calculations -->|"Calculated values"| queries
+    queries -->|"Serialized results"| ipc
+    ipc -->|"Manual refresh or abort"| supervisor
+    supervisor -->|"Owned scan fiber"| scan
+    scan -->|"Read source files"| sources
+    scan -->|"Reconcile fingerprints and cached calls"| cache
+    scan -->|"Per-file deltas"| repository
+    repository --> sql
+    sql -->|"Read and write"| ledger
+    scan -->|"Progress and scan outcome"| supervisor
+    supervisor -->|"Progress and store:changed"| ipc
+
+    ipc -->|"Coach commands"| coach
+    coach <-->|"ACP requests and events"| harness
+    pool -.->|"Start and dispose"| sdk
+    coach -->|"Acquire MCP attachment"| pool
+    harness <-->|"MCP over stdio or loopback HTTP"| sdk
+    sdk -->|"Tool and resource requests"| mcpQueries
+    mcpQueries -->|"Read facts and live settings"| mcpSql
+    mcpSql -->|"Read only"| ledger
+```
+
+The diagram shows the core scan, query, and Coach paths. HTTP pricing/FX
+clients, Config, Clock, and the Operational log support the owning runtime
+as described [below](#the-effect-first-backend). `BackgroundShell` owns native
+UI resources within main and uses the same IPC boundary for renderer data.
+For each request arrow, the response returns to its caller; selected result
+and event paths are drawn explicitly.
+
+### Following a request through the app
+
+1. A manual refresh enters through the preload API and main's worker client.
+   The worker supervisor coalesces it with any active scan and owns the scan
+   fiber. `scanLedger` composes provider discovery, parser streams, cache IO,
+   and per-file ingest. Provider records pass extraction Schema validation;
+   malformed declared fields increment the provider's `unparsed` count.
+   The first scan covers lifetime history. Later scans reuse fingerprints
+   and cached calls, while each changed file commits atomically to the ledger.
+2. The worker sends progress and completion events to main for relay.
+   `store:changed` triggers the renderer's existing refresh flow. A section's
+   data request travels through the Promise IPC API to an application query
+   in the worker. That query obtains decoded facts and live settings through
+   a focused repository capability, runs pure calculations, and validates
+   the outgoing payload with Effect Schema. Main forwards the result and the
+   renderer decodes it again before updating its store.
+3. An Alias or Price override edit follows a worker command route into
+   `LedgerConfig`. Subsequent queries use the updated setting to reprice the
+   existing facts. The edit requires no transcript rescan. Each repository
+   operation completes its SQLite transaction without Promise yields.
+4. A Coach request goes to main's harness integration. The coding-agent CLI
+   can call `watchtower-ledger` tools over MCP to inspect usage. Each MCP
+   query process owns a read-only connection and reuses the application query
+   code with its own service graph. The SDK owns protocol handling; Effect
+   Schema owns Watchtower's tool arguments and result contracts. Tool scopes
+   default to lifetime and can differ from the current dashboard scope.
+5. Cancellation and shutdown belong to the runtime that owns the work.
+   Scoped fibers and finalizers release scan, harness, shell, and sidecar
+   resources. Expected operational failures stay typed inside Effect until a
+   worker, IPC, or SDK adapter translates them. A malformed renderer result
+   becomes an error state; a malformed broadcast is dropped by the tripwire.
+
+To trace these paths in source, start with the
+[worker supervisor](../src/main/db-worker/entry.ts),
+[scan application](../src/main/application/scan-ledger.ts),
+[query dispatcher](../src/main/db-worker/query-dispatch.ts), and
+[Overview query](../src/main/application/overview-query.ts). The
+[MCP query runtime](../src/main/agents/ledger-mcp/query-runtime.ts) shows how
+the same application queries run with a separate read-only service graph.
+
 ## Data flow
 
 ```
@@ -50,7 +172,7 @@ Because scans port _deltas_ instead of rewriting snapshots:
 
 Every provider's parsed call record flows through one shared Effect Schema
 (`src/shared/schemas/providers.ts`) before it can become a cached call or a
-ledger row. Effect Schema is the authority for migrated provider, ledger, and
+ledger row. Effect Schema is the authority for provider, ledger, cache, and
 IPC contracts. The renderer decodes incoming payloads synchronously with
 Effect Schema and reports invalid payloads through its existing error state
 and tripwire. One UI-only schema module remains plain TypeScript. The renderer
@@ -91,11 +213,17 @@ SKILL.md grounded in the ledger.
 ## The Effect-first backend
 
 Effect is the composition model for effectful backend workflows in the main
-process, the db-worker, and the Harness integration (ADR 0032, accepted and
-authoritative). Adoption moves one vertical slice at a time: each migrated
-workflow uses Effect end to end for orchestration and effectful dependencies,
-while behavior and IPC contracts stay stable. Pure parsing, mapping,
+process, the db-worker, and the Harness integration
+([ADR 0032](./adr/0032-effect-first-backend-architecture.md)). The backend and
+owned Schema migration is complete. Workflows use Effect end to end for
+orchestration and effectful dependencies. Pure parsing, mapping,
 aggregation, and formatting stay ordinary functions.
+
+`effect` and `@effect/sql-sqlite-node` are pinned to `4.0.0-rc.115`.
+[ADR 0034](./adr/0034-effect-schema-contract-authority.md) defines contract
+authority. The [adoption plan](./plans/effect-target-architecture.md#current-priority-2026-10-15)
+records completion and verification; its earlier dated entries describe
+historical checkpoints.
 
 ### Current ownership
 
@@ -137,32 +265,36 @@ writer. Main and worker have separate in-memory metric registries. The worker
 forwards records to main through its existing event channel. No exporter or
 second logging sink is installed.
 
-Locked decisions carried over from the adoption follow-up:
+### Application workflows and repository boundaries
 
-- Configuration is env-only through Effect Config. Persisted settings —
-  Aliases, Price overrides, and other user settings changed at runtime —
-  stay in the ledger repository. There is no unified app config.
-- Any platform-layer adoption is sequenced HttpClient, then FileSystem, then
-  Command, each step pinned to the `effect` release line and proven inside
-  the packaged artifact the way `effect` itself was. **Re-specified against
-  what `effect@4.0.0-rc.115` actually ships:** there is no Effect-v4
-  `@effect/platform` (every release peer-depends on Effect v3), and rc.115 ships
-  the in-package modules instead — `effect/unstable/http` for step 1 (landed),
-  `effect/unstable/process` (`ChildProcess` + `ChildProcessSpawner`) for step 3
-  (landed, one tracer call site: the Claude auth probe, behind the
-  `CommandRunner` port). `FileSystem` (step 2) is **closed as "no"** — owner
-  decision, 2026-09-29: the ~20 `node:fs` reads it would cover are synchronous
-  discovery reads that must resolve before any Effect context exists, so the
-  transport would buy substitution no test uses and lifecycle no resource needs.
-  The boundary rule that keeps this an exception rather than a spreading
-  default: **sync discovery stays plain functions on `node:fs`; effectful,
-  streamed, retryable, or scope-owned file work goes through a port**
-  (`CommandRunner` is the existing example). No new dependency is needed for
-  steps 1 or 3, and the packaged artifact needs no new external.
-- Observability is a bridge, not a second pipeline: Effect logs, metrics,
-  and spans feed the existing Effect-`Logger`/`Tracer`-backed Operational log
-  (ADR 0029). There is no separate exporter and no third-party logging
-  dependency.
+`src/main/application/` contains query and command workflows. They compose
+focused capabilities such as `LedgerViewReads`, `LedgerSessionReads`,
+`LedgerExportReads`, `LedgerIngest`, and `LedgerConfig`. Repository
+implementations share the isolate's existing SQL client. Section queries and
+exports load the facts and live settings their calculations require in one
+transaction, then pass decoded data to pure `*-calculation.ts` functions.
+Application queries validate outgoing payloads with Effect Schema. MCP tools
+reuse the application queries through their process's Promise adapter.
+
+Expected operational failures stay in Effect's typed error channel until the
+worker, IPC, or SDK adapter translates them. Scoped resources and fibers own
+cleanup and cancellation. Runtime construction and `run*` calls belong at
+composition roots and external adapters. Effect values, services, and fibers
+never cross IPC.
+
+### Configuration and platform IO
+
+Environment configuration uses Effect Config. Main and worker startup capture
+`AppPaths` for synchronous path helpers; Effect consumers use the `Env`
+service or operation-time Config reads. Persisted settings, including Aliases
+and Price overrides, stay in the ledger's `LedgerConfig` capability. Clock
+controls time-dependent policy, allowing tests to substitute `TestClock`.
+
+HTTP uses `effect/unstable/http`; the `CommandRunner` port uses
+`effect/unstable/process` for the Claude auth probe. These modules ship in the
+pinned Effect package. Synchronous discovery helpers may use `node:fs`;
+effectful, streamed, retryable, or scope-owned file work goes through an owned
+capability. Provider discovery and parser streams compose in the scan fiber.
 
 ## Architecture decisions
 
@@ -170,8 +302,8 @@ Key decisions are recorded as ADRs in [`docs/adr`](./adr) and referenced
 inline in the code. The most relevant ones:
 
 - [ADR 0002: the ledger is an accumulating store of raw facts; every view is a query-time derivation](./adr/0002-accumulating-ledger-query-time-aggregation.md)
-- [ADR 0003: shared zod schemas as the single source of truth, with a loose extraction seam that degrades provider drift instead of failing the scan](./adr/0003-shared-zod-schemas-extraction-seam.md)
-- [ADR 0004: lifetime delta scans; the main process owns the scan loop; `store:changed` is the renderer's only refetch trigger](./adr/0004-lifetime-delta-scans-single-refetch-trigger.md)
+- [ADR 0003: shared Effect Schema contracts and extraction that tolerates provider drift](./adr/0003-shared-zod-schemas-extraction-seam.md)
+- [ADR 0004: lifetime delta scans and the single `store:changed` refetch trigger; worker ownership follows ADR 0023](./adr/0004-lifetime-delta-scans-single-refetch-trigger.md)
 - [ADR 0005: sandboxed renderer, a typed IPC surface, a frozen wire contract, and a renderer-side tripwire](./adr/0005-sandboxed-renderer-ipc-tripwire.md)
 - [ADR 0009: USD-anchored store; currency conversion only at the display/export boundary](./adr/0009-usd-anchored-fx-boundary.md)
 - [ADR 0012: local-first privacy, no telemetry, manual informational updates](./adr/0012-local-first-privacy-manual-updates.md)
@@ -185,7 +317,7 @@ inline in the code. The most relevant ones:
 - [ADR 0025: ledger MCP HTTP fallback for stdio-rejecting harnesses](./adr/0025-ledger-mcp-http-fallback-for-stdio-rejecting-harnesses.md)
 - [ADR 0026: pooled ledger MCP sidecar for stdio-rejecting harnesses](./adr/0026-pooled-ledger-mcp-sidecar.md)
 - [ADR 0027: app-scoped local ledger MCP and startup controls](./adr/0027-app-scoped-local-ledger-mcp.md)
-- [ADR 0030: targeted Effect adoption for the Coach harness layer](./adr/0030-effect-for-harness-management.md)
+- [ADR 0030: original Coach harness adoption; scope superseded by ADRs 0032 and 0034](./adr/0030-effect-for-harness-management.md)
 - [ADR 0031: version the local ledger schema with SQLite migrations](./adr/0031-versioned-ledger-migrations.md)
 - [ADR 0032: Effect as the composition model for backend workflows](./adr/0032-effect-first-backend-architecture.md)
 - [ADR 0034: Effect Schema as the contract authority](./adr/0034-effect-schema-contract-authority.md)

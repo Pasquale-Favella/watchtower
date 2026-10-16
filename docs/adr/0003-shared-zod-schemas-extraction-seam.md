@@ -2,7 +2,7 @@
 
 Status: accepted
 
-One authoritative schema defines each extraction, persistence or wire contract and its TypeScript types. ADR 0034 authorizes replacing Zod with Effect Schema, including synchronous renderer validation. During migration, each contract retains its current definition until its schema and consumers convert together. Do not maintain two independent definitions for the same contract.
+One authoritative Effect Schema defines each extraction, persistence or wire contract and its TypeScript types. The replacement authorized by [ADR 0034](./0034-effect-schema-contract-authority.md) is complete, including synchronous renderer validation. Watchtower has no owned Zod contracts or imports. One UI-only module uses plain TypeScript types. Do not maintain two independent definitions for the same contract. This ADR retains its original filename so existing links continue to resolve.
 
 Portable schemas are compiled into both Node and web targets when their consumers require them. Persistence-only row codecs and internal projections may remain private to the backend. Stored snake_case keys and JSON strings, decoded domain values, and IPC payloads are distinct representations; their mappings belong to the corresponding codecs rather than to scattered store helpers. Share field definitions where their semantics agree.
 
