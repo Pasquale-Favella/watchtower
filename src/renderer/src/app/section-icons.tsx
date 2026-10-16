@@ -12,7 +12,7 @@ import {
   Settings,
 } from 'lucide-react'
 
-import type { Section } from '../../../shared/schemas/renderer.js'
+import type { Section } from '../../../shared/schemas/navigation.js'
 
 /** Section icons — one source of truth shared by the sidebar and the command
  * palette. Leaf module (lucide + a type-only import) so headless tests can

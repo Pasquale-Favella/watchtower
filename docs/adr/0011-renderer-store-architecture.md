@@ -11,3 +11,15 @@ The renderer is built from three cooperating layers, all store-driven:
 **The shell is a composition root** (`AppShell.tsx`): it only decides splash-vs-app and mounts onboarding. Theme, hotkeys, and bootstrap logic live in hooks (`use-theme-effect`, `use-app-hotkeys`, `use-app-bootstrap`); the JSX lives in `ShellLayout` composed of store-driven components (AppSidebar, TopBar, Splash, ContentRegion) that each read their own store and the shared scope selector — no props threaded. Settings is full-bleed with its own rail, handled by `ShellLayout`.
 
 **Why:** eight sections all read period/provider-scoped data and all must refresh on the same scan event. Centralizing the refresh trigger, the IPC wiring, and the scope model makes a section a one-liner (`createScopedDataStore(fetchX)`) and keeps every component a pure reader of its store — which is what makes the renderer testable without jsdom and keeps `window` confined to two modules.
+
+**Amendment (background orb, several windows):** the IPC wiring is now one layer of _wiring modules_, one per window, composed from a shared one, instead of a single module.
+
+- `app/stores/shared-wiring.ts` holds what every window needs:
+  - the scan lifecycle
+  - the data plane: `store:changed` / `config:changed` driving the shared refresh tick, plus FX updates
+  - settings sync across windows, via the `storage` event
+- `app/stores/subscribe.ts` (the app window) adds Coach events and the orb's `app:navigate`.
+- `orb/beacon-wiring.ts` (the 64px orb) mounts the scan lifecycle, its placement and settings sync (for the theme): no ledger data.
+- `orb/panel-wiring.ts` (the spend panel) mounts the full data plane, settings sync and its placement. Opening, folding and the first-close peek (its note and timer) belong to the main process; the panel only mirrors the placement it broadcasts.
+
+The rule is unchanged: wiring modules and `lib/api.ts` are the only code that touches `window`, and every subscription feeds a store action, never component state. The split exists so that each window's bundle loads only the stores it uses. A single module statically importing every store made the orb load the Coach store and the app load the orb store.

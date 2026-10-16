@@ -1,5 +1,6 @@
-import { test, expect } from '@playwright/test'
-import { dismissOnboarding, waitForAnyVisible, withApp } from './app'
+import { expect, test } from '@playwright/test'
+
+import { dismissOnboarding, expectSingleMainWindow, waitForAnyVisible, withApp } from './app'
 
 /**
  * Smoke (spins out of #123 W7, tracks #133): the built app boots in a real
@@ -26,6 +27,6 @@ test('app boots, onboarding dismisses, sections navigate', async () => {
     await window.getByRole('button', { name: 'Overview', exact: true }).click()
     await expect(searchSessions.or(sessionsEmpty)).toBeHidden()
     await expect(window.getByText('Total spend', { exact: true })).toBeVisible()
-    expect(app.windows().length).toBe(1)
+    await expectSingleMainWindow(app)
   })
 })

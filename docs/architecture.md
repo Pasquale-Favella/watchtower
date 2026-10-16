@@ -107,6 +107,16 @@ SQLite connection. It keeps database work off the Electron main thread. MCP
 query processes use a separate read-only runtime and connection; they never
 share the worker's SQLite state.
 
+The Electron root also composes `BackgroundShell` into that same runtime.
+Its scoped Layer owns the tray, orb windows, IPC and display subscriptions,
+and delayed visibility, readiness, reveal and peek work. Native callbacks enter
+scoped fibers through Effect's `FiberMap` bridge; delays and held-request age
+use the captured Clock. Quit blocks new shell activity, interrupts pending tray
+acquisition and delayed work, then runtime disposal releases subscriptions and
+windows. The first-close explanation is consumed only when its panel appears.
+Shell preferences retain their existing `shell-preferences.json` representation,
+with a Schema-derived contract and typed read, decode and write failures.
+
 Effect owns backend orchestration, service composition, typed failures,
 scoped resources, fibers, schedules, and time-dependent policy. Provider IO and
 session-cache IO use native Effects; pure parsing and transformations remain

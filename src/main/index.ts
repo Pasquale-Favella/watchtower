@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 
@@ -24,6 +24,7 @@ import { registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
 import { saveSkill } from './application/save-skill.js'
+import { BackgroundShell, type BackgroundShellHandle, backgroundShellLayer } from './background-shell.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths, readAppPathsEffect } from './env.js'
 import { makeMainRuntime } from './main-runtime.js'
@@ -50,11 +51,22 @@ let updateChecker: UpdateCheckerEffect | null = null
 let agentsCleanup: { reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
 let dbClient: DbWorkerClient | null = null
-const mainRuntime = makeMainRuntime({
-  clientVersion: app.getVersion(),
-  appPath: app.getAppPath(),
-  onHarnessChange: rows => broadcast('coach:harnesses-changed', rows),
-})
+const mainRuntime = makeMainRuntime(
+  {
+    clientVersion: app.getVersion(),
+    appPath: app.getAppPath(),
+    onHarnessChange: rows => broadcast('coach:harnesses-changed', rows),
+  },
+  {},
+  backgroundShellLayer({
+    preloadPath: join(__dirname, '../preload/index.js'),
+    rendererUrl: process.env['ELECTRON_RENDERER_URL'],
+    rendererDir: join(__dirname, '../renderer'),
+    iconPath: app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(__dirname, '../../build/icon.png'),
+    createMainWindow: createWindow,
+    requestScan: () => void dbClient?.request('scan:start').catch(() => {}),
+  }),
+)
 /** App-level loopback-HTTP ledger sidecar: shared by Copilot, local external
  * MCP clients, and any future harness that rejects stdio. It remains lazy by
  * default and is prewarmed after the data worker is ready when the persisted
@@ -66,8 +78,16 @@ const sidecarPool = {
     mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.regenerate(context))),
   status: () => mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.status())),
 }
-/** The requesting window of the in-flight manual scan (progress/error routing). */
-let scanRequester: WebContents | null = null
+/** Tray + floating orb + hide-on-close (set once the app is ready). */
+let backgroundShell: BackgroundShellHandle | null = null
+
+// One Watchtower per profile: with the app living in the tray, launching it
+// again must bring the existing window back rather than boot a second ledger
+// owner. The e2e suite runs each launch on its own `--user-data-dir`, so its
+// instances never contend for this lock.
+const hasInstanceLock = app.requestSingleInstanceLock()
+if (!hasInstanceLock) app.quit()
+app.on('second-instance', () => backgroundShell?.showMainWindow())
 
 function broadcast(channel: string, data?: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -121,9 +141,10 @@ async function ledgerMcpStatus(db: DbWorkerClient): Promise<LedgerMcpStatus> {
   return { startupMode, running: server !== null, url: server && 'url' in server ? server.url : null }
 }
 
-/** Relays db-worker broadcasts to windows. Manual-scan lifecycle events go to
- * the requesting window only (today's ⌘R semantics); everything else fans out
- * to every window. */
+/** Relays db-worker broadcasts to windows. Everything fans out to every
+ * window — scan lifecycle included, manual or background: with the orb there
+ * are several windows, and a scan one of them starts is the app's scan, so
+ * every window must show it (and refetch on the same `store:changed`). */
 function relayWorkerEvents(db: DbWorkerClient): void {
   db.onEvent(event => {
     // Boot handshake (`ready` / `init-error`) is consumed by the client
@@ -131,14 +152,10 @@ function relayWorkerEvents(db: DbWorkerClient): void {
     if (event.event === 'ready' || event.event === 'init-error') return
     switch (event.event) {
       case 'scan:progress':
-        if (event.manual) {
-          if (scanRequester && !scanRequester.isDestroyed()) scanRequester.send('scan:progress', event.progress)
-        } else {
-          broadcast('scan:progress', event.progress)
-        }
+        broadcast('scan:progress', event.progress)
         break
       case 'scan:error':
-        if (scanRequester && !scanRequester.isDestroyed()) scanRequester.send('scan:error', event.message)
+        broadcast('scan:error', event.message)
         break
       case 'store:changed':
         broadcast('store:changed', event.metadata)
@@ -177,18 +194,12 @@ function registerIpc(db: DbWorkerClient): void {
     return { ok: true }
   })
 
-  handleLogged('scan:start', async (event, options?: { provider?: string }) => {
-    // First-come-wins: a concurrent second caller gets `alreadyRunning` from
-    // the worker, so stealing the slot would misroute the live scan's
-    // progress to a window that never started it. A dead slot is free again
-    // (its window closed mid-scan while another one is still waiting).
-    if (!scanRequester || scanRequester.isDestroyed()) scanRequester = event.sender
-    try {
-      return await db.request('scan:start', options)
-    } finally {
-      if (scanRequester === event.sender) scanRequester = null
-    }
-  })
+  handleLogged('scan:start', (_event, options?: { provider?: string }) => db.request('scan:start', options))
+
+  /** Whether a scan is in flight — asked of the worker, which owns the scan
+   * (ADR 0023). A window's bootstrap reads it once, then follows the
+   * broadcast lifecycle events. */
+  handleLogged('scan:active', () => db.request('scan:active'))
 
   ipcMain.on('scan:abort', () => {
     // Fire-and-forget like the renderer's send: a dead worker must never turn
@@ -434,11 +445,12 @@ function registerIpc(db: DbWorkerClient): void {
   })
 }
 
-function createWindow(): void {
-  // Dev/standalone windows get the generated brand icon (ADR 0015); packaged
-  // builds carry it in the exe/dmg/AppImage, and build/ isn't shipped (files:
-  // out/**), so this resolves to no icon at runtime.
-  const devIcon = join(__dirname, '../../build/icon.png')
+// Dev/standalone windows get the generated brand icon (ADR 0015); packaged
+// builds carry it in the exe/dmg/AppImage, and build/ isn't shipped (files:
+// out/**), so this resolves to no icon at runtime.
+const devIcon = join(__dirname, '../../build/icon.png')
+
+function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -454,15 +466,18 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
+  backgroundShell?.attachMainWindow(mainWindow)
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+  return mainWindow
 }
 
 app.whenReady().then(async () => {
+  if (!hasInstanceLock) return
   const dataDir = app.getPath('userData')
   try {
     await initOperationalLog({ logDir: join(dataDir, 'logs'), isPackaged: app.isPackaged })
@@ -491,6 +506,7 @@ app.whenReady().then(async () => {
   // dependency is provided there, so the IPC handler just runs check().
   updateChecker = await mainRuntime.runPromise(createUpdateCheckerEffect({ currentVersion: app.getVersion() }))
   registerIpc(db)
+  backgroundShell = await mainRuntime.runPromise(BackgroundShell)
   createWindow()
 
   // Optional app-level prewarm: the persisted setting is read only after the
@@ -526,12 +542,14 @@ app.whenReady().then(async () => {
     app.quit()
   })
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  // macOS dock click: bring the (possibly hidden) window back.
+  app.on('activate', () => backgroundShell?.showMainWindow())
 })
 
 app.on('window-all-closed', () => {
+  // Living in the tray: with no window left (the orb disabled) the app keeps
+  // running until the user quits from the tray.
+  if (backgroundShell?.keepsRunning()) return
   if (process.platform !== 'darwin') app.quit()
 })
 
@@ -540,6 +558,8 @@ app.on('window-all-closed', () => {
 let quitState: 'running' | 'closing' | 'closed' = 'running'
 app.on('before-quit', event => {
   if (quitState === 'closed') return
+  // From here on a window close is a real close, not a hide-to-tray.
+  backgroundShell?.markQuitting()
   event.preventDefault()
   if (quitState === 'closing') return
   quitState = 'closing'
