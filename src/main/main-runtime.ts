@@ -1,7 +1,6 @@
-import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
-import type * as FileSystem from 'effect/FileSystem'
+import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 
@@ -28,10 +27,11 @@ import {
   OperationalLogTracerLayer,
 } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
+import { NodePlatformLive, type NodePlatformServices } from './platform-live.js'
 
 /** Stable services available through the Electron main isolate's one runtime. */
 export type MainServices =
-  | FileSystem.FileSystem
+  | NodePlatformServices
   | HttpFetch
   | Env
   | OperationalLog
@@ -58,16 +58,18 @@ export interface MainRuntimeOverrides {
   readonly sidecar?: LedgerMcpSidecarOptions
   readonly coachSdk?: () => Promise<HarnessSdk>
   readonly coachRuntime?: HarnessRuntimeOptions
+  readonly platform?: Layer.Layer<NodePlatformServices>
 }
 
 /** Shared main-process dependencies with no Electron or harness state. */
 function mainLive(
   configProvider: ConfigProvider.ConfigProvider,
-): Layer.Layer<FileSystem.FileSystem | HttpFetch | Env | OperationalLog> {
+  platform: Layer.Layer<NodePlatformServices> = NodePlatformLive,
+): Layer.Layer<NodePlatformServices | HttpFetch | Env | OperationalLog> {
   const config = Layer.succeed(ConfigProvider.ConfigProvider, configProvider)
   return Layer.mergeAll(
-    NodeFileSystem.layer,
-    HttpFetch.layer,
+    platform,
+    HttpFetch.layer.pipe(Layer.provide(FetchHttpClient.layer)),
     Env.layer.pipe(Layer.provide(config)),
     OperationalLog.layer,
     config,
@@ -83,7 +85,7 @@ const processConfigProvider = ConfigProvider.fromEnvRecord(process.env, {
   preserveEmptyStrings: true,
 })
 
-export const MainLive: Layer.Layer<FileSystem.FileSystem | HttpFetch | Env | OperationalLog> =
+export const MainLive: Layer.Layer<NodePlatformServices | HttpFetch | Env | OperationalLog> =
   mainLive(processConfigProvider)
 
 /** Compose the main process's actual app-version-aware, scoped harness snapshot. */
@@ -91,13 +93,16 @@ export function makeMainLive(
   options: MainRuntimeOptions,
   overrides: MainRuntimeOverrides = {},
 ): Layer.Layer<MainServices> {
-  const commandRunner = CommandRunner.layer
+  const mainServices =
+    overrides.configProvider || overrides.platform
+      ? mainLive(overrides.configProvider ?? processConfigProvider, overrides.platform)
+      : MainLive
+  const commandRunner = CommandRunner.layer.pipe(Layer.provide(mainServices))
   const probeImpl = overrides.probe
   const probe = probeImpl
     ? HarnessProbe.layerWithProbe(info => probeImpl(info, options.clientVersion))
     : HarnessProbe.layerWithClientVersion(options.clientVersion)
   const probeAndRunner = probe.pipe(Layer.provideMerge(commandRunner))
-  const mainServices = overrides.configProvider ? mainLive(overrides.configProvider) : MainLive
   const snapshot = harnessSnapshotLayer({
     detect:
       overrides.detect ??

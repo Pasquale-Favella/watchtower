@@ -37,9 +37,10 @@ import {
   type CommandRunOptions,
   makeRecordingCommandRunner,
 } from '../src/main/agents/command-runner.js'
+import { CommandRunnerLiveLayer } from '../src/main/agents/command-runner-live.js'
 
 /** One `run` through whichever `CommandRunner` layer the case is exercising —
- *  the recording fake or `CommandRunner.layer` — returned UNRUN so a case can
+ *  the recording fake or `CommandRunnerLiveLayer` — returned UNRUN so a case can
  *  `Effect.flip`/`fork`/supply a TestClock on it. */
 function runThrough(
   layer: Layer.Layer<CommandRunner>,
@@ -55,7 +56,7 @@ function runThrough(
 
 /** The LIVE layer: a real child process, no installed CLI required. */
 function liveRun(command: string, args: readonly string[], options?: CommandRunOptions) {
-  return runThrough(CommandRunner.layer, command, args, options)
+  return runThrough(CommandRunnerLiveLayer, command, args, options)
 }
 
 function liveRunError(command: string, args: readonly string[], options?: CommandRunOptions) {
