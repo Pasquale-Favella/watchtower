@@ -24,7 +24,7 @@ import { registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
 import { saveSkill } from './application/save-skill.js'
-import { type BackgroundShell, createBackgroundShell } from './background-shell.js'
+import { BackgroundShell, type BackgroundShellHandle, backgroundShellLayer } from './background-shell.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { initAppPaths, readAppPathsEffect } from './env.js'
 import { makeMainRuntime } from './main-runtime.js'
@@ -51,11 +51,22 @@ let updateChecker: UpdateCheckerEffect | null = null
 let agentsCleanup: { reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
 let dbClient: DbWorkerClient | null = null
-const mainRuntime = makeMainRuntime({
-  clientVersion: app.getVersion(),
-  appPath: app.getAppPath(),
-  onHarnessChange: rows => broadcast('coach:harnesses-changed', rows),
-})
+const mainRuntime = makeMainRuntime(
+  {
+    clientVersion: app.getVersion(),
+    appPath: app.getAppPath(),
+    onHarnessChange: rows => broadcast('coach:harnesses-changed', rows),
+  },
+  {},
+  backgroundShellLayer({
+    preloadPath: join(__dirname, '../preload/index.js'),
+    rendererUrl: process.env['ELECTRON_RENDERER_URL'],
+    rendererDir: join(__dirname, '../renderer'),
+    iconPath: app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(__dirname, '../../build/icon.png'),
+    createMainWindow: createWindow,
+    requestScan: () => void dbClient?.request('scan:start').catch(() => {}),
+  }),
+)
 /** App-level loopback-HTTP ledger sidecar: shared by Copilot, local external
  * MCP clients, and any future harness that rejects stdio. It remains lazy by
  * default and is prewarmed after the data worker is ready when the persisted
@@ -68,7 +79,7 @@ const sidecarPool = {
   status: () => mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.status())),
 }
 /** Tray + floating orb + hide-on-close (set once the app is ready). */
-let backgroundShell: BackgroundShell | null = null
+let backgroundShell: BackgroundShellHandle | null = null
 
 // One Watchtower per profile: with the app living in the tray, launching it
 // again must bring the existing window back rather than boot a second ledger
@@ -495,16 +506,7 @@ app.whenReady().then(async () => {
   // dependency is provided there, so the IPC handler just runs check().
   updateChecker = await mainRuntime.runPromise(createUpdateCheckerEffect({ currentVersion: app.getVersion() }))
   registerIpc(db)
-  backgroundShell = createBackgroundShell({
-    preloadPath: join(__dirname, '../preload/index.js'),
-    rendererUrl: process.env['ELECTRON_RENDERER_URL'],
-    rendererDir: join(__dirname, '../renderer'),
-    iconPath: app.isPackaged ? join(process.resourcesPath, 'icon.png') : devIcon,
-    createMainWindow: createWindow,
-    // Tray "Scan now": the same worker op as any window's scan; its lifecycle
-    // fans out to every window. A concurrent scan answers `alreadyRunning`.
-    requestScan: () => void db.request('scan:start').catch(() => {}),
-  })
+  backgroundShell = await mainRuntime.runPromise(BackgroundShell)
   createWindow()
 
   // Optional app-level prewarm: the persisted setting is read only after the

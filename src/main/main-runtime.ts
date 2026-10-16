@@ -38,7 +38,7 @@ export type MainServices =
   | LedgerMcpSidecar
   | LedgerMcpPool
   | CoachHarnessExecution
-export type MainRuntime = ManagedRuntime.ManagedRuntime<MainServices, never>
+export type MainRuntime<Additional = never> = ManagedRuntime.ManagedRuntime<MainServices | Additional, never>
 
 export interface MainRuntimeOptions {
   readonly clientVersion: string
@@ -112,7 +112,20 @@ export function makeMainLive(
   )
 }
 
-/** The only runtime constructor for this isolate; the root disposes its scope on quit. */
-export function makeMainRuntime(options: MainRuntimeOptions, overrides: MainRuntimeOverrides = {}): MainRuntime {
-  return ManagedRuntime.make(makeMainLive(options, overrides))
+/** The only runtime constructor for this isolate. The root may add scoped
+ * Electron services without importing Electron into the shared composition;
+ * disposing the runtime closes both graphs together. */
+export function makeMainRuntime(options: MainRuntimeOptions, overrides?: MainRuntimeOverrides): MainRuntime
+export function makeMainRuntime<Additional>(
+  options: MainRuntimeOptions,
+  overrides: MainRuntimeOverrides,
+  additional: Layer.Layer<Additional>,
+): MainRuntime<Additional>
+export function makeMainRuntime<Additional>(
+  options: MainRuntimeOptions,
+  overrides: MainRuntimeOverrides = {},
+  additional?: Layer.Layer<Additional>,
+): MainRuntime<Additional> | MainRuntime {
+  const main = makeMainLive(options, overrides)
+  return additional ? ManagedRuntime.make(Layer.merge(main, additional)) : ManagedRuntime.make(main)
 }

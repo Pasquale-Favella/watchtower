@@ -61,6 +61,7 @@ describe('createPeekGate — the first-close peek', () => {
     const gate = createPeekGate()
     gate.dataReady()
     expect(gate.closed()).toBe(true)
+    gate.shown()
     expect(gate.closed()).toBe(false)
     expect(gate.dataReady()).toBe(false)
   })
@@ -69,5 +70,15 @@ describe('createPeekGate — the first-close peek', () => {
     const gate = createPeekGate()
     expect(gate.dataReady()).toBe(false)
     expect(gate.dataReady()).toBe(false)
+  })
+
+  it('keeps the explanation pending until it has actually been shown', () => {
+    const gate = createPeekGate()
+    gate.closed()
+    expect(gate.dataReady()).toBe(true)
+    expect(gate.pending()).toBe(true)
+    expect(gate.closed()).toBe(true)
+    gate.shown()
+    expect(gate.pending()).toBe(false)
   })
 })

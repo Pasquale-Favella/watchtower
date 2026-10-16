@@ -1,14 +1,19 @@
+import * as Clock from 'effect/Clock'
+import * as Context from 'effect/Context'
+import * as Effect from 'effect/Effect'
+import * as FiberMap from 'effect/FiberMap'
+import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import {
   app,
   BrowserWindow,
   type BrowserWindowConstructorOptions,
+  type Event as ElectronEvent,
   globalShortcut,
   ipcMain,
   type IpcMainEvent,
   type IpcMainInvokeEvent,
   Menu,
-  type NativeImage,
   nativeImage,
   screen,
   Tray,
@@ -22,7 +27,7 @@ import { orbPanelRequestSchema, type OrbPlacement } from '../shared/schemas/orb.
 import { logCodeFor, safeLogOperationalEvent } from './operational-log.js'
 import { clampToWorkArea, defaultOrbPosition, orbBounds, panelLayout } from './orb-geometry.js'
 import { containsPoint, createHeldRequest, createPeekGate, offsetAnchor, type Point } from './orb-policy.js'
-import { loadShellPreferences, saveShellPreferences } from './shell-preferences.js'
+import { DEFAULT_SHELL_PREFERENCES, loadShellPreferences, saveShellPreferences } from './shell-preferences.js'
 
 /**
  * The background shell: what keeps Watchtower alive once its window is
@@ -83,7 +88,7 @@ export interface BackgroundShellOptions {
   requestScan: () => void
 }
 
-export interface BackgroundShell {
+export interface BackgroundShellHandle {
   /** Wires hide-on-close and orb visibility to a freshly created main window. */
   attachMainWindow: (win: BrowserWindow) => void
   /** Brings the full app back (creating the window if needed), optionally on a section. */
@@ -94,45 +99,58 @@ export interface BackgroundShell {
   keepsRunning: () => boolean
 }
 
-async function trayIcon(iconPath: string | null): Promise<NativeImage> {
+export class BackgroundShell extends Context.Service<BackgroundShell, BackgroundShellHandle>()(
+  'watchtower/main/BackgroundShell',
+) {}
+
+class ShellTrayError extends Schema.TaggedError<ShellTrayError>()('ShellTrayError', { code: Schema.String }) {}
+
+const trayIcon = Effect.fn('BackgroundShell.trayIcon')(function* (iconPath: string | null) {
   let image = iconPath && existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty()
   if (image.isEmpty()) {
-    try {
-      image = await app.getFileIcon(process.execPath, { size: 'small' })
-    } catch {
-      /* an empty tray image is still a working (if invisible) tray */
-    }
+    image = yield* Effect.tryPromise({
+      try: () => app.getFileIcon(process.execPath, { size: 'small' }),
+      catch: cause => new ShellTrayError({ code: logCodeFor(cause, 'icon-failed') }),
+    }).pipe(Effect.orElseSucceed(() => nativeImage.createEmpty()))
   }
   const size = process.platform === 'darwin' ? 18 : 16
   return image.isEmpty() ? image : image.resize({ width: size, height: size, quality: 'best' })
-}
-
-/** Runs `show` once the window's page can paint — or after a fallback, so a
- * page that never reports ready cannot leave the window unshown forever. */
-function showWhenReady(win: BrowserWindow, show: () => void): void {
-  if (!win.webContents.isLoading()) {
-    show()
-    return
-  }
-  let done = false
-  const once = (): void => {
-    if (done || win.isDestroyed()) return
-    done = true
-    clearTimeout(fallback)
-    show()
-  }
-  const fallback = setTimeout(once, READY_FALLBACK_MS)
-  win.once('ready-to-show', once)
-}
+})
 
 function live(win: BrowserWindow | null): BrowserWindow | null {
   return win && !win.isDestroyed() ? win : null
 }
 
-export function createBackgroundShell(options: BackgroundShellOptions): BackgroundShell {
+const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (options: BackgroundShellOptions) {
+  const tasks = yield* FiberMap.make<string, unknown, never>()
+  // Native callbacks enter fibers in this layer's captured context and scope.
+  const runTask = yield* FiberMap.runtime(tasks)<never>()
+  const clock = yield* Clock.Clock
+  const cancel = (key: string): void => {
+    runTask(key, Effect.void)
+  }
   const prefsFile = join(app.getPath('userData'), 'shell-preferences.json')
-  const prefs = loadShellPreferences(prefsFile)
-  const savePreferences = (): void => saveShellPreferences(prefsFile, prefs)
+  const prefs = yield* loadShellPreferences(prefsFile).pipe(
+    Effect.catchTag('ShellPreferencesError', error =>
+      Effect.sync(() => {
+        if (error.code !== 'ENOENT')
+          safeLogOperationalEvent('warn', 'shell.preferences-unavailable', { code: error.code })
+        return { ...DEFAULT_SHELL_PREFERENCES }
+      }),
+    ),
+  )
+  const savePreferences = (): void => {
+    runTask(
+      'preferences',
+      saveShellPreferences(prefsFile, prefs).pipe(
+        Effect.catchTag('ShellPreferencesError', error =>
+          Effect.sync(() => {
+            safeLogOperationalEvent('warn', 'shell.preferences-unavailable', { code: error.code })
+          }),
+        ),
+      ),
+    )
+  }
   let mainWindow: BrowserWindow | null = null
   let orbWindow: BrowserWindow | null = null
   let panelWindow: BrowserWindow | null = null
@@ -144,20 +162,47 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   /** The open is the first-close peek: inactive, with its note, folding on
    * its own until the user interacts with it. */
   let peeking = false
-  let peekTimer: NodeJS.Timeout | null = null
   let dragOrigin: Point | null = null
   /** The first-close peek: once per session, once the close and the panel's
    * data have both happened. */
   const peekGate = createPeekGate()
   /** An open asked for while the orb is still on its way to the screen: applied
    * when the orb shows, unless it has gone stale meanwhile. */
-  const heldOpen = createHeldRequest<PanelMode>(HELD_OPEN_TTL_MS)
+  const heldOpen = createHeldRequest<PanelMode>(HELD_OPEN_TTL_MS, () => clock.currentTimeMillisUnsafe())
   /** The orb is about the app being *away*: never float it during boot,
    * before the main window has been on screen once. */
   let mainWindowShown = false
-  let visibilityTimer: NodeJS.Timeout | null = null
   /** Set while the panel is shown but still transparent (see revealPanel). */
-  let revealTimer: NodeJS.Timeout | null = null
+  let revealing = false
+
+  function showWhenReady(win: BrowserWindow, key: string, show: () => void): void {
+    cancel(key)
+    if (quitting || win.isDestroyed()) return
+    if (!win.webContents.isLoading()) {
+      show()
+      return
+    }
+    const ready = Effect.callback<undefined>(resume => {
+      const onReady = (): void => resume(Effect.succeed(undefined))
+      const onClosed = (): void => resume(Effect.interrupt)
+      win.once('ready-to-show', onReady)
+      win.once('closed', onClosed)
+      return Effect.sync(() => {
+        win.removeListener('ready-to-show', onReady)
+        win.removeListener('closed', onClosed)
+      })
+    })
+    runTask(
+      key,
+      Effect.raceFirst(ready, Effect.sleep(READY_FALLBACK_MS)).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            if (!quitting && !win.isDestroyed()) show()
+          }),
+        ),
+      ),
+    )
+  }
 
   function mainWindowAway(): boolean {
     return !mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || mainWindow.isMinimized()
@@ -192,29 +237,41 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   }
 
   function clearPeekTimer(): void {
-    if (peekTimer) clearTimeout(peekTimer)
-    peekTimer = null
+    cancel('peek')
   }
 
   /** The peek folds on its own — but not from under a pointer resting on it. */
   function schedulePeekFold(delayMs: number): void {
     clearPeekTimer()
-    peekTimer = setTimeout(() => {
-      peekTimer = null
-      if (!peeking) return
-      const panel = live(panelWindow)
-      if (panel && containsPoint(panel.getBounds(), screen.getCursorScreenPoint())) {
-        schedulePeekFold(PEEK_RECHECK_MS)
-        return
-      }
-      applyPanel(false)
-    }, delayMs)
+    runTask(
+      'peek',
+      Effect.sleep(delayMs).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            if (!peeking) return
+            const panel = live(panelWindow)
+            if (panel && containsPoint(panel.getBounds(), screen.getCursorScreenPoint())) {
+              schedulePeekFold(PEEK_RECHECK_MS)
+              return
+            }
+            applyPanel(false)
+          }),
+        ),
+      ),
+    )
   }
 
   function finishReveal(): void {
-    if (revealTimer) clearTimeout(revealTimer)
-    revealTimer = null
-    live(panelWindow)?.setOpacity(1)
+    cancel('reveal')
+    if (!revealing) return
+    revealing = false
+    const panel = live(panelWindow)
+    if (quitting || !expanded || !panel?.isVisible()) return
+    panel.setOpacity(1)
+    if (peeking) {
+      peekGate.shown()
+      schedulePeekFold(PEEK_MS)
+    }
   }
 
   /** Shows the hidden panel without a flicker. A hidden transparent window
@@ -226,7 +283,7 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
    * a no-op on Linux: there it simply shows.) */
   function revealPanel(panel: BrowserWindow, focus: boolean): void {
     panel.setOpacity(0)
-    showWhenReady(panel, () => {
+    showWhenReady(panel, 'panel-ready', () => {
       // Folded or quitting while the page got ready: show nothing.
       if (!expanded || quitting || panel.isDestroyed()) return
       if (focus) {
@@ -235,8 +292,8 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
       } else {
         panel.showInactive()
       }
-      if (revealTimer) clearTimeout(revealTimer)
-      revealTimer = setTimeout(finishReveal, REVEAL_FALLBACK_MS)
+      revealing = true
+      runTask('reveal', Effect.sleep(REVEAL_FALLBACK_MS).pipe(Effect.andThen(Effect.sync(finishReveal))))
     })
   }
 
@@ -250,15 +307,21 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     // A peek stays a peek only while nothing else asks for the panel.
     peeking = expanded && mode === 'peek' && (!wasOpen || peeking)
     clearPeekTimer()
-    if (peeking) schedulePeekFold(PEEK_MS)
     if (panel && expanded) {
       panel.setBounds(panelLayout(anchor, true).bounds)
       if (!panel.isVisible()) revealPanel(panel, mode === 'open')
-      else if (mode === 'open') panel.focus()
+      else {
+        if (peeking && !revealing) {
+          peekGate.shown()
+          schedulePeekFold(PEEK_MS)
+        }
+        if (mode === 'open') panel.focus()
+      }
     } else {
       heldOpen.clear()
-      if (revealTimer) clearTimeout(revealTimer)
-      revealTimer = null
+      cancel('panel-ready')
+      cancel('reveal')
+      revealing = false
       if (panel?.isVisible()) panel.hide()
     }
     return broadcastPlacement()
@@ -267,6 +330,7 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   /** Opens the panel as `mode` — beside a visible orb. One that arrives while
    * the orb is still on its way is held and applied when it shows. */
   function openPanel(mode: PanelMode): OrbPlacement {
+    if (!orbWanted()) return currentPlacement()
     if (!live(orbWindow)?.isVisible()) {
       if (orbWanted()) heldOpen.hold(mode)
       return currentPlacement()
@@ -349,27 +413,29 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
   /** Window events arrive in bursts (show → restore, minimize → hide) and
    * mid-transition `isVisible()` can lie: settle before deciding. */
   function scheduleOrbVisibility(): void {
-    if (visibilityTimer) clearTimeout(visibilityTimer)
-    visibilityTimer = setTimeout(() => {
-      visibilityTimer = null
-      updateOrbVisibility()
-    }, 150)
+    if (quitting) return
+    runTask('visibility', Effect.sleep(150).pipe(Effect.andThen(Effect.sync(updateOrbVisibility))))
   }
 
   function updateOrbVisibility(): void {
     if (orbWanted()) {
       const orb = ensureSurfaces()
-      if (orb.isVisible()) return
+      if (orb.isVisible()) {
+        if (peekGate.pending() && !expanded) openPanel('peek')
+        return
+      }
       orb.setBounds(orbBounds(anchor))
-      showWhenReady(orb, () => {
+      showWhenReady(orb, 'orb-ready', () => {
         if (!orbWanted()) return // the app came back while the orb was loading
         orb.showInactive()
         // An open that arrived while the orb was on its way (if still fresh).
         const mode = heldOpen.take()
         if (mode) applyPanel(true, mode)
+        else if (peekGate.pending()) applyPanel(true, 'peek')
       })
     } else {
       heldOpen.clear()
+      cancel('orb-ready')
       if (!live(orbWindow)?.isVisible()) return
       if (expanded) applyPanel(false)
       live(orbWindow)?.hide()
@@ -381,6 +447,7 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
    * never destroyed, while the app runs, so recreating it is a crash fallback
    * that opens on its default route (the requested section is not replayed). */
   function showMainWindow(section?: Section): void {
+    if (quitting) return
     if (!mainWindow || mainWindow.isDestroyed()) {
       options.createMainWindow()
       return
@@ -464,39 +531,59 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
     )
   }
 
-  async function createTray(): Promise<void> {
-    tray = new Tray(await trayIcon(options.iconPath))
-    tray.setToolTip('Watchtower')
+  const createTray = Effect.gen(function* () {
+    const icon = yield* trayIcon(options.iconPath)
+    const acquired = yield* Effect.acquireRelease(
+      Effect.try({
+        try: () => new Tray(icon),
+        catch: cause => new ShellTrayError({ code: logCodeFor(cause, 'tray-failed') }),
+      }),
+      resource =>
+        Effect.sync(() => {
+          if (tray === resource) tray = null
+          resource.destroy()
+        }),
+    )
+    tray = acquired
+    acquired.setToolTip('Watchtower')
     // Windows/Linux: a left click opens the app; the menu stays on right click.
     // macOS opens the context menu on click, as menu-bar items do.
-    if (process.platform !== 'darwin') tray.on('click', () => showMainWindow())
+    if (process.platform !== 'darwin') acquired.on('click', () => showMainWindow())
     rebuildTrayMenu()
-  }
+    yield* Effect.never
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTag('ShellTrayError', error =>
+      Effect.sync(() => {
+        safeLogOperationalEvent('warn', 'shell.tray-unavailable', { code: error.code })
+      }),
+    ),
+  )
 
   function registerOrbIpc(): void {
-    ipcMain.handle('orb:placement:get', event => (isOrbSurface(event) ? currentPlacement() : null))
-    ipcMain.handle('orb:panel:request', (event, request: unknown) => {
+    handle('orb:placement:get', event => (isOrbSurface(event) ? currentPlacement() : null))
+    handle('orb:panel:request', (event, request: unknown) => {
       if (!isOrbSurface(event) || !isPanelRequest(request)) return null
       return request === 'fold' ? applyPanel(false) : openPanel('open')
     })
     // The panel's data is in: the first-close peek may open now (once).
-    ipcMain.on('orb:panel-data-ready', event => {
+    listen('orb:panel-data-ready', event => {
       if (isPanelSender(event) && peekGate.dataReady()) openPanel('peek')
     })
-    ipcMain.on('orb:drag-start', event => {
+    listen('orb:drag-start', event => {
       if (!isOrbSender(event)) return
       // The panel is anchored to the orb: a drag folds it rather than leave it behind.
       if (expanded) applyPanel(false)
       dragOrigin = { ...anchor }
     })
-    ipcMain.on('orb:drag-move', (event, dx: unknown, dy: unknown) => {
+    listen('orb:drag-move', (event, dx: unknown, dy: unknown) => {
       if (!isOrbSender(event) || !dragOrigin || typeof dx !== 'number' || typeof dy !== 'number') return
       if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
       // Free movement while dragging; the clamp to the work area lands on drop.
       anchor = offsetAnchor(dragOrigin, dx, dy)
       live(orbWindow)?.setBounds(orbBounds(anchor))
     })
-    ipcMain.on('orb:drag-end', event => {
+    listen('orb:drag-end', event => {
       if (!isOrbSender(event) || !dragOrigin) return
       dragOrigin = null
       anchor = clampToWorkArea(anchor)
@@ -505,42 +592,74 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
       prefs.orbPosition = anchor
       savePreferences()
     })
-    ipcMain.on('orb:open-app', (event, section: unknown) => {
+    listen('orb:open-app', (event, section: unknown) => {
       if (!isOrbSurface(event)) return
       if (expanded) applyPanel(false)
       showMainWindow(isSection(section) ? section : undefined)
     })
-    ipcMain.on('orb:hide', event => {
+    listen('orb:hide', event => {
       if (isOrbSurface(event)) setOrbEnabled(false)
     })
-    ipcMain.on('orb:quit', event => {
+    listen('orb:quit', event => {
       if (isOrbSurface(event)) app.quit()
     })
     // The panel page painted a fresh frame after opening: reveal it.
-    ipcMain.on('orb:panel-painted', event => {
-      if (revealTimer && isPanelSender(event)) finishReveal()
+    listen('orb:panel-painted', event => {
+      if (revealing && isPanelSender(event)) finishReveal()
     })
   }
 
-  registerOrbIpc()
-  registerSummonShortcut()
-  // No tray (a headless session, no notification area) must not break the
-  // shell: the orb and the summon shortcut still work without one.
-  createTray().catch(err => {
-    safeLogOperationalEvent('warn', 'shell.tray-unavailable', { code: logCodeFor(err, 'tray-failed') })
-  })
   // Monitors come and go (laptop undocked): keep the orb on a live screen.
-  screen.on('display-removed', () => {
+  const onDisplayRemoved = (): void => {
+    if (quitting) return
     anchor = clampToWorkArea(anchor)
     live(orbWindow)?.setBounds(orbBounds(anchor))
     if (expanded) live(panelWindow)?.setBounds(panelLayout(anchor, true).bounds)
     broadcastPlacement()
-  })
+  }
 
-  return {
+  function markQuitting(): void {
+    if (quitting) return
+    quitting = true
+    heldOpen.clear()
+    for (const key of ['peek', 'visibility', 'reveal', 'orb-ready', 'panel-ready', 'tray']) cancel(key)
+    if (SUMMON_ACCELERATOR) globalShortcut.unregister(SUMMON_ACCELERATOR)
+    live(panelWindow)?.hide()
+    live(orbWindow)?.hide()
+  }
+
+  // Remove only this shell's subscriptions; other main-process IPC stays live
+  // until its own owner shuts down.
+  const subscriptions: Array<() => void> = []
+  const listen = (channel: string, listener: (event: IpcMainEvent, ...args: unknown[]) => void): void => {
+    const active = (event: IpcMainEvent, ...args: unknown[]): void => {
+      if (!quitting) listener(event, ...args)
+    }
+    ipcMain.on(channel, active)
+    subscriptions.push(() => ipcMain.removeListener(channel, active))
+  }
+  const handle = (channel: string, listener: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown): void => {
+    ipcMain.handle(channel, (event, ...args: unknown[]) => (quitting ? null : listener(event, ...args)))
+    subscriptions.push(() => ipcMain.removeHandler(channel))
+  }
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      markQuitting()
+      screen.removeListener('display-removed', onDisplayRemoved)
+      for (const unsubscribe of subscriptions) unsubscribe()
+      live(panelWindow)?.destroy()
+      live(orbWindow)?.destroy()
+    }),
+  )
+  registerOrbIpc()
+  registerSummonShortcut()
+  screen.on('display-removed', onDisplayRemoved)
+  runTask('tray', createTray)
+
+  return BackgroundShell.of({
     attachMainWindow: win => {
       mainWindow = win
-      win.on('close', event => {
+      const onClose = (event: ElectronEvent): void => {
         if (quitting) return
         event.preventDefault()
         if (!prefs.runInBackground) {
@@ -550,27 +669,33 @@ export function createBackgroundShell(options: BackgroundShellOptions): Backgrou
         win.hide()
         // "Once" means once it can be seen: with the orb off, nothing is spent.
         if (prefs.orbEnabled && peekGate.closed()) openPanel('peek')
-      })
-      win.on('show', () => {
+      }
+      const onShow = (): void => {
         mainWindowShown = true
         scheduleOrbVisibility()
-      })
-      for (const change of ['hide', 'minimize', 'restore'] as const) {
-        win.on(change as 'hide', () => scheduleOrbVisibility())
       }
-      win.on('closed', () => {
+      const onChange = (): void => scheduleOrbVisibility()
+      const onClosed = (): void => {
         if (mainWindow === win) mainWindow = null
         scheduleOrbVisibility()
+      }
+      win.on('close', onClose)
+      win.on('show', onShow)
+      win.on('closed', onClosed)
+      for (const change of ['hide', 'minimize', 'restore'] as const) win.on(change as 'hide', onChange)
+      subscriptions.push(() => {
+        win.removeListener('close', onClose)
+        win.removeListener('show', onShow)
+        win.removeListener('closed', onClosed)
+        for (const change of ['hide', 'minimize', 'restore'] as const) win.removeListener(change as 'hide', onChange)
       })
     },
     showMainWindow,
-    markQuitting: () => {
-      quitting = true
-      clearPeekTimer()
-      if (SUMMON_ACCELERATOR) globalShortcut.unregister(SUMMON_ACCELERATOR)
-      live(panelWindow)?.hide()
-      live(orbWindow)?.hide()
-    },
+    markQuitting,
     keepsRunning: () => !quitting && prefs.runInBackground,
-  }
+  })
+})
+
+export function backgroundShellLayer(options: BackgroundShellOptions): Layer.Layer<BackgroundShell> {
+  return Layer.effect(BackgroundShell, createBackgroundShell(options))
 }

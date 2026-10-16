@@ -58,10 +58,13 @@ export function createHeldRequest<T>(ttlMs: number, now: () => number = Date.now
 /** The first-close peek fires once per session, and only when BOTH have
  * happened, in either order: the main window was closed to the tray with the
  * orb on, and the panel reported its data loaded (so it never opens onto
- * skeletons). Each mark returns whether the peek should open now. */
+ * skeletons). Each mark returns whether the peek is due; `shown` consumes it
+ * only after the shell actually displays it. */
 export interface PeekGate {
   closed: () => boolean
   dataReady: () => boolean
+  pending: () => boolean
+  shown: () => void
 }
 
 export function createPeekGate(): PeekGate {
@@ -70,7 +73,6 @@ export function createPeekGate(): PeekGate {
   let fired = false
   const due = (): boolean => {
     if (fired || !closed || !ready) return false
-    fired = true
     return true
   }
   return {
@@ -81,6 +83,10 @@ export function createPeekGate(): PeekGate {
     dataReady: () => {
       ready = true
       return due()
+    },
+    pending: due,
+    shown: () => {
+      fired = true
     },
   }
 }
