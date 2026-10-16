@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'crypto'
-import { Effect, Semaphore } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Semaphore from 'effect/Semaphore'
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
 import { readFileSync, unlinkSync } from 'fs'

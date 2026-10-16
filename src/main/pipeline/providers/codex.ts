@@ -1,4 +1,6 @@
-import { Effect, Scope, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Scope from 'effect/Scope'
+import * as Stream from 'effect/Stream'
 import { createReadStream } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { basename, join } from 'path'

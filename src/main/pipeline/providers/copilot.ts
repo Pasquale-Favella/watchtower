@@ -76,7 +76,11 @@
 // =============================================================================
 
 import { createHash } from 'crypto'
-import { Effect, Predicate, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Predicate from 'effect/Predicate'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { existsSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { homedir, platform } from 'os'

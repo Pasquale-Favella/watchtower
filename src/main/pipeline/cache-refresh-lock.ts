@@ -1,5 +1,9 @@
 import { randomBytes } from 'crypto'
-import { Clock, Effect, Fiber, Schema, Semaphore } from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import * as Schema from 'effect/Schema'
+import * as Semaphore from 'effect/Semaphore'
 import { mkdir, open, readFile, stat, unlink, utimes, writeFile } from 'fs/promises'
 import { join } from 'path'
 

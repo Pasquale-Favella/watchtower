@@ -1,5 +1,7 @@
 import { randomBytes } from 'crypto'
-import { Effect, Result, Schema } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
 import { mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'

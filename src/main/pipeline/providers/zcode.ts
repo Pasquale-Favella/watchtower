@@ -1,7 +1,10 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import { captureScanPricing } from '../models.js'
