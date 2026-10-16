@@ -24,6 +24,7 @@ async function errorRules(code: string, file: string): Promise<string[]> {
 const rendererProbe = 'src/renderer/src/__boundary-probe.ts'
 const mainProbe = 'src/main/__boundary-probe.ts'
 const preloadProbe = 'src/preload/__boundary-probe.ts'
+const deeplyNestedRendererProbe = 'src/renderer/src/features/account/overview/__boundary-probe.ts'
 
 describe('process boundaries (ADR 0005 / ADR 0023)', () => {
   it('rejects Electron imports in the renderer', async () => {
@@ -46,15 +47,32 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
 
   it('rejects main/preload source imports from the renderer', async () => {
     const rules = await errorRules(
-      `import type { OverviewScope } from '../../main/overview.js'\nexport type Probe = OverviewScope\n`,
+      `import type { OverviewScope } from '../../main/overview-scope.js'\nexport type Probe = OverviewScope\n`,
       rendererProbe,
     )
-    expect(rules).toContain('no-restricted-imports')
+    expect(rules).toContain('import-x/no-restricted-paths')
+  })
+
+  it('rejects resolved aliases and deep relative imports across process boundaries', async () => {
+    const aliasRules = await errorRules(
+      `import { overviewDateRange } from '@/../../main/overview-scope.js'\nexport const probe = overviewDateRange\n`,
+      deeplyNestedRendererProbe,
+    )
+    expect(aliasRules).toContain('import-x/no-restricted-paths')
+
+    const deepRules = await errorRules(
+      `import { overviewDateRange } from '../../../../../main/overview-scope.js'\nexport const probe = overviewDateRange\n`,
+      deeplyNestedRendererProbe,
+    )
+    expect(deepRules).toContain('import-x/no-restricted-paths')
   })
 
   it('rejects renderer imports and DOM globals in main', async () => {
-    const importRules = await errorRules(`import { x } from '../renderer/x.js'\nexport const probe = x\n`, mainProbe)
-    expect(importRules).toContain('no-restricted-imports')
+    const importRules = await errorRules(
+      `import { localDateKey } from '../renderer/src/shared/lib/utils.js'\nexport const probe = localDateKey\n`,
+      mainProbe,
+    )
+    expect(importRules).toContain('import-x/no-restricted-paths')
     const globalRules = await errorRules(`export const width = window.innerWidth\n`, mainProbe)
     expect(globalRules).toContain('no-restricted-globals')
   })
@@ -78,5 +96,19 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
       rendererProbe,
     )
     expect(rules).not.toContain('no-restricted-imports')
+  })
+
+  it('allows a preload type import from main and rejects its value import at arbitrary depth', async () => {
+    const deepPreloadProbe = 'src/preload/nested/contracts/__boundary-probe.ts'
+    const typeRules = await errorRules(
+      `import type { OverviewScope } from '../../../main/overview.js'\nexport type Probe = OverviewScope\n`,
+      deepPreloadProbe,
+    )
+    expect(typeRules).not.toContain('no-restricted-imports')
+    const valueRules = await errorRules(
+      `import { overviewDateRange } from '../../../main/overview-scope.js'\nexport const probe = typeof overviewDateRange\n`,
+      deepPreloadProbe,
+    )
+    expect(valueRules).toContain('no-restricted-imports')
   })
 })
