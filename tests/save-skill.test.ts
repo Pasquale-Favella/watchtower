@@ -3,6 +3,7 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
@@ -24,7 +25,9 @@ describe('saveSkill', () => {
     const target = join(tempDir, '.agents', 'skills', 'nested-skill', 'SKILL.md')
     const content = '# Nested skill\n\nSaved from the draft board.\n'
 
-    await expect(Effect.runPromise(saveSkill(target, content))).resolves.toBe(target)
+    await expect(
+      Effect.runPromise(saveSkill(target, content).pipe(Effect.provide(NodeFileSystem.layer))),
+    ).resolves.toBe(target)
     await expect(readFile(target, 'utf8')).resolves.toBe(content)
   })
 
@@ -40,7 +43,7 @@ describe('saveSkill', () => {
       expectedMessage = error instanceof Error ? error.message : String(error)
     }
 
-    const exit = await Effect.runPromiseExit(saveSkill(target, '# Skill'))
+    const exit = await Effect.runPromiseExit(saveSkill(target, '# Skill').pipe(Effect.provide(NodeFileSystem.layer)))
 
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) {

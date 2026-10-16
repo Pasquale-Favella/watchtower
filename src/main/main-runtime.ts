@@ -1,5 +1,7 @@
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
+import type * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 
@@ -29,6 +31,7 @@ import { HttpFetch } from './pipeline/fetch-utils.js'
 
 /** Stable services available through the Electron main isolate's one runtime. */
 export type MainServices =
+  | FileSystem.FileSystem
   | HttpFetch
   | Env
   | OperationalLog
@@ -58,9 +61,12 @@ export interface MainRuntimeOverrides {
 }
 
 /** Shared main-process dependencies with no Electron or harness state. */
-function mainLive(configProvider: ConfigProvider.ConfigProvider): Layer.Layer<HttpFetch | Env | OperationalLog> {
+function mainLive(
+  configProvider: ConfigProvider.ConfigProvider,
+): Layer.Layer<FileSystem.FileSystem | HttpFetch | Env | OperationalLog> {
   const config = Layer.succeed(ConfigProvider.ConfigProvider, configProvider)
   return Layer.mergeAll(
+    NodeFileSystem.layer,
     HttpFetch.layer,
     Env.layer.pipe(Layer.provide(config)),
     OperationalLog.layer,
@@ -77,7 +83,8 @@ const processConfigProvider = ConfigProvider.fromEnvRecord(process.env, {
   preserveEmptyStrings: true,
 })
 
-export const MainLive: Layer.Layer<HttpFetch | Env | OperationalLog> = mainLive(processConfigProvider)
+export const MainLive: Layer.Layer<FileSystem.FileSystem | HttpFetch | Env | OperationalLog> =
+  mainLive(processConfigProvider)
 
 /** Compose the main process's actual app-version-aware, scoped harness snapshot. */
 export function makeMainLive(
