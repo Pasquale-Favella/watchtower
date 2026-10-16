@@ -16,6 +16,7 @@ const fsControls = {
   readStarted: null as (() => void) | null,
   readGate: null as Promise<void> | null,
   readFailurePath: null as string | null,
+  missingStatPath: null as string | null,
 }
 
 import { ExportFiles } from '../src/main/application/export-files.js'
@@ -27,6 +28,10 @@ const testFileSystem = Layer.effect(
     const fs = yield* FileSystem.FileSystem
     return FileSystem.FileSystem.of({
       ...fs,
+      stat: path =>
+        path === fsControls.missingStatPath
+          ? Effect.fail(PlatformError.systemError({ _tag: 'NotFound', module: 'FileSystem', method: 'stat' }))
+          : fs.stat(path),
       open: (path, options) =>
         fs.open(path, options).pipe(
           Effect.map(
@@ -79,6 +84,7 @@ afterEach(() => {
   fsControls.readStarted = null
   fsControls.readGate = null
   fsControls.readFailurePath = null
+  fsControls.missingStatPath = null
   const expectedParent = resolve(tmpdir())
   for (const directory of directories.splice(0)) {
     const target = resolve(directory)
@@ -117,6 +123,16 @@ function writeJsonFileWithLivePort(target: string, contents: string): Promise<st
 }
 
 describe('export file ownership and overwrite checks', () => {
+  it('accepts a normalized missing destination without depending on a native errno cause', async () => {
+    const root = tempDirectory()
+    const target = join(root, 'new.json')
+    const contents = '{"schema":"watchtower.export.v1"}'
+    fsControls.missingStatPath = target
+
+    await expect(writeJsonFileWithLivePort(target, contents)).resolves.toBe(target)
+    expect(readFileSync(target, 'utf8')).toBe(contents)
+  })
+
   it('writes the marker, README and all nine CSV files into the resolved folder', async () => {
     const root = tempDirectory()
     const target = join(root, 'usage.csv')

@@ -20,12 +20,7 @@ function isMissingNative(error: unknown): boolean {
 }
 
 function isMissingPlatform(error: PlatformError.PlatformError): boolean {
-  return (
-    error.reason.cause !== null &&
-    typeof error.reason.cause === 'object' &&
-    'code' in error.reason.cause &&
-    error.reason.cause.code === 'ENOENT'
-  )
+  return error.reason._tag === 'NotFound'
 }
 
 function toFileError(): ExportFileError {
