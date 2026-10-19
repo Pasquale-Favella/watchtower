@@ -219,11 +219,11 @@ owned Schema migration is complete. Workflows use Effect end to end for
 orchestration and effectful dependencies. Pure parsing, mapping,
 aggregation, and formatting stay ordinary functions.
 
-`effect` and `@effect/sql-sqlite-node` are pinned to `4.0.0-rc.115`.
+`effect`, `@effect/platform-node`, and `@effect/sql-sqlite-node` are pinned to `4.0.5`.
 [ADR 0034](./adr/0034-effect-schema-contract-authority.md) defines contract
-authority. The [adoption plan](./plans/effect-target-architecture.md#current-priority-2026-10-15)
-records completion and verification; its earlier dated entries describe
-historical checkpoints.
+authority. The [adoption plan](./plans/effect-target-architecture.md#stable-ecosystem-adoption-2026-10-19)
+links the stable ecosystem migration and its verification. Earlier dated entries
+describe the original backend and Schema adoption.
 
 ### Current ownership
 
@@ -256,9 +256,10 @@ Electron, SDK, and Promise APIs remain leaves at their existing boundaries.
 The 23-module owned-schema baseline has no Watchtower-owned Zod contracts:
 22 modules use Effect Schema and one UI-only module uses plain TypeScript.
 Renderer validation is synchronous and needs no application runtime. The
-official MCP SDK may retain its own Zod protocol schemas. Compatibility
-adapters remain only where direct Promise, framework, SDK, or test callers use
-them; each has a documented removal condition tied to those callers.
+official MCP SDK may retain its own Zod protocol schemas. Providers expose one
+Effect discovery operation and one parser Stream. Parser, registry, cache and
+file-read tests run those native operations through test adapters. Framework,
+SDK and IPC adapters remain at their external boundaries.
 
 Effect Logger, Metric, and Tracer use the existing sanitized operational-log
 writer. Main and worker have separate in-memory metric registries. The worker
@@ -270,8 +271,9 @@ second logging sink is installed.
 `src/main/application/` contains query and command workflows. They compose
 focused capabilities such as `LedgerViewReads`, `LedgerSessionReads`,
 `LedgerExportReads`, `LedgerIngest`, and `LedgerConfig`. Repository
-implementations share the isolate's existing SQL client. Section queries and
-exports load the facts and live settings their calculations require in one
+implementations are focused capability layers that resolve the isolate's existing
+SQL client. They do not construct a connection or an intermediate repository
+runtime. Section queries and exports load the facts and live settings their calculations require in one
 transaction, then pass decoded data to pure `*-calculation.ts` functions.
 Application queries validate outgoing payloads with Effect Schema. MCP tools
 reuse the application queries through their process's Promise adapter.
@@ -290,11 +292,46 @@ service or operation-time Config reads. Persisted settings, including Aliases
 and Price overrides, stay in the ledger's `LedgerConfig` capability. Clock
 controls time-dependent policy, allowing tests to substitute `TestClock`.
 
-HTTP uses `effect/unstable/http`; the `CommandRunner` port uses
-`effect/unstable/process` for the Claude auth probe. These modules ship in the
-pinned Effect package. Synchronous discovery helpers may use `node:fs`;
+HTTP uses `effect/http`; the `CommandRunner` port uses
+`effect/process` with the official Node spawner. Main and worker supply the
+FileSystem, Path, and process services through `NodePlatformLive`. Standalone
+auth probing uses an explicit adapter over the same default layers. Skills saves
+and protected exports, cache persistence and refresh locks use FileSystem.
+Export symlink inspection retains a native no-follow leaf because the portable
+stat API follows links. Cache fingerprinting retains native numeric stat fields
+to preserve the existing persisted representation. Each noncancellable file
+operation settles before interruption completes. Polling sleeps remain
+interruptible. See
+[ADR 0035](./adr/0035-official-effect-platform-implementations.md).
+Synchronous discovery helpers may use `node:fs`;
 effectful, streamed, retryable, or scope-owned file work goes through an owned
 capability. Provider discovery and parser streams compose in the scan fiber.
+
+Provider and parser types declare their service requirements. Providers without
+a filesystem dependency retain their narrower types; the scan registry composes
+providers that need FileSystem with the worker's existing platform layer.
+`jsonl-parser.ts` owns pure string and Buffer scanning, while
+`cache-refresh-coordinator.ts` owns refresh locking, authoritative reload,
+read-only fallback and release. The parser retains canonical assembly and shared
+deduplication.
+
+The session, Codex and Cursor cache writers share `cache-file-write.ts` for
+staging and closing a file before publication. Expected filesystem close failures
+stay typed so existing cache fallbacks can recover. Operation failures,
+unexpected release defects and interruption keep their causes. Native handle
+tests check `EBADF` after close and before rename.
+
+HTTP callers consume status and an Effectful JSON decoder from one HttpClient
+implementation. The deadline covers response headers. Body decoding follows
+the status check, and caller cancellation applies to both phases. Retries cover
+transient request failures; status and decode fallbacks stay with their callers.
+
+ESLint uses the official Effect plugin for subpath imports and a TypeScript
+resolver for repository import boundaries. The separate `lint:effect` gate
+uses official semantic diagnostics with positive and negative fixtures.
+Application runtime ownership remains a repository rule. Effect-aware tests use
+`@effect/vitest`; specialized virtual-clock windows and real-time hang bounds
+remain where they test cancellation or retries.
 
 ## Architecture decisions
 

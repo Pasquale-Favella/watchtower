@@ -4,6 +4,21 @@ This extends [the September 30 assessment](../research/effect-adoption-assessmen
 
 Full Effect adoption is complete when contracts have one Schema authority, application workflows compose ports, each isolate owns its resources, and product operations avoid redundant work. A library substitution alone does not establish those properties.
 
+## Stable ecosystem adoption, 2026-10-19
+
+[Issue #156](https://github.com/Pasquale-Favella/watchtower/issues/156) and
+[PR #157](https://github.com/Pasquale-Favella/watchtower/pull/157) track the
+stable ecosystem migration from the accepted backend below. The
+[October 16 assessment](../research/effect-v4-stable-assessment-2026-10-16.md)
+defines its scope. Matching Effect, SQLite and Node platform packages are
+pinned to 4.0.5. The migration replaces custom platform transports, removes
+unused compatibility executors, separates parser and repository responsibilities,
+and adopts supported semantic tooling and Effect-aware tests.
+
+The issue body is the living implementation and verification record. The
+October 15 results below prove the earlier source only; they do not establish
+acceptance of the stable ecosystem changes.
+
 ## Current priority, 2026-10-15
 
 The agreed backend Effect and owned Schema port is complete and accepted at frozen product source `210da5b`. The owner stopped profiling and removed its JSON files from docs; that instruction supersedes measurement follow-ups in the historical records below. Later documentation commits leave product code unchanged.

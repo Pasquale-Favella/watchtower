@@ -117,6 +117,19 @@ them a permanent second API.
 
 Related: ADR 0003, ADR 0005, ADR 0023, ADR 0030, ADR 0031, ADR 0034.
 
+## Stable ecosystem implementations, 2026-10-16
+
+Stable Effect 4.0.5 and its matching SQLite driver expose connection acquisition
+failures as `SqlError`; runtime and layer types carry that failure through boot
+and cleanup. Focused ledger capability layers now resolve the caller-owned SQL
+client directly, replacing the internal `LedgerImplementation` service without
+adding connections or changing transaction units. The original adoption and
+session-read notes below describe the earlier shared implementation.
+
+[ADR 0035](./0035-official-effect-platform-implementations.md) records selection
+of the available official Node platform implementations. Existing worker,
+renderer, and contract ownership remains governed by this decision and ADR 0034.
+
 ## Focused session reads, 2026-10-06
 
 `LedgerSessionReads` supplies project/session summaries, targeted session detail,
