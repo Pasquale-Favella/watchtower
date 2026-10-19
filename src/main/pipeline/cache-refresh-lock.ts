@@ -2,9 +2,11 @@ import { randomBytes } from 'crypto'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import * as FileSystem from 'effect/FileSystem'
+import * as Option from 'effect/Option'
+import * as PlatformError from 'effect/PlatformError'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
-import { mkdir, open, readFile, stat, unlink, utimes, writeFile } from 'fs/promises'
 import { join } from 'path'
 
 import { resolveCacheDir } from '../env.js'
@@ -37,8 +39,6 @@ export type RefreshLockOptions = {
 
 export type RefreshLockHandle = {
   token: string
-  release: () => Promise<void>
-  verifyStillOwner: () => Promise<boolean>
   releaseEffect: Effect.Effect<void, Error>
   verifyStillOwnerEffect: Effect.Effect<boolean, Error>
 }
@@ -59,17 +59,8 @@ const io = <A>(operation: () => Promise<A>): Effect.Effect<A, Error> =>
     catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
   })
 
-function isBusyError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code
-  return code === 'EPERM' || code === 'EBUSY'
-}
-
-function isExistsError(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException | undefined)?.code === 'EEXIST'
-}
-
-function isMissingError(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT'
+function reasonTag(error: unknown): string | undefined {
+  return PlatformError.isPlatformError(error) ? error.reason._tag : undefined
 }
 
 type MutationResult = 'created' | 'exists' | 'unavailable'
@@ -83,16 +74,17 @@ const sleepFor = (options: RefreshLockOptions, ms: number): Effect.Effect<void, 
 }
 
 const retryWindowsMutation = (
-  operation: () => Promise<void>,
+  operation: Effect.Effect<void, PlatformError.PlatformError>,
   options: RefreshLockOptions,
 ): Effect.Effect<boolean, Error> =>
   Effect.gen(function* () {
     for (let attempt = 0; attempt < WINDOWS_RETRIES; attempt++) {
-      const result = yield* Effect.uninterruptible(io(operation)).pipe(
+      const result = yield* Effect.uninterruptible(operation).pipe(
         Effect.as('done' as const),
         Effect.catch(error => {
-          if (isMissingError(error)) return Effect.succeed('done' as const)
-          if (isBusyError(error) && attempt < WINDOWS_RETRIES - 1) return Effect.succeed('retry' as const)
+          if (reasonTag(error) === 'NotFound') return Effect.succeed('done' as const)
+          if ((reasonTag(error) === 'Busy' || reasonTag(error) === 'PermissionDenied') && attempt < WINDOWS_RETRIES - 1)
+            return Effect.succeed('retry' as const)
           return Effect.succeed('stop' as const)
         }),
       )
@@ -103,31 +95,44 @@ const retryWindowsMutation = (
     return false
   })
 
-const bestEffortUnlink = (path: string, options: RefreshLockOptions): Effect.Effect<void, never> =>
-  retryWindowsMutation(() => unlink(path), options).pipe(
+const bestEffortUnlink = (
+  fs: FileSystem.FileSystem,
+  path: string,
+  options: RefreshLockOptions,
+): Effect.Effect<void, never> =>
+  retryWindowsMutation(fs.remove(path, { force: true }), options).pipe(
     Effect.catch(() => Effect.succeed(false)),
     Effect.asVoid,
   )
 
-const createExclusive = (path: string, body: string): Effect.Effect<MutationResult, Error> =>
-  Effect.acquireUseRelease(
-    io(() => open(path, 'wx', 0o600)),
-    handle => io(() => handle.writeFile(body, { encoding: 'utf-8' })).pipe(Effect.uninterruptible),
-    handle => io(() => handle.close()),
-  ).pipe(
+const createExclusive = (fs: FileSystem.FileSystem, path: string, body: string): Effect.Effect<MutationResult, Error> =>
+  Effect.uninterruptible(fs.writeFileString(path, body, { flag: 'wx', mode: 0o600 })).pipe(
     Effect.as('created' as const),
-    Effect.catch(error => Effect.succeed(isExistsError(error) ? ('exists' as const) : ('unavailable' as const))),
+    Effect.catch(error =>
+      Effect.succeed(reasonTag(error) === 'AlreadyExists' ? ('exists' as const) : ('unavailable' as const)),
+    ),
   )
 
-const observe = (path: string, options: RefreshLockOptions): Effect.Effect<ObservationResult, Error> =>
+const observe = (
+  fs: FileSystem.FileSystem,
+  path: string,
+  options: RefreshLockOptions,
+): Effect.Effect<ObservationResult, Error> =>
   Effect.gen(function* () {
     let sawChange = false
     for (let attempt = 0; attempt < 3; attempt++) {
       const result = yield* Effect.gen(function* () {
-        const before = yield* io(() => stat(path))
-        const raw = yield* io(() => readFile(path, 'utf-8'))
-        const after = yield* io(() => stat(path))
-        if (before.mtimeMs !== after.mtimeMs || before.size !== after.size) {
+        const before = yield* Effect.uninterruptible(fs.stat(path))
+        const raw = yield* Effect.uninterruptible(fs.readFileString(path, 'utf-8'))
+        const after = yield* Effect.uninterruptible(fs.stat(path))
+        const beforeMtime = Option.getOrUndefined(before.mtime)?.getTime()
+        const afterMtime = Option.getOrUndefined(after.mtime)?.getTime()
+        if (
+          beforeMtime === undefined ||
+          afterMtime === undefined ||
+          beforeMtime !== afterMtime ||
+          before.size !== after.size
+        ) {
           sawChange = true
           return 'changing' as const
         }
@@ -137,13 +142,12 @@ const observe = (path: string, options: RefreshLockOptions): Effect.Effect<Obser
         }).pipe(Effect.catch(() => Effect.succeed(null)))
         if (json === null) return 'invalid' as const
         const parsed = Schema.decodeUnknownResult(LockRecordSchema)(json)
-        if (parsed._tag === 'Success') return { record: parsed.success, mtimeMs: after.mtimeMs }
+        if (parsed._tag === 'Success') return { record: parsed.success, mtimeMs: afterMtime }
         return 'invalid' as const
       }).pipe(
         Effect.catch(error => {
-          if (isMissingError(error)) return Effect.succeed('missing' as const)
-          const code = (error as NodeJS.ErrnoException).code
-          if (code === 'EACCES' || code === 'EPERM') return Effect.succeed('unavailable' as const)
+          if (reasonTag(error) === 'NotFound') return Effect.succeed('missing' as const)
+          if (reasonTag(error) === 'PermissionDenied') return Effect.succeed('unavailable' as const)
           return Effect.succeed('invalid' as const)
         }),
       )
@@ -161,7 +165,8 @@ function sameObservation(a: Observation, b: Observation): boolean {
 /** Native Effect workflow for the warm cache transaction's cross-process lock. */
 export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockEffect')(function* (
   options: RefreshLockOptions = {},
-): Effect.fn.Return<RefreshLockOutcome, Error> {
+): Effect.fn.Return<RefreshLockOutcome, Error, FileSystem.FileSystem> {
+  const fs = yield* FileSystem.FileSystem
   let ownsPermit = false
   const leave = Effect.suspend(() => {
     if (!ownsPermit) return Effect.void
@@ -189,23 +194,23 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
     const body = (): Effect.Effect<string> =>
       wallNow().pipe(Effect.map(at => JSON.stringify({ pid: process.pid, token, at })))
     const createLock = (path: string): Effect.Effect<MutationResult, Error> =>
-      body().pipe(Effect.flatMap(value => createExclusive(path, value)))
+      body().pipe(Effect.flatMap(value => createExclusive(fs, path, value)))
 
     const acquireTakeoverGuard = (): Effect.Effect<MutationResult, Error> =>
       Effect.gen(function* () {
         const created = yield* createLock(takeoverPath)
         if (created !== 'exists') return created
-        const staleGuard = yield* observe(takeoverPath, options)
+        const staleGuard = yield* observe(fs, takeoverPath, options)
         if (staleGuard === 'missing') return yield* createLock(takeoverPath)
         if (staleGuard === 'changing') return 'exists'
         if (staleGuard === 'unavailable') return 'unavailable'
         if (Math.max(0, (yield* wallNow()) - staleGuard.mtimeMs) <= staleMs) return 'exists'
-        const reverified = yield* observe(takeoverPath, options)
+        const reverified = yield* observe(fs, takeoverPath, options)
         if (reverified === 'missing') return yield* createLock(takeoverPath)
         if (reverified === 'changing') return 'exists'
         if (reverified === 'unavailable') return 'unavailable'
         if (!sameObservation(staleGuard, reverified)) return 'exists'
-        if (!(yield* retryWindowsMutation(() => unlink(takeoverPath), options))) return 'unavailable'
+        if (!(yield* retryWindowsMutation(fs.remove(takeoverPath, { force: true }), options))) return 'unavailable'
         return yield* createLock(takeoverPath)
       })
 
@@ -216,7 +221,7 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
             if (guard !== 'created') return Effect.succeed({ guard })
             return restore(operation()).pipe(
               Effect.map(value => ({ guard: 'created' as const, value })),
-              Effect.ensuring(bestEffortUnlink(takeoverPath, options)),
+              Effect.ensuring(bestEffortUnlink(fs, takeoverPath, options)),
             )
           }),
         ),
@@ -232,11 +237,11 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
           for (let attempt = 0; attempt < 20; attempt++) {
             const result = yield* withTakeoverGuard(() =>
               Effect.gen(function* () {
-                const current = yield* observe(lockPath, options)
+                const current = yield* observe(fs, lockPath, options)
                 if (current === 'missing') return true
                 if (current === 'changing' || current === 'unavailable') return false
                 if (current.record.token !== token) return true
-                return yield* retryWindowsMutation(() => unlink(lockPath), options)
+                return yield* retryWindowsMutation(fs.remove(lockPath, { force: true }), options)
               }),
             )
             if (result.guard === 'unavailable') return false
@@ -250,7 +255,7 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
     const verifyStillOwnerEffect = serializeOwnerOp(
       withTakeoverGuard(() =>
         Effect.gen(function* () {
-          const current = yield* observe(lockPath, options)
+          const current = yield* observe(fs, lockPath, options)
           return (
             current !== 'missing' &&
             current !== 'changing' &&
@@ -280,7 +285,7 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
         Effect.uninterruptible(
           Effect.gen(function* () {
             if (released) return
-            const current = yield* observe(lockPath, options)
+            const current = yield* observe(fs, lockPath, options)
             if (
               current === 'missing' ||
               current === 'changing' ||
@@ -289,9 +294,9 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
             )
               return
             const lockBody = yield* body()
-            yield* io(() => writeFile(lockPath, lockBody, { encoding: 'utf-8' }))
+            yield* Effect.uninterruptible(fs.writeFileString(lockPath, lockBody))
             const now = new Date(yield* wallNow())
-            yield* io(() => utimes(lockPath, now, now))
+            yield* Effect.uninterruptible(fs.utimes(lockPath, now, now))
           }),
         ),
       ).pipe(Effect.asVoid),
@@ -303,12 +308,8 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
           Effect.sleep(`${heartbeatMs} millis`).pipe(Effect.flatMap(() => heartbeatTick)),
         ).pipe(Effect.catch(() => Effect.void))
         heartbeatFiber = yield* Effect.forkDetach(heartbeat)
-        const verifyPromise = (): Promise<boolean> => Effect.runPromise(verifyStillOwnerEffect)
-        const releasePromise = (): Promise<void> => Effect.runPromise(releaseEffect)
         const result: RefreshLockHandle = {
           token,
-          verifyStillOwner: verifyPromise,
-          release: releasePromise,
           verifyStillOwnerEffect,
           releaseEffect,
         }
@@ -334,11 +335,11 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
           if (guard === 'unavailable') return { outcome: 'unavailable' as const }
           if (guard === 'exists') return null
           return yield* Effect.gen(function* () {
-            const current = yield* observe(lockPath, options)
+            const current = yield* observe(fs, lockPath, options)
             if (current === 'unavailable') return { outcome: 'unavailable' as const }
             if (current === 'changing' || current === 'missing' || !sameObservation(stale, current)) return null
             if (Math.max(0, (yield* wallNow()) - current.mtimeMs) <= staleMs) return null
-            if (!(yield* retryWindowsMutation(() => unlink(lockPath), options)))
+            if (!(yield* retryWindowsMutation(fs.remove(lockPath, { force: true }), options)))
               return { outcome: 'unavailable' as const }
             const successor = yield* createLock(lockPath)
             if (successor === 'created') {
@@ -347,24 +348,24 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
             }
             if (successor === 'unavailable') return { outcome: 'unavailable' as const }
             return null
-          }).pipe(Effect.ensuring(bestEffortUnlink(takeoverPath, options)))
+          }).pipe(Effect.ensuring(bestEffortUnlink(fs, takeoverPath, options)))
         }),
       )
 
-    yield* io(() => mkdir(cacheDir, { recursive: true }))
+    yield* Effect.uninterruptible(fs.makeDirectory(cacheDir, { recursive: true }))
     const immediate = yield* tryCreateOwner()
     if (immediate) return immediate
 
     const deadline = (yield* monotonicNow()) + waitMs
     while ((yield* monotonicNow()) < deadline) {
-      const observation = yield* observe(lockPath, options)
+      const observation = yield* observe(fs, lockPath, options)
       if (observation === 'unavailable') return { outcome: 'unavailable' as const }
       if (observation === 'changing') {
         yield* sleepFor(options, pollMs)
         continue
       }
       if (observation === 'missing') {
-        const guard = yield* observe(takeoverPath, options)
+        const guard = yield* observe(fs, takeoverPath, options)
         if (guard === 'unavailable') return { outcome: 'unavailable' as const }
         if (guard === 'changing') {
           yield* sleepFor(options, pollMs)
@@ -398,8 +399,3 @@ export const acquireCacheRefreshLockEffect = Effect.fn('acquireCacheRefreshLockE
   )
   return yield* result
 })
-
-/** Promise adapter for callers that have not moved to Effect yet. */
-export function acquireCacheRefreshLock(options: RefreshLockOptions = {}): Promise<RefreshLockOutcome> {
-  return Effect.runPromise(acquireCacheRefreshLockEffect(options))
-}

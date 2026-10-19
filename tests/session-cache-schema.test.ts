@@ -2,15 +2,25 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { loadCache, saveCache, sessionCachePath } from '../src/main/pipeline/session-cache.js'
+import { emptyCache, loadCacheEffect, saveCacheEffect, sessionCachePath } from '../src/main/pipeline/session-cache.js'
 import { sessionCacheSchema } from '../src/shared/schemas/session-cache.js'
 import { buildFixtureCachedFile } from './fixtures/cached-file.js'
 
 const ORIGINAL_CACHE_DIR = process.env['WATCHTOWER_CACHE_DIR']
 const tempDirs: string[] = []
+
+function loadCache() {
+  return Effect.runPromise(loadCacheEffect().pipe(Effect.provide(NodeFileSystem.layer)))
+}
+
+function saveCache(cache: ReturnType<typeof emptyCache>) {
+  return Effect.runPromise(saveCacheEffect(cache).pipe(Effect.provide(NodeFileSystem.layer)))
+}
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })

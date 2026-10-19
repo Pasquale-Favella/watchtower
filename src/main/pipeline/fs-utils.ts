@@ -12,7 +12,7 @@ import { logFileName, queueLogRecord } from './file-errors.js'
 import { throwIfScanAborted } from './scan-control.js'
 
 // Hard cap well below V8's 512 MB string limit. Callers that need line-by-line
-// processing should use readSessionLines(), which avoids materializing the
+// processing should use readSessionLinesStream(), which avoids materializing the
 // whole file and can return large lines as Buffers.
 export const MAX_SESSION_FILE_BYTES = 128 * 1024 * 1024
 export const LARGE_STREAM_LINE_BYTES = 32 * 1024
@@ -92,15 +92,6 @@ export const readSessionFileEffect = Effect.fn('readSessionFile')(function* (
   return readResult.success
 })
 
-/** Remove this Promise edge when the remaining provider/helper callers use native Effects. */
-export function readSessionFile(
-  filePath: string,
-  encoding: BufferEncoding = 'utf-8',
-  options: { readonly signal?: AbortSignal } = {},
-): Promise<string | null> {
-  return Effect.runPromise(readSessionFileEffect(filePath, encoding, options))
-}
-
 export function readSessionFileSync(filePath: string): string | null {
   let size: number
   try {
@@ -140,61 +131,11 @@ type ReadSessionLinesOptions = {
   signal?: AbortSignal
 }
 
-export function readSessionLines(filePath: string, shouldSkipHead?: (head: string) => boolean): AsyncGenerator<string>
-export function readSessionLines(
-  filePath: string,
-  shouldSkipHead: ((head: string) => boolean) | undefined,
-  options: ReadSessionLinesOptions & { largeLineAsBuffer?: false },
-): AsyncGenerator<string>
-export function readSessionLines(
-  filePath: string,
-  shouldSkipHead?: (head: string) => boolean,
-  options?: ReadSessionLinesOptions & { largeLineAsBuffer: true },
-): AsyncGenerator<SessionLine>
-export async function* readSessionLines(
-  filePath: string,
-  shouldSkipHead?: (head: string) => boolean,
-  options: ReadSessionLinesOptions = {},
-): AsyncGenerator<SessionLine> {
-  throwIfScanAborted(options.signal)
-  let size: number
-  try {
-    size = (await stat(filePath)).size
-  } catch (err) {
-    throwIfScanAborted(options.signal)
-    warn(`stat failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
-    return
-  }
-  throwIfScanAborted(options.signal)
-
-  const maxBytes = options.maxBytes ?? MAX_STREAM_SESSION_FILE_BYTES
-  if (size > maxBytes) {
-    notice(filePath, 'oversize')
-    return
-  }
-
-  const stream = createReadStream(filePath, {
-    ...(options.startByteOffset !== undefined ? { start: options.startByteOffset } : {}),
-    ...(options.signal ? { signal: options.signal } : {}),
-  })
-  const closed = new Promise<void>(resolve => stream.once('close', () => resolve()))
-  try {
-    yield* splitNativeSessionLines(stream, filePath, shouldSkipHead, options)
-  } catch (err) {
-    throwIfScanAborted(options.signal)
-    warn(`stream read failed for ${shortPath(filePath)}: ${(err as NodeJS.ErrnoException).code ?? 'unknown'}`)
-  } finally {
-    stream.destroy()
-    await closed
-  }
-}
-
 /**
  * Effect-native counterpart for workflows that already run in a Stream.
  * The ReadStream is acquired only when pulled and remains owned by the stream
  * scope until its async iterator has stopped and the native `close` event has
- * drained. Unlike `readSessionLines`, this does not build on that legacy
- * AsyncGenerator boundary.
+ * drained.
  */
 export function readSessionLinesStream(
   filePath: string,

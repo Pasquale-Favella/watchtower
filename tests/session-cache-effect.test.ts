@@ -1,3 +1,4 @@
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Deferred, Effect, Exit, Fiber } from 'effect'
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -11,6 +12,10 @@ import {
   loadCacheEffect,
   saveCacheEffect,
 } from '../src/main/pipeline/session-cache.js'
+
+const withFileSystem = <A, E>(
+  effect: Effect.Effect<A, E, import('effect/FileSystem').FileSystem>,
+): Effect.Effect<A, E, never> => effect.pipe(Effect.provide(NodeFileSystem.layer))
 
 const originalCacheDir = process.env['WATCHTOWER_CACHE_DIR']
 let cacheDir: string
@@ -27,7 +32,7 @@ afterEach(async () => {
 })
 
 async function withColdHydration<A>(use: (release: Effect.Effect<void, Error>) => Promise<A>): Promise<A> {
-  const handle = await Effect.runPromise(beginColdHydrationEffect(true))
+  const handle = await Effect.runPromise(withFileSystem(beginColdHydrationEffect(true)))
   try {
     return await use(handle.release)
   } finally {
@@ -40,15 +45,15 @@ describe('session cache Effects', () => {
     const cache = emptyCache()
     cache.complete = true
 
-    expect(await Effect.runPromise(saveCacheEffect(cache))).toBe(true)
-    expect(await Effect.runPromise(loadCacheEffect())).toEqual(cache)
+    expect(await Effect.runPromise(withFileSystem(saveCacheEffect(cache)))).toBe(true)
+    expect(await Effect.runPromise(withFileSystem(loadCacheEffect()))).toEqual(cache)
   })
 
   it('does not publish when the owner fence rejects the write', async () => {
     const cache = emptyCache()
 
-    expect(await Effect.runPromise(saveCacheEffect(cache, () => Effect.succeed(false)))).toBe(false)
-    expect(await Effect.runPromise(loadCacheEffect())).toEqual(emptyCache())
+    expect(await Effect.runPromise(withFileSystem(saveCacheEffect(cache, () => Effect.succeed(false))))).toBe(false)
+    expect(await Effect.runPromise(withFileSystem(loadCacheEffect()))).toEqual(emptyCache())
   })
 
   it('serializes same-process cold owners and lets a waiter reload after the owner releases', async () => {
@@ -57,7 +62,7 @@ describe('session cache Effects', () => {
       const waiter = Effect.runFork(
         Effect.gen(function* () {
           yield* Deferred.succeed(started, undefined)
-          return yield* beginColdHydrationEffect(true)
+          return yield* withFileSystem(beginColdHydrationEffect(true))
         }),
       )
       let waited: HydrationHandleEffect | undefined
@@ -81,7 +86,7 @@ describe('session cache Effects', () => {
       const waiter = Effect.runFork(
         Effect.gen(function* () {
           yield* Deferred.succeed(started, undefined)
-          return yield* beginColdHydrationEffect(true)
+          return yield* withFileSystem(beginColdHydrationEffect(true))
         }),
       )
       try {
@@ -117,7 +122,7 @@ describe('session cache Effects', () => {
   })
 
   it('keeps the successor lock and permit when the old owner releases again', async () => {
-    const owner = await Effect.runPromise(beginColdHydrationEffect(true))
+    const owner = await Effect.runPromise(withFileSystem(beginColdHydrationEffect(true)))
     await Effect.runPromise(owner.release)
 
     await withColdHydration(async successorRelease => {
@@ -129,7 +134,7 @@ describe('session cache Effects', () => {
       const waiter = Effect.runFork(
         Effect.gen(function* () {
           yield* Deferred.succeed(started, undefined)
-          return yield* beginColdHydrationEffect(true)
+          return yield* withFileSystem(beginColdHydrationEffect(true))
         }),
       )
       try {

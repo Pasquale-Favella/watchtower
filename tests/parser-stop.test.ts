@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
@@ -34,13 +35,11 @@ vi.mock('../src/main/pipeline/fs-utils.js', () => ({
 }))
 
 vi.mock('../src/main/pipeline/providers/index.js', () => ({
-  discoverAllSessions: (...args: unknown[]) => hooks.discovered(...args),
   discoverAllSessionsEffect: (...args: unknown[]) =>
     Effect.tryPromise({
       try: () => hooks.discovered(...args) as Promise<unknown>,
       catch: cause => cause as Error,
     }),
-  getProvider: (...args: unknown[]) => hooks.getProvider(...args),
   getProviderEffect: (...args: unknown[]) =>
     Effect.tryPromise({
       try: () => hooks.getProvider(...args) as Promise<unknown>,
@@ -90,10 +89,11 @@ vi.mock('../src/main/pipeline/cache-refresh-lock.js', async () => {
 import { Env } from '../src/main/env.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { captureScanPricing } from '../src/main/pipeline/models.js'
-import { clearSessionCache, parseAllSessions, parseAllSessionsEffect } from '../src/main/pipeline/parser.js'
+import { clearSessionCache, parseAllSessionsEffect } from '../src/main/pipeline/parser.js'
 import type { Provider } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { CachedFile, SessionCache } from '../src/shared/schemas/session-cache.js'
+import { runParseAllSessionsForTest } from './fixtures/parser-effects.js'
 
 const source = (provider: string, path: string) => ({ provider, path, project: 'test-project' })
 
@@ -138,8 +138,14 @@ function parsedCall() {
   }
 }
 
-function withParserServices<A, E>(program: Effect.Effect<A, E, Env | HttpFetch>): Effect.Effect<A, E, never> {
-  return program.pipe(Effect.provide(Env.layer), Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)))
+function withParserServices<A, E>(
+  program: Effect.Effect<A, E, Env | HttpFetch | import('effect/FileSystem').FileSystem>,
+): Effect.Effect<A, E, never> {
+  return program.pipe(
+    Effect.provide(Env.layer),
+    Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
+    Effect.provide(NodeFileSystem.layer),
+  )
 }
 
 function ownedPendingDelta(
@@ -247,7 +253,9 @@ describe('parser cooperative stop', () => {
       .mockImplementation((() => true) as typeof process.stderr.write)
 
     try {
-      await expect(parseAllSessions(undefined, undefined, onDelta, undefined, controller.signal)).rejects.toBe(abort)
+      await expect(
+        runParseAllSessionsForTest(undefined, undefined, onDelta, undefined, controller.signal),
+      ).rejects.toBe(abort)
 
       expect(hooks.parserCreated).toHaveBeenCalledOnce()
       expect(onDelta).toHaveBeenCalledOnce()
@@ -281,7 +289,7 @@ describe('parser cooperative stop', () => {
       throw abort
     })
 
-    await expect(parseAllSessions()).rejects.toBe(abort)
+    await expect(runParseAllSessionsForTest()).rejects.toBe(abort)
 
     expect(hooks.readLines).toHaveBeenCalledOnce()
     const files = cache.providers.claude?.files
@@ -310,7 +318,9 @@ describe('parser cooperative stop', () => {
       throw abort
     })
 
-    await expect(parseAllSessions(undefined, undefined, onDelta, undefined, controller.signal)).rejects.toBe(abort)
+    await expect(runParseAllSessionsForTest(undefined, undefined, onDelta, undefined, controller.signal)).rejects.toBe(
+      abort,
+    )
 
     expect(onDelta).toHaveBeenCalledOnce()
     expect(cache.providers.claude?.files[filePath]).toEqual(prior)
@@ -342,7 +352,7 @@ describe('parser cooperative stop', () => {
       await callbackGate
     })
 
-    const scan = parseAllSessions(undefined, undefined, onDelta, undefined, controller.signal)
+    const scan = runParseAllSessionsForTest(undefined, undefined, onDelta, undefined, controller.signal)
     await callbackStarted
     controller.abort(abort)
     let settled = false
@@ -424,7 +434,9 @@ describe('parser cooperative stop', () => {
       throw new Error('provider load failed during stop')
     })
 
-    await expect(parseAllSessions(undefined, undefined, undefined, undefined, controller.signal)).rejects.toBe(abort)
+    await expect(
+      runParseAllSessionsForTest(undefined, undefined, undefined, undefined, controller.signal),
+    ).rejects.toBe(abort)
     expect(cache.providers['test-provider']?.files[path]).toEqual(priorFile)
     expect(hooks.saveCache).not.toHaveBeenCalled()
   })
@@ -451,7 +463,7 @@ describe('parser cooperative stop', () => {
     const services = { gatewayEnabled: true, fetchGatewayReport: vi.fn(() => Effect.succeed([])), pricing }
     const onDelta = vi.fn()
 
-    await parseAllSessions(undefined, undefined, onDelta, undefined, controller.signal, services)
+    await runParseAllSessionsForTest(undefined, undefined, onDelta, undefined, controller.signal, services)
 
     const context = hooks.discovered.mock.calls[0][2]
     expect(context).toEqual({ ...services, signal: controller.signal })
