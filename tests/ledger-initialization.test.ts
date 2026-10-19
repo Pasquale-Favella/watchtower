@@ -10,7 +10,7 @@ import { initializeLedger } from '../src/main/store/ledger-initialization.js'
 import { makeWorkerRuntime, openWorkerRuntime } from '../src/main/worker-runtime.js'
 
 describe('ledger initialization', () => {
-  it('applies the shared schema migration once and accepts a repeated initialization', async () => {
+  it('applies the shared schema migrations once and accepts a repeated initialization', async () => {
     const runtime = makeWorkerRuntime(':memory:')
     try {
       runtime.runSync(initializeLedger)
@@ -19,6 +19,7 @@ describe('ledger initialization', () => {
 
       expect(runtime.runSync(sql.unsafe('SELECT migration_id, name FROM watchtower_sql_migrations'))).toEqual([
         { migration_id: 1, name: 'initial_ledger_schema' },
+        { migration_id: 2, name: 'index_session_detail_reads' },
       ])
       expect(
         runtime.runSync(sql.unsafe("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_source'")),
@@ -28,6 +29,61 @@ describe('ledger initialization', () => {
           sql.unsafe("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_mcp_config'"),
         ),
       ).toEqual([{ name: 'ledger_mcp_config' }])
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('upgrades a version 1 ledger without changing its facts or configuration', async () => {
+    const runtime = makeWorkerRuntime(':memory:')
+    try {
+      runtime.runSync(initializeLedger)
+      const sql = runtime.runSync(SqlClient.SqlClient)
+      runtime.runSync(
+        sql.unsafe(
+          "INSERT INTO ledger_source (provider, env_fingerprint, file_path, repo_url) VALUES ('opencode', 'env', '/session.json', 'https://example.com/repo')",
+        ),
+      )
+      runtime.runSync(
+        sql.unsafe(
+          "INSERT INTO ledger_session (source_id, session_id, title) VALUES (1, 'session-to-preserve', 'preserved title')",
+        ),
+      )
+      runtime.runSync(
+        sql.unsafe(
+          "INSERT INTO ledger_turn (source_id, session_id, turn_index, timestamp, category) VALUES (1, 'session-to-preserve', 3, '2026-01-01T00:00:00.000Z', 'implementation')",
+        ),
+      )
+      runtime.runSync(sql.unsafe("INSERT INTO display_currency_config (id, code) VALUES (1, 'EUR')"))
+
+      // Restore the version 1 boundary while retaining its original schema and rows.
+      runtime.runSync(sql.unsafe('DROP INDEX idx_ledger_session_session'))
+      runtime.runSync(sql.unsafe('DROP INDEX idx_ledger_turn_session_turn'))
+      runtime.runSync(sql.unsafe('DELETE FROM watchtower_sql_migrations WHERE migration_id = 2'))
+      expect(runtime.runSync(sql.unsafe('SELECT migration_id, name FROM watchtower_sql_migrations'))).toEqual([
+        { migration_id: 1, name: 'initial_ledger_schema' },
+      ])
+
+      runtime.runSync(initializeLedger)
+
+      expect(runtime.runSync(sql.unsafe('SELECT migration_id, name FROM watchtower_sql_migrations'))).toEqual([
+        { migration_id: 1, name: 'initial_ledger_schema' },
+        { migration_id: 2, name: 'index_session_detail_reads' },
+      ])
+      expect(runtime.runSync(sql.unsafe('SELECT session_id, title FROM ledger_session'))).toEqual([
+        { session_id: 'session-to-preserve', title: 'preserved title' },
+      ])
+      expect(runtime.runSync(sql.unsafe('SELECT session_id, turn_index FROM ledger_turn'))).toEqual([
+        { session_id: 'session-to-preserve', turn_index: 3 },
+      ])
+      expect(runtime.runSync(sql.unsafe('SELECT code FROM display_currency_config'))).toEqual([{ code: 'EUR' }])
+      expect(
+        runtime.runSync(
+          sql.unsafe(
+            "SELECT name FROM sqlite_master WHERE name IN ('idx_ledger_session_session', 'idx_ledger_turn_session_turn') ORDER BY name",
+          ),
+        ),
+      ).toEqual([{ name: 'idx_ledger_session_session' }, { name: 'idx_ledger_turn_session_turn' }])
     } finally {
       await runtime.dispose()
     }
