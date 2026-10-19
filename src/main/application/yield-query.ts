@@ -4,7 +4,7 @@ import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
 import { type YieldPayload, yieldPayloadSchema } from '../../shared/schemas/yield.js'
-import { overviewDateRange, scopeDateRange } from '../overview-scope.js'
+import { overviewQueryRanges, scopeDateRange } from '../overview-scope.js'
 import { buildSessionSummariesFromSnapshotResult, groupSummariesIntoProjects } from '../store/aggregate-calculation.js'
 import type { LedgerQueries } from '../store/ledger-ports.js'
 import { loadLedgerQuerySnapshotEffect } from '../store/ledger-query-snapshot.js'
@@ -21,8 +21,7 @@ export const queryYieldView = Effect.fn('queryYieldView')(function* (
   LedgerQueries | PricingDiagnostics | RepositoryInspection
 > {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const range = overviewDateRange(input.scope, now)
-  const readRange = input.scope.period === 'lifetime' && !input.scope.range ? undefined : range
+  const { range, readRange } = overviewQueryRanges(input.scope, now)
   const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const calculation = buildSessionSummariesFromSnapshotResult(snapshot, {
     range,

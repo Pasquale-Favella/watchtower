@@ -381,6 +381,16 @@ describe('Overview application query', () => {
   })
 
   it('keeps lifetime data start and diagnostics across finite dates and composite sessions', async () => {
+    // The frozen oracle can omit this empty final day after historical midnight DST.
+    function legacyWithFinalDay(
+      ...args: Parameters<typeof calculateOverviewFromSnapshot>
+    ): ReturnType<typeof calculateOverviewFromSnapshot> {
+      const result = calculateOverviewFromSnapshot(...args)
+      const finalDay = { date: '2026-07-10', costUSD: 0, calls: 0, sessions: 0 }
+      if (result.value.daily.at(-1)?.date === finalDay.date) return result
+      return { ...result, value: { ...result.value, daily: [...result.value.daily, finalDay] } }
+    }
+
     const { runtime } = openLedgerFixture()
     await runtime.runPromise(
       Effect.gen(function* () {
@@ -556,7 +566,7 @@ describe('Overview application query', () => {
       catalogue: overviewCatalogue,
       proxyPaths: { paths: [], caseSensitive: true },
     })
-    const result = calculateOverviewFromSnapshot(
+    const result = legacyWithFinalDay(
       snapshot,
       { period: 'lifetime', provider: 'opencode' },
       new Date(2026, 6, 10, 12),
@@ -603,12 +613,7 @@ describe('Overview application query', () => {
       catalogue: catalogue(),
       proxyPaths: { paths: [], caseSensitive: true },
     })
-    const reversedExpected = calculateOverviewFromSnapshot(
-      reversedCalls,
-      { period: 'lifetime' },
-      new Date(2026, 6, 10, 12),
-      {},
-    )
+    const reversedExpected = legacyWithFinalDay(reversedCalls, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {})
     const reversedFromData = calculateOverviewFromData(
       overviewFactsFromSnapshot(reversedData),
       { period: 'lifetime' },
@@ -623,8 +628,7 @@ describe('Overview application query', () => {
     // The first call admits the turn; every call then participates in the
     // session's timestamp. The previous summary path reports this literal day.
     expect(
-      calculateOverviewFromSnapshot(reversedCalls, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value
-        .dataStart,
+      legacyWithFinalDay(reversedCalls, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value.dataStart,
     ).toBe('1969-12-31')
 
     const emptyLastData = {
@@ -637,7 +641,7 @@ describe('Overview application query', () => {
       catalogue: catalogue(),
       proxyPaths: { paths: [], caseSensitive: true },
     })
-    const emptyLastExpected = calculateOverviewFromSnapshot(
+    const emptyLastExpected = legacyWithFinalDay(
       emptyLastTimestamp,
       { period: 'lifetime' },
       new Date(2026, 6, 10, 12),
@@ -656,8 +660,7 @@ describe('Overview application query', () => {
     }).toEqual(emptyLastExpected)
     expect(emptyLastFromData.value.dataStart).toBe('2026-07-01')
     expect(
-      calculateOverviewFromSnapshot(emptyLastTimestamp, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value
-        .dataStart,
+      legacyWithFinalDay(emptyLastTimestamp, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value.dataStart,
     ).toBe('2001-02-03')
 
     const orphanSourceId = source.id + 1000
@@ -675,12 +678,7 @@ describe('Overview application query', () => {
       catalogue: catalogue(),
       proxyPaths: { paths: [], caseSensitive: true },
     })
-    const orphanExpected = calculateOverviewFromSnapshot(
-      orphanRows,
-      { period: 'lifetime' },
-      new Date(2026, 6, 10, 12),
-      {},
-    )
+    const orphanExpected = legacyWithFinalDay(orphanRows, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {})
     expect(
       calculateOverviewFromData(
         overviewFactsFromSnapshot(orphanData),
@@ -690,9 +688,9 @@ describe('Overview application query', () => {
         {},
       ),
     ).toEqual(orphanExpected)
-    expect(
-      calculateOverviewFromSnapshot(orphanRows, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value.dataStart,
-    ).toBe('1970-01-01')
+    expect(legacyWithFinalDay(orphanRows, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value.dataStart).toBe(
+      '1970-01-01',
+    )
   })
 
   it('uses the time captured before a deferred snapshot load', async () => {

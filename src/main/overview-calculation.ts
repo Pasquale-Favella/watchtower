@@ -1,3 +1,5 @@
+import { subDays } from 'date-fns'
+
 import {
   type EfficiencyGrade,
   type OverviewActivityRow,
@@ -16,7 +18,7 @@ import {
   type OverviewToolRow,
   type OverviewUnpricedModel,
 } from '../shared/schemas/overview.js'
-import { localDateKey, overviewDateRange, periodWindowStart } from './overview-scope.js'
+import { localDateKey, localDateKeys, overviewDateRange, periodWindowStart } from './overview-scope.js'
 import { EDIT_TOOLS } from './pipeline/classifier.js'
 import { getShortModelName } from './pipeline/model-names.js'
 import {
@@ -562,7 +564,7 @@ function calculateOverviewFromSessionFacts(
   if (scope.range) {
     daily.push(...contiguousDaily(dayBuckets, scope.range.since, scope.range.until))
   } else {
-    const defaultChartStart = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29))
+    const defaultChartStart = localDateKey(subDays(now, 29))
     const periodStart = periodWindowStart(scope.period, now)
     let earliestInPeriod: string | null = null
     for (const key of dayBuckets.keys()) {
@@ -770,17 +772,8 @@ function contiguousDaily(
   fromKey: string,
   toKey: string,
 ): OverviewDailyEntry[] {
-  if (fromKey > toKey) return []
-  const [fy, fm, fd] = fromKey.split('-').map(Number)
-  const [ty, tm, td] = toKey.split('-').map(Number)
-  const cursor = new Date(fy, fm - 1, fd)
-  const end = new Date(ty, tm - 1, td)
-  const out: OverviewDailyEntry[] = []
-  while (cursor <= end) {
-    const key = localDateKey(cursor)
+  return localDateKeys(fromKey, toKey).map(key => {
     const bucket = dayBuckets.get(key)
-    out.push({ date: key, costUSD: bucket?.cost ?? 0, calls: bucket?.calls ?? 0, sessions: bucket?.sessions ?? 0 })
-    cursor.setDate(cursor.getDate() + 1)
-  }
-  return out
+    return { date: key, costUSD: bucket?.cost ?? 0, calls: bucket?.calls ?? 0, sessions: bucket?.sessions ?? 0 }
+  })
 }

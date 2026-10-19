@@ -5,7 +5,7 @@ import type { SqlError } from 'effect/sql/SqlError'
 
 import { type OptimizePayload, optimizePayloadSchema } from '../../shared/schemas/optimize.js'
 import { calculateOptimizePayload } from '../optimize-calculation.js'
-import { overviewDateRange } from '../overview-scope.js'
+import { overviewQueryRanges } from '../overview-scope.js'
 import { buildSessionSummariesFromSnapshotResult, groupSummariesIntoProjects } from '../store/aggregate-calculation.js'
 import type { LedgerQueries } from '../store/ledger-ports.js'
 import { loadLedgerQuerySnapshotEffect } from '../store/ledger-query-snapshot.js'
@@ -23,8 +23,7 @@ export const queryOptimizeView = Effect.fn('queryOptimizeView')(function* (
   LedgerQueries | PricingDiagnostics | AssistantSetup
 > {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const range = overviewDateRange(input.scope, now)
-  const readRange = input.scope.period === 'lifetime' && !input.scope.range ? undefined : range
+  const { range, readRange } = overviewQueryRanges(input.scope, now)
   const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const result = buildSessionSummariesFromSnapshotResult(snapshot, {
     range,

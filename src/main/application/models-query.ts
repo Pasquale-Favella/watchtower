@@ -5,7 +5,7 @@ import type { SqlError } from 'effect/sql/SqlError'
 
 import { type ModelsConfig, type ModelsPayload, modelsPayloadSchema } from '../../shared/schemas/models.js'
 import { calculateModelsPayload } from '../models-calculation.js'
-import { overviewDateRange } from '../overview-scope.js'
+import { overviewQueryRanges } from '../overview-scope.js'
 import { buildSessionSummariesFromSnapshotResult } from '../store/aggregate-calculation.js'
 import type { LedgerQueries } from '../store/ledger-ports.js'
 import { loadLedgerQuerySnapshotEffect } from '../store/ledger-query-snapshot.js'
@@ -16,8 +16,7 @@ export const queryModelsView = Effect.fn('queryModelsView')(function* (
   input: ScopedViewQueryInputs,
 ): Effect.fn.Return<ModelsPayload, SqlError | Schema.SchemaError, LedgerQueries | PricingDiagnostics> {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const range = overviewDateRange(input.scope, now)
-  const readRange = input.scope.period === 'lifetime' && !input.scope.range ? undefined : range
+  const { range, readRange } = overviewQueryRanges(input.scope, now)
   const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const calculation = buildSessionSummariesFromSnapshotResult(snapshot, {
     range,

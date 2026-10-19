@@ -7,11 +7,14 @@ import {
   dataStartForSessions,
   inScope,
   localDateKey,
+  localDateKeys,
   overviewDateRange,
+  overviewQueryRanges,
   periodWindowStart,
   scopeDateRange,
 } from '../src/main/overview-scope.js'
 import type { SessionSummary } from '../src/main/pipeline/types.js'
+import { candidateTimestampBounds } from '../src/main/store/scoped-snapshot-sql.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 
 function session(firstTimestamp: string, providers: string[] = []): SessionSummary {
@@ -22,18 +25,83 @@ function session(firstTimestamp: string, providers: string[] = []): SessionSumma
 }
 
 describe('overview scope module boundary', () => {
-  it('has no runtime or IO imports', () => {
+  it('depends only on pure calendar helpers and domain types', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/main/overview-scope.ts'), 'utf8')
-    const imports = source.match(/^import\s+.*$/gm) ?? []
+    const imports = [...source.matchAll(/from '([^']+)'/g)].map(match => match[1])
 
-    expect(imports).toEqual([
-      "import type { OverviewPeriod, OverviewScope } from '../shared/schemas/overview.js'",
-      "import type { DateRange, SessionSummary } from './pipeline/types.js'",
-    ])
+    expect(imports).toEqual(['date-fns', '../shared/schemas/overview.js', './pipeline/types.js'])
   })
 })
 
 describe('local calendar windows', () => {
+  it.each(['today', 'week', '30days', 'month', 'all'] as const)(
+    'uses the calculation window for %s reads without mutating the captured clock',
+    period => {
+      const now = new Date(2026, 0, 31, 12, 34, 56)
+      const captured = now.getTime()
+      const { range, readRange } = overviewQueryRanges({ period }, now)
+
+      expect(readRange).toBe(range)
+      expect(range).toEqual(overviewDateRange({ period }, now))
+      expect(now.getTime()).toBe(captured)
+    },
+  )
+
+  it('keeps lifetime reads unbounded and gives custom ranges precedence', () => {
+    const now = new Date(2026, 0, 31, 12)
+    expect(overviewQueryRanges({ period: 'lifetime' }, now)).toEqual({
+      range: { start: new Date(1970, 0, 1), end: new Date(2026, 0, 31, 23, 59, 59, 999) },
+      readRange: undefined,
+    })
+    const { range, readRange } = overviewQueryRanges(
+      { period: 'lifetime', range: { since: '2026-01-01', until: '2026-01-03' } },
+      now,
+    )
+    expect(readRange).toBe(range)
+    expect(range).toEqual({ start: new Date(2026, 0, 1), end: new Date(2026, 0, 3, 23, 59, 59, 999) })
+  })
+
+  it('starts the six-month window at a month boundary even from the 31st', () => {
+    expect(periodWindowStart('all', new Date(2026, 7, 31, 12))).toBe('2026-02-01')
+    expect(periodWindowStart('30days', new Date(2024, 2, 1, 12))).toBe('2024-01-31')
+  })
+
+  it.each([
+    [new Date(2026, 2, 30, 0, 30), '2026-03-23'],
+    [new Date(2026, 9, 26, 0, 30), '2026-10-19'],
+    [new Date(2026, 2, 9, 0, 30), '2026-03-02'],
+    [new Date(2026, 10, 2, 0, 30), '2026-10-26'],
+  ] as const)('keeps calendar weeks across clock changes at %s', (now, expected) => {
+    expect(periodWindowStart('week', now)).toBe(expected)
+  })
+
+  it('generates inclusive chart days across leap days and clock changes', () => {
+    expect(localDateKeys('2024-02-28', '2024-03-01')).toEqual(['2024-02-28', '2024-02-29', '2024-03-01'])
+    expect(localDateKeys('2026-03-28', '2026-03-30')).toEqual(['2026-03-28', '2026-03-29', '2026-03-30'])
+    expect(localDateKeys('2026-10-24', '2026-10-26')).toEqual(['2026-10-24', '2026-10-25', '2026-10-26'])
+    expect(localDateKeys('2026-01-01', '2026-01-01')).toEqual(['2026-01-01'])
+    expect(localDateKeys('2026-01-03', '2026-01-01')).toEqual([])
+    expect(localDateKeys('invalid', 'invalid')).toEqual([])
+  })
+
+  it('includes the final chart day after historical midnight clock changes', () => {
+    const keys = localDateKeys('1970-01-01', '2026-07-10')
+    expect(keys).toHaveLength(20_645)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(keys[0]).toBe('1970-01-01')
+    expect(keys.at(-1)).toBe('2026-07-10')
+  })
+
+  it.each([new Date(2026, 2, 29), new Date(2026, 9, 25), new Date(2026, 2, 8), new Date(2026, 10, 1)])(
+    'pads SQL candidates by exactly 24 elapsed hours around %s',
+    now => {
+      const range = overviewDateRange({ period: 'today' }, now)
+      const [from, to] = candidateTimestampBounds(range)
+      expect(range.start.getTime() - Date.parse(from)).toBe(86_400_000)
+      expect(Date.parse(to) - range.end.getTime()).toBe(86_400_000)
+    },
+  )
+
   it('ends detector periods at the captured instant', () => {
     const now = new Date(2026, 0, 3, 12, 34, 56, 789)
 

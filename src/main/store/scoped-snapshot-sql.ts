@@ -1,13 +1,15 @@
+import { addHours, subHours } from 'date-fns'
+
 import type { DateRange } from '../pipeline/types.js'
 
-const CANDIDATE_WINDOW_MS = 24 * 60 * 60 * 1000
+const CANDIDATE_WINDOW_HOURS = 24
 
 /** SQLite's timestamp index selects likely sessions; full rows for those
  * composite identities are read afterwards to retain turn and spawn context. */
 export function candidateTimestampBounds(range: DateRange): [string, string] {
   return [
-    new Date(range.start.getTime() - CANDIDATE_WINDOW_MS).toISOString(),
-    new Date(range.end.getTime() + CANDIDATE_WINDOW_MS).toISOString(),
+    subHours(range.start, CANDIDATE_WINDOW_HOURS).toISOString(),
+    addHours(range.end, CANDIDATE_WINDOW_HOURS).toISOString(),
   ]
 }
 

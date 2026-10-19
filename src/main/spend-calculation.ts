@@ -1,3 +1,5 @@
+import { subDays } from 'date-fns'
+
 import type { OverviewScope } from '../shared/schemas/overview.js'
 import type {
   SpendDayEntry,
@@ -6,7 +8,7 @@ import type {
   SpendPayload,
   SpendSegment,
 } from '../shared/schemas/spend.js'
-import { localDateKey, overviewDateRange } from './overview-scope.js'
+import { localDateKey, localDateKeys, overviewDateRange } from './overview-scope.js'
 import { getShortModelName } from './pipeline/model-names.js'
 import { resolveModelNameAlias } from './pipeline/pricing-calculation.js'
 import type { SessionSummary } from './pipeline/types.js'
@@ -55,24 +57,15 @@ function contiguousDayEntries(
   fromKey: string,
   toKey: string,
 ): SpendDayEntry[] {
-  if (fromKey > toKey) return []
-  const [fy, fm, fd] = fromKey.split('-').map(Number)
-  const [ty, tm, td] = toKey.split('-').map(Number)
-  const cursor = new Date(fy, fm - 1, fd)
-  const end = new Date(ty, tm - 1, td)
-  const out: SpendDayEntry[] = []
-  while (cursor <= end) {
-    const key = localDateKey(cursor)
+  return localDateKeys(fromKey, toKey).map(key => {
     const bucket = byDay.get(key)
     const segments: SpendSegment[] = bucket
       ? [...bucket.entries()]
           .map(([name, cost]) => ({ name, cost }))
           .sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name))
       : []
-    out.push({ date: key, cost: segments.reduce((sum, segment) => sum + segment.cost, 0), segments })
-    cursor.setDate(cursor.getDate() + 1)
-  }
-  return out
+    return { date: key, cost: segments.reduce((sum, segment) => sum + segment.cost, 0), segments }
+  })
 }
 
 function earliestKey(...maps: Array<Map<string, unknown>>): string | null {
@@ -119,9 +112,7 @@ export function calculateSpendView(
   }))
   const todayKey = localDateKey(now)
   const winEnd = scope.range?.until ?? todayKey
-  const winStart =
-    scope.range?.since ??
-    localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - (SPEND_CHART_DAYS - 1)))
+  const winStart = scope.range?.since ?? localDateKey(subDays(now, SPEND_CHART_DAYS - 1))
 
   const byModelDay = new Map<string, Map<string, number>>()
   const byProjectDay = new Map<string, Map<string, number>>()

@@ -9,7 +9,7 @@ import {
   skillsPayloadSchema,
   type SkillsThresholds,
 } from '../../shared/schemas/skills.js'
-import { overviewDateRange } from '../overview-scope.js'
+import { overviewQueryRanges } from '../overview-scope.js'
 import { calculateSkillsView } from '../skills-calculation.js'
 import { buildSessionSummariesFromSnapshotResult } from '../store/aggregate-calculation.js'
 import type { LedgerQueries } from '../store/ledger-ports.js'
@@ -32,8 +32,7 @@ export const querySkillsView = Effect.fn('querySkillsView')(function* (
   LedgerQueries | LedgerConfig | AssistantSetup | PricingDiagnostics
 > {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const dateRange = overviewDateRange(input.scope, now)
-  const readRange = input.scope.period === 'lifetime' && !input.scope.range ? undefined : dateRange
+  const { range: dateRange, readRange } = overviewQueryRanges(input.scope, now)
   const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const aggregation = buildSessionSummariesFromSnapshotResult(snapshot, {
     range: dateRange,
