@@ -2,6 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { it as effectIt } from '@effect/vitest'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { ConfigProvider, Effect, Stream } from 'effect'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -144,7 +146,7 @@ function parser(signal?: AbortSignal, pricing?: ScanPricing) {
 function nativeStream(signal?: AbortSignal, pricing?: ScanPricing): Stream.Stream<ParsedProviderCall, Error> {
   const stream = parser(signal, pricing).parseStream
   if (!stream) throw new Error('Cursor parser did not expose its native stream')
-  return stream()
+  return stream().pipe(Stream.provide(NodeFileSystem.layer))
 }
 
 beforeEach(() => {
@@ -193,20 +195,18 @@ describe('Cursor native Effect stream', () => {
     expect(hooks.queries.some(sql => sql.includes('ROWID < ?'))).toBe(true)
   })
 
-  it('captures the six-month SQL window from the Effect Clock when parsing starts', async () => {
-    const stream = nativeStream()
-    const nowMs = Date.parse('2020-10-15T12:30:00.000Z')
+  effectIt.effect('captures the six-month SQL window from the Effect Clock when parsing starts', () =>
+    Effect.gen(function* () {
+      const stream = nativeStream()
+      const nowMs = Date.parse('2020-10-15T12:30:00.000Z')
 
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        yield* TestClock.setTime(nowMs)
-        return yield* Stream.runCollect(stream)
-      }).pipe(Effect.provide(TestClock.layer())),
-    )
+      yield* TestClock.setTime(nowMs)
+      yield* Stream.runCollect(stream)
 
-    expect(hooks.cacheTimeFloors).toEqual([getCursorTimeFloor(undefined, new Date(nowMs))])
-    expect(hooks.cacheTimeFloors[0]).toContain('2020-04')
-  })
+      expect(hooks.cacheTimeFloors).toEqual([getCursorTimeFloor(undefined, new Date(nowMs))])
+      expect(hooks.cacheTimeFloors[0]).toContain('2020-04')
+    }),
+  )
 
   it('closes its database when a consumer stops early', async () => {
     const calls = await Effect.runPromise(Stream.runCollect(nativeStream().pipe(Stream.take(1))))
@@ -309,7 +309,9 @@ describe('Cursor native Effect stream', () => {
       const provider = createCursorProvider(dbPath)
       if (!provider.discoverSessionsEffect) throw new Error('Cursor provider did not expose native discovery')
       const sources = await Effect.runPromise(
-        provider.discoverSessionsEffect().pipe(Effect.provide(Env.layerWithGatewayKey(null))),
+        provider
+          .discoverSessionsEffect()
+          .pipe(Effect.provide(Env.layerWithGatewayKey(null)), Effect.provide(NodeFileSystem.layer)),
       )
       expect(sources).toEqual([{ path: `${dbPath}#cursor-ws=__orphan__`, project: 'cursor', provider: 'cursor' }])
     } finally {

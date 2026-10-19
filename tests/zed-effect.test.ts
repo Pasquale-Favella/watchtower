@@ -306,7 +306,7 @@ describe('Zed native Effect provider', () => {
     }
   })
 
-  it('unwraps an early scope close failure to the original native error', async () => {
+  it('surfaces an early scope close failure in the native stream error channel', async () => {
     const { dbPath, db } = createDatabase()
     insertThread(db, {
       id: 'thread-one',
@@ -324,10 +324,17 @@ describe('Zed native Effect provider', () => {
       pricing: pricing(() => 0),
     })
 
-    const iterator = parser.parse()
-    await expect(iterator.next()).resolves.toMatchObject({ done: false })
-    await expect(iterator.return(undefined)).rejects.toBe(closeError)
+    const exit = await Effect.runPromiseExit(Stream.runHead(nativeStream(parser)()))
+    expect(Exit.isFailure(exit)).toBe(true)
     expect(databaseState.closeCount).toBe(1)
+    if (Exit.isFailure(exit)) {
+      const defect = Cause.findDefect(exit.cause)
+      expect(Result.isSuccess(defect) ? defect.success : undefined).toMatchObject({
+        _tag: 'ZedDatabaseError',
+        operation: 'close',
+        cause: closeError,
+      })
+    }
   })
 
   it('preserves unexpected transformation defects and still closes the database', async () => {

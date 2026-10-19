@@ -3,8 +3,10 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect } from 'effect'
+import { Effect, type FileSystem } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { withProviderFileSystem } from './fixtures/provider-effects.js'
 
 const hooks = vi.hoisted(() => ({ firstLineReaderEvents: [] as string[] }))
 
@@ -49,7 +51,9 @@ async function writeSession(path: string, cwd: string, originator = 'Codex CLI')
   )
 }
 
-function nativeDiscovery(provider: Provider): ReturnType<NonNullable<Provider['discoverSessionsEffect']>> {
+function nativeDiscovery(
+  provider: Provider<FileSystem.FileSystem>,
+): ReturnType<Provider<FileSystem.FileSystem>['discoverSessionsEffect']> {
   if (!provider.discoverSessionsEffect) throw new Error('Codex Effect discovery is unavailable')
   return provider.discoverSessionsEffect()
 }
@@ -67,7 +71,9 @@ describe('Codex Effect discovery', () => {
     await writeSession(ignoredName, '/work/ignored')
 
     const provider = createCodexProvider(codexHome)
-    const sources = await Effect.runPromise(nativeDiscovery(provider).pipe(Effect.provide(Env.layer)))
+    const sources = await Effect.runPromise(
+      withProviderFileSystem(nativeDiscovery(provider).pipe(Effect.provide(Env.layer))),
+    )
 
     expect(sources).toEqual([
       {
@@ -92,9 +98,9 @@ describe('Codex Effect discovery', () => {
     const provider = createCodexProvider()
 
     initAppPaths({ cacheDir: join(root, 'cache'), codexHome })
-    await expect(Effect.runPromise(nativeDiscovery(provider).pipe(Effect.provide(Env.layer)))).resolves.toMatchObject([
-      { path: session, project: 'late-project' },
-    ])
+    await expect(
+      Effect.runPromise(withProviderFileSystem(nativeDiscovery(provider).pipe(Effect.provide(Env.layer)))),
+    ).resolves.toMatchObject([{ path: session, project: 'late-project' }])
   })
 
   it('closes each first-line reader before opening the next session reader', async () => {
@@ -105,7 +111,7 @@ describe('Codex Effect discovery', () => {
     await writeSession(second, '/work/second')
 
     const sources = await Effect.runPromise(
-      nativeDiscovery(createCodexProvider(codexHome)).pipe(Effect.provide(Env.layer)),
+      withProviderFileSystem(nativeDiscovery(createCodexProvider(codexHome)).pipe(Effect.provide(Env.layer))),
     )
 
     expect(sources).toHaveLength(2)

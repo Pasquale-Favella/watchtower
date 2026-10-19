@@ -63,11 +63,6 @@ export function createClineProvider(overrideDirs?: string | string[]): Provider 
       return discoverEffect(context)
     },
 
-    // Remove when direct discovery callers consume the native Effect path.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      return Effect.runPromise(discoverEffect(context))
-    },
-
     createSessionParser(
       source: SessionSource,
       seenKeys: Set<string>,

@@ -2,21 +2,34 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Fiber } from 'effect'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import { Cause, Effect, Exit, Fiber, FileSystem, Scope, Stream } from 'effect'
+import * as PlatformError from 'effect/PlatformError'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
   failCacheRead: false,
   failWrite: false,
+  failClose: false,
+  dieClose: false,
   failRename: false,
   failRandomBytes: false,
   renameCalls: 0,
   pauseWrite: false,
   onWriteStarted: undefined as (() => void) | undefined,
   releaseWrite: undefined as (() => void) | undefined,
-  closedHandles: new Set<string>(),
   cleanupAfterClose: [] as boolean[],
+  closedBeforeRename: [] as boolean[],
 }))
+
+function fileSystemError(method: string, message: string): PlatformError.PlatformError {
+  return PlatformError.systemError({
+    _tag: 'Unknown',
+    module: 'FileSystem',
+    method,
+    cause: new Error(message),
+  })
+}
 
 vi.mock('crypto', async importOriginal => {
   const actual = await importOriginal<typeof import('node:crypto')>()
@@ -25,58 +38,6 @@ vi.mock('crypto', async importOriginal => {
     randomBytes: (...args: Parameters<typeof actual.randomBytes>) => {
       if (hooks.failRandomBytes) throw new Error('crypto defect')
       return actual.randomBytes(...args)
-    },
-  }
-})
-
-vi.mock('fs/promises', async importOriginal => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>()
-  return {
-    ...actual,
-    readFile: async (...args: Parameters<typeof actual.readFile>) => {
-      if (hooks.failCacheRead && String(args[0]).endsWith('antigravity-results.json')) {
-        throw new Error('cache read failed')
-      }
-      return actual.readFile(...args)
-    },
-    open: async (...args: Parameters<typeof actual.open>) => {
-      const handle = await actual.open(...args)
-      const path = String(args[0])
-      let closed = false
-      return {
-        writeFile: async (...writeArgs: Parameters<typeof handle.writeFile>) => {
-          if (hooks.pauseWrite) {
-            hooks.pauseWrite = false
-            await new Promise<void>(resolve => {
-              hooks.releaseWrite = resolve
-              hooks.onWriteStarted?.()
-            })
-          }
-          if (hooks.failWrite) {
-            await handle.writeFile('partial cache payload')
-            throw new Error('cache write failed')
-          }
-          return handle.writeFile(...writeArgs)
-        },
-        sync: () => handle.sync(),
-        close: async () => {
-          closed = true
-          hooks.closedHandles.add(path)
-          return handle.close()
-        },
-        get closed() {
-          return closed
-        },
-      }
-    },
-    rename: async (...args: Parameters<typeof actual.rename>) => {
-      hooks.renameCalls++
-      if (hooks.failRename) throw new Error('cache rename failed')
-      return actual.rename(...args)
-    },
-    unlink: async (path: Parameters<typeof actual.unlink>[0]) => {
-      hooks.cleanupAfterClose.push(hooks.closedHandles.has(String(path)))
-      return actual.unlink(path)
     },
   }
 })
@@ -95,20 +56,97 @@ vi.mock('child_process', async importOriginal => {
 
 let root = ''
 let provider: typeof import('../src/main/pipeline/providers/antigravity.js')
+let openedTempFiles: FileSystem.File[] = []
+
+function hookedFileSystem(fs: FileSystem.FileSystem): FileSystem.FileSystem {
+  return {
+    ...fs,
+    readFileString: (path, encoding) => {
+      if (hooks.failCacheRead && path.endsWith('antigravity-results.json')) {
+        return Effect.fail(fileSystemError('readFileString', 'cache read failed'))
+      }
+      return fs.readFileString(path, encoding)
+    },
+    open: (path, options) =>
+      Effect.gen(function* () {
+        const handle = yield* fs.open(path, options)
+        if (!path.endsWith('.tmp')) return handle
+        openedTempFiles.push(handle)
+        const scope = yield* Effect.scope
+        const closeFinalizer = Effect.sync(() => hooks.cleanupAfterClose.push(true)).pipe(
+          Effect.asVoid,
+          Effect.andThen(
+            Effect.suspend(() => {
+              if (hooks.dieClose) return Effect.die(new Error('close defect'))
+              if (hooks.failClose) return Effect.die(fileSystemError('close', 'cache close failed'))
+              return Effect.void
+            }),
+          ),
+        )
+        yield* Scope.addFinalizer(scope, closeFinalizer)
+        return {
+          ...handle,
+          sync: handle.sync.pipe(Effect.asVoid),
+          writeAll: bytes =>
+            Effect.promise(async () => {
+              if (!hooks.pauseWrite) return
+              hooks.pauseWrite = false
+              await new Promise<void>(resolve => {
+                hooks.releaseWrite = resolve
+                hooks.onWriteStarted?.()
+              })
+            }).pipe(
+              Effect.andThen(
+                hooks.failWrite
+                  ? handle
+                      .writeAll(new TextEncoder().encode('partial cache payload'))
+                      .pipe(Effect.andThen(Effect.fail(fileSystemError('write', 'cache write failed'))))
+                  : handle.writeAll(bytes),
+              ),
+            ),
+        }
+      }),
+    rename: (from, to) =>
+      Effect.gen(function* () {
+        hooks.renameCalls++
+        const handle = openedTempFiles.at(-1)
+        if (handle) hooks.closedBeforeRename.push(Exit.isFailure(yield* Effect.exit(handle.stat)))
+        return yield* hooks.failRename
+          ? Effect.fail(fileSystemError('rename', 'cache rename failed'))
+          : fs.rename(from, to)
+      }),
+    remove: (path, options) => {
+      if (path.endsWith('.tmp')) hooks.cleanupAfterClose.push(false)
+      return fs.remove(path, options)
+    },
+  }
+}
+
+function runWithFileSystem<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>): Promise<A> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      return yield* Effect.provideService(effect, FileSystem.FileSystem, hookedFileSystem(fs))
+    }).pipe(Effect.provide(NodeFileSystem.layer)),
+  )
+}
 
 beforeEach(async () => {
   vi.resetModules()
   root = await mkdtemp(join(tmpdir(), 'watchtower-antigravity-cache-effect-'))
   hooks.failCacheRead = false
   hooks.failWrite = false
+  hooks.failClose = false
+  hooks.dieClose = false
   hooks.failRename = false
   hooks.failRandomBytes = false
   hooks.renameCalls = 0
   hooks.pauseWrite = false
   hooks.onWriteStarted = undefined
   hooks.releaseWrite = undefined
-  hooks.closedHandles.clear()
   hooks.cleanupAfterClose.length = 0
+  hooks.closedBeforeRename.length = 0
+  openedTempFiles = []
   const env = await import('../src/main/env.js')
   env.initAppPaths({ cacheDir: root })
   provider = await import('../src/main/pipeline/providers/antigravity.js')
@@ -168,8 +206,20 @@ async function loadThroughParser(sourcePath: string): Promise<unknown[]> {
     .createAntigravityProvider()
     .createSessionParser({ path: sourcePath, project: 'antigravity-cli', provider: 'antigravity' }, new Set())
   const calls: unknown[] = []
-  for await (const call of parser.parse()) calls.push(call)
+  const fs = await Effect.runPromise(Effect.provide(FileSystem.FileSystem, NodeFileSystem.layer))
+  const stream = parser.parseStream().pipe(Stream.provideService(FileSystem.FileSystem, hookedFileSystem(fs)))
+  for await (const call of Stream.toAsyncIterable(stream)) calls.push(call)
   return calls
+}
+
+function flushCache(liveIds?: Set<string>): Promise<void> {
+  return runWithFileSystem(provider.flushAntigravityCacheEffect(liveIds))
+}
+
+async function expectTempHandleClosed(): Promise<void> {
+  const handle = openedTempFiles.at(-1)
+  if (!handle) throw new Error('Expected the cache temp file handle to be captured')
+  await expect(Effect.runPromise(handle.stat)).rejects.toMatchObject({ reason: { cause: { code: 'EBADF' } } })
 }
 
 describe('Antigravity native cache effects', () => {
@@ -200,15 +250,15 @@ describe('Antigravity native cache effects', () => {
     await loadThroughParser(sourcePath)
     hooks.failWrite = true
 
-    await expect(Effect.runPromise(provider.flushAntigravityCacheEffect(new Set()))).resolves.toBeUndefined()
+    await expect(flushCache(new Set())).resolves.toBeUndefined()
 
     expect(await readFile(cachePath, 'utf-8')).toBe(rawCache)
-    expect(hooks.cleanupAfterClose).toEqual([true])
+    expect(hooks.cleanupAfterClose).toEqual([true, false])
     expect(hooks.renameCalls).toBe(0)
     expect((await readdir(root)).filter(name => name.endsWith('.tmp'))).toEqual([])
 
     hooks.failWrite = false
-    await Effect.runPromise(provider.flushAntigravityCacheEffect())
+    await flushCache()
     expect(JSON.parse(await readFile(cachePath, 'utf-8'))).toEqual({ version: 5, cascades: {} })
   })
 
@@ -216,9 +266,11 @@ describe('Antigravity native cache effects', () => {
     const { cachePath, sourcePath } = await seedCache()
     await loadThroughParser(sourcePath)
 
-    await Effect.runPromise(Effect.scoped(provider.flushAntigravityCacheEffect(new Set(['other-cascade']))))
+    await flushCache(new Set(['other-cascade']))
 
     expect(JSON.parse(await readFile(cachePath, 'utf-8'))).toEqual({ version: 5, cascades: {} })
+    expect(hooks.closedBeforeRename).toEqual([true])
+    await expectTempHandleClosed()
   })
 
   it('removes the temporary file after rename failure and retains the prior cache', async () => {
@@ -226,13 +278,69 @@ describe('Antigravity native cache effects', () => {
     await loadThroughParser(sourcePath)
     hooks.failRename = true
 
-    await Effect.runPromise(Effect.scoped(provider.flushAntigravityCacheEffect(new Set())))
+    await flushCache(new Set())
 
     expect(await readFile(cachePath, 'utf-8')).toBe(rawCache)
     expect((await readdir(root)).filter(name => name.endsWith('.tmp'))).toEqual([])
-    expect(hooks.cleanupAfterClose).toEqual([true])
-    await Effect.runPromise(provider.flushAntigravityCacheEffect())
+    expect(hooks.cleanupAfterClose).toEqual([true, false])
+    expect(hooks.closedBeforeRename).toEqual([true])
+    await expectTempHandleClosed()
+    await flushCache()
     expect(hooks.renameCalls).toBe(1)
+  })
+
+  it('recovers from official filesystem close defects and leaves the cache dirty for a retry', async () => {
+    const { cachePath, sourcePath, rawCache } = await seedCache()
+    await loadThroughParser(sourcePath)
+    hooks.failClose = true
+
+    await expect(flushCache(new Set())).resolves.toBeUndefined()
+    expect(await readFile(cachePath, 'utf-8')).toBe(rawCache)
+    expect(hooks.renameCalls).toBe(0)
+    expect(hooks.cleanupAfterClose).toEqual([true, false])
+
+    hooks.failClose = false
+    await flushCache()
+    expect(hooks.renameCalls).toBe(1)
+  })
+
+  it('preserves defects from scoped filesystem release', async () => {
+    const { sourcePath } = await seedCache()
+    await loadThroughParser(sourcePath)
+    hooks.dieClose = true
+
+    await expect(flushCache(new Set())).rejects.toThrow('close defect')
+    expect(hooks.renameCalls).toBe(0)
+    expect(hooks.cleanupAfterClose).toEqual([true, false])
+    expect((await readdir(root)).filter(name => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('does not recover a write failure when scoped close also defects', async () => {
+    const { sourcePath } = await seedCache()
+    await loadThroughParser(sourcePath)
+    hooks.failWrite = true
+    hooks.dieClose = true
+
+    const result = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        yield* provider
+          .flushAntigravityCacheEffect(new Set())
+          .pipe(Effect.provideService(FileSystem.FileSystem, hookedFileSystem(fs)))
+      }).pipe(Effect.provide(NodeFileSystem.layer)),
+    )
+    expect(Exit.isFailure(result)).toBe(true)
+    if (Exit.isFailure(result)) {
+      expect(result.cause.reasons.some(Cause.isDieReason)).toBe(true)
+      expect(
+        result.cause.reasons.some(
+          reason => Cause.isFailReason(reason) && reason.error._tag === 'AntigravityCacheIoError',
+        ),
+      ).toBe(true)
+    }
+    expect(hooks.renameCalls).toBe(0)
+    expect((await readdir(root)).filter(name => name.endsWith('.tmp'))).toEqual([])
+    await expectTempHandleClosed()
   })
 
   it('waits for a pending write to settle before closing and cleaning up on interruption', async () => {
@@ -245,7 +353,16 @@ describe('Antigravity native cache effects', () => {
     })
     hooks.onWriteStarted = writeStarted
 
-    const fiber = Effect.runFork(Effect.scoped(provider.flushAntigravityCacheEffect(new Set())))
+    const fiber = Effect.runFork(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        yield* Effect.scoped(
+          provider
+            .flushAntigravityCacheEffect(new Set())
+            .pipe(Effect.provideService(FileSystem.FileSystem, hookedFileSystem(fs))),
+        )
+      }).pipe(Effect.provide(NodeFileSystem.layer)),
+    )
     await started
     const interrupted = Effect.runPromise(Fiber.interrupt(fiber))
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -255,8 +372,9 @@ describe('Antigravity native cache effects', () => {
     hooks.releaseWrite?.()
     await interrupted
 
-    expect(hooks.cleanupAfterClose).toEqual([true])
+    expect(hooks.cleanupAfterClose).toEqual([true, false])
     expect((await readdir(root)).filter(name => name.endsWith('.tmp'))).toEqual([])
+    await expectTempHandleClosed()
   })
 
   it('surfaces a pre-aborted caller signal as a typed scan cancellation', async () => {
@@ -264,7 +382,7 @@ describe('Antigravity native cache effects', () => {
     controller.abort()
 
     await expect(
-      Effect.runPromise(Effect.scoped(provider.flushAntigravityCacheEffect(undefined, controller.signal))),
+      runWithFileSystem(provider.flushAntigravityCacheEffect(undefined, controller.signal)),
     ).rejects.toMatchObject({ _tag: 'ScanAbortedError' })
   })
 
@@ -272,6 +390,6 @@ describe('Antigravity native cache effects', () => {
     const { sourcePath } = await seedCache()
     await loadThroughParser(sourcePath)
     hooks.failRandomBytes = true
-    await expect(Effect.runPromise(provider.flushAntigravityCacheEffect(new Set()))).rejects.toThrow('crypto defect')
+    await expect(flushCache(new Set())).rejects.toThrow('crypto defect')
   })
 })

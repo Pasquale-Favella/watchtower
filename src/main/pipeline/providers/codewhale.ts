@@ -15,7 +15,6 @@ import { readSessionFileEffect } from '../fs-utils.js'
 import { captureScanPricing, getShortModelName } from '../models.js'
 import { isScanAbortedError } from '../scan-control.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
-import type { ScanPricing } from '../scan-pricing.js'
 import type { DateRange } from '../types.js'
 import type { ToolCall } from '../types.js'
 import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
@@ -115,10 +114,6 @@ const toolNameMap: Record<string, string> = {
   update_plan: 'TodoWrite',
   load_skill: 'Skill',
   request_user_input: 'AskUser',
-}
-
-function toError(cause: unknown): Error {
-  return cause instanceof Error ? cause : new Error(String(cause), { cause })
 }
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -559,10 +554,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
   const parseStream: NonNullable<SessionParser['parseStream']> = () => Stream.unwrap(parseEffect())
   return {
     parseStream,
-    // Remove when the scanner and external parser callers consume parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -604,11 +595,6 @@ export function createCodeWhaleProvider(overrideDirs?: string | string[], paths?
 
     discoverSessionsEffect(context?: ProviderScanContext): Effect.Effect<SessionSource[], Error, Env> {
       return discoverEffect(context)
-    },
-
-    // Remove when external discovery callers use discoverSessionsEffect.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(

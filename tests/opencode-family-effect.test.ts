@@ -194,7 +194,7 @@ describe('OpenCode family native SQLite Effects', () => {
     expect(close).toHaveBeenCalledTimes(1)
   })
 
-  it('preserves native close-error identity when the legacy iterator stops early', async () => {
+  it('preserves scope close defects when the native stream stops early', async () => {
     const { config, source } = fixture('1x')
     const originalOpen = sqlite.openDatabase
     const closeError = new Error('early close failed')
@@ -218,20 +218,13 @@ describe('OpenCode family native SQLite Effects', () => {
         undefined,
         pricing(),
       )
-    const iterator = createParser().parse()
-    expect((await iterator.next()).done).toBe(false)
-    await expect(iterator.return(undefined)).rejects.toBe(closeError)
-    expect(close).toHaveBeenCalledTimes(1)
-
-    // A scope finalizer cannot declare a typed failure. Early native stop
-    // reports that cleanup defect; the compatibility adapter unwraps it.
     const exit = await Effect.runPromise(Effect.exit(Stream.runHead(createParser().parseStream!())))
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) {
       expect(Cause.hasDies(exit.cause)).toBe(true)
       expect(Cause.squash(exit.cause)).toMatchObject({ operation: 'close', cause: closeError })
     }
-    expect(close).toHaveBeenCalledTimes(2)
+    expect(close).toHaveBeenCalledTimes(1)
   })
 
   it('keeps close failures in the typed stream error channel at normal completion', async () => {
@@ -259,21 +252,6 @@ describe('OpenCode family native SQLite Effects', () => {
     const result = await Effect.runPromise(Effect.result(Stream.runDrain(parser.parseStream!())))
     expect(result._tag).toBe('Failure')
     if (result._tag === 'Failure') expect(result.failure).toMatchObject({ operation: 'close', message: 'close failed' })
-
-    const iteratorParser = createSqliteSessionParser(
-      { path: source, project: 'fixture', provider: 'opencode' },
-      new Set(),
-      config,
-      undefined,
-      pricing(),
-    )
-    const iterator = iteratorParser.parse()
-    try {
-      await iterator.next()
-      await expect(iterator.next()).rejects.toBe(closeError)
-    } finally {
-      await iterator.return(undefined)
-    }
   })
 
   it('keeps an open failure on the legacy empty-source path', async () => {

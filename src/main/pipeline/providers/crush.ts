@@ -365,26 +365,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream,
-    // Remove when every parser caller consumes parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
-      try {
-        while (true) {
-          const next = await iterator.next()
-          if (next.done) return
-          yield next.value
-        }
-      } catch (error) {
-        if (error instanceof CrushDatabaseError) {
-          // eslint-disable-next-line no-restricted-syntax
-          throw error.cause
-        }
-        // eslint-disable-next-line no-restricted-syntax
-        throw error
-      } finally {
-        await iterator.return?.()
-      }
-    },
   }
 }
 
@@ -404,18 +384,6 @@ export function createCrushProvider(paths?: AppPaths): Provider {
     },
 
     discoverSessionsEffect: discover,
-    // Remove when every discovery caller uses the native Effect entry point.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discover(context)).catch(error => {
-        if (error instanceof CrushDatabaseError) {
-          // eslint-disable-next-line no-restricted-syntax
-          throw error.cause
-        }
-        // eslint-disable-next-line no-restricted-syntax
-        throw error
-      })
-    },
 
     createSessionParser(
       source: SessionSource,

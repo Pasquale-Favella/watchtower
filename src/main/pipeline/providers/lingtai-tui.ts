@@ -474,10 +474,6 @@ function createParser(source: SessionSource, context?: ProviderScanContext): Ses
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      // Remove when direct parser callers consume parseStream.
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -502,11 +498,6 @@ export function createLingTaiTuiProvider(options?: string | LingTaiProviderOptio
     },
 
     discoverSessionsEffect: discoverEffect,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove when external discovery callers use discoverSessionsEffect.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

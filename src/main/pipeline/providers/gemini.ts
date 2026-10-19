@@ -364,9 +364,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -396,12 +393,6 @@ export function createGeminiProvider(geminiTmpDir?: string): Provider {
 
     discoverSessionsEffect(context?: ProviderScanContext): Effect.Effect<SessionSource[], Error> {
       return discoverSessionsEffect(root(), context)
-    },
-
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // This is the legacy Promise edge; scan orchestration consumes the Effect hook above.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverSessionsEffect(root(), context))
     },
 
     createSessionParser(

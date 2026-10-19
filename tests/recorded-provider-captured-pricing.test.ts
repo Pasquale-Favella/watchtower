@@ -15,6 +15,7 @@ import { quickdesk } from '../src/main/pipeline/providers/quickdesk.js'
 import type { ParsedProviderCall } from '../src/main/pipeline/providers/types.js'
 import type { Provider, ProviderScanContext, SessionSource } from '../src/main/pipeline/providers/types.js'
 import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const directories: string[] = []
 
@@ -36,7 +37,7 @@ async function firstCall(
   source: SessionSource,
   context?: ProviderScanContext,
 ): Promise<IteratorResult<ParsedProviderCall>> {
-  const parser = provider.createSessionParser(source, new Set(), undefined, context).parse()
+  const parser = providerParserIterator(provider.createSessionParser(source, new Set(), undefined, context))
   const result = await parser.next()
   await parser.return(undefined)
   return result
@@ -94,7 +95,7 @@ describe('provider scan pricing capture', () => {
     const capturedParser = provider.createSessionParser(source, new Set())
     setPriceOverrides({ 'capture-fixture-model': { input: 3, output: 3 } })
 
-    const captured = await capturedParser.parse().next()
+    const captured = await providerParserIterator(capturedParser).next()
     const fresh = await firstCall(provider, source)
 
     expect(captured.value?.costUSD).toBe(1)

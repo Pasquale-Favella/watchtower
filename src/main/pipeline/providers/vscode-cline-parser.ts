@@ -398,9 +398,5 @@ export function createClineParser(
 
   return {
     parseStream,
-    // Remove this async-generator adapter when all direct callers consume parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }

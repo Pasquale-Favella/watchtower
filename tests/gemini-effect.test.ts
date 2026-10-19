@@ -43,6 +43,7 @@ vi.mock('fs/promises', async importOriginal => {
 import { createGeminiProvider } from '../src/main/pipeline/providers/gemini.js'
 import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let root = ''
 
@@ -145,7 +146,7 @@ describe('Gemini Effect provider', () => {
     })
     const adapterParser = createGeminiProvider().createSessionParser(source(path), new Set())
     const compatibleCalls: unknown[] = []
-    for await (const call of adapterParser.parse()) compatibleCalls.push(call)
+    for await (const call of providerParserIterator(adapterParser)) compatibleCalls.push(call)
     expect(compatibleCalls).toEqual(calls)
   })
 

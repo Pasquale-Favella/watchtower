@@ -271,10 +271,6 @@ function createParser(
 
   return {
     parseStream,
-    // Remove this compatibility adapter when direct callers use parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -299,11 +295,6 @@ export function createOpenDesignProvider(overrideDir?: string, paths?: AppPaths)
     },
 
     discoverSessionsEffect: discoverEffect,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove this Promise edge after external callers consume native discovery.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

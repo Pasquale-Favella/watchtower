@@ -565,9 +565,6 @@ function createParser(
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -612,12 +609,6 @@ export function createMistralVibeProvider(sessionsDir?: string, paths?: AppPaths
     },
 
     discoverSessionsEffect: discoverEffect,
-
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Compatibility edge for callers that have not moved to Effect.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

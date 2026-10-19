@@ -374,32 +374,27 @@ describe('Crush Effect provider', () => {
     expect(hooks.closed).toBe(1)
   })
 
-  it('closes after a read error and preserves the native error in the legacy adapter', async () => {
+  it('closes after a read error and preserves its cause in the stream error channel', async () => {
     const project = makeProject('read-error', [{ id: 'session-1', prompt_tokens: 1, completion_tokens: 1, cost: 1 }])
     const dbPath = join(project, '.crush', 'crush.db')
     hooks.queryError = new Error('session read failed')
     const nativeParser = parser(dbPath)
-    await expect(collect(nativeParser)).rejects.toThrow('session read failed')
-    expect(hooks.closed).toBe(1)
-
-    hooks.closed = 0
-    await expect(nativeParser.parse().next()).rejects.toBe(hooks.queryError)
+    await expect(Effect.runPromise(Stream.runCollect(parseStream(nativeParser)))).rejects.toMatchObject({
+      _tag: 'CrushDatabaseError',
+      cause: hooks.queryError,
+    })
     expect(hooks.closed).toBe(1)
   })
 
-  it('unwraps the original close error at EOF for the legacy parser adapter', async () => {
+  it('keeps close failures in the stream error channel at EOF', async () => {
     const project = makeProject('close-error', [{ id: 'session-1', prompt_tokens: 1, completion_tokens: 1, cost: 1 }])
     const dbPath = join(project, '.crush', 'crush.db')
     const closeError = new Error('native close failed')
     hooks.closeError = closeError
-    const legacyParser = parser(dbPath)
-    const consume = async () => {
-      const calls: ParsedProviderCall[] = []
-      for await (const call of legacyParser.parse()) calls.push(call)
-      return calls
-    }
-
-    await expect(consume()).rejects.toBe(closeError)
+    await expect(Effect.runPromise(Stream.runCollect(parseStream(parser(dbPath))))).rejects.toMatchObject({
+      _tag: 'CrushDatabaseError',
+      cause: closeError,
+    })
     expect(hooks.closed).toBe(1)
   })
 

@@ -954,14 +954,6 @@ export function createSqliteSessionParser(
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      try {
-        yield* Stream.toAsyncIterable(parseStream())
-      } catch (error) {
-        if (error instanceof SqliteFamilyError) throw error.cause
-        throw error
-      }
-    },
   }
 }
 

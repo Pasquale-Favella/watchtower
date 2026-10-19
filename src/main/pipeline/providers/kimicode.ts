@@ -456,10 +456,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream: () => Stream.unwrap(parseEffect()),
-    // Remove when scan/parser and external iterator callers consume parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(Stream.unwrap(parseEffect()))
-    },
   }
 }
 
@@ -494,12 +490,6 @@ export function createKimicodeProvider(homeOverride?: string, paths?: AppPaths):
 
     discoverSessionsEffect(context?: ProviderScanContext): Effect.Effect<SessionSource[], Error, Env> {
       return discoverEffect(context)
-    },
-
-    // Remove when all discovery callers use the native Effect entry point.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(

@@ -60,11 +60,6 @@ export function createIBMBobProvider(overrideDir?: string, paths?: AppPaths): Pr
       return discoverEffect(context)
     },
 
-    // Remove when direct discovery callers consume the native Effect path.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      return Effect.runPromise(discoverEffect(context))
-    },
-
     createSessionParser(
       source: SessionSource,
       seenKeys: Set<string>,

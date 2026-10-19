@@ -176,10 +176,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      // Remove this Promise edge when direct parser callers consume parseStream.
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -221,11 +217,6 @@ export function createZerostackProvider(sessionsDir?: string, paths?: AppPaths):
     },
 
     discoverSessionsEffect: discoverEffect,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove this Promise edge once direct compatibility callers use the native scan hook.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

@@ -2,8 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Stream } from 'effect'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import { Effect, type FileSystem, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { withProviderFileSystem } from './fixtures/provider-effects.js'
 
 const hooks = vi.hoisted(() => ({
   streamFactory: undefined as (() => unknown) | undefined,
@@ -79,8 +82,10 @@ function createPricing() {
   }
 }
 
-async function collect(stream: Stream.Stream<ParsedProviderCall, Error>): Promise<ParsedProviderCall[]> {
-  return await Effect.runPromise(Stream.runCollect(stream))
+async function collect(
+  stream: Stream.Stream<ParsedProviderCall, Error, FileSystem.FileSystem>,
+): Promise<ParsedProviderCall[]> {
+  return await Effect.runPromise(withProviderFileSystem(Stream.runCollect(stream)))
 }
 
 function acquiredLineStream(lines: string[], onLine?: (line: string) => void): Stream.Stream<string, Error> {
@@ -152,7 +157,9 @@ describe('Antigravity statusline Effect parser', () => {
     const parser = createAntigravityProvider().createSessionParser(source(), seen, undefined, { pricing })
     if (!parser.parseStream) throw new Error('Statusline parser did not expose its native stream')
 
-    const calls = await Effect.runPromise(Stream.runCollect(parser.parseStream().pipe(Stream.take(1))))
+    const calls = await Effect.runPromise(
+      withProviderFileSystem(Stream.runCollect(parser.parseStream().pipe(Stream.take(1)))),
+    )
 
     expect(calls).toHaveLength(1)
     expect(pricing.calculateCost).toHaveBeenCalledTimes(1)
@@ -168,7 +175,9 @@ describe('Antigravity statusline Effect parser', () => {
     const parser = createAntigravityProvider().createSessionParser(source(), new Set())
     if (!parser.parseStream) throw new Error('Statusline parser did not expose its native stream')
 
-    const iterator = Stream.toAsyncIterable(parser.parseStream())[Symbol.asyncIterator]()
+    const iterator = Stream.toAsyncIterable(parser.parseStream().pipe(Stream.provide(NodeFileSystem.layer)))[
+      Symbol.asyncIterator
+    ]()
     const first = await iterator.next()
 
     expect(first.done).toBe(false)

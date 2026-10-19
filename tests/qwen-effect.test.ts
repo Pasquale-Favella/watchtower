@@ -44,6 +44,7 @@ import { calculateCost } from '../src/main/pipeline/models.js'
 import { createQwenProvider } from '../src/main/pipeline/providers/qwen.js'
 import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 let root = ''
 
@@ -114,7 +115,7 @@ describe('Qwen Effect provider', () => {
       { path: join(firstChats, 'first.jsonl'), project: 'repo', provider: 'qwen' },
       { path: join(secondChats, 'second.jsonl'), project: 'plain', provider: 'qwen' },
     ])
-    await expect(provider.discoverSessions()).resolves.toEqual(effectSources)
+    await expect(discoverProviderSessions(provider)).resolves.toEqual(effectSources)
     await expect(
       Effect.runPromise(nativeDiscovery(createQwenProvider(join(root, 'missing')))().pipe(Effect.provide(Env.layer))),
     ).resolves.toEqual([])

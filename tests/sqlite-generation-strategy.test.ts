@@ -21,6 +21,7 @@ import {
 import type { PartData } from '../src/main/pipeline/providers/session-message.js'
 import type { ParsedProviderCall, SessionParser } from '../src/main/pipeline/providers/types.js'
 import { blobToText, openDatabase, type SqliteDatabase } from '../src/main/pipeline/sqlite.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 // `SqliteGeneration` is a COMPLETE STRATEGY: every statement that names a table
 // lives on the descriptor, and the shared mechanism only calls methods. This file
@@ -57,7 +58,7 @@ function writable(dbPath: string): DatabaseSync {
 
 async function collect(parser: SessionParser): Promise<ParsedProviderCall[]> {
   const calls: ParsedProviderCall[] = []
-  for await (const call of parser.parse()) calls.push(call)
+  for await (const call of providerParserIterator(parser)) calls.push(call)
   return calls
 }
 

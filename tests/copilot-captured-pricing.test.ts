@@ -41,6 +41,7 @@ import {
 } from '../src/main/pipeline/models.js'
 import { createCopilotProvider } from '../src/main/pipeline/providers/copilot.js'
 import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const MODEL = 'copilot-captured-pricing-model'
 
@@ -101,7 +102,9 @@ describe('Copilot captured scan pricing', () => {
     const expected = pricing.calculateCost(MODEL, 0, 100, 0, 0, 0)
     setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
     const call = await firstCall(
-      createCopilotProvider().createSessionParser(source(path), new Set(), undefined, { pricing }).parse(),
+      providerParserIterator(
+        createCopilotProvider().createSessionParser(source(path), new Set(), undefined, { pricing }),
+      ),
     )
     expect(call.costUSD).toBe(expected)
   })
@@ -117,7 +120,7 @@ describe('Copilot captured scan pricing', () => {
     const firstPricing = captureScanPricing()
     const firstExpected = firstPricing.calculateCost(MODEL, 0, 100, 0, 0, 0)
     const provider = createCopilotProvider()
-    const firstParser = provider.createSessionParser(source(firstPath), new Set()).parse()
+    const firstParser = providerParserIterator(provider.createSessionParser(source(firstPath), new Set()))
     hooks.pauseNextRead = true
     let started!: () => void
     const readStarted = new Promise<void>(resolve => {
@@ -137,7 +140,7 @@ describe('Copilot captured scan pricing', () => {
 
     const nextPricing = captureScanPricing()
     const nextExpected = nextPricing.calculateCost(MODEL, 0, 100, 0, 0, 0)
-    const next = await firstCall(provider.createSessionParser(source(nextPath), new Set()).parse())
+    const next = await firstCall(providerParserIterator(provider.createSessionParser(source(nextPath), new Set())))
     expect(next.costUSD).toBe(nextExpected)
     expect(next.costUSD).not.toBe(firstExpected)
   })

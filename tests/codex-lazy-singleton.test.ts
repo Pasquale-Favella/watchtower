@@ -7,7 +7,7 @@ import { appPaths, initAppPaths } from '../src/main/env.js'
 import { codex } from '../src/main/pipeline/providers/codex.js'
 import type { Provider } from '../src/main/pipeline/providers/types.js'
 
-async function probeRoots(provider: Provider) {
+async function probeRoots(provider: Pick<Provider, 'name' | 'probeRoots'>) {
   if (!provider.probeRoots) throw new Error(`${provider.name} does not expose probe roots`)
   return provider.probeRoots()
 }

@@ -296,9 +296,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -328,11 +325,6 @@ function makeProvider(
       return toolNameMap[rawTool] ?? rawTool
     },
     discoverSessionsEffect: discoverEffect,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Compatibility boundary for callers that still use Provider.discoverSessions().
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
     createSessionParser(
       source: SessionSource,
       seenKeys: Set<string>,

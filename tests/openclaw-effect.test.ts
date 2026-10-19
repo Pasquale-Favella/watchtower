@@ -46,6 +46,7 @@ import { createOpenClawProvider } from '../src/main/pipeline/providers/openclaw.
 import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 let root = ''
 
@@ -119,7 +120,7 @@ describe('OpenClaw Effect provider', () => {
       { path: idPath, project: 'agent-a', provider: 'openclaw' },
     ])
     expect(sources.slice(2)).toEqual([{ path: extraPath, project: 'agent-a', provider: 'openclaw' }])
-    await expect(provider.discoverSessions()).resolves.toEqual(sources)
+    await expect(discoverProviderSessions(provider)).resolves.toEqual(sources)
   })
 
   it('decodes valid siblings and preserves model, billing, tool, identity, timestamp, and user-message mapping', async () => {

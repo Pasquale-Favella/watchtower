@@ -4,8 +4,11 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { pathToFileURL } from 'node:url'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { withProviderFileSystem } from './fixtures/provider-effects.js'
 
 const hooks = vi.hoisted(() => ({
   databaseOpens: [] as string[],
@@ -285,7 +288,9 @@ describe('Antigravity conversation parser Effects', () => {
     if (!parseStream) throw new Error('Antigravity native parser stream is unavailable')
 
     let unparsed = 0
-    const calls = await Effect.runPromise(Stream.runCollect(parseStream(Effect.sync(() => (unparsed += 1)))))
+    const calls = await Effect.runPromise(
+      withProviderFileSystem(Stream.runCollect(parseStream(Effect.sync(() => (unparsed += 1))))),
+    )
     expect(unparsed).toBe(0)
     expect(Array.from(calls)).toMatchObject([
       {
@@ -310,7 +315,7 @@ describe('Antigravity conversation parser Effects', () => {
     expect(hooks.databaseQueries[0]).toContain('FROM trajectory_metadata_blob')
     expect(hooks.databaseQueries[1]).toContain('FROM gen_metadata')
 
-    await Effect.runPromise(provider.flushAntigravityCacheEffect())
+    await Effect.runPromise(withProviderFileSystem(provider.flushAntigravityCacheEffect()))
     const cache = JSON.parse(readFileSync(join(root, 'antigravity-results.json'), 'utf8')) as {
       cascades: Record<string, { calls: unknown[] }>
     }
@@ -324,14 +329,14 @@ describe('Antigravity conversation parser Effects', () => {
     const coldParser = parserFor(path, new Set(), pricing, 'antigravity-ide')
     const coldStream = coldParser.parseStream
     if (!coldStream) throw new Error('Antigravity native parser stream is unavailable')
-    const coldCalls = await Effect.runPromise(Stream.runCollect(coldStream()))
+    const coldCalls = await Effect.runPromise(withProviderFileSystem(Stream.runCollect(coldStream())))
     expect(coldCalls).toHaveLength(2)
     expect(Array.from(coldCalls)[0]).toMatchObject({ project: basename(workspacePath), projectPath: workspacePath })
 
     const warmParser = parserFor(path, new Set(), pricing, 'antigravity-ide')
     const warmStream = warmParser.parseStream
     if (!warmStream) throw new Error('Antigravity native parser stream is unavailable')
-    const warmCalls = await Effect.runPromise(Stream.runCollect(warmStream()))
+    const warmCalls = await Effect.runPromise(withProviderFileSystem(Stream.runCollect(warmStream())))
     expect(warmCalls).toHaveLength(2)
     expect(Array.from(warmCalls)[0]).toMatchObject({ project: basename(workspacePath), projectPath: workspacePath })
 
@@ -354,7 +359,7 @@ describe('Antigravity conversation parser Effects', () => {
     const parseStream = parser.parseStream
     if (!parseStream) throw new Error('Antigravity native parser stream is unavailable')
 
-    const calls = await Effect.runPromise(Stream.runCollect(parseStream()))
+    const calls = await Effect.runPromise(withProviderFileSystem(Stream.runCollect(parseStream())))
     expect(Array.from(calls)[0]).toMatchObject({ project: basename(workspacePath), projectPath: workspacePath })
     expect(hooks.databaseOpens).toHaveLength(1)
     expect(hooks.databaseCloses).toEqual(hooks.databaseOpens)
@@ -368,7 +373,9 @@ describe('Antigravity conversation parser Effects', () => {
     const parseStream = parser.parseStream
     if (!parseStream) throw new Error('Antigravity native parser stream is unavailable')
 
-    const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
+    const iterator = Stream.toAsyncIterable(parseStream().pipe(Stream.provide(NodeFileSystem.layer)))[
+      Symbol.asyncIterator
+    ]()
     const first = await iterator.next()
     expect(first.done).toBe(false)
     expect(first.value?.deduplicationKey).toBe('antigravity:sqlite-partial:sqlite-partial-one')
@@ -379,7 +386,7 @@ describe('Antigravity conversation parser Effects', () => {
     const nextParser = parserFor(path, seen, pricing)
     const nextStream = nextParser.parseStream
     if (!nextStream) throw new Error('Antigravity native parser stream is unavailable')
-    const remaining = await Effect.runPromise(Stream.runCollect(nextStream()))
+    const remaining = await Effect.runPromise(withProviderFileSystem(Stream.runCollect(nextStream())))
     expect(Array.from(remaining).map(call => call.deduplicationKey)).toEqual([
       'antigravity:sqlite-partial:sqlite-partial-two',
     ])
@@ -399,7 +406,7 @@ describe('Antigravity conversation parser Effects', () => {
     const parseStream = parser.parseStream
     if (!parseStream) throw new Error('Antigravity native parser stream is unavailable')
 
-    const calls = await Effect.runPromise(Stream.runCollect(parseStream()))
+    const calls = await Effect.runPromise(withProviderFileSystem(Stream.runCollect(parseStream())))
     expect(Array.from(calls).map(call => call.deduplicationKey)).toContain(
       'antigravity:sqlite-string-index:legacy-index',
     )
@@ -419,10 +426,13 @@ describe('Antigravity conversation parser Effects', () => {
     const parseStream = parser.parseStream
     if (!parseStream) throw new Error('Antigravity native parser stream is unavailable')
 
-    await expect(Effect.runPromise(Stream.runCollect(parseStream()))).rejects.toHaveProperty('name', 'ScanAbortedError')
+    await expect(Effect.runPromise(withProviderFileSystem(Stream.runCollect(parseStream())))).rejects.toHaveProperty(
+      'name',
+      'ScanAbortedError',
+    )
     expect(hooks.databaseCloses).toEqual(hooks.databaseOpens)
     expect(hooks.databaseOpens).toHaveLength(1)
-    await Effect.runPromise(provider.flushAntigravityCacheEffect())
+    await Effect.runPromise(withProviderFileSystem(provider.flushAntigravityCacheEffect()))
     expect(() => readFileSync(join(root, 'antigravity-results.json'))).toThrow()
   })
 
@@ -434,7 +444,7 @@ describe('Antigravity conversation parser Effects', () => {
     const parseStream = parser.parseStream
     if (!parseStream) throw new Error('Antigravity native parser stream is unavailable')
 
-    await expect(Effect.runPromise(Stream.runCollect(parseStream()))).rejects.toMatchObject({
+    await expect(Effect.runPromise(withProviderFileSystem(Stream.runCollect(parseStream())))).rejects.toMatchObject({
       _tag: 'AntigravityConversationDatabaseError',
       operation: 'read',
     })
@@ -452,7 +462,7 @@ describe('Antigravity conversation parser Effects', () => {
     const parseStream = parser.parseStream
     if (!parseStream) throw new Error('Antigravity native parser stream is unavailable')
 
-    await expect(Effect.runPromise(Stream.runCollect(parseStream()))).rejects.toMatchObject({
+    await expect(Effect.runPromise(withProviderFileSystem(Stream.runCollect(parseStream())))).rejects.toMatchObject({
       _tag: 'AntigravityConversationDatabaseError',
       operation: 'read',
       cause: { code: 'SQLITE_BUSY' },
@@ -473,7 +483,7 @@ describe('Antigravity conversation parser Effects', () => {
     const parseStream = parser.parseStream
     if (!parseStream) throw new Error('Antigravity native parser stream is unavailable')
 
-    await expect(Effect.runPromise(Stream.runCollect(parseStream()))).rejects.toMatchObject({
+    await expect(Effect.runPromise(withProviderFileSystem(Stream.runCollect(parseStream())))).rejects.toMatchObject({
       _tag: 'AntigravityConversationDatabaseError',
       operation: 'close',
     })
@@ -495,7 +505,9 @@ describe('Antigravity conversation parser Effects', () => {
     const failedStream = failedParser.parseStream
     if (!failedStream) throw new Error('Antigravity native parser stream is unavailable')
 
-    await expect(Effect.runPromise(Stream.runCollect(failedStream()))).rejects.toThrow('pricing defect')
+    await expect(Effect.runPromise(withProviderFileSystem(Stream.runCollect(failedStream())))).rejects.toThrow(
+      'pricing defect',
+    )
     expect(hooks.databaseCloses).toEqual(hooks.databaseOpens)
     expect(hooks.databaseOpens).toHaveLength(1)
     expect(existsSync(join(root, 'antigravity-results.json'))).toBe(false)
@@ -504,7 +516,7 @@ describe('Antigravity conversation parser Effects', () => {
     const retryParser = parserFor(path, new Set(), pricing)
     const retryStream = retryParser.parseStream
     if (!retryStream) throw new Error('Antigravity native parser stream is unavailable')
-    expect(await Effect.runPromise(Stream.runCollect(retryStream()))).toHaveLength(2)
+    expect(await Effect.runPromise(withProviderFileSystem(Stream.runCollect(retryStream())))).toHaveLength(2)
     expect(hooks.databaseOpens).toHaveLength(2)
   })
 
@@ -519,7 +531,9 @@ describe('Antigravity conversation parser Effects', () => {
     if (!parseStream) throw new Error('Antigravity native parser stream is unavailable')
 
     let unparsed = 0
-    const calls = await Effect.runPromise(Stream.runCollect(parseStream(Effect.sync(() => (unparsed += 1)))))
+    const calls = await Effect.runPromise(
+      withProviderFileSystem(Stream.runCollect(parseStream(Effect.sync(() => (unparsed += 1))))),
+    )
     expect(unparsed).toBe(2)
     expect(Array.from(calls)).toHaveLength(1)
     expect(Array.from(calls)[0]).toMatchObject({

@@ -360,24 +360,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
-      try {
-        while (true) {
-          const next = await iterator.next()
-          if (next.done) return
-          yield next.value
-        }
-      } catch (error) {
-        // The Promise adapter preserves the SQLite Error object used by callers.
-        // eslint-disable-next-line no-restricted-syntax
-        if (error instanceof GooseDatabaseError) throw error.cause
-        // eslint-disable-next-line no-restricted-syntax
-        throw error
-      } finally {
-        await iterator.return?.()
-      }
-    },
   }
 }
 
@@ -452,14 +434,6 @@ export function createGooseProvider(paths?: AppPaths): Provider {
     },
 
     discoverSessionsEffect: discover,
-
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove this Promise edge when external discovery callers use the Effect hook.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discover(context)).catch(error =>
-        Promise.reject(error instanceof GooseDatabaseError ? error.cause : error),
-      )
-    },
 
     createSessionParser(
       source: SessionSource,

@@ -21,6 +21,7 @@ import { Env } from '../src/main/env.js'
 import { createKiroProvider } from '../src/main/pipeline/providers/kiro.js'
 import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
 import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 const roots: string[] = []
 
@@ -83,7 +84,7 @@ describe('Kiro native Effect provider', () => {
       join(agent, 'workspace-sessions', 'L3dvcmsvZGVtbw', 'workspace.json'),
       join(v2Session, 'messages.jsonl'),
     ])
-    expect(await provider.discoverSessions()).toEqual(found)
+    expect(await discoverProviderSessions(provider)).toEqual(found)
   })
 
   it('parses v2 events from the bounded native line stream and preserves reasoning billing', async () => {

@@ -1,4 +1,5 @@
 import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import { createReadStream } from 'fs'
@@ -357,7 +358,7 @@ const statForDiscovery = Effect.fn('codexDiscoveryStat')(function* (
 const discoverSessionFile = Effect.fn('discoverCodexSessionFile')(function* (
   filePath: string,
   signal?: AbortSignal,
-): Effect.fn.Return<SessionSource | null, Error> {
+): Effect.fn.Return<SessionSource | null, Error, FileSystem.FileSystem> {
   if (!(yield* statForDiscovery(filePath, signal))) return null
 
   const cachedProject = yield* getCachedCodexProjectEffect(filePath, signal)
@@ -393,7 +394,7 @@ const readdirOrEmpty = Effect.fn('codexDiscoveryReaddir')(function* (
 const discoverSessionsInDir = Effect.fn('discoverCodexSessionsInDir')(function* (
   codexDir: string,
   signal?: AbortSignal,
-): Effect.fn.Return<SessionSource[], Error> {
+): Effect.fn.Return<SessionSource[], Error, FileSystem.FileSystem> {
   const sources: SessionSource[] = []
   const years = yield* readdirOrEmpty(join(codexDir, 'sessions'), signal)
 
@@ -432,9 +433,13 @@ function resolveModel(info: CodexEntry['payload'], sessionModel?: string): strin
   return info?.model ?? info?.info?.model ?? info?.info?.model_name ?? sessionModel ?? 'gpt-5'
 }
 
-function createParser(source: SessionSource, seenKeys: Set<string>, context?: ProviderScanContext): SessionParser {
+function createParser(
+  source: SessionSource,
+  seenKeys: Set<string>,
+  context?: ProviderScanContext,
+): SessionParser<FileSystem.FileSystem> {
   const pricing = context?.pricing ?? captureScanPricing()
-  const parseStream = (): Stream.Stream<ParsedProviderCall, Error> =>
+  const parseStream = (): Stream.Stream<ParsedProviderCall, Error, FileSystem.FileSystem> =>
     Stream.scoped(
       Stream.unwrap(
         Effect.gen(function* () {
@@ -846,13 +851,10 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
-export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provider {
+export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provider<FileSystem.FileSystem> {
   // One trailing snapshot param, never a second "override" slot: the explicit
   // `codexDir` wins, then `AppPaths.codexHome` — the `CODEX_HOME` value the
   // startup snapshot reports, or the homedir default when the var is unset.
@@ -865,7 +867,9 @@ export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provid
   // captured here would freeze the pre-`initAppPaths` snapshot). Every other
   // seam already resolves `appPaths()` inside its call; this one now does too.
   const dir = (): string => resolveCodexHome((paths ?? appPaths()).codexHome, codexDir)
-  const discoverEffect = (context?: ProviderScanContext): Effect.Effect<SessionSource[], Error> =>
+  const discoverEffect = (
+    context?: ProviderScanContext,
+  ): Effect.Effect<SessionSource[], Error, FileSystem.FileSystem> =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* Effect.try({ try: () => throwIfScanAborted(context?.signal), catch: toError })
@@ -901,16 +905,12 @@ export function createCodexProvider(codexDir?: string, paths?: AppPaths): Provid
 
     discoverSessionsEffect: discoverEffect,
 
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      return Effect.runPromise(discoverEffect(context))
-    },
-
     createSessionParser(
       source: SessionSource,
       seenKeys: Set<string>,
       _dateRange?: DateRange,
       context?: ProviderScanContext,
-    ): SessionParser {
+    ): SessionParser<FileSystem.FileSystem> {
       return createParser(source, seenKeys, context)
     },
   }

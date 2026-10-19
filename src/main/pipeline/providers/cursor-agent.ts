@@ -637,10 +637,6 @@ function createParser(
 
   return {
     parseStream,
-    // Remove this async-iterator adapter when direct callers use parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -737,11 +733,6 @@ export function createCursorAgentProvider(baseDirOverride?: string): Provider {
     },
 
     discoverSessionsEffect,
-    // Remove this Promise edge when external callers use native discovery.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverSessionsEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

@@ -2,12 +2,14 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+
 import { describe, expect, it } from 'vitest'
 
+import { billableOutputTokens } from '../src/main/pipeline/billable-output.js'
+import { calculateCost } from '../src/main/pipeline/models.js'
 import { createCopilotProvider, getCopilotSessionStoreDbPath } from '../src/main/pipeline/providers/copilot.js'
 import type { ParsedProviderCall, Provider, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { calculateCost } from '../src/main/pipeline/models.js'
-import { billableOutputTokens } from '../src/main/pipeline/billable-output.js'
+import { discoverProviderSessions, providerParserIterator } from './fixtures/provider-effects.js'
 
 // The Copilot CLI session-store.db source: per-request token rows from
 // ~/.copilot/session-store.db, read with the same node:sqlite fixture approach
@@ -141,14 +143,14 @@ async function collect(provider: Provider, sources: SessionSource[]): Promise<Pa
   const seen = new Set<string>()
   const calls: ParsedProviderCall[] = []
   for (const source of sources) {
-    for await (const call of provider.createSessionParser(source, seen).parse()) calls.push(call)
+    for await (const call of providerParserIterator(provider.createSessionParser(source, seen))) calls.push(call)
   }
   return calls
 }
 
 async function parseAll(dirs: Overrides): Promise<ParsedProviderCall[]> {
   const provider = providerFor(dirs)
-  return collect(provider, await provider.discoverSessions())
+  return collect(provider, await discoverProviderSessions(provider))
 }
 
 /**
@@ -641,7 +643,7 @@ describe('session-store.db: discovery', () => {
       'claude-sonnet-4-5': { inputTokens: 1_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
     })
     const provider = providerFor(dirs)
-    const sources = await provider.discoverSessions()
+    const sources = await discoverProviderSessions(provider)
 
     const kinds = sources.map(s => ('sourceType' in s ? s.sourceType : undefined))
     expect(kinds[0]).toBe('sessionstore')
@@ -652,7 +654,7 @@ describe('session-store.db: discovery', () => {
 
   it('discovers nothing when there is no store beside the session-state dir', async () => {
     const provider = providerFor(isolatedDirs('tr-store-none-dirs-'))
-    const sources = await provider.discoverSessions()
+    const sources = await discoverProviderSessions(provider)
     expect(sources.some(s => 'sourceType' in s && s.sourceType === 'sessionstore')).toBe(false)
   })
 

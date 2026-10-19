@@ -12,6 +12,7 @@ import {
   getCopilotSessionStateDir,
   getJetBrainsCopilotRoot,
 } from '../src/main/pipeline/providers/copilot.js'
+import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 // `copilot.ts` seam composition, not the resolver: `overrideFor` /
 // `platformFor` / `resolveProviderOverrides` and the override key list are
@@ -217,7 +218,7 @@ describe('createCopilotProvider (WS / GLOBAL storage + DISABLE_OTEL seams)', () 
       WATCHTOWER_COPILOT_GLOBAL_STORAGE_DIR: global,
       WATCHTOWER_COPILOT_DISABLE_OTEL: '1',
     })
-    const sources = await providerFor(paths, root).discoverSessions()
+    const sources = await discoverProviderSessions(providerFor(paths, root))
     expect(sources.map(source => source.path).sort()).toEqual([wsSource, globalSource].sort())
     expect(sources.every(source => 'sourceType' in source && source.sourceType === 'chatsession')).toBe(true)
   })
@@ -229,28 +230,29 @@ describe('createCopilotProvider (WS / GLOBAL storage + DISABLE_OTEL seams)', () 
     const db = join(root, 'agent-traces.db')
     writeFileSync(db, '')
 
-    const enabled = await providerFor(pathsOf({ WATCHTOWER_COPILOT_OTEL_DB: db }), root).discoverSessions()
+    const enabled = await discoverProviderSessions(providerFor(pathsOf({ WATCHTOWER_COPILOT_OTEL_DB: db }), root))
     expect(enabled.map(source => ('sourceType' in source ? source.sourceType : undefined))).toEqual(['otel'])
     expect(enabled[0]?.path).toBe(db)
 
     // `'0'` and `''` are truthy but not `'1'`: OTel stays enabled, as before.
     for (const value of ['0', '', 'true']) {
-      const sources = await providerFor(
-        pathsOf({ WATCHTOWER_COPILOT_OTEL_DB: db, WATCHTOWER_COPILOT_DISABLE_OTEL: value }),
-        root,
-      ).discoverSessions()
+      const sources = await discoverProviderSessions(
+        providerFor(pathsOf({ WATCHTOWER_COPILOT_OTEL_DB: db, WATCHTOWER_COPILOT_DISABLE_OTEL: value }), root),
+      )
       expect(sources.map(source => ('sourceType' in source ? source.sourceType : undefined))).toEqual(['otel'])
     }
 
     const { ws, wsSource } = storageFixture('tr-copilot-otel-flag-off-')
-    const disabled = await providerFor(
-      pathsOf({
-        WATCHTOWER_COPILOT_OTEL_DB: db,
-        WATCHTOWER_COPILOT_DISABLE_OTEL: '1',
-        WATCHTOWER_COPILOT_WS_STORAGE_DIR: ws,
-      }),
-      root,
-    ).discoverSessions()
+    const disabled = await discoverProviderSessions(
+      providerFor(
+        pathsOf({
+          WATCHTOWER_COPILOT_OTEL_DB: db,
+          WATCHTOWER_COPILOT_DISABLE_OTEL: '1',
+          WATCHTOWER_COPILOT_WS_STORAGE_DIR: ws,
+        }),
+        root,
+      ),
+    )
     expect(disabled.map(source => ('sourceType' in source ? source.sourceType : undefined))).toEqual(['chatsession'])
     expect(disabled.map(source => source.path)).toEqual([wsSource])
   })
@@ -266,13 +268,15 @@ describe('createCopilotProvider (WS / GLOBAL storage + DISABLE_OTEL seams)', () 
     // at the fixture: the argument wins, so the fixture is never walked.
     const argWs = join(root, 'arg-ws')
     mkdirSync(argWs, { recursive: true })
-    const sources = await createCopilotProvider(
-      join(root, 'session-state'),
-      argWs,
-      join(root, 'arg-global'),
-      join(root, 'jetbrains'),
-      paths,
-    ).discoverSessions()
+    const sources = await discoverProviderSessions(
+      createCopilotProvider(
+        join(root, 'session-state'),
+        argWs,
+        join(root, 'arg-global'),
+        join(root, 'jetbrains'),
+        paths,
+      ),
+    )
     expect(sources).toEqual([])
     expect(sources.map(source => source.path)).not.toContain(wsSource)
   })
@@ -282,6 +286,6 @@ describe('createCopilotProvider (WS / GLOBAL storage + DISABLE_OTEL seams)', () 
     // `(paths ?? appPaths())` default is what keeps that working.
     expect(copilot.name).toBe('copilot')
     expect(copilot.durableSources).toBe(true)
-    expect(copilot.discoverSessions).toBeTypeOf('function')
+    expect(copilot.discoverSessionsEffect).toBeTypeOf('function')
   })
 })

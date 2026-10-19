@@ -1,24 +1,27 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+
 import { afterEach, describe, expect, it } from 'vitest'
-import {
-  createOpenCodeFileSessionParser,
-  discoverOpenCodeFileSessions,
-} from '../src/main/pipeline/providers/opencode-file-parser.js'
-import {
-  createSqliteSessionParser,
-  discoverSqliteSessions,
-  OPENCODE_FAMILY_1X,
-} from '../src/main/pipeline/providers/opencode-family-sqlite.js'
+
 import {
   clearCursorWorkspaceMapCache,
   createCursorProvider,
   workspaceFsPath,
 } from '../src/main/pipeline/providers/cursor.js'
 import { attachWorkspacePaths } from '../src/main/pipeline/providers/cursor.js'
+import {
+  createSqliteSessionParser,
+  discoverSqliteSessions,
+  OPENCODE_FAMILY_1X,
+} from '../src/main/pipeline/providers/opencode-family-sqlite.js'
+import {
+  createOpenCodeFileSessionParser,
+  discoverOpenCodeFileSessions,
+} from '../src/main/pipeline/providers/opencode-file-parser.js'
 import type { ParsedProviderCall } from '../src/main/pipeline/providers/types.js'
+import { discoverProviderSessions, providerParserIterator } from './fixtures/provider-effects.js'
 
 // Provider working-directory emission (#104): sessions from providers that
 // currently emit no path carry their working directory through discovery
@@ -59,7 +62,7 @@ describe('opencode file sessions', () => {
 
     const parser = createOpenCodeFileSessionParser(sources[0]!, new Set(), dataDir, 'opencode')
     const calls = []
-    for await (const call of parser.parse()) calls.push(call)
+    for await (const call of providerParserIterator(parser)) calls.push(call)
     expect(calls.length).toBeGreaterThan(0)
     expect(calls[0]!.workingDirectory).toBe(DIR)
     expect(calls[0]!.projectPath).toBe(DIR)
@@ -96,7 +99,7 @@ describe('opencode sqlite sessions', () => {
 
     const parser = createSqliteSessionParser(sources[0]!, new Set(), config)
     const calls = []
-    for await (const call of parser.parse()) calls.push(call)
+    for await (const call of providerParserIterator(parser)) calls.push(call)
     expect(calls.length).toBeGreaterThan(0)
     expect(calls[0]!.workingDirectory).toBe(DIR)
     expect(calls[0]!.projectPath).toBe(DIR)
@@ -131,7 +134,7 @@ describe('opencode sqlite sessions', () => {
       config,
     )
     const calls = []
-    for await (const call of parser.parse()) calls.push(call)
+    for await (const call of providerParserIterator(parser)) calls.push(call)
     expect(calls.length).toBeGreaterThan(0)
     expect(calls[0]!.workingDirectory).toBeUndefined()
     expect(calls[0]!.projectPath).toBeUndefined()
@@ -205,7 +208,7 @@ describe('cursor workspace sessions', () => {
     writeWorkspace(root, 'bbb', 'vscode-remote://wsl+Ubuntu/home/me/proj')
 
     const provider = createCursorProvider(join(root, 'User', 'globalStorage', 'state.vscdb'))
-    const sources = await provider.discoverSessions()
+    const sources = await discoverProviderSessions(provider)
     const local = sources.find(s => s.project === '-Users-tester-proj')
     const remote = sources.find(s => s.project === '-wsl-Ubuntu-home-me-proj')
     expect(local?.workingDirectory).toBe('/Users/tester/proj')

@@ -172,7 +172,7 @@ describe('Copilot SQLite Effect parsers', () => {
     expect(closeSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps the legacy parser API and its native SQLite query error', async () => {
+  it('keeps native SQLite query errors in the stream error channel and closes once', async () => {
     const path = tempPath('query-error.db')
     makeOtel(path)
     const sqliteError = new Error('native query failure')
@@ -181,7 +181,10 @@ describe('Copilot SQLite Effect parsers', () => {
     countDatabaseCloses()
     const parser = createCopilotProvider().createSessionParser(source(path, 'otel'), new Set())
 
-    await expect(parser.parse().next()).rejects.toBe(sqliteError)
+    await expect(Effect.runPromise(Stream.runCollect(parser.parseStream()))).rejects.toMatchObject({
+      _tag: 'CopilotDatabaseError',
+      cause: sqliteError,
+    })
     expect(closeSpy).toHaveBeenCalledTimes(1)
   })
 

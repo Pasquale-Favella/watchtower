@@ -43,6 +43,7 @@ import { captureScanPricing } from '../src/main/pipeline/models.js'
 import { createKimicodeProvider } from '../src/main/pipeline/providers/kimicode.js'
 import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { discoverProviderSessions, providerParserIterator } from './fixtures/provider-effects.js'
 
 let root = ''
 
@@ -141,7 +142,7 @@ describe('Kimicode native Effect provider', () => {
         sourcePath: 'C:/work/alpha',
       },
     ])
-    await expect(provider.discoverSessions()).resolves.toEqual(found)
+    await expect(discoverProviderSessions(provider)).resolves.toEqual(found)
     if (!provider.probeRoots) throw new Error('Kimicode root probe is unavailable')
     await expect(provider.probeRoots()).resolves.toEqual([{ path: root, label: 'Kimi Code home' }])
   })
@@ -301,11 +302,11 @@ describe('Kimicode native Effect provider', () => {
     expect(nativeIo.reads).toEqual([paths.wirePath])
   })
 
-  it('keeps the async-generator compatibility adapter output', async () => {
+  it('keeps the native parser stream output', async () => {
     const paths = await writeFixture([JSON.stringify(request), JSON.stringify(usage)].join('\n'))
     const parser = createKimicodeProvider().createSessionParser(source(paths.wirePath), new Set())
     const calls = []
-    for await (const call of parser.parse()) calls.push(call)
+    for await (const call of providerParserIterator(parser)) calls.push(call)
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({
       model: 'k3',

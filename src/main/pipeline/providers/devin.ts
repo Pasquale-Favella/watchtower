@@ -530,10 +530,6 @@ function createParser(
   const parseStream = (onUnparsedCall?: Effect.Effect<void>) => Stream.unwrap(parseEffect(onUnparsedCall))
   return {
     parseStream,
-    // Remove this Promise edge once direct parser callers consume parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -595,11 +591,6 @@ export function createDevinProvider(cliDir: string): Provider {
     },
 
     discoverSessionsEffect: discoverEffect,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove this Promise edge once direct discovery callers consume the native hook.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

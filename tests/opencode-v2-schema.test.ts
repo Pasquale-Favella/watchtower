@@ -18,6 +18,7 @@ import {
 } from '../src/main/pipeline/providers/opencode-family-sqlite.js'
 import type { ParsedProviderCall, SessionParser } from '../src/main/pipeline/providers/types.js'
 import { openDatabase, type SqliteDatabase } from '../src/main/pipeline/sqlite.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 // OpenCode 2.x wrote sessions to `session_v2` and messages to `session_message`,
 // and FROZE the 1.x `session` / `message` / `part` tables at the upgrade. So a
@@ -151,7 +152,7 @@ function insertV2Message(
 
 async function collect(parser: SessionParser): Promise<ParsedProviderCall[]> {
   const calls: ParsedProviderCall[] = []
-  for await (const call of parser.parse()) calls.push(call)
+  for await (const call of providerParserIterator(parser)) calls.push(call)
   return calls
 }
 
@@ -749,7 +750,7 @@ describe('unreadable databases', () => {
       config,
     )
     const calls: unknown[] = []
-    for await (const call of parser.parse()) calls.push(call)
+    for await (const call of providerParserIterator(parser)) calls.push(call)
     expect(calls).toEqual([])
   })
 

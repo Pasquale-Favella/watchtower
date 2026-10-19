@@ -366,10 +366,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream,
-    // Remove when direct parser callers consume parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -394,11 +390,6 @@ export function createMuxProvider(muxRoot?: string, paths?: AppPaths): Provider 
     },
 
     discoverSessionsEffect: discoverEffect,
-    // Remove this Promise edge when external callers consume native discovery.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

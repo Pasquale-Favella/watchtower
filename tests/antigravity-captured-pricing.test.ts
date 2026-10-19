@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { Effect, Stream } from 'effect'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import { Effect, FileSystem, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -182,23 +183,6 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
   }
 })
 
-vi.mock('fs/promises', async importOriginal => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>()
-  return {
-    ...actual,
-    readFile: async (...args: Parameters<typeof actual.readFile>) => {
-      if (hooks.pauseNextRead && String(args[0]).endsWith(hooks.pauseSuffix)) {
-        hooks.pauseNextRead = false
-        await new Promise<void>(resolve => {
-          hooks.releaseRead = resolve
-          hooks.onReadStarted?.()
-        })
-      }
-      return actual.readFile(...args)
-    },
-  }
-})
-
 import { appPaths, initAppPaths } from '../src/main/env.js'
 import {
   captureScanPricing,
@@ -206,8 +190,9 @@ import {
   setModelAliases,
   setPriceOverrides,
 } from '../src/main/pipeline/models.js'
-import { createAntigravityProvider, flushAntigravityCache } from '../src/main/pipeline/providers/antigravity.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+import { createAntigravityProvider, flushAntigravityCacheEffect } from '../src/main/pipeline/providers/antigravity.js'
+import type { ParsedProviderCall, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const MODEL = 'antigravity-captured-pricing-model'
 
@@ -232,7 +217,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
-  await flushAntigravityCache()
+  await Effect.runPromise(flushAntigravityCacheEffect().pipe(Effect.provide(NodeFileSystem.layer)))
   setPriceOverrides({})
   setModelAliases({})
   setLocalModelSavings({})
@@ -310,6 +295,30 @@ async function collect(parser: AsyncGenerator<ParsedProviderCall>): Promise<Pars
   return calls
 }
 
+function parserIteratorWithPausedCacheRead(
+  parser: SessionParser<FileSystem.FileSystem>,
+): AsyncGenerator<ParsedProviderCall> {
+  return (async function* () {
+    const fs = await Effect.runPromise(Effect.provide(FileSystem.FileSystem, NodeFileSystem.layer))
+    const hookedFs: FileSystem.FileSystem = {
+      ...fs,
+      readFileString: (path, encoding) => {
+        if (!hooks.pauseNextRead || !path.endsWith(hooks.pauseSuffix)) return fs.readFileString(path, encoding)
+        hooks.pauseNextRead = false
+        return Effect.promise(
+          () =>
+            new Promise<void>(resolve => {
+              hooks.releaseRead = resolve
+              hooks.onReadStarted?.()
+            }),
+        ).pipe(Effect.andThen(fs.readFileString(path, encoding)))
+      },
+    }
+    const stream = parser.parseStream().pipe(Stream.provideService(FileSystem.FileSystem, hookedFs))
+    yield* Stream.toAsyncIterable(stream)
+  })()
+}
+
 describe('Antigravity captured scan pricing', () => {
   it('keeps a statusline parser on its creation snapshot across file IO and refreshes the next parser', async () => {
     const path = writeStatusLine()
@@ -324,7 +333,7 @@ describe('Antigravity captured scan pricing', () => {
       started = resolve
     })
     hooks.onReadStarted = started
-    const pendingFirst = collect(parser.parse())
+    const pendingFirst = collect(providerParserIterator(parser))
     try {
       await readStarted
       setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
@@ -337,7 +346,7 @@ describe('Antigravity captured scan pricing', () => {
     expect(firstCalls[0]?.costUSD).toBe(firstPricing.calculateCost(MODEL, 10, 5, 3, 2, 0))
 
     const nextPricing = captureScanPricing()
-    const nextCalls = await collect(provider.createSessionParser(sourceValue, new Set()).parse())
+    const nextCalls = await collect(providerParserIterator(provider.createSessionParser(sourceValue, new Set())))
     expect(nextCalls).toHaveLength(1)
     expect(nextCalls[0]?.costUSD).toBe(nextPricing.calculateCost(MODEL, 10, 5, 3, 2, 0))
     expect(nextCalls[0]?.costUSD).not.toBe(firstCalls[0]?.costUSD)
@@ -355,7 +364,7 @@ describe('Antigravity captured scan pricing', () => {
       started = resolve
     })
     hooks.onReadStarted = started
-    const pending = collect(parser.parse())
+    const pending = collect(parserIteratorWithPausedCacheRead(parser))
     try {
       await readStarted
       setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
@@ -386,7 +395,9 @@ describe('Antigravity captured scan pricing', () => {
       started = resolve
     })
     hooks.onReadStarted = started
-    const pending = createAntigravityProvider().createSessionParser(source(path), new Set()).parse().next()
+    const pending = providerParserIterator(
+      createAntigravityProvider().createSessionParser(source(path), new Set()),
+    ).next()
     try {
       await rpcStarted
       setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
@@ -403,7 +414,9 @@ describe('Antigravity captured scan pricing', () => {
     const nextPath = join(conversationDir, `${nextCascadeId}.pb`)
     writeFileSync(nextPath, new Uint8Array())
     const nextPricing = captureScanPricing()
-    const nextResult = await createAntigravityProvider().createSessionParser(source(nextPath), new Set()).parse().next()
+    const nextResult = await providerParserIterator(
+      createAntigravityProvider().createSessionParser(source(nextPath), new Set()),
+    ).next()
     expect(nextResult.done).toBe(false)
     if (nextResult.done) throw new Error('Antigravity next RPC parser returned no call')
     expect(nextResult.value.costUSD).toBe(nextPricing.calculateCost(MODEL, 10, 5, 0, 0, 0))
@@ -415,7 +428,9 @@ describe('Antigravity captured scan pricing', () => {
     const pricing = captureScanPricing()
     setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
     const calls = await collect(
-      createAntigravityProvider().createSessionParser(source(path), new Set(), undefined, { pricing }).parse(),
+      providerParserIterator(
+        createAntigravityProvider().createSessionParser(source(path), new Set(), undefined, { pricing }),
+      ),
     )
     expect(calls).toHaveLength(1)
     expect(calls[0]?.costUSD).toBe(pricing.calculateCost(MODEL, 10, 5, 3, 2, 0))

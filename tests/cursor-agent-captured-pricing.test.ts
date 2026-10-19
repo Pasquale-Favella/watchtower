@@ -51,6 +51,7 @@ import {
 } from '../src/main/pipeline/models.js'
 import { createCursorAgentProvider } from '../src/main/pipeline/providers/cursor-agent.js'
 import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const MODEL = 'cursor-agent-captured-pricing-model'
 
@@ -117,7 +118,7 @@ describe('Cursor Agent captured scan pricing', () => {
       started = resolve
     })
     hooks.onOpenStarted = started
-    const pending = collect(parser.parse())
+    const pending = collect(providerParserIterator(parser))
     try {
       await readStarted
       setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
@@ -137,7 +138,9 @@ describe('Cursor Agent captured scan pricing', () => {
     const nextSource = createSource(nextId)
     addSummary(nextId)
     const nextPricing = captureScanPricing()
-    const nextCalls = await collect(createCursorAgentProvider(root).createSessionParser(nextSource, new Set()).parse())
+    const nextCalls = await collect(
+      providerParserIterator(createCursorAgentProvider(root).createSessionParser(nextSource, new Set())),
+    )
     expect(nextCalls).toHaveLength(1)
     const nextCall = nextCalls[0]
     if (!nextCall) throw new Error('Cursor Agent parser returned no next call')
@@ -154,7 +157,9 @@ describe('Cursor Agent captured scan pricing', () => {
     const pricing = captureScanPricing()
     setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
     const calls = await collect(
-      createCursorAgentProvider(root).createSessionParser(transcript, new Set(), undefined, { pricing }).parse(),
+      providerParserIterator(
+        createCursorAgentProvider(root).createSessionParser(transcript, new Set(), undefined, { pricing }),
+      ),
     )
     expect(calls).toHaveLength(1)
     const call = calls[0]

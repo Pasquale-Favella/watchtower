@@ -486,10 +486,4 @@ export const claude: DiscoverableProvider = {
   },
 
   discoverSessionsEffect: discoverClaudeSessionsEffect,
-
-  async discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-    // Compatibility edge for callers that have not moved to Effect.
-    // eslint-disable-next-line no-restricted-syntax
-    return Effect.runPromise(discoverClaudeSessionsEffect(context))
-  },
 }

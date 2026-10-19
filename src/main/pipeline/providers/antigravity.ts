@@ -2,11 +2,16 @@ import type { Stats } from 'node:fs'
 
 import { execFile } from 'child_process'
 import { randomBytes } from 'crypto'
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as FileSystem from 'effect/FileSystem'
+import * as PlatformError from 'effect/PlatformError'
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
-import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises'
+import { readdir, readFile, stat } from 'fs/promises'
 import https from 'https'
 import { homedir } from 'os'
 import { basename, join } from 'path'
@@ -449,22 +454,37 @@ const checkCacheAbort = Effect.fnUntraced(function* (signal?: AbortSignal): Effe
   if (signal?.aborted) return yield* Effect.fail(scanAbortError(signal))
 })
 
-const cacheIo = Effect.fnUntraced(function* <A>(
+const cacheIo = Effect.fnUntraced(function* <A, R>(
   operation: CacheIoOperation,
-  run: () => Promise<A>,
-): Effect.fn.Return<A, AntigravityCacheIoError> {
-  return yield* scanIo(run).pipe(
+  io: Effect.Effect<A, Error, R>,
+): Effect.fn.Return<A, AntigravityCacheIoError, R> {
+  return yield* Effect.uninterruptible(io).pipe(
     Effect.mapError(
-      cause => new AntigravityCacheIoError({ operation, cause, message: `Antigravity cache ${operation} failed` }),
+      cause =>
+        new AntigravityCacheIoError({
+          operation,
+          cause,
+          message: `Antigravity cache ${operation} failed`,
+        }),
     ),
   )
 })
 
-const loadCacheEffect = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<AntigravityCache, Error> {
+function platformErrorFromCloseExit(exit: Exit.Exit<void, never>): PlatformError.PlatformError | null {
+  if (Exit.isSuccess(exit) || exit.cause.reasons.length !== 1) return null
+  const reason = exit.cause.reasons[0]
+  if (!reason || !Cause.isDieReason(reason) || !PlatformError.isPlatformError(reason.defect)) return null
+  return reason.defect
+}
+
+const loadCacheEffect = Effect.fnUntraced(function* (
+  signal?: AbortSignal,
+): Effect.fn.Return<AntigravityCache, Error, FileSystem.FileSystem> {
+  const fs = yield* FileSystem.FileSystem
   yield* checkCacheAbort(signal)
   if (memCache) return memCache
 
-  const raw = yield* cacheIo('read', () => readFile(getCachePath(), 'utf-8')).pipe(
+  const raw = yield* cacheIo('read', fs.readFileString(getCachePath(), 'utf-8')).pipe(
     Effect.catchTag('AntigravityCacheIoError', () => Effect.succeed(null)),
   )
   yield* checkCacheAbort(signal)
@@ -479,12 +499,20 @@ const loadCacheEffect = Effect.fnUntraced(function* (signal?: AbortSignal): Effe
   return memCache
 })
 
+function isRecoverableCacheIoCause<E>(cause: Cause.Cause<E>): boolean {
+  return (
+    cause.reasons.length > 0 &&
+    cause.reasons.every(reason => Cause.isFailReason(reason) && reason.error instanceof AntigravityCacheIoError)
+  )
+}
+
 export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffect')(function* (
   liveCascadeIds?: Set<string>,
   signal?: AbortSignal,
-): Effect.fn.Return<void, AntigravityCacheIoError | ScanAbortedError | Schema.SchemaError> {
+): Effect.fn.Return<void, AntigravityCacheIoError | ScanAbortedError | Schema.SchemaError, FileSystem.FileSystem> {
   return yield* Effect.scoped(
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
       yield* checkCacheAbort(signal)
       if (!memCache) return
       // If the caller supplied liveCascadeIds, we must run the eviction step
@@ -504,7 +532,7 @@ export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffec
 
       const dir = getCacheDir()
       yield* checkCacheAbort(signal)
-      yield* cacheIo('mkdir', () => mkdir(dir, { recursive: true }))
+      yield* cacheIo('mkdir', fs.makeDirectory(dir, { recursive: true }))
       yield* checkCacheAbort(signal)
       const finalPath = getCachePath()
       const tempPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
@@ -513,7 +541,9 @@ export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffec
         if (!ownedTempPath) return Effect.void
         const path = ownedTempPath
         ownedTempPath = undefined
-        return cacheIo('unlink', () => unlink(path)).pipe(Effect.catchTag('AntigravityCacheIoError', () => Effect.void))
+        return cacheIo('unlink', fs.remove(path, { force: true })).pipe(
+          Effect.catchTag('AntigravityCacheIoError', () => Effect.void),
+        )
       })
 
       // Invalid in-memory data is a schema failure, not a recoverable filesystem
@@ -522,33 +552,59 @@ export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffec
       const payload = JSON.stringify(encoded)
       yield* checkCacheAbort(signal)
 
-      const file = yield* Effect.acquireRelease(
-        Effect.uninterruptible(
-          cacheIo('open', () => open(tempPath, 'w', 0o600)).pipe(Effect.map(handle => ({ handle, closed: false }))),
+      const fileScope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Effect.uninterruptible(Scope.close(fileScope, Exit.succeed(undefined))))
+      const openExit = yield* Effect.uninterruptible(
+        Effect.exit(
+          Effect.provideService(fs.open(tempPath, { flag: 'w', mode: 0o600 }), Scope.Scope, fileScope).pipe(
+            Effect.mapError(
+              cause =>
+                new AntigravityCacheIoError({
+                  operation: 'open',
+                  cause,
+                  message: 'Antigravity cache open failed',
+                }),
+            ),
+          ),
         ),
-        owned => {
-          if (owned.closed) return Effect.void
-          owned.closed = true
-          return cacheIo('close', () => owned.handle.close()).pipe(
-            Effect.catchTag('AntigravityCacheIoError', () => Effect.void),
-          )
-        },
       )
+      if (Exit.isFailure(openExit)) {
+        const closeExit = yield* Effect.exit(Effect.uninterruptible(Scope.close(fileScope, Exit.succeed(undefined))))
+        if (Exit.isFailure(closeExit)) return yield* Effect.failCause(Cause.combine(openExit.cause)(closeExit.cause))
+        return yield* Effect.failCause(openExit.cause)
+      }
 
-      yield* checkCacheAbort(signal)
-      yield* cacheIo('write', () => file.handle.writeFile(payload, { encoding: 'utf-8' }))
-      yield* checkCacheAbort(signal)
-      yield* cacheIo('sync', () => file.handle.sync())
-      yield* checkCacheAbort(signal)
-      file.closed = true
-      yield* cacheIo('close', () => file.handle.close())
+      const writeExit = yield* Effect.exit(
+        Effect.gen(function* () {
+          yield* checkCacheAbort(signal)
+          yield* cacheIo('write', openExit.value.writeAll(new TextEncoder().encode(payload)))
+          yield* checkCacheAbort(signal)
+          yield* cacheIo('sync', openExit.value.sync)
+        }),
+      )
+      const closeExit = yield* Effect.exit(Effect.uninterruptible(Scope.close(fileScope, Exit.succeed(undefined))))
+      if (Exit.isFailure(writeExit)) {
+        if (Exit.isFailure(closeExit)) return yield* Effect.failCause(Cause.combine(writeExit.cause)(closeExit.cause))
+        return yield* Effect.failCause(writeExit.cause)
+      }
+      if (Exit.isFailure(closeExit)) {
+        const platformCloseError = platformErrorFromCloseExit(closeExit)
+        if (platformCloseError) {
+          return yield* new AntigravityCacheIoError({
+            operation: 'close',
+            cause: platformCloseError,
+            message: 'Antigravity cache close failed',
+          })
+        }
+        return yield* Effect.failCause(closeExit.cause)
+      }
       yield* checkCacheAbort(signal)
 
       // Check cancellation before beginning the commit attempt. The leaf itself
       // drains uninterruptibly, then dirty-state follows whether rename worked.
       yield* checkCacheAbort(signal)
       yield* Effect.uninterruptible(
-        cacheIo('rename', () => rename(tempPath, finalPath)).pipe(
+        cacheIo('rename', fs.rename(tempPath, finalPath)).pipe(
           Effect.map(() => true),
           Effect.catchTag('AntigravityCacheIoError', () => Effect.succeed(false)),
           Effect.tap(renamed =>
@@ -563,14 +619,8 @@ export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffec
       )
       yield* checkCacheAbort(signal)
     }),
-  ).pipe(Effect.catchTag('AntigravityCacheIoError', () => Effect.void))
+  ).pipe(Effect.catchCause(cause => (isRecoverableCacheIoCause(cause) ? Effect.void : Effect.failCause(cause))))
 })
-
-async function flushCache(liveCascadeIds?: Set<string>): Promise<void> {
-  // Remove this Promise edge once the remaining Antigravity cache writers use the native cache effect.
-  // eslint-disable-next-line no-restricted-syntax
-  await Effect.runPromise(flushAntigravityCacheEffect(liveCascadeIds))
-}
 
 const readProcessCommandLinesEffect = Effect.fnUntraced(function* (
   signal?: AbortSignal,
@@ -1289,7 +1339,7 @@ const discoverIo = Effect.fnUntraced(function* <A>(
   )
 })
 
-const discoverAntigravitySessionsEffect = Effect.fnUntraced(function* (
+export const discoverAntigravitySessionsEffect = Effect.fnUntraced(function* (
   roots?: readonly AntigravityConversationRoot[],
   context?: ProviderScanContext,
 ): Effect.fn.Return<SessionSource[], Error> {
@@ -1336,14 +1386,6 @@ const discoverAntigravitySessionsEffect = Effect.fnUntraced(function* (
 
   return sources
 })
-
-// Remove after direct discovery callers consume the Effect-native path.
-export function discoverAntigravitySessionSources(
-  roots?: readonly AntigravityConversationRoot[],
-): Promise<SessionSource[]> {
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(discoverAntigravitySessionsEffect(roots))
-}
 
 function parseStatusLineEvent(input: unknown): StatusLineEvent | null {
   const decoded = decodeStatusLineEventInput(input)
@@ -1887,11 +1929,11 @@ function createParser(
   seenKeys: Set<string>,
   pricing = captureScanPricing(),
   signal?: AbortSignal,
-): SessionParser {
+): SessionParser<FileSystem.FileSystem> {
   const statusLineSource = isAntigravityStatusLineEventsPath(source.path)
   const parseConversationStream = (
     onUnparsedCall: Effect.Effect<void> = Effect.void,
-  ): Stream.Stream<ParsedProviderCall, Error> =>
+  ): Stream.Stream<ParsedProviderCall, Error, FileSystem.FileSystem> =>
     Stream.scoped(
       Stream.unwrap(
         Effect.gen(function* () {
@@ -1985,28 +2027,13 @@ function createParser(
       ),
     )
 
-  const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
+  const parseStream: NonNullable<SessionParser<FileSystem.FileSystem>['parseStream']> = onUnparsedCall =>
     statusLineSource
       ? parseStatusLineCallsStream(source, seenKeys, pricing, signal)(onUnparsedCall)
       : parseConversationStream(onUnparsedCall)
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
-      try {
-        while (true) {
-          const next = await iterator.next()
-          if (next.done) return
-          yield next.value
-        }
-      } catch (error) {
-        if (error instanceof AntigravityConversationDatabaseError) throw error.cause
-        throw error
-      } finally {
-        await iterator.return?.()
-      }
-    },
   }
 }
 
@@ -2030,7 +2057,7 @@ const modelDisplayNames: Record<string, string> = {
   'claude-sonnet-4-6': 'Sonnet 4.6',
 }
 
-export function createAntigravityProvider(): Provider {
+export function createAntigravityProvider(): Provider<FileSystem.FileSystem> {
   const discover = (context?: ProviderScanContext) => discoverAntigravitySessionsEffect(undefined, context)
   return {
     name: 'antigravity',
@@ -2045,25 +2072,16 @@ export function createAntigravityProvider(): Provider {
     },
 
     discoverSessionsEffect: discover,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove this Promise edge once direct discovery callers consume the native hook.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discover(context))
-    },
 
     createSessionParser(
       source: SessionSource,
       seenKeys: Set<string>,
       _dateRange?: DateRange,
       context?: ProviderScanContext,
-    ): SessionParser {
+    ): SessionParser<FileSystem.FileSystem> {
       return createParser(source, seenKeys, context?.pricing ?? captureScanPricing(), context?.signal)
     },
   }
 }
 
-export async function flushAntigravityCache(liveCascadeIds?: Set<string>): Promise<void> {
-  await flushCache(liveCascadeIds)
-}
-
-export const antigravity = createAntigravityProvider()
+export const antigravity: Provider<FileSystem.FileSystem> = createAntigravityProvider()

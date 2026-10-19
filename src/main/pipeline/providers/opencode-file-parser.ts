@@ -285,9 +285,5 @@ export function createOpenCodeFileSessionParser(
 
   return {
     parseStream,
-    // Remove this iterator edge after scanner and external callers use parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }

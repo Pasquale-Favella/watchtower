@@ -119,11 +119,6 @@ export function createOpenCodeProvider(dataDir?: string, paths?: AppPaths): Prov
       return discoverEffect(context)
     },
 
-    // Remove after external callers use discoverSessionsEffect.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      return Effect.runPromise(discoverEffect(context))
-    },
-
     createSessionParser(
       source: SessionSource,
       seenKeys: Set<string>,

@@ -3,8 +3,10 @@ import { mkdir, readdir, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect } from 'effect'
+import { Effect, type FileSystem } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { withProviderFileSystem } from './fixtures/provider-effects.js'
 
 const homes = vi.hoisted(() => ({ home: '' }))
 
@@ -21,7 +23,7 @@ vi.mock('fs/promises', async importOriginal => {
 import { appPaths, Env, initAppPaths } from '../src/main/env.js'
 import {
   antigravity,
-  discoverAntigravitySessionSources,
+  discoverAntigravitySessionsEffect,
   getAntigravityStatusLineEventsPath,
 } from '../src/main/pipeline/providers/antigravity.js'
 import type { Provider } from '../src/main/pipeline/providers/types.js'
@@ -42,7 +44,9 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-function nativeDiscovery(provider: Provider): NonNullable<Provider['discoverSessionsEffect']> {
+function nativeDiscovery(
+  provider: Provider<FileSystem.FileSystem>,
+): Provider<FileSystem.FileSystem>['discoverSessionsEffect'] {
   if (!provider.discoverSessionsEffect) throw new Error('Antigravity Effect discovery is unavailable')
   return provider.discoverSessionsEffect
 }
@@ -58,10 +62,12 @@ describe('Antigravity Effect discovery', () => {
     await mkdir(join(first, 'folder.pb'))
     await writeFile(join(first, 'ignore.json'), '')
     await writeFile(join(second, 'b.pb'), '')
-    const sources = await discoverAntigravitySessionSources([
-      { dir: first, project: 'first-project', extensions: ['.pb', '.db'] },
-      { dir: second, project: 'second-project', extensions: ['.pb'] },
-    ])
+    const sources = await Effect.runPromise(
+      discoverAntigravitySessionsEffect([
+        { dir: first, project: 'first-project', extensions: ['.pb', '.db'] },
+        { dir: second, project: 'second-project', extensions: ['.pb'] },
+      ]),
+    )
 
     expect(sources).toEqual([
       { path: join(first, 'A.DB'), project: 'first-project', provider: 'antigravity' },
@@ -78,7 +84,9 @@ describe('Antigravity Effect discovery', () => {
     await writeFile(join(conversationDir, 'conversation.pb'), '')
     await writeFile(getAntigravityStatusLineEventsPath(), '')
 
-    const nativeSources = await Effect.runPromise(nativeDiscovery(antigravity)().pipe(Effect.provide(Env.layer)))
+    const nativeSources = await Effect.runPromise(
+      withProviderFileSystem(nativeDiscovery(antigravity)().pipe(Effect.provide(Env.layer))),
+    )
     expect(nativeSources.map(source => source.path)).toEqual([
       join(conversationDir, 'conversation.pb'),
       getAntigravityStatusLineEventsPath(),
@@ -89,9 +97,9 @@ describe('Antigravity Effect discovery', () => {
       provider: 'antigravity',
     })
 
-    const explicitSources = await discoverAntigravitySessionSources([
-      { dir: conversationDir, project: 'antigravity', extensions: ['.pb'] },
-    ])
+    const explicitSources = await Effect.runPromise(
+      discoverAntigravitySessionsEffect([{ dir: conversationDir, project: 'antigravity', extensions: ['.pb'] }]),
+    )
     expect(explicitSources.map(source => source.path)).toEqual([join(conversationDir, 'conversation.pb')])
   })
 
@@ -105,10 +113,12 @@ describe('Antigravity Effect discovery', () => {
       return await vi.importActual<typeof import('fs/promises')>('fs/promises').then(fs => fs.stat(path))
     })
 
-    const sources = await discoverAntigravitySessionSources([
-      { dir: join(root, 'missing'), project: 'missing', extensions: ['.pb'] },
-      { dir: directory, project: 'present', extensions: ['.pb'] },
-    ])
+    const sources = await Effect.runPromise(
+      discoverAntigravitySessionsEffect([
+        { dir: join(root, 'missing'), project: 'missing', extensions: ['.pb'] },
+        { dir: directory, project: 'present', extensions: ['.pb'] },
+      ]),
+    )
     expect(sources).toEqual([{ path: join(directory, 'good.pb'), project: 'present', provider: 'antigravity' }])
   })
 
@@ -116,7 +126,11 @@ describe('Antigravity Effect discovery', () => {
     const controller = new AbortController()
     controller.abort(new Error('stop scan'))
     await expect(
-      Effect.runPromise(nativeDiscovery(antigravity)({ signal: controller.signal }).pipe(Effect.provide(Env.layer))),
+      Effect.runPromise(
+        withProviderFileSystem(
+          nativeDiscovery(antigravity)({ signal: controller.signal }).pipe(Effect.provide(Env.layer)),
+        ),
+      ),
     ).rejects.toHaveProperty('name', 'ScanAbortedError')
     expect(readdir).not.toHaveBeenCalled()
   })
@@ -144,7 +158,9 @@ describe('Antigravity Effect discovery', () => {
     await writeFile(join(defaultRoot, 'conversation.pb'), '')
     let interrupted = false
     const discovery = Effect.runPromise(
-      nativeDiscovery(antigravity)({ signal: controller.signal }).pipe(Effect.provide(Env.layer)),
+      withProviderFileSystem(
+        nativeDiscovery(antigravity)({ signal: controller.signal }).pipe(Effect.provide(Env.layer)),
+      ),
     ).catch(error => {
       interrupted = true
       throw error

@@ -1,6 +1,7 @@
 import * as Effect from 'effect/Effect'
+import type * as FileSystem from 'effect/FileSystem'
 
-import { Env } from '../../env.js'
+import type { Env } from '../../env.js'
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import { isScanAbortedError, type ScanAbortedError, scanAbortError } from '../scan-control.js'
 import { claude } from './claude.js'
@@ -31,12 +32,14 @@ import { rooCode } from './roo-code.js'
 import type { DiscoverableProvider, Provider, ProviderScanContext, SessionSource } from './types.js'
 import { zerostack } from './zerostack.js'
 
-type OptionalProvider = { readonly name: string; readonly load: () => Promise<Provider> }
+type OptionalProvider = { readonly name: string; readonly load: () => Promise<Provider<FileSystem.FileSystem>> }
 
 // Dynamic imports are native Promise leaves. Cache the Promise itself so
 // concurrent lookups join the same import and a failed optional import is
 // remembered as absent for this process lifetime.
-const optionalProviders: ReadonlyArray<OptionalProvider & { promise?: Promise<Provider | null> }> = [
+const optionalProviders: ReadonlyArray<
+  OptionalProvider & { promise?: Promise<Provider<FileSystem.FileSystem> | null> }
+> = [
   { name: 'antigravity', load: async () => (await import('./antigravity.js')).antigravity },
   { name: 'forge', load: async () => (await import('./forge.js')).forge },
   { name: 'goose', load: async () => (await import('./goose.js')).goose },
@@ -50,7 +53,7 @@ const optionalProviders: ReadonlyArray<OptionalProvider & { promise?: Promise<Pr
   { name: 'zed', load: async () => (await import('./zed.js')).zed },
 ]
 
-const coreProviders: DiscoverableProvider[] = [
+const coreProviders: DiscoverableProvider<FileSystem.FileSystem>[] = [
   claude,
   cline,
   codewhale,
@@ -89,7 +92,9 @@ export function allProviderNames(): readonly string[] {
   return allProviderNamesCache
 }
 
-function loadOptionalProvider(entry: (typeof optionalProviders)[number]): Promise<Provider | null> {
+function loadOptionalProvider(
+  entry: (typeof optionalProviders)[number],
+): Promise<Provider<FileSystem.FileSystem> | null> {
   entry.promise ??= Promise.resolve()
     .then(entry.load)
     .catch(() => null)
@@ -99,7 +104,7 @@ function loadOptionalProvider(entry: (typeof optionalProviders)[number]): Promis
 function loadOptionalProviderEffect(
   entry: (typeof optionalProviders)[number],
   context: DiscoveryContext,
-): Effect.Effect<Provider | null, Error> {
+): Effect.Effect<Provider<FileSystem.FileSystem> | null, Error> {
   return runOwnedProviderImport(() => loadOptionalProvider(entry), context).pipe(
     Effect.mapError(cause => (cause instanceof Error ? cause : new Error(String(cause)))),
   )
@@ -150,7 +155,7 @@ function checkDiscoveryAbort(context: DiscoveryContext): Effect.Effect<void, Sca
 /** Compose the lazy module imports in the scan's native Effect workflow. */
 export const getAllProvidersEffect = Effect.fnUntraced(function* (
   context: DiscoveryContext = {},
-): Effect.fn.Return<DiscoverableProvider[], Error> {
+): Effect.fn.Return<DiscoverableProvider<FileSystem.FileSystem>[], Error> {
   yield* checkDiscoveryAbort(context)
   const optional = yield* Effect.all(
     optionalProviders.map(entry => loadOptionalProviderEffect(entry, context)),
@@ -159,14 +164,11 @@ export const getAllProvidersEffect = Effect.fnUntraced(function* (
     },
   )
   yield* checkDiscoveryAbort(context)
-  return [...coreProviders, ...optional.filter((provider): provider is Provider => provider !== null)]
+  return [
+    ...coreProviders,
+    ...optional.filter((provider): provider is Provider<FileSystem.FileSystem> => provider !== null),
+  ]
 })
-
-/** Promise edge for callers that have not moved to Effect yet. */
-export function getAllProviders(): Promise<DiscoverableProvider[]> {
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(getAllProvidersEffect())
-}
 
 // Isolate one provider's discovery. A provider that rejects (a crafted/corrupt
 // file reaching a string op, an unexpected on-disk shape) must never take down
@@ -175,9 +177,9 @@ export function getAllProviders(): Promise<DiscoverableProvider[]> {
 // per-file in parser.ts.
 const warnedDiscoveryFailures = new Set<string>()
 export const safeDiscoverSessionsEffect = Effect.fnUntraced(function* (
-  provider: DiscoverableProvider,
+  provider: DiscoverableProvider<FileSystem.FileSystem>,
   context: DiscoveryContext = {},
-): Effect.fn.Return<SessionSource[], ScanAbortedError, Env> {
+): Effect.fn.Return<SessionSource[], ScanAbortedError, Env | FileSystem.FileSystem> {
   yield* checkDiscoveryAbort(context)
   const discovered = yield* Effect.result(provider.discoverSessionsEffect(context))
   yield* checkDiscoveryAbort(context)
@@ -190,23 +192,13 @@ export const safeDiscoverSessionsEffect = Effect.fnUntraced(function* (
   return []
 })
 
-/** Promise edge for provider callers that have not moved to Effect yet. */
-export function safeDiscoverSessions(
-  provider: DiscoverableProvider,
-  context: DiscoveryContext = {},
-): Promise<SessionSource[]> {
-  // Compatibility edge for discovery callers that still expose Promise APIs.
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(safeDiscoverSessionsEffect(provider, context).pipe(Effect.provide(Env.layer)))
-}
-
 export const discoverAllSessionsEffect = Effect.fnUntraced(function* (
   providerFilter?: string,
   // Injectable for tests so the isolation loop itself is exercised, not just
   // the helper. Defaults to the real registry.
-  providerList?: DiscoverableProvider[],
+  providerList?: DiscoverableProvider<FileSystem.FileSystem>[],
   context: DiscoveryContext = {},
-): Effect.fn.Return<SessionSource[], Error, Env> {
+): Effect.fn.Return<SessionSource[], Error, Env | FileSystem.FileSystem> {
   yield* checkDiscoveryAbort(context)
   const allProviders = providerList ?? (yield* getAllProvidersEffect(context))
   yield* checkDiscoveryAbort(context)
@@ -221,23 +213,10 @@ export const discoverAllSessionsEffect = Effect.fnUntraced(function* (
   return all
 })
 
-/** Promise edge for callers that have not moved to Effect yet. */
-export function discoverAllSessions(
-  providerFilter?: string,
-  providerList?: DiscoverableProvider[],
-  context: DiscoveryContext = {},
-): Promise<SessionSource[]> {
-  // Compatibility edge for discovery callers that still expose Promise APIs.
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(
-    discoverAllSessionsEffect(providerFilter, providerList, context).pipe(Effect.provide(Env.layer)),
-  )
-}
-
 export const getProviderEffect = Effect.fnUntraced(function* (
   name: string,
   context: DiscoveryContext = {},
-): Effect.fn.Return<DiscoverableProvider | undefined, Error> {
+): Effect.fn.Return<DiscoverableProvider<FileSystem.FileSystem> | undefined, Error> {
   yield* checkDiscoveryAbort(context)
   const optional = optionalProviders.find(provider => provider.name === name)
   if (optional) {
@@ -247,9 +226,3 @@ export const getProviderEffect = Effect.fnUntraced(function* (
   }
   return coreProviders.find(provider => provider.name === name)
 })
-
-/** Promise edge for provider callers not migrated to Effect yet. */
-export function getProvider(name: string): Promise<DiscoverableProvider | undefined> {
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(getProviderEffect(name))
-}

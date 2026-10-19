@@ -14,10 +14,6 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
   return {
     ...actual,
-    readSessionFile: async (...args: Parameters<typeof actual.readSessionFile>) => {
-      await hooks.pause?.()
-      return actual.readSessionFile(...args)
-    },
     readSessionFileEffect: (...args: Parameters<typeof actual.readSessionFileEffect>) =>
       Effect.promise(async () => hooks.pause?.()).pipe(Effect.andThen(actual.readSessionFileEffect(...args))),
     readSessionLinesStream: (...args: Parameters<typeof actual.readSessionLinesStream>) =>
@@ -41,6 +37,7 @@ import type {
 } from '../src/main/pipeline/providers/types.js'
 import { createZcodeProvider } from '../src/main/pipeline/providers/zcode.js'
 import { createZerostackProvider } from '../src/main/pipeline/providers/zerostack.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 import { deferred } from './helpers/deferred.js'
 
 const model = 'file-provider-captured-alias'
@@ -63,7 +60,7 @@ afterEach(() => {
 
 async function collect(parser: SessionParser): Promise<ParsedProviderCall[]> {
   const calls: ParsedProviderCall[] = []
-  for await (const call of parser.parse()) calls.push(call)
+  for await (const call of providerParserIterator(parser)) calls.push(call)
   return calls
 }
 

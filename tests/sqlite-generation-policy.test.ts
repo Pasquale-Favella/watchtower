@@ -18,6 +18,7 @@ import {
 } from '../src/main/pipeline/providers/opencode-family-sqlite.js'
 import type { ParsedProviderCall, SessionParser } from '../src/main/pipeline/providers/types.js'
 import { openDatabase } from '../src/main/pipeline/sqlite.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 // ADR 0006: a provider is an isolated, replaceable unit. That only holds if the
 // SHARED reader holds no opinion about which tools have migrated.
@@ -119,7 +120,7 @@ function insertV2Message(
 
 async function collect(parser: SessionParser): Promise<ParsedProviderCall[]> {
   const calls: ParsedProviderCall[] = []
-  for await (const call of parser.parse()) calls.push(call)
+  for await (const call of providerParserIterator(parser)) calls.push(call)
   return calls
 }
 

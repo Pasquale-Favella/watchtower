@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Stream } from 'effect'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import { Effect, type FileSystem, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -44,6 +45,7 @@ import {
 } from '../src/main/pipeline/models.js'
 import { createCodexProvider } from '../src/main/pipeline/providers/codex.js'
 import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const MODEL = 'codex-captured-pricing-model'
 
@@ -117,10 +119,12 @@ async function collect(parser: AsyncGenerator<ParsedProviderCall>): Promise<Pars
 }
 
 async function collectNative(parser: {
-  parseStream?: () => Stream.Stream<ParsedProviderCall, Error>
+  parseStream?: () => Stream.Stream<ParsedProviderCall, Error, FileSystem.FileSystem>
 }): Promise<ParsedProviderCall[]> {
   if (!parser.parseStream) throw new Error('Codex parser did not expose its native stream')
-  const calls = await Effect.runPromise(Stream.runCollect(parser.parseStream()))
+  const calls = await Effect.runPromise(
+    Stream.runCollect(parser.parseStream()).pipe(Effect.provide(NodeFileSystem.layer)),
+  )
   return [...calls]
 }
 
@@ -132,9 +136,11 @@ describe('Codex captured scan pricing', () => {
     const expected = pricing.calculateCost(MODEL, 8, 5, 0, 2, 0)
     setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
     const calls = await collect(
-      createCodexProvider('/unused')
-        .createSessionParser(source(path, 'codex-scan-context'), new Set(), undefined, { pricing })
-        .parse(),
+      providerParserIterator(
+        createCodexProvider('/unused').createSessionParser(source(path, 'codex-scan-context'), new Set(), undefined, {
+          pricing,
+        }),
+      ),
     )
     expect(calls).toHaveLength(1)
     expect(calls[0]?.costUSD).toBe(expected)
@@ -149,7 +155,9 @@ describe('Codex captured scan pricing', () => {
     const firstPricing = captureScanPricing()
     const firstExpected = firstPricing.calculateCost(MODEL, 8, 5, 0, 2, 0)
     const provider = createCodexProvider('/unused')
-    const firstParser = provider.createSessionParser(source(firstPath, 'codex-first'), new Set()).parse()
+    const firstParser = providerParserIterator(
+      provider.createSessionParser(source(firstPath, 'codex-first'), new Set()),
+    )
     hooks.pauseNextRead = true
     let started!: () => void
     const readStarted = new Promise<void>(resolve => {
@@ -170,13 +178,17 @@ describe('Codex captured scan pricing', () => {
 
     const nextPricing = captureScanPricing()
     const nextExpected = nextPricing.calculateCost(MODEL, 8, 5, 0, 2, 0)
-    const nextCalls = await collect(provider.createSessionParser(source(nextPath, 'codex-next'), new Set()).parse())
+    const nextCalls = await collect(
+      providerParserIterator(provider.createSessionParser(source(nextPath, 'codex-next'), new Set())),
+    )
     expect(nextCalls).toHaveLength(1)
     expect(nextCalls[0]?.costUSD).toBe(nextExpected)
     expect(nextCalls[0]?.costUSD).not.toBe(firstExpected)
 
-    await Effect.runPromise(Effect.scoped(flushCodexCacheEffect(undefined)))
-    const warmCalls = await collect(provider.createSessionParser(source(firstPath, 'codex-first'), new Set()).parse())
+    await Effect.runPromise(Effect.scoped(flushCodexCacheEffect(undefined)).pipe(Effect.provide(NodeFileSystem.layer)))
+    const warmCalls = await collect(
+      providerParserIterator(provider.createSessionParser(source(firstPath, 'codex-first'), new Set())),
+    )
     expect(warmCalls).toEqual(firstCalls)
   })
 
@@ -222,13 +234,17 @@ describe('Codex captured scan pricing', () => {
     await writeFile(path, `${lines}\n${JSON.stringify(second)}`)
 
     const provider = createCodexProvider('/unused')
-    const full = await collect(provider.createSessionParser(source(path, 'codex-native-partial'), new Set()).parse())
+    const full = await collect(
+      providerParserIterator(provider.createSessionParser(source(path, 'codex-native-partial'), new Set())),
+    )
     expect(full).toHaveLength(2)
 
     const seen = new Set<string>()
     const parser = provider.createSessionParser(source(path, 'codex-native-partial'), seen)
     if (!parser.parseStream) throw new Error('Codex parser did not expose its native stream')
-    await Effect.runPromise(Stream.runCollect(parser.parseStream().pipe(Stream.take(1))))
+    await Effect.runPromise(
+      Stream.runCollect(parser.parseStream().pipe(Stream.take(1))).pipe(Effect.provide(NodeFileSystem.layer)),
+    )
     expect(seen.size).toBe(1)
   })
 })

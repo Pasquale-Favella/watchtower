@@ -630,10 +630,6 @@ function createParser(
     Stream.unwrap(parseEffect(onUnparsedCall))
   return {
     parseStream,
-    // Remove this async-generator edge when all direct parser callers consume parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -667,11 +663,6 @@ export function createHermesProvider(hermesHomeOverride?: string, paths?: AppPat
     },
 
     discoverSessionsEffect: discoverEffect,
-    // Remove this Promise edge when every discovery caller uses the native Effect entry point.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

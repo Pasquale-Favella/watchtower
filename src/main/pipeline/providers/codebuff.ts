@@ -487,10 +487,6 @@ function createParser(
 
   return {
     parseStream: onUnparsedCall => Stream.unwrap(parseEffect(onUnparsedCall)),
-    // Remove when scan/parser and external iterator callers consume parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(Stream.unwrap(parseEffect()))
-    },
   }
 }
 
@@ -521,11 +517,6 @@ export function createCodebuffProvider(baseDir?: string, paths?: AppPaths): Prov
     },
 
     discoverSessionsEffect: discoverEffect,
-    // Remove this Promise edge after external callers consume native discovery.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

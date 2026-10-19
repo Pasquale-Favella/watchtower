@@ -23,15 +23,14 @@ export interface ProviderScanContext extends ProviderScanServices {
   readonly signal?: AbortSignal
 }
 
-export type SessionParser = {
-  parse(): AsyncGenerator<ParsedProviderCall>
-  /** Effect-native parser path. The per-file collector supplies an Effect to
-   * count rejected calls before canonical emission, without exposing raw data. */
-  parseStream: (onUnparsedCall?: Effect.Effect<void>) => Stream.Stream<ParsedProviderCall, Error>
+export type SessionParser<R = never> = {
+  /** Native parser path. The per-file collector supplies an Effect to count
+   * rejected calls before canonical emission, without exposing raw data. */
+  parseStream: (onUnparsedCall?: Effect.Effect<void>) => Stream.Stream<ParsedProviderCall, Error, R>
 }
 
 /** Provider metadata and discovery are also used by aggregate parsers such as Claude. */
-export type DiscoverableProvider = {
+export type DiscoverableProvider<R = never> = {
   name: string
   displayName: string
   // Data comes from a live API fetch (no on-disk file). Such sources can't be
@@ -44,12 +43,9 @@ export type DiscoverableProvider = {
   durableSources?: boolean
   modelDisplayName(model: string): string
   toolDisplayName(rawTool: string): string
-  /** Public Promise adapter for direct callers; remove after they migrate to
-   * discoverSessionsEffect. */
-  discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]>
-  /** Native discovery used by the scan. */
-  discoverSessionsEffect: (context?: ProviderScanContext) => Effect.Effect<SessionSource[], Error, Env>
-  // The exact directories/dbs discoverSessions() scans, resolved the same way.
+  /** Native discovery used by the scan and direct callers. */
+  discoverSessionsEffect: (context?: ProviderScanContext) => Effect.Effect<SessionSource[], Error, Env | R>
+  // The exact directories/dbs discoverSessionsEffect() scans, resolved the same way.
   // Optional: providers that implement it let the diagnostic probe show and
   // existence-check the probed paths even when zero sessions are found (so
   // "tool not installed" vs "wrong override" is distinguishable).
@@ -57,11 +53,11 @@ export type DiscoverableProvider = {
 }
 
 /** Providers with per-source session parsing expose a native Effect stream. */
-export type Provider = DiscoverableProvider & {
+export type Provider<R = never> = DiscoverableProvider<R> & {
   createSessionParser(
     source: SessionSource,
     seenKeys: Set<string>,
     dateRange?: DateRange,
     context?: ProviderScanContext,
-  ): SessionParser
+  ): SessionParser<R>
 }

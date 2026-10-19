@@ -66,11 +66,6 @@ export function createKiloCodeProvider(overrideDir?: string | string[], paths?: 
       return discoverEffect(context)
     },
 
-    // Remove when direct discovery callers consume the native Effect path.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      return Effect.runPromise(discoverEffect(context))
-    },
-
     createSessionParser(
       source: SessionSource,
       seenKeys: Set<string>,
