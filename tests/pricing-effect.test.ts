@@ -17,11 +17,7 @@ import {
 import { runEffectTest, runWithTestClockWindow } from './helpers/run-effect-test.js'
 
 function okResponse(body: unknown): Response {
-  return {
-    ok: true,
-    status: 200,
-    json: async () => body,
-  } as Response
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
 }
 
 function fakeFetchOk(data: unknown): typeof fetch {
@@ -240,7 +236,7 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
 
   it('refreshPricingNowEffect maps a non-2xx response to a typed http error', async () => {
     freshCacheDir()
-    const badStatus = (async () => ({ ok: false, status: 500, json: async () => ({}) })) as unknown as typeof fetch
+    const badStatus = (async () => new Response('{}', { status: 500 })) as typeof fetch
     const error = await Effect.runPromise(
       refreshPricingNowEffect().pipe(
         Effect.provide(HttpFetch.layerWithFetch(badStatus)),
@@ -254,16 +250,29 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
 
   it('refreshPricingNowEffect maps a JSON failure to a typed decode error', async () => {
     freshCacheDir()
-    const badJson = (async () => ({
-      ok: true,
-      status: 200,
-      json: async () => {
-        throw new Error('bad json')
-      },
-    })) as unknown as typeof fetch
+    let calls = 0
+    const badJson = (async () => {
+      calls += 1
+      return new Response('not json', { status: 200 })
+    }) as typeof fetch
     const error = await Effect.runPromise(
       refreshPricingNowEffect().pipe(
         Effect.provide(HttpFetch.layerWithFetch(badJson)),
+        Effect.provide(pricingEnv()),
+        Effect.flip,
+      ),
+    )
+    expect(error).toBeInstanceOf(PricingRefreshError)
+    expect(error.reason).toBe('decode')
+    expect(calls).toBe(1)
+  })
+
+  it('refreshPricingNowEffect maps a non-record JSON root to a typed decode error', async () => {
+    freshCacheDir()
+    const nullRoot = (async () => new Response('null', { status: 200 })) as typeof fetch
+    const error = await Effect.runPromise(
+      refreshPricingNowEffect().pipe(
+        Effect.provide(HttpFetch.layerWithFetch(nullRoot)),
         Effect.provide(pricingEnv()),
         Effect.flip,
       ),
@@ -307,11 +316,19 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
         input_cost_per_token: -0.001,
         output_cost_per_token: 0.000002,
       },
+      'bad-null-row-delta': null,
+      'good-with-upstream-metadata-delta': {
+        input_cost_per_token: 0.000003,
+        output_cost_per_token: 0.000004,
+        sample_spec: { note: 'unconsumed catalog metadata' },
+      },
     }
     await runLoadPricing(fakeFetchOk(upstream))
     expect(getModelCosts('good-invalid-test-model-delta')).not.toBeNull()
     expect(getModelCosts('bad-missing-input-delta')).toBeNull()
     expect(getModelCosts('bad-missing-output-delta')).toBeNull()
     expect(getModelCosts('bad-negative-delta')).toBeNull()
+    expect(getModelCosts('bad-null-row-delta')).toBeNull()
+    expect(getModelCosts('good-with-upstream-metadata-delta')).not.toBeNull()
   })
 })

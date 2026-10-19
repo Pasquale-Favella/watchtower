@@ -46,16 +46,33 @@ function localFetch(serverUrl: string) {
     calls += 1
     try {
       const response = await globalThis.fetch(serverUrl, init)
-      const json = response.json.bind(response)
-      response.json = async () => {
-        bodyStarted.resolve(undefined)
-        try {
-          return await json()
-        } finally {
-          bodySettled = true
-        }
-      }
-      return response
+      if (!response.body) return response
+      const reader = response.body.getReader()
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          bodyStarted.resolve(undefined)
+          try {
+            const item = await reader.read()
+            if (item.done) {
+              bodySettled = true
+              controller.close()
+            } else {
+              controller.enqueue(item.value)
+            }
+          } catch (error) {
+            bodySettled = true
+            controller.error(error)
+          }
+        },
+        async cancel(reason) {
+          try {
+            await reader.cancel(reason)
+          } finally {
+            bodySettled = true
+          }
+        },
+      })
+      return new Response(body, { status: response.status, headers: response.headers })
     } finally {
       requestSettled = true
     }

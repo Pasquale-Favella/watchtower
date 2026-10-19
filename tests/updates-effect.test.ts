@@ -10,7 +10,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { closeOperationalLog, initOperationalLog, OperationalLogLoggerLayer } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
-import { runWithTestClockWindow } from './helpers/run-effect-test.js'
 import {
   createUpdateCheckerEffect,
   fetchReleasesEffect,
@@ -18,6 +17,7 @@ import {
   UpdateFetchError,
   type UpdateStatus,
 } from '../src/main/updates.js'
+import { runWithTestClockWindow } from './helpers/run-effect-test.js'
 import { runEffectTest } from './helpers/run-effect-test.js'
 
 const CURRENT = '0.1.0'
@@ -27,19 +27,15 @@ afterEach(() => {
 })
 
 function okFetch(body: unknown): typeof fetch {
-  return (async () => ({
-    ok: true,
-    status: 200,
-    json: async () => body,
-  })) as unknown as typeof fetch
+  return (async () =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
 }
 
 function statusFetch(status: number): typeof fetch {
-  return (async () => ({
-    ok: false,
-    status,
-    json: async () => ({}),
-  })) as unknown as typeof fetch
+  return (async () => new Response('{}', { status })) as typeof fetch
 }
 
 function throwingFetch(message = 'offline'): typeof fetch {
@@ -101,6 +97,11 @@ describe('fetchReleasesEffect (Effect-native releases boundary)', () => {
   it('yields [] for non-array JSON', async () => {
     const releases = await runFetchReleases(okFetch({ tag_name: 'v0.2.0' }))
     expect(releases).toEqual([])
+  })
+
+  it('skips malformed release rows while retaining valid rows', async () => {
+    const releases = await runFetchReleases(okFetch([{ tag_name: 'v0.2.0' }, null, { tag_name: 2 }, {}]))
+    expect(releases).toEqual([{ tag_name: 'v0.2.0' }, {}])
   })
 
   it('maps a network rejection to a typed network error', async () => {
@@ -189,7 +190,7 @@ describe('createUpdateCheckerEffect (Effect-native check)', () => {
     const slow = (async () => {
       fetches += 1
       await new Promise(resolve => setTimeout(resolve, 20))
-      return { ok: true, status: 200, json: async () => [{ tag_name: 'v0.2.0' }] }
+      return new Response(JSON.stringify([{ tag_name: 'v0.2.0' }]), { status: 200 })
     }) as unknown as typeof fetch
     const [first, second] = await Effect.runPromise(
       Effect.all([checker.check(), checker.check()], { concurrency: 2 }).pipe(

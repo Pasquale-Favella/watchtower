@@ -121,14 +121,7 @@ describe('FxRates.layer (LedgerConfig adapter)', () => {
       refreshFxRateWithRates('EUR').pipe(
         Effect.provide(liveRatesLayer(config)),
         Effect.provide(
-          HttpFetch.layerWithFetch(
-            async () =>
-              ({
-                ok: true,
-                status: 200,
-                json: async () => ({ rates: { EUR: 0.9 } }),
-              }) as Response,
-          ),
+          HttpFetch.layerWithFetch(async () => new Response(JSON.stringify({ rates: { EUR: 0.9 } }), { status: 200 })),
         ),
       ),
     )

@@ -142,10 +142,7 @@ export const refreshFxRateWithRates = Effect.fnUntraced(function* (
     // rate" degrade — it just runs after the retries are spent.
     const response = yield* http.fetch(`${FRANKFURTER_URL}${safe}`, {}, options.timeoutMs).pipe(retryTransientFetch)
     if (!response.ok) return fallback()
-    const payload = yield* Effect.tryPromise({
-      try: async (): Promise<unknown> => response.json(),
-      catch: cause => cause,
-    }).pipe(Effect.orElseSucceed(() => null))
+    const payload = yield* response.json.pipe(Effect.orElseSucceed(() => null))
     const responseData = yield* Effect.result(Schema.decodeUnknownEffect(frankfurterResponseSchema)(payload))
     if (responseData._tag === 'Failure') return fallback()
     const decodedRate = yield* Effect.result(Schema.decodeUnknownEffect(fxRateSchema)(responseData.success.rates[safe]))

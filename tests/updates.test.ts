@@ -19,19 +19,11 @@ import { releasePageUrl } from '../src/renderer/src/features/settings/updates.js
 const CURRENT = '0.1.0'
 
 function okFetch(body: unknown): typeof fetch {
-  return (async () => ({
-    ok: true,
-    status: 200,
-    json: async () => body,
-  })) as unknown as typeof fetch
+  return (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch
 }
 
 function statusFetch(status: number): typeof fetch {
-  return (async () => ({
-    ok: false,
-    status,
-    json: async () => ({}),
-  })) as unknown as typeof fetch
+  return (async () => new Response('{}', { status })) as typeof fetch
 }
 
 function throwingFetch(message = 'offline'): typeof fetch {
@@ -151,8 +143,8 @@ describe('createUpdateCheckerEffect', () => {
     const slow = (async () => {
       fetches += 1
       await new Promise(resolve => setTimeout(resolve, 10))
-      return { ok: true, status: 200, json: async () => [{ tag_name: 'v0.2.0' }] }
-    }) as unknown as typeof fetch
+      return new Response(JSON.stringify([{ tag_name: 'v0.2.0' }]), { status: 200 })
+    }) as typeof fetch
     const [first, second] = await Effect.runPromise(
       Effect.all([checker.check(), checker.check()], { concurrency: 2 }).pipe(
         Effect.provide(HttpFetch.layerWithFetch(slow)),

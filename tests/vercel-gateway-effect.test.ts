@@ -9,7 +9,6 @@ import { HttpFetch, worstCaseRetryWindowMs } from '../src/main/pipeline/fetch-ut
 import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
 import type { SessionParser } from '../src/main/pipeline/providers/types.js'
 import {
-  discoverVercelGatewaySessionsEffect,
   fetchVercelGatewayReportEffect,
   type ReportRow,
   vercelGateway,
@@ -47,11 +46,8 @@ function loggedCodes(): string[] {
 }
 
 function fakeJsonFetch(status: number, body: unknown): typeof fetch {
-  return (async () => ({
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-  })) as unknown as typeof fetch
+  return (async () =>
+    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })) as typeof fetch
 }
 
 function throwingFetch(): typeof fetch {
@@ -75,7 +71,6 @@ function fakeCountingFetch(body: unknown): { fetch: typeof fetch; getCalls: () =
 }
 
 function gatewayStream(parser: SessionParser): ReturnType<NonNullable<SessionParser['parseStream']>> {
-  if (!parser.parseStream) throw new Error('Expected the native Gateway parser stream')
   return parser.parseStream()
 }
 
@@ -184,7 +179,7 @@ describe('resolveGatewayKey (env trim/empty normalization)', () => {
   })
 })
 
-describe('discoverVercelGatewaySessionsEffect (discovery through Env layer)', () => {
+describe('Vercel Gateway native discovery', () => {
   async function runWithGuardedFetch<T>(run: () => Promise<T>): Promise<T> {
     const envBefore: NodeJS.ProcessEnv = { ...process.env }
     let fetchCalls = 0
@@ -205,59 +200,50 @@ describe('discoverVercelGatewaySessionsEffect (discovery through Env layer)', ()
 
   it('no-key returns [] with zero fetch and zero process.env mutation', async () => {
     const rows = await runWithGuardedFetch(() =>
-      Effect.runPromise(discoverVercelGatewaySessionsEffect().pipe(Effect.provide(Env.layerWithGatewayKey(null)))),
+      Effect.runPromise(vercelGateway.discoverSessionsEffect().pipe(Effect.provide(Env.layerWithGatewayKey(null)))),
     )
     expect(rows).toEqual([])
   })
 
   it('keyed discovery returns the gateway source via fake Env layer', async () => {
     const rows = await Effect.runPromise(
-      discoverVercelGatewaySessionsEffect().pipe(Effect.provide(Env.layerWithGatewayKey('test-key'))),
+      vercelGateway.discoverSessionsEffect().pipe(Effect.provide(Env.layerWithGatewayKey('test-key'))),
     )
     expect(rows).toEqual([
       { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
     ])
   })
-
-  it('Provider.discoverSessions keeps the Promise<SessionSource[]> interface', async () => {
-    const sources = await runWithGuardedFetch(async () => {
-      const pending = vercelGateway.discoverSessions()
-      expect(pending).toBeInstanceOf(Promise)
-      return pending
-    })
-    expect(Array.isArray(sources)).toBe(true)
-    for (const source of sources) {
-      expect(source.provider).toBe('vercel-gateway')
-    }
-  })
 })
 
 describe('Vercel Gateway native parser stream', () => {
-  it('keeps the standalone Promise parser fallback on its environment and fetch boundary', async () => {
+  it('consumes the captured report capability without global fetch or environment reads', async () => {
     const rows = [{ day: '2026-01-05', model: 'openai/gpt-4o', total_cost: 1.5 }]
     const { fetch: fetcher, getCalls } = fakeCountingFetch({ results: rows })
-    vi.stubGlobal('fetch', fetcher)
-    await expect(Effect.runPromise(Env.pipe(Effect.provide(Env.layer)))).resolves.toMatchObject({
-      vercelGatewayApiKey: 'standalone-key',
-    })
+    const fetchReport = (range: DateRange, signal?: AbortSignal) =>
+      fetchVercelGatewayReportEffect(range, signal).pipe(
+        Effect.provide(HttpFetch.layerWithFetch(fetcher)),
+        Effect.provide(Env.layerWithGatewayKey('standalone-key')),
+      )
     const parser = vercelGateway.createSessionParser(
       { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
       new Set(),
       RANGE,
+      { gatewayEnabled: true, fetchGatewayReport: fetchReport },
     )
-    const parsed = []
-    for await (const call of parser.parse()) parsed.push(call)
+    const parsed = await Effect.runPromise(Stream.runCollect(gatewayStream(parser)))
 
     expect(getCalls()).toBe(1)
     expect(loggedCodes()).toEqual([])
-    expect(parsed).toHaveLength(1)
+    expect(Array.from(parsed)).toHaveLength(1)
     expect(parsed[0]).toMatchObject({ model: 'openai/gpt-4o', costUSD: 1.5, timestamp: '2026-01-05T12:00:00.000Z' })
-    await expect(vercelGateway.discoverSessions()).resolves.toEqual([
-      { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
-    ])
+    await expect(
+      Effect.runPromise(
+        vercelGateway.discoverSessionsEffect().pipe(Effect.provide(Env.layerWithGatewayKey('standalone-key'))),
+      ),
+    ).resolves.toEqual([{ path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' }])
   })
 
-  it('preserves abort identity at the standalone Promise parser boundary', async () => {
+  it('preserves abort identity through the native parser stream', async () => {
     const abort = new ScanAbortedError({ message: 'standalone scan stopped' })
     const parser = vercelGateway.createSessionParser(
       { path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' },
@@ -266,7 +252,7 @@ describe('Vercel Gateway native parser stream', () => {
       { fetchGatewayReport: () => Effect.fail(abort) },
     )
 
-    await expect(parser.parse().next()).rejects.toBe(abort)
+    await expect(Effect.runPromise(Stream.runCollect(gatewayStream(parser)))).rejects.toBe(abort)
   })
 
   it('consumes the captured report Effect and deduplicates repeated model-day rows', async () => {

@@ -18,6 +18,7 @@
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import * as Option from 'effect/Option'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 
@@ -33,7 +34,8 @@ const FETCH_TIMEOUT_MS = 15_000
 // a tag convention can be chosen later without a code change.
 const RELEASE_TAG_RE = /^(?:desktop-)?v?(\d+\.\d+\.\d+)$/
 
-type GitHubRelease = { tag_name?: string }
+const githubReleaseSchema = Schema.Struct({ tag_name: Schema.optional(Schema.String) })
+type GitHubRelease = Schema.Schema.Type<typeof githubReleaseSchema>
 
 function baselineStatus(currentVersion: string): UpdateStatus {
   return { currentVersion, latestVersion: null, updateAvailable: false, tag: null }
@@ -151,18 +153,24 @@ export const fetchReleasesEffect = Effect.fn('fetchReleasesEffect')(function* ()
       status: response.status,
     })
   }
-  const data = yield* Effect.tryPromise({
-    try: () => response.json(),
-    catch: cause =>
-      new UpdateFetchError({
-        reason: 'network',
-        message: describeUpdateErrorCause(cause),
-      }),
-  })
-  if (Array.isArray(data)) {
-    return data as GitHubRelease[]
+  const data = yield* response.json.pipe(
+    Effect.mapError(
+      cause =>
+        new UpdateFetchError({
+          reason: 'network',
+          message: describeUpdateErrorCause(cause),
+        }),
+    ),
+  )
+  const releases = yield* Schema.decodeUnknownEffect(Schema.mutable(Schema.Array(Schema.Unknown)))(data).pipe(
+    Effect.orElseSucceed(() => []),
+  )
+  const decoded: GitHubRelease[] = []
+  for (const release of releases) {
+    const result = Schema.decodeUnknownOption(githubReleaseSchema)(release)
+    if (Option.isSome(result)) decoded.push(result.value)
   }
-  return []
+  return decoded
 })
 
 export interface UpdateCheckerEffect {

@@ -103,7 +103,7 @@ function freshCacheDir(): string {
 }
 
 function okResponse(body: unknown): Response {
-  return { ok: true, status: 200, json: async () => body } as Response
+  return new Response(JSON.stringify(body), { status: 200 })
 }
 
 function fakeFetchOk(data: unknown): typeof fetch {

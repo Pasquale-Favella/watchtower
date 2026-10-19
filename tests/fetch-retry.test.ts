@@ -100,7 +100,7 @@ function jsonFetch(status: number, body: unknown): { fetch: typeof fetch; calls:
   let calls = 0
   const impl = (async () => {
     calls += 1
-    return { ok: status >= 200 && status < 300, status, json: async () => body }
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
   }) as unknown as typeof fetch
   return { fetch: impl, calls: () => calls }
 }
@@ -294,7 +294,7 @@ describe('refreshFxRateWithRates + transient retry', () => {
         const flaky = (async () => {
           calls += 1
           if (calls < 3) throw new Error('blip')
-          return { ok: true, status: 200, json: async () => ({ rates: { EUR: 0.85 } }) }
+          return new Response(JSON.stringify({ rates: { EUR: 0.85 } }), { status: 200 })
         }) as unknown as typeof fetch
         const active = yield* joinAfterAdvance(fxProgram(layer, flaky), RETRY_ENVELOPE_MS)
         return { calls, active, saved: saved.get('EUR') }
@@ -411,7 +411,7 @@ describe('fetchReleasesEffect + transient retry', () => {
     const flaky = (async () => {
       calls += 1
       if (calls < 3) throw new Error('blip')
-      return { ok: true, status: 200, json: async () => [{ tag_name: 'v0.2.0' }] }
+      return new Response(JSON.stringify([{ tag_name: 'v0.2.0' }]), { status: 200 })
     }) as unknown as typeof fetch
     const releases = await Effect.runPromise(
       joinAfterAdvance(
@@ -478,7 +478,7 @@ describe('fetchVercelGatewayReportEffect + transient retry', () => {
     const flaky = (async () => {
       calls += 1
       if (calls < 3) throw new Error('blip')
-      return { ok: true, status: 200, json: async () => ({ results: [{ day: '2026-01-05', total_cost: 1.5 }] }) }
+      return new Response(JSON.stringify({ results: [{ day: '2026-01-05', total_cost: 1.5 }] }), { status: 200 })
     }) as unknown as typeof fetch
     const rows = await Effect.runPromise(
       joinAfterAdvance(

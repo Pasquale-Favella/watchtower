@@ -78,11 +78,7 @@ function openRuntimeFixture<Overrides extends WorkerOverrides = never>(
 }
 
 function okFetch(body: unknown): typeof fetch {
-  return (async () => ({
-    ok: true,
-    status: 200,
-    json: async () => body,
-  })) as unknown as typeof fetch
+  return (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch
 }
 
 function recordingSink(): { sink: OperationalLogSink; records: string[] } {
@@ -288,11 +284,12 @@ describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
         OperationalLog.layer,
         HttpFetch.layerWithFetch(((input: RequestInfo | URL) => {
           seen.push(String(input))
-          return Promise.resolve({
-            ok: true,
-            status: 200,
-            json: async () => ({ 'wiring-fake-model': { input_cost_per_token: 0.001, output_cost_per_token: 0.002 } }),
-          } as unknown as Response)
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ 'wiring-fake-model': { input_cost_per_token: 0.001, output_cost_per_token: 0.002 } }),
+              { status: 200 },
+            ),
+          )
         }) as unknown as typeof fetch),
         FxRates.layerWithRates({
           getCurrencyRate: () => Effect.succeed(null),

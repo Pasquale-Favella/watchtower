@@ -1,5 +1,6 @@
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
@@ -58,13 +59,15 @@ type PriceOverrideRates = {
   cacheCreation?: number
 }
 
-type LiteLLMEntry = {
-  input_cost_per_token?: number
-  output_cost_per_token?: number
-  cache_creation_input_token_cost?: number
-  cache_read_input_token_cost?: number
-  provider_specific_entry?: { fast?: number }
-}
+const liteLLMEntrySchema = Schema.Struct({
+  input_cost_per_token: Schema.optional(Schema.Number),
+  output_cost_per_token: Schema.optional(Schema.Number),
+  cache_creation_input_token_cost: Schema.optional(Schema.NullOr(Schema.Number)),
+  cache_read_input_token_cost: Schema.optional(Schema.NullOr(Schema.Number)),
+  provider_specific_entry: Schema.optional(Schema.Struct({ fast: Schema.optional(Schema.NullOr(Schema.Number)) })),
+})
+
+type LiteLLMEntry = Schema.Schema.Type<typeof liteLLMEntrySchema>
 
 // [input, output, cacheWrite, cacheRead, fastMultiplier]. The trailing fast
 // multiplier is carried straight from LiteLLM's provider_specific_entry.fast so
@@ -273,8 +276,8 @@ function getCachePath(): string {
 /// We use Number.isFinite to also reject NaN/Infinity, and cap at $1/token
 /// (well above the most expensive frontier model) so a stray decimal-place
 /// shift in the upstream JSON can't wildly inflate spend numbers either.
-function safePerTokenRate(n: number | undefined): number | null {
-  if (n === undefined || !Number.isFinite(n) || n < 0) return null
+function safePerTokenRate(n: number | null | undefined): number | null {
+  if (n === undefined || n === null || !Number.isFinite(n) || n < 0) return null
   if (n > 1) return 1
   return n
 }
@@ -1027,17 +1030,29 @@ const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(funct
   if (!response.ok) {
     return yield* new PricingRefreshError({ reason: 'http', message: `HTTP ${response.status}` })
   }
-  const data = yield* Effect.tryPromise({
-    try: () => response.json() as Promise<Record<string, LiteLLMEntry>>,
-    catch: cause =>
-      new PricingRefreshError({
-        reason: 'decode',
-        message: describeErrorCause(cause),
-      }),
-  })
+  const unknownData = yield* response.json.pipe(
+    Effect.mapError(
+      cause =>
+        new PricingRefreshError({
+          reason: 'decode',
+          message: cause.message || describeErrorCause(cause),
+        }),
+    ),
+  )
+  const data = yield* Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Unknown))(unknownData).pipe(
+    Effect.mapError(
+      cause =>
+        new PricingRefreshError({
+          reason: 'decode',
+          message: describeErrorCause(cause),
+        }),
+    ),
+  )
   const pricing = new Map<string, ModelCosts>()
-  for (const [name, entry] of Object.entries(data)) {
-    const costs = parseLiteLLMEntry(entry)
+  for (const [name, rawEntry] of Object.entries(data)) {
+    const entry = Schema.decodeUnknownOption(liteLLMEntrySchema)(rawEntry)
+    if (Option.isNone(entry)) continue
+    const costs = parseLiteLLMEntry(entry.value)
     if (!costs) continue
     pricing.set(name, costs)
     // Also index by stripped name so lookups work without provider prefix.

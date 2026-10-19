@@ -1,14 +1,10 @@
 import * as Context from 'effect/Context'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
-import * as Exit from 'effect/Exit'
 import * as FetchHttpClient from 'effect/http/FetchHttpClient'
-import * as HttpBody from 'effect/http/HttpBody'
 import * as HttpClient from 'effect/http/HttpClient'
 import * as HttpClientError from 'effect/http/HttpClientError'
 import * as HttpClientRequest from 'effect/http/HttpClientRequest'
-import * as HttpClientResponse from 'effect/http/HttpClientResponse'
-import type { HttpMethod } from 'effect/http/HttpMethod'
 import * as Layer from 'effect/Layer'
 import * as Metric from 'effect/Metric'
 import * as Option from 'effect/Option'
@@ -24,11 +20,10 @@ import { FETCH_TIMEOUT_COUNTER, type OperationalLogCounter } from '../operationa
 // 8s is generous for these small JSON endpoints while still failing fast.
 export const DEFAULT_FETCH_TIMEOUT_MS = 8000
 
-/** Typed fetch failure: timeout, caller abort, or network. HTTP statuses are
- * not failures here — callers check `response.ok` themselves to preserve the
- * existing offline/blocked/non-2xx fallback behavior. */
+/** Typed request or response-body failure. HTTP statuses are returned as data —
+ * callers check `response.ok` themselves to preserve offline/blocked fallback behavior. */
 export class HttpFetchError extends Schema.TaggedError<HttpFetchError>()('HttpFetchError', {
-  reason: Schema.Literals(['timeout', 'abort', 'network']),
+  reason: Schema.Literals(['timeout', 'abort', 'network', 'decode']),
   message: Schema.String,
   url: Schema.String,
 }) {}
@@ -92,12 +87,13 @@ export const transientRetrySchedule: Schedule.Schedule<Duration.Duration, HttpFe
  * The abort guard paired with `transientRetrySchedule` — the `while` half of
  * `retryTransientFetch` below.
  *
- * `HttpFetchError.reason` is `'timeout' | 'abort' | 'network'`. `timeout` and
- * `network` are the transient pair a blip produces (DNS not up after
+ * `HttpFetchError.reason` is `'timeout' | 'abort' | 'network' | 'decode'`.
+ * `timeout` and `network` are the transient pair a blip produces (DNS not up after
  * wake-from-sleep, a dropped connection, a half-open Wi-Fi), so both retry.
  * A non-2xx status is deliberately absent: statuses are not failures here, so
  * a 500 never reaches this predicate and is handled by the caller's own
- * `response.ok` check exactly as before.
+ * `response.ok` check exactly as before. JSON decoding also stays outside the
+ * retry and `decode` errors are never transient.
  *
  * `abort` is the interruption signal — fiber interruption or a caller
  * `AbortSignal` — and it is what makes the retry honest: retrying it would
@@ -106,7 +102,7 @@ export const transientRetrySchedule: Schedule.Schedule<Duration.Duration, HttpFe
  * retries, zero extra fetches, and zero extra clock time.
  */
 export function isTransientFetchError(error: HttpFetchError): boolean {
-  return error.reason !== 'abort'
+  return error.reason === 'timeout' || error.reason === 'network'
 }
 
 /**
@@ -170,21 +166,8 @@ export const worstCaseRetryWindowMs = Effect.fnUntraced(function* (
   return (TRANSIENT_RETRY_RETRIES + 1) * perAttemptTimeoutMs + scheduleMs
 })
 
-function isAbortError(cause: unknown): boolean {
-  if (cause instanceof DOMException) return cause.name === 'AbortError'
-  if (cause instanceof Error) return cause.name === 'AbortError'
-  return false
-}
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause)
-}
-
-/** Optional counter sink for fetch timeouts (value-seam, not `R`-channel):
- *  defaults to the live singleton delegation below so every existing
- *  `layerWithFetch(fake)` call site keeps compiling with zero edits and prod
- *  files counters with no second sink. Tests inject a fake recording
- *  `incrementCounter` calls. Mirrors `HarnessSnapshotCounters` (Wave 4). */
+/** Optional counter sink for timeout tests; production delegates to the shared
+ * metric and operational log. */
 export interface HttpFetchCounters {
   incrementCounter: (
     name: OperationalLogCounter,
@@ -193,8 +176,7 @@ export interface HttpFetchCounters {
   ) => Effect.Effect<void>
 }
 
-/** Updates the runtime's native counter and forwards one delta through the
- * existing Logger and sanitized operational sink. No separate exporter. */
+/** Updates the runtime metric and forwards one delta through the operational sink. */
 const liveFetchCounters: HttpFetchCounters = {
   incrementCounter: Effect.fnUntraced(function* (
     name: OperationalLogCounter,
@@ -206,16 +188,6 @@ const liveFetchCounters: HttpFetchCounters = {
   }),
 }
 
-// Timeout-only counter: filed AFTER the deadline race resolves (the race
-// width is unchanged — `timeoutOption` already settled to `None` before this
-// runs), alongside the error mapping, never inside it. `catchCause` (which,
-// unlike `ignore`, also swallows defects and interruptions) covers every sink
-// defect — so the `HttpFetchError{timeout}` contract stays byte-identical.
-// Abort and network paths never file. Filed fields are reason-only — never
-// the URL, which is untrusted input and is on no list. `reason: 'timeout'` is
-// the single value allowlisted for this key (`ALLOWED_ENUM_FIELDS.reason`), so
-// the record breaks down by reason while every other `reason` string in the app
-// stays droppable; `sanitizeOperationalRecord` remains the enforcement point.
 function fileFetchTimeout(
   counters: HttpFetchCounters,
   timeoutMs: number,
@@ -227,224 +199,116 @@ function fileFetchTimeout(
       .pipe(Effect.catchCause(() => Effect.void))
     return yield* new HttpFetchError({
       reason: 'timeout',
-      message: `fetch timed out after ${timeoutMs}ms`,
+      message: 'fetch timed out after ' + timeoutMs + 'ms',
       url,
     })
   })
 }
 
-function makeFetch(
-  fetchImpl: typeof fetch,
-  counters: HttpFetchCounters = liveFetchCounters,
-): (url: string, init?: RequestInit, timeoutMs?: number) => Effect.Effect<Response, HttpFetchError> {
-  return Effect.fn('HttpFetch.fetch')(function* (
-    url: string,
-    init: RequestInit = {},
-    timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
-  ): Effect.fn.Return<Response, HttpFetchError> {
-    const attempt = Effect.acquireUseRelease(
-      Effect.sync(() => {
-        const controller = new AbortController()
-        const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal
-        const promise = (async () => fetchImpl(url, { ...init, signal }))()
-        return {
-          controller,
-          promise,
-          drain: promise.then(
-            () => undefined,
-            () => undefined,
-          ),
-        }
-      }),
-      owned =>
-        Effect.tryPromise({
-          try: () => owned.promise,
-          catch: cause =>
-            new HttpFetchError({
-              reason: init.signal?.aborted || isAbortError(cause) ? 'abort' : 'network',
-              message: errorMessage(cause),
-              url,
-            }),
-        }),
-      (owned, exit) =>
-        Effect.promise(() => {
-          if (Exit.isSuccess(exit)) return Promise.resolve()
-          owned.controller.abort()
-          // A caller stopping its producer waits for the native Promise. The
-          // existing HTTP deadline retains bounded recovery for a stuck transport.
-          return init.signal?.aborted ? owned.drain : Promise.resolve()
-        }),
-    )
-    const outcome = yield* attempt.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)))
-    if (Option.isNone(outcome)) {
-      return yield* fileFetchTimeout(counters, timeoutMs, url)
-    }
-    return outcome.value
-  })
+export interface HttpFetchResponse {
+  readonly ok: boolean
+  readonly status: number
+  readonly json: Effect.Effect<unknown, HttpFetchError>
 }
 
-function normalizeHeaderValue(value: string | readonly string[]): string {
-  return typeof value === 'string' ? value : value.join(', ')
+export interface HttpFetchOptions {
+  readonly headers?: HttpClientRequest.Options['headers']
+  readonly signal?: AbortSignal
 }
 
-function toHeaderRecord(headers: NonNullable<RequestInit['headers']> | undefined): Record<string, string> {
-  if (headers === undefined) return {}
-  if (headers instanceof Headers) return Object.fromEntries(headers.entries())
-  if (Array.isArray(headers)) return Object.fromEntries(headers)
-  const out: Record<string, string> = {}
-  for (const [name, value] of Object.entries(headers)) out[name] = normalizeHeaderValue(value)
-  return out
-}
-
-function findContentType(headers: Record<string, string>): string | undefined {
-  return Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1]
-}
-
-function toClientBody(
-  url: string,
-  body: RequestInit['body'],
-  contentType: string | undefined,
-): Effect.Effect<HttpBody.HttpBody | null, HttpFetchError> {
-  if (body === null || body === undefined) return Effect.succeed(null)
-  if (typeof body === 'string') return Effect.succeed(HttpBody.text(body, contentType))
-  if (body instanceof URLSearchParams) {
-    return Effect.succeed(HttpBody.text(body.toString(), contentType ?? 'application/x-www-form-urlencoded'))
-  }
-  if (body instanceof FormData) return Effect.succeed(HttpBody.formData(body))
-  if (body instanceof Blob) {
-    return Effect.tryPromise({
-      try: () => body.arrayBuffer(),
-      catch: cause =>
-        new HttpFetchError({
-          reason: 'network',
-          message: errorMessage(cause),
-          url,
-        }),
-    }).pipe(Effect.map(bytes => HttpBody.uint8Array(new Uint8Array(bytes), contentType || body.type || undefined)))
-  }
-  if (body instanceof ArrayBuffer) return Effect.succeed(HttpBody.uint8Array(new Uint8Array(body), contentType))
-  if (ArrayBuffer.isView(body)) {
-    const bytes = new Uint8Array(body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer)
-    return Effect.succeed(HttpBody.uint8Array(bytes, contentType))
-  }
-  if (body instanceof ReadableStream) {
-    return Effect.succeed(HttpBody.raw(body, contentType === undefined ? undefined : { contentType }))
-  }
-  return Effect.fail(new HttpFetchError({ reason: 'network', message: `unsupported request body for ${url}`, url }))
-}
-
-function buildClientRequest(
-  url: string,
-  init: RequestInit,
-): Effect.Effect<HttpClientRequest.HttpClientRequest, HttpFetchError> {
-  return Effect.gen(function* () {
-    const headers = toHeaderRecord(init.headers)
-    const body = yield* toClientBody(url, init.body ?? null, findContentType(headers))
-    const method = (init.method ?? 'GET') as HttpMethod
-    return body === null
-      ? HttpClientRequest.make(method)(url, { headers })
-      : HttpClientRequest.make(method)(url, { headers, body })
-  })
+function isAbortError(cause: unknown): boolean {
+  return (cause instanceof DOMException || cause instanceof Error) && cause.name === 'AbortError'
 }
 
 function toHttpFetchError(url: string, error: HttpClientError.HttpClientError): HttpFetchError {
   const cause = error.reason.cause
+  const reason =
+    error.reason._tag === 'DecodeError'
+      ? 'decode'
+      : error.reason._tag === 'TransportError' && isAbortError(cause)
+        ? 'abort'
+        : 'network'
   return new HttpFetchError({
-    reason: error.reason._tag === 'TransportError' && isAbortError(cause) ? 'abort' : 'network',
+    reason,
     message: cause instanceof Error ? cause.message : error.message,
     url,
   })
 }
 
-// The platform client has no `toWeb` accessor (`WebHttpClientResponse.source`
-// is private), so the response is rebuilt from the preserved surface — status,
-// headers, and body bytes. Lossy by construction and documented here: `url`,
-// `redirected`, `type`, and `statusText` reset to their defaults; multi-valued
-// headers collapse (`set-cookie` included — no caller reads it); the body is
-// buffered once up front, so the returned Response stays single-use exactly
-// like a fetch Response. Statuses are never failures: callers keep checking
-// `response.ok` themselves.
-function toWebResponse(
-  url: string,
-  response: HttpClientResponse.HttpClientResponse,
-): Effect.Effect<Response, HttpFetchError> {
-  return Effect.gen(function* () {
-    const buffer = yield* response.arrayBuffer.pipe(
-      Effect.mapError(cause => new HttpFetchError({ reason: 'network', message: cause.message, url })),
-    )
-    const headers = new Headers()
-    for (const [name, value] of Object.entries(response.headers)) headers.set(name, value)
-    return new Response(buffer.byteLength === 0 ? null : buffer, { status: response.status, headers })
+function callerAbort(signal: AbortSignal, url: string): Effect.Effect<never, HttpFetchError> {
+  return Effect.callback(resume => {
+    const fail = () =>
+      resume(Effect.fail(new HttpFetchError({ reason: 'abort', message: 'fetch aborted by caller', url })))
+    signal.addEventListener('abort', fail, { once: true })
+    if (signal.aborted) fail()
+    return Effect.sync(() => signal.removeEventListener('abort', fail))
   })
 }
 
-// Live fetch over the in-package platform client (`FetchHttpClient.layer` +
-// `HttpClient`): the platform executor passes its abort signal to fetch, so
-// fiber interruption still aborts the underlying request, and transport
-// failures still collapse to `TransportError{cause}`, which keeps the
-// `{timeout|abort|network}` mapping via the same abort-cause inspection.
-// Deliberately NOT applied: `retryTransient`/`filterStatusOk` — this CLIENT
-// stays single-attempt on purpose. The bounded retry that closes F15 lives at
-// the four call sites (`retryTransientFetch` above), not in here, so one
-// `HttpFetch.fetch` is still exactly one wire request with one 8s ceiling and
-// a status is still not a failure. The old comment here said the no-retry
-// contract stood "because callers degrade to fallbacks"; the degrade is real
-// but a blip used to cost 24h of stale FX, so the retry moved up a level
-// instead of disappearing. The Clock timeout covers request completion
-// (headers), matching the previous `fetch()`
-// resolution window; body bytes are consumed after it, exactly where callers
-// already read `response.json()` themselves. Requests carrying a caller
-// `AbortSignal` cannot be expressed in the platform request model, so they
-// keep the bespoke `AbortSignal.any` combining executor over the same `Fetch`
-// transport — same seam, same semantics.
-function makeClientFetch(
-  client: HttpClient.HttpClient,
-  counters: HttpFetchCounters = liveFetchCounters,
-): (url: string, init?: RequestInit, timeoutMs?: number) => Effect.Effect<Response, HttpFetchError> {
-  return Effect.fn('HttpFetch.fetch')(function* (
-    url: string,
-    init: RequestInit = {},
-    timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
-  ): Effect.fn.Return<Response, HttpFetchError> {
-    if (init.signal?.aborted === true) {
-      return yield* new HttpFetchError({ reason: 'abort', message: 'fetch aborted before start', url })
-    }
-    if (init.signal !== undefined && init.signal !== null) {
-      return yield* makeFetch(yield* FetchHttpClient.Fetch, counters)(url, init, timeoutMs)
-    }
-    const request = yield* buildClientRequest(url, init)
-    const outcome = yield* client.execute(request).pipe(
-      Effect.mapError(error => toHttpFetchError(url, error)),
-      Effect.timeoutOption(Duration.millis(timeoutMs)),
-    )
-    if (Option.isNone(outcome)) {
-      // Same timeout-only filing as `makeFetch` (see `fileFetchTimeout`).
-      return yield* fileFetchTimeout(counters, timeoutMs, url)
-    }
-    return yield* toWebResponse(url, outcome.value)
-  })
+function makeHttpFetchLayer(counters: HttpFetchCounters = liveFetchCounters) {
+  return Layer.effect(
+    HttpFetch,
+    Effect.map(HttpClient.HttpClient, client =>
+      HttpFetch.of({
+        fetch: Effect.fn('HttpFetch.fetch')(function* (
+          url: string,
+          options: HttpFetchOptions = {},
+          timeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
+        ): Effect.fn.Return<HttpFetchResponse, HttpFetchError> {
+          if (options.signal?.aborted) {
+            return yield* new HttpFetchError({ reason: 'abort', message: 'fetch aborted before start', url })
+          }
+          const request = HttpClientRequest.get(url, {
+            headers: options.headers,
+          })
+          const requestEffect = client.execute(request).pipe(
+            Effect.mapError(error => toHttpFetchError(url, error)),
+            Effect.timeoutOption(Duration.millis(timeoutMs)),
+          )
+          const outcome = options.signal
+            ? yield* Effect.raceFirst(requestEffect, callerAbort(options.signal, url))
+            : yield* requestEffect
+          if (Option.isNone(outcome)) return yield* fileFetchTimeout(counters, timeoutMs, url)
+
+          const response = outcome.value
+          return {
+            status: response.status,
+            ok: response.status >= 200 && response.status < 300,
+            json: response.json.pipe(
+              Effect.mapError(error => toHttpFetchError(url, error)),
+              body => (options.signal ? Effect.raceFirst(body, callerAbort(options.signal, url)) : body),
+            ),
+          }
+        }),
+      }),
+    ),
+  )
 }
 
-/** Effect-native fetch with explicit timeout and typed failures. Timeout uses
- * the Effect Clock (TestClock-controllable); fiber interruption aborts the
- * underlying fetch via the platform client's abort signal (bespoke
- * `AbortSignal.any` combining for caller-signal requests) — no manual
- * AbortSignal plumbing at call sites. `fetch` itself is single-attempt and
- * stays that way: the bounded `retryTransientFetch` is applied by the FX /
- * pricing / updates / gateway call sites, not here, so this service is
- * unchanged and callers still degrade to cached/snapshot fallbacks — just
- * after a bounded retry instead of after one attempt. */
+/** HttpClient-backed JSON request. The timeout covers response headers, matching
+ * the established contract; body decoding remains separate so non-2xx
+ * fallbacks never read their bodies. Retries wrap this request only and never
+ * repeat JSON decoding. */
 export class HttpFetch extends Context.Service<
   HttpFetch,
   {
-    readonly fetch: (url: string, init?: RequestInit, timeoutMs?: number) => Effect.Effect<Response, HttpFetchError>
+    readonly fetch: (
+      url: string,
+      options?: HttpFetchOptions,
+      timeoutMs?: number,
+    ) => Effect.Effect<HttpFetchResponse, HttpFetchError>
   }
 >()('watchtower/pipeline/HttpFetch') {
-  static readonly layer = Layer.effect(
-    HttpFetch,
-    Effect.map(HttpClient.HttpClient, client => HttpFetch.of({ fetch: makeClientFetch(client) })),
-  ).pipe(Layer.provide(FetchHttpClient.layer))
+  /** Requires an HttpClient supplied by the application composition root. */
+  static get layer() {
+    return makeHttpFetchLayer()
+  }
 
-  static readonly layerWithFetch = (fetchImpl: typeof fetch, counters?: HttpFetchCounters) =>
-    Layer.succeed(HttpFetch, HttpFetch.of({ fetch: makeFetch(fetchImpl, counters ?? liveFetchCounters) }))
+  /** Test seam using the same FetchHttpClient and request pipeline as production. */
+  static get layerWithFetch() {
+    return (fetchImpl: typeof fetch, counters: HttpFetchCounters = liveFetchCounters) =>
+      makeHttpFetchLayer(counters).pipe(
+        Layer.provide(FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetchImpl)))),
+      )
+  }
 }
