@@ -1,3 +1,4 @@
+import { it as effectIt } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
@@ -168,9 +169,9 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
     expect(saved.get('EUR')?.updatedAt).toBe(active.updatedAt)
   })
 
-  it('TestClock governs staleness for the port-based core', async () => {
-    const { saved, ratesLayer } = makeFakeRates()
-    const program = Effect.gen(function* () {
+  effectIt.effect('TestClock governs staleness for the port-based core', () =>
+    Effect.gen(function* () {
+      const { saved, ratesLayer } = makeFakeRates()
       const first = yield* refreshFxRateWithRates('EUR').pipe(
         Effect.provide(ratesLayer),
         Effect.provide(HttpFetch.layerWithFetch(fakeFetchOk({ EUR: 0.9 }))),
@@ -194,9 +195,8 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
       )
       expect(third.rate).toBe(0.85)
       expect(saved.get('EUR')?.rate).toBe(0.85)
-    })
-    await Effect.runPromise(program.pipe(Effect.provide(TestClock.layer())))
-  })
+    }),
+  )
 
   it('fiber interruption does not persist a partial rate', async () => {
     const fixture = openLedgerFixture()
