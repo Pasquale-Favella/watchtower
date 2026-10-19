@@ -1,4 +1,5 @@
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import { it as effectIt } from '@effect/vitest'
 /**
  * Bounded transient retry on the four outbound fetch call sites (F15 / plan A1).
  *
@@ -34,6 +35,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Env } from '../src/main/env.js'
 import { type ActiveCurrency, FX_CACHE_TTL_MS, FxRates, refreshFxRateWithRates } from '../src/main/fx.js'
 import {
+  fetchJsonWithRetry,
   HttpFetch,
   HttpFetchError,
   isTransientFetchError,
@@ -104,6 +106,30 @@ function jsonFetch(status: number, body: unknown): { fetch: typeof fetch; calls:
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
   }) as unknown as typeof fetch
   return { fetch: impl, calls: () => calls }
+}
+
+function interruptedBodyFetch(reason: 'network' | 'abort'): { fetch: typeof fetch; calls: () => number } {
+  let calls = 0
+  return {
+    calls: () => calls,
+    fetch: (async () => {
+      calls += 1
+      return new Response(
+        new ReadableStream<Uint8Array>(
+          {
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"partial":'))
+            },
+            pull(controller) {
+              controller.error(reason === 'abort' ? new DOMException('aborted', 'AbortError') : new Error('body reset'))
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { status: 200 },
+      )
+    }) as typeof fetch,
+  }
 }
 
 /** Hangs forever, so the ONLY way out is the per-attempt Clock timeout —
@@ -237,6 +263,121 @@ describe('HttpFetch stays single-attempt (the retry is a call-site property)', (
     expect(error).toBeInstanceOf(HttpFetchError)
     expect(calls()).toBe(1)
   })
+})
+
+describe('response body transport participates in the shared retry policy', () => {
+  effectIt.effect('FX retries a partial body failure before falling back', () =>
+    Effect.gen(function* () {
+      const down = interruptedBodyFetch('network')
+      const { layer, saved } = fakeRates()
+      const result = yield* joinAfterAdvance(fxProgram(layer, down.fetch), RETRY_ENVELOPE_MS)
+      expect(down.calls()).toBe(1 + TRANSIENT_RETRY_RETRIES)
+      expect(result.rate).toBe(1)
+      expect(saved.size).toBe(0)
+    }),
+  )
+
+  effectIt.effect('pricing retries a partial body failure before returning a typed fetch error', () =>
+    Effect.gen(function* () {
+      const down = interruptedBodyFetch('network')
+      const error = yield* joinAfterAdvance(
+        refreshPricingNowEffect().pipe(
+          Effect.provide(NodeFileSystem.layer),
+          Effect.provide(HttpFetch.layerWithFetch(down.fetch)),
+          Effect.flip,
+        ),
+        RETRY_ENVELOPE_MS,
+      )
+      expect(down.calls()).toBe(1 + TRANSIENT_RETRY_RETRIES)
+      expect(error).toBeInstanceOf(PricingRefreshError)
+      expect(error.reason).toBe('fetch')
+    }),
+  )
+
+  effectIt.effect('updates retry a partial body failure before returning a typed network error', () =>
+    Effect.gen(function* () {
+      const down = interruptedBodyFetch('network')
+      const error = yield* joinAfterAdvance(
+        fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(down.fetch)), Effect.flip),
+        RETRY_ENVELOPE_MS,
+      )
+      expect(down.calls()).toBe(1 + TRANSIENT_RETRY_RETRIES)
+      expect(error).toBeInstanceOf(UpdateFetchError)
+      expect(error.reason).toBe('network')
+    }),
+  )
+
+  effectIt.effect('gateway retries a partial body failure and logs one fallback', () =>
+    Effect.gen(function* () {
+      const down = interruptedBodyFetch('network')
+      const rows = yield* joinAfterAdvance(
+        fetchVercelGatewayReportEffect(RANGE).pipe(
+          Effect.provide(HttpFetch.layerWithFetch(down.fetch)),
+          Effect.provide(Env.layerWithGatewayKey('test-key')),
+        ),
+        RETRY_ENVELOPE_MS,
+      )
+      expect(down.calls()).toBe(1 + TRANSIENT_RETRY_RETRIES)
+      expect(rows).toEqual([])
+      expect(takeQueuedLogRecords()).toHaveLength(1)
+    }),
+  )
+
+  effectIt.effect('a body abort does not schedule another request', () =>
+    Effect.gen(function* () {
+      const down = interruptedBodyFetch('abort')
+      const error = yield* fetchJsonWithRetry('https://example.test/body').pipe(
+        Effect.provide(HttpFetch.layerWithFetch(down.fetch)),
+        Effect.flip,
+      )
+      expect(error.reason).toBe('abort')
+      expect(down.calls()).toBe(1)
+    }),
+  )
+
+  effectIt.effect('malformed JSON does not schedule another request', () =>
+    Effect.gen(function* () {
+      let calls = 0
+      const fetchImpl = (async () => {
+        calls += 1
+        return new Response('{"unfinished":', { status: 200 })
+      }) as typeof fetch
+      const error = yield* fetchJsonWithRetry('https://example.test/body').pipe(
+        Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+        Effect.flip,
+      )
+      expect(error.reason).toBe('decode')
+      expect(calls).toBe(1)
+    }),
+  )
+
+  effectIt.effect('non-2xx responses neither read a body nor schedule another request', () =>
+    Effect.gen(function* () {
+      let calls = 0
+      let reads = 0
+      const fetchImpl = (async () => {
+        calls += 1
+        return new Response(
+          new ReadableStream(
+            {
+              pull: () => {
+                reads += 1
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+          { status: 503 },
+        )
+      }) as typeof fetch
+      const result = yield* fetchJsonWithRetry('https://example.test/body').pipe(
+        Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+      )
+      expect(result.status).toBe(503)
+      expect(result.ok).toBe(false)
+      expect(calls).toBe(1)
+      expect(reads).toBe(0)
+    }),
+  )
 })
 
 // ---------------------------------------------------------------------------

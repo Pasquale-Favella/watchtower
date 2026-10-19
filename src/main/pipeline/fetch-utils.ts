@@ -32,6 +32,8 @@ export const TRANSIENT_RETRY_BASE_MS = 250
 export const TRANSIENT_RETRY_CAP_MS = 1_000
 export const TRANSIENT_RETRY_RETRIES = 2
 
+const responseJsonSchema = Schema.fromJsonString(Schema.Unknown)
+
 /**
  * `Schedule.jittered`'s default spread: each stepped delay can be drawn up to
  * 20% above nominal, so a worst-case window multiplies by this. Named so the
@@ -92,8 +94,8 @@ export const transientRetrySchedule: Schedule.Schedule<Duration.Duration, HttpFe
  * wake-from-sleep, a dropped connection, a half-open Wi-Fi), so both retry.
  * A non-2xx status is deliberately absent: statuses are not failures here, so
  * a 500 never reaches this predicate and is handled by the caller's own
- * `response.ok` check exactly as before. JSON decoding also stays outside the
- * retry and `decode` errors are never transient.
+ * `response.ok` check exactly as before. Body transport failures also retry;
+ * JSON syntax and schema failures are never transient.
  *
  * `abort` is the interruption signal — fiber interruption or a caller
  * `AbortSignal` — and it is what makes the retry honest: retrying it would
@@ -107,8 +109,8 @@ export function isTransientFetchError(error: HttpFetchError): boolean {
 
 /**
  * How the four call sites (FX, pricing, updates, gateway) apply the bounded
- * retry: `http.fetch(url, {}, timeout).pipe(retryTransientFetch,
- * Effect.mapError(...))`.
+ * retry. `fetchJsonWithRetry` includes the successful response body in each
+ * attempt, before callers map transport errors to their domain errors.
  *
  * Bundling the schedule and its abort guard into one point-free step is what
  * keeps the policy uniform: the guard is the half that makes a retry honest, so
@@ -222,14 +224,8 @@ function isAbortError(cause: unknown): boolean {
 
 function toHttpFetchError(url: string, error: HttpClientError.HttpClientError): HttpFetchError {
   const cause = error.reason.cause
-  const reason =
-    error.reason._tag === 'DecodeError'
-      ? 'decode'
-      : error.reason._tag === 'TransportError' && isAbortError(cause)
-        ? 'abort'
-        : 'network'
   return new HttpFetchError({
-    reason,
+    reason: isAbortError(cause) ? 'abort' : 'network',
     message: cause instanceof Error ? cause.message : error.message,
     url,
   })
@@ -274,8 +270,15 @@ function makeHttpFetchLayer(counters: HttpFetchCounters = liveFetchCounters) {
           return {
             status: response.status,
             ok: response.status >= 200 && response.status < 300,
-            json: response.json.pipe(
+            json: response.text.pipe(
               Effect.mapError(error => toHttpFetchError(url, error)),
+              Effect.flatMap(text =>
+                text === ''
+                  ? Effect.succeed(null)
+                  : Schema.decodeUnknownEffect(responseJsonSchema)(text).pipe(
+                      Effect.mapError(cause => new HttpFetchError({ reason: 'decode', message: cause.message, url })),
+                    ),
+              ),
               body => (options.signal ? Effect.raceFirst(body, callerAbort(options.signal, url)) : body),
             ),
           }
@@ -287,8 +290,8 @@ function makeHttpFetchLayer(counters: HttpFetchCounters = liveFetchCounters) {
 
 /** HttpClient-backed JSON request. The timeout covers response headers, matching
  * the established contract; body decoding remains separate so non-2xx
- * fallbacks never read their bodies. Retries wrap this request only and never
- * repeat JSON decoding. */
+ * fallbacks never read their bodies. Use `fetchJsonWithRetry` to retry a
+ * successful response's body transport together with its request. */
 export class HttpFetch extends Context.Service<
   HttpFetch,
   {
@@ -312,3 +315,23 @@ export class HttpFetch extends Context.Service<
       )
   }
 }
+
+export interface HttpJsonResponse {
+  readonly ok: boolean
+  readonly status: number
+  readonly body: unknown
+}
+
+/** Retry request and body transport as one attempt. Non-2xx bodies stay unread. */
+export const fetchJsonWithRetry = Effect.fnUntraced(function* (
+  url: string,
+  options: HttpFetchOptions = {},
+  timeoutMs?: number,
+): Effect.fn.Return<HttpJsonResponse, HttpFetchError, HttpFetch> {
+  const http = yield* HttpFetch
+  return yield* Effect.gen(function* () {
+    const response = yield* http.fetch(url, options, timeoutMs)
+    const body = response.ok ? yield* response.json : undefined
+    return { ok: response.ok, status: response.status, body }
+  }).pipe(retryTransientFetch)
+})

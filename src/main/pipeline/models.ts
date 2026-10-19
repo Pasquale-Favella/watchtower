@@ -8,7 +8,7 @@ import { join } from 'path'
 import { type AppPaths, Env, resolveCacheDir } from '../env.js'
 import snapshotData from './data/litellm-snapshot.json'
 import fallbackData from './data/pricing-fallback.json'
-import { DEFAULT_FETCH_TIMEOUT_MS, HttpFetch, retryTransientFetch } from './fetch-utils.js'
+import { DEFAULT_FETCH_TIMEOUT_MS, fetchJsonWithRetry, HttpFetch } from './fetch-utils.js'
 import { getShortModelName as getShortModelNamePure } from './model-names.js'
 import {
   calculateCostResult,
@@ -1017,28 +1017,21 @@ const loadCachedPricingEffect = Effect.fn('loadCachedPricingEffect')(function* (
 const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(function* (
   timeoutMs?: number,
 ): Effect.fn.Return<Map<string, ModelCosts>, PricingRefreshError, HttpFetch | FileSystem.FileSystem> {
-  const http = yield* HttpFetch
   // Bounded transient retry (F15/A1), applied BEFORE the `mapError` so the
   // schedule sees the raw `HttpFetchError` and its `reason`. Without it a blip
   // sent the whole refresh to the on-disk cache for its full TTL. The non-2xx
   // arm below is deliberately OUTSIDE the retry: a 500 is a real answer, not a
   // transient failure, so it fails fast exactly as before.
-  const response = yield* http.fetch(LITELLM_URL, {}, timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS).pipe(
-    retryTransientFetch,
-    Effect.mapError(cause => new PricingRefreshError({ reason: 'fetch', message: cause.message })),
+  const response = yield* fetchJsonWithRetry(LITELLM_URL, {}, timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS).pipe(
+    Effect.mapError(
+      cause =>
+        new PricingRefreshError({ reason: cause.reason === 'decode' ? 'decode' : 'fetch', message: cause.message }),
+    ),
   )
   if (!response.ok) {
     return yield* new PricingRefreshError({ reason: 'http', message: `HTTP ${response.status}` })
   }
-  const unknownData = yield* response.json.pipe(
-    Effect.mapError(
-      cause =>
-        new PricingRefreshError({
-          reason: 'decode',
-          message: cause.message || describeErrorCause(cause),
-        }),
-    ),
-  )
+  const unknownData = response.body
   const data = yield* Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Unknown))(unknownData).pipe(
     Effect.mapError(
       cause =>

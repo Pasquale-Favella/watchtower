@@ -3,7 +3,7 @@ import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
 import { Env } from '../../env.js'
-import { HttpFetch, HttpFetchError, retryTransientFetch } from '../fetch-utils.js'
+import { fetchJsonWithRetry, HttpFetch, HttpFetchError } from '../fetch-utils.js'
 import { fileErrorCode, queueLogRecord } from '../file-errors.js'
 import { ScanAbortedError, scanAbortError } from '../scan-control.js'
 import type { DateRange } from '../types.js'
@@ -57,25 +57,22 @@ export const fetchVercelGatewayReportEffect = Effect.fn('fetchVercelGatewayRepor
     group_by: 'model',
   })
 
-  const http = yield* HttpFetch
   return yield* Effect.acquireUseRelease(
     Effect.sync(() => new AbortController()),
     controller =>
       Effect.gen(function* () {
-        // Bounded transient retry (F15/A1) on the fetch only: discovery used to
+        // Bounded transient retry (F15/A1) on request and body transport: discovery used to
         // answer "no sessions" (plus one `unreachable` warn) off a single blip,
         // which silently zeroes a whole provider's cost for the scan. The
         // non-2xx arm below stays OUTSIDE the retry — a 401/500 is a real answer,
         // and the warn code it logs is byte-identical to today's.
-        const res = yield* http
-          .fetch(`${REPORT_URL}?${params}`, {
-            headers: {
-              Authorization: `Bearer ${key}`,
-              Accept: 'application/json',
-            },
-            signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
-          })
-          .pipe(retryTransientFetch)
+        const res = yield* fetchJsonWithRetry(`${REPORT_URL}?${params}`, {
+          headers: {
+            Authorization: `Bearer ${key}`,
+            Accept: 'application/json',
+          },
+          signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+        })
 
         if (!res.ok) {
           // The gateway error body can carry request echoes — status only.
@@ -83,7 +80,7 @@ export const fetchVercelGatewayReportEffect = Effect.fn('fetchVercelGatewayRepor
           return []
         }
 
-        const body = yield* res.json
+        const body = res.body
         if (signal?.aborted) return yield* scanAbortError(signal)
         const report = yield* Schema.decodeUnknownEffect(gatewayReportSchema)(body)
         return report.results ?? []
