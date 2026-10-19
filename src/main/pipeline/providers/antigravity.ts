@@ -470,11 +470,32 @@ const cacheIo = Effect.fnUntraced(function* <A, R>(
   )
 })
 
-function platformErrorFromCloseExit(exit: Exit.Exit<void, never>): PlatformError.PlatformError | null {
-  if (Exit.isSuccess(exit) || exit.cause.reasons.length !== 1) return null
-  const reason = exit.cause.reasons[0]
-  if (!reason || !Cause.isDieReason(reason) || !PlatformError.isPlatformError(reason.defect)) return null
-  return reason.defect
+function expectedPlatformCloseCause(exit: Exit.Exit<void, never>): Cause.Cause<AntigravityCacheIoError> | null {
+  if (
+    Exit.isSuccess(exit) ||
+    exit.cause.reasons.length === 0 ||
+    !exit.cause.reasons.every(reason => Cause.isDieReason(reason) && PlatformError.isPlatformError(reason.defect))
+  ) {
+    return null
+  }
+  return Cause.fromReasons(
+    exit.cause.reasons.flatMap(reason => {
+      if (!Cause.isDieReason(reason) || !PlatformError.isPlatformError(reason.defect)) return []
+      return [
+        Cause.makeFailReason(
+          new AntigravityCacheIoError({
+            operation: 'close',
+            cause: reason.defect,
+            message: 'Antigravity cache close failed',
+          }),
+        ),
+      ]
+    }),
+  )
+}
+
+function hasScanAbort<E>(cause: Cause.Cause<E>): boolean {
+  return cause.reasons.some(reason => Cause.isFailReason(reason) && isScanAbortedError(reason.error))
 }
 
 const loadCacheEffect = Effect.fnUntraced(function* (
@@ -570,7 +591,10 @@ export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffec
       )
       if (Exit.isFailure(openExit)) {
         const closeExit = yield* Effect.exit(Effect.uninterruptible(Scope.close(fileScope, Exit.succeed(undefined))))
-        if (Exit.isFailure(closeExit)) return yield* Effect.failCause(Cause.combine(openExit.cause)(closeExit.cause))
+        if (Exit.isFailure(closeExit)) {
+          const expectedCloseCause = expectedPlatformCloseCause(closeExit)
+          return yield* Effect.failCause(Cause.combine(openExit.cause)(expectedCloseCause ?? closeExit.cause))
+        }
         return yield* Effect.failCause(openExit.cause)
       }
 
@@ -584,18 +608,16 @@ export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffec
       )
       const closeExit = yield* Effect.exit(Effect.uninterruptible(Scope.close(fileScope, Exit.succeed(undefined))))
       if (Exit.isFailure(writeExit)) {
-        if (Exit.isFailure(closeExit)) return yield* Effect.failCause(Cause.combine(writeExit.cause)(closeExit.cause))
+        if (Exit.isFailure(closeExit)) {
+          const expectedCloseCause = expectedPlatformCloseCause(closeExit)
+          if (expectedCloseCause && hasScanAbort(writeExit.cause)) return yield* Effect.failCause(writeExit.cause)
+          return yield* Effect.failCause(Cause.combine(writeExit.cause)(expectedCloseCause ?? closeExit.cause))
+        }
         return yield* Effect.failCause(writeExit.cause)
       }
       if (Exit.isFailure(closeExit)) {
-        const platformCloseError = platformErrorFromCloseExit(closeExit)
-        if (platformCloseError) {
-          return yield* new AntigravityCacheIoError({
-            operation: 'close',
-            cause: platformCloseError,
-            message: 'Antigravity cache close failed',
-          })
-        }
+        const expectedCloseCause = expectedPlatformCloseCause(closeExit)
+        if (expectedCloseCause) return yield* Effect.failCause(expectedCloseCause)
         return yield* Effect.failCause(closeExit.cause)
       }
       yield* checkCacheAbort(signal)

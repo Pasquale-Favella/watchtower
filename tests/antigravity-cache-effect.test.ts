@@ -16,6 +16,7 @@ const hooks = vi.hoisted(() => ({
   failRandomBytes: false,
   renameCalls: 0,
   pauseWrite: false,
+  abortOnWrite: undefined as (() => void) | undefined,
   onWriteStarted: undefined as (() => void) | undefined,
   releaseWrite: undefined as (() => void) | undefined,
   cleanupAfterClose: [] as boolean[],
@@ -89,6 +90,7 @@ function hookedFileSystem(fs: FileSystem.FileSystem): FileSystem.FileSystem {
           sync: handle.sync.pipe(Effect.asVoid),
           writeAll: bytes =>
             Effect.promise(async () => {
+              hooks.abortOnWrite?.()
               if (!hooks.pauseWrite) return
               hooks.pauseWrite = false
               await new Promise<void>(resolve => {
@@ -142,6 +144,7 @@ beforeEach(async () => {
   hooks.failRandomBytes = false
   hooks.renameCalls = 0
   hooks.pauseWrite = false
+  hooks.abortOnWrite = undefined
   hooks.onWriteStarted = undefined
   hooks.releaseWrite = undefined
   hooks.cleanupAfterClose.length = 0
@@ -304,6 +307,27 @@ describe('Antigravity native cache effects', () => {
     expect(hooks.renameCalls).toBe(1)
   })
 
+  it('recovers when a typed write failure is followed by an expected close failure', async () => {
+    const { cachePath, sourcePath, rawCache } = await seedCache()
+    await loadThroughParser(sourcePath)
+    hooks.failWrite = true
+    hooks.failClose = true
+
+    await expect(flushCache(new Set())).resolves.toBeUndefined()
+
+    expect(await readFile(cachePath, 'utf-8')).toBe(rawCache)
+    expect(hooks.renameCalls).toBe(0)
+    expect(hooks.cleanupAfterClose).toEqual([true, false])
+    expect((await readdir(root)).filter(name => name.endsWith('.tmp'))).toEqual([])
+    await expectTempHandleClosed()
+
+    hooks.failWrite = false
+    hooks.failClose = false
+    await flushCache()
+    expect(JSON.parse(await readFile(cachePath, 'utf-8'))).toEqual({ version: 5, cascades: {} })
+    expect(hooks.renameCalls).toBe(1)
+  })
+
   it('preserves defects from scoped filesystem release', async () => {
     const { sourcePath } = await seedCache()
     await loadThroughParser(sourcePath)
@@ -337,6 +361,34 @@ describe('Antigravity native cache effects', () => {
           reason => Cause.isFailReason(reason) && reason.error._tag === 'AntigravityCacheIoError',
         ),
       ).toBe(true)
+    }
+    expect(hooks.renameCalls).toBe(0)
+    expect((await readdir(root)).filter(name => name.endsWith('.tmp'))).toEqual([])
+    await expectTempHandleClosed()
+  })
+
+  it('preserves an arbitrary close defect alongside a typed scan abort', async () => {
+    const { sourcePath } = await seedCache()
+    await loadThroughParser(sourcePath)
+    const controller = new AbortController()
+    hooks.abortOnWrite = () => controller.abort()
+    hooks.dieClose = true
+
+    const result = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        yield* provider
+          .flushAntigravityCacheEffect(new Set(), controller.signal)
+          .pipe(Effect.provideService(FileSystem.FileSystem, hookedFileSystem(fs)))
+      }).pipe(Effect.provide(NodeFileSystem.layer)),
+    )
+
+    expect(Exit.isFailure(result)).toBe(true)
+    if (Exit.isFailure(result)) {
+      expect(
+        result.cause.reasons.some(reason => Cause.isFailReason(reason) && reason.error._tag === 'ScanAbortedError'),
+      ).toBe(true)
+      expect(result.cause.reasons.some(Cause.isDieReason)).toBe(true)
     }
     expect(hooks.renameCalls).toBe(0)
     expect((await readdir(root)).filter(name => name.endsWith('.tmp'))).toEqual([])
