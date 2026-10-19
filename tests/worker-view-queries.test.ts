@@ -347,11 +347,31 @@ describe('worker view queries', () => {
       )
       expect(projection).toHaveBeenCalledTimes(projectedOperations.has(operation) ? 1 : 0)
       expect(overviewProjection).toHaveBeenCalledTimes(overviewOperations.has(operation) ? 1 : 0)
+      if (!projectedOperations.has(operation)) {
+        const expectedRange = overviewDateRange(scope, new Date())
+        if (overviewOperations.has(operation)) expect(overviewProjection).toHaveBeenCalledWith(expectedRange)
+        else expect(snapshot).toHaveBeenCalledWith(expectedRange)
+      }
       expect(aliases).not.toHaveBeenCalled()
       expect(overrides).not.toHaveBeenCalled()
       expect(dismissalRead).toHaveBeenCalledTimes(operation === 'skills:view' ? 1 : 0)
     })
   })
+
+  it.each(operations.filter(operation => !projectedOperations.has(operation)))(
+    'keeps the lifetime read unbounded for %s',
+    async operation => {
+      await withWorker(async (context, owner) => {
+        const snapshot = vi.spyOn(owner.runtime.runSync(LedgerQueries), 'getRequestSnapshotData')
+        const overview = vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getOverviewData')
+
+        await context.dispatch(operation, [{ period: 'lifetime' }])
+
+        if (overviewOperations.has(operation)) expect(overview).toHaveBeenCalledExactlyOnceWith(undefined)
+        else expect(snapshot).toHaveBeenCalledExactlyOnceWith(undefined)
+      })
+    },
+  )
 
   it.each(operations)('reflects alias and override changes on the next %s request without a scan', async operation => {
     await withWorker(async (context, owner) => {
@@ -407,7 +427,16 @@ describe('worker view queries', () => {
       const failure = Schema.decodeUnknownEffect(Schema.Number)('invalid')
       if (overviewOperations.has(operation)) {
         vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getOverviewData').mockReturnValue(
-          failure.pipe(Effect.as({ sessions: [], turns: [], calls: [], aliases: [], overrides: [] })),
+          failure.pipe(
+            Effect.as({
+              sessions: [],
+              turns: [],
+              calls: [],
+              aliases: [],
+              overrides: [],
+              lifetime: { dataStartTimestamp: null, models: [] },
+            }),
+          ),
         )
       } else if (projectedOperations.has(operation)) {
         vi.spyOn(owner.runtime.runSync(LedgerViewReads), 'getViewData').mockReturnValue(

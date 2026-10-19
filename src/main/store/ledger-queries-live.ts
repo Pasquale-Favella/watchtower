@@ -10,10 +10,12 @@ import {
   modelAliasRowSchema,
   priceOverrideRowSchema,
 } from '../../shared/schemas/ledger.js'
+import type { DateRange } from '../pipeline/types.js'
 import { SELECT_MODEL_ALIASES, SELECT_PRICE_OVERRIDES } from './ledger-config-live.js'
 import { LedgerQueries } from './ledger-ports.js'
 import { decodeRows } from './ledger-repository-codec.js'
-import { ledgerCallFactsRowSchema } from './read-projections.js'
+import { ledgerCallFactsRowSchema, ledgerLifetimeModelSchema } from './read-projections.js'
+import { candidateTimestampBounds, selectScopedSessionRows } from './scoped-snapshot-sql.js'
 
 const SELECT_SOURCES = `
   SELECT id, provider, env_fingerprint, file_path, repo_url, project,
@@ -25,38 +27,129 @@ const SELECT_SOURCES = `
 
 const SELECT_HAS_SOURCES = 'SELECT 1 FROM ledger_source LIMIT 1'
 
-const SELECT_SESSIONS = `
-  SELECT source_id, session_id, project, project_path, working_directory, canonical_project, canonical_cwd,
-         agent_type, title, pr_links_json, is_sidechain, parent_session_id, agent_spawn_links_json,
-         mcp_inventory_json, ambiguous_spawn_agent_ids_json, ever_had_branch
-  FROM ledger_session ORDER BY session_id ASC
-`
+const SESSION_COLUMNS = [
+  'source_id',
+  'session_id',
+  'project',
+  'project_path',
+  'working_directory',
+  'canonical_project',
+  'canonical_cwd',
+  'agent_type',
+  'title',
+  'pr_links_json',
+  'is_sidechain',
+  'parent_session_id',
+  'agent_spawn_links_json',
+  'mcp_inventory_json',
+  'ambiguous_spawn_agent_ids_json',
+  'ever_had_branch',
+] as const
 
-const SELECT_TURNS = `
-  SELECT source_id, session_id, turn_index, timestamp, user_message, git_branch, pr_refs_json,
-         spawn_tool_use_ids_json, category, sub_category, retries, has_edits
-  FROM ledger_turn ORDER BY session_id ASC, turn_index ASC
-`
+const TURN_COLUMNS = [
+  'source_id',
+  'session_id',
+  'turn_index',
+  'timestamp',
+  'user_message',
+  'git_branch',
+  'pr_refs_json',
+  'spawn_tool_use_ids_json',
+  'category',
+  'sub_category',
+  'retries',
+  'has_edits',
+] as const
 
-const SELECT_CALLS = `
-  SELECT source_id, session_id, turn_index, call_index, call_key, dedup_key, provider, model, timestamp, speed,
-         project, project_path, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
-         input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
-         reasoning_tokens, web_search_requests, cache_creation_one_hour_tokens, agent_type,
-         tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
-         tool_sequence_json,
-         loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
-  FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
-`
+const CALL_COLUMNS = [
+  'source_id',
+  'session_id',
+  'turn_index',
+  'call_index',
+  'call_key',
+  'dedup_key',
+  'provider',
+  'model',
+  'timestamp',
+  'speed',
+  'project',
+  'project_path',
+  'working_directory',
+  'base_cost_usd',
+  'is_estimated',
+  'savings_usd',
+  'savings_baseline_model',
+  'input_tokens',
+  'output_tokens',
+  'cache_creation_input_tokens',
+  'cache_read_input_tokens',
+  'cached_input_tokens',
+  'reasoning_tokens',
+  'web_search_requests',
+  'cache_creation_one_hour_tokens',
+  'agent_type',
+  'tools_json',
+  'mcp_tools_json',
+  'skills_json',
+  'subagent_types_json',
+  'bash_commands_json',
+  'tool_sequence_json',
+  'loc_added',
+  'loc_removed',
+  'interrupted',
+  'user_modified',
+  'tool_errors',
+  'edit_failed',
+] as const
 
-const SELECT_CALL_FACTS = `
-  SELECT source_id, session_id, turn_index, call_index, dedup_key, provider, model, timestamp, speed,
-         project, working_directory, base_cost_usd, is_estimated, savings_usd, savings_baseline_model,
-         input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cached_input_tokens,
-         reasoning_tokens, web_search_requests, cache_creation_one_hour_tokens,
-         tools_json, mcp_tools_json, skills_json, subagent_types_json, bash_commands_json,
-         tool_sequence_json
-  FROM ledger_call ORDER BY session_id ASC, turn_index ASC, call_index ASC
+const CALL_FACT_COLUMNS = [
+  'source_id',
+  'session_id',
+  'turn_index',
+  'call_index',
+  'dedup_key',
+  'provider',
+  'model',
+  'timestamp',
+  'speed',
+  'project',
+  'working_directory',
+  'base_cost_usd',
+  'is_estimated',
+  'savings_usd',
+  'savings_baseline_model',
+  'input_tokens',
+  'output_tokens',
+  'cache_creation_input_tokens',
+  'cache_read_input_tokens',
+  'cached_input_tokens',
+  'reasoning_tokens',
+  'web_search_requests',
+  'cache_creation_one_hour_tokens',
+  'tools_json',
+  'mcp_tools_json',
+  'skills_json',
+  'subagent_types_json',
+  'bash_commands_json',
+  'tool_sequence_json',
+] as const
+
+const SELECT_SESSIONS = `SELECT ${SESSION_COLUMNS.join(', ')} FROM ledger_session`
+const SELECT_TURNS = `SELECT ${TURN_COLUMNS.join(', ')} FROM ledger_turn`
+const SELECT_CALLS = `SELECT ${CALL_COLUMNS.join(', ')} FROM ledger_call`
+const SELECT_CALL_FACTS = `SELECT ${CALL_FACT_COLUMNS.join(', ')} FROM ledger_call`
+
+const ORDER_SESSIONS = ' ORDER BY session_id ASC, rowid ASC'
+const ORDER_TURNS = ' ORDER BY session_id ASC, turn_index ASC, rowid ASC'
+const ORDER_CALLS = ' ORDER BY session_id ASC, turn_index ASC, call_index ASC, rowid ASC'
+const ORDER_SCOPED_SESSIONS = ' ORDER BY facts.session_id ASC, __rowid ASC'
+const ORDER_SCOPED_TURNS = ' ORDER BY facts.session_id ASC, facts.turn_index ASC, __rowid ASC'
+const ORDER_SCOPED_CALLS = ' ORDER BY facts.session_id ASC, facts.turn_index ASC, facts.call_index ASC, __rowid ASC'
+
+const SELECT_LIFETIME_MODELS = `
+  SELECT DISTINCT source_id AS sourceId, model
+  FROM ledger_call
+  ORDER BY source_id ASC, model ASC
 `
 
 export const LedgerQueriesLive = Layer.effect(
@@ -74,17 +167,17 @@ export const LedgerQueriesLive = Layer.effect(
     })
 
     const getSessions = Effect.fn('LedgerQueries.getSessions')(function* () {
-      const rows = yield* sql.unsafe(SELECT_SESSIONS)
+      const rows = yield* sql.unsafe(SELECT_SESSIONS + ORDER_SESSIONS)
       return yield* decodeRows(ledgerSessionRowSchema)(rows)
     })
 
     const getTurns = Effect.fn('LedgerQueries.getTurns')(function* () {
-      const rows = yield* sql.unsafe(SELECT_TURNS)
+      const rows = yield* sql.unsafe(SELECT_TURNS + ORDER_TURNS)
       return yield* decodeRows(ledgerTurnRowSchema)(rows)
     })
 
     const getCalls = Effect.fn('LedgerQueries.getCalls')(function* () {
-      const rows = yield* sql.unsafe(SELECT_CALLS)
+      const rows = yield* sql.unsafe(SELECT_CALLS + ORDER_CALLS)
       return yield* decodeRows(ledgerCallRowSchema)(rows)
     })
 
@@ -103,23 +196,36 @@ export const LedgerQueriesLive = Layer.effect(
      *  which `call_key` alone is 34.1 B — a STORED generated column SQLite has
      *  to materialise for every row. */
     const getCallFacts = Effect.fn('LedgerQueries.getCallFacts')(function* () {
-      const rows = yield* sql.unsafe(SELECT_CALL_FACTS)
+      const rows = yield* sql.unsafe(SELECT_CALL_FACTS + ORDER_CALLS)
       return yield* decodeRows(ledgerCallFactsRowSchema)(rows)
     })
 
     /** One request-level read unit for view inputs. Materialize all selected
      * rows inside the transaction, then decode after it commits so large
      * schema passes never hold the SQLite transaction open. */
-    const getRequestSnapshotData = Effect.fn('LedgerQueries.getRequestSnapshotData')(function* () {
+    const getRequestSnapshotData = Effect.fn('LedgerQueries.getRequestSnapshotData')(function* (range?: DateRange) {
+      const bounded = range !== undefined
+      const [since, until] = bounded ? candidateTimestampBounds(range) : ['', '']
+      const sessionsQuery = bounded
+        ? selectScopedSessionRows(SESSION_COLUMNS, 'ledger_session') + ORDER_SCOPED_SESSIONS
+        : SELECT_SESSIONS + ORDER_SESSIONS
+      const turnsQuery = bounded
+        ? selectScopedSessionRows(TURN_COLUMNS, 'ledger_turn') + ORDER_SCOPED_TURNS
+        : SELECT_TURNS + ORDER_TURNS
+      const callsQuery = bounded
+        ? selectScopedSessionRows(CALL_FACT_COLUMNS, 'ledger_call') + ORDER_SCOPED_CALLS
+        : SELECT_CALL_FACTS + ORDER_CALLS
+      const params = bounded ? [since, until] : []
       const rawRows = yield* sql.withTransaction(
         Effect.gen(function* () {
           const sources = yield* sql.unsafe(SELECT_SOURCES)
-          const sessions = yield* sql.unsafe(SELECT_SESSIONS)
-          const turns = yield* sql.unsafe(SELECT_TURNS)
-          const calls = yield* sql.unsafe(SELECT_CALL_FACTS)
+          const sessions = yield* sql.unsafe(sessionsQuery, params)
+          const turns = yield* sql.unsafe(turnsQuery, params)
+          const calls = yield* sql.unsafe(callsQuery, params)
+          const lifetimeModels = bounded ? yield* sql.unsafe(SELECT_LIFETIME_MODELS) : []
           const aliases = yield* sql.unsafe(SELECT_MODEL_ALIASES)
           const overrides = yield* sql.unsafe(SELECT_PRICE_OVERRIDES)
-          return { sources, sessions, turns, calls, aliases, overrides }
+          return { sources, sessions, turns, calls, lifetimeModels, aliases, overrides }
         }),
       )
 
@@ -127,9 +233,10 @@ export const LedgerQueriesLive = Layer.effect(
       const sessions = yield* decodeRows(ledgerSessionRowSchema)(rawRows.sessions)
       const turns = yield* decodeRows(ledgerTurnRowSchema)(rawRows.turns)
       const calls = yield* decodeRows(ledgerCallFactsRowSchema)(rawRows.calls)
+      const lifetimeModels = bounded ? yield* decodeRows(ledgerLifetimeModelSchema)(rawRows.lifetimeModels) : undefined
       const aliases = yield* decodeRows(modelAliasRowSchema)(rawRows.aliases)
       const overrides = yield* decodeRows(priceOverrideRowSchema)(rawRows.overrides)
-      return { sources, sessions, turns, calls, aliases, overrides }
+      return { sources, sessions, turns, calls, aliases, overrides, ...(lifetimeModels ? { lifetimeModels } : {}) }
     })
     return LedgerQueries.of({
       getSources,

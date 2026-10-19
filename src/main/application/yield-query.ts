@@ -4,7 +4,7 @@ import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
 import { type YieldPayload, yieldPayloadSchema } from '../../shared/schemas/yield.js'
-import { overviewDateRange, scopeDateRange } from '../overview-scope.js'
+import { overviewQueryRanges, scopeDateRange } from '../overview-scope.js'
 import { buildSessionSummariesFromSnapshotResult, groupSummariesIntoProjects } from '../store/aggregate-calculation.js'
 import type { LedgerQueries } from '../store/ledger-ports.js'
 import { loadLedgerQuerySnapshotEffect } from '../store/ledger-query-snapshot.js'
@@ -21,14 +21,15 @@ export const queryYieldView = Effect.fn('queryYieldView')(function* (
   LedgerQueries | PricingDiagnostics | RepositoryInspection
 > {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const snapshot = yield* loadLedgerQuerySnapshotEffect(input)
+  const { range, readRange } = overviewQueryRanges(input.scope, now)
+  const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const calculation = buildSessionSummariesFromSnapshotResult(snapshot, {
-    range: overviewDateRange(input.scope, now),
+    range,
     provider: input.scope.provider,
   })
-  const range = scopeDateRange(input.scope, now) ?? { start: new Date(0), end: now }
-  const groups = yield* inspectYieldProjects(groupSummariesIntoProjects(calculation.summaries), range)
-  const payload = calculateYieldPayload(groups, range)
+  const detectorRange = scopeDateRange(input.scope, now) ?? { start: new Date(0), end: now }
+  const groups = yield* inspectYieldProjects(groupSummariesIntoProjects(calculation.summaries), detectorRange)
+  const payload = calculateYieldPayload(groups, detectorRange)
   const diagnostics = yield* PricingDiagnostics
   yield* diagnostics.reportUnpricedModels(calculation.unpricedModels)
   return yield* Schema.decodeUnknownEffect(yieldPayloadSchema)(payload)

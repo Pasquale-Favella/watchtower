@@ -35,10 +35,43 @@ function extractReadSql(source, name) {
 
   function literal(node, seen = new Set()) {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text
+    if (ts.isAsExpression(node) || ts.isParenthesizedExpression(node)) return literal(node.expression, seen)
     if (ts.isIdentifier(node) && constants.has(node.text) && !seen.has(node.text)) {
       const declarations = constants.get(node.text)
       if (declarations.length !== 1) throw new Error(`ambiguous SQL binding in ${name}: ${node.text}`)
-      return literal(declarations[0], new Set([...seen, node.text]))
+      const initializer = declarations[0]
+      if (!(initializer.parent.parent.flags & ts.NodeFlags.Const)) {
+        throw new Error(`mutable SQL binding in ${name}: ${node.text}`)
+      }
+      return literal(initializer, new Set([...seen, node.text]))
+    }
+    if (ts.isArrayLiteralExpression(node)) {
+      const values = node.elements.map(element => literal(element, seen))
+      if (values.every(value => typeof value === 'string')) return values
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = literal(node.left, seen)
+      const right = literal(node.right, seen)
+      if (typeof left === 'string' && typeof right === 'string') return left + right
+    }
+    if (ts.isTemplateExpression(node)) {
+      let value = node.head.text
+      for (const span of node.templateSpans) {
+        const part = literal(span.expression, seen)
+        if (typeof part !== 'string') throw new Error(`expected static SQL text in ${name}`)
+        value += part + span.literal.text
+      }
+      return value
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'join' &&
+      node.arguments.length === 1
+    ) {
+      const values = literal(node.expression.expression, seen)
+      const separator = literal(node.arguments[0], seen)
+      if (Array.isArray(values) && typeof separator === 'string') return values.join(separator)
     }
     throw new Error(`unsupported SQL expression in ${name}: ${node.getText(file)}`)
   }
@@ -55,12 +88,15 @@ function extractReadSql(source, name) {
       queries.push(literal(node.arguments[0]))
     }
     if (ts.isTaggedTemplateExpression(node) && node.tag.getText(file) === 'sql') {
+      if (!ts.isNoSubstitutionTemplateLiteral(node.template)) {
+        throw new Error(`parameterized SQL template in ${name}`)
+      }
       queries.push(literal(node.template))
     }
     ts.forEachChild(node, findQuery)
   }
   findQuery(spans[0])
-  if (queries.length !== 1 || !/^\s*SELECT\b/i.test(queries[0])) {
+  if (queries.length !== 1 || typeof queries[0] !== 'string' || !/^\s*SELECT\b/i.test(queries[0])) {
     throw new Error(`expected one SELECT in ${name}, found ${queries.length} SQL statements`)
   }
   return queries[0]

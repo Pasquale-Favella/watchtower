@@ -179,7 +179,9 @@ function watchNativeSelects(): NativeSelect[] {
     const result = Reflect.apply(nativeAll, this, parameters)
     const sql = sqlByStatement.get(this) ?? ''
     const connection = connectionByStatement.get(this)
-    if (connection && /^\s*SELECT\b/i.test(sql) && SELECT_TARGET.test(sql)) executions.push({ sql, connection })
+    if (connection && /^\s*(?:SELECT|WITH)\b/i.test(sql) && SELECT_TARGET.test(sql)) {
+      executions.push({ sql, connection })
+    }
     return result
   })
 
@@ -234,13 +236,17 @@ describe('request snapshots', () => {
 
       expect(snapshot).not.toHaveBeenCalled()
       expect(overviewRead).toHaveBeenCalledTimes(1)
+      const reads = executions.slice(readStart)
       expectNativeReads(executions, readStart, [
-        'ledger_session',
-        'ledger_turn',
+        'ledger_call',
+        'ledger_call',
         'ledger_call',
         'model_alias',
         'price_override',
+        'ledger_call',
+        'ledger_call',
       ])
+      expect(reads.slice(0, 3).every(({ sql }) => /^\s*WITH\s+scoped\s+AS/i.test(sql))).toBe(true)
     } finally {
       vi.restoreAllMocks()
     }

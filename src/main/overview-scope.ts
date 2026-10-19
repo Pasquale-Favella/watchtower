@@ -1,3 +1,5 @@
+import { eachDayOfInterval, endOfDay, startOfDay, startOfMonth, subDays, subMonths } from 'date-fns'
+
 import type { OverviewPeriod, OverviewScope } from '../shared/schemas/overview.js'
 import type { DateRange, SessionSummary } from './pipeline/types.js'
 
@@ -10,46 +12,67 @@ const ALL_TIME_MONTHS = 6
 
 /** Inclusive lower bound (date key) of the selected period's window. */
 export function periodWindowStart(period: OverviewPeriod, now = new Date()): string {
+  return localDateKey(periodStartDate(period, now))
+}
+
+function periodStartDate(period: OverviewPeriod, now: Date): Date {
   switch (period) {
     case 'today':
-      return localDateKey(now)
+      return startOfDay(now)
     case 'week':
-      return localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7))
+      return startOfDay(subDays(now, 7))
     case '30days':
-      return localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30))
+      return startOfDay(subDays(now, 30))
     case 'month':
-      return localDateKey(new Date(now.getFullYear(), now.getMonth(), 1))
+      return startOfMonth(now)
     case 'all':
-      return localDateKey(new Date(now.getFullYear(), now.getMonth() - ALL_TIME_MONTHS, 1))
+      return subMonths(startOfMonth(now), ALL_TIME_MONTHS)
     case 'lifetime':
-      return localDateKey(new Date(1970, 0, 1))
+      return new Date(1970, 0, 1)
   }
+}
+
+function parseLocalDateKey(key: string): Date {
+  const [year, month, day] = key.split('-').map(Number)
+  return new Date(year, month - 1, day)
 }
 
 /** The scope's window as a DateRange on the aggregation seam, inclusive in local time. */
 export function overviewDateRange(scope: OverviewScope, now = new Date()): DateRange {
-  const parseDay = (key: string): Date => {
-    const [y, m, d] = key.split('-').map(Number)
-    return new Date(y, m - 1, d)
-  }
   if (scope.range) {
-    const end = parseDay(scope.range.until)
-    end.setHours(23, 59, 59, 999)
-    return { start: parseDay(scope.range.since), end }
+    return { start: parseLocalDateKey(scope.range.since), end: endOfDay(parseLocalDateKey(scope.range.until)) }
   }
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
-  return { start: parseDay(periodWindowStart(scope.period, now)), end }
+  return { start: periodStartDate(scope.period, now), end: endOfDay(now) }
+}
+
+/** Calculations always have a window; lifetime reads must retain the unfiltered SQL path. */
+export function overviewQueryRanges(
+  scope: OverviewScope,
+  now: Date,
+): { range: DateRange; readRange: DateRange | undefined } {
+  const range = overviewDateRange(scope, now)
+  if (scope.period === 'lifetime' && scope.range === undefined) return { range, readRange: undefined }
+  return { range, readRange: range }
+}
+
+/** Local calendar keys for zero-filled charts, including both endpoints. */
+export function localDateKeys(fromKey: string, toKey: string): string[] {
+  if (fromKey > toKey) return []
+  const start = parseLocalDateKey(fromKey)
+  const end = parseLocalDateKey(toKey)
+  if (!(start <= end)) return []
+  return eachDayOfInterval({ start, end }).map(localDateKey)
 }
 
 /** Detector periods end at the captured instant, or the custom range's final local day. */
 export function scopeDateRange(scope: OverviewScope, now: Date): DateRange | null {
   if (scope.range) {
     return {
-      start: new Date(`${scope.range.since}T00:00:00`),
-      end: new Date(`${scope.range.until}T23:59:59.999`),
+      start: startOfDay(new Date(`${scope.range.since}T00:00:00`)),
+      end: endOfDay(new Date(`${scope.range.until}T00:00:00`)),
     }
   }
-  return { start: new Date(`${periodWindowStart(scope.period, now)}T00:00:00`), end: now }
+  return { start: periodStartDate(scope.period, now), end: now }
 }
 
 export function sessionFirstDateKey(sess: SessionSummary): string {

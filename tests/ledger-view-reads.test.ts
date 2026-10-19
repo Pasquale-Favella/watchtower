@@ -26,8 +26,8 @@ function readViewData(runtime: TestRuntime): Promise<LedgerViewData> {
   return runtime.runPromise(Effect.flatMap(LedgerViewReads, reads => reads.getViewData()))
 }
 
-function readOverviewData(runtime: TestRuntime): Promise<OverviewReadData> {
-  return runtime.runPromise(Effect.flatMap(LedgerViewReads, reads => reads.getOverviewData()))
+function readOverviewData(runtime: TestRuntime, range?: { start: Date; end: Date }): Promise<OverviewReadData> {
+  return runtime.runPromise(Effect.flatMap(LedgerViewReads, reads => reads.getOverviewData(range)))
 }
 
 function expectSchemaFailure<A, E>(exit: Exit.Exit<A, E>): void {
@@ -87,7 +87,7 @@ function setPriceOverride(
 afterEach(() => vi.restoreAllMocks())
 
 describe('purpose-shaped dashboard and analytics reads', () => {
-  it('loads five minimal Overview reads on the existing connection with current pricing', async () => {
+  it('loads minimal Overview facts and lifetime metadata on the existing connection', async () => {
     const { runtime } = openLedgerFixture()
     const sqlByStatement = new WeakMap<StatementSync, string>()
     const connectionByStatement = new WeakMap<StatementSync, DatabaseSync>()
@@ -137,10 +137,20 @@ describe('purpose-shaped dashboard and analytics reads', () => {
     const data = await readOverviewData(runtime)
     const reads = executions.slice(start)
 
-    expect(reads).toHaveLength(5)
+    expect(reads).toHaveLength(7)
     expect(reads.every(({ sql }) => /^\s*SELECT/i.test(sql))).toBe(true)
     expect(new Set(reads.map(({ connection }) => connection)).size).toBe(1)
-    expect(transactionEvents).toEqual(['BEGIN IMMEDIATE', 'SELECT', 'SELECT', 'SELECT', 'SELECT', 'SELECT', 'COMMIT'])
+    expect(transactionEvents).toEqual([
+      'BEGIN IMMEDIATE',
+      'SELECT',
+      'SELECT',
+      'SELECT',
+      'SELECT',
+      'SELECT',
+      'SELECT',
+      'SELECT',
+      'COMMIT',
+    ])
     expect(Object.keys(data.sessions[0] ?? {}).sort()).toEqual(['sessionId', 'sourceId', 'sourceProvider'].sort())
     expect(Object.keys(data.turns[0] ?? {}).sort()).toEqual(
       [
@@ -187,6 +197,75 @@ describe('purpose-shaped dashboard and analytics reads', () => {
     expect(reads.map(({ sql }) => sql).join('\n')).not.toMatch(
       /reasoning_tokens|git_branch|pr_refs_json|spawn_tool_use_ids_json|mcp_inventory_json|agent_spawn_links_json|ambiguous_spawn_agent_ids_json|loc_added|interrupted|call_key/i,
     )
+  })
+
+  it('scopes candidate sessions while retaining every row for included source sessions', async () => {
+    const { runtime, dbPath } = openLedgerFixture()
+    const inside = '2026-07-01T09:00:00.000Z'
+    const outside = '2026-05-01T09:00:00.000Z'
+    const file = (sessionId: string, timestamps: string[]) =>
+      buildFixtureCachedFile({
+        turns: [
+          buildFixtureCachedTurn(0, 'scoped', {
+            sessionId,
+            timestamp: timestamps[0] ?? inside,
+            calls: timestamps.map((timestamp, index) => ({
+              ...buildFixtureCachedCall(index),
+              timestamp,
+              deduplicationKey: `${sessionId}-${index}`,
+            })),
+          }),
+        ],
+      })
+    port(runtime, 'scoped-source-a', 'opencode', file('duplicate', [inside, outside]))
+    port(runtime, 'scoped-source-b', 'claude', file('duplicate', [inside]))
+    port(runtime, 'scoped-first-outside', 'opencode', file('first-outside', [outside, inside]))
+    port(runtime, 'scoped-outside', 'opencode', file('outside', [outside]))
+
+    const writer = new DatabaseSync(dbPath)
+    try {
+      writer.prepare("UPDATE ledger_call SET tools_json = 'not-json' WHERE session_id = 'outside'").run()
+    } finally {
+      writer.close()
+    }
+
+    const range = { start: new Date('2026-07-01T00:00:00.000Z'), end: new Date('2026-07-02T23:59:59.999Z') }
+    const scoped = await readOverviewData(runtime, range)
+    expect(scoped.sessions).toHaveLength(3)
+    expect(new Set(scoped.sessions.map(session => session.sourceId)).size).toBe(3)
+    expect(scoped.sessions.map(session => session.sourceProvider)).toEqual(['opencode', 'claude', 'opencode'])
+    expect(scoped.turns).toHaveLength(3)
+    expect(scoped.calls).toHaveLength(5)
+    expect(scoped.calls.filter(call => call.sourceId === scoped.sessions[0]?.sourceId)).toHaveLength(2)
+    const firstOutsideSource = scoped.sessions.find(session => session.sessionId === 'first-outside')?.sourceId
+    const firstOutsideCalls = scoped.calls.filter(call => call.sourceId === firstOutsideSource)
+    expect(firstOutsideCalls.map(call => call.timestamp)).toEqual([outside, inside])
+    expect(scoped.lifetime.models).toEqual(['demo-model'])
+    expect(scoped.lifetime.dataStartTimestamp).toBe(outside)
+  })
+
+  it('uses turn timestamps only when every call timestamp is empty', async () => {
+    const { runtime, dbPath } = openLedgerFixture()
+    port(runtime, 'overview-empty-call-times')
+    const writer = new DatabaseSync(dbPath)
+    try {
+      writer.exec("UPDATE ledger_call SET timestamp = ''")
+      writer.exec("UPDATE ledger_turn SET timestamp = '2026-07-02T09:00:00.000Z'")
+    } finally {
+      writer.close()
+    }
+
+    const data = await readOverviewData(runtime)
+    expect(data.lifetime.dataStartTimestamp).toBe('2026-07-02T09:00:00.000Z')
+    expect(data.lifetime.models).toEqual(['demo-model'])
+
+    const emptyWriter = new DatabaseSync(dbPath)
+    try {
+      emptyWriter.prepare("UPDATE ledger_turn SET timestamp = ''").run()
+    } finally {
+      emptyWriter.close()
+    }
+    expect((await readOverviewData(runtime)).lifetime.dataStartTimestamp).toBeNull()
   })
 
   it('selects five narrow reads on one connection and sees current pricing config', async () => {

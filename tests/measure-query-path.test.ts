@@ -79,7 +79,7 @@ const { measure, measureAsync, measureViewInputProbe, watchNativeStatements } = 
   }>
   watchNativeStatements(): {
     reset(): void
-    snapshot(): { statements: Array<{ method: string }> }
+    snapshot(): { selectCount: number; materializedRows: number | null; statements: Array<{ method: string }> }
     beginSelectRowCapture(): void
     endSelectRowCapture(): { nativeSqlMs: number; rows: unknown[][] }
     restore(): void
@@ -209,11 +209,12 @@ describe('query-path measurement samples', () => {
       database.prepare('SELECT value FROM sample').all()
       expect(instrumentation.snapshot().statements).toHaveLength(1)
       instrumentation.beginSelectRowCapture()
-      const rows = database.prepare('SELECT value FROM sample').all()
+      const rows = database.prepare('WITH scoped AS (SELECT value FROM sample) SELECT value FROM scoped').all()
       const captured = instrumentation.endSelectRowCapture()
 
       expect(captured.nativeSqlMs).toBeGreaterThanOrEqual(0)
       expect(captured.rows).toEqual([rows])
+      expect(instrumentation.snapshot()).toMatchObject({ selectCount: 1, materializedRows: 1 })
       expect(instrumentation.snapshot().statements).toHaveLength(1)
     } finally {
       database.close()

@@ -1,3 +1,5 @@
+import { subDays } from 'date-fns'
+
 import {
   type EfficiencyGrade,
   type OverviewActivityRow,
@@ -16,13 +18,14 @@ import {
   type OverviewToolRow,
   type OverviewUnpricedModel,
 } from '../shared/schemas/overview.js'
-import { localDateKey, overviewDateRange, periodWindowStart } from './overview-scope.js'
+import { localDateKey, localDateKeys, overviewDateRange, periodWindowStart } from './overview-scope.js'
 import { EDIT_TOOLS } from './pipeline/classifier.js'
 import { getShortModelName } from './pipeline/model-names.js'
 import {
   calculateRepricedCostResult,
   createPricingConfigLookup,
   findUnpricedModels,
+  getModelCosts,
   isExpectedFreeModel,
   type LocalModelSavings,
   type PricingCatalogue,
@@ -108,31 +111,26 @@ const overviewSessionKey = (sourceId: number, sessionId: string): string => `${s
 const overviewTurnKey = (sourceId: number, sessionId: string, turnIndex: number): string =>
   `${overviewSessionKey(sourceId, sessionId)}\0${turnIndex}`
 
-function calculateOverviewDataStart(sessions: OverviewSessionFacts[], now: Date): string | null {
-  const lifetimeRange = overviewDateRange({ period: 'lifetime' }, now)
-  let earliest: string | null = null
-  for (const session of sessions) {
-    let firstTimestamp = ''
-    let fallbackTimestamp: string | null = null
-    for (const turn of session.turns) {
-      const firstCallMillis = Date.parse(turn.calls[0]?.row.timestamp ?? '')
-      if (
-        !Number.isFinite(firstCallMillis) ||
-        firstCallMillis < lifetimeRange.start.getTime() ||
-        firstCallMillis > lifetimeRange.end.getTime()
-      )
-        continue
-      if (fallbackTimestamp === null) fallbackTimestamp = turn.row.timestamp
-      for (const call of turn.calls) {
-        if (!firstTimestamp || call.row.timestamp < firstTimestamp) firstTimestamp = call.row.timestamp
-      }
-    }
-    const millis = Date.parse(firstTimestamp || fallbackTimestamp || '')
-    if (!Number.isFinite(millis)) continue
-    const key = localDateKey(new Date(millis))
-    if (earliest === null || key < earliest) earliest = key
+function dataStartFromTimestamp(timestamp: string | null): string | null {
+  if (timestamp === null) return null
+  const millis = Date.parse(timestamp)
+  return Number.isFinite(millis) ? localDateKey(new Date(millis)) : null
+}
+
+function aliasUnpricedModels(
+  models: readonly string[],
+  pricing: ReturnType<typeof createPricingConfigLookup>,
+  catalogue: PricingCatalogue,
+): string[] {
+  const out = new Set<string>()
+  for (const model of models) {
+    const resolved = pricing.resolveAlias(model)
+    if (resolved === model) continue
+    if (pricing.findOverride(resolved)) continue
+    if (getModelCosts(catalogue, resolved)) continue
+    out.add(resolved)
   }
-  return earliest
+  return [...out].sort()
 }
 
 function priceOverviewCall(
@@ -159,7 +157,7 @@ function buildOverviewSessionFacts(
   scope: OverviewScope,
   now: Date,
   catalogue: PricingCatalogue,
-): { sessions: OverviewSessionFacts[]; unpricedModels: readonly string[]; dataStart: string | null } {
+): OverviewSessionFacts[] {
   const pricing = createPricingConfigLookup(data.aliases, data.overrides)
   const sessions = new Map<string, OverviewSessionFacts>()
   const turns = new Map<string, OverviewTurnFacts>()
@@ -179,11 +177,9 @@ function buildOverviewSessionFacts(
     turns.set(overviewTurnKey(row.sourceId, row.sessionId, row.turnIndex), turn)
   }
 
-  const unpricedModels = new Set<string>()
   for (const row of data.calls) {
     const resolvedModel = pricing.resolveAlias(row.model)
     const priced = priceOverviewCall(row, resolvedModel, pricing, catalogue)
-    if (!priced.priced) unpricedModels.add(resolvedModel)
     turns.get(overviewTurnKey(row.sourceId, row.sessionId, row.turnIndex))?.calls.push({
       row,
       resolvedModel,
@@ -201,7 +197,6 @@ function buildOverviewSessionFacts(
   }
 
   const allSessions = [...sessions.values()]
-  const dataStart = calculateOverviewDataStart(allSessions, now)
   const range = overviewDateRange(scope, now)
   for (const session of allSessions) {
     session.turns = session.turns.filter(turn => {
@@ -209,13 +204,9 @@ function buildOverviewSessionFacts(
       return Number.isFinite(firstMillis) && firstMillis >= range.start.getTime() && firstMillis <= range.end.getTime()
     })
   }
-  return {
-    sessions: allSessions
-      .filter(session => !scope.provider || session.sourceProvider === scope.provider)
-      .sort((a, b) => a.sessionId.localeCompare(b.sessionId)),
-    unpricedModels: [...unpricedModels],
-    dataStart,
-  }
+  return allSessions
+    .filter(session => !scope.provider || session.sourceProvider === scope.provider)
+    .sort((a, b) => a.sessionId.localeCompare(b.sessionId))
 }
 
 type NumericMap = Map<string, number>
@@ -573,7 +564,7 @@ function calculateOverviewFromSessionFacts(
   if (scope.range) {
     daily.push(...contiguousDaily(dayBuckets, scope.range.since, scope.range.until))
   } else {
-    const defaultChartStart = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29))
+    const defaultChartStart = localDateKey(subDays(now, 29))
     const periodStart = periodWindowStart(scope.period, now)
     let earliestInPeriod: string | null = null
     for (const key of dayBuckets.keys()) {
@@ -761,10 +752,18 @@ export function calculateOverviewFromData(
   catalogue: PricingCatalogue,
   localSavings: LocalModelSavings,
 ): OverviewCalculationResult {
-  const grouped = buildOverviewSessionFacts(data, scope, now, catalogue)
+  const sessions = buildOverviewSessionFacts(data, scope, now, catalogue)
+  const pricing = createPricingConfigLookup(data.aliases, data.overrides)
   return {
-    value: calculateOverviewFromSessionFacts(scope, now, catalogue, localSavings, grouped.sessions, grouped.dataStart),
-    unpricedModels: grouped.unpricedModels,
+    value: calculateOverviewFromSessionFacts(
+      scope,
+      now,
+      catalogue,
+      localSavings,
+      sessions,
+      dataStartFromTimestamp(data.lifetime.dataStartTimestamp),
+    ),
+    unpricedModels: aliasUnpricedModels(data.lifetime.models, pricing, catalogue),
   }
 }
 
@@ -773,17 +772,8 @@ function contiguousDaily(
   fromKey: string,
   toKey: string,
 ): OverviewDailyEntry[] {
-  if (fromKey > toKey) return []
-  const [fy, fm, fd] = fromKey.split('-').map(Number)
-  const [ty, tm, td] = toKey.split('-').map(Number)
-  const cursor = new Date(fy, fm - 1, fd)
-  const end = new Date(ty, tm - 1, td)
-  const out: OverviewDailyEntry[] = []
-  while (cursor <= end) {
-    const key = localDateKey(cursor)
+  return localDateKeys(fromKey, toKey).map(key => {
     const bucket = dayBuckets.get(key)
-    out.push({ date: key, costUSD: bucket?.cost ?? 0, calls: bucket?.calls ?? 0, sessions: bucket?.sessions ?? 0 })
-    cursor.setDate(cursor.getDate() + 1)
-  }
-  return out
+    return { date: key, costUSD: bucket?.cost ?? 0, calls: bucket?.calls ?? 0, sessions: bucket?.sessions ?? 0 }
+  })
 }

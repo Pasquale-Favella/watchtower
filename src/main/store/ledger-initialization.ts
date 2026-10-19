@@ -148,6 +148,14 @@ const migrations = [
       );
     `),
   },
+  {
+    version: 2,
+    name: 'index_session_detail_reads',
+    up: executeSqliteScript(`
+      CREATE INDEX IF NOT EXISTS idx_ledger_session_session ON ledger_session(session_id);
+      CREATE INDEX IF NOT EXISTS idx_ledger_turn_session_turn ON ledger_turn(session_id, turn_index);
+    `),
+  },
 ] as const
 
 export const initializeLedger = runSqliteMigrations(migrations)

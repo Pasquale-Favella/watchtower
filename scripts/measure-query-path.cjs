@@ -304,6 +304,7 @@ OUTPUT
                          store:projects, store:sessions, store:session,
                          store:session:missing,
                          store:search, store:search:blank, overview:query,
+                         overview:query:range, sessions:query:range, models:query:range,
                          store:analytics, store:views, export:read.
 
 EXECUTION
@@ -495,6 +496,8 @@ function loadEffectModules() {
     sessionDetail: load('src/main/application/session-detail-query.ts'),
     sessionSearch: load('src/main/application/session-search-query.ts'),
     overview: load('src/main/application/overview-query.ts'),
+    scopedSessions: load('src/main/application/sessions-query.ts'),
+    scopedModels: load('src/main/application/models-query.ts'),
     views: load('src/main/application/view-queries.ts'),
     viewReads: load('src/main/store/ledger-view-reads.ts'),
     viewCalculation: load('src/main/view-aggregate-calculation.ts'),
@@ -831,7 +834,7 @@ function watchNativeStatements() {
     return id
   }
   const record = (sql, connection, method, result, nativeSqlMs = 0) => {
-    const select = /^\s*(?:\/\*[\s\S]*?\*\/\s*)*SELECT\b/i.test(sql)
+    const select = /^\s*(?:\/\*[\s\S]*?\*\/\s*)*(?:SELECT|WITH)\b/i.test(sql)
     const materializedRows = select
       ? method === 'all'
         ? (result?.length ?? 0)
@@ -1176,6 +1179,9 @@ const EFFECT_OPERATIONS = [
   { id: 'store:search', description: 'querySessionSearch with a term taken from the fixture' },
   { id: 'store:search:blank', description: 'querySessionSearch with blank input' },
   { id: 'overview:query', description: 'queryOverview with an all-time scope and explicit local savings' },
+  { id: 'overview:query:range', description: 'queryOverview for a seven-day window inside the synthetic history' },
+  { id: 'sessions:query:range', description: 'querySessionsView for the same seven-day window' },
+  { id: 'models:query:range', description: 'queryModelsView for the same seven-day window' },
   { id: 'store:analytics', description: 'queryAnalyticalViews over the purpose-shaped view read' },
   { id: 'store:views', description: 'queryDashboardViews over the purpose-shaped view read' },
   { id: 'export:read', description: 'queryExport with in-memory output files' },
@@ -1198,6 +1204,7 @@ function effectOperation(context, id, options, callTarget) {
   const catalogue = models.captureModelPricingCatalogue()
   const proxyPaths = models.captureProxyPaths()
   const localSavings = models.captureLocalModelSavings()
+  const rangeScope = { period: 'lifetime', range: { since: '2026-08-25', until: '2026-08-31' } }
   const shape = {
     turnsPerSession: options.turnsPerSession,
     callsPerTurn: options.callsPerTurn,
@@ -1288,6 +1295,21 @@ function effectOperation(context, id, options, callTarget) {
       return {
         makeEffect: () =>
           modules.overview.queryOverview({ scope: { period: 'lifetime' }, catalogue, proxyPaths, localSavings }),
+        crossesWorkerBoundary: true,
+      }
+    case 'overview:query:range':
+      return {
+        makeEffect: () => modules.overview.queryOverview({ scope: rangeScope, catalogue, proxyPaths, localSavings }),
+        crossesWorkerBoundary: true,
+      }
+    case 'sessions:query:range':
+      return {
+        makeEffect: () => modules.scopedSessions.querySessionsView({ scope: rangeScope, catalogue, proxyPaths }),
+        crossesWorkerBoundary: true,
+      }
+    case 'models:query:range':
+      return {
+        makeEffect: () => modules.scopedModels.queryModelsView({ scope: rangeScope, catalogue, proxyPaths }),
         crossesWorkerBoundary: true,
       }
     case 'store:analytics':
@@ -1747,9 +1769,15 @@ const MEASURED_SOURCES = [
   'src/main/store/ledger-initialization.ts',
   'src/main/store/ledger-ports.ts',
   'src/main/store/ledger-repository.ts',
+  'src/main/store/ledger-queries-live.ts',
+  'src/main/store/scoped-snapshot-sql.ts',
+  'src/main/store/read-projections.ts',
   'src/main/store/ledger-session-reads.ts',
+  'src/main/store/ledger-session-reads-live.ts',
   'src/main/store/session-read-projections.ts',
   'src/main/store/ledger-view-reads.ts',
+  'src/main/store/ledger-view-reads-live.ts',
+  'src/main/store/overview-read-projections.ts',
   'src/main/store/view-read-projections.ts',
   'src/main/store/export-read-projections.ts',
   'src/main/store/ledger-export-reads.ts',
@@ -1768,6 +1796,11 @@ const MEASURED_SOURCES = [
   'src/main/application/session-detail-query.ts',
   'src/main/application/session-search-query.ts',
   'src/main/application/overview-query.ts',
+  'src/main/overview-calculation.ts',
+  'src/main/application/sessions-query.ts',
+  'src/main/sessions-calculation.ts',
+  'src/main/application/models-query.ts',
+  'src/main/models-calculation.ts',
   'src/main/views-calculation.ts',
   'src/main/view-aggregate-calculation.ts',
   'src/main/application/view-queries.ts',

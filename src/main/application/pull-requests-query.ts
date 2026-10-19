@@ -4,7 +4,7 @@ import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
 import { type PullRequestsPayload, pullRequestsPayloadSchema } from '../../shared/schemas/pull-requests.js'
-import { overviewDateRange } from '../overview-scope.js'
+import { overviewQueryRanges } from '../overview-scope.js'
 import { calculatePullRequestsPayload } from '../pull-requests-calculation.js'
 import { buildSessionSummariesFromSnapshotResult } from '../store/aggregate-calculation.js'
 import type { LedgerQueries } from '../store/ledger-ports.js'
@@ -16,9 +16,10 @@ export const queryPullRequestsView = Effect.fn('queryPullRequestsView')(function
   input: ScopedViewQueryInputs,
 ): Effect.fn.Return<PullRequestsPayload, SqlError | Schema.SchemaError, LedgerQueries | PricingDiagnostics> {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const snapshot = yield* loadLedgerQuerySnapshotEffect(input)
+  const { range, readRange } = overviewQueryRanges(input.scope, now)
+  const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const calculation = buildSessionSummariesFromSnapshotResult(snapshot, {
-    range: overviewDateRange(input.scope, now),
+    range,
     provider: input.scope.provider,
   })
   const payload = calculatePullRequestsPayload(calculation.summaries, snapshot.catalogue)
