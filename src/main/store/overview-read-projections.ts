@@ -68,6 +68,10 @@ export const overviewReadDataSchema = Schema.Struct({
   calls: Schema.mutable(Schema.Array(overviewReadCallSchema)),
   aliases: Schema.mutable(Schema.Array(modelAliasSchema)),
   overrides: Schema.mutable(Schema.Array(priceOverrideSchema)),
+  lifetime: Schema.Struct({
+    dataStartTimestamp: Schema.NullOr(Schema.String),
+    models: Schema.mutable(Schema.Array(Schema.String)),
+  }),
 })
 
 export type OverviewReadSession = Schema.Schema.Type<typeof overviewReadSessionSchema>

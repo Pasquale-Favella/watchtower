@@ -5,6 +5,7 @@ import type { SqlError } from 'effect/sql/SqlError'
 
 import { type OverviewPayload, overviewPayloadSchema } from '../../shared/schemas/overview.js'
 import { calculateOverviewFromData } from '../overview-calculation.js'
+import { overviewDateRange } from '../overview-scope.js'
 import type { LocalModelSavings } from '../pipeline/pricing-calculation.js'
 import { LedgerViewReads } from '../store/ledger-view-reads.js'
 import { PricingDiagnostics } from './pricing-diagnostics.js'
@@ -17,7 +18,11 @@ export const queryOverview = Effect.fn('queryOverview')(function* (
 ): Effect.fn.Return<OverviewPayload, SqlError | Schema.SchemaError, LedgerViewReads | PricingDiagnostics> {
   const now = DateTime.toDateUtc(yield* DateTime.now)
   const reads = yield* LedgerViewReads
-  const data = yield* reads.getOverviewData()
+  const range =
+    input.scope.range === undefined && input.scope.period === 'lifetime'
+      ? undefined
+      : overviewDateRange(input.scope, now)
+  const data = yield* reads.getOverviewData(range)
   const result = calculateOverviewFromData(data, input.scope, now, input.catalogue, input.localSavings)
   const diagnostics = yield* PricingDiagnostics
   yield* diagnostics.reportUnpricedModels(result.unpricedModels)

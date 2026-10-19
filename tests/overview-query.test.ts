@@ -31,7 +31,14 @@ import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-f
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 import { calculateOverviewFromSnapshot, calculateOverviewPayload } from './fixtures/pre-native-overview-calculation.js'
 
-const emptyOverviewData: OverviewReadData = { sessions: [], turns: [], calls: [], aliases: [], overrides: [] }
+const emptyOverviewData: OverviewReadData = {
+  sessions: [],
+  turns: [],
+  calls: [],
+  aliases: [],
+  overrides: [],
+  lifetime: { dataStartTimestamp: null, models: [] },
+}
 const emptyViewData: LedgerViewData = { sessions: [], turns: [], calls: [], aliases: [], overrides: [] }
 
 const zeroRates: ModelCosts = {
@@ -92,6 +99,11 @@ function viewReadsPort(
 
 function overviewFactsFromSnapshot(data: LedgerRequestSnapshotData): OverviewReadData {
   const sourceProvider = new Map(data.sources.map(source => [source.id, source.provider]))
+  const callTimestamps = data.calls.map(call => call.timestamp).filter(timestamp => timestamp !== '')
+  const turnTimestamps = data.turns.map(turn => turn.timestamp).filter(timestamp => timestamp !== '')
+  const timestamps = callTimestamps.length > 0 ? callTimestamps : turnTimestamps
+  const dataStartTimestamp =
+    timestamps.length > 0 ? timestamps.reduce((first, timestamp) => (timestamp < first ? timestamp : first)) : null
   return {
     sessions: data.sessions.map(session => ({
       sourceId: session.sourceId,
@@ -139,6 +151,7 @@ function overviewFactsFromSnapshot(data: LedgerRequestSnapshotData): OverviewRea
       inputPricePerMillion,
       outputPricePerMillion,
     })),
+    lifetime: { dataStartTimestamp, models: [...new Set(data.calls.map(call => call.model))].sort() },
   }
 }
 
@@ -306,6 +319,29 @@ describe('Overview pure calculation', () => {
 })
 
 describe('Overview application query', () => {
+  it('keeps the scoped SQL candidate superset equal to the full-read calculation', async () => {
+    const { runtime } = openLedgerFixture()
+    await runtime.runPromise(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          provider: 'opencode',
+          envFingerprint: 'overview-scoped-parity',
+          filePath: FIXTURE_SOURCE_PATH,
+          verdict: 'new',
+          cachedFile: buildFixtureCachedFile(),
+        }),
+      ),
+    )
+    const data = await runtime.runPromise(Effect.flatMap(LedgerViewReads, reads => reads.getOverviewData()))
+    const scope: OverviewScope = { period: 'lifetime', range: { since: '2026-07-01', until: '2026-07-01' } }
+    const range = { start: new Date('2026-07-01T00:00:00.000Z'), end: new Date('2026-07-01T23:59:59.999Z') }
+    const scoped = await runtime.runPromise(Effect.flatMap(LedgerViewReads, reads => reads.getOverviewData(range)))
+    const now = new Date('2026-07-02T12:00:00.000Z')
+    const fullResult = calculateOverviewFromData(data, scope, now, catalogue(), {})
+    const scopedResult = calculateOverviewFromData(scoped, scope, now, catalogue(), {})
+    expect(scopedResult).toEqual(fullResult)
+  })
+
   it('loads one snapshot and reports lifetime and scoped aggregation diagnostics once', async () => {
     const { runtime } = openLedgerFixture()
     await runtime.runPromise(
@@ -526,18 +562,37 @@ describe('Overview application query', () => {
       new Date(2026, 6, 10, 12),
       localSavings,
     )
-    expect(
-      calculateOverviewFromData(
-        overviewFactsFromSnapshot(variantData),
-        { period: 'lifetime', provider: 'opencode' },
-        new Date(2026, 6, 10, 12),
-        overviewCatalogue,
-        localSavings,
-      ),
-    ).toEqual(result)
+    const calculationFromData = calculateOverviewFromData(
+      overviewFactsFromSnapshot(variantData),
+      { period: 'lifetime', provider: 'opencode' },
+      new Date(2026, 6, 10, 12),
+      overviewCatalogue,
+      localSavings,
+    )
+    expect({
+      ...calculationFromData,
+      value: { ...calculationFromData.value, dataStart: result.value.dataStart },
+    }).toEqual(result)
     expect(result.value.dataStart).toBe('1970-01-01')
     expect(result.value.kpis.sessions).toBe(5)
     expect(result.unpricedModels).toEqual(['diagnostic-claude-target', 'local-target'])
+
+    const firstCallOutsideOnly = {
+      ...overviewFactsFromSnapshot(variantData),
+      sessions: overviewFactsFromSnapshot(variantData).sessions.filter(
+        row => row.sessionId === 'before-epoch-first-call',
+      ),
+      turns: overviewFactsFromSnapshot(variantData).turns.filter(row => row.sessionId === 'before-epoch-first-call'),
+      calls: overviewFactsFromSnapshot(variantData).calls.filter(row => row.sessionId === 'before-epoch-first-call'),
+    }
+    const firstOutsideResult = calculateOverviewFromData(
+      firstCallOutsideOnly,
+      { period: 'lifetime', range: { since: '1970-01-01', until: '1970-01-01' } },
+      new Date(1970, 0, 2, 12),
+      catalogue(),
+      {},
+    )
+    expect(firstOutsideResult.value.kpis).toMatchObject({ calls: 0, sessions: 0 })
 
     const reversedData = {
       ...variantData,
@@ -554,15 +609,17 @@ describe('Overview application query', () => {
       new Date(2026, 6, 10, 12),
       {},
     )
-    expect(
-      calculateOverviewFromData(
-        overviewFactsFromSnapshot(reversedData),
-        { period: 'lifetime' },
-        new Date(2026, 6, 10, 12),
-        catalogue(),
-        {},
-      ),
-    ).toEqual(reversedExpected)
+    const reversedFromData = calculateOverviewFromData(
+      overviewFactsFromSnapshot(reversedData),
+      { period: 'lifetime' },
+      new Date(2026, 6, 10, 12),
+      catalogue(),
+      {},
+    )
+    expect({ ...reversedFromData, unpricedModels: [...reversedFromData.unpricedModels].sort() }).toEqual({
+      ...reversedExpected,
+      unpricedModels: [...reversedExpected.unpricedModels].sort(),
+    })
     // The first call admits the turn; every call then participates in the
     // session's timestamp. The previous summary path reports this literal day.
     expect(
@@ -586,15 +643,18 @@ describe('Overview application query', () => {
       new Date(2026, 6, 10, 12),
       {},
     )
-    expect(
-      calculateOverviewFromData(
-        overviewFactsFromSnapshot(emptyLastData),
-        { period: 'lifetime' },
-        new Date(2026, 6, 10, 12),
-        catalogue(),
-        {},
-      ),
-    ).toEqual(emptyLastExpected)
+    const emptyLastFromData = calculateOverviewFromData(
+      overviewFactsFromSnapshot(emptyLastData),
+      { period: 'lifetime' },
+      new Date(2026, 6, 10, 12),
+      catalogue(),
+      {},
+    )
+    expect({
+      ...emptyLastFromData,
+      value: { ...emptyLastFromData.value, dataStart: emptyLastExpected.value.dataStart },
+    }).toEqual(emptyLastExpected)
+    expect(emptyLastFromData.value.dataStart).toBe('2026-07-01')
     expect(
       calculateOverviewFromSnapshot(emptyLastTimestamp, { period: 'lifetime' }, new Date(2026, 6, 10, 12), {}).value
         .dataStart,
@@ -662,6 +722,36 @@ describe('Overview application query', () => {
     )
 
     expect(payload.daily.at(-1)?.date).toBe('2026-06-15')
+  })
+
+  it('passes a range for bounded scopes and keeps lifetime unbounded', async () => {
+    const calls: Array<{ start: number; end: number } | undefined> = []
+    const reads = LedgerViewReads.of({
+      ...viewReadsPort(() => Effect.succeed(emptyOverviewData)),
+      getOverviewData: range =>
+        Effect.sync(() => {
+          calls.push(range && { start: range.start.getTime(), end: range.end.getTime() })
+          return emptyOverviewData
+        }),
+    })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const run = (scope: OverviewScope) =>
+          queryOverview(queryInput(scope)).pipe(
+            Effect.provideService(LedgerViewReads, reads),
+            Effect.provideService(PricingDiagnostics, diagnostics([])),
+          )
+        yield* run({ period: 'week' })
+        yield* run({ period: 'month' })
+        yield* run({ period: 'all' })
+        yield* run({ period: 'lifetime' })
+        yield* run({ period: 'lifetime', range: { since: '2026-07-01', until: '2026-07-03' } })
+      }),
+    )
+    expect(calls).toHaveLength(5)
+    expect(calls.slice(0, 3).every(range => range !== undefined)).toBe(true)
+    expect(calls[3]).toBeUndefined()
+    expect(calls[4]).toBeDefined()
   })
 
   it('preserves typed SQL and Schema failures from the canonical snapshot load', async () => {

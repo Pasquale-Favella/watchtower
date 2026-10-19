@@ -3,6 +3,7 @@ import type * as Effect from 'effect/Effect'
 import type * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
+import type { DateRange } from '../pipeline/types.js'
 import type { OverviewReadData } from './overview-read-projections.js'
 import type { LedgerViewData } from './view-read-projections.js'
 
@@ -10,7 +11,7 @@ import type { LedgerViewData } from './view-read-projections.js'
 export interface LedgerViewReadsPort {
   getViewData(): Effect.Effect<LedgerViewData, SqlError | Schema.SchemaError>
   /** Minimal, request-fresh facts for the Overview Section. */
-  getOverviewData(): Effect.Effect<OverviewReadData, SqlError | Schema.SchemaError>
+  getOverviewData(range?: DateRange): Effect.Effect<OverviewReadData, SqlError | Schema.SchemaError>
 }
 
 export class LedgerViewReads extends Context.Service<LedgerViewReads, LedgerViewReadsPort>()(
