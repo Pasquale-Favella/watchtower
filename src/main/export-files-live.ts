@@ -1,13 +1,16 @@
 import { lstat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as PlatformError from 'effect/PlatformError'
 
 import { ExportFileError, type ExportFileErrorReason, ExportFiles } from './application/export-files.js'
 import type { ExportFileContent } from './export-calculation.js'
+import { mapPlatformCloseCause } from './platform-file-errors.js'
 
 const EXPORT_MARKER_FILE = '.watchtower-export'
 
@@ -97,15 +100,43 @@ const readExistingJsonHeader = Effect.fnUntraced(function* (
   target: string,
   fs: FileSystem.FileSystem,
 ): Effect.fn.Return<void, ExportFileError> {
-  yield* Effect.scoped(
-    Effect.gen(function* () {
-      const handle = yield* io(fs.open(target, { flag: 'r', noFollow: process.platform !== 'win32' }))
-      const buffer = Buffer.alloc(4096)
-      const bytesRead = yield* io(handle.read(buffer))
-      if (!buffer.toString('utf-8', 0, bytesRead).includes('"schema": "watchtower.export.v')) {
-        return yield* Effect.fail(fileError('json-unmarked-file'))
-      }
-    }),
+  let operationExit: Exit.Exit<void, ExportFileError> | undefined
+  const buffer = Buffer.alloc(4096)
+  const scopeExit = yield* Effect.exit(
+    Effect.uninterruptibleMask(restore =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const opened = yield* Effect.exit(io(fs.open(target, { flag: 'r', noFollow: process.platform !== 'win32' })))
+          if (Exit.isFailure(opened)) {
+            operationExit = opened
+            return
+          }
+          operationExit = yield* Effect.exit(
+            restore(
+              io(opened.value.read(buffer)).pipe(
+                Effect.flatMap(bytesRead =>
+                  buffer.toString('utf-8', 0, bytesRead).includes('"schema": "watchtower.export.v')
+                    ? Effect.void
+                    : Effect.fail(fileError('json-unmarked-file')),
+                ),
+              ),
+            ),
+          )
+        }),
+      ),
+    ),
+  )
+
+  if (Exit.isSuccess(scopeExit)) {
+    if (operationExit && Exit.isFailure(operationExit)) return yield* Effect.failCause(operationExit.cause)
+    return
+  }
+
+  const releaseCause = mapPlatformCloseCause(scopeExit.cause, () => fileError('io-failure')) ?? scopeExit.cause
+  return yield* Effect.failCause(
+    operationExit && Exit.isFailure(operationExit)
+      ? Cause.fromReasons([...operationExit.cause.reasons, ...releaseCause.reasons])
+      : releaseCause,
   )
 })
 

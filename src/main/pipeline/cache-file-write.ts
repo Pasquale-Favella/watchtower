@@ -2,9 +2,9 @@ import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as FileSystem from 'effect/FileSystem'
-import * as PlatformError from 'effect/PlatformError'
 
-import { isScanAbortedError, throwIfScanAborted } from './scan-control.js'
+import { mapPlatformCloseCause } from '../platform-file-errors.js'
+import { hasScanAbortCause, isRecoverableScanFailureCause, throwIfScanAborted } from './scan-control.js'
 
 function toError(cause: unknown): Error {
   return cause instanceof Error ? cause : new Error(String(cause), { cause })
@@ -14,19 +14,9 @@ function abortCheck(signal?: AbortSignal): Effect.Effect<void, Error> {
   return Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
 }
 
-function isExpectedPlatformCloseCause(cause: Cause.Cause<Error>): boolean {
-  return (
-    cause.reasons.length > 0 &&
-    cause.reasons.every(reason => Cause.isDieReason(reason) && PlatformError.isPlatformError(reason.defect))
-  )
-}
-
 /** True only for typed, non-abort cache failures that callers may safely ignore. */
 export function isRecoverableCacheFailure(cause: Cause.Cause<Error>): boolean {
-  return (
-    cause.reasons.length > 0 &&
-    cause.reasons.every(reason => Cause.isFailReason(reason) && !isScanAbortedError(reason.error))
-  )
+  return isRecoverableScanFailureCause(cause, () => true)
 }
 
 /** Write and close a cache temp file before the caller attempts its atomic rename. */
@@ -65,16 +55,10 @@ export function writeCacheTempFileEffect(
         return Effect.void
       }
 
-      if (isExpectedPlatformCloseCause(scopeExit.cause)) {
-        const closeCause = Cause.fromReasons(
-          scopeExit.cause.reasons.map(reason =>
-            Cause.isDieReason(reason) ? Cause.makeFailReason(toError(reason.defect)) : reason,
-          ),
-        )
+      const closeCause = mapPlatformCloseCause(scopeExit.cause, toError)
+      if (closeCause) {
         if (operationExit && Exit.isFailure(operationExit)) {
-          if (
-            operationExit.cause.reasons.some(reason => Cause.isFailReason(reason) && isScanAbortedError(reason.error))
-          ) {
+          if (hasScanAbortCause(operationExit.cause)) {
             return Effect.failCause(operationExit.cause)
           }
           return Effect.failCause(Cause.combine(operationExit.cause, closeCause))

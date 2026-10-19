@@ -19,10 +19,17 @@ import { fileURLToPath } from 'url'
 
 import { parsedProviderCallSchema } from '../../../shared/schemas/providers.js'
 import { resolveCacheDir } from '../../env.js'
+import { mapPlatformCloseCause } from '../../platform-file-errors.js'
 import { billableOutputTokens } from '../billable-output.js'
 import { readSessionLinesStream, SessionLineReadError } from '../fs-utils.js'
 import { captureScanPricing } from '../models.js'
-import { isScanAbortedError, ScanAbortedError, scanAbortError } from '../scan-control.js'
+import {
+  hasScanAbortCause,
+  isRecoverableScanFailureCause,
+  isScanAbortedError,
+  ScanAbortedError,
+  scanAbortError,
+} from '../scan-control.js'
 import { checkScanAbort, scanIo } from '../scan-io.js'
 import type { ScanPricing } from '../scan-pricing.js'
 import type { SqliteDatabase } from '../sqlite.js'
@@ -471,31 +478,16 @@ const cacheIo = Effect.fnUntraced(function* <A, R>(
 })
 
 function expectedPlatformCloseCause(exit: Exit.Exit<void, never>): Cause.Cause<AntigravityCacheIoError> | null {
-  if (
-    Exit.isSuccess(exit) ||
-    exit.cause.reasons.length === 0 ||
-    !exit.cause.reasons.every(reason => Cause.isDieReason(reason) && PlatformError.isPlatformError(reason.defect))
-  ) {
-    return null
-  }
-  return Cause.fromReasons(
-    exit.cause.reasons.flatMap(reason => {
-      if (!Cause.isDieReason(reason) || !PlatformError.isPlatformError(reason.defect)) return []
-      return [
-        Cause.makeFailReason(
-          new AntigravityCacheIoError({
-            operation: 'close',
-            cause: reason.defect,
-            message: 'Antigravity cache close failed',
-          }),
-        ),
-      ]
-    }),
+  if (Exit.isSuccess(exit)) return null
+  return mapPlatformCloseCause(
+    exit.cause,
+    platformError =>
+      new AntigravityCacheIoError({
+        operation: 'close',
+        cause: platformError,
+        message: 'Antigravity cache close failed',
+      }),
   )
-}
-
-function hasScanAbort<E>(cause: Cause.Cause<E>): boolean {
-  return cause.reasons.some(reason => Cause.isFailReason(reason) && isScanAbortedError(reason.error))
 }
 
 const loadCacheEffect = Effect.fnUntraced(function* (
@@ -521,10 +513,7 @@ const loadCacheEffect = Effect.fnUntraced(function* (
 })
 
 function isRecoverableCacheIoCause<E>(cause: Cause.Cause<E>): boolean {
-  return (
-    cause.reasons.length > 0 &&
-    cause.reasons.every(reason => Cause.isFailReason(reason) && reason.error instanceof AntigravityCacheIoError)
-  )
+  return isRecoverableScanFailureCause(cause, error => error instanceof AntigravityCacheIoError)
 }
 
 export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffect')(function* (
@@ -610,7 +599,7 @@ export const flushAntigravityCacheEffect = Effect.fn('flushAntigravityCacheEffec
       if (Exit.isFailure(writeExit)) {
         if (Exit.isFailure(closeExit)) {
           const expectedCloseCause = expectedPlatformCloseCause(closeExit)
-          if (expectedCloseCause && hasScanAbort(writeExit.cause)) return yield* Effect.failCause(writeExit.cause)
+          if (expectedCloseCause && hasScanAbortCause(writeExit.cause)) return yield* Effect.failCause(writeExit.cause)
           return yield* Effect.failCause(Cause.combine(writeExit.cause)(expectedCloseCause ?? closeExit.cause))
         }
         return yield* Effect.failCause(writeExit.cause)

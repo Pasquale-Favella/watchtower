@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
@@ -16,6 +18,10 @@ const fsControls = {
   readStarted: null as (() => void) | null,
   readGate: null as Promise<void> | null,
   readFailurePath: null as string | null,
+  closeFailurePath: null as string | null,
+  defectClosePath: null as string | null,
+  closeCalls: 0,
+  closedFile: null as FileSystem.File | null,
   missingStatPath: null as string | null,
 }
 
@@ -33,39 +39,70 @@ const testFileSystem = Layer.effect(
           ? Effect.fail(PlatformError.systemError({ _tag: 'NotFound', module: 'FileSystem', method: 'stat' }))
           : fs.stat(path),
       open: (path, options) =>
-        fs.open(path, options).pipe(
-          Effect.map(
-            file =>
-              new Proxy(file, {
-                get(target, property, receiver) {
-                  if (property === 'read' && path === fsControls.interceptedPath) {
-                    return (buffer: Uint8Array) =>
-                      Effect.suspend(() => {
-                        fsControls.readStarted?.()
-                        const readGate = fsControls.readGate
-                        const wait = readGate ? Effect.promise(() => readGate) : Effect.void
-                        return wait.pipe(
-                          Effect.flatMap(() =>
-                            path === fsControls.readFailurePath
-                              ? Effect.fail(
-                                  PlatformError.systemError({
-                                    _tag: 'Unknown',
-                                    module: 'FileSystem',
-                                    method: 'read',
-                                    cause: new Error('test read failure'),
-                                  }),
-                                )
-                              : target.read(buffer),
-                          ),
-                        )
-                      })
-                  }
-                  const value = Reflect.get(target, property, receiver)
-                  return typeof value === 'function' ? value.bind(target) : value
-                },
-              }),
-          ),
-        ),
+        Effect.gen(function* () {
+          const trackClose =
+            path === fsControls.interceptedPath ||
+            path === fsControls.closeFailurePath ||
+            path === fsControls.defectClosePath
+          let acquired = false
+          if (trackClose) {
+            yield* Effect.addFinalizer(() =>
+              acquired
+                ? Effect.sync(() => {
+                    fsControls.closeCalls += 1
+                  }).pipe(
+                    Effect.andThen(
+                      path === fsControls.closeFailurePath
+                        ? Effect.die(
+                            PlatformError.systemError({
+                              _tag: 'Unknown',
+                              module: 'FileSystem',
+                              method: 'close',
+                              cause: Object.assign(new Error('bad file descriptor'), { code: 'EBADF' }),
+                            }),
+                          )
+                        : path === fsControls.defectClosePath
+                          ? Effect.die(new Error('unexpected close defect'))
+                          : Effect.void,
+                    ),
+                  )
+                : Effect.void,
+            )
+          }
+          const file = yield* fs.open(path, options)
+          acquired = true
+          if (trackClose) fsControls.closedFile = file
+          if (path !== fsControls.interceptedPath) return file
+
+          return new Proxy(file, {
+            get(target, property, receiver) {
+              if (property === 'read') {
+                return (buffer: Uint8Array, readOptions?: FileSystem.File.ReadOptions) =>
+                  Effect.suspend(() => {
+                    fsControls.readStarted?.()
+                    const readGate = fsControls.readGate
+                    const wait = readGate ? Effect.promise(() => readGate) : Effect.void
+                    return wait.pipe(
+                      Effect.flatMap(() =>
+                        path === fsControls.readFailurePath
+                          ? Effect.fail(
+                              PlatformError.systemError({
+                                _tag: 'Unknown',
+                                module: 'FileSystem',
+                                method: 'read',
+                                cause: new Error('test read failure'),
+                              }),
+                            )
+                          : target.read(buffer, readOptions),
+                      ),
+                    )
+                  })
+              }
+              const value = Reflect.get(target, property, receiver)
+              return typeof value === 'function' ? value.bind(target) : value
+            },
+          })
+        }),
     })
   }),
 ).pipe(Layer.provideMerge(NodeFileSystem.layer))
@@ -84,6 +121,10 @@ afterEach(() => {
   fsControls.readStarted = null
   fsControls.readGate = null
   fsControls.readFailurePath = null
+  fsControls.closeFailurePath = null
+  fsControls.defectClosePath = null
+  fsControls.closeCalls = 0
+  fsControls.closedFile = null
   fsControls.missingStatPath = null
   const expectedParent = resolve(tmpdir())
   for (const directory of directories.splice(0)) {
@@ -120,6 +161,23 @@ function writeCsvWithLivePort(
 
 function writeJsonFileWithLivePort(target: string, contents: string): Promise<string> {
   return Effect.runPromise(writeJsonWithLivePort(target, contents))
+}
+
+async function expectOpenedFileClosed(): Promise<void> {
+  const file = fsControls.closedFile
+  if (file === null) throw new Error('expected an acquired export file handle')
+  const exit = await Effect.runPromiseExit(file.stat)
+  expect(Exit.isFailure(exit)).toBe(true)
+  if (Exit.isFailure(exit)) {
+    expect(
+      exit.cause.reasons.some(
+        reason =>
+          Cause.isFailReason(reason) &&
+          PlatformError.isPlatformError(reason.error) &&
+          (reason.error.reason.cause as NodeJS.ErrnoException | undefined)?.code === 'EBADF',
+      ),
+    ).toBe(true)
+  }
 }
 
 describe('export file ownership and overwrite checks', () => {
@@ -241,7 +299,7 @@ describe('export file ownership and overwrite checks', () => {
     expect(readFileSync(`${target}.json`, 'utf-8')).toBe('{"schema":"watchtower.export.v1"}')
   })
 
-  it('drains a pending JSON header read before honoring interruption and skips overwrite', async () => {
+  it('closes a pending JSON header read before honoring interruption and skips overwrite', async () => {
     const root = tempDirectory()
     const target = join(root, 'report.json')
     const original = '{"schema": "watchtower.export.v1", "old": true}'
@@ -260,14 +318,41 @@ describe('export file ownership and overwrite checks', () => {
 
     const fiber = Effect.runFork(writeJsonWithLivePort(target, '{"schema":"watchtower.export.v1","new":true}'))
     await readStarted
-    const interrupted = Effect.runPromise(Fiber.interrupt(fiber))
+    let interruptSettled = false
+    const interrupted = Effect.runPromise(Fiber.interrupt(fiber)).then(() => {
+      interruptSettled = true
+    })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(fsControls.closeCalls).toBe(0)
+    expect(interruptSettled).toBe(false)
     finishRead()
     await interrupted
 
+    expect(fsControls.closeCalls).toBe(1)
+    await expectOpenedFileClosed()
     expect(readFileSync(target, 'utf-8')).toBe(original)
   })
 
-  it('maps JSON header read failure to io-failure and skips overwrite', async () => {
+  it('maps JSON close failure to io-failure and does not retry the close', async () => {
+    const root = tempDirectory()
+    const target = join(root, 'report.json')
+    const original = '{"schema": "watchtower.export.v1", "old": true}'
+    writeFileSync(target, original)
+    fsControls.interceptedPath = target
+    fsControls.closeFailurePath = target
+
+    await expect(
+      Effect.runPromise(writeJsonWithLivePort(target, '{"schema":"watchtower.export.v1"}')),
+    ).rejects.toMatchObject({
+      _tag: 'ExportFileError',
+      reason: 'io-failure',
+    })
+    expect(fsControls.closeCalls).toBe(1)
+    await expectOpenedFileClosed()
+    expect(readFileSync(target, 'utf-8')).toBe(original)
+  })
+
+  it('maps JSON header read failure to io-failure and closes once', async () => {
     const root = tempDirectory()
     const target = join(root, 'report.json')
     const original = '{"schema": "watchtower.export.v1", "old": true}'
@@ -277,10 +362,71 @@ describe('export file ownership and overwrite checks', () => {
 
     await expect(
       Effect.runPromise(writeJsonWithLivePort(target, '{"schema":"watchtower.export.v1"}')),
-    ).rejects.toMatchObject({
-      _tag: 'ExportFileError',
-      reason: 'io-failure',
-    })
+    ).rejects.toMatchObject({ _tag: 'ExportFileError', reason: 'io-failure' })
+    expect(fsControls.closeCalls).toBe(1)
+    expect(readFileSync(target, 'utf-8')).toBe(original)
+  })
+
+  it('keeps JSON header read and close failures typed without a second close', async () => {
+    const root = tempDirectory()
+    const target = join(root, 'report.json')
+    const original = '{"schema": "watchtower.export.v1", "old": true}'
+    writeFileSync(target, original)
+    fsControls.interceptedPath = target
+    fsControls.readFailurePath = target
+    fsControls.closeFailurePath = target
+
+    const exit = await Effect.runPromiseExit(writeJsonWithLivePort(target, '{"schema":"watchtower.export.v1"}'))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      expect(exit.cause.reasons.filter(Cause.isDieReason)).toEqual([])
+      const failures = exit.cause.reasons.filter(Cause.isFailReason).map(reason => reason.error)
+      expect(failures).toHaveLength(2)
+      for (const failure of failures) {
+        expect(failure).toMatchObject({ _tag: 'ExportFileError', reason: 'io-failure' })
+      }
+    }
+    expect(fsControls.closeCalls).toBe(1)
+    await expectOpenedFileClosed()
+    expect(readFileSync(target, 'utf-8')).toBe(original)
+  })
+
+  it('preserves an arbitrary release defect alongside the read failure', async () => {
+    const root = tempDirectory()
+    const target = join(root, 'report.json')
+    const original = '{"schema": "watchtower.export.v1", "old": true}'
+    writeFileSync(target, original)
+    fsControls.interceptedPath = target
+    fsControls.readFailurePath = target
+    fsControls.defectClosePath = target
+
+    const exit = await Effect.runPromiseExit(writeJsonWithLivePort(target, '{"schema":"watchtower.export.v1"}'))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      expect(exit.cause.reasons.some(Cause.isFailReason)).toBe(true)
+      expect(
+        exit.cause.reasons.some(
+          reason =>
+            Cause.isDieReason(reason) &&
+            reason.defect instanceof Error &&
+            reason.defect.message === 'unexpected close defect',
+        ),
+      ).toBe(true)
+      expect(
+        exit.cause.reasons.some(
+          reason =>
+            Cause.isFailReason(reason) &&
+            typeof reason.error === 'object' &&
+            reason.error !== null &&
+            '_tag' in reason.error &&
+            reason.error._tag === 'ExportFileError' &&
+            'reason' in reason.error &&
+            reason.error.reason === 'io-failure',
+        ),
+      ).toBe(true)
+    }
+    expect(fsControls.closeCalls).toBe(1)
+    await expectOpenedFileClosed()
     expect(readFileSync(target, 'utf-8')).toBe(original)
   })
 })
