@@ -2,6 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import { it as effectIt } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -47,26 +49,18 @@ function runLoadPricing(fetchImpl: typeof fetch, timeoutMs?: number, ttlMs: numb
   const envLayer = pricingEnv(ttlMs)
   if (timeoutMs === undefined) {
     return Effect.runPromise(
-      loadPricingEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl)), Effect.provide(envLayer)),
+      loadPricingEffect().pipe(
+        Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+        Effect.provide(envLayer),
+        Effect.provide(NodeFileSystem.layer),
+      ),
     )
   }
   return Effect.runPromise(
     loadPricingEffect({ timeoutMs }).pipe(
       Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
       Effect.provide(envLayer),
-    ),
-  )
-}
-
-function runLoadPricingAt(fetchImpl: typeof fetch, ttlMs: number, nowMs: number): Promise<void> {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      yield* TestClock.setTime(nowMs)
-      yield* loadPricingEffect()
-    }).pipe(
-      Effect.provide(TestClock.layer()),
-      Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
-      Effect.provide(pricingEnv(ttlMs)),
+      Effect.provide(NodeFileSystem.layer),
     ),
   )
 }
@@ -129,7 +123,7 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
     expectSnapshotMerged()
   })
 
-  it('uses the Effect Clock for pricing cache expiry and write timestamps', async () => {
+  effectIt.effect('uses the Effect Clock for pricing cache expiry and write timestamps', () => {
     const dir = freshCacheDir()
     const nowMs = Date.parse('2026-10-14T12:00:00.000Z')
     const cachedCosts = {
@@ -149,14 +143,30 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
       })
     }) as unknown as typeof fetch
 
-    await runLoadPricingAt(fetchImpl, 100, nowMs)
-    expect(calls).toBe(0)
-    expect(getModelCosts('clock-cached-model')).not.toBeNull()
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs)
+      const loadWithPricingPorts = () =>
+        loadPricingEffect().pipe(
+          Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+          Effect.provide(pricingEnv(100)),
+          Effect.provide(NodeFileSystem.layer),
+        )
 
-    writeFileSync(cachePath, JSON.stringify({ timestamp: nowMs - 101, data: { 'clock-cached-model': cachedCosts } }))
-    await runLoadPricingAt(fetchImpl, 100, nowMs)
-    expect(calls).toBe(1)
-    expect(JSON.parse(readFileSync(cachePath, 'utf8'))).toMatchObject({ timestamp: nowMs })
+      yield* loadWithPricingPorts()
+      expect(calls).toBe(0)
+      expect(getModelCosts('clock-cached-model')).not.toBeNull()
+
+      yield* Effect.sync(() =>
+        writeFileSync(
+          cachePath,
+          JSON.stringify({ timestamp: nowMs - 101, data: { 'clock-cached-model': cachedCosts } }),
+        ),
+      )
+      yield* loadWithPricingPorts()
+      expect(calls).toBe(1)
+      const written = yield* Effect.sync(() => JSON.parse(readFileSync(cachePath, 'utf8')))
+      expect(written).toMatchObject({ timestamp: nowMs })
+    })
   })
 
   it('fetch failure falls back to the snapshot and never fails', async () => {
@@ -176,6 +186,7 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
             pricingCacheTtlMs: Infinity,
           }),
         ),
+        Effect.provide(NodeFileSystem.layer),
       ),
     )
     // Never fails: reaching here means no rejection. Snapshot still resolves.
@@ -189,6 +200,7 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
       refreshPricingNowEffect().pipe(
         Effect.provide(HttpFetch.layerWithFetch(throwingFetch())),
         Effect.provide(pricingEnv()),
+        Effect.provide(NodeFileSystem.layer),
         Effect.flip,
       ),
     )
@@ -206,6 +218,7 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
           loadPricingEffect({ timeoutMs: 100 }).pipe(
             Effect.provide(HttpFetch.layerWithFetch(neverFetch)),
             Effect.provide(pricingEnv()),
+            Effect.provide(NodeFileSystem.layer),
           ),
           yield* worstCaseRetryWindowMs(100),
         )
@@ -241,6 +254,7 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
       refreshPricingNowEffect().pipe(
         Effect.provide(HttpFetch.layerWithFetch(badStatus)),
         Effect.provide(pricingEnv()),
+        Effect.provide(NodeFileSystem.layer),
         Effect.flip,
       ),
     )
@@ -259,6 +273,7 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
       refreshPricingNowEffect().pipe(
         Effect.provide(HttpFetch.layerWithFetch(badJson)),
         Effect.provide(pricingEnv()),
+        Effect.provide(NodeFileSystem.layer),
         Effect.flip,
       ),
     )
@@ -274,6 +289,7 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
       refreshPricingNowEffect().pipe(
         Effect.provide(HttpFetch.layerWithFetch(nullRoot)),
         Effect.provide(pricingEnv()),
+        Effect.provide(NodeFileSystem.layer),
         Effect.flip,
       ),
     )
@@ -292,6 +308,7 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
       refreshPricingNowEffect().pipe(
         Effect.provide(HttpFetch.layerWithFetch(fakeFetchOk(upstream))),
         Effect.provide(pricingEnv()),
+        Effect.provide(NodeFileSystem.layer),
         Effect.flip,
       ),
     )

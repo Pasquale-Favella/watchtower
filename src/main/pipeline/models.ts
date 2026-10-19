@@ -1,8 +1,8 @@
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
-import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 
 import { type AppPaths, Env, resolveCacheDir } from '../env.js'
@@ -953,10 +953,10 @@ export function getShortModelName(model: string): string {
 //
 // Same contracts as the Promise adapters above, with the network entering
 // through the `HttpFetch` service (Effect Clock timeout, fiber interruption
-// aborts the underlying fetch). Filesystem cache reads/writes stay via
-// `Effect.tryPromise` + the `resolveCacheDir()` seam (which resolves
-// `AppPaths.cacheDir` → the `WATCHTOWER_CACHE_DIR` override → the homedir
-// default), so the cache location needs no `paths` parameter here.
+// aborts the underlying fetch) and filesystem cache access through the shared
+// `FileSystem` service. `resolveCacheDir()` resolves `AppPaths.cacheDir` →
+// `WATCHTOWER_CACHE_DIR` → the homedir default, so the cache location needs no
+// `paths` parameter here.
 // Pure pricing math stays plain TypeScript. Both effects write through to the
 // live cache; its captured catalogue is invalidated and rebuilt on next use.
 
@@ -1000,12 +1000,12 @@ function writeThroughPricingCache(pricing: Map<string, ModelCosts>): void {
 const loadCachedPricingEffect = Effect.fn('loadCachedPricingEffect')(function* (): Effect.fn.Return<
   Map<string, ModelCosts> | null,
   never,
-  Env
+  Env | FileSystem.FileSystem
 > {
-  const raw = yield* Effect.tryPromise({
-    try: () => readFile(getCachePath(), 'utf-8'),
-    catch: cause => cause,
-  }).pipe(Effect.orElseSucceed(() => null))
+  const fs = yield* FileSystem.FileSystem
+  const raw = yield* Effect.uninterruptible(fs.readFileString(getCachePath(), 'utf-8')).pipe(
+    Effect.orElseSucceed(() => null),
+  )
   if (raw === null) {
     return null
   }
@@ -1016,7 +1016,7 @@ const loadCachedPricingEffect = Effect.fn('loadCachedPricingEffect')(function* (
 
 const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(function* (
   timeoutMs?: number,
-): Effect.fn.Return<Map<string, ModelCosts>, PricingRefreshError, HttpFetch> {
+): Effect.fn.Return<Map<string, ModelCosts>, PricingRefreshError, HttpFetch | FileSystem.FileSystem> {
   const http = yield* HttpFetch
   // Bounded transient retry (F15/A1), applied BEFORE the `mapError` so the
   // schedule sees the raw `HttpFetchError` and its `reason`. Without it a blip
@@ -1088,15 +1088,12 @@ const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(funct
   }
   const cacheError = (cause: unknown) =>
     new PricingRefreshError({ reason: 'cache', message: describeErrorCause(cause) })
-  yield* Effect.tryPromise({
-    try: () => mkdir(getCacheDir(), { recursive: true }),
-    catch: cacheError,
-  })
+  const fs = yield* FileSystem.FileSystem
+  yield* Effect.uninterruptible(fs.makeDirectory(getCacheDir(), { recursive: true })).pipe(Effect.mapError(cacheError))
   const timestamp = yield* Clock.currentTimeMillis
-  yield* Effect.tryPromise({
-    try: () => writeFile(getCachePath(), JSON.stringify({ timestamp, data: Object.fromEntries(pricing) })),
-    catch: cacheError,
-  })
+  yield* Effect.uninterruptible(
+    fs.writeFileString(getCachePath(), JSON.stringify({ timestamp, data: Object.fromEntries(pricing) })),
+  ).pipe(Effect.mapError(cacheError))
   return pricing
 })
 
@@ -1107,7 +1104,7 @@ const fetchAndCachePricingEffect = Effect.fn('fetchAndCachePricingEffect')(funct
  */
 export const loadPricingEffect = Effect.fn('loadPricingEffect')(function* (
   options: PricingEffectOptions = {},
-): Effect.fn.Return<void, never, HttpFetch | Env> {
+): Effect.fn.Return<void, never, HttpFetch | Env | FileSystem.FileSystem> {
   const cached = yield* loadCachedPricingEffect()
   if (cached) {
     yield* Effect.sync(() => writeThroughPricingCache(cached))
@@ -1127,7 +1124,7 @@ export const loadPricingEffect = Effect.fn('loadPricingEffect')(function* (
  */
 export const refreshPricingNowEffect = Effect.fn('refreshPricingNowEffect')(function* (
   options: PricingEffectOptions = {},
-): Effect.fn.Return<void, PricingRefreshError, HttpFetch> {
+): Effect.fn.Return<void, PricingRefreshError, HttpFetch | FileSystem.FileSystem> {
   const pricing = yield* fetchAndCachePricingEffect(options.timeoutMs)
   yield* Effect.sync(() => writeThroughPricingCache(pricing))
 })

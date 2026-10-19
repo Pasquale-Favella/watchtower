@@ -1,3 +1,4 @@
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 /**
  * Bounded transient retry on the four outbound fetch call sites (F15 / plan A1).
  *
@@ -326,11 +327,13 @@ describe('refreshPricingNowEffect + transient retry', () => {
     const down = failingFetch('network')
     const result = await Effect.runPromise(
       joinAfterAdvance(
-        refreshPricingNowEffect().pipe(
-          Effect.provide(HttpFetch.layerWithFetch(down.fetch)),
-          Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
-          Effect.flip,
-        ),
+        refreshPricingNowEffect()
+          .pipe(Effect.provide(NodeFileSystem.layer))
+          .pipe(
+            Effect.provide(HttpFetch.layerWithFetch(down.fetch)),
+            Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
+            Effect.flip,
+          ),
         RETRY_ENVELOPE_MS,
       ).pipe(Effect.provide(TestClock.layer())),
     )
@@ -342,11 +345,13 @@ describe('refreshPricingNowEffect + transient retry', () => {
   it('an abort retries ZERO times and propagates on the first attempt', async () => {
     const down = failingFetch('abort')
     const error = await Effect.runPromise(
-      refreshPricingNowEffect().pipe(
-        Effect.provide(HttpFetch.layerWithFetch(down.fetch)),
-        Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
-        Effect.flip,
-      ),
+      refreshPricingNowEffect()
+        .pipe(Effect.provide(NodeFileSystem.layer))
+        .pipe(
+          Effect.provide(HttpFetch.layerWithFetch(down.fetch)),
+          Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
+          Effect.flip,
+        ),
     )
     expect(down.calls()).toBe(1)
     expect(error).toBeInstanceOf(PricingRefreshError)
@@ -356,11 +361,13 @@ describe('refreshPricingNowEffect + transient retry', () => {
   it('a non-2xx status is still NOT a failure: one fetch, typed http error, no retry', async () => {
     const bad = jsonFetch(503, {})
     const error = await Effect.runPromise(
-      refreshPricingNowEffect().pipe(
-        Effect.provide(HttpFetch.layerWithFetch(bad.fetch)),
-        Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
-        Effect.flip,
-      ),
+      refreshPricingNowEffect()
+        .pipe(Effect.provide(NodeFileSystem.layer))
+        .pipe(
+          Effect.provide(HttpFetch.layerWithFetch(bad.fetch)),
+          Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
+          Effect.flip,
+        ),
     )
     expect(bad.calls()).toBe(1)
     expect(error).toBeInstanceOf(PricingRefreshError)
@@ -537,11 +544,13 @@ describe('the timeout reason is retried, then degrades exactly as it did before'
     const hang = hangingFetch()
     const error = await Effect.runPromise(
       joinAfterAdvance(
-        refreshPricingNowEffect({ timeoutMs: 100 }).pipe(
-          Effect.provide(HttpFetch.layerWithFetch(hang.fetch)),
-          Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
-          Effect.flip,
-        ),
+        refreshPricingNowEffect({ timeoutMs: 100 })
+          .pipe(Effect.provide(NodeFileSystem.layer))
+          .pipe(
+            Effect.provide(HttpFetch.layerWithFetch(hang.fetch)),
+            Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
+            Effect.flip,
+          ),
         2_000,
       ).pipe(Effect.provide(TestClock.layer())),
     )

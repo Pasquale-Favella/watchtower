@@ -34,6 +34,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -133,6 +134,7 @@ async function pricedBy(upstream: Record<string, unknown>): Promise<typeof Model
       .pipe(
         Effect.provide(HttpFetch.layerWithFetch(fakeFetchOk(upstream))),
         Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
+        Effect.provide(NodeFileSystem.layer),
       ),
   )
   return fresh
@@ -991,6 +993,7 @@ describe('a user price override beats a tier in every form getModelCosts honours
         .pipe(
           Effect.provide(HttpFetch.layerWithFetch(fakeFetchOk({}))),
           Effect.provide(Env.layerWithValues({ vercelGatewayApiKey: null, pricingCacheTtlMs: Infinity })),
+          Effect.provide(NodeFileSystem.layer),
         ),
     )
     return fresh
