@@ -72,7 +72,7 @@ describe('main-owned harness snapshot', () => {
       }),
     )
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-main-callback-'))
-    await initOperationalLog({ logDir: directory, isPackaged: false })
+    await initOperationalLog({ logDir: directory, isPackaged: false, isDevelopment: true })
     const runtime = makeMainRuntime(
       { clientVersion: 'test', appPath: '/app', onHarnessChange: () => {} },
       { detect: async () => [] },

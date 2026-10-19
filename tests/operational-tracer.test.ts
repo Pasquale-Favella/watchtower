@@ -20,7 +20,7 @@ import {
 /**
  * A7: the Operational-log `Tracer`. The proof is the FILE, not a spy — every
  * case reads the emitted JSON lines back, so each one also proves
- * `sanitizeOperationalRecord` ran on the way out. `isPackaged: false`
+ * `sanitizeOperationalRecord` ran on the way out. `isPackaged: false, isDevelopment: true`
  * everywhere because the writer is the file-level enforcement point and a
  * packaged build drops `debug` (spans file at `debug` on purpose); the dev
  * echo is the one that can show them.
@@ -91,7 +91,7 @@ function startSpan(
 describe('A7 Operational-log Tracer: one record per application/repository span END', () => {
   it('files exactly one debug record per ended span, with name, kind, ids and duration', async () => {
     const logDir = tempLogDir()
-    await initOperationalLog({ logDir, isPackaged: false })
+    await initOperationalLog({ logDir, isPackaged: false, isDevelopment: true })
     const tracer = makeOperationalLogTracer('main')
     // Chosen, not clocked: 2_500_000ns of a 1_000_000ns start is exactly 2.5ms.
     const span = startSpan(tracer, 'HttpFetch.fetch', 1_000_000n)
@@ -116,7 +116,7 @@ describe('A7 Operational-log Tracer: one record per application/repository span 
 
   it('files nothing for a span that never ends — the start is never written', async () => {
     const logDir = tempLogDir()
-    await initOperationalLog({ logDir, isPackaged: false })
+    await initOperationalLog({ logDir, isPackaged: false, isDevelopment: true })
     startSpan(makeOperationalLogTracer('main'), 'never.ended', 1_000_000n)
     closeOperationalLog()
     // A start line per span would double the file volume for no diagnostic
@@ -126,7 +126,7 @@ describe('A7 Operational-log Tracer: one record per application/repository span 
 
   it('a failing span files the error code and never the message', async () => {
     const logDir = tempLogDir()
-    await initOperationalLog({ logDir, isPackaged: false })
+    await initOperationalLog({ logDir, isPackaged: false, isDevelopment: true })
     const secret = 'user asked: what did I spend on gpt-5? ($456.78, C:\\Users\\alice)'
     const span = startSpan(makeOperationalLogTracer('main'), 'LedgerIngest.write', 1_000_000n)
     span.end(2_000_000n, Exit.fail(new TypeError(secret)))
@@ -146,7 +146,7 @@ describe('A7 Operational-log Tracer: one record per application/repository span 
 
   it('suppresses a SQL statement span while retaining its enclosing operation failure and timing', async () => {
     const logDir = tempLogDir()
-    await initOperationalLog({ logDir, isPackaged: false })
+    await initOperationalLog({ logDir, isPackaged: false, isDevelopment: true })
     const tracer = makeOperationalLogTracer('worker')
     const operation = startSpan(tracer, 'LedgerConfig.getCurrencyRate', 1_000_000n)
     const sql = startSpan(tracer, 'sql.execute', 1_500_000n, {}, operation)
@@ -186,7 +186,7 @@ describe('A7 Operational-log Tracer: one record per application/repository span 
 
   it('stamps the emitting isolate context, so worker spans never read as main', async () => {
     const logDir = tempLogDir()
-    await initOperationalLog({ logDir, isPackaged: false })
+    await initOperationalLog({ logDir, isPackaged: false, isDevelopment: true })
     startSpan(makeOperationalLogTracer('worker'), 'db-worker.ingest', 0n).end(1_000_000n, Exit.void)
     startSpan(makeOperationalLogTracer('main'), 'main.ingest', 0n).end(1_000_000n, Exit.void)
     closeOperationalLog()
@@ -197,7 +197,7 @@ describe('A7 Operational-log Tracer: one record per application/repository span 
 describe('A7: the layer is what a fiber actually reads', () => {
   it('an Effect.fn span reaches the file through the layer, with a real duration', async () => {
     const logDir = tempLogDir()
-    await initOperationalLog({ logDir, isPackaged: false })
+    await initOperationalLog({ logDir, isPackaged: false, isDevelopment: true })
     const work = Effect.fn('HttpFetch.fetch')(function* () {
       return yield* Effect.succeed('body')
     })
@@ -217,7 +217,7 @@ describe('A7: the layer is what a fiber actually reads', () => {
 
   it('NON-VACUITY: the same program files 0 records on the native tracer and 1 on the operational tracer', async () => {
     const logDir = tempLogDir()
-    await initOperationalLog({ logDir, isPackaged: false })
+    await initOperationalLog({ logDir, isPackaged: false, isDevelopment: true })
     const work = Effect.fn('CommandRunner.start')(function* () {
       return yield* Effect.succeed('started')
     })
@@ -235,7 +235,7 @@ describe('A7: the layer is what a fiber actually reads', () => {
 
   it('a nested span files its parent span id and shares the trace id', async () => {
     const logDir = tempLogDir()
-    await initOperationalLog({ logDir, isPackaged: false })
+    await initOperationalLog({ logDir, isPackaged: false, isDevelopment: true })
     const inner = Effect.fn('LedgerQueries.overview')(function* () {
       return yield* Effect.succeed('rows')
     })
@@ -257,7 +257,7 @@ describe('A7: the layer is what a fiber actually reads', () => {
 describe('A7: span attributes ride the sanitizer, not the seam', () => {
   it('drops a non-allowlisted attribute and refuses to let one overwrite the record', async () => {
     const logDir = tempLogDir()
-    await initOperationalLog({ logDir, isPackaged: false })
+    await initOperationalLog({ logDir, isPackaged: false, isDevelopment: true })
     const tracer = makeOperationalLogTracer('main')
     // `Effect.fn(name, { attributes })` attributes are Effect-internal, never
     // vetted ledger facts — same contract as an `Effect.log` annotation. One of

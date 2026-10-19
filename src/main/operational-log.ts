@@ -61,12 +61,14 @@ const ROTATED_PATTERN = /^operational\.log\.(\d+)$/
 /** Event name for an `Effect.log` that carries no `event` annotation — the
  * pre-existing name for "an Effect log with no opinion of its own". */
 const DEFAULT_LOG_EVENT = 'effect.log'
-/** Level order for the file-level ceiling (debug in dev, info in packaged). */
+/** Level order for the file-level ceiling (debug in development, info otherwise). */
 const LEVEL_RANK: Readonly<Record<LogLevel, number>> = { debug: 10, info: 20, warn: 30, error: 40 }
 
 export interface OperationalLogOptions {
   logDir: string
   isPackaged: boolean
+  /** Enable debug records and console echo only for the development server. */
+  isDevelopment?: boolean
   /** Test-only rotation overrides for the #131 quota test; production always
    * uses the defaults above. */
   size?: string | number
@@ -132,8 +134,9 @@ class OperationalLogWriter {
     const size = parseRollSize(opts.size ?? DEFAULT_ROLL_SIZE)
     this.maxBytes = Number.isFinite(size) && size > 0 ? size : parseRollSize(DEFAULT_ROLL_SIZE)
     this.keep = rotationLimit(opts.count)
-    this.minRank = LEVEL_RANK[opts.isPackaged ? 'info' : 'debug']
-    this.echo = !opts.isPackaged
+    const isDevelopment = opts.isDevelopment === true && !opts.isPackaged
+    this.minRank = LEVEL_RANK[isDevelopment ? 'debug' : 'info']
+    this.echo = isDevelopment
     mkdirSync(this.dir, { recursive: true })
     this.prune()
     this.reopen()
@@ -542,7 +545,7 @@ export const OperationalLogLogger = makeOperationalLogLogger()
 /** Installs `OperationalLogLogger`, replacing the default loggers so Effect
  * logs land only in the operational file (no console duplication). Lowers the
  * Effect minimum to `Debug` so debug records reach the sink in dev; the writer
- * stays the file-level enforcement point (info in packaged, debug in dev). */
+ * stays the file-level enforcement point (debug only in development). */
 export const OperationalLogLoggerLayer = EffectLogger.layer([OperationalLogLogger]).pipe(
   Layer.provideMerge(Layer.succeed(References.MinimumLogLevel, 'Debug')),
 )
@@ -567,7 +570,7 @@ export function operationalLogLoggerLayerWithSink(sink: OperationalLogSink, cont
  * facts — are dropped unless they name an allowlisted key, exactly as at an
  * `Effect.log` call site. Never throws, including before
  * `initOperationalLog` and inside a fiber finalizer. It files at `debug`; the
- * writer drops `debug` in packaged builds.
+ * writer drops `debug` outside development.
  */
 export const SPAN_EVENT = 'effect.span' as const
 

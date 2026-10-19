@@ -16,6 +16,10 @@ npm run dev        # launches the Electron app with hot reload
 The README's [Quick start](../README.md#quick-start) covers first-launch
 behavior and the macOS Full Disk Access requirement.
 
+`npm run dev` enables debug records and console echo. Production previews and
+packaged apps keep info, warning and error records in the operational log
+without echoing them to the console.
+
 ## Effect conventions
 
 The backend uses Effect 4 for application workflows, service composition,

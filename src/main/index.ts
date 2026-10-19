@@ -480,7 +480,11 @@ app.whenReady().then(async () => {
   if (!hasInstanceLock) return
   const dataDir = app.getPath('userData')
   try {
-    await initOperationalLog({ logDir: join(dataDir, 'logs'), isPackaged: app.isPackaged })
+    await initOperationalLog({
+      logDir: join(dataDir, 'logs'),
+      isPackaged: app.isPackaged,
+      isDevelopment: Boolean(process.env['ELECTRON_RENDERER_URL']),
+    })
   } catch {
     /* logging must never break boot */
   }

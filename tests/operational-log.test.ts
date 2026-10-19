@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import * as Effect from 'effect/Effect'
 import * as Metric from 'effect/Metric'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { makeMainRuntime } from '../src/main/main-runtime.js'
 import {
@@ -91,20 +91,28 @@ describe('Operational log main sink (JSON-lines writer, slice 1)', () => {
     expect(parsed).not.toHaveProperty('ledgerFact')
   })
 
-  it('drops debug in packaged builds but keeps it in development', async () => {
-    const prodDir = tempLogDir()
-    await initOperationalLog({ logDir: prodDir, isPackaged: true })
-    logOperationalEvent('debug', 'debug.note', {})
-    logOperationalEvent('info', 'boot.ready', {})
-    closeOperationalLog()
-    expect(readLines(prodDir)).toHaveLength(1)
+  it.each([
+    { mode: 'development', isPackaged: false, isDevelopment: true, debug: true },
+    { mode: 'production preview', isPackaged: false, isDevelopment: false, debug: false },
+    { mode: 'unpackaged without a dev flag', isPackaged: false, isDevelopment: undefined, debug: false },
+    { mode: 'packaged', isPackaged: true, isDevelopment: false, debug: false },
+    { mode: 'packaged with a dev flag', isPackaged: true, isDevelopment: true, debug: false },
+  ])('gates debug records and console echo in $mode', async ({ isPackaged, isDevelopment, debug }) => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    try {
+      const logDir = tempLogDir()
+      await initOperationalLog({ logDir, isPackaged, isDevelopment })
+      logOperationalEvent('debug', 'debug.note', {})
+      logOperationalEvent('info', 'boot.ready', {})
+      closeOperationalLog()
 
-    rmSync(dir, { recursive: true, force: true })
-    const devDir = tempLogDir()
-    await initOperationalLog({ logDir: devDir, isPackaged: false })
-    logOperationalEvent('debug', 'debug.note', {})
-    closeOperationalLog()
-    expect(readLines(devDir)).toHaveLength(1)
+      const levels = readLines(logDir).map(line => (JSON.parse(line) as { level: string }).level)
+      expect(levels).toEqual(debug ? ['debug', 'info'] : ['info'])
+      expect(stdout).toHaveBeenCalledTimes(debug ? 2 : 0)
+      if (debug) expect(stdout).toHaveBeenCalledWith(expect.stringContaining('DEBUG:'))
+    } finally {
+      stdout.mockRestore()
+    }
   })
 
   it('records IPC failures with op and code only', async () => {
@@ -485,7 +493,7 @@ describe('OperationalLog Effect bridge (Wave 2 §4.4/§5.4)', () => {
 
   it('Logger maps Effect levels into the file sink', async () => {
     const logDir = tempLogDir()
-    await initOperationalLog({ logDir, isPackaged: false })
+    await initOperationalLog({ logDir, isPackaged: false, isDevelopment: true })
     await Effect.runPromise(
       Effect.gen(function* () {
         yield* Effect.logDebug('debug message')
