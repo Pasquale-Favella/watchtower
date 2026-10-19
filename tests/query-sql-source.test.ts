@@ -27,6 +27,18 @@ describe('measurement SQL extraction', () => {
     expect(extractReadSql(source, 'getCalls')).toBe('SELECT model FROM ledger_call')
   })
 
+  it('resolves shared static columns, template interpolation and ordering without executing code', () => {
+    const source = [
+      "const COLUMNS = ['source_id', 'session_id'] as const",
+      "const SELECT = `SELECT ${COLUMNS.join(', ')} FROM ledger_session`",
+      "const ORDER = ' ORDER BY session_id ASC'",
+      "Effect.fn('LedgerQueries.getSessions')(function* () { return yield* sql.unsafe(SELECT + ORDER) })",
+    ].join('\n')
+    expect(extractReadSql(source, 'getSessions')).toBe(
+      'SELECT source_id, session_id FROM ledger_session ORDER BY session_id ASC',
+    )
+  })
+
   it('ignores an unrelated call that repeats the tracing label', () => {
     const source = [
       "const label = decorate('LedgerQueries.getCalls')(() => sql`DELETE FROM ledger_call`)",
@@ -43,6 +55,11 @@ describe('measurement SQL extraction', () => {
     "const query = `SELECT 1`; function unrelated() { const query = `SELECT 2` }; Effect.fn('LedgerQueries.getCalls')(function* () { return yield* sql.unsafe(query) })",
     "const query = alias; const alias = query; Effect.fn('LedgerQueries.getCalls')(function* () { return yield* sql.unsafe(query) })",
     "Effect.fn('LedgerQueries.getCalls')(function* () { return yield* sql`SELECT ${column} FROM ledger_call` })",
+    "const columns = ['model'].map(dynamicColumn); Effect.fn('LedgerQueries.getCalls')(function* () { return yield* sql.unsafe(`SELECT ${columns.join(', ')} FROM ledger_call`) })",
+    "const columns = ['model', dynamicColumn()]; Effect.fn('LedgerQueries.getCalls')(function* () { return yield* sql.unsafe(`SELECT ${columns.join(', ')} FROM ledger_call`) })",
+    "Effect.fn('LedgerQueries.getCalls')(function* () { return yield* sql.unsafe(['SELECT model FROM ledger_call']) })",
+    "let query = 'SELECT model FROM ledger_call'; query = dynamicSql(); Effect.fn('LedgerQueries.getCalls')(function* () { return yield* sql.unsafe(query) })",
+    "const model = 'demo'; Effect.fn('LedgerQueries.getCalls')(function* () { return yield* sql`SELECT model FROM ledger_call WHERE model = ${model}` })",
   ])('rejects unsupported or ambiguous reads instead of reporting unrelated SQL', source => {
     expect(() => extractReadSql(source, 'getCalls')).toThrow()
   })
