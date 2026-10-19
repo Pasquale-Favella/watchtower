@@ -105,7 +105,8 @@ describe('purpose-shaped session reads', () => {
     execute.mockImplementation(function (this: StatementSync, ...parameters: unknown[]) {
       const result = Reflect.apply(nativeAll, this, parameters)
       const connection = statementConnection.get(this)
-      if (connection) executions.push({ sql: statementSql.get(this) ?? '', connection })
+      const sql = statementSql.get(this) ?? ''
+      if (connection && /^\s*SELECT/i.test(sql)) executions.push({ sql, connection })
       return result
     })
 

@@ -2,12 +2,14 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { it as effectIt } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as FetchHttpClient from 'effect/http/FetchHttpClient'
+import * as Layer from 'effect/Layer'
 import * as Metric from 'effect/Metric'
 import * as TestClock from 'effect/testing/TestClock'
-import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
@@ -17,14 +19,15 @@ import {
   OperationalLogLoggerLayer,
   safeLogOperationalEvent,
 } from '../src/main/operational-log.js'
-import { HttpFetch, type HttpFetchCounters, HttpFetchError } from '../src/main/pipeline/fetch-utils.js'
+import {
+  HttpFetch,
+  type HttpFetchCounters,
+  HttpFetchError,
+  type HttpFetchResponse,
+} from '../src/main/pipeline/fetch-utils.js'
 
 function okResponse(body: unknown = {}): Response {
-  return {
-    ok: true,
-    status: 200,
-    json: async () => body,
-  } as Response
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
 }
 
 /** Every `operational*` file in `logDir`, parsed into records AND kept as raw
@@ -53,21 +56,20 @@ function fetchError(fetchImpl: typeof fetch, url = 'https://example.test/x'): Pr
 }
 
 // Live-layer runner: HttpFetch.layer over FetchHttpClient with an explicit
-// Fetch transport. The Fetch reference caches its default process-wide, so
-// tests must provide it per-effect — stubbing global fetch is not enough.
+// Fetch transport, mirroring the production composition root.
 // `OperationalLogLoggerLayer` is the reference production installs in
 // `MainLive` / `WorkerLive`; without it the live counter's `Effect.log*` would
 // reach Effect's default logger instead of the Operational log.
 function provideLiveFetch<A, E>(effect: Effect.Effect<A, E, HttpFetch>, fetchImpl: typeof fetch): Effect.Effect<A, E> {
   return effect.pipe(
     Effect.provide(OperationalLogLoggerLayer),
-    Effect.provide(HttpFetch.layer),
+    Effect.provide(Layer.provideMerge(HttpFetch.layer, FetchHttpClient.layer)),
     Effect.provideService(FetchHttpClient.Fetch, fetchImpl),
   )
 }
 
 describe('HttpFetch (Effect-native fetch boundary)', () => {
-  it('returns the Response on 200', async () => {
+  it('returns a status and Effectful JSON decoder on 200', async () => {
     const fetchImpl = (async () => okResponse({ rates: { EUR: 0.9 } })) as typeof fetch
     const response = await Effect.runPromise(
       Effect.gen(function* () {
@@ -76,7 +78,7 @@ describe('HttpFetch (Effect-native fetch boundary)', () => {
       }).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))),
     )
     expect(response.ok).toBe(true)
-    expect(await response.json()).toEqual({ rates: { EUR: 0.9 } })
+    expect(await Effect.runPromise(response.json)).toEqual({ rates: { EUR: 0.9 } })
   })
 
   it('maps a network rejection to HttpFetchError reason network', async () => {
@@ -98,22 +100,20 @@ describe('HttpFetch (Effect-native fetch boundary)', () => {
     expect(error.reason).toBe('abort')
   })
 
-  it('times out via the Effect Clock (TestClock-controllable)', async () => {
-    const neverFetch = (() => new Promise<Response>(() => {})) as typeof fetch
-    const program = Effect.gen(function* () {
-      const http = yield* HttpFetch
-      return yield* http.fetch('https://example.test/slow', {}, 100)
-    })
-    const error = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(program.pipe(Effect.provide(HttpFetch.layerWithFetch(neverFetch))))
-        yield* TestClock.adjust(200)
-        return yield* Fiber.join(fiber).pipe(Effect.flip)
-      }).pipe(Effect.provide(TestClock.layer())),
-    )
-    expect(error).toBeInstanceOf(HttpFetchError)
-    expect(error.reason).toBe('timeout')
-  })
+  effectIt.effect('times out via the Effect Clock (TestClock-controllable)', () =>
+    Effect.gen(function* () {
+      const neverFetch = (() => new Promise<Response>(() => {})) as typeof fetch
+      const program = Effect.gen(function* () {
+        const http = yield* HttpFetch
+        return yield* http.fetch('https://example.test/slow', {}, 100)
+      })
+      const fiber = yield* Effect.forkChild(program.pipe(Effect.provide(HttpFetch.layerWithFetch(neverFetch))))
+      yield* TestClock.adjust(200)
+      const error = yield* Fiber.join(fiber).pipe(Effect.flip)
+      expect(error).toBeInstanceOf(HttpFetchError)
+      expect(error.reason).toBe('timeout')
+    }),
+  )
 
   it('fiber interruption aborts the underlying fetch', async () => {
     let observedSignal: AbortSignal | undefined
@@ -143,7 +143,7 @@ describe('HttpFetch (Effect-native fetch boundary)', () => {
 })
 
 describe('HttpFetch.live (FetchHttpClient platform path)', () => {
-  it('preserves the Response surface: status/ok/headers/body-bytes', async () => {
+  it('returns status while JSON remains an Effect value', async () => {
     const fetchImpl = (async () =>
       new Response(JSON.stringify({ hello: 'world' }), {
         status: 201,
@@ -160,12 +160,23 @@ describe('HttpFetch.live (FetchHttpClient platform path)', () => {
     )
     expect(response.status).toBe(201)
     expect(response.ok).toBe(true)
-    expect(response.headers.get('x-custom')).toBe('yes')
-    expect(await response.json()).toEqual({ hello: 'world' })
+    expect(await Effect.runPromise(response.json)).toEqual({ hello: 'world' })
   })
 
   it('does not fail on HTTP error statuses (callers check response.ok)', async () => {
-    const fetchImpl = (async () => new Response('boom', { status: 503 })) as typeof fetch
+    let bodyReads = 0
+    const fetchImpl = (async () =>
+      new Response(
+        new ReadableStream(
+          {
+            pull() {
+              bodyReads += 1
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { status: 503 },
+      )) as typeof fetch
     const response = await Effect.runPromise(
       provideLiveFetch(
         Effect.gen(function* () {
@@ -177,7 +188,7 @@ describe('HttpFetch.live (FetchHttpClient platform path)', () => {
     )
     expect(response.ok).toBe(false)
     expect(response.status).toBe(503)
-    expect(await response.text()).toBe('boom')
+    expect(bodyReads).toBe(0)
   })
 
   it('maps a network rejection without retrying (single attempt)', async () => {
@@ -200,22 +211,20 @@ describe('HttpFetch.live (FetchHttpClient platform path)', () => {
     expect(calls).toBe(1)
   })
 
-  it('times out via the Effect Clock (TestClock-controllable)', async () => {
-    const neverFetch = (() => new Promise<Response>(() => {})) as typeof fetch
-    const program = Effect.gen(function* () {
-      const http = yield* HttpFetch
-      return yield* http.fetch('https://example.test/slow', {}, 100)
-    })
-    const error = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(provideLiveFetch(program, neverFetch))
-        yield* TestClock.adjust(200)
-        return yield* Fiber.join(fiber).pipe(Effect.flip)
-      }).pipe(Effect.provide(TestClock.layer())),
-    )
-    expect(error).toBeInstanceOf(HttpFetchError)
-    expect(error.reason).toBe('timeout')
-  })
+  effectIt.effect('times out via the Effect Clock (TestClock-controllable)', () =>
+    Effect.gen(function* () {
+      const neverFetch = (() => new Promise<Response>(() => {})) as typeof fetch
+      const program = Effect.gen(function* () {
+        const http = yield* HttpFetch
+        return yield* http.fetch('https://example.test/slow', {}, 100)
+      })
+      const fiber = yield* Effect.forkChild(provideLiveFetch(program, neverFetch))
+      yield* TestClock.adjust(200)
+      const error = yield* Fiber.join(fiber).pipe(Effect.flip)
+      expect(error).toBeInstanceOf(HttpFetchError)
+      expect(error.reason).toBe('timeout')
+    }),
+  )
 
   it('fiber interruption aborts the underlying fetch', async () => {
     let observedSignal: AbortSignal | undefined
@@ -246,7 +255,7 @@ describe('HttpFetch.live (FetchHttpClient platform path)', () => {
     expect(observedSignal?.aborted).toBe(true)
   })
 
-  it('forwards method and headers to the underlying fetch', async () => {
+  it('forwards request headers to the underlying fetch', async () => {
     let observed: { url: unknown; init: RequestInit } | undefined
     const fetchImpl = ((url: string, init: RequestInit = {}) => {
       observed = { url, init }
@@ -257,7 +266,6 @@ describe('HttpFetch.live (FetchHttpClient platform path)', () => {
         Effect.gen(function* () {
           const http = yield* HttpFetch
           return yield* http.fetch('https://example.test/report?x=1', {
-            method: 'GET',
             headers: { Authorization: 'Bearer key', Accept: 'application/json' },
           })
         }),
@@ -340,14 +348,16 @@ describe('HttpFetch timeout counter (Wave 5, issue #148)', () => {
     return (() => new Promise<Response>(() => {})) as typeof fetch
   }
 
-  function slowFetchProgram(url = 'https://example.test/slow'): Effect.Effect<Response, HttpFetchError, HttpFetch> {
+  function slowFetchProgram(
+    url = 'https://example.test/slow',
+  ): Effect.Effect<HttpFetchResponse, HttpFetchError, HttpFetch> {
     return Effect.gen(function* () {
       const http = yield* HttpFetch
       return yield* http.fetch(url, {}, 100)
     })
   }
 
-  function runTimeoutWithClock(effect: Effect.Effect<Response, HttpFetchError>): Promise<HttpFetchError> {
+  function runTimeoutWithClock(effect: Effect.Effect<HttpFetchResponse, HttpFetchError>): Promise<HttpFetchError> {
     return Effect.runPromise(
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(effect)

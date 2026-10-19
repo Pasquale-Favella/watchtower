@@ -2,7 +2,7 @@ import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
-import * as SqlError from 'effect/unstable/sql/SqlError'
+import * as SqlError from 'effect/sql/SqlError'
 import { describe, expect, it } from 'vitest'
 
 import { FxRates, refreshFxRateWithRates } from '../src/main/fx.js'
@@ -121,14 +121,7 @@ describe('FxRates.layer (LedgerConfig adapter)', () => {
       refreshFxRateWithRates('EUR').pipe(
         Effect.provide(liveRatesLayer(config)),
         Effect.provide(
-          HttpFetch.layerWithFetch(
-            async () =>
-              ({
-                ok: true,
-                status: 200,
-                json: async () => ({ rates: { EUR: 0.9 } }),
-              }) as Response,
-          ),
+          HttpFetch.layerWithFetch(async () => new Response(JSON.stringify({ rates: { EUR: 0.9 } }), { status: 200 })),
         ),
       ),
     )

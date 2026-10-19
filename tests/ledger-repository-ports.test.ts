@@ -2,8 +2,8 @@
  * ADR 0032 §A3 / plan F12 — the ledger's three focused ports.
  *
  * The claim under test is that the three native worker ports remain
- * independently providable and fakeable, and share one implementation and
- * SQLite connection. Three things a type annotation alone cannot show:
+ * independently providable and fakeable, and share one SQLite connection.
+ * Three things a type annotation alone cannot show:
  *
  *  1. **Isolation, provably.** A graph containing ONLY a `LedgerQueries` fake
  *     answers the four reads; reaching `LedgerIngest` or `LedgerConfig` from that
@@ -11,8 +11,8 @@
  *     happen to be absent" is evidence only if their absence is observable, and
  *     `tests/` is in neither tsconfig, so a `Layer.Layer<LedgerQueries>`
  *     annotation here would prove nothing at all. Repeated for all three tags.
- *  2. **One implementation, three tags.** All three LIVE ports run in the
- *     worker runtime over its one SQLite connection: a row ported through
+ *  2. **One connection, three tags.** All LIVE ports run in the worker runtime
+ *     over its one SQLite connection: a row ported through
  *     `LedgerIngest.portIn` is visible to `LedgerQueries.getCalls` and writable
  *     by `LedgerConfig` in the same program.
  *  3. **The rows are still schema-validated.** Every read still decodes with
@@ -31,7 +31,7 @@ import { describe, expect, it } from 'vitest'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
 import type { PortInput } from '../src/main/store/port.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
-import { openLedgerFixture } from './fixtures/ledger-runtime.js'
+import { atTime, openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 const baseInput = {
   provider: 'opencode',
@@ -215,9 +215,28 @@ describe('each port is providable in isolation, with the other two absent', () =
   })
 })
 
-// ── 2 & 3. One implementation, three tags, still schema-validated ──────────
+// ── 2 & 3. One connection, three tags, still schema-validated ───────────────
 
-describe('the three live ports share ONE implementation over the writer connection', () => {
+describe('the live ports share ONE writer connection', () => {
+  it('timestamps an ingest through the runtime Clock', async () => {
+    const { runtime } = openLedgerFixture()
+    const now = new Date('2026-10-16T09:30:00.000Z')
+    const sources = await runtime.runPromise(
+      atTime(
+        Effect.gen(function* () {
+          const ingest = yield* LedgerIngest
+          yield* ingest.portIn(newPortInput())
+          const queries = yield* LedgerQueries
+          return yield* queries.getSources()
+        }),
+        now,
+      ),
+    )
+
+    expect(sources).toHaveLength(1)
+    expect(sources[0]?.lastPortedAt).toBe(now.toISOString())
+  })
+
   it('a row ported through LedgerIngest is readable through LedgerQueries and writable by LedgerConfig', async () => {
     const { runtime } = openLedgerFixture()
 
@@ -248,9 +267,8 @@ describe('the three live ports share ONE implementation over the writer connecti
 
     expect(result.insertedCalls).toBeGreaterThan(0)
     // ONE ledger, THREE tags, one program: `ported` from LedgerIngest, `calls`
-    // from LedgerQueries, `aliases` from LedgerConfig. A duplicated SQL
-    // implementation per port would need its own connection and this could not
-    // hold.
+    // from LedgerQueries, `aliases` from LedgerConfig. Separate capability
+    // factories still resolve the same writer client supplied by the runtime.
     expect(result.callCount).toBeGreaterThan(0)
     expect(result.sourceCount).toBe(1)
 

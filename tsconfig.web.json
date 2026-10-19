@@ -11,6 +11,17 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnosticSeverity": {
+          "floatingEffect": "error",
+          "floatingEffectInVitest": "error",
+          "missingEffectError": "error",
+          "missingEffectContext": "error"
+        }
+      }
+    ],
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/renderer/src/*"]

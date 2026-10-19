@@ -9,6 +9,7 @@ import { calculateCost } from '../src/main/pipeline/models.js'
 import { cachedTurnToClassified } from '../src/main/pipeline/parser.js'
 import { codex } from '../src/main/pipeline/providers/codex.js'
 import { buildFixtureCachedCall } from './fixtures/cached-file.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 // Reasoning is billed once, not twice (pricing-input correctness).
 //
@@ -133,7 +134,7 @@ describe('codex through the real parser path', () => {
 
     const parser = codex.createSessionParser({ path: filePath, project: 'demo', provider: 'codex' }, new Set())
     const calls = []
-    for await (const call of parser.parse()) calls.push(call)
+    for await (const call of providerParserIterator(parser)) calls.push(call)
 
     expect(calls).toHaveLength(1)
     const call = calls[0]!

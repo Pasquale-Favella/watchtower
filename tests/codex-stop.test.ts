@@ -2,7 +2,9 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Fiber, Stream } from 'effect'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import { Cause, Effect, Exit, Fiber, FileSystem, PlatformError, Stream } from 'effect'
+import * as Scope from 'effect/Scope'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -11,7 +13,7 @@ const hooks = vi.hoisted(() => ({
   streamOpens: 0,
   streamCloses: 0,
   blockCacheRead: false,
-  readSignal: undefined as AbortSignal | undefined,
+  releaseCacheRead: undefined as (() => void) | undefined,
   pauseNextStream: false,
   onStreamStarted: undefined as (() => void) | undefined,
   onStreamClosed: undefined as (() => void) | undefined,
@@ -19,7 +21,13 @@ const hooks = vi.hoisted(() => ({
   blockFlushWrite: false,
   blockFlushOpen: false,
   failNextFlushClose: false,
+  dieNextFlushClose: false,
+  compoundFlushClose: false,
+  failNextFlushWrite: false,
+  dieNextFlushWrite: false,
   flushTempPath: undefined as string | undefined,
+  flushFile: undefined as FileSystem.File | undefined,
+  closedBeforeRename: false,
   flushHandleCloses: 0,
   onFlushOpenStarted: undefined as (() => void) | undefined,
   releaseFlushOpen: undefined as (() => void) | undefined,
@@ -58,63 +66,6 @@ vi.mock('fs/promises', async importOriginal => {
       hooks.statCalls++
       return actual.stat(...args)
     },
-    readFile: (...args: Parameters<typeof actual.readFile>) => {
-      hooks.readCalls++
-      if (hooks.blockCacheRead && String(args[0]).endsWith('codex-results.json')) {
-        const options = args[1]
-        hooks.readSignal =
-          typeof options === 'object' && options !== null && 'signal' in options
-            ? (options.signal as AbortSignal)
-            : undefined
-        hooks.onCacheReadStarted?.()
-        return new Promise<Buffer | string>((_resolve, reject) => {
-          const signal = hooks.readSignal
-          if (signal?.aborted) reject(signal.reason)
-          else signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
-        })
-      }
-      return actual.readFile(...args)
-    },
-    open: async (...args: Parameters<typeof actual.open>) => {
-      if (hooks.blockFlushOpen && String(args[0]).endsWith('.tmp')) {
-        hooks.blockFlushOpen = false
-        await new Promise<void>(resolve => {
-          hooks.releaseFlushOpen = resolve
-          hooks.onFlushOpenStarted?.()
-        })
-      }
-      const handle = await actual.open(...args)
-      if (
-        (!hooks.blockFlushWrite && !hooks.releaseFlushOpen && !hooks.failNextFlushClose) ||
-        !String(args[0]).endsWith('.tmp')
-      )
-        return handle
-      hooks.flushTempPath = String(args[0])
-      return new Proxy(handle, {
-        get(target, property, receiver) {
-          if (property === 'writeFile' && hooks.blockFlushWrite) {
-            return async (...writeArgs: Parameters<typeof handle.writeFile>) => {
-              await new Promise<void>(resolve => {
-                hooks.releaseFlushWrite = resolve
-                hooks.onFlushWriteStarted?.()
-              })
-              return handle.writeFile(...writeArgs)
-            }
-          }
-          if (property === 'close') {
-            return async () => {
-              hooks.flushHandleCloses++
-              if (hooks.failNextFlushClose) {
-                hooks.failNextFlushClose = false
-                throw new Error('cache close failed')
-              }
-              return handle.close()
-            }
-          }
-          return Reflect.get(target, property, receiver)
-        },
-      })
-    },
   }
 })
 
@@ -123,11 +74,149 @@ import { writeFile } from 'node:fs/promises'
 import { appPaths, Env, initAppPaths } from '../src/main/env.js'
 import { flushCodexCacheEffect, lookupCachedCodexResultsEffect } from '../src/main/pipeline/codex-cache.js'
 import { createCodexProvider } from '../src/main/pipeline/providers/codex.js'
-import type { ProviderScanContext } from '../src/main/pipeline/providers/types.js'
+import type { ProviderScanContext, SessionParser } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 let root = ''
 let priorCacheDir = ''
+
+function fileSystemError(method: string, message: string): PlatformError.PlatformError {
+  return PlatformError.systemError({ _tag: 'Unknown', module: 'FileSystem', method, cause: new Error(message) })
+}
+
+function observedFileSystem(fs: FileSystem.FileSystem): FileSystem.FileSystem {
+  return {
+    ...fs,
+    readFileString: (path, encoding) => {
+      if (!path.endsWith('codex-results.json')) return fs.readFileString(path, encoding)
+      hooks.readCalls++
+      if (!hooks.blockCacheRead) return fs.readFileString(path, encoding)
+      hooks.onCacheReadStarted?.()
+      return Effect.uninterruptible(
+        Effect.promise(
+          () =>
+            new Promise<void>(resolve => {
+              hooks.releaseCacheRead = resolve
+            }),
+        ),
+      ).pipe(Effect.flatMap(() => fs.readFileString(path, encoding)))
+    },
+    open: (path, options) =>
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          const scope = yield* Effect.scope
+          const temporary = path.endsWith('.tmp')
+          if (temporary) {
+            yield* Scope.addFinalizer(
+              scope,
+              Effect.sync(() => {
+                hooks.flushHandleCloses++
+                if (hooks.failNextFlushClose) {
+                  hooks.failNextFlushClose = false
+                  throw fileSystemError('open', 'close failed')
+                }
+                if (hooks.dieNextFlushClose) {
+                  hooks.dieNextFlushClose = false
+                  throw new Error('arbitrary close defect')
+                }
+              }),
+            )
+            if (hooks.compoundFlushClose) {
+              hooks.compoundFlushClose = false
+              yield* Scope.addFinalizer(
+                scope,
+                Effect.sync(() => {
+                  throw new Error('arbitrary compound close defect')
+                }),
+              )
+              yield* Scope.addFinalizer(
+                scope,
+                Effect.sync(() => {
+                  throw fileSystemError('open', 'platform compound close defect')
+                }),
+              )
+            }
+          }
+          const handle = yield* Effect.uninterruptible(fs.open(path, options))
+          if (!temporary) return handle
+          hooks.flushTempPath = path
+          hooks.flushFile = handle
+          if (hooks.blockFlushOpen) {
+            hooks.blockFlushOpen = false
+            yield* Effect.uninterruptible(
+              Effect.promise(
+                () =>
+                  new Promise<void>(resolve => {
+                    hooks.releaseFlushOpen = resolve
+                    hooks.onFlushOpenStarted?.()
+                  }),
+              ),
+            )
+          }
+          return {
+            ...handle,
+            sync: handle.sync,
+            writeAll: bytes => {
+              if (hooks.dieNextFlushWrite) {
+                hooks.dieNextFlushWrite = false
+                return Effect.die(fileSystemError('write', 'write defect'))
+              }
+              if (hooks.failNextFlushWrite) {
+                hooks.failNextFlushWrite = false
+                return Effect.fail(fileSystemError('write', 'write failed'))
+              }
+              if (!hooks.blockFlushWrite) return handle.writeAll(bytes)
+              return Effect.uninterruptible(
+                Effect.promise(
+                  () =>
+                    new Promise<void>(resolve => {
+                      hooks.releaseFlushWrite = resolve
+                      hooks.onFlushWriteStarted?.()
+                    }),
+                ),
+              ).pipe(Effect.flatMap(() => handle.writeAll(bytes)))
+            },
+          }
+        }),
+      ),
+    rename: (fromPath, toPath) =>
+      Effect.gen(function* () {
+        if (hooks.flushFile) {
+          const stat = yield* Effect.exit(hooks.flushFile.stat)
+          if (Exit.isFailure(stat)) {
+            const failure = Cause.findErrorOption(stat.cause)
+            const cause =
+              failure._tag === 'Some' && PlatformError.isPlatformError(failure.value) ? failure.value.cause : null
+            hooks.closedBeforeRename = (cause as NodeJS.ErrnoException | null)?.code === 'EBADF'
+          }
+        }
+        yield* fs.rename(fromPath, toPath)
+      }),
+  }
+}
+
+function withCacheFileSystem<A, E, R extends FileSystem.FileSystem>(effect: Effect.Effect<A, E, R>) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    return yield* Effect.provideService(effect, FileSystem.FileSystem, observedFileSystem(fs))
+  }).pipe(Effect.provide(NodeFileSystem.layer))
+}
+
+function runWithCacheFileSystem<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) {
+  return Effect.runPromise(withCacheFileSystem(effect))
+}
+
+function providerParserIterator(parser: SessionParser<FileSystem.FileSystem>) {
+  return (async function* () {
+    const fs = observedFileSystem(
+      await Effect.runPromise(FileSystem.FileSystem.pipe(Effect.provide(NodeFileSystem.layer))),
+    )
+    const stream = parser.parseStream()
+    if (!stream) return
+    yield* Stream.toAsyncIterable(stream.pipe(Stream.provideService(FileSystem.FileSystem, fs)))
+  })()
+}
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'watchtower-codex-stop-'))
@@ -138,7 +227,7 @@ beforeEach(() => {
   hooks.streamOpens = 0
   hooks.streamCloses = 0
   hooks.blockCacheRead = false
-  hooks.readSignal = undefined
+  hooks.releaseCacheRead = undefined
   hooks.pauseNextStream = false
   hooks.onStreamStarted = undefined
   hooks.onStreamClosed = undefined
@@ -146,7 +235,13 @@ beforeEach(() => {
   hooks.blockFlushWrite = false
   hooks.blockFlushOpen = false
   hooks.failNextFlushClose = false
+  hooks.dieNextFlushClose = false
+  hooks.compoundFlushClose = false
+  hooks.failNextFlushWrite = false
+  hooks.dieNextFlushWrite = false
   hooks.flushTempPath = undefined
+  hooks.flushFile = undefined
+  hooks.closedBeforeRename = false
   hooks.flushHandleCloses = 0
   hooks.onFlushOpenStarted = undefined
   hooks.releaseFlushOpen = undefined
@@ -200,11 +295,26 @@ async function writeSession(path: string, trailer = ''): Promise<void> {
 }
 
 function parse(path: string, seenKeys = new Set<string>(), context?: ProviderScanContext) {
-  return createCodexProvider('/unused').createSessionParser(source(path), seenKeys, undefined, context).parse()
+  return providerParserIterator(
+    createCodexProvider('/unused').createSessionParser(source(path), seenKeys, undefined, context),
+  )
 }
 
 function flush(signal?: AbortSignal): Promise<void> {
-  return Effect.runPromise(Effect.scoped(flushCodexCacheEffect(signal)))
+  return runWithCacheFileSystem(Effect.scoped(flushCodexCacheEffect(signal)))
+}
+
+async function expectClosedFlushFile(): Promise<void> {
+  const file = hooks.flushFile
+  expect(file).toBeDefined()
+  if (!file) return
+  const result = await Effect.runPromise(Effect.exit(file.stat))
+  expect(Exit.isFailure(result)).toBe(true)
+  if (Exit.isFailure(result)) {
+    const failure = Cause.findErrorOption(result.cause)
+    const cause = failure._tag === 'Some' && PlatformError.isPlatformError(failure.value) ? failure.value.cause : null
+    expect((cause as NodeJS.ErrnoException | null)?.code).toBe('EBADF')
+  }
 }
 
 describe('Codex scan cancellation', () => {
@@ -220,12 +330,12 @@ describe('Codex scan cancellation', () => {
       signal: controller.signal,
     })
     if (!parser.parseStream) throw new Error('Codex must provide a native parser stream')
-    const result = Effect.runPromise(Stream.runCollect(parser.parseStream()))
+    const result = runWithCacheFileSystem(Stream.runCollect(parser.parseStream()))
     const rejected = expect(result).rejects.toMatchObject({ _tag: 'ScanAbortedError', message: 'scan aborted' })
     await started
     controller.abort()
+    hooks.releaseCacheRead?.()
     await rejected
-    expect(hooks.readSignal?.aborted).toBe(true)
     expect(hooks.streamOpens).toBe(0)
   })
 
@@ -240,18 +350,19 @@ describe('Codex scan cancellation', () => {
     hooks.onCacheReadStarted = start
     const controller = new AbortController()
 
-    const pending = Effect.runPromise(
+    const pending = runWithCacheFileSystem(
       Effect.scoped(lookupCachedCodexResultsEffect(path, controller.signal).pipe(Effect.map(value => value.calls))),
     )
     await started
-    expect(hooks.readSignal).not.toBe(controller.signal)
     controller.abort(new ScanAbortedError({ message: 'scan aborted' }))
+    hooks.releaseCacheRead?.()
     await expect(pending).rejects.toMatchObject({ _tag: 'ScanAbortedError' })
-    expect(hooks.readSignal?.aborted).toBe(true)
 
     hooks.blockCacheRead = false
     await expect(
-      Effect.runPromise(Effect.scoped(lookupCachedCodexResultsEffect(path, undefined).pipe(Effect.map(x => x.calls)))),
+      runWithCacheFileSystem(
+        Effect.scoped(lookupCachedCodexResultsEffect(path, undefined).pipe(Effect.map(x => x.calls))),
+      ),
     ).resolves.toBeNull()
     expect(hooks.readCalls).toBe(2)
   })
@@ -279,7 +390,7 @@ describe('Codex scan cancellation', () => {
     hooks.onStreamClosed = close
 
     const controller = new AbortController()
-    const pending = createCodexProvider(codexHome).discoverSessions({ signal: controller.signal })
+    const pending = discoverProviderSessions(createCodexProvider(codexHome), { signal: controller.signal })
     await started
     controller.abort(new ScanAbortedError({ message: 'scan aborted' }))
 
@@ -313,7 +424,7 @@ describe('Codex scan cancellation', () => {
 
     const discover = createCodexProvider(codexHome).discoverSessionsEffect
     if (!discover) throw new Error('Codex Effect discovery is unavailable')
-    const fiber = Effect.runFork(discover().pipe(Effect.provide(Env.layer)))
+    const fiber = Effect.runFork(withCacheFileSystem(discover().pipe(Effect.provide(Env.layer))))
     await started
     await Effect.runPromise(Fiber.interrupt(fiber))
 
@@ -393,6 +504,7 @@ describe('Codex scan cancellation', () => {
     expect(cachedCalls).toEqual(calls)
     expect(hooks.streamOpens).toBe(streamOpens)
     expect(seenKeys).toEqual(new Set(calls.map(call => call.deduplicationKey)))
+    expect(hooks.closedBeforeRename).toBe(true)
   })
 
   it('removes the second cache fingerprint stat from a cold parser request', async () => {
@@ -422,11 +534,13 @@ describe('Codex scan cancellation', () => {
 
     const cachePath = join(root, 'cache', 'codex-results.json')
     const oldContents = await (await import('node:fs/promises')).readFile(cachePath)
+    hooks.flushHandleCloses = 0
     const pending = parse(pendingPath)
     const pendingCalls = []
     for await (const call of pending) pendingCalls.push(call)
 
     hooks.blockFlushWrite = true
+    hooks.failNextFlushClose = true
     let start!: () => void
     const started = new Promise<void>(resolve => {
       start = resolve
@@ -445,17 +559,17 @@ describe('Codex scan cancellation', () => {
     }
     await expect(flushing).rejects.toMatchObject({ _tag: 'ScanAbortedError' })
 
-    expect(hooks.flushHandleCloses).toBe(1)
+    await expectClosedFlushFile()
     expect(tempPath).toBeDefined()
     expect(existsSync(tempPath ?? '')).toBe(false)
     await expect((await import('node:fs/promises')).readFile(cachePath)).resolves.toEqual(oldContents)
     await expect(
-      Effect.runPromise(
+      runWithCacheFileSystem(
         Effect.scoped(lookupCachedCodexResultsEffect(cachedPath, undefined).pipe(Effect.map(x => x.calls))),
       ),
     ).resolves.toEqual(initialCalls)
     await expect(
-      Effect.runPromise(
+      runWithCacheFileSystem(
         Effect.scoped(lookupCachedCodexResultsEffect(pendingPath, undefined).pipe(Effect.map(x => x.calls))),
       ),
     ).resolves.toEqual(pendingCalls)
@@ -472,6 +586,7 @@ describe('Codex scan cancellation', () => {
     await flush()
     const cachePath = join(root, 'cache', 'codex-results.json')
     const oldContents = await (await import('node:fs/promises')).readFile(cachePath)
+    hooks.flushHandleCloses = 0
     const pendingCalls = []
     for await (const call of parse(pendingPath)) pendingCalls.push(call)
 
@@ -481,24 +596,24 @@ describe('Codex scan cancellation', () => {
       start = resolve
     })
     hooks.onFlushOpenStarted = start
-    const fiber = Effect.runFork(Effect.scoped(flushCodexCacheEffect(undefined)))
+    const fiber = Effect.runFork(withCacheFileSystem(Effect.scoped(flushCodexCacheEffect(undefined))))
     await started
 
     const interrupted = Effect.runPromise(Fiber.interrupt(fiber))
     hooks.releaseFlushOpen?.()
     await interrupted
 
-    expect(hooks.flushHandleCloses).toBe(1)
+    await expectClosedFlushFile()
     expect(hooks.flushTempPath).toBeDefined()
     expect(existsSync(hooks.flushTempPath ?? '')).toBe(false)
     await expect((await import('node:fs/promises')).readFile(cachePath)).resolves.toEqual(oldContents)
     await expect(
-      Effect.runPromise(
+      runWithCacheFileSystem(
         Effect.scoped(lookupCachedCodexResultsEffect(cachedPath, undefined).pipe(Effect.map(x => x.calls))),
       ),
     ).resolves.toEqual(initialCalls)
     await expect(
-      Effect.runPromise(
+      runWithCacheFileSystem(
         Effect.scoped(lookupCachedCodexResultsEffect(pendingPath, undefined).pipe(Effect.map(x => x.calls))),
       ),
     ).resolves.toEqual(pendingCalls)
@@ -515,18 +630,106 @@ describe('Codex scan cancellation', () => {
     await flush()
     const cachePath = join(root, 'cache', 'codex-results.json')
     const oldContents = await (await import('node:fs/promises')).readFile(cachePath)
+    hooks.flushHandleCloses = 0
     const pendingCalls = []
     for await (const call of parse(pendingPath)) pendingCalls.push(call)
 
     hooks.failNextFlushClose = true
     await flush()
 
-    expect(hooks.flushHandleCloses).toBe(2)
+    await expectClosedFlushFile()
     expect(hooks.flushTempPath).toBeDefined()
     expect(existsSync(hooks.flushTempPath ?? '')).toBe(false)
     await expect((await import('node:fs/promises')).readFile(cachePath)).resolves.toEqual(oldContents)
     await expect(
-      Effect.runPromise(lookupCachedCodexResultsEffect(pendingPath).pipe(Effect.map(x => x.calls))),
+      runWithCacheFileSystem(lookupCachedCodexResultsEffect(pendingPath).pipe(Effect.map(x => x.calls))),
     ).resolves.toEqual(pendingCalls)
+  })
+
+  it('keeps PlatformError defects from the write operation as defects', async () => {
+    const cachedPath = join(root, 'rollout-write-defect-cached.jsonl')
+    const pendingPath = join(root, 'rollout-write-defect-pending.jsonl')
+    await writeSession(cachedPath)
+    await writeSession(pendingPath)
+    for await (const _call of parse(cachedPath)) {
+      /* Populate the existing disk cache. */
+    }
+    hooks.dieNextFlushWrite = true
+    for await (const _call of parse(pendingPath)) {
+      /* Queue a cache update. */
+    }
+
+    const exit = await runWithCacheFileSystem(Effect.exit(Effect.scoped(flushCodexCacheEffect(undefined))))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const defect = Cause.findDefect(exit.cause)
+      expect(defect._tag).toBe('Success')
+      if (defect._tag === 'Success') expect(PlatformError.isPlatformError(defect.success)).toBe(true)
+    }
+  })
+
+  it('preserves an arbitrary close defect when the write operation also fails', async () => {
+    const cachedPath = join(root, 'rollout-write-close-defect-cached.jsonl')
+    const pendingPath = join(root, 'rollout-write-close-defect-pending.jsonl')
+    await writeSession(cachedPath)
+    await writeSession(pendingPath)
+    for await (const _call of parse(cachedPath)) {
+      /* Populate the existing disk cache. */
+    }
+    hooks.failNextFlushWrite = true
+    hooks.dieNextFlushClose = true
+    for await (const _call of parse(pendingPath)) {
+      /* Queue a cache update. */
+    }
+
+    const exit = await runWithCacheFileSystem(Effect.exit(Effect.scoped(flushCodexCacheEffect(undefined))))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      expect(exit.cause.reasons).toHaveLength(2)
+      expect(exit.cause.reasons.filter(Cause.isFailReason).map(reason => reason.error)).toContainEqual(
+        expect.objectContaining({
+          reason: expect.objectContaining({ cause: expect.objectContaining({ message: 'write failed' }) }),
+        }),
+      )
+      expect(
+        exit.cause.reasons.some(
+          reason =>
+            Cause.isDieReason(reason) &&
+            reason.defect instanceof Error &&
+            reason.defect.message === 'arbitrary close defect',
+        ),
+      ).toBe(true)
+    }
+  })
+
+  it('preserves every unexpected finalizer reason when one reason is a PlatformError', async () => {
+    const cachedPath = join(root, 'rollout-compound-close-cached.jsonl')
+    const pendingPath = join(root, 'rollout-compound-close-pending.jsonl')
+    await writeSession(cachedPath)
+    await writeSession(pendingPath)
+    for await (const _call of parse(cachedPath)) {
+      /* Populate the existing disk cache. */
+    }
+    hooks.compoundFlushClose = true
+    for await (const _call of parse(pendingPath)) {
+      /* Queue a cache update. */
+    }
+
+    const exit = await runWithCacheFileSystem(Effect.exit(Effect.scoped(flushCodexCacheEffect(undefined))))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      expect(exit.cause.reasons).toHaveLength(2)
+      expect(
+        exit.cause.reasons.some(reason => Cause.isDieReason(reason) && PlatformError.isPlatformError(reason.defect)),
+      ).toBe(true)
+      expect(
+        exit.cause.reasons.some(
+          reason =>
+            Cause.isDieReason(reason) &&
+            reason.defect instanceof Error &&
+            reason.defect.message === 'arbitrary compound close defect',
+        ),
+      ).toBe(true)
+    }
   })
 })

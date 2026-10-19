@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { DatabaseSync, StatementSync } from 'node:sqlite'
 
 import * as Effect from 'effect/Effect'
-import * as SqlClient from 'effect/unstable/sql/SqlClient'
+import * as SqlClient from 'effect/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'

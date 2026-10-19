@@ -45,7 +45,6 @@ vi.mock('fs/promises', async importOriginal => {
 
 import {
   createOpenCodeFileSessionParser,
-  discoverOpenCodeFileSessions,
   discoverOpenCodeFileSessionsEffect,
 } from '../src/main/pipeline/providers/opencode-file-parser.js'
 import { decodeMessageJson } from '../src/main/pipeline/providers/session-message.js'
@@ -128,9 +127,6 @@ describe('OpenCode file helper native Effect path', () => {
     const native = await Effect.runPromise(
       discoverOpenCodeFileSessionsEffect(dataDir, 'opencode', { signal: new AbortController().signal }),
     )
-    const legacy = await discoverOpenCodeFileSessions(dataDir, 'opencode')
-
-    expect(native).toEqual(legacy)
     expect(native.map(source => source.path)).toEqual(
       nativeOrder.filter(file => file !== 'broken.json').map(file => join(projectDir, file)),
     )

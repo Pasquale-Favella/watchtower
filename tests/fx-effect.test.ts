@@ -1,6 +1,8 @@
+import { it as effectIt } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 import * as Layer from 'effect/Layer'
 import * as TestClock from 'effect/testing/TestClock'
 import { describe, expect, it } from 'vitest'
@@ -18,7 +20,11 @@ import { type LedgerFixture, openLedgerFixture } from './fixtures/ledger-runtime
 import { runWithTestClockWindow } from './helpers/run-effect-test.js'
 
 function fakeFetchOk(rates: Record<string, unknown>): typeof fetch {
-  return (async () => ({ ok: true, status: 200, json: async () => ({ rates }) })) as unknown as typeof fetch
+  return (async () =>
+    new Response(JSON.stringify({ rates }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
 }
 
 function throwingFetch(message = 'offline'): typeof fetch {
@@ -28,7 +34,7 @@ function throwingFetch(message = 'offline'): typeof fetch {
 }
 
 function fxEffect(code: string, fetchImpl: typeof fetch, options: RefreshFxRateEffectOptions = {}) {
-  return refreshFxRateWithRates(code, options).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl)))
+  return refreshFxRateWithRates(code, options).pipe(Effect.provideService(FetchHttpClient.Fetch, fetchImpl))
 }
 
 function runFx(
@@ -86,7 +92,7 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
     let calls = 0
     const counting = (async () => {
       calls += 1
-      return { ok: true, status: 200, json: async () => ({ rates: { EUR: 1.5 } }) }
+      return new Response(JSON.stringify({ rates: { EUR: 1.5 } }), { status: 200 })
     }) as unknown as typeof fetch
     await runFx(fixture, 'EUR', counting)
     expect(calls).toBe(0)
@@ -129,7 +135,7 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
     let calls = 0
     const counting = (async () => {
       calls += 1
-      return { ok: true, status: 200, json: async () => ({}) }
+      return new Response('{}', { status: 200 })
     }) as unknown as typeof fetch
     expect(await runFx(fixture, 'USD', counting)).toEqual({ code: 'USD', symbol: '$', rate: 1 })
     expect(calls).toBe(0)
@@ -163,9 +169,9 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
     expect(saved.get('EUR')?.updatedAt).toBe(active.updatedAt)
   })
 
-  it('TestClock governs staleness for the port-based core', async () => {
-    const { saved, ratesLayer } = makeFakeRates()
-    const program = Effect.gen(function* () {
+  effectIt.effect('TestClock governs staleness for the port-based core', () =>
+    Effect.gen(function* () {
+      const { saved, ratesLayer } = makeFakeRates()
       const first = yield* refreshFxRateWithRates('EUR').pipe(
         Effect.provide(ratesLayer),
         Effect.provide(HttpFetch.layerWithFetch(fakeFetchOk({ EUR: 0.9 }))),
@@ -174,7 +180,7 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
       let calls = 0
       const counting = (async () => {
         calls += 1
-        return { ok: true, status: 200, json: async () => ({ rates: { EUR: 1.5 } }) }
+        return new Response(JSON.stringify({ rates: { EUR: 1.5 } }), { status: 200 })
       }) as unknown as typeof fetch
       const second = yield* refreshFxRateWithRates('EUR').pipe(
         Effect.provide(ratesLayer),
@@ -189,9 +195,8 @@ describe('refreshFxRateWithRates (Effect-native FX boundary)', () => {
       )
       expect(third.rate).toBe(0.85)
       expect(saved.get('EUR')?.rate).toBe(0.85)
-    })
-    await Effect.runPromise(program.pipe(Effect.provide(TestClock.layer())))
-  })
+    }),
+  )
 
   it('fiber interruption does not persist a partial rate', async () => {
     const fixture = openLedgerFixture()

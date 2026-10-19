@@ -1,4 +1,7 @@
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { readdir, readFile } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
@@ -291,10 +294,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      // Remove this Promise edge once direct compatibility callers consume parseStream.
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -376,11 +375,6 @@ export function createOpenClawProvider(overrideDir?: string): Provider {
     },
 
     discoverSessionsEffect: discoverEffect,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove this Promise edge once direct compatibility callers use the native scan hook.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

@@ -1,7 +1,7 @@
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import type { SqlError } from 'effect/unstable/sql/SqlError'
+import type { SqlError } from 'effect/sql/SqlError'
 
 import { type SessionRow, sessionRowSchema } from '../../shared/schemas/views.js'
 import { calculateSessionsView } from '../sessions-calculation.js'

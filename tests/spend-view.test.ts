@@ -2,7 +2,7 @@ import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
 import { querySpendView } from '../src/main/application/spend-query.js'
-import { normalizeProjectPathKey } from '../src/main/pipeline/parser.js'
+import { normalizeProjectPathKey } from '../src/main/pipeline/parser-calculations.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
 import { LedgerIngest } from '../src/main/store/ledger-ports.js'
 import type { WorkerRuntime } from '../src/main/worker-runtime.js'

@@ -12,25 +12,19 @@ const hooks = vi.hoisted(() => ({
   releaseRead: undefined as (() => void) | undefined,
 }))
 
-vi.mock('../src/main/pipeline/cursor-cache.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/cursor-cache.js')>()
+vi.mock('../src/main/pipeline/cursor-cache.js', async () => {
   const { Effect } = await import('effect')
-  const readCachedResults = async (dbPath: string) => {
-    if (hooks.pauseNextRead) {
-      hooks.pauseNextRead = false
-      await new Promise<void>(resolve => {
-        hooks.releaseRead = resolve
-        hooks.onReadStarted?.()
-      })
-    }
-    return (hooks.cache.get(dbPath) as Awaited<ReturnType<typeof actual.readCachedResults>>) ?? null
-  }
   return {
-    ...actual,
     readCachedResultsEffect: (dbPath: string) =>
-      Effect.tryPromise({
-        try: () => readCachedResults(dbPath),
-        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      Effect.promise(async () => {
+        if (hooks.pauseNextRead) {
+          hooks.pauseNextRead = false
+          await new Promise<void>(resolve => {
+            hooks.releaseRead = resolve
+            hooks.onReadStarted?.()
+          })
+        }
+        return (hooks.cache.get(dbPath) as ParsedProviderCall[] | undefined) ?? null
       }),
     writeCachedResultsEffect: (dbPath: string, calls: unknown[]) => Effect.sync(() => hooks.cache.set(dbPath, calls)),
   }
@@ -44,6 +38,7 @@ import {
 } from '../src/main/pipeline/models.js'
 import { createCursorProvider } from '../src/main/pipeline/providers/cursor.js'
 import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const MODEL = 'cursor-captured-pricing-model'
 const UUID = '11111111-1111-1111-1111-111111111111'
@@ -142,7 +137,7 @@ describe('Cursor captured scan pricing', () => {
       started = resolve
     })
     hooks.onReadStarted = started
-    const pendingFirst = collect(firstParser.parse())
+    const pendingFirst = collect(providerParserIterator(firstParser))
     try {
       await readStarted
       setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
@@ -161,13 +156,13 @@ describe('Cursor captured scan pricing', () => {
     }
 
     const nextPricing = captureScanPricing()
-    const nextCalls = await collect(provider.createSessionParser(source(nextPath), new Set()).parse())
+    const nextCalls = await collect(providerParserIterator(provider.createSessionParser(source(nextPath), new Set())))
     expect(nextCalls.map(call => call.costUSD)).toEqual(
       firstCalls.map(call => nextPricing.calculateCost(MODEL, call.inputTokens, call.outputTokens, 0, 0, 0)),
     )
     expect(nextCalls.map(call => call.costUSD)).not.toEqual(firstCalls.map(call => call.costUSD))
 
-    const warmCalls = await collect(provider.createSessionParser(source(firstPath), new Set()).parse())
+    const warmCalls = await collect(providerParserIterator(provider.createSessionParser(source(firstPath), new Set())))
     expect(warmCalls).toEqual(firstCalls)
   })
 
@@ -176,7 +171,9 @@ describe('Cursor captured scan pricing', () => {
     const pricing = captureScanPricing()
     setPriceOverrides({ [MODEL]: { input: 1000, output: 2000, cacheCreation: 3000, cacheRead: 4000 } })
     const calls = await collect(
-      createCursorProvider().createSessionParser(source(path), new Set(), undefined, { pricing }).parse(),
+      providerParserIterator(
+        createCursorProvider().createSessionParser(source(path), new Set(), undefined, { pricing }),
+      ),
     )
     expect(calls).toHaveLength(3)
     for (const call of calls) {

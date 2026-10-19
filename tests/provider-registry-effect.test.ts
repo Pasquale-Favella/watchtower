@@ -34,9 +34,8 @@ function provider(name: string): Provider {
     displayName: name,
     modelDisplayName: model => model,
     toolDisplayName: tool => tool,
-    discoverSessions: async () => [],
     discoverSessionsEffect: () => Effect.succeed([]),
-    createSessionParser: () => ({ parse: async function* () {}, parseStream: () => Stream.empty }),
+    createSessionParser: () => ({ parseStream: () => Stream.empty }),
   }
 }
 

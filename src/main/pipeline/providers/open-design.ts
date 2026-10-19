@@ -1,4 +1,7 @@
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, join } from 'path'
@@ -268,10 +271,6 @@ function createParser(
 
   return {
     parseStream,
-    // Remove this compatibility adapter when direct callers use parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -296,11 +295,6 @@ export function createOpenDesignProvider(overrideDir?: string, paths?: AppPaths)
     },
 
     discoverSessionsEffect: discoverEffect,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove this Promise edge after external callers consume native discovery.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

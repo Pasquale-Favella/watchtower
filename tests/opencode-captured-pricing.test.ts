@@ -9,6 +9,7 @@ import { setModelAliases, setPriceOverrides } from '../src/main/pipeline/models.
 import { createOpenCodeProvider } from '../src/main/pipeline/providers/opencode.js'
 import type { ParsedProviderCall, SessionParser } from '../src/main/pipeline/providers/types.js'
 import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const tempDirs: string[] = []
 const ALIAS = 'captured-pricing-probe'
@@ -34,7 +35,7 @@ function setPricing(target = FIRST, input = 1, output = 2, alias = ALIAS): void 
 
 async function collect(parser: SessionParser): Promise<ParsedProviderCall[]> {
   const calls: ParsedProviderCall[] = []
-  for await (const call of parser.parse()) calls.push(call)
+  for await (const call of providerParserIterator(parser)) calls.push(call)
   return calls
 }
 

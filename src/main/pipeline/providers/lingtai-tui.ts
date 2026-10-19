@@ -1,6 +1,9 @@
 import type { Dirent } from 'node:fs'
 
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, delimiter, dirname, join, resolve } from 'path'
@@ -471,10 +474,6 @@ function createParser(source: SessionSource, context?: ProviderScanContext): Ses
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      // Remove when direct parser callers consume parseStream.
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -499,11 +498,6 @@ export function createLingTaiTuiProvider(options?: string | LingTaiProviderOptio
     },
 
     discoverSessionsEffect: discoverEffect,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove when external discovery callers use discoverSessionsEffect.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

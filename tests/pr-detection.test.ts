@@ -14,10 +14,9 @@ import {
   collectSessionMeta,
   compactEntry,
   emptySessionMeta,
-  extractPrUrlsFromProviderCall,
-  extractPrUrlsFromText,
   groupIntoTurns,
 } from '../src/main/pipeline/parser.js'
+import { extractPrUrlsFromProviderCall, extractPrUrlsFromText } from '../src/main/pipeline/parser-calculations.js'
 import { codex } from '../src/main/pipeline/providers/codex.js'
 import { buildAssistantCallResult } from '../src/main/pipeline/providers/session-message.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
@@ -30,6 +29,7 @@ import type { PortInput } from '../src/shared/schemas/port.js'
 import { providerSectionSchema } from '../src/shared/schemas/session-cache.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const GH = 'https://github.com/acme/repo/pull/12'
 const GHE = 'https://ghe.corp.example.com/acme/widget/pull/34'
@@ -327,7 +327,7 @@ describe('codex assistant text reaches the PR seam', () => {
     writeFileSync(filePath, lines.map(l => JSON.stringify(l)).join('\n'))
     const parser = codex.createSessionParser({ path: filePath, project: 'demo', provider: 'codex' }, new Set())
     const calls = []
-    for await (const call of parser.parse()) calls.push(call)
+    for await (const call of providerParserIterator(parser)) calls.push(call)
     expect(calls).toHaveLength(1)
     expect(calls[0]).toHaveProperty('assistantText')
     expect(extractPrUrlsFromProviderCall(calls[0]!)).toEqual([GH])

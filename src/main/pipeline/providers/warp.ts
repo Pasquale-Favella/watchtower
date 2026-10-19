@@ -1,7 +1,10 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 
 import { type AppPaths, overrideFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
@@ -628,27 +631,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream,
-    // Remove after external callers consume parseStream; retain native error identity.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
-      try {
-        while (true) {
-          const next = await iterator.next()
-          if (next.done) return
-          yield next.value
-        }
-      } catch (error) {
-        if (error instanceof WarpDatabaseError) {
-          // Preserve the exact native SQLite error for legacy callers.
-          // eslint-disable-next-line no-restricted-syntax
-          throw error.cause
-        }
-        // eslint-disable-next-line no-restricted-syntax
-        throw error
-      } finally {
-        await iterator.return?.()
-      }
-    },
   }
 }
 
@@ -676,19 +658,6 @@ export function createWarpProvider(dbPathOverride?: string, paths?: AppPaths): P
       return rawTool === 'run_command' ? 'Bash' : rawTool
     },
     discoverSessionsEffect: discover,
-    // Remove when callers use native discovery directly; unwrap the old error object.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discover(context)).catch(error => {
-        if (error instanceof WarpDatabaseError) {
-          // Preserve the exact native SQLite error for legacy callers.
-          // eslint-disable-next-line no-restricted-syntax
-          throw error.cause
-        }
-        // eslint-disable-next-line no-restricted-syntax
-        throw error
-      })
-    },
     createSessionParser(
       source: SessionSource,
       seenKeys: Set<string>,

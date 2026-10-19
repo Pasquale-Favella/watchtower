@@ -1,3 +1,4 @@
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -16,13 +17,11 @@ vi.mock('fs/promises', () => ({
 }))
 
 vi.mock('../src/main/pipeline/providers/index.js', () => ({
-  discoverAllSessions: (...args: unknown[]) => hooks.discovered(...args),
   discoverAllSessionsEffect: (...args: unknown[]) =>
     Effect.tryPromise({
       try: () => hooks.discovered(...args) as Promise<unknown>,
       catch: cause => cause as Error,
     }),
-  getProvider: vi.fn(),
 }))
 
 vi.mock('../src/main/pipeline/session-cache.js', async () => {
@@ -79,6 +78,7 @@ describe('parser Effect workflow', () => {
       parseAllSessionsEffect().pipe(
         Effect.provide(Env.layer),
         Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
+        Effect.provide(NodeFileSystem.layer),
       ),
     )
 

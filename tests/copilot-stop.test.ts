@@ -34,6 +34,7 @@ vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
 import { createCopilotProvider } from '../src/main/pipeline/providers/copilot.js'
 import type { SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { discoverProviderSessions, providerParserIterator } from './fixtures/provider-effects.js'
 
 describe('Copilot cooperative stop', () => {
   beforeEach(() => {
@@ -84,7 +85,7 @@ describe('Copilot cooperative stop', () => {
       signal: controller.signal,
     })
 
-    const pending = parser.parse().next()
+    const pending = providerParserIterator(parser).next()
     const settled = vi.fn()
     void pending.then(settled, settled)
     await started
@@ -103,7 +104,7 @@ describe('Copilot cooperative stop', () => {
     const abort = new ScanAbortedError({ message: 'scan aborted' })
     controller.abort(abort)
 
-    await expect(createCopilotProvider().discoverSessions({ signal: controller.signal })).rejects.toBe(abort)
+    await expect(discoverProviderSessions(createCopilotProvider(), { signal: controller.signal })).rejects.toBe(abort)
     expect(hooks.readdir).not.toHaveBeenCalled()
     expect(hooks.stat).not.toHaveBeenCalled()
     expect(hooks.readSessionLinesStream).not.toHaveBeenCalled()
@@ -137,7 +138,9 @@ describe('Copilot cooperative stop', () => {
       sourceType: 'sessionstore',
       mtime: '2026-01-01T00:00:00.000Z',
     } as SessionSource
-    const store = provider.createSessionParser(storeSource, new Set(), undefined, { signal: controller.signal }).parse()
+    const store = providerParserIterator(
+      provider.createSessionParser(storeSource, new Set(), undefined, { signal: controller.signal }),
+    )
 
     expect((await store.next()).done).toBe(false)
     controller.abort(abort)
@@ -152,7 +155,7 @@ describe('Copilot cooperative stop', () => {
         data: { modelMetrics: { 'claude-sonnet-4-6': { usage: { inputTokens: 100 } } } },
       })
 
-    const rollups = provider.createSessionParser(jsonlSource, new Set()).parse()
+    const rollups = providerParserIterator(provider.createSessionParser(jsonlSource, new Set()))
     expect((await rollups.next()).value?.deduplicationKey).toBe('copilot:sess-1:shutdown:claude-sonnet-4-6')
     await rollups.return(undefined)
   })
@@ -185,7 +188,7 @@ describe('Copilot cooperative stop', () => {
       sourceType: 'sessionstore',
       mtime: '2026-01-01T00:00:00.000Z',
     } as SessionSource
-    const store = provider.createSessionParser(storeSource, new Set()).parse()
+    const store = providerParserIterator(provider.createSessionParser(storeSource, new Set()))
 
     expect((await store.next()).done).toBe(false)
     await expect(store.next()).rejects.toThrow('close failed')
@@ -199,7 +202,7 @@ describe('Copilot cooperative stop', () => {
         data: { modelMetrics: { 'claude-sonnet-4-6': { usage: { inputTokens: 100 } } } },
       })
 
-    const rollups = provider.createSessionParser(jsonlSource, new Set()).parse()
+    const rollups = providerParserIterator(provider.createSessionParser(jsonlSource, new Set()))
     expect((await rollups.next()).value?.deduplicationKey).toBe('copilot:sess-1:shutdown:claude-sonnet-4-6')
     await rollups.return(undefined)
   })

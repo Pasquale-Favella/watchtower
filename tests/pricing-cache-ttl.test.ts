@@ -12,11 +12,11 @@
 // finite TTL is what makes the fetch path reachable again. The two loader cases
 // at the bottom of this file are the ones that prove it; everything above them
 // asserts the parser's own contract, offline, against hand-written numbers.
-
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -194,7 +194,10 @@ describe('the default TTL decides whether a disk cache is still live', () => {
       calls: 0,
       fetch: (async () => {
         state.calls += 1
-        return { ok: true, status: 200, json: async () => models } as Response
+        return new Response(JSON.stringify(models), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
       }) as unknown as typeof fetch,
     }
     return state
@@ -206,12 +209,14 @@ describe('the default TTL decides whether a disk cache is still live', () => {
    *  to come from `process.env`, which is the `resolveCacheDir` seam. */
   async function loadFromDisk(fetchImpl: typeof fetch): Promise<void> {
     await Effect.runPromise(
-      loadPricingEffect().pipe(
-        Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
-        Effect.provide(Env.layer),
-        // No TTL var at all: the DEFAULT, which is the case the defect was in.
-        Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord({})),
-      ),
+      loadPricingEffect()
+        .pipe(Effect.provide(NodeFileSystem.layer))
+        .pipe(
+          Effect.provide(HttpFetch.layerWithFetch(fetchImpl)),
+          Effect.provide(Env.layer),
+          // No TTL var at all: the DEFAULT, which is the case the defect was in.
+          Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord({})),
+        ),
     )
   }
 

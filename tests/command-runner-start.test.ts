@@ -14,11 +14,9 @@
  * Every termination case asserts an OS FACT — the child the port started is
  * gone afterwards — rather than that the port stopped waiting for it.
  */
-import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { Readable } from 'node:stream'
 
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -26,20 +24,7 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as Stream from 'effect/Stream'
-import { describe, expect, it, vi } from 'vitest'
-
-const spawnControl = vi.hoisted(() => ({ child: undefined as unknown }))
-
-vi.mock('node:child_process', async importOriginal => {
-  const actual = await importOriginal<typeof import('node:child_process')>()
-  return {
-    ...actual,
-    spawn: (...args: Parameters<typeof actual.spawn>) =>
-      spawnControl.child !== undefined
-        ? (spawnControl.child as ReturnType<typeof actual.spawn>)
-        : actual.spawn(...args),
-  }
-})
+import { describe, expect, it } from 'vitest'
 
 import {
   CommandError,
@@ -48,15 +33,16 @@ import {
   type CommandStartOptions,
   makeRecordingCommandRunner,
 } from '../src/main/agents/command-runner.js'
+import { CommandRunnerLiveLayer } from '../src/main/agents/command-runner-live.js'
 
-/** One `start` through `CommandRunner.layer` — a real child process, no
+/** One `start` through `CommandRunnerLiveLayer` — a real child process, no
  *  installed CLI required. Left UNRUN so a case can `Effect.scoped`/
  *  `Effect.flip`/fork it. */
 function liveStart(command: string, args: readonly string[], options?: CommandStartOptions) {
   return Effect.gen(function* () {
     const runner = yield* CommandRunner
     return yield* runner.start(command, args, options)
-  }).pipe(Effect.provide(CommandRunner.layer))
+  }).pipe(Effect.provide(CommandRunnerLiveLayer))
 }
 
 /** One `start` through a recording fake, SCOPE ALREADY CLOSED — the supervised
@@ -339,7 +325,7 @@ describe('CommandRunner.start live layer (real child, scope-bound lifetime)', ()
             Effect.scoped(
               Effect.gen(function* () {
                 yield* liveStart(process.execPath, node(GATED, pidFile, gateFile))
-                yield* Effect.never
+                return yield* Effect.never
               }),
             ),
           )
@@ -376,6 +362,49 @@ describe('CommandRunner.start live layer (real child, scope-bound lifetime)', ()
       cleanup()
     }
   })
+
+  it.skipIf(process.platform === 'win32')('maps a native signal exit to numeric code 1', async () => {
+    const exitCode = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const handle = yield* liveStart(process.execPath, node('process.kill(process.pid, "SIGTERM")'))
+          return yield* handle.exitCode
+        }),
+      ),
+    )
+    expect(exitCode).toBe(1)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'bounds cleanup when a child ignores SIGTERM',
+    { timeout: 10_000 },
+    async () => {
+      const { path, cleanup } = tempDir()
+      const pidFile = join(path, 'pid')
+      try {
+        const { exitCode, pid } = await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const handle = yield* liveStart(
+                process.execPath,
+                node(
+                  'const fs = require("node:fs"); process.on("SIGTERM", () => {}); fs.writeFileSync(process.argv[1], String(process.pid)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)',
+                  pidFile,
+                ),
+              )
+              const startedPid = yield* Effect.promise(() => readChildPid(pidFile))
+              yield* handle.kill
+              return { pid: startedPid, exitCode: yield* handle.exitCode }
+            }),
+          ),
+        )
+        expect(exitCode).toBe(1)
+        expect(await waitForDeath(pid)).toBe(true)
+      } finally {
+        cleanup()
+      }
+    },
+  )
 
   it('applies the PATH walk and the win32 shim, exactly as `run` does (§5.3)', async () => {
     // DOMAIN CODE proof for the new surface: a name that exists ONLY on PATH.
@@ -447,88 +476,23 @@ describe('CommandRunner.start live layer (real child, scope-bound lifetime)', ()
       cleanup()
     }
   })
-
-  it('keeps observing a pending spawn error after startup is interrupted', async () => {
-    const command = 'watchtower-delayed-spawn-error'
-    let markErrorListenerReady: (() => void) | undefined
-    const errorListenerReady = new Promise<void>(resolve => {
-      markErrorListenerReady = resolve
-    })
-    const child = new EventEmitter() as EventEmitter & {
-      pid: undefined
-      exitCode: number | null
-      signalCode: NodeJS.Signals | null
-      kill: () => boolean
-      on: (event: string | symbol, listener: (...args: Array<unknown>) => void) => typeof child
-    }
-    child.pid = undefined
-    child.exitCode = null
-    child.signalCode = null
-    child.kill = () => false
-    const originalOn = child.on.bind(child)
-    child.on = (event: string | symbol, listener: (...args: Array<unknown>) => void) => {
-      const result = originalOn(event, listener)
-      if (event === 'error') markErrorListenerReady?.()
-      return result
-    }
-    spawnControl.child = child
-    try {
-      await Effect.runPromise(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const startup = yield* Effect.forkChild(Effect.scoped(liveStart(command, [])))
-            yield* Effect.promise(() => errorListenerReady)
-            yield* Fiber.interrupt(startup)
-          }),
-        ),
-      )
-
-      expect(child.listenerCount('error')).toBe(1)
-      expect(() => child.emit('error', Object.assign(new Error('delayed ENOENT'), { code: 'ENOENT' }))).not.toThrow()
-      child.emit('close', null)
-      expect(child.listenerCount('error')).toBe(0)
-      expect(child.listenerCount('spawn')).toBe(0)
-      expect(child.listenerCount('close')).toBe(0)
-    } finally {
-      spawnControl.child = undefined
-    }
-  })
 })
 
 describe('the stdio declaration reaches the OS (shared transport)', () => {
-  it('captures buffered chunks and EOF between pump fiber turns', async () => {
-    const chunks = Array.from({ length: 100 }, (_, index) => Buffer.from(`chunk-${index}\n`))
-    const stdout = Readable.from(chunks, { objectMode: false, highWaterMark: 1 })
-    const child = Object.assign(new EventEmitter(), {
-      stdout,
-      stderr: null,
-      pid: 17,
-      exitCode: null as number | null,
-      signalCode: null,
-      kill: vi.fn(() => true),
-    })
-    stdout.once('end', () => {
-      child.exitCode = 0
-      child.emit('close', 0)
-    })
-    spawnControl.child = child
-    try {
-      const result = Effect.runPromise(
+  it('captures buffered chunks when the child exits before stdout is consumed', async () => {
+    const expected = Array.from({ length: 100 }, (_, index) => `chunk-${index}\n`).join('')
+    const source = `for (let index = 0; index < 100; index += 1) process.stdout.write("chunk-" + index + "\\n")`
+    const result = await Effect.runPromise(
+      Effect.scoped(
         Effect.gen(function* () {
-          const runner = yield* CommandRunner
-          const run = yield* Effect.forkChild(runner.run('watchtower-buffered-output', []), { startImmediately: true })
-          child.emit('spawn')
-          return yield* Fiber.join(run)
-        }).pipe(Effect.provide(CommandRunner.layer)),
-      )
-      await expect(result).resolves.toEqual({ stdout: Buffer.concat(chunks).toString('utf8'), exitCode: 0 })
-      expect(child.kill).not.toHaveBeenCalled()
-      expect(stdout.listenerCount('readable')).toBe(0)
-      expect(stdout.listenerCount('error')).toBe(0)
-    } finally {
-      spawnControl.child = undefined
-      stdout.destroy()
-    }
+          const handle = yield* liveStart(process.execPath, node(source))
+          const exitCode = yield* handle.exitCode
+          const stdout = yield* Stream.mkString(Stream.decodeText(handle.stdout))
+          return { stdout, exitCode }
+        }),
+      ),
+    )
+    expect(result).toEqual({ stdout: expected, exitCode: 0 })
   })
 
   // These two guard `toSpawnOptions`: the port DECLARES `stdin: 'ignore'` and
@@ -551,7 +515,7 @@ describe('the stdio declaration reaches the OS (shared transport)', () => {
       Effect.gen(function* () {
         const runner = yield* CommandRunner
         return yield* runner.run(process.execPath, child, { timeoutMs: 20_000 })
-      }).pipe(Effect.provide(CommandRunner.layer)),
+      }).pipe(Effect.provide(CommandRunnerLiveLayer)),
     )
     expect(result).toEqual({ stdout: 'done', exitCode: 0 })
   })
@@ -562,7 +526,7 @@ describe('the stdio declaration reaches the OS (shared transport)', () => {
       Effect.gen(function* () {
         const runner = yield* CommandRunner
         return yield* runner.run(process.execPath, child, { timeoutMs: 20_000 })
-      }).pipe(Effect.provide(CommandRunner.layer)),
+      }).pipe(Effect.provide(CommandRunnerLiveLayer)),
     )
     expect(result).toEqual({ stdout: 'eof', exitCode: 0 })
   })

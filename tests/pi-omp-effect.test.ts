@@ -28,6 +28,7 @@ import { Env } from '../src/main/env.js'
 import { createOmpProvider, createPiProvider } from '../src/main/pipeline/providers/pi.js'
 import type { ProviderScanContext, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 let root = ''
 
@@ -93,7 +94,7 @@ describe('Pi and OMP Effect workflows', () => {
     const nativeSources = await discover(provider)
     expect(nativeSources).toHaveLength(expectedSources.length)
     expect(nativeSources).toEqual(expect.arrayContaining(expectedSources))
-    const promiseSources = await provider.discoverSessions()
+    const promiseSources = await discoverProviderSessions(provider)
     expect(promiseSources).toHaveLength(expectedSources.length)
     expect(promiseSources).toEqual(expect.arrayContaining(expectedSources))
   })

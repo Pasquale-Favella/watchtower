@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { copilot } from '../src/main/pipeline/providers/copilot.js'
 import type { SessionSource } from '../src/main/pipeline/providers/types.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 /**
  * The Copilot CLI writes a per-model input/cache rollup on `session.shutdown`,
@@ -50,7 +51,7 @@ function shutdown(inputTokens: number, cacheRead: number, output = 0): Record<st
 async function collect(source: SessionSource): Promise<Array<Record<string, unknown>>> {
   const seen = new Set<string>()
   const out: Array<Record<string, unknown>> = []
-  for await (const call of copilot.createSessionParser(source, seen).parse()) {
+  for await (const call of providerParserIterator(copilot.createSessionParser(source, seen))) {
     out.push(call as unknown as Record<string, unknown>)
   }
   return out

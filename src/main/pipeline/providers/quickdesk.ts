@@ -2,7 +2,13 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
 
-import { Cache, Context, Effect, Option, Result, Schema, Stream } from 'effect'
+import * as Cache from 'effect/Cache'
+import * as Context from 'effect/Context'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 
 import { type AppPaths, overrideFor } from '../../env.js'
 import { captureScanPricing } from '../models.js'
@@ -625,9 +631,6 @@ function createMetricsParser(
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -697,9 +700,6 @@ function createDatabaseParser(
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -737,11 +737,6 @@ export function createQuickdeskProvider(quickworkHomeOverride?: string, paths?: 
     },
 
     discoverSessionsEffect: discoverEffect,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove this Promise edge when external discovery callers use the Effect hook.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

@@ -1,7 +1,11 @@
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 
-import { Clock, Effect, Result, Schema, Stream } from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 
 import { type AppPaths, overrideFor, platformFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
@@ -356,24 +360,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
-      try {
-        while (true) {
-          const next = await iterator.next()
-          if (next.done) return
-          yield next.value
-        }
-      } catch (error) {
-        // The Promise adapter preserves the SQLite Error object used by callers.
-        // eslint-disable-next-line no-restricted-syntax
-        if (error instanceof GooseDatabaseError) throw error.cause
-        // eslint-disable-next-line no-restricted-syntax
-        throw error
-      } finally {
-        await iterator.return?.()
-      }
-    },
   }
 }
 
@@ -448,14 +434,6 @@ export function createGooseProvider(paths?: AppPaths): Provider {
     },
 
     discoverSessionsEffect: discover,
-
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove this Promise edge when external discovery callers use the Effect hook.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discover(context)).catch(error =>
-        Promise.reject(error instanceof GooseDatabaseError ? error.cause : error),
-      )
-    },
 
     createSessionParser(
       source: SessionSource,

@@ -18,11 +18,12 @@
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import * as Option from 'effect/Option'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 
 import type { UpdateStatus } from '../shared/schemas/updates.js'
-import { HttpFetch, retryTransientFetch } from './pipeline/fetch-utils.js'
+import { fetchJsonWithRetry, HttpFetch } from './pipeline/fetch-utils.js'
 
 export type { UpdateStatus } from '../shared/schemas/updates.js'
 
@@ -33,7 +34,8 @@ const FETCH_TIMEOUT_MS = 15_000
 // a tag convention can be chosen later without a code change.
 const RELEASE_TAG_RE = /^(?:desktop-)?v?(\d+\.\d+\.\d+)$/
 
-type GitHubRelease = { tag_name?: string }
+const githubReleaseSchema = Schema.Struct({ tag_name: Schema.optional(Schema.String) })
+type GitHubRelease = Schema.Schema.Type<typeof githubReleaseSchema>
 
 function baselineStatus(currentVersion: string): UpdateStatus {
   return { currentVersion, latestVersion: null, updateAvailable: false, tag: null }
@@ -121,7 +123,7 @@ interface UpdateCheckDecision {
  * no app-identifying headers (see the file header). Non-array JSON still
  * yields `[]`.
  *
- * Bounded transient retry (F15/A1) on the fetch only: the manual check used
+ * Bounded transient retry (F15/A1) on request and body transport: the manual check used
  * to report "unable to check" off a single two-second blip. It stays
  * manual-only, still sends nothing, and still never blocks — the
  * `update.offline` degrade in `createUpdateCheckerEffect` is unchanged, it
@@ -133,9 +135,7 @@ export const fetchReleasesEffect = Effect.fn('fetchReleasesEffect')(function* ()
   UpdateFetchError,
   HttpFetch
 > {
-  const http = yield* HttpFetch
-  const response = yield* http.fetch(RELEASES_URL, {}, FETCH_TIMEOUT_MS).pipe(
-    retryTransientFetch,
+  const response = yield* fetchJsonWithRetry(RELEASES_URL, {}, FETCH_TIMEOUT_MS).pipe(
     Effect.mapError(
       cause =>
         new UpdateFetchError({
@@ -151,18 +151,15 @@ export const fetchReleasesEffect = Effect.fn('fetchReleasesEffect')(function* ()
       status: response.status,
     })
   }
-  const data = yield* Effect.tryPromise({
-    try: () => response.json(),
-    catch: cause =>
-      new UpdateFetchError({
-        reason: 'network',
-        message: describeUpdateErrorCause(cause),
-      }),
-  })
-  if (Array.isArray(data)) {
-    return data as GitHubRelease[]
+  const releases = yield* Schema.decodeUnknownEffect(Schema.mutable(Schema.Array(Schema.Unknown)))(response.body).pipe(
+    Effect.orElseSucceed(() => []),
+  )
+  const decoded: GitHubRelease[] = []
+  for (const release of releases) {
+    const result = Schema.decodeUnknownOption(githubReleaseSchema)(release)
+    if (Option.isSome(result)) decoded.push(result.value)
   }
-  return []
+  return decoded
 })
 
 export interface UpdateCheckerEffect {

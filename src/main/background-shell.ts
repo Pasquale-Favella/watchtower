@@ -550,7 +550,7 @@ const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (op
     // macOS opens the context menu on click, as menu-bar items do.
     if (process.platform !== 'darwin') acquired.on('click', () => showMainWindow())
     rebuildTrayMenu()
-    yield* Effect.never
+    return yield* Effect.never
   }).pipe(
     Effect.scoped,
     Effect.catchTag('ShellTrayError', error =>

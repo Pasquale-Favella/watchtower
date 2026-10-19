@@ -1,4 +1,7 @@
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { readdir } from 'fs/promises'
 import { join } from 'path'
 
@@ -951,14 +954,6 @@ export function createSqliteSessionParser(
 
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      try {
-        yield* Stream.toAsyncIterable(parseStream())
-      } catch (error) {
-        if (error instanceof SqliteFamilyError) throw error.cause
-        throw error
-      }
-    },
   }
 }
 
@@ -1024,11 +1019,3 @@ export const discoverSqliteSessionsEffect = Effect.fnUntraced(function* (
   }
   return sessions
 })
-
-/// Remove after every consumer composes discovery through discoverSqliteSessionsEffect.
-export function discoverSqliteSessions(
-  config: SqliteProviderConfig,
-  context?: ProviderScanContext,
-): Promise<SessionSource[]> {
-  return Effect.runPromise(discoverSqliteSessionsEffect(config, context))
-}

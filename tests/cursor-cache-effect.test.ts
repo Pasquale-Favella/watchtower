@@ -2,7 +2,8 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect } from 'effect'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import { Cause, Effect, Exit, FileSystem, PlatformError } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const hooks = vi.hoisted(() => ({
@@ -12,6 +13,8 @@ const hooks = vi.hoisted(() => ({
   failRename: false,
   renameCalls: 0,
   abortAfterWrite: undefined as (() => void) | undefined,
+  openedFile: undefined as FileSystem.File | undefined,
+  closedBeforeRename: false,
 }))
 
 vi.mock('os', async importOriginal => {
@@ -19,32 +22,64 @@ vi.mock('os', async importOriginal => {
   return { ...actual, homedir: () => hooks.root }
 })
 
-vi.mock('fs/promises', async importOriginal => {
-  const actual = await importOriginal<typeof import('fs/promises')>()
-  return {
-    ...actual,
-    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
-      if (hooks.failWrite) throw new Error('temporary write failed')
-      if (hooks.failPartialWrite) {
-        await actual.writeFile(args[0], 'partial cache')
-        throw new Error('partial write failed')
-      }
-      await actual.writeFile(...args)
-      hooks.abortAfterWrite?.()
-    },
-    rename: async (...args: Parameters<typeof actual.rename>) => {
-      hooks.renameCalls++
-      if (hooks.failRename) throw new Error('rename failed')
-      return actual.rename(...args)
-    },
-  }
-})
-
 import { readCachedResultsEffect, writeCachedResultsEffect } from '../src/main/pipeline/cursor-cache.js'
 import type { ParsedProviderCall } from '../src/main/pipeline/providers/types.js'
 
 let root = ''
 let dbPath = ''
+
+function fileSystemError(method: string, message: string): PlatformError.PlatformError {
+  return PlatformError.systemError({ _tag: 'Unknown', module: 'FileSystem', method, cause: new Error(message) })
+}
+
+function withFileSystem<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | import('effect/Scope').Scope>) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const hooked: FileSystem.FileSystem = {
+      ...fs,
+      open: (path, options) =>
+        fs.open(path, options).pipe(
+          Effect.map(handle => {
+            if (path.endsWith('.tmp')) hooks.openedFile = handle
+            return {
+              ...handle,
+              sync: handle.sync,
+              writeAll: bytes => {
+                if (hooks.failWrite) return Effect.fail(fileSystemError('writeAll', 'temporary write failed'))
+                const write = handle.writeAll(bytes)
+                if (!hooks.failPartialWrite)
+                  return write.pipe(Effect.tap(() => Effect.sync(() => hooks.abortAfterWrite?.())))
+                return write.pipe(
+                  Effect.flatMap(() => Effect.fail(fileSystemError('writeAll', 'partial write failed'))),
+                )
+              },
+            }
+          }),
+        ),
+      rename: (fromPath, toPath) => {
+        hooks.renameCalls++
+        return Effect.gen(function* () {
+          if (hooks.openedFile) {
+            const stat = yield* Effect.exit(hooks.openedFile.stat)
+            if (Exit.isFailure(stat)) {
+              const failure = Cause.findErrorOption(stat.cause)
+              const cause =
+                failure._tag === 'Some' && PlatformError.isPlatformError(failure.value) ? failure.value.cause : null
+              hooks.closedBeforeRename = (cause as NodeJS.ErrnoException | null)?.code === 'EBADF'
+            }
+          }
+          if (hooks.failRename) return yield* Effect.fail(fileSystemError('rename', 'rename failed'))
+          return yield* fs.rename(fromPath, toPath)
+        })
+      },
+    }
+    return yield* Effect.provideService(effect, FileSystem.FileSystem, hooked)
+  }).pipe(Effect.provide(NodeFileSystem.layer))
+}
+
+function run<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | import('effect/Scope').Scope>) {
+  return Effect.runPromise(Effect.scoped(withFileSystem(effect)))
+}
 
 function call(): ParsedProviderCall {
   return {
@@ -77,6 +112,8 @@ beforeEach(() => {
   hooks.failRename = false
   hooks.renameCalls = 0
   hooks.abortAfterWrite = undefined
+  hooks.openedFile = undefined
+  hooks.closedBeforeRename = false
   dbPath = join(root, 'state.vscdb')
   writeFileSync(dbPath, 'cursor database')
 })
@@ -88,35 +125,36 @@ afterEach(() => {
 describe('Cursor cache native Effects', () => {
   it('writes atomically and reads a schema-validated matching v6 cache', async () => {
     const expected = [call()]
-    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, expected, '2026-04-01T00:00:00.000Z')))
+    await run(Effect.scoped(writeCachedResultsEffect(dbPath, expected, '2026-04-01T00:00:00.000Z')))
 
-    const actual = await Effect.runPromise(readCachedResultsEffect(dbPath, '2026-06-01T00:00:00.000Z'))
+    const actual = await run(readCachedResultsEffect(dbPath, '2026-06-01T00:00:00.000Z'))
 
     expect(actual).toEqual(expected)
+    expect(hooks.closedBeforeRename).toBe(true)
     expect(readdirSync(join(root, '.cache', 'watchtower'))).toEqual(['cursor-results.json'])
   })
 
   it('keeps the cache floor and database fingerprint checks', async () => {
-    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, [call()], '2026-06-01T00:00:00.000Z')))
-    expect(await Effect.runPromise(readCachedResultsEffect(dbPath, '2026-04-01T00:00:00.000Z'))).toBeNull()
+    await run(Effect.scoped(writeCachedResultsEffect(dbPath, [call()], '2026-06-01T00:00:00.000Z')))
+    expect(await run(readCachedResultsEffect(dbPath, '2026-04-01T00:00:00.000Z'))).toBeNull()
 
     writeFileSync(dbPath, 'cursor database changed')
-    expect(await Effect.runPromise(readCachedResultsEffect(dbPath, '2026-06-01T00:00:00.000Z'))).toBeNull()
+    expect(await run(readCachedResultsEffect(dbPath, '2026-06-01T00:00:00.000Z'))).toBeNull()
   })
 
   it('removes an owned temporary file after write failure', async () => {
     hooks.failWrite = true
-    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, [call()], '2026-04-01T00:00:00.000Z')))
+    await run(Effect.scoped(writeCachedResultsEffect(dbPath, [call()], '2026-04-01T00:00:00.000Z')))
 
     expect(readdirSync(join(root, '.cache', 'watchtower'))).toEqual([])
   })
 
-  it('removes the staged file when abort arrives after the native write settles', async () => {
+  it('removes the staged file when abort arrives after the filesystem write settles', async () => {
     const controller = new AbortController()
     hooks.abortAfterWrite = () => controller.abort()
 
     await expect(
-      Effect.runPromise(
+      run(
         Effect.scoped(writeCachedResultsEffect(dbPath, [call()], '2026-04-01T00:00:00.000Z', false, controller.signal)),
       ),
     ).rejects.toMatchObject({ _tag: 'ScanAbortedError' })
@@ -126,28 +164,28 @@ describe('Cursor cache native Effects', () => {
   it('retains the previous cache and removes a partially written temporary file', async () => {
     const previous = [call()]
     const floor = '2026-04-01T00:00:00.000Z'
-    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, previous, floor)))
+    await run(Effect.scoped(writeCachedResultsEffect(dbPath, previous, floor)))
     hooks.failPartialWrite = true
-    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, [{ ...call(), costUSD: 1 }], floor)))
+    await run(Effect.scoped(writeCachedResultsEffect(dbPath, [{ ...call(), costUSD: 1 }], floor)))
 
     expect(hooks.renameCalls).toBe(1)
-    expect(await Effect.runPromise(readCachedResultsEffect(dbPath, floor))).toEqual(previous)
+    expect(await run(readCachedResultsEffect(dbPath, floor))).toEqual(previous)
     expect(readdirSync(join(root, '.cache', 'watchtower'))).toEqual(['cursor-results.json'])
   })
 
   it('retains the previous cache and removes the staged file after rename failure', async () => {
     const previous = [call()]
     const floor = '2026-04-01T00:00:00.000Z'
-    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, previous, floor)))
+    await run(Effect.scoped(writeCachedResultsEffect(dbPath, previous, floor)))
     hooks.failRename = true
-    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, [{ ...call(), costUSD: 1 }], floor)))
+    await run(Effect.scoped(writeCachedResultsEffect(dbPath, [{ ...call(), costUSD: 1 }], floor)))
 
-    expect(await Effect.runPromise(readCachedResultsEffect(dbPath, floor))).toEqual(previous)
+    expect(await run(readCachedResultsEffect(dbPath, floor))).toEqual(previous)
     expect(readdirSync(join(root, '.cache', 'watchtower'))).toEqual(['cursor-results.json'])
   })
 
   it('does not create cache files when writes are suppressed', async () => {
-    await Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, [call()], '2026-04-01T00:00:00.000Z', true)))
+    await run(Effect.scoped(writeCachedResultsEffect(dbPath, [call()], '2026-04-01T00:00:00.000Z', true)))
     expect(() => readdirSync(join(root, '.cache', 'watchtower'))).toThrow()
   })
 })

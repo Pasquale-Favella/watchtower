@@ -266,18 +266,22 @@ describe('Warp native Effect provider', () => {
     expect(failure.cause).toBe(databaseState.queryError)
   })
 
-  it('unwraps the original SQLite error through the legacy parser', async () => {
+  it('preserves the original SQLite cause in the native stream error channel', async () => {
     const { dbPath, source } = createDatabase()
-    databaseState.queryError = new Error('warp legacy read failed')
+    databaseState.queryError = new Error('warp native read failed')
     databaseState.queryMatch = 'FROM ai_queries WHERE conversation_id'
 
-    await expect(async () => {
-      for await (const call of parser(dbPath, source).parse()) {
-        // The query fails before the parser emits a call.
-        void call
-      }
-    }).rejects.toBe(databaseState.queryError)
+    const result = await Effect.runPromiseExit(Stream.runCollect(parseStream(parser(dbPath, source))()))
+    expect(Exit.isFailure(result)).toBe(true)
     expect(databaseState.closeCount).toBe(1)
+    if (!Exit.isFailure(result)) throw new Error('Expected the query to fail')
+    const failure = Option.getOrThrow(Cause.findErrorOption(result.cause)) as unknown as {
+      _tag: string
+      operation: string
+      cause: unknown
+    }
+    expect(failure).toMatchObject({ _tag: 'WarpDatabaseError', operation: 'read' })
+    expect(failure.cause).toBe(databaseState.queryError)
   })
 
   it('preserves the original close error identity and closes only once', async () => {

@@ -1,5 +1,6 @@
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
 
 import { CommandRunner } from '../agents/command-runner.js'
 import type { Env } from '../env.js'
@@ -20,7 +21,7 @@ export const scanLedger = Effect.fnUntraced(function* (
 ): Effect.fn.Return<
   ScanMetadata,
   unknown,
-  HttpFetch | Env | OperationalLog | LedgerIngest | CommandRunner | GatewayReports
+  HttpFetch | Env | OperationalLog | LedgerIngest | CommandRunner | GatewayReports | FileSystem.FileSystem
 > {
   const ingest = yield* LedgerIngest
   const runner = yield* CommandRunner

@@ -1,13 +1,13 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
+import * as SqlError from 'effect/sql/SqlError'
 import * as TestClock from 'effect/testing/TestClock'
-import * as SqlError from 'effect/unstable/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
 import { querySpendView } from '../src/main/application/spend-query.js'
 import type { ScopedViewQueryInputs } from '../src/main/application/view-queries.js'
-import { normalizeProjectPathKey } from '../src/main/pipeline/parser.js'
+import { normalizeProjectPathKey } from '../src/main/pipeline/parser-calculations.js'
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
 import {
   LedgerConfig,

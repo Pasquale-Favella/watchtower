@@ -3,7 +3,7 @@ import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
 import { Env } from '../../env.js'
-import { HttpFetch, HttpFetchError, retryTransientFetch } from '../fetch-utils.js'
+import { fetchJsonWithRetry, HttpFetch, HttpFetchError } from '../fetch-utils.js'
 import { fileErrorCode, queueLogRecord } from '../file-errors.js'
 import { ScanAbortedError, scanAbortError } from '../scan-control.js'
 import type { DateRange } from '../types.js'
@@ -57,26 +57,22 @@ export const fetchVercelGatewayReportEffect = Effect.fn('fetchVercelGatewayRepor
     group_by: 'model',
   })
 
-  const http = yield* HttpFetch
   return yield* Effect.acquireUseRelease(
     Effect.sync(() => new AbortController()),
     controller =>
       Effect.gen(function* () {
-        // Bounded transient retry (F15/A1) on the fetch only: discovery used to
+        // Bounded transient retry (F15/A1) on request and body transport: discovery used to
         // answer "no sessions" (plus one `unreachable` warn) off a single blip,
         // which silently zeroes a whole provider's cost for the scan. The
         // non-2xx arm below stays OUTSIDE the retry — a 401/500 is a real answer,
         // and the warn code it logs is byte-identical to today's.
-        const res = yield* http
-          .fetch(`${REPORT_URL}?${params}`, {
-            method: 'GET',
-            headers: {
-              Authorization: `Bearer ${key}`,
-              Accept: 'application/json',
-            },
-            signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
-          })
-          .pipe(retryTransientFetch)
+        const res = yield* fetchJsonWithRetry(`${REPORT_URL}?${params}`, {
+          headers: {
+            Authorization: `Bearer ${key}`,
+            Accept: 'application/json',
+          },
+          signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+        })
 
         if (!res.ok) {
           // The gateway error body can carry request echoes — status only.
@@ -84,26 +80,7 @@ export const fetchVercelGatewayReportEffect = Effect.fn('fetchVercelGatewayRepor
           return []
         }
 
-        // Stop the native response body before joining the actual JSON promise.
-        // Interrupting its Effect wrapper alone would leave body work unowned.
-        const body = yield* Effect.acquireUseRelease(
-          Effect.sync(() => {
-            const promise: Promise<unknown> = Promise.resolve().then(() => res.json())
-            return {
-              promise,
-              drain: promise.then(
-                () => undefined,
-                () => undefined,
-              ),
-            }
-          }),
-          owned => Effect.tryPromise({ try: () => owned.promise, catch: cause => cause }),
-          owned =>
-            Effect.promise(() => {
-              controller.abort()
-              return owned.drain
-            }),
-        )
+        const body = res.body
         if (signal?.aborted) return yield* scanAbortError(signal)
         const report = yield* Schema.decodeUnknownEffect(gatewayReportSchema)(body)
         return report.results ?? []
@@ -181,22 +158,7 @@ function createParser(
         )
       }),
     )
-  return {
-    parseStream: () => parseWith(context.fetchGatewayReport),
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      // External compatibility edge for standalone parser callers. The scan
-      // supplies its captured GatewayReports capability to parseStream directly.
-      // Remove this fallback when standalone callers supply that capability.
-      const fetchReport =
-        context.fetchGatewayReport ??
-        ((range, signal) =>
-          fetchVercelGatewayReportEffect(range, signal).pipe(
-            Effect.provide(HttpFetch.layerWithFetch(globalThis.fetch)),
-            Effect.provide(Env.layer),
-          ))
-      yield* Stream.toAsyncIterable(parseWith(fetchReport))
-    },
-  }
+  return { parseStream: () => parseWith(context.fetchGatewayReport) }
 }
 
 function checkGatewayAbort(signal?: AbortSignal): Effect.Effect<void, ScanAbortedError> {
@@ -209,22 +171,6 @@ const discoverGatewayEffect = Effect.fnUntraced(function* (
   yield* checkGatewayAbort(context.signal)
   const enabled = context.gatewayEnabled ?? (yield* Env).vercelGatewayApiKey !== null
   return enabled ? [{ path: 'vercel-ai-gateway:report', project: 'Vercel AI Gateway', provider: 'vercel-gateway' }] : []
-})
-
-export const discoverVercelGatewaySessionsEffect = Effect.fnUntraced(function* (): Effect.fn.Return<
-  SessionSource[],
-  never,
-  Env
-> {
-  const { vercelGatewayApiKey: key } = yield* Env
-  if (!key) return []
-  return [
-    {
-      path: 'vercel-ai-gateway:report',
-      project: 'Vercel AI Gateway',
-      provider: 'vercel-gateway',
-    },
-  ]
 })
 
 export const vercelGateway: Provider = {
@@ -242,9 +188,6 @@ export const vercelGateway: Provider = {
   },
 
   discoverSessionsEffect: discoverGatewayEffect,
-  discoverSessions(context: ProviderScanContext = {}): Promise<SessionSource[]> {
-    return Effect.runPromise(discoverGatewayEffect(context).pipe(Effect.provide(Env.layer)))
-  },
 
   createSessionParser(
     source: SessionSource,

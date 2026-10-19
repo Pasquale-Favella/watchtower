@@ -8,7 +8,7 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
-import * as SqlError from 'effect/unstable/sql/SqlError'
+import * as SqlError from 'effect/sql/SqlError'
 import { describe, expect, it, vi } from 'vitest'
 
 import { queryActiveCurrency, selectDisplayCurrency } from '../src/main/application/currency-commands.js'

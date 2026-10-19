@@ -53,7 +53,7 @@ describe('measurement SQL extraction', () => {
     ['getTurns', 'ledger_turn', 12],
     ['getCalls', 'ledger_call', 38],
   ] as const)('extracts the real %s projection', (name, table, columns) => {
-    const source = readFileSync(new URL('../src/main/store/ledger-repository.ts', import.meta.url), 'utf8')
+    const source = readFileSync(new URL('../src/main/store/ledger-queries-live.ts', import.meta.url), 'utf8')
     const sql = extractReadSql(source, name)
     expect(sql).toMatch(new RegExp(`FROM ${table}\\b`))
     const projection = sql.slice(sql.indexOf('SELECT') + 6, sql.lastIndexOf('FROM'))

@@ -1,5 +1,9 @@
 import { createHash } from 'crypto'
-import { Effect, Predicate, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Predicate from 'effect/Predicate'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { readdir, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
@@ -633,10 +637,6 @@ function createParser(
 
   return {
     parseStream,
-    // Remove this async-iterator adapter when direct callers use parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -733,11 +733,6 @@ export function createCursorAgentProvider(baseDirOverride?: string): Provider {
     },
 
     discoverSessionsEffect,
-    // Remove this Promise edge when external callers use native discovery.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverSessionsEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

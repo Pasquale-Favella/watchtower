@@ -3,7 +3,10 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 
 import { type AppPaths, type Env, overrideFor } from '../../env.js'
 import { extractBashCommands } from '../bash-utils.js'
@@ -453,10 +456,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
 
   return {
     parseStream: () => Stream.unwrap(parseEffect()),
-    // Remove when scan/parser and external iterator callers consume parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(Stream.unwrap(parseEffect()))
-    },
   }
 }
 
@@ -491,12 +490,6 @@ export function createKimicodeProvider(homeOverride?: string, paths?: AppPaths):
 
     discoverSessionsEffect(context?: ProviderScanContext): Effect.Effect<SessionSource[], Error, Env> {
       return discoverEffect(context)
-    },
-
-    // Remove when all discovery callers use the native Effect entry point.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(

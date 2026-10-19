@@ -1,6 +1,11 @@
 import * as fsPromises from 'node:fs/promises'
 
-import { Clock, Effect, Result, Schema, Stream } from 'effect'
+import * as Clock from 'effect/Clock'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
@@ -1195,11 +1200,11 @@ function createParser(
   paths?: AppPaths,
   pricing = captureScanPricing(),
   signal?: AbortSignal,
-): SessionParser {
+): SessionParser<FileSystem.FileSystem> {
   const { dbPath, workspaceTag } = decodeSourcePath(source.path)
   const workspacePath = workspaceFsPath(workspaceTag)
 
-  const parseStream: NonNullable<SessionParser['parseStream']> = () =>
+  const parseStream: NonNullable<SessionParser<FileSystem.FileSystem>['parseStream']> = () =>
     Stream.scoped(
       Stream.unwrap(
         Effect.gen(function* () {
@@ -1312,22 +1317,6 @@ function createParser(
 
   return {
     parseStream,
-    // Remove after external callers consume parseStream; retain native SQLite errors.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
-      try {
-        while (true) {
-          const next = await iterator.next()
-          if (next.done) return
-          yield next.value
-        }
-      } catch (error) {
-        if (error instanceof CursorDatabaseError) throw error.cause
-        throw error
-      } finally {
-        await iterator.return?.()
-      }
-    },
   }
 }
 
@@ -1361,7 +1350,7 @@ const discoverCursorSessionsEffect = Effect.fn('discoverCursorSessions')(functio
   return sources
 })
 
-export function createCursorProvider(dbPathOverride?: string, paths?: AppPaths): Provider {
+export function createCursorProvider(dbPathOverride?: string, paths?: AppPaths): Provider<FileSystem.FileSystem> {
   return {
     name: 'cursor',
     displayName: 'Cursor',
@@ -1376,18 +1365,12 @@ export function createCursorProvider(dbPathOverride?: string, paths?: AppPaths):
 
     discoverSessionsEffect: context => discoverCursorSessionsEffect(dbPathOverride, context),
 
-    // Remove after discovery callers use the native Effect hook.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverCursorSessionsEffect(dbPathOverride, context))
-    },
-
     createSessionParser(
       source: SessionSource,
       seenKeys: Set<string>,
       dateRange?: DateRange,
       context?: ProviderScanContext,
-    ): SessionParser {
+    ): SessionParser<FileSystem.FileSystem> {
       return createParser(source, seenKeys, dateRange, paths, context?.pricing ?? captureScanPricing(), context?.signal)
     },
   }

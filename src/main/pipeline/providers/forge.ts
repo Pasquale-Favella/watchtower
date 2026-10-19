@@ -1,4 +1,7 @@
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
@@ -300,25 +303,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
     )
   return {
     parseStream,
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      // Remove when all direct parser callers consume parseStream.
-      const iterator = Stream.toAsyncIterable(parseStream())[Symbol.asyncIterator]()
-      try {
-        while (true) {
-          const next = await iterator.next()
-          if (next.done) return
-          yield next.value
-        }
-      } catch (error) {
-        // The legacy Promise API must preserve the original SQLite error identity.
-        // eslint-disable-next-line no-restricted-syntax
-        if (error instanceof ForgeDatabaseError) throw error.cause
-        // eslint-disable-next-line no-restricted-syntax
-        throw error
-      } finally {
-        await iterator.return?.()
-      }
-    },
   }
 }
 
@@ -377,13 +361,6 @@ export function createForgeProvider(dbPath = DEFAULT_DB_PATH): Provider {
     displayName: 'Forge',
     modelDisplayName: model => model,
     toolDisplayName: rawTool => rawTool,
-    discoverSessions: context => {
-      // Remove this Promise edge after callers use the native Effect hook.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverFromDb(dbPath, context)).catch(error =>
-        Promise.reject(error instanceof ForgeDatabaseError ? error.cause : error),
-      )
-    },
     discoverSessionsEffect: context => discoverFromDb(dbPath, context),
     createSessionParser: (
       source: SessionSource,

@@ -4,7 +4,7 @@ import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Schema from 'effect/Schema'
-import * as SqlError from 'effect/unstable/sql/SqlError'
+import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createPricingConfigLookup } from '../src/main/pipeline/pricing-calculation.js'
@@ -117,8 +117,14 @@ describe('purpose-shaped dashboard and analytics reads', () => {
       const rows = Reflect.apply(nativeAll, this, parameters)
       const connection = connectionByStatement.get(this)
       if (connection) {
-        executions.push({ sql: sqlByStatement.get(this) ?? '', connection })
-        transactionEvents.push('SELECT')
+        const sql = sqlByStatement.get(this) ?? ''
+        const normalized = sql.trim().toUpperCase()
+        if (/^\s*SELECT/i.test(sql)) {
+          executions.push({ sql, connection })
+          transactionEvents.push('SELECT')
+        } else if (/^(BEGIN|COMMIT|ROLLBACK)/.test(normalized)) {
+          transactionEvents.push(normalized)
+        }
       }
       return rows
     })
@@ -202,7 +208,10 @@ describe('purpose-shaped dashboard and analytics reads', () => {
     ) {
       const rows = Reflect.apply(nativeAll, this, parameters)
       const connection = connectionByStatement.get(this)
-      if (connection) executions.push({ sql: sqlByStatement.get(this) ?? '', connection })
+      if (connection) {
+        const sql = sqlByStatement.get(this) ?? ''
+        if (/^\s*SELECT/i.test(sql)) executions.push({ sql, connection })
+      }
       return rows
     })
 
@@ -437,6 +446,15 @@ describe('purpose-shaped dashboard and analytics reads', () => {
       const normalized = (schemaSqlByStatement.get(this) ?? '').trim().toUpperCase()
       if (/^(BEGIN|COMMIT|ROLLBACK)/.test(normalized)) schemaTransactionEvents.push(normalized)
       return Reflect.apply(nativeRun, this, parameters)
+    })
+    const nativeAll = StatementSync.prototype.all
+    vi.spyOn(StatementSync.prototype, 'all').mockImplementation(function (
+      this: StatementSync,
+      ...parameters: unknown[]
+    ) {
+      const normalized = (schemaSqlByStatement.get(this) ?? '').trim().toUpperCase()
+      if (/^(BEGIN|COMMIT|ROLLBACK)/.test(normalized)) schemaTransactionEvents.push(normalized)
+      return Reflect.apply(nativeAll, this, parameters)
     })
     const malformedOverviewJson = await runtime.runPromise(
       Effect.exit(Effect.flatMap(LedgerViewReads, reads => reads.getOverviewData())),

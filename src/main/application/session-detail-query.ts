@@ -1,6 +1,6 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import type { SqlError } from 'effect/unstable/sql/SqlError'
+import type { SqlError } from 'effect/sql/SqlError'
 
 import { type SessionDetail, sessionDetailSchema } from '../../shared/schemas/views.js'
 import type { PricingCatalogue } from '../pipeline/pricing-calculation.js'

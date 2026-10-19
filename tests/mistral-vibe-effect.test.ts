@@ -27,6 +27,7 @@ import { Env } from '../src/main/env.js'
 import { createMistralVibeProvider } from '../src/main/pipeline/providers/mistral-vibe.js'
 import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let root = ''
 
@@ -84,7 +85,7 @@ describe('Mistral Vibe Effect provider', () => {
     ])
   })
 
-  it('matches the Promise adapter and preserves allocations, turns, tools, and valid message siblings', async () => {
+  it('preserves allocations, turns, tools, and valid message siblings across native runs', async () => {
     const path = join(root, 'session-one')
     const metadata = {
       session_id: 'session-one',
@@ -116,12 +117,12 @@ describe('Mistral Vibe Effect provider', () => {
     const provider = createMistralVibeProvider(root)
     const source = { path, project: 'session-one', provider: 'mistral-vibe' } satisfies SessionSource
     const native = provider.createSessionParser(source, new Set())
-    const legacy = provider.createSessionParser(source, new Set())
+    const secondParser = provider.createSessionParser(source, new Set())
     const calls = await collect(native)
-    const legacyCalls = []
-    for await (const call of legacy.parse()) legacyCalls.push(call)
+    const secondRun = []
+    for await (const call of providerParserIterator(secondParser)) secondRun.push(call)
 
-    expect(calls).toEqual(legacyCalls)
+    expect(calls).toEqual(secondRun)
     expect(calls).toMatchObject([
       {
         model: 'mistral-vibe-cli-latest',

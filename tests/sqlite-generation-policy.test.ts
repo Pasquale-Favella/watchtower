@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import { Effect } from 'effect'
 import { afterAll, describe, expect, it } from 'vitest'
 
 import { getSqliteConfig as kiloSqliteConfig } from '../src/main/pipeline/providers/kilo-code.js'
@@ -10,7 +11,7 @@ import { getSqliteConfig as opencodeSqliteConfig } from '../src/main/pipeline/pr
 import {
   createSqliteSessionParser,
   detectGeneration,
-  discoverSqliteSessions,
+  discoverSqliteSessionsEffect,
   OPENCODE_FAMILY_1X,
   OPENCODE_FAMILY_2X,
   type SqliteGeneration,
@@ -18,6 +19,7 @@ import {
 } from '../src/main/pipeline/providers/opencode-family-sqlite.js'
 import type { ParsedProviderCall, SessionParser } from '../src/main/pipeline/providers/types.js'
 import { openDatabase } from '../src/main/pipeline/sqlite.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 // ADR 0006: a provider is an isolated, replaceable unit. That only holds if the
 // SHARED reader holds no opinion about which tools have migrated.
@@ -119,7 +121,7 @@ function insertV2Message(
 
 async function collect(parser: SessionParser): Promise<ParsedProviderCall[]> {
   const calls: ParsedProviderCall[] = []
-  for await (const call of parser.parse()) calls.push(call)
+  for await (const call of providerParserIterator(parser)) calls.push(call)
   return calls
 }
 
@@ -202,7 +204,7 @@ describe('kilo-code is not subject to OpenCode’s migration', () => {
   // for its own session; it now must read 1.x and emit the 1.x calls.
   it('reads the 1.x tables even when session_v2 and session_message both exist', async () => {
     const f = kiloWithV2TablesFixture()
-    const sources = await discoverSqliteSessions(f.config)
+    const sources = await Effect.runPromise(discoverSqliteSessionsEffect(f.config))
 
     // Discovery sees only the 1.x session: kilo declared no 2.x generation, so
     // no 2.x table was ever projected.
@@ -429,7 +431,7 @@ describe('discovery dedupes across generations without naming another table', ()
 
   it('surfaces a session present in both tables exactly once', async () => {
     const f = upgradedWithChildren()
-    const sources = await discoverSqliteSessions(f.config)
+    const sources = await Effect.runPromise(discoverSqliteSessionsEffect(f.config))
     const paths = sources.map(s => s.path)
     expect(paths).toHaveLength(2)
     expect(new Set(paths).size).toBe(2)
@@ -439,7 +441,9 @@ describe('discovery dedupes across generations without naming another table', ()
 
   it('a 1.x-only declaration never projects the 2.x tables at all', async () => {
     const f = upgradedWithChildren()
-    const sources = await discoverSqliteSessions({ ...f.config, generations: [OPENCODE_FAMILY_1X] })
+    const sources = await Effect.runPromise(
+      discoverSqliteSessionsEffect({ ...f.config, generations: [OPENCODE_FAMILY_1X] }),
+    )
     const paths = sources.map(s => s.path)
     expect(paths).toHaveLength(2)
     // Both ids exist in `session`, so both surface — and neither is duplicated
@@ -459,7 +463,7 @@ describe('discovery dedupes across generations without naming another table', ()
     )
     db.close()
 
-    const paths = (await discoverSqliteSessions(f.config)).map(s => s.path)
+    const paths = (await Effect.runPromise(discoverSqliteSessionsEffect(f.config))).map(s => s.path)
     expect(paths.some(p => p.endsWith(':ses-archived'))).toBe(false)
   })
 })

@@ -176,7 +176,7 @@ describe('effect: interrupt + drain barrier (pain 4 — iterator.return() juggli
                   drained.push(event)
                   if (drained.length === 2) {
                     yield* Deferred.succeed(buffered, undefined)
-                    yield* Effect.never
+                    return yield* Effect.never
                   }
                 }),
               ),
@@ -299,11 +299,7 @@ describe('effect: run teardown barrier (§4.3 — acquireRelease + timeoutOption
 /** Fake fetch shared by both flat-composition cases: the capability seams only
  *  read `ok`/`status`/`json`, so the payload shape is irrelevant here. */
 function fakeOkFetch(): typeof fetch {
-  return (async () => ({
-    ok: true,
-    status: 200,
-    json: async () => ({ rates: { EUR: 0.9 } }),
-  })) as unknown as typeof fetch
+  return (async () => new Response(JSON.stringify({ rates: { EUR: 0.9 } }), { status: 200 })) as typeof fetch
 }
 
 /** The one probe request both cases drive through `HarnessProbe` (read-only, so

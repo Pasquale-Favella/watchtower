@@ -150,6 +150,7 @@ vi.mock('https', async importOriginal => {
 })
 
 import type { SessionSource } from '../src/main/pipeline/providers/types.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let createAntigravityProvider: typeof import('../src/main/pipeline/providers/antigravity.js').createAntigravityProvider
 let extractAntigravityModelMap: typeof import('../src/main/pipeline/providers/antigravity.js').extractAntigravityModelMap
@@ -220,10 +221,9 @@ describe('Antigravity RPC Effects', () => {
     mkdirSync(join(root, '.gemini', 'antigravity-ide', 'conversations'), { recursive: true })
     writeFileSync(ideSource.path, new Uint8Array())
     state.hangNextExec = true
-    const pending = createAntigravityProvider()
-      .createSessionParser(ideSource, new Set(), undefined, { signal: controller.signal })
-      .parse()
-      .next()
+    const pending = providerParserIterator(
+      createAntigravityProvider().createSessionParser(ideSource, new Set(), undefined, { signal: controller.signal }),
+    ).next()
     while (state.calls.length === 0) await new Promise(resolve => setTimeout(resolve, 0))
     controller.abort()
     await expect(pending).rejects.toHaveProperty('name', 'ScanAbortedError')
@@ -231,7 +231,7 @@ describe('Antigravity RPC Effects', () => {
   })
 
   it('resolves ephemeral ports after process inspection and applies the local RPC protocol', async () => {
-    const pending = createAntigravityProvider().createSessionParser(source(), new Set()).parse().next()
+    const pending = providerParserIterator(createAntigravityProvider().createSessionParser(source(), new Set())).next()
     await pending
 
     expect(state.calls.map(call => call.command)).toEqual(
@@ -260,7 +260,7 @@ describe('Antigravity RPC Effects', () => {
     'accepts probe headers without waiting for or reading the unused response body',
     async () => {
       state.holdProbeBody = true
-      await createAntigravityProvider().createSessionParser(source(), new Set()).parse().next()
+      await providerParserIterator(createAntigravityProvider().createSessionParser(source(), new Set())).next()
       expect(state.requests).toHaveLength(3)
       expect(state.requests[0]?.destroy).toHaveBeenCalledTimes(1)
     },
@@ -269,10 +269,9 @@ describe('Antigravity RPC Effects', () => {
   it('destroys and settles an in-flight HTTPS request when the parser signal aborts', async () => {
     const controller = new AbortController()
     state.hangNextRequest = true
-    const pending = createAntigravityProvider()
-      .createSessionParser(source(), new Set(), undefined, { signal: controller.signal })
-      .parse()
-      .next()
+    const pending = providerParserIterator(
+      createAntigravityProvider().createSessionParser(source(), new Set(), undefined, { signal: controller.signal }),
+    ).next()
     while (state.requests.length === 0) await new Promise(resolve => setTimeout(resolve, 0))
     controller.abort()
     await expect(pending).rejects.toHaveProperty('name', 'ScanAbortedError')
@@ -281,7 +280,7 @@ describe('Antigravity RPC Effects', () => {
 
   it('falls back from an invalid model-map RPC response and continues to metadata', async () => {
     state.invalidJsonCountdown = process.platform === 'win32' ? 2 : 1
-    await createAntigravityProvider().createSessionParser(source(), new Set()).parse().next()
+    await providerParserIterator(createAntigravityProvider().createSessionParser(source(), new Set())).next()
     expect(state.requests.map(request => request.path.endsWith('GetCascadeTrajectoryGeneratorMetadata'))).toEqual(
       process.platform === 'win32' ? [false, false, true] : [false, true],
     )
@@ -289,7 +288,7 @@ describe('Antigravity RPC Effects', () => {
 
   it('closes an oversized model-map response and continues with the empty fallback map', async () => {
     state.oversizedCountdown = process.platform === 'win32' ? 2 : 1
-    await createAntigravityProvider().createSessionParser(source(), new Set()).parse().next()
+    await providerParserIterator(createAntigravityProvider().createSessionParser(source(), new Set())).next()
     expect(state.requests[process.platform === 'win32' ? 1 : 0]?.destroy).toHaveBeenCalledTimes(1)
     expect(state.requests.at(-1)?.path.endsWith('GetCascadeTrajectoryGeneratorMetadata')).toBe(true)
   })

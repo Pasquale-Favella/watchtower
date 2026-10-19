@@ -3,13 +3,19 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect } from 'effect'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import { Effect, FileSystem } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ParsedProviderCall } from '../src/main/pipeline/providers/types.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let root = ''
 let priorCacheDir = ''
+
+function run<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) {
+  return Effect.runPromise(effect.pipe(Effect.provide(NodeFileSystem.layer)))
+}
 
 beforeEach(async () => {
   vi.resetModules()
@@ -54,19 +60,17 @@ describe('Codex result cache Effects', () => {
     const path = join(root, 'session.jsonl')
     await writeFile(path, 'session')
     const lookup = lookupCachedCodexResultsEffect(path)
-    const cold = await Effect.runPromise(Effect.scoped(lookup))
+    const cold = await run(Effect.scoped(lookup))
 
     expect(cold.calls).toBeNull()
     expect(cold.fingerprint).not.toBeNull()
     if (!cold.fingerprint) throw new Error('Expected source fingerprint')
 
     const expected = [call(path)]
-    await Effect.runPromise(
-      Effect.scoped(writeCachedCodexResultsEffect(path, 'effect-project', expected, cold.fingerprint)),
-    )
-    const warm = await Effect.runPromise(Effect.scoped(lookupCachedCodexResultsEffect(path)))
+    await run(Effect.scoped(writeCachedCodexResultsEffect(path, 'effect-project', expected, cold.fingerprint)))
+    const warm = await run(Effect.scoped(lookupCachedCodexResultsEffect(path)))
     expect(warm.calls).toEqual(expected)
-    await Effect.runPromise(Effect.scoped(flushCodexCacheEffect(undefined)))
+    await run(Effect.scoped(flushCodexCacheEffect(undefined)))
 
     const persisted = JSON.parse(await readFile(join(root, 'cache', 'codex-results.json'), 'utf-8')) as {
       version: number
@@ -81,7 +85,7 @@ describe('Codex result cache Effects', () => {
     const { initAppPaths } = await import('../src/main/env.js')
     initAppPaths({ cacheDir: join(root, 'cache') })
     const reloaded = await import('../src/main/pipeline/codex-cache.js')
-    expect(await Effect.runPromise(reloaded.lookupCachedCodexResultsEffect(path))).toEqual({
+    expect(await run(reloaded.lookupCachedCodexResultsEffect(path))).toEqual({
       calls: expected,
       fingerprint: cold.fingerprint,
     })
@@ -133,7 +137,7 @@ describe('Codex result cache Effects', () => {
       new Set(),
     )
     const calls: ParsedProviderCall[] = []
-    for await (const parsed of parser.parse()) calls.push(parsed)
+    for await (const parsed of providerParserIterator(parser)) calls.push(parsed)
 
     expect(calls).toHaveLength(1)
     expect(calls[0]?.sessionId).toBe('malformed-cache-session')

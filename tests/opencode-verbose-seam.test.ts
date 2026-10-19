@@ -11,6 +11,7 @@ import {
   OPENCODE_FAMILY_1X,
   type SqliteProviderConfig,
 } from '../src/main/pipeline/providers/opencode-family-sqlite.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 // The shared reader's ONE env consumer: the verbose "yielded 0 calls" notice
 // for a session that has messages but produced no calls. This was the last
@@ -95,12 +96,9 @@ async function parse(
   config: SqliteProviderConfig,
   paths?: AppPaths,
 ): Promise<void> {
-  for await (const _ of createSqliteSessionParser(
-    { ...source, provider: config.providerName },
-    new Set(),
-    config,
-    paths,
-  ).parse()) {
+  for await (const _ of providerParserIterator(
+    createSqliteSessionParser({ ...source, provider: config.providerName }, new Set(), config, paths),
+  )) {
     void _
   }
 }
@@ -205,12 +203,14 @@ describe('the sqlite reader verbose gate (WATCHTOWER_VERBOSE seam)', () => {
     const config = configFor(dbDir, `Verbose Yields ${sessionId}`, 'verbose-yields')
     const { lines } = captureNotices()
     const calls: string[] = []
-    for await (const call of createSqliteSessionParser(
-      { path: `${dbPath}:${sessionId}`, project: DIR, provider: 'verbose-yields' },
-      new Set(),
-      config,
-      pathsWith({ WATCHTOWER_VERBOSE: '1' }),
-    ).parse()) {
+    for await (const call of providerParserIterator(
+      createSqliteSessionParser(
+        { path: `${dbPath}:${sessionId}`, project: DIR, provider: 'verbose-yields' },
+        new Set(),
+        config,
+        pathsWith({ WATCHTOWER_VERBOSE: '1' }),
+      ),
+    )) {
       calls.push(call.deduplicationKey)
     }
 

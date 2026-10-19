@@ -39,6 +39,7 @@ import { createDroidProvider } from '../src/main/pipeline/providers/droid.js'
 import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 let root = ''
 
@@ -108,7 +109,7 @@ describe('Droid Effect provider', () => {
       ]),
     )
     expect(nativeSources).toHaveLength(2)
-    expect(await provider.discoverSessions()).toEqual(nativeSources)
+    expect(await discoverProviderSessions(provider)).toEqual(nativeSources)
   })
 
   it('allocates session totals before dedupe, keeps call order and applies Droid tool parsing', async () => {

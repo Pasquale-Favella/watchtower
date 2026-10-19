@@ -3,6 +3,7 @@ import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 
 import { CommandError, CommandRunner } from './command-runner.js'
+import { CommandRunnerLiveLayer } from './command-runner-live.js'
 import type { HarnessAuthStatus } from './detect.js'
 
 /**
@@ -27,7 +28,7 @@ import type { HarnessAuthStatus } from './detect.js'
  * Wave 9 (issue #148), §5.3 `Command` step: the `node:child_process.execFile`
  * call and its `timeout` option are gone, replaced by the `CommandRunner`
  * port (`src/main/agents/command-runner.ts`) built on the in-package
- * `effect/unstable/process` modules. The deadline now rides the Effect Clock
+ * `effect/process` modules. The deadline now rides the Effect Clock
  * as the port's `timeoutMs`, so a hung child is KILLED (scope finalizer) and
  * no `setTimeout` is involved. The Windows `.cmd` shim and the `which()` PATH
  * lookup are DOMAIN CODE called by that port's live layer, unchanged — so
@@ -120,11 +121,10 @@ export function runClaudeAuthProbe(
  * through a Promise-typed `ProbeDeps.claudeAuthProbe` — a file this slice may
  * not edit, and the reason the probe cannot simply reach for the main runtime
  * (`MainLive` → `HarnessProbe` → `probeHarness` → this module is an import
- * cycle). `CommandRunner.layer` owns no scoped resources — the child is scoped
- * to the single `run` call — so building it per probe is cheap, and the isolate
- * still has exactly ONE `ManagedRuntime`.
+ * cycle). The child is scoped to the single `run` call. This standalone layer
+ * creates no second `ManagedRuntime`.
  *
- * Named removal condition: this adapter, the `CommandRunner.layer` provide
+ * Named removal condition: this adapter, the `CommandRunnerLiveLayer` provide
  * below, and the `AuthProbeExec` injection point all delete together when
  * `authFromInitialize` accepts an Effect-returning auth probe instead — i.e.
  * when the harness probe seam is re-skinned. At that point the live runner is
@@ -135,7 +135,7 @@ function defaultExec(command: string, args: readonly string[]): Promise<{ stdout
   return Effect.runPromise(
     captureStdout(command, args).pipe(
       Effect.map(stdout => ({ stdout })),
-      Effect.provide(CommandRunner.layer),
+      Effect.provide(CommandRunnerLiveLayer),
     ),
   )
 }

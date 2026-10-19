@@ -45,6 +45,7 @@ import { createForgeProvider } from '../src/main/pipeline/providers/forge.js'
 import type { ProviderScanContext, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let directory = ''
 
@@ -264,7 +265,7 @@ describe('Forge native Effect path', () => {
     )
   })
 
-  it('keeps native read and close errors intact at the legacy parser edge and closes once', async () => {
+  it('keeps read and close errors in the native stream channel and closes once', async () => {
     const path = join(directory, 'forge.db')
     createDb(path, [assistant('one')])
     const readError = new Error('native read failure')
@@ -278,24 +279,22 @@ describe('Forge native Effect path', () => {
     }
     expect(nativeDb.closed).toBe(1)
 
-    nativeDb.closed = 0
-    const iterator = selected.parse()[Symbol.asyncIterator]()
-    await expect(iterator.next()).rejects.toBe(readError)
-    expect(nativeDb.closed).toBe(1)
-
     nativeDb.queryError = undefined
     nativeDb.closed = 0
     nativeDb.closeError = new Error('native close failure')
-    const closeIterator = parser(path).parse()[Symbol.asyncIterator]()
-    await expect(closeIterator.next()).resolves.toMatchObject({ done: false })
-    await expect(closeIterator.next()).rejects.toBe(nativeDb.closeError)
+    const closeExit = await Effect.runPromiseExit(Stream.runCollect(parser(path).parseStream?.() ?? Stream.empty))
+    expect(Exit.isFailure(closeExit)).toBe(true)
     expect(nativeDb.closed).toBe(1)
+    if (Exit.isFailure(closeExit)) {
+      const failure = Option.getOrUndefined(Cause.findErrorOption(closeExit.cause)) as { cause?: Error } | undefined
+      expect(failure?.cause).toBe(nativeDb.closeError)
+    }
   })
 
   it('closes the database once when the consumer stops after the first call', async () => {
     const path = join(directory, 'forge.db')
     createDb(path, [assistant('first'), assistant('second')])
-    const iterator = parser(path).parse()[Symbol.asyncIterator]()
+    const iterator = providerParserIterator(parser(path))[Symbol.asyncIterator]()
     await expect(iterator.next()).resolves.toMatchObject({ done: false })
     await iterator.return?.(undefined)
     expect(nativeDb.closed).toBe(1)

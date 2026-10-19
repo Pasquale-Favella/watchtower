@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import { it as effectIt } from '@effect/vitest'
 import { Cause, Effect, Exit, Option, Stream } from 'effect'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -386,23 +387,21 @@ describe('Goose native Effect provider', () => {
     expect(sqliteState.closeCount).toBe(1)
   })
 
-  it('uses the Effect Clock when malformed session timestamps fall back to now', async () => {
-    const db = new DatabaseSync(databasePath)
-    db.prepare('UPDATE sessions SET created_at = ?, updated_at = NULL').run('not-a-timestamp')
-    db.close()
-    const selected = parser({ pricing: pricing(() => 1) })
-    const nowMs = Date.parse('2026-10-15T12:30:00.000Z')
+  effectIt.effect('uses the Effect Clock when malformed session timestamps fall back to now', () =>
+    Effect.gen(function* () {
+      const db = new DatabaseSync(databasePath)
+      db.prepare('UPDATE sessions SET created_at = ?, updated_at = NULL').run('not-a-timestamp')
+      db.close()
+      const selected = parser({ pricing: pricing(() => 1) })
+      const nowMs = Date.parse('2026-10-15T12:30:00.000Z')
 
-    const calls = await Effect.runPromise(
-      Effect.gen(function* () {
-        yield* TestClock.setTime(nowMs)
-        return yield* Stream.runCollect(nativeStream(selected)())
-      }).pipe(Effect.provide(TestClock.layer())),
-    )
+      yield* TestClock.setTime(nowMs)
+      const calls = yield* Stream.runCollect(nativeStream(selected)())
 
-    expect(calls[0]?.timestamp).toBe(new Date(nowMs).toISOString())
-    expect(sqliteState.closeCount).toBe(1)
-  })
+      expect(calls[0]?.timestamp).toBe(new Date(nowMs).toISOString())
+      expect(sqliteState.closeCount).toBe(1)
+    }),
+  )
 
   it('closes an acquired connection when cancellation arrives after the row query', async () => {
     const controller = new AbortController()
@@ -418,15 +417,18 @@ describe('Goose native Effect provider', () => {
     expect(sqliteState.closeCount).toBe(1)
   })
 
-  it('keeps native SQLite error identity at the legacy parser boundary', async () => {
+  it('keeps native SQLite failures in the stream error channel and closes once', async () => {
     const queryError = new Error('session query failed')
     sqliteState.readError = queryError
-    const iterator = parser().parse()
-    await expect(iterator.next()).rejects.toBe(queryError)
+    await expect(Effect.runPromise(Stream.runCollect(nativeStream(parser())()))).rejects.toMatchObject({
+      _tag: 'GooseDatabaseError',
+      operation: 'read',
+      cause: queryError,
+    })
     expect(sqliteState.closeCount).toBe(1)
   })
 
-  it('keeps a close failure in the native stream error channel and unwraps it for legacy callers', async () => {
+  it('keeps close failures in the native stream error channel and closes once', async () => {
     const closeError = new Error('close failed')
     sqliteState.closeError = closeError
     const selected = parser()
@@ -437,8 +439,6 @@ describe('Goose native Effect provider', () => {
       expect(error).toMatchObject({ _tag: 'GooseDatabaseError', operation: 'close', cause: closeError })
     }
 
-    const next = parser().parse()
-    await expect(next.next()).rejects.toBe(closeError)
-    expect(sqliteState.closeCount).toBe(2)
+    expect(sqliteState.closeCount).toBe(1)
   })
 })

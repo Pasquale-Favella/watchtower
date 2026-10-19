@@ -1,4 +1,7 @@
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { readFile } from 'fs/promises'
 import { join } from 'path'
 
@@ -140,16 +143,6 @@ export const discoverOpenCodeFileSessionsEffect = Effect.fn('discoverOpenCodeFil
   return sources
 })
 
-/** Promise edge for file-session callers that have not moved to the native hook. */
-export function discoverOpenCodeFileSessions(
-  dataDir: string,
-  providerName: string,
-  context?: ProviderScanContext,
-): Promise<SessionSource[]> {
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(discoverOpenCodeFileSessionsEffect(dataDir, providerName, context))
-}
-
 function parseOpenCodeFileStream(
   source: SessionSource,
   seenKeys: Set<string>,
@@ -282,9 +275,5 @@ export function createOpenCodeFileSessionParser(
 
   return {
     parseStream,
-    // Remove this iterator edge after scanner and external callers use parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }

@@ -8,7 +8,7 @@
  *    `HttpFetch.layerWithFetch` / `HarnessProbe.layerWithProbe` fake-ability):
  *    options pass-through, the "a non-zero exit is not a failure" contract, and
  *    the typed `CommandError`. No process is ever started.
- * 2. The LIVE layer, over `effect/unstable/process`'s in-package
+ * 2. The LIVE layer, over `effect/process`'s
  *    `ChildProcess`/`ChildProcessSpawner`. The child is the test runner's own
  *    `process.execPath` — no harness CLI is required or spawned (there is no
  *    `claude` binary on the box) — so the transport, the stdout capture, the
@@ -37,9 +37,10 @@ import {
   type CommandRunOptions,
   makeRecordingCommandRunner,
 } from '../src/main/agents/command-runner.js'
+import { CommandRunnerLiveLayer } from '../src/main/agents/command-runner-live.js'
 
 /** One `run` through whichever `CommandRunner` layer the case is exercising —
- *  the recording fake or `CommandRunner.layer` — returned UNRUN so a case can
+ *  the recording fake or `CommandRunnerLiveLayer` — returned UNRUN so a case can
  *  `Effect.flip`/`fork`/supply a TestClock on it. */
 function runThrough(
   layer: Layer.Layer<CommandRunner>,
@@ -55,7 +56,7 @@ function runThrough(
 
 /** The LIVE layer: a real child process, no installed CLI required. */
 function liveRun(command: string, args: readonly string[], options?: CommandRunOptions) {
-  return runThrough(CommandRunner.layer, command, args, options)
+  return runThrough(CommandRunnerLiveLayer, command, args, options)
 }
 
 function liveRunError(command: string, args: readonly string[], options?: CommandRunOptions) {
@@ -159,7 +160,7 @@ describe('CommandRunner port (fake runner — no process is started)', () => {
   })
 })
 
-describe('CommandRunner live layer (in-package effect/unstable/process, real child)', () => {
+describe('CommandRunner live layer (effect/process, real child)', () => {
   it('captures stdout and the exit code of a successful run', async () => {
     const result = await Effect.runPromise(
       liveRun(process.execPath, node('process.stdout.write(JSON.stringify({ loggedIn: true }))')),

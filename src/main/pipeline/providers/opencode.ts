@@ -1,4 +1,4 @@
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -117,11 +117,6 @@ export function createOpenCodeProvider(dataDir?: string, paths?: AppPaths): Prov
 
     discoverSessionsEffect(context?: ProviderScanContext) {
       return discoverEffect(context)
-    },
-
-    // Remove after external callers use discoverSessionsEffect.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(

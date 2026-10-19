@@ -2,10 +2,11 @@ import { mkdtempSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { delimiter as pathDelimiter, isAbsolute, join, resolve } from 'node:path'
 
+import { Effect } from 'effect'
 import { describe, expect, it } from 'vitest'
 
 import { type AppPaths, appPaths, type PlatformPaths, type ProviderOverrides } from '../src/main/env.js'
-import { claude, getClaudeConfigDirs, getDesktopSessionsDirs } from '../src/main/pipeline/providers/claude.js'
+import { claude, getClaudeConfigDirsEffect, getDesktopSessionsDirs } from '../src/main/pipeline/providers/claude.js'
 
 // `claude.ts` seam composition, not the resolver: `overrideFor` / `platformFor`
 // / `resolveProviderOverrides` and the override key list are already pinned in
@@ -43,42 +44,51 @@ describe('getClaudeConfigDirs (CLAUDE_CONFIG_DIRS + CLAUDE_CONFIG_DIR seams)', (
     const value = [` ${first} `, '', second, first].join(pathDelimiter)
     // The blank entry is dropped by the reader's own `filter`, the repeat by
     // `dedupeResolved`, and the surrounding spaces by the per-entry `trim`.
-    await expect(getClaudeConfigDirs(pathsOf({ CLAUDE_CONFIG_DIRS: value }))).resolves.toEqual([
-      resolve(first),
-      resolve(second),
-    ])
+    await expect(
+      Effect.runPromise(getClaudeConfigDirsEffect(undefined, pathsOf({ CLAUDE_CONFIG_DIRS: value }))),
+    ).resolves.toEqual([resolve(first), resolve(second)])
   })
 
   it('CLAUDE_CONFIG_DIRS still wins over CLAUDE_CONFIG_DIR (unchanged precedence)', async () => {
     const multi = makeTempDir('tr-claude-multi-')
     const single = makeTempDir('tr-claude-single-')
     await expect(
-      getClaudeConfigDirs(pathsOf({ CLAUDE_CONFIG_DIRS: multi, CLAUDE_CONFIG_DIR: single })),
+      Effect.runPromise(
+        getClaudeConfigDirsEffect(undefined, pathsOf({ CLAUDE_CONFIG_DIRS: multi, CLAUDE_CONFIG_DIR: single })),
+      ),
     ).resolves.toEqual([resolve(multi)])
   })
 
   it('honors the snapshot single dir when the list var is absent', async () => {
     const single = makeTempDir('tr-claude-single-')
-    await expect(getClaudeConfigDirs(pathsOf({ CLAUDE_CONFIG_DIR: single }))).resolves.toEqual([resolve(single)])
+    await expect(
+      Effect.runPromise(getClaudeConfigDirsEffect(undefined, pathsOf({ CLAUDE_CONFIG_DIR: single }))),
+    ).resolves.toEqual([resolve(single)])
   })
 
   it('an empty snapshot value is still skipped, exactly like an unset env var', async () => {
     // `overrideFor` reports `''` verbatim; the reader's own `!== ''` check is
     // what rejects it. Each side proves the OTHER var still decides.
     const multi = makeTempDir('tr-claude-multi-')
-    await expect(getClaudeConfigDirs(pathsOf({ CLAUDE_CONFIG_DIRS: '', CLAUDE_CONFIG_DIR: multi }))).resolves.toEqual([
-      resolve(multi),
-    ])
+    await expect(
+      Effect.runPromise(
+        getClaudeConfigDirsEffect(undefined, pathsOf({ CLAUDE_CONFIG_DIRS: '', CLAUDE_CONFIG_DIR: multi })),
+      ),
+    ).resolves.toEqual([resolve(multi)])
 
     const single = makeTempDir('tr-claude-single-')
-    await expect(getClaudeConfigDirs(pathsOf({ CLAUDE_CONFIG_DIRS: single, CLAUDE_CONFIG_DIR: '' }))).resolves.toEqual([
-      resolve(single),
-    ])
+    await expect(
+      Effect.runPromise(
+        getClaudeConfigDirsEffect(undefined, pathsOf({ CLAUDE_CONFIG_DIRS: single, CLAUDE_CONFIG_DIR: '' })),
+      ),
+    ).resolves.toEqual([resolve(single)])
 
     // Both empty: neither env var decides, so the chain falls through to the
     // config-file / `~/.claude` layer — a different seam — and never returns an
     // empty or relative entry invented by an empty override.
-    const fell = await getClaudeConfigDirs(pathsOf({ CLAUDE_CONFIG_DIRS: '', CLAUDE_CONFIG_DIR: '' }))
+    const fell = await Effect.runPromise(
+      getClaudeConfigDirsEffect(undefined, pathsOf({ CLAUDE_CONFIG_DIRS: '', CLAUDE_CONFIG_DIR: '' })),
+    )
     expect(fell.length).toBeGreaterThan(0)
     expect(fell).not.toContain('')
     expect(fell.every(dir => dir !== '' && isAbsolute(dir))).toBe(true)
@@ -87,7 +97,9 @@ describe('getClaudeConfigDirs (CLAUDE_CONFIG_DIRS + CLAUDE_CONFIG_DIR seams)', (
   it('unthreaded equals the old process.env read', async () => {
     // Both calls resolve the ambient snapshot, which is `process.env` through
     // the same pure resolvers — so the unthreaded seam still sees the old value.
-    await expect(getClaudeConfigDirs()).resolves.toEqual(await getClaudeConfigDirs(appPaths()))
+    await expect(Effect.runPromise(getClaudeConfigDirsEffect())).resolves.toEqual(
+      await Effect.runPromise(getClaudeConfigDirsEffect(undefined, appPaths())),
+    )
   })
 })
 
@@ -177,7 +189,7 @@ describe('the module-level claude provider (zero-edit registry wiring)', () => {
     // `claude` is built at module scope, and `Provider.probeRoots()` takes no
     // snapshot: the `(paths ?? appPaths())` default is what keeps the registry
     // entry working without edits.
-    const dirs = await getClaudeConfigDirs()
+    const dirs = await Effect.runPromise(getClaudeConfigDirsEffect())
     const [firstDir] = dirs
     expect(firstDir).toBeDefined()
     const roots = await claude.probeRoots?.()

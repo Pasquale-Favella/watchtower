@@ -49,7 +49,7 @@
 //   WATCHTOWER_COPILOT_SESSION_STORE_DB — Override the CLI session-store.db path
 //
 // ARCHITECTURE:
-//   discoverSessions() returns the CLI session-store source FIRST, then OTel
+//   discoverSessionsEffect() returns the CLI session-store source FIRST, then OTel
 //   sessions and legacy JSONL sessions. Order is load-bearing: the scan parses
 //   a provider's sources in the order discovery returned them (parser.ts
 //   `for (const source of sources)` → `changedSources` → the parse loop), and
@@ -76,7 +76,11 @@
 // =============================================================================
 
 import { createHash } from 'crypto'
-import { Effect, Predicate, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Predicate from 'effect/Predicate'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { existsSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { homedir, platform } from 'os'
@@ -129,22 +133,9 @@ function openCopilotDatabase(path: string): Effect.Effect<OwnedCopilotDatabase, 
   })
 }
 
-function legacyCopilotParser(parseStream: NonNullable<SessionParser['parseStream']>): SessionParser {
+function copilotParser(parseStream: NonNullable<SessionParser['parseStream']>): SessionParser {
   return {
     parseStream,
-    // Remove when all direct parser callers consume parseStream; retain the original
-    // SQLite cause for callers of the Promise compatibility surface.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      try {
-        yield* Stream.toAsyncIterable(parseStream())
-      } catch (error) {
-        // The Promise compatibility boundary preserves native SQLite errors.
-        // eslint-disable-next-line no-restricted-syntax
-        if (error instanceof CopilotDatabaseError) throw error.cause
-        // eslint-disable-next-line no-restricted-syntax
-        throw error
-      }
-    },
   }
 }
 
@@ -1355,7 +1346,7 @@ function createJsonlParser(
     }
   }
 
-  return legacyCopilotParser(parseStream)
+  return copilotParser(parseStream)
 }
 function createChatSessionParser(
   source: SessionSource,
@@ -1475,7 +1466,7 @@ function createChatSessionParser(
       }),
     )
 
-  return legacyCopilotParser(parseStream)
+  return copilotParser(parseStream)
 }
 
 // ---------------------------------------------------------------------------
@@ -1796,7 +1787,7 @@ function createSessionStoreParser(
         }),
       ),
     )
-  return legacyCopilotParser(parseStream)
+  return copilotParser(parseStream)
 }
 
 // ---------------------------------------------------------------------------
@@ -2333,7 +2324,7 @@ function createJetBrainsParser(
   seenKeys: Set<string>,
   context: CopilotParserContext,
 ): SessionParser {
-  const parseStream: NonNullable<SessionParser['parseStream']> = _onUnparsedCall =>
+  const parseStream: NonNullable<SessionParser['parseStream']> = () =>
     Stream.unwrap(
       Effect.gen(function* () {
         yield* checkScanAbort(context.signal)
@@ -2395,7 +2386,7 @@ function createJetBrainsParser(
       }),
     )
 
-  return legacyCopilotParser(parseStream)
+  return copilotParser(parseStream)
 }
 
 // ---------------------------------------------------------------------------
@@ -2643,7 +2634,7 @@ function createOtelParser(source: SessionSource, seenKeys: Set<string>, context:
         }),
       ),
     )
-  return legacyCopilotParser(parseStream)
+  return copilotParser(parseStream)
 }
 
 // ---------------------------------------------------------------------------
@@ -2778,12 +2769,6 @@ function optionalDiscovery<A>(effect: Effect.Effect<A, Error>, fallback: A): Eff
 
 const workspaceJsonSchema = Schema.fromJsonString(Schema.Struct({ folder: Schema.optional(Schema.String) }))
 const decodeWorkspaceJson = Schema.decodeUnknownResult(workspaceJsonSchema)
-
-function discoverSessionsFromEffect(effect: Effect.Effect<SessionSource[], Error>): Promise<SessionSource[]> {
-  // Remove this Promise edge when external callers use native discovery.
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(effect)
-}
 
 const discoverJsonlSessions = Effect.fnUntraced(function* (
   sessionStateDir: string,
@@ -3284,7 +3269,7 @@ export function createCopilotProvider(
   /**
    * Resolve the CLI store candidate; Effect-native stat checks it during discovery.
    *
-   * Resolved lazily inside discoverSessions (like the session-state dir) so an
+   * Resolved lazily inside native discovery (like the session-state dir) so an
    * override set after module load is respected, and derived from the CLI home
    * so the one session-state seam redirects both roots.
    */
@@ -3344,10 +3329,6 @@ export function createCopilotProvider(
     },
 
     discoverSessionsEffect: discover,
-
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      return discoverSessionsFromEffect(discover(context))
-    },
 
     createSessionParser(
       source: SessionSource,

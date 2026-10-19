@@ -10,6 +10,7 @@ import { createCrushProvider, crush, getRegistryPath } from '../src/main/pipelin
 import { createOpenDesignProvider, getOpenDesignDir } from '../src/main/pipeline/providers/open-design.js'
 import { createOpenCodeProvider, opencode } from '../src/main/pipeline/providers/opencode.js'
 import type { Provider } from '../src/main/pipeline/providers/types.js'
+import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 // Provider-home seams (Wave 9 rollout, step 2): `OPENCODE_DATA_DIR` /
 // `XDG_DATA_HOME` / `OPENCODE_DB_PREFIX` and `CRUSH_GLOBAL_DATA` /
@@ -154,7 +155,7 @@ function makeFixtureDataDir(): string {
 /** Session ids out of `<dbPath>:<sessionId>` — split from the right, because a
  *  Windows `dbPath` carries a drive colon. */
 async function discoveredSessions(provider: Provider): Promise<string[]> {
-  const sources = await provider.discoverSessions()
+  const sources = await discoverProviderSessions(provider)
   return sources.map(source => source.path.slice(source.path.lastIndexOf(':') + 1)).sort()
 }
 
@@ -204,10 +205,10 @@ describe('Open Design AppPaths seam', () => {
       writeFileSync(join(run, 'events.jsonl'), '')
     }
     const paths = pathsWith({ WATCHTOWER_OPEN_DESIGN_DIR: snapshotRoot }, NO_PLATFORM)
-    await expect(createOpenDesignProvider(undefined, paths).discoverSessions()).resolves.toEqual([
+    await expect(discoverProviderSessions(createOpenDesignProvider(undefined, paths))).resolves.toEqual([
       { path: join(snapshotRoot, 'runs', 'session', 'events.jsonl'), project: 'snapshot', provider: 'open-design' },
     ])
-    await expect(createOpenDesignProvider(factoryRoot, paths).discoverSessions()).resolves.toEqual([
+    await expect(discoverProviderSessions(createOpenDesignProvider(factoryRoot, paths))).resolves.toEqual([
       { path: join(factoryRoot, 'runs', 'session', 'events.jsonl'), project: 'factory', provider: 'open-design' },
     ])
   })
@@ -300,6 +301,6 @@ describe('getRegistryPath (CRUSH_GLOBAL_DATA / LOCALAPPDATA / XDG_DATA_HOME seam
 
   it('discovery on a missing registry resolves [] instead of throwing', async () => {
     const provider = createCrushProvider(pathsWith({ CRUSH_GLOBAL_DATA: '/definitely/missing/tr-crush' }, NO_PLATFORM))
-    await expect(provider.discoverSessions()).resolves.toEqual([])
+    await expect(discoverProviderSessions(provider)).resolves.toEqual([])
   })
 })

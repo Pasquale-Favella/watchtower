@@ -8,5 +8,6 @@
       "@/*": ["src/renderer/src/*"]
     }
   },
-  "include": ["tests/**/*.ts", "src/preload/index.d.ts"]
+  "include": ["tests/**/*.ts", "src/preload/index.d.ts"],
+  "exclude": ["tests/lint/effect-fixtures/**/*.ts"]
 }

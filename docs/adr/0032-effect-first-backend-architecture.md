@@ -19,10 +19,11 @@ around the Effect SQL client. This leaves Effect's service composition,
 structured concurrency, resource scopes, typed failures, and deterministic
 testing available only in isolated parts of the backend.
 
-Watchtower pins `effect` and `@effect/sql-sqlite-node` to
-`4.0.0-rc.115`. The db-worker owns the SQLite connection and data plane on one
-dedicated thread (ADR 0023). `node:sqlite` is synchronous, so Effect fibers do
-not make an individual SQL statement non-blocking; the worker remains the
+At adoption, Watchtower pinned `effect` and `@effect/sql-sqlite-node` to
+`4.0.0-rc.115`. That version pin is historical; the stable ecosystem migration
+is recorded below. The db-worker owns the SQLite connection and data plane on
+one dedicated thread (ADR 0023). `node:sqlite` is synchronous, so Effect fibers
+do not make an individual SQL statement non-blocking; the worker remains the
 isolation boundary that keeps database work off Electron's main thread.
 
 ## Decision
@@ -116,6 +117,19 @@ them a permanent second API.
   stay simple until an actual effectful workflow benefits from the runtime.
 
 Related: ADR 0003, ADR 0005, ADR 0023, ADR 0030, ADR 0031, ADR 0034.
+
+## Stable ecosystem implementations, 2026-10-16
+
+Stable Effect 4.0.5 and its matching SQLite driver expose connection acquisition
+failures as `SqlError`; runtime and layer types carry that failure through boot
+and cleanup. Focused ledger capability layers now resolve the caller-owned SQL
+client directly, replacing the internal `LedgerImplementation` service without
+adding connections or changing transaction units. The original adoption and
+session-read notes below describe the earlier shared implementation.
+
+[ADR 0035](./0035-official-effect-platform-implementations.md) records selection
+of the available official Node platform implementations. Existing worker,
+renderer, and contract ownership remains governed by this decision and ADR 0034.
 
 ## Focused session reads, 2026-10-06
 

@@ -5,7 +5,7 @@ import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
-import * as SqlError from 'effect/unstable/sql/SqlError'
+import * as SqlError from 'effect/sql/SqlError'
 import { describe, expect, it } from 'vitest'
 
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'

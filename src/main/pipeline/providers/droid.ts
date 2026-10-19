@@ -1,4 +1,7 @@
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
@@ -367,10 +370,6 @@ function createParser(
 
   return {
     parseStream: () => Stream.unwrap(parseEffect()),
-    // Remove when scan/parser and external iterator callers have migrated to parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(Stream.unwrap(parseEffect()))
-    },
   }
 }
 
@@ -394,12 +393,6 @@ export function createDroidProvider(factoryDir?: string, paths?: AppPaths): Prov
       return toolNameMap[rawTool] ?? rawTool
     },
     discoverSessionsEffect: discoverEffect,
-    // Remove when every discovery caller uses the native Effect entry point.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Compatibility edge for external callers of the Promise provider API.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
     createSessionParser(
       source: SessionSource,
       seenKeys: Set<string>,

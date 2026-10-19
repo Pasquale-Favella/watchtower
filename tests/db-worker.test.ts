@@ -1,11 +1,14 @@
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import type * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Schedule from 'effect/Schedule'
 import * as TestClock from 'effect/testing/TestClock'
@@ -40,11 +43,11 @@ function removeTempDir(directory: string, prefix: string): void {
 }
 
 function okFetch(body: unknown): typeof fetch {
-  return (async () => ({
-    ok: true,
-    status: 200,
-    json: async () => body,
-  })) as unknown as typeof fetch
+  return (async () =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
 }
 
 function throwingFetch(message = 'offline'): typeof fetch {
@@ -470,29 +473,30 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   })
 
   it('waits for a cancelled FX request before closing the ledger', async () => {
-    let resolveResponse!: (response: Response) => void
     let requestSignal: AbortSignal | undefined
-    const originalFetch = globalThis.fetch
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
-        requestSignal = init?.signal as AbortSignal | undefined
-        return new Promise<Response>(resolve => {
-          resolveResponse = resolve
-        })
-      }),
-    )
-    const completeResponse = (): void =>
-      resolveResponse?.({
-        ok: true,
-        status: 200,
-        json: async () => ({ rates: { EUR: 0.9 } }),
-      } as Response)
+    let markRequestStarted!: () => void
+    let markResponseClosed!: () => void
+    const requestStarted = new Promise<void>(resolve => (markRequestStarted = resolve))
+    const responseClosed = new Promise<void>(resolve => (markResponseClosed = resolve))
+    const server = createServer((_request, response) => {
+      markRequestStarted()
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.write('{"rates":')
+      response.once('close', markResponseClosed)
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Expected an HTTP listener address')
+    const nativeFetch = globalThis.fetch
+    const fetchImpl: typeof fetch = (_input, init) => {
+      requestSignal = init?.signal ?? undefined
+      return nativeFetch(`http://127.0.0.1:${address.port}/fx`, init)
+    }
+    const c = openWith(HttpFetch.layerWithFetch(fetchImpl))
 
     try {
-      const c = open()
       await c.dispatch('currency:set', ['EUR'])
-      await vi.waitFor(() => expect(requestSignal).toBeDefined())
+      await requestStarted
 
       let closed = false
       const closing = c.close().then(() => {
@@ -500,41 +504,37 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
       })
       await vi.waitFor(() => expect(requestSignal?.aborted).toBe(true))
       expect(closed).toBe(false)
+      await responseClosed
 
-      completeResponse()
       await closing
       expect(closed).toBe(true)
       await expect(c.dispatch('currency:get', [])).rejects.toThrow(/shutting down/)
     } finally {
-      completeResponse()
-      vi.stubGlobal('fetch', originalFetch)
+      await c.close()
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
     }
   })
 
   it('pricing:refresh runs the Effect path and maps typed errors to {ok:false}', async () => {
     const pricingCacheDir = mkdtempSync(join(tmpdir(), 'watchtower-pricing-wiring-'))
     process.env['WATCHTOWER_CACHE_DIR'] = pricingCacheDir
-    const originalFetch = globalThis.fetch
+    let delegate: typeof fetch = okFetch({
+      'wiring-test-model': { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+    })
+    const fetchImpl: typeof fetch = (input, init) => delegate(input, init)
+    const c = openWith(HttpFetch.layerWithFetch(fetchImpl))
     try {
-      const c = open()
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(
-          okFetch({
-            'wiring-test-model': { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
-          }),
-        ),
-      )
       await expect(c.dispatch('pricing:refresh', [])).resolves.toEqual({ ok: true })
 
-      vi.stubGlobal('fetch', vi.fn(throwingFetch()))
+      delegate = throwingFetch()
       const failed = (await c.dispatch('pricing:refresh', [])) as { ok: boolean; error?: string }
       expect(failed.ok).toBe(false)
       expect(typeof failed.error).toBe('string')
       expect(failed.error).toContain('offline')
     } finally {
       try {
-        vi.stubGlobal('fetch', originalFetch)
+        await c.close()
         delete process.env['WATCHTOWER_CACHE_DIR']
       } finally {
         removeTempDir(pricingCacheDir, 'watchtower-pricing-wiring-')
@@ -543,18 +543,16 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   })
 
   it('currency:set refreshes via the Effect FX path and emits currency:changed', async () => {
-    const originalFetch = globalThis.fetch
     const seenUrls: string[] = []
-    const eurRates = okFetch({ rates: { EUR: 0.9 } })
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        seenUrls.push(String(input))
-        return eurRates(input, {})
-      }) as unknown as typeof fetch,
-    )
+    const fetchImpl: typeof fetch = async input => {
+      seenUrls.push(String(input))
+      return new Response(JSON.stringify({ rates: { EUR: 0.9 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const c = openWith(HttpFetch.layerWithFetch(fetchImpl))
     try {
-      const c = open()
       const immediate = (await c.dispatch('currency:set', ['EUR'])) as { code: string }
       expect(immediate.code).toBe('EUR')
       await vi.waitFor(() => {
@@ -567,7 +565,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
       }
       expect(changed.currency.rate).toBe(0.9)
     } finally {
-      vi.stubGlobal('fetch', originalFetch)
+      await c.close()
     }
   })
 })
@@ -600,7 +598,11 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
   }
 
   function provideScanLayers(
-    program: Effect.Effect<ScanMetadata, ScanAbortedError | Error, HttpFetch | Env | OperationalLog>,
+    program: Effect.Effect<
+      ScanMetadata,
+      ScanAbortedError | Error,
+      FileSystem.FileSystem | HttpFetch | Env | OperationalLog
+    >,
     sink: OperationalLogSink,
   ): Effect.Effect<ScanMetadata, ScanAbortedError | Error> {
     return program.pipe(
@@ -608,6 +610,7 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
       Effect.provide(testEnv()),
       Effect.provide(OperationalLog.layerWithSink(sink)),
       Effect.provide(TestClock.layer()),
+      Effect.provide(NodeFileSystem.layer),
     )
   }
 
@@ -658,6 +661,7 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
       Effect.provide(HttpFetch.layerWithFetch(throwingFetch())),
       Effect.provide(OperationalLog.layerWithSink(sink)),
       Effect.provide(TestClock.layer()),
+      Effect.provide(NodeFileSystem.layer),
     )
     const exit = await Reflect.apply(Effect.runPromise, undefined, [Effect.exit(program)])
     expect(exit._tag).toBe('Failure')

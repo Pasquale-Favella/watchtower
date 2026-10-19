@@ -1,4 +1,4 @@
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 
 import { captureScanPricing } from '../models.js'
 import type { DateRange } from '../types.js'
@@ -27,11 +27,6 @@ export function createRooCodeProvider(overrideDir?: string | string[]): Provider
 
     discoverSessionsEffect(context?: ProviderScanContext) {
       return discoverEffect(context)
-    },
-
-    // Remove when direct discovery callers consume the native Effect path.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(

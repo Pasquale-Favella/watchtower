@@ -1,12 +1,14 @@
 import { randomBytes } from 'crypto'
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Schema from 'effect/Schema'
-import { mkdir, open, readFile, rename, stat, unlink } from 'fs/promises'
+import { stat } from 'fs/promises'
 import { join } from 'path'
 
 import { type ParsedProviderCall, parsedProviderCallSchema } from '../../shared/schemas/providers.js'
 import { resolveCacheDir } from '../env.js'
-import { isScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
+import { isRecoverableCacheFailure, writeCacheTempFileEffect } from './cache-file-write.js'
+import { isScanAbortedError, throwIfScanAborted } from './scan-control.js'
 
 // v4: attribute MCP calls emitted as event_msg/mcp_tool_call_end (issue #478).
 // Recent Codex sessions cached under v3 dropped these, so force a re-parse.
@@ -56,62 +58,15 @@ function toError(cause: unknown): Error {
   return cause instanceof Error ? cause : new Error(String(cause))
 }
 
-/**
- * Owns Promise based Node leaves that cannot be interrupted by Effect itself.
- * The local signal reaches APIs that support cancellation; on fiber interruption
- * the scope aborts the leaf and waits for settlement before releasing ownership.
- */
-function ownedPromise<A>(
-  operation: (signal: AbortSignal) => Promise<A>,
-  parentSignal?: AbortSignal,
-): Effect.Effect<A, Error> {
-  return Effect.scoped(
-    Effect.gen(function* () {
-      const owned = yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const controller = new AbortController()
-          let settled = false
-          const abortFromParent = (): void => controller.abort(parentSignal?.reason)
-          if (parentSignal?.aborted) abortFromParent()
-          else parentSignal?.addEventListener('abort', abortFromParent, { once: true })
-          const promise = Promise.resolve()
-            .then(() => {
-              throwIfScanAborted(controller.signal)
-              return operation(controller.signal)
-            })
-            .finally(() => {
-              settled = true
-              parentSignal?.removeEventListener('abort', abortFromParent)
-            })
-          const drained = promise.then(
-            () => undefined,
-            () => undefined,
-          )
-          return { controller, promise, drained, isSettled: () => settled }
-        }),
-        resource =>
-          Effect.promise(async () => {
-            if (!resource.isSettled()) {
-              if (!resource.controller.signal.aborted) resource.controller.abort()
-              await resource.drained
-            }
-          }),
-      )
-      return yield* Effect.tryPromise({
-        try: () => owned.promise,
-        catch: cause => (parentSignal?.aborted ? scanAbortError(parentSignal) : toError(cause)),
-      })
-    }),
-  )
-}
-
-const loadCacheEffect = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<ResultCache, Error> {
+const loadCacheEffect = Effect.fnUntraced(function* (
+  signal?: AbortSignal,
+): Effect.fn.Return<ResultCache, Error, FileSystem.FileSystem> {
   yield* abortCheck(signal)
   if (memCache) return memCache
-  const raw = yield* ownedPromise(
-    localSignal => readFile(getCachePath(), { encoding: 'utf-8', signal: localSignal }),
-    signal,
-  ).pipe(Effect.catch(() => Effect.succeed(null as string | null)))
+  const fs = yield* FileSystem.FileSystem
+  const raw = yield* Effect.uninterruptible(fs.readFileString(getCachePath(), 'utf-8')).pipe(
+    Effect.catch(() => Effect.succeed(null as string | null)),
+  )
   yield* abortCheck(signal)
   const decoded =
     raw === null
@@ -133,20 +88,24 @@ function getEntry(cache: ResultCache, filePath: string, fp: FileFingerprint): Fi
 
 export type CodexCacheLookup = { calls: ParsedProviderCall[] | null; fingerprint: FileFingerprint | null }
 
+function fingerprintEffect(filePath: string): Effect.Effect<FileFingerprint, Error> {
+  return Effect.uninterruptible(
+    Effect.tryPromise({
+      try: () => stat(filePath).then(s => ({ mtimeMs: s.mtimeMs, sizeBytes: s.size })),
+      catch: toError,
+    }),
+  )
+}
+
 /** Native lookup returns the stat fingerprint so a cold parser reuses it. */
 export const lookupCachedCodexResultsEffect = Effect.fn('lookupCachedCodexResultsEffect')(function* (
   filePath: string,
   signal?: AbortSignal,
-): Effect.fn.Return<CodexCacheLookup, Error> {
+): Effect.fn.Return<CodexCacheLookup, Error, FileSystem.FileSystem> {
   yield* abortCheck(signal)
-  const fingerprint = yield* ownedPromise(
-    () =>
-      stat(filePath).then(s => ({
-        mtimeMs: s.mtimeMs,
-        sizeBytes: s.size,
-      })),
-    signal,
-  ).pipe(Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))))
+  const fingerprint = yield* fingerprintEffect(filePath).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
   yield* abortCheck(signal)
   if (!fingerprint) return { calls: null, fingerprint: null }
   const cache = yield* loadCacheEffect(signal)
@@ -158,16 +117,11 @@ export const lookupCachedCodexResultsEffect = Effect.fn('lookupCachedCodexResult
 export const getCachedCodexProjectEffect = Effect.fn('getCachedCodexProjectEffect')(function* (
   filePath: string,
   signal?: AbortSignal,
-): Effect.fn.Return<string | null, Error> {
+): Effect.fn.Return<string | null, Error, FileSystem.FileSystem> {
   yield* abortCheck(signal)
-  const fingerprint = yield* ownedPromise(
-    () =>
-      stat(filePath).then(s => ({
-        mtimeMs: s.mtimeMs,
-        sizeBytes: s.size,
-      })),
-    signal,
-  ).pipe(Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))))
+  const fingerprint = yield* fingerprintEffect(filePath).pipe(
+    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
+  )
   yield* abortCheck(signal)
   if (!fingerprint) return null
   const cache = yield* loadCacheEffect(signal)
@@ -181,7 +135,7 @@ export const writeCachedCodexResultsEffect = Effect.fn('writeCachedCodexResultsE
   calls: ParsedProviderCall[],
   fingerprint: FileFingerprint,
   signal?: AbortSignal,
-): Effect.fn.Return<void, Error> {
+): Effect.fn.Return<void, Error, FileSystem.FileSystem> {
   yield* abortCheck(signal)
   const cache = yield* loadCacheEffect(signal)
   yield* abortCheck(signal)
@@ -194,25 +148,28 @@ export const writeCachedCodexResultsEffect = Effect.fn('writeCachedCodexResultsE
 })
 
 export const flushCodexCacheEffect = Effect.fn('flushCodexCacheEffect')(
-  function* (signal: AbortSignal | undefined): Effect.fn.Return<void, Error, import('effect/Scope').Scope> {
+  function* (
+    signal: AbortSignal | undefined,
+  ): Effect.fn.Return<void, Error, import('effect/Scope').Scope | FileSystem.FileSystem> {
     yield* abortCheck(signal)
     if (!memCache) return
+    const fs = yield* FileSystem.FileSystem
     const original = memCache
     const originalFiles = { ...original.files }
     const cache = { ...original, files: { ...originalFiles } }
     const missing = new Set<string>()
     let tempPath: string | undefined
-    const cleanup = Effect.promise(async () => {
+    const cleanup = Effect.gen(function* () {
       if (tempPath) {
         const current = tempPath
         tempPath = undefined
-        await unlink(current).catch(() => {})
+        yield* Effect.uninterruptible(fs.remove(current, { force: true })).pipe(Effect.catch(() => Effect.void))
       }
     })
     yield* Effect.addFinalizer(() => cleanup)
     for (const path of Object.keys(cache.files)) {
       yield* abortCheck(signal)
-      const exists = yield* ownedPromise(() => stat(path), signal).pipe(
+      const exists = yield* fingerprintEffect(path).pipe(
         Effect.map(() => true),
         Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(false))),
       )
@@ -223,7 +180,7 @@ export const flushCodexCacheEffect = Effect.fn('flushCodexCacheEffect')(
     }
     yield* abortCheck(signal)
     const dir = getCacheDir()
-    yield* ownedPromise(() => mkdir(dir, { recursive: true }), signal)
+    yield* Effect.uninterruptible(fs.makeDirectory(dir, { recursive: true }))
     yield* abortCheck(signal)
     const finalPath = getCachePath()
     const temporaryPath = `${finalPath}.${randomBytes(8).toString('hex')}.tmp`
@@ -231,42 +188,15 @@ export const flushCodexCacheEffect = Effect.fn('flushCodexCacheEffect')(
     const encoded = yield* Schema.encodeUnknownEffect(resultCacheSchema)(cache)
     const payload = JSON.stringify(encoded)
     yield* abortCheck(signal)
-    yield* Effect.acquireUseRelease(
-      Effect.tryPromise({ try: () => open(temporaryPath, 'w', 0o600), catch: toError }).pipe(
-        Effect.map(handle => ({ handle, closed: false })),
-      ),
-      owned =>
-        Effect.gen(function* () {
-          yield* abortCheck(signal)
-          // FileHandle operations have no AbortSignal. Keep each operation
-          // uninterruptible so close cannot race with pending write or sync.
-          yield* Effect.uninterruptible(
-            Effect.tryPromise({ try: () => owned.handle.writeFile(payload, { encoding: 'utf-8' }), catch: toError }),
-          )
-          yield* abortCheck(signal)
-          yield* Effect.uninterruptible(Effect.tryPromise({ try: () => owned.handle.sync(), catch: toError }))
-          yield* abortCheck(signal)
-          yield* Effect.uninterruptible(
-            Effect.tryPromise({ try: () => owned.handle.close(), catch: toError }).pipe(
-              Effect.tap(() =>
-                Effect.sync(() => {
-                  owned.closed = true
-                }),
-              ),
-            ),
-          )
-        }),
-      owned =>
-        owned.closed
-          ? Effect.void
-          : Effect.tryPromise({ try: () => owned.handle.close(), catch: toError }).pipe(
-              Effect.catch(() => Effect.void),
-            ),
-    )
+    yield* writeCacheTempFileEffect(fs, temporaryPath, payload, signal)
     yield* abortCheck(signal)
     const temporary = tempPath
-    yield* Effect.uninterruptible(Effect.tryPromise({ try: () => rename(temporary, finalPath), catch: toError }))
-    tempPath = undefined
+    yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        yield* fs.rename(temporary, finalPath)
+        tempPath = undefined
+      }),
+    )
     yield* abortCheck(signal)
     if (memCache === original) {
       const concurrentWrites = Object.fromEntries(
@@ -287,5 +217,5 @@ export const flushCodexCacheEffect = Effect.fn('flushCodexCacheEffect')(
       }
     }
   },
-  Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.void)),
+  Effect.catchCause(cause => (isRecoverableCacheFailure(cause) ? Effect.void : Effect.failCause(cause))),
 )

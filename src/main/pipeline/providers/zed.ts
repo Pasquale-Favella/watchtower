@@ -1,10 +1,12 @@
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import zlib from 'zlib'
 
-import { Env } from '../../env.js'
 import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../file-errors.js'
 import { captureScanPricing } from '../models.js'
 import { checkScanAbort } from '../scan-io.js'
@@ -414,15 +416,6 @@ function createParser(
 
   return {
     parseStream,
-    // Remove after external callers consume parseStream; preserve native error identity.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      try {
-        yield* Stream.toAsyncIterable(parseStream())
-      } catch (error) {
-        if (error instanceof ZedDatabaseError) throw error.cause
-        throw error
-      }
-    },
   }
 }
 
@@ -455,11 +448,6 @@ export function createZedProvider(dbPathOverride?: string): Provider {
     },
 
     discoverSessionsEffect: context => discoverSessionsEffect(dbPathOverride, context),
-    // Remove after discovery callers use the native Effect hook.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverSessionsEffect(dbPathOverride, context).pipe(Effect.provide(Env.layer)))
-    },
 
     createSessionParser(
       source: SessionSource,

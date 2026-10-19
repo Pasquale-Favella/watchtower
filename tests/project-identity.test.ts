@@ -2,19 +2,19 @@ import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
 import { querySpendView } from '../src/main/application/spend-query.js'
-import { normalizeProjectPathKey } from '../src/main/pipeline/parser.js'
+import { normalizeProjectPathKey } from '../src/main/pipeline/parser-calculations.js'
+import type { SessionSummary } from '../src/main/pipeline/types.js'
 import {
   buildSessionRowsFromSnapshot,
   buildSessionSummariesFromSnapshot,
   groupSummariesIntoProjects,
 } from '../src/main/store/aggregate-calculation.js'
 import { LedgerIngest } from '../src/main/store/ledger-ports.js'
-import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
 import type { LedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
-import type { SessionSummary } from '../src/main/pipeline/types.js'
+import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
 import type { WorkerRuntime } from '../src/main/worker-runtime.js'
-import type { SpendPayload } from '../src/shared/schemas/spend.js'
 import type { PortInput } from '../src/shared/schemas/port.js'
+import type { SpendPayload } from '../src/shared/schemas/spend.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 

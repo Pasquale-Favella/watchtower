@@ -1420,21 +1420,21 @@ describe('Coach IPC inspect — probe coalescing (one ACP spawn at a time)', () 
   }))
 
   const trackedRuntime = (): {
-    run: ReturnType<typeof vi.fn>
-    inspect: ReturnType<typeof vi.fn>
+    run: ReturnType<typeof vi.fn<HarnessRuntime['run']>>
+    inspect: ReturnType<typeof vi.fn<HarnessRuntime['inspect']>>
     order: string[]
     maxConcurrent: () => number
   } => {
     let concurrent = 0
     let max = 0
     const order: string[] = []
-    const inspect = vi.fn(async ({ harness }: { harness: HarnessInfo }) => {
+    const inspect = vi.fn<HarnessRuntime['inspect']>(async ({ harness }) => {
       concurrent++
       max = Math.max(max, concurrent)
       order.push(harness.kind)
       await new Promise(resolve => setTimeout(resolve, 5))
       concurrent--
-      return { sessionId: `sess_${harness.kind}` }
+      return {}
     })
     const run = vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
       yield { kind: 'status', state: 'done' }

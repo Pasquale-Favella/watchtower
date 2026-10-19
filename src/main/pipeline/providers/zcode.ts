@@ -1,7 +1,10 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { Effect, Result, Schema, Stream } from 'effect'
+import * as Effect from 'effect/Effect'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 
 import { fileErrorCode, reportProviderIssue } from '../file-errors.js'
 import { captureScanPricing } from '../models.js'
@@ -259,10 +262,6 @@ function createParser(source: SessionSource, seenKeys: Set<string>, context?: Pr
   const parseStream = (): Stream.Stream<ParsedProviderCall, Error> => Stream.unwrap(parseEffect())
   return {
     parseStream,
-    // Remove when scan/parser and external iterator callers have migrated to parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -282,11 +281,6 @@ export function createZcodeProvider(dbPathOverride?: string): Provider {
 
     discoverSessionsEffect(context?: ProviderScanContext) {
       return discoverSessionsEffect(dbPath, context)
-    },
-    // Remove when every discovery caller uses the native Effect entry point.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverSessionsEffect(dbPath, context))
     },
 
     createSessionParser(

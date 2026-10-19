@@ -1,12 +1,17 @@
 import { randomBytes } from 'crypto'
-import { Effect, Result, Schema } from 'effect'
-import { mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as FileSystem from 'effect/FileSystem'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import { stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
 import { type ParsedProviderCall, parsedProviderCallSchema } from '../../shared/schemas/providers.js'
 import { resolveCursorCacheSuppressWrites } from '../env.js'
-import { isScanAbortedError, scanAbortError, throwIfScanAborted } from './scan-control.js'
+import { isRecoverableCacheFailure, writeCacheTempFileEffect } from './cache-file-write.js'
+import { isScanAbortedError, throwIfScanAborted } from './scan-control.js'
 
 // Bumped to 3 for the workspace-aware breakdown change: the cursor parser
 // now derives `sessionId` from the bubble row key (the real composer id)
@@ -52,55 +57,25 @@ function abortCheck(signal?: AbortSignal): Effect.Effect<void, Error> {
   return Effect.try({ try: () => throwIfScanAborted(signal), catch: toError })
 }
 
-/** Owns an uninterruptible Node promise until its native leaf has settled. */
-function nativeLeaf<A>(operation: () => Promise<A>, signal?: AbortSignal): Effect.Effect<A, Error> {
-  return Effect.scoped(
-    Effect.gen(function* () {
-      const owned = yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          let settled = false
-          const promise = Promise.resolve()
-            .then(() => {
-              throwIfScanAborted(signal)
-              return operation()
-            })
-            .finally(() => {
-              settled = true
-            })
-          const drained = promise.then(
-            () => undefined,
-            () => undefined,
-          )
-          return { promise, drained, isSettled: () => settled }
-        }),
-        resource => Effect.promise(() => (resource.isSettled() ? Promise.resolve() : resource.drained)),
-      )
-      return yield* Effect.tryPromise({
-        try: () => owned.promise,
-        catch: cause => (signal?.aborted ? scanAbortError(signal) : toError(cause)),
-      })
+function getDbFingerprint(dbPath: string): Effect.Effect<{ mtimeMs: number; size: number } | null, Error> {
+  return Effect.uninterruptible(
+    Effect.tryPromise({
+      try: () => stat(dbPath).then(file => ({ mtimeMs: file.mtimeMs, size: file.size })),
+      catch: toError,
     }),
-  )
-}
-
-function getDbFingerprint(
-  dbPath: string,
-  signal?: AbortSignal,
-): Effect.Effect<{ mtimeMs: number; size: number } | null, Error> {
-  return nativeLeaf(() => stat(dbPath).then(file => ({ mtimeMs: file.mtimeMs, size: file.size })), signal).pipe(
-    Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
-  )
+  ).pipe(Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))))
 }
 
 export const readCachedResultsEffect = Effect.fn('readCachedResultsEffect')(function* (
   dbPath: string,
   requestedFloor: string,
   signal?: AbortSignal,
-): Effect.fn.Return<ParsedProviderCall[] | null, Error> {
+): Effect.fn.Return<ParsedProviderCall[] | null, Error, FileSystem.FileSystem> {
   yield* abortCheck(signal)
-  const fingerprint = yield* getDbFingerprint(dbPath, signal)
+  const fingerprint = yield* getDbFingerprint(dbPath)
   if (!fingerprint) return null
-  const raw = yield* nativeLeaf(() => readFile(getCachePath(), 'utf-8'), signal).pipe(
+  const fs = yield* FileSystem.FileSystem
+  const raw = yield* Effect.uninterruptible(fs.readFileString(getCachePath(), 'utf-8')).pipe(
     Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.succeed(null))),
   )
   yield* abortCheck(signal)
@@ -124,14 +99,15 @@ export const writeCachedResultsEffect = Effect.fn('writeCachedResultsEffect')(fu
   lookbackFloor: string,
   suppressWrites?: boolean,
   signal?: AbortSignal,
-): Effect.fn.Return<void, Error, import('effect/Scope').Scope> {
+): Effect.fn.Return<void, Error, FileSystem.FileSystem> {
   yield* abortCheck(signal)
   if (suppressWrites ?? resolveCursorCacheSuppressWrites(process.env['WATCHTOWER_SUPPRESS_CACHE_WRITES'])) return
-  const fingerprint = yield* getDbFingerprint(dbPath, signal)
+  const fs = yield* FileSystem.FileSystem
+  const fingerprint = yield* getDbFingerprint(dbPath)
   if (!fingerprint) return
 
   const dir = getCacheDir()
-  yield* nativeLeaf(() => mkdir(dir, { recursive: true }), signal).pipe(
+  yield* Effect.uninterruptible(fs.makeDirectory(dir, { recursive: true })).pipe(
     Effect.catch(error => (isScanAbortedError(error) ? Effect.fail(error) : Effect.void)),
   )
   yield* abortCheck(signal)
@@ -147,41 +123,34 @@ export const writeCachedResultsEffect = Effect.fn('writeCachedResultsEffect')(fu
   )
   if (encoded === null) return
   const target = getCachePath()
-  let tempPath: string | undefined = `${target}.${randomBytes(8).toString('hex')}.tmp`
-  const cleanup = Effect.gen(function* () {
-    if (!tempPath) return
-    const ownedPath = tempPath
-    tempPath = undefined
-    yield* nativeLeaf(() => unlink(ownedPath)).pipe(Effect.catch(() => Effect.void))
-  })
-  yield* Effect.addFinalizer(() => cleanup)
-  const stagedPath = tempPath
-  const staged = yield* Effect.result(
-    nativeLeaf(() => writeFile(stagedPath, JSON.stringify(encoded), { encoding: 'utf-8', mode: 0o600 }), signal),
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      let tempPath: string | undefined = `${target}.${randomBytes(8).toString('hex')}.tmp`
+      yield* Effect.addFinalizer(() =>
+        Effect.suspend(() => {
+          if (!tempPath) return Effect.void
+          const ownedPath = tempPath
+          tempPath = undefined
+          return Effect.uninterruptible(fs.remove(ownedPath, { force: true })).pipe(Effect.catch(() => Effect.void))
+        }),
+      )
+      const stagedPath = tempPath
+      const staged = yield* Effect.exit(writeCacheTempFileEffect(fs, stagedPath, JSON.stringify(encoded), signal))
+      if (Exit.isFailure(staged)) {
+        if (isRecoverableCacheFailure(staged.cause)) return
+        return yield* Effect.failCause(staged.cause)
+      }
+      const committed = yield* Effect.result(
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            yield* fs.rename(stagedPath, target)
+            tempPath = undefined
+          }),
+        ),
+      )
+      if (Result.isFailure(committed)) {
+        if (isScanAbortedError(committed.failure)) return yield* Effect.fail(committed.failure)
+      }
+    }),
   )
-  if (Result.isFailure(staged)) {
-    if (isScanAbortedError(staged.failure)) return yield* Effect.fail(staged.failure)
-    return
-  }
-  const committed = yield* Effect.result(nativeLeaf(() => rename(stagedPath, target), signal))
-  if (Result.isFailure(committed)) {
-    if (isScanAbortedError(committed.failure)) return yield* Effect.fail(committed.failure)
-    return
-  }
-  tempPath = undefined
 })
-
-// Promise adapters remain for callers that have not migrated to the native
-// Effect hook yet. Cursor parsing itself composes the effects above directly.
-export async function readCachedResults(dbPath: string, requestedFloor: string): Promise<ParsedProviderCall[] | null> {
-  return Effect.runPromise(readCachedResultsEffect(dbPath, requestedFloor))
-}
-
-export async function writeCachedResults(
-  dbPath: string,
-  calls: ParsedProviderCall[],
-  lookbackFloor: string,
-  suppressWrites?: boolean,
-): Promise<void> {
-  return Effect.runPromise(Effect.scoped(writeCachedResultsEffect(dbPath, calls, lookbackFloor, suppressWrites)))
-}

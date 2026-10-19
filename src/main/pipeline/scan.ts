@@ -2,6 +2,7 @@ import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import * as FileSystem from 'effect/FileSystem'
 
 import type { PerProviderPort, ScanMetadata, ScanOptions, ScanProgress } from '../../shared/schemas/scan.js'
 import type { Env } from '../env.js'
@@ -122,7 +123,7 @@ export const runScan = Effect.fnUntraced(function* (
   abort?: { isAborted(): boolean },
   onDelta?: DeltaHandler,
   providerServices: ProviderScanServices = {},
-): Effect.fn.Return<ScanMetadata, ScanAbortedError | Error, HttpFetch | Env | OperationalLog> {
+): Effect.fn.Return<ScanMetadata, ScanAbortedError | Error, HttpFetch | Env | OperationalLog | FileSystem.FileSystem> {
   // Wall-duration start via the Effect Clock so TestClock governs duration in
   // tests (mirrors `refreshFxRateWithRates` staleness + fetch-timeout Clock).
   // `Date.now`/`new Date` below stay for scanId/timestamps (wire, out of scope).

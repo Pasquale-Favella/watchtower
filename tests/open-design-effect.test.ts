@@ -14,6 +14,7 @@ import type {
 } from '../src/main/pipeline/providers/types.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let root = ''
 
@@ -228,7 +229,7 @@ describe('Open Design native parser stream', () => {
     const pricing: ScanPricing = { calculateCost: () => 41, calculateLocalModelSavings: () => null }
     const parser = createOpenDesignProvider(root).createSessionParser(source(path), new Set(), undefined, { pricing })
 
-    await expect(parser.parse().next()).resolves.toMatchObject({
+    await expect(providerParserIterator(parser).next()).resolves.toMatchObject({
       done: false,
       value: { model: 'context-model', costUSD: 41 },
     })

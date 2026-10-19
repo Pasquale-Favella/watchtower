@@ -6,8 +6,9 @@ import { describe, expect, it } from 'vitest'
 import { type AppPaths, appPaths, initAppPaths } from '../src/main/env.js'
 import { codex, createCodexProvider } from '../src/main/pipeline/providers/codex.js'
 import type { Provider } from '../src/main/pipeline/providers/types.js'
+import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
-async function probeRoots(provider: Provider) {
+async function probeRoots(provider: Pick<Provider, 'name' | 'probeRoots'>) {
   if (!provider.probeRoots) throw new Error(`${provider.name} does not expose probe roots`)
   return provider.probeRoots()
 }
@@ -70,7 +71,7 @@ describe('createCodexProvider (CODEX_HOME seam)', () => {
 
   it('discoverSessions on a missing dir resolves [] (no throw)', async () => {
     const provider = createCodexProvider('/definitely/missing/codex-dir-tr')
-    await expect(provider.discoverSessions()).resolves.toEqual([])
+    await expect(discoverProviderSessions(provider)).resolves.toEqual([])
   })
 
   it('reads the codex home off the AppPaths startup snapshot (boot → sync provider)', async () => {

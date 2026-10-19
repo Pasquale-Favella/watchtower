@@ -1,4 +1,10 @@
-import { Cache, Context, Effect, Option, Result, Schema, Stream } from 'effect'
+import * as Cache from 'effect/Cache'
+import * as Context from 'effect/Context'
+import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
+import * as Result from 'effect/Result'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
@@ -524,10 +530,6 @@ function createParser(
   const parseStream = (onUnparsedCall?: Effect.Effect<void>) => Stream.unwrap(parseEffect(onUnparsedCall))
   return {
     parseStream,
-    // Remove this Promise edge once direct parser callers consume parseStream.
-    async *parse(): AsyncGenerator<ParsedProviderCall> {
-      yield* Stream.toAsyncIterable(parseStream())
-    },
   }
 }
 
@@ -589,11 +591,6 @@ export function createDevinProvider(cliDir: string): Provider {
     },
 
     discoverSessionsEffect: discoverEffect,
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      // Remove this Promise edge once direct discovery callers consume the native hook.
-      // eslint-disable-next-line no-restricted-syntax
-      return Effect.runPromise(discoverEffect(context))
-    },
 
     createSessionParser(
       source: SessionSource,

@@ -1,6 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -17,12 +18,11 @@ import {
   refreshFxRateWithRates,
   roundForActiveCurrency,
 } from '../src/main/fx.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { LedgerIngest } from '../src/main/store/ledger-repository.js'
 import { type LedgerFixture, openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 function fakeFetchPayload(payload: unknown): typeof fetch {
-  return (async () => ({ ok: true, status: 200, json: async () => payload })) as unknown as typeof fetch
+  return (async () => new Response(JSON.stringify(payload), { status: 200 })) as typeof fetch
 }
 
 function fakeFetchOk(rates: Record<string, unknown>): typeof fetch {
@@ -46,7 +46,7 @@ function fakeCountingFetch(rates: Record<string, unknown>): { fetch: typeof fetc
 }
 
 function fxEffect(code: string, fetchImpl: typeof fetch, options: RefreshFxRateEffectOptions = {}) {
-  return refreshFxRateWithRates(code, options).pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl)))
+  return refreshFxRateWithRates(code, options).pipe(Effect.provideService(FetchHttpClient.Fetch, fetchImpl))
 }
 
 function runFx(
@@ -233,13 +233,7 @@ describe('refreshFxRateWithRates (the main-process Frankfurter background job)',
     const fixture = openLedgerFixture()
     const stale = new Date(Date.now() - (FX_CACHE_TTL_MS + 60_000)).toISOString()
     await setRate(fixture, 'EUR', 0.9, stale)
-    const malformedJson = (async () => ({
-      ok: true,
-      status: 200,
-      json: async () => {
-        throw new SyntaxError('malformed JSON')
-      },
-    })) as unknown as typeof fetch
+    const malformedJson = (async () => new Response('{malformed JSON', { status: 200 })) as typeof fetch
     expect(await runFx(fixture, 'EUR', malformedJson)).toMatchObject({ rate: 0.9 })
     expect((await readRate(fixture, 'EUR'))?.rate).toBe(0.9)
   })

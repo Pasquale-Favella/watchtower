@@ -2,15 +2,16 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
-import { readSessionLines } from '../src/main/pipeline/fs-utils.js'
+import { readSessionLinesStream } from '../src/main/pipeline/fs-utils.js'
+import { claudeSlugFallbackPath } from '../src/main/pipeline/parser.js'
 import {
-  claudeSlugFallbackPath,
   deriveCanonicalProjectKey,
   normalizeProjectPathKey,
   projectNameFromPath,
-} from '../src/main/pipeline/parser.js'
+} from '../src/main/pipeline/parser-calculations.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 
 // Canonical project identity (#103): one checkout, one grouping key,
@@ -117,14 +118,18 @@ describe('projectNameFromPath', () => {
   })
 })
 
-describe('readSessionLines cancellation', () => {
+describe('readSessionLinesStream cancellation', () => {
   it('stops within a buffered chunk and closes the stream after abort', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'watchtower-parser-stop-'))
     const filePath = join(directory, 'session.jsonl')
     await writeFile(filePath, 'first line\nsecond line\nthird line\n', 'utf8')
     const controller = new AbortController()
     const abort = new ScanAbortedError({ message: 'scan aborted' })
-    const lines = readSessionLines(filePath, undefined, { largeLineAsBuffer: true, signal: controller.signal })
+    const lines = (async function* () {
+      yield* Stream.toAsyncIterable(
+        readSessionLinesStream(filePath, undefined, { largeLineAsBuffer: true, signal: controller.signal }),
+      )
+    })()
 
     try {
       await expect(lines.next()).resolves.toMatchObject({ value: 'first line', done: false })

@@ -1,4 +1,4 @@
-import { Effect } from 'effect'
+import * as Effect from 'effect/Effect'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -58,11 +58,6 @@ export function createIBMBobProvider(overrideDir?: string, paths?: AppPaths): Pr
 
     discoverSessionsEffect(context?: ProviderScanContext) {
       return discoverEffect(context)
-    },
-
-    // Remove when direct discovery callers consume the native Effect path.
-    discoverSessions(context?: ProviderScanContext): Promise<SessionSource[]> {
-      return Effect.runPromise(discoverEffect(context))
     },
 
     createSessionParser(
