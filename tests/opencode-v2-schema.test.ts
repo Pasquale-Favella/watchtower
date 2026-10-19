@@ -3,12 +3,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import { Effect } from 'effect'
 import { afterAll, describe, expect, it } from 'vitest'
 
 import {
   createSqliteSessionParser,
   detectGeneration,
-  discoverSqliteSessions,
+  discoverSqliteSessionsEffect,
   OPENCODE_FAMILY_1X,
   OPENCODE_FAMILY_2X,
   type SqliteGeneration,
@@ -458,7 +459,7 @@ describe('v2 parser end-to-end', () => {
     db.close()
 
     const fixture: Fixture = { dbDir, dbPath, config: CONFIG(dbDir) }
-    const sources = await discoverSqliteSessions(fixture.config)
+    const sources = await Effect.runPromise(discoverSqliteSessionsEffect(fixture.config))
     expect(sources.map(s => s.path)).toEqual([`${dbPath}:ses-v2`])
 
     const calls = await parseAll(fixture, sources[0]!)
@@ -613,7 +614,7 @@ describe('union on an upgraded DB', () => {
 
   it('emits a session present in both tables exactly once, read as v2', async () => {
     const f = upgradedFixture()
-    const sources = await discoverSqliteSessions(f.config)
+    const sources = await Effect.runPromise(discoverSqliteSessionsEffect(f.config))
     const paths = sources.map(s => s.path)
     expect(paths.filter(p => p.endsWith(':ses-both'))).toHaveLength(1)
 
@@ -624,7 +625,7 @@ describe('union on an upgraded DB', () => {
 
   it('still discovers a legacy-only session and reads it from the legacy tables', async () => {
     const f = upgradedFixture()
-    const sources = await discoverSqliteSessions(f.config)
+    const sources = await Effect.runPromise(discoverSqliteSessionsEffect(f.config))
     expect(sources.map(s => s.path).sort()).toEqual([`${f.dbPath}:ses-both`, `${f.dbPath}:ses-legacy-only`])
 
     const source = sources.find(s => s.path.endsWith(':ses-legacy-only'))!
@@ -646,7 +647,7 @@ describe('union on an upgraded DB', () => {
       .run('ses-child-v2', 'ses-both', 4)
     setup.close()
 
-    const sources = await discoverSqliteSessions(f.config)
+    const sources = await Effect.runPromise(discoverSqliteSessionsEffect(f.config))
     const paths = sources.map(s => s.path)
     expect(paths).toHaveLength(2)
     expect(new Set(paths).size).toBe(2)
@@ -681,7 +682,7 @@ describe('legacy parity', () => {
       dbFilePrefix: 'opencode',
       generations: OPENCODE_GENERATIONS,
     }
-    const sources = await discoverSqliteSessions(config)
+    const sources = await Effect.runPromise(discoverSqliteSessionsEffect(config))
     expect(sources).toHaveLength(1)
     const calls = await collect(createSqliteSessionParser(sources[0]!, new Set(), config))
     return {
@@ -741,7 +742,7 @@ describe('unreadable databases', () => {
     writeFileSync(join(dbDir, 'opencode-broken.db'), 'this is not sqlite')
     const config = CONFIG(dbDir)
 
-    await expect(discoverSqliteSessions(config)).resolves.toEqual([])
+    await expect(Effect.runPromise(discoverSqliteSessionsEffect(config))).resolves.toEqual([])
 
     // And the parser for that path yields nothing rather than throwing.
     const parser = createSqliteSessionParser(
@@ -756,7 +757,7 @@ describe('unreadable databases', () => {
 
   it('yields no sources when the data dir does not exist', async () => {
     const config = CONFIG(join(tempDir('oc-missing-'), 'absent'))
-    await expect(discoverSqliteSessions(config)).resolves.toEqual([])
+    await expect(Effect.runPromise(discoverSqliteSessionsEffect(config))).resolves.toEqual([])
   })
 
   it('re-throws a busy error out of detectGeneration rather than reporting an empty schema', async () => {

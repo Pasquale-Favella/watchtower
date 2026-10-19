@@ -140,26 +140,6 @@ export const getClaudeConfigDirsEffect = Effect.fnUntraced(function* (
   return [join(homedir(), '.claude')]
 })
 
-/// Returns every Claude config dir to scan, in priority order with duplicates
-/// removed (resolved-path equality). Precedence: `CLAUDE_CONFIG_DIRS` (a
-/// `path.delimiter`-separated list, ":" on POSIX, ";" on Windows), then
-/// `CLAUDE_CONFIG_DIR` (single dir), then the `claudeConfigDirs` array in
-/// `~/.config/watchtower/config.json` (how the desktop app configures
-/// multi-account aggregation, since a GUI app can't inherit the shell env),
-/// then `~/.claude`. Sessions from every returned dir are merged into one
-/// ProjectSummary per project name in `src/parser.ts:scanProjectDirs`, so two
-/// dirs holding the same sanitized project slug naturally aggregate (#208).
-///
-/// `paths` is the trailing AppPaths snapshot seam (`env.ts` convention): both
-/// env vars are read through `overrideFor`, which reports the raw string. The
-/// normalization below stays here — an empty value is still skipped by the
-/// `!== ''` checks, which is what `process.env[...] === undefined` used to do.
-export async function getClaudeConfigDirs(paths?: AppPaths): Promise<string[]> {
-  // Compatibility edge for callers that still expose Promise APIs.
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(getClaudeConfigDirsEffect(undefined, paths))
-}
-
 const discoverClaudeConfigSourcesEffect = Effect.fnUntraced(function* (
   context?: ProviderScanContext,
 ): Effect.fn.Return<ClaudeConfigSource[], Error> {
@@ -479,7 +459,10 @@ export const claude: DiscoverableProvider = {
   // plus the Claude Desktop sessions base. Resolved via the same helpers so a
   // CLAUDE_CONFIG_DIR(S) override is reflected exactly.
   async probeRoots(): Promise<ProbeRoot[]> {
-    const dirs = await getClaudeConfigDirs()
+    // The provider-inspection contract still requires Promise roots. Remove
+    // this runtime edge when probeRoots accepts Effect directly.
+
+    const dirs = await Effect.runPromise(getClaudeConfigDirsEffect())
     const roots: ProbeRoot[] = dirs.map(dir => ({ path: join(dir, 'projects'), label: 'projects' }))
     roots.push(...getDesktopSessionsDirs().map(path => ({ path, label: 'desktop' })))
     return roots

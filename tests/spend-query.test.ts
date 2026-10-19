@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
 import { querySpendView } from '../src/main/application/spend-query.js'
 import type { ScopedViewQueryInputs } from '../src/main/application/view-queries.js'
-import { normalizeProjectPathKey } from '../src/main/pipeline/parser.js'
+import { normalizeProjectPathKey } from '../src/main/pipeline/parser-calculations.js'
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
 import {
   LedgerConfig,

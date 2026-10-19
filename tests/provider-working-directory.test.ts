@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import { Effect } from 'effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
@@ -13,12 +14,12 @@ import {
 import { attachWorkspacePaths } from '../src/main/pipeline/providers/cursor.js'
 import {
   createSqliteSessionParser,
-  discoverSqliteSessions,
+  discoverSqliteSessionsEffect,
   OPENCODE_FAMILY_1X,
 } from '../src/main/pipeline/providers/opencode-family-sqlite.js'
 import {
   createOpenCodeFileSessionParser,
-  discoverOpenCodeFileSessions,
+  discoverOpenCodeFileSessionsEffect,
 } from '../src/main/pipeline/providers/opencode-file-parser.js'
 import type { ParsedProviderCall } from '../src/main/pipeline/providers/types.js'
 import { discoverProviderSessions, providerParserIterator } from './fixtures/provider-effects.js'
@@ -56,7 +57,7 @@ describe('opencode file sessions', () => {
     )
     writeFileSync(join(dataDir, 'storage', 'part', 'm1', 'p1.json'), JSON.stringify({ type: 'text', text: 'hello' }))
 
-    const sources = await discoverOpenCodeFileSessions(dataDir, 'opencode')
+    const sources = await Effect.runPromise(discoverOpenCodeFileSessionsEffect(dataDir, 'opencode'))
     expect(sources).toHaveLength(1)
     expect(sources[0]!.workingDirectory).toBe(DIR)
 
@@ -93,7 +94,7 @@ describe('opencode sqlite sessions', () => {
       dbFilePrefix: 'opencode',
       generations: [OPENCODE_FAMILY_1X],
     }
-    const sources = await discoverSqliteSessions(config)
+    const sources = await Effect.runPromise(discoverSqliteSessionsEffect(config))
     expect(sources).toHaveLength(1)
     expect(sources[0]!.workingDirectory).toBe(DIR)
 

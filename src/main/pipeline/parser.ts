@@ -8,29 +8,11 @@ import { existsSync } from 'fs'
 import { lstat, readdir, readFile } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
 
-import { type AppPaths, Env, overrideFor } from '../env.js'
-import { billableOutputTokens } from './billable-output.js'
-import {
-  buildSpawnPrSets,
-  extractPrUrlsFromProviderCall,
-  extractPrUrlsFromText,
-  isAbsoluteProjectPath,
-  normalizeProjectPathKey,
-  projectNameFromPath,
-} from './parser-calculations.js'
-/** Compatibility re-exports for callers of parser-calculations helpers. */
-export {
-  buildSpawnPrSets,
-  deriveCanonicalProjectKey,
-  extractPrUrlsFromProviderCall,
-  extractPrUrlsFromText,
-  isAbsoluteProjectPath,
-  normalizeProjectPathKey,
-  projectNameFromPath,
-} from './parser-calculations.js'
 import { parseOrSkip, type UnparsedTally } from '../../shared/schemas/extract.js'
 import { parsedProviderCallSchema } from '../../shared/schemas/providers.js'
+import { type AppPaths, Env, overrideFor } from '../env.js'
 import { extractBashCommands } from './bash-utils.js'
+import { billableOutputTokens } from './billable-output.js'
 import { coordinateCacheRefreshEffect } from './cache-refresh-coordinator.js'
 import type { RefreshLockHandle } from './cache-refresh-lock.js'
 import { BASH_TOOLS, classifyTurn, EDIT_TOOLS } from './classifier.js'
@@ -41,6 +23,14 @@ import { logFileName, queueLogRecord } from './file-errors.js'
 import { readSessionLinesStream } from './fs-utils.js'
 import { BASH_COMMAND_CAP, MAX_ADDED_NAMES, MAX_TOOL_BLOCKS, parseJsonlLine, USER_TEXT_CAP } from './jsonl-parser.js'
 import { captureScanPricing, getProxyPathsConfigHash, getShortModelName, isProxiedPath } from './models.js'
+import {
+  buildSpawnPrSets,
+  extractPrUrlsFromProviderCall,
+  extractPrUrlsFromText,
+  isAbsoluteProjectPath,
+  normalizeProjectPathKey,
+  projectNameFromPath,
+} from './parser-calculations.js'
 import {
   antigravityCascadeIdFromPath,
   flushAntigravityCacheEffect,

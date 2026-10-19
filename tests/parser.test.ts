@@ -6,12 +6,12 @@ import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
 import { readSessionLinesStream } from '../src/main/pipeline/fs-utils.js'
+import { claudeSlugFallbackPath } from '../src/main/pipeline/parser.js'
 import {
-  claudeSlugFallbackPath,
   deriveCanonicalProjectKey,
   normalizeProjectPathKey,
   projectNameFromPath,
-} from '../src/main/pipeline/parser.js'
+} from '../src/main/pipeline/parser-calculations.js'
 import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 
 // Canonical project identity (#103): one checkout, one grouping key,

@@ -1019,11 +1019,3 @@ export const discoverSqliteSessionsEffect = Effect.fnUntraced(function* (
   }
   return sessions
 })
-
-/// Remove after every consumer composes discovery through discoverSqliteSessionsEffect.
-export function discoverSqliteSessions(
-  config: SqliteProviderConfig,
-  context?: ProviderScanContext,
-): Promise<SessionSource[]> {
-  return Effect.runPromise(discoverSqliteSessionsEffect(config, context))
-}

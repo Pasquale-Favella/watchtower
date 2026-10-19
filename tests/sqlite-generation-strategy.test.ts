@@ -4,12 +4,13 @@ import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 
+import { Effect } from 'effect'
 import { afterAll, describe, expect, it } from 'vitest'
 
 import {
   createSqliteSessionParser,
   detectGeneration,
-  discoverSqliteSessions,
+  discoverSqliteSessionsEffect,
   type NormalizedMessages,
   OPENCODE_FAMILY_1X,
   OPENCODE_FAMILY_2X,
@@ -307,8 +308,8 @@ describe('no SQL in the shared mechanism is built by interpolation', () => {
       generations,
     })
 
-    const honestSources = await discoverSqliteSessions(config([OPENCODE_FAMILY_1X]))
-    const poisonedSources = await discoverSqliteSessions(config([poisoned]))
+    const honestSources = await Effect.runPromise(discoverSqliteSessionsEffect(config([OPENCODE_FAMILY_1X])))
+    const poisonedSources = await Effect.runPromise(discoverSqliteSessionsEffect(config([poisoned])))
     expect(poisonedSources).toEqual(honestSources)
     expect(honestSources.map(s => s.path)).toEqual([`${dbPath}:ses-1`])
     expect(JSON.stringify(poisonedSources)).not.toContain('DROP TABLE')
@@ -552,7 +553,7 @@ describe('a third declared generation is resolved like the first two', () => {
 
   it("discovery surfaces the third generation's own sessions, deduped by id", async () => {
     const f = allThree()
-    const paths = (await discoverSqliteSessions(config(f.dbDir, ALL))).map(s => s.path)
+    const paths = (await Effect.runPromise(discoverSqliteSessionsEffect(config(f.dbDir, ALL)))).map(s => s.path)
 
     // `ses-shared` appears once, claimed by the preferred generation; the older
     // and the third contribute only the ids that never migrated.
@@ -563,7 +564,9 @@ describe('a third declared generation is resolved like the first two', () => {
 
   it('a provider declaring ONLY the third generation never touches the other tables', async () => {
     const f = allThree()
-    const paths = (await discoverSqliteSessions(config(f.dbDir, [TEST_FAMILY_3X]))).map(s => s.path)
+    const paths = (await Effect.runPromise(discoverSqliteSessionsEffect(config(f.dbDir, [TEST_FAMILY_3X])))).map(
+      s => s.path,
+    )
     expect(paths.map(sessionIdOf).sort()).toEqual(['ses-only-3.x', 'ses-shared'])
   })
 

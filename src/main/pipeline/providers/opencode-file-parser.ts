@@ -143,16 +143,6 @@ export const discoverOpenCodeFileSessionsEffect = Effect.fn('discoverOpenCodeFil
   return sources
 })
 
-/** Promise edge for file-session callers that have not moved to the native hook. */
-export function discoverOpenCodeFileSessions(
-  dataDir: string,
-  providerName: string,
-  context?: ProviderScanContext,
-): Promise<SessionSource[]> {
-  // eslint-disable-next-line no-restricted-syntax
-  return Effect.runPromise(discoverOpenCodeFileSessionsEffect(dataDir, providerName, context))
-}
-
 function parseOpenCodeFileStream(
   source: SessionSource,
   seenKeys: Set<string>,

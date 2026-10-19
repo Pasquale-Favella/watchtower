@@ -14,10 +14,9 @@ import {
   collectSessionMeta,
   compactEntry,
   emptySessionMeta,
-  extractPrUrlsFromProviderCall,
-  extractPrUrlsFromText,
   groupIntoTurns,
 } from '../src/main/pipeline/parser.js'
+import { extractPrUrlsFromProviderCall, extractPrUrlsFromText } from '../src/main/pipeline/parser-calculations.js'
 import { codex } from '../src/main/pipeline/providers/codex.js'
 import { buildAssistantCallResult } from '../src/main/pipeline/providers/session-message.js'
 import type { CachedFile } from '../src/main/pipeline/session-cache.js'
