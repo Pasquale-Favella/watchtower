@@ -30,17 +30,23 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
+import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import type { SqlError } from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { CommandRunner } from '../src/main/agents/command-runner.js'
+import { ExportFiles } from '../src/main/application/export-files.js'
 import { GatewayReports } from '../src/main/application/gateway-reports.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { Env } from '../src/main/env.js'
 import { FxRates } from '../src/main/fx.js'
 import { OperationalLog, type OperationalLogSink } from '../src/main/operational-log.js'
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
+import { NodePlatformLive } from '../src/main/platform-live.js'
 import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
 import {
   makeWorkerLive,
@@ -79,6 +85,15 @@ function openRuntimeFixture<Overrides extends WorkerOverrides = never>(
 
 function okFetch(body: unknown): typeof fetch {
   return (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch
+}
+
+function fakeFxRates(currency: string): FxRates['Service'] {
+  return {
+    getCurrencyRate: () => Effect.succeed(null),
+    setCurrencyRate: () => Effect.void,
+    getDisplayCurrency: () => Effect.succeed(currency),
+    setDisplayCurrency: () => Effect.void,
+  }
 }
 
 function recordingSink(): { sink: OperationalLogSink; records: string[] } {
@@ -326,6 +341,119 @@ describe('WorkerLive: a substituted layer reaches a dispatch arm', () => {
       ok: true,
     })
     expect(records).toContain('scan.duration')
+  })
+})
+
+describe('WorkerLive override composition', () => {
+  it('passes substituted FileSystem and ChildProcessSpawner services to captured adapters', async () => {
+    const dir = tempDir()
+    const madeDirectories: string[] = []
+    const spawnedCommands: string[] = []
+    const trackedFileSystem = Layer.effect(
+      FileSystem.FileSystem,
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        return FileSystem.FileSystem.of({
+          ...fs,
+          makeDirectory: (path, options) => {
+            madeDirectories.push(path)
+            return fs.makeDirectory(path, options)
+          },
+        })
+      }),
+    ).pipe(Layer.provideMerge(NodeFileSystem.layer))
+    const trackedSpawner = Layer.effect(
+      ChildProcessSpawner.ChildProcessSpawner,
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+        return ChildProcessSpawner.ChildProcessSpawner.of({
+          ...spawner,
+          spawn: command => {
+            spawnedCommands.push(command._tag === 'StandardCommand' ? command.command : 'pipeline')
+            return spawner.spawn(command)
+          },
+        })
+      }),
+    ).pipe(Layer.provide(NodePlatformLive))
+    const overrides = Layer.mergeAll(trackedFileSystem, trackedSpawner)
+    const runtime = openRuntimeFixture(dir, join(dir, 'ledger.db'), overrides)
+
+    try {
+      const exportFiles = runtime.runSync(ExportFiles)
+      await expect(
+        runtime.runPromise(
+          exportFiles.writeCsvFolder(join(dir, 'tracked.csv'), [{ name: 'tracked.csv', contents: 'tracked' }]),
+        ),
+      ).resolves.toBe(resolve(dir, 'tracked'))
+      expect(madeDirectories).toEqual([resolve(dir, 'tracked')])
+
+      const commandRunner = runtime.runSync(CommandRunner)
+      await expect(
+        runtime.runPromise(
+          commandRunner.run('node', ['-e', 'process.stdout.write("captured")'], { timeoutMs: 15_000 }),
+        ),
+      ).resolves.toEqual({ stdout: 'captured', exitCode: 0 })
+      expect(spawnedCommands).toHaveLength(1)
+      expect(spawnedCommands[0]).toMatch(/node/i)
+    } finally {
+      try {
+        await runtime.dispose()
+      } finally {
+        removeTempDir(dir)
+      }
+    }
+  })
+
+  it('keeps high-level overrides last and closes their scoped resource once', async () => {
+    const dir = tempDir()
+    let acquisitions = 0
+    let releases = 0
+    const exportFilesOverride = Layer.succeed(
+      ExportFiles,
+      ExportFiles.of({
+        writeCsvFolder: () => Effect.succeed('high-level-csv-override'),
+        writeJsonFile: () => Effect.succeed('high-level-json-override'),
+      }),
+    )
+    const fxRatesOverride = Layer.effect(
+      FxRates,
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          acquisitions += 1
+          return FxRates.of(fakeFxRates('CAD'))
+        }),
+        () =>
+          Effect.sync(() => {
+            releases += 1
+          }),
+      ),
+    )
+    const runtime = openRuntimeFixture(
+      dir,
+      join(dir, 'ledger.db'),
+      Layer.mergeAll(exportFilesOverride, fxRatesOverride),
+    )
+
+    try {
+      const exportFiles = runtime.runSync(ExportFiles)
+      const fxRates = runtime.runSync(FxRates)
+      await expect(runtime.runPromise(exportFiles.writeCsvFolder('unused.csv', []))).resolves.toBe(
+        'high-level-csv-override',
+      )
+      await expect(runtime.runPromise(exportFiles.writeJsonFile('unused.json', '{}'))).resolves.toBe(
+        'high-level-json-override',
+      )
+      await expect(runtime.runPromise(fxRates.getDisplayCurrency())).resolves.toBe('CAD')
+      expect(acquisitions).toBe(1)
+    } finally {
+      try {
+        await runtime.dispose()
+      } finally {
+        removeTempDir(dir)
+      }
+    }
+
+    expect(releases).toBe(1)
   })
 })
 

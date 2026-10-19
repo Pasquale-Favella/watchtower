@@ -32,8 +32,8 @@ import {
 } from './operational-log.js'
 import { HttpFetch } from './pipeline/fetch-utils.js'
 import { PricingDiagnosticsLive } from './pipeline/pricing-diagnostics.js'
-import { RepositoryInspectionLive } from './repository-inspection-live.js'
 import { NodePlatformLive, type NodePlatformServices } from './platform-live.js'
+import { RepositoryInspectionLive } from './repository-inspection-live.js'
 import { initializeLedger } from './store/ledger-initialization.js'
 import {
   LedgerConfig,
@@ -99,13 +99,15 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
   const liveFetch = HttpFetch.layer.pipe(Layer.provide(FetchHttpClient.layer))
   const platform = overrides ? Layer.merge(NodePlatformLive, overrides) : NodePlatformLive
   const commandRunner = CommandRunner.layer.pipe(Layer.provide(platform))
-  const capabilities = Layer.mergeAll(ledger, AssistantSetupLive, platform, commandRunner, Env.layer, liveFetch)
-  const dependencies = overrides ? Layer.mergeAll(capabilities, overrides) : capabilities
-  const exportFiles = ExportFilesLive.pipe(Layer.provide(dependencies))
-  const fxRates = FxRates.layer.pipe(Layer.provide(dependencies))
-  const repositoryInspection = RepositoryInspectionLive.pipe(Layer.provide(dependencies))
-  const gatewayReports = GatewayReportsLive.pipe(Layer.provide(dependencies))
-  const maintenance = LedgerMaintenanceLive.pipe(Layer.provide(dependencies))
+  // Put the merged platform/override layer after defaults so its services win
+  // collisions. CommandRunner captures this same layer; the other adapters
+  // receive the completed capability graph below.
+  const capabilities = Layer.mergeAll(ledger, AssistantSetupLive, commandRunner, Env.layer, liveFetch, platform)
+  const exportFiles = ExportFilesLive.pipe(Layer.provide(capabilities))
+  const fxRates = FxRates.layer.pipe(Layer.provide(capabilities))
+  const repositoryInspection = RepositoryInspectionLive.pipe(Layer.provide(capabilities))
+  const gatewayReports = GatewayReportsLive.pipe(Layer.provide(capabilities))
+  const maintenance = LedgerMaintenanceLive.pipe(Layer.provide(capabilities))
 
   const live = Layer.mergeAll(
     OperationalLogMetricLayer,
@@ -118,9 +120,9 @@ export function makeWorkerLive<Overrides extends WorkerOverrides = never>(
     repositoryInspection,
     gatewayReports,
     maintenance,
-    dependencies,
+    capabilities,
   )
-  return overrides ? Layer.mergeAll(live, overrides) : live
+  return live
 }
 
 export function makeWorkerRuntime(
