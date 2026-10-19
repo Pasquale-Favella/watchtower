@@ -40,7 +40,6 @@ const EFFECT_COMPOSITION_ROOTS = [
   'src/main/agents/ledger-mcp/pool.ts',
   'src/main/agents/auth-probe.ts',
   'src/main/agents/process-tree.ts',
-  'src/main/pipeline/providers/vercel-gateway.ts',
   'src/main/db-worker/context.ts',
   'src/main/db-worker/client.ts',
 ]

@@ -2,6 +2,11 @@
 
 This extends [the September 30 assessment](../research/effect-adoption-assessment-2026-09-30.md) and [issue #148](https://github.com/Pasquale-Favella/watchtower/issues/148). It specifies the target of the authorized Zod replacement and backend restructuring. Implementation starts from local commit `ce81593`, which includes ledger Schema Wave A. Names below describe responsibilities; the execution record distinguishes implemented work from remaining work.
 
+The dated entries below preserve the evidence and dependency versions from each
+checkpoint. They are historical where later entries supersede them. The current
+stable package versions and compiler checks are described in the development
+guide and in the October 19 stable ecosystem entry.
+
 Full Effect adoption is complete when contracts have one Schema authority, application workflows compose ports, each isolate owns its resources, and product operations avoid redundant work. A library substitution alone does not establish those properties.
 
 ## Stable ecosystem adoption, 2026-10-19
@@ -14,12 +19,15 @@ defines its scope. Matching Effect, SQLite and Node platform packages are
 pinned to 4.0.5. The migration replaces custom platform transports, removes
 unused compatibility executors, separates parser and repository responsibilities,
 and adopts supported semantic tooling and Effect-aware tests.
+The Effect semantic gate checks node, web, and test projects. Positive and
+negative probes cover floating Effects and plain Vitest callbacks that return
+Effects.
 
 The issue body is the living implementation and verification record. The
 October 15 results below prove the earlier source only; they do not establish
 acceptance of the stable ecosystem changes.
 
-## Current priority, 2026-10-15
+## Historical baseline, 2026-10-15
 
 The agreed backend Effect and owned Schema port is complete and accepted at frozen product source `210da5b`. The owner stopped profiling and removed its JSON files from docs; that instruction supersedes measurement follow-ups in the historical records below. Later documentation commits leave product code unchanged.
 
@@ -401,7 +409,7 @@ A workflow such as GetOverview is a named Effect function consuming services. It
 
 A row codec can map snake_case columns and JSON strings to decoded values. It cannot be reused as a wire validator if the wire already contains decoded camelCase fields and arrays. State `Type` and `Encoded` for every transforming contract and identify which representation actually crosses the boundary. Preserve existing Date/structured-clone behavior; do not apply JSON encoding to all channels as a migration shortcut.
 
-Use `Schema.decodeUnknownEffect` where application Effects must preserve typed failures. Use synchronous `Schema.decodeUnknownResult` at pure extraction and renderer boundaries. Its rc.115 implementation returns Schema mismatches as Result failures but can still throw defects or non-schema failures. Transformations must not throw on expected malformed inputs, and the existing renderer fetch/event guards still need to contain unexpected decoder defects. Wire schemas must have no asynchronous decoding or service requirements. Never start a runtime solely to validate a renderer payload.
+Use `Schema.decodeUnknownEffect` where application Effects must preserve typed failures. Use synchronous `Schema.decodeUnknownResult` at pure extraction and renderer boundaries. The migration-baseline rc.115 implementation returned Schema mismatches as Result failures but could still throw defects or non-schema failures; that observation applies to the dated migration checkpoint, not the current stable release. Transformations must not throw on expected malformed inputs, and the existing renderer fetch/event guards still need to contain unexpected decoder defects. Wire schemas must have no asynchronous decoding or service requirements. Never start a runtime solely to validate a renderer payload.
 
 Share field definitions where representations agree. Derive a narrower projection rather than decoding a wide row and discarding fields. Projection schemas and payload schemas may legitimately differ; they are contracts for different data. Avoid two independent definitions of the same contract or permanent Zod-compatible wrappers around Effect Schema.
 
@@ -431,7 +439,7 @@ Verdict: use the installed SDK's exported `Server` for this advanced adapter. It
 
 The installed `server/index.d.ts` marks `Server` deprecated for ordinary use and explicitly reserves it for advanced use cases. This adapter needs independent argument validation and generated metadata, which the high-level `McpServer` registration cannot provide without Zod tool shapes. Using `McpServer.server` alongside high-level registrations would give both layers ownership of the same handlers; `server/mcp.js` installs them from its private registration maps. Keep one handler owner and confine this SDK dependency to `agents/ledger-mcp/server.ts`.
 
-In Effect rc.115, generate input metadata with `Schema.toStandardJSONSchemaV1(schema)['~standard'].jsonSchema.input({ target: 'draft-2020-12' })`. This projects the contract's Encoded input. Decode tool arguments with the same authoritative Effect schema, then pass decoded values to the tool. The SDK's own protocol schemas remain dependency-owned Zod values. Generated JSON Schema advertises inputs; it is not a separately maintained validator.
+At the rc.115 checkpoint, input metadata used `Schema.toStandardJSONSchemaV1(schema)['~standard'].jsonSchema.input({ target: 'draft-2020-12' })` to project the contract's Encoded input. That API note is historical to the October 1 adapter evaluation. Decode tool arguments with the same authoritative Effect schema, then pass decoded values to the tool. The SDK's own protocol schemas remain dependency-owned Zod values. Generated JSON Schema advertises inputs; it is not a separately maintained validator.
 
 Preserve current error categories. The installed high-level handler returns `isError: true` for an unknown tool, invalid tool arguments and ordinary handler failures. Resource and prompt lookup failures remain SDK `InvalidParams` protocol errors. Malformed MCP envelopes and unknown protocol methods remain SDK errors. Verify these distinctions with a real SDK client, including absent arguments, metadata, known and unknown names, each tool's output, and both stdio and stateless Streamable HTTP. Check response/transport shutdown and read-only store ownership; closing a per-request server must not close the process-owned store.
 
@@ -508,7 +516,7 @@ Owner correction during implementation: preserve the existing `data-store.ts` an
 | Cache or RequestResolver                      | Measured repeated/batched demand                          | Defer until freshness, key, size and ownership contracts exist                                      |
 | Logger and Tracer over an injected sink       | Local operation/counter observation in each isolate       | Forward worker records to main; keep the allowlist and no exporter policy                           |
 
-RcMap, generated SqlModel and unstable RPC remain outside this plan under their recorded verdicts. Effect Schema authorization does not reverse those verdicts. Test support must match the pinned rc.115 APIs.
+RcMap, generated SqlModel and unstable RPC remain outside this plan under their recorded verdicts. Effect Schema authorization does not reverse those verdicts. At the original migration baseline, tests matched the pinned rc.115 APIs; current code and tests use the stable 4.0.5 APIs documented by the installed packages.
 
 ## Structural and product gates
 

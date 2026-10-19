@@ -135,8 +135,8 @@ export interface CommandHandle {
   readonly stdout: Stream.Stream<Uint8Array, CommandError>
   /** stderr; `Stream.empty` unless the call asked for `pipeStderr`. */
   readonly stderr: Stream.Stream<Uint8Array, CommandError>
-  /** stdout and stderr interleaved, genuinely merged. Equal to `stdout` only
-   *  when there is no stderr pipe to merge with. */
+  /** stdout and stderr interleaved. When no stderr pipe exists, this contains
+   *  the same chunks as `stdout`. */
   readonly all: Stream.Stream<Uint8Array, CommandError>
   /** Terminate the child now (SIGTERM). Infallible: killing a child that has
    *  already exited is a no-op, because teardown must never fail the caller. */

@@ -333,7 +333,7 @@ describe('scan lifetime ownership', () => {
             return release.promise
           }),
         )
-        yield* Effect.promise(() => new Promise<never>(() => undefined))
+        return yield* Effect.promise(() => new Promise<never>(() => undefined))
       }),
     )
     const signal = await parserEntered.promise

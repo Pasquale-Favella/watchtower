@@ -19,7 +19,7 @@
     "test": "vitest",
     "test:e2e": "npm run build && playwright test",
     "lint": "eslint .",
-    "lint:effect": "effect-tsgo diagnostics --project tsconfig.node.json --severity error --format text && effect-tsgo diagnostics --project tsconfig.web.json --severity error --format text && node scripts/lint/verify-effect-diagnostics.mjs",
+    "lint:effect": "effect-tsgo diagnostics --project tsconfig.node.json --severity error --format text && effect-tsgo diagnostics --project tsconfig.web.json --severity error --format text && effect-tsgo diagnostics --project tsconfig.test.json --severity error --format text && node scripts/lint/verify-effect-diagnostics.mjs",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

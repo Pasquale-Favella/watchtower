@@ -4,7 +4,10 @@
     "plugins": [
       {
         "name": "@effect/language-service",
-        "diagnosticSeverity": { "floatingEffect": "error" }
+        "diagnosticSeverity": {
+          "floatingEffect": "error",
+          "floatingEffectInVitest": "error"
+        }
       }
     ]
   },

@@ -325,7 +325,7 @@ describe('CommandRunner.start live layer (real child, scope-bound lifetime)', ()
             Effect.scoped(
               Effect.gen(function* () {
                 yield* liveStart(process.execPath, node(GATED, pidFile, gateFile))
-                yield* Effect.never
+                return yield* Effect.never
               }),
             ),
           )

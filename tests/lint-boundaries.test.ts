@@ -4,7 +4,7 @@ import { ESLint } from 'eslint'
 import { describe, expect, it } from 'vitest'
 
 /**
- * Lint boundary regression test (PR #137 review follow-through on #136).
+ * Lint boundary regression test for the process seams.
  *
  * `eslint.config.mjs` enforces the process seams — sandboxed renderer
  * (ADR 0005), db-worker data plane with no view dependency (ADR 0023) — with

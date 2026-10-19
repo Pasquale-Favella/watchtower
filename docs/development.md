@@ -19,11 +19,11 @@ behavior and the macOS Full Disk Access requirement.
 ## Effect conventions
 
 The backend uses Effect 4 for application workflows, service composition,
-typed operational failures, and scoped resources. `effect` and
-`@effect/sql-sqlite-node` are pinned to `4.0.0-rc.115`. Before writing Effect
-code, read the installed `node_modules/effect/AGENTS.md` completely and follow
-its required links, as specified in [the agent guide](./agents/effect.md).
-Use the installed source for APIs on this release line.
+typed operational failures, and scoped resources. `effect`,
+`@effect/platform-node`, and `@effect/sql-sqlite-node` are pinned to `4.0.5`.
+Before writing Effect code, read the installed `node_modules/effect/AGENTS.md`
+completely and follow its required links, as specified in [the agent
+guide](./agents/effect.md). Use the installed source for APIs on this release.
 
 - Compose capabilities with `Context.Service` and `Layer`. Main, db-worker,
   and MCP query processes own separate runtimes and resource lifetimes.
@@ -53,21 +53,40 @@ supersede them.
 
 ## Scripts
 
-| Command                                                 | What it does                                                                                           |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `npm run dev`                                           | Run the app in development (electron-vite)                                                             |
-| `npm run build`                                         | Compile main, preload, and renderer bundles                                                            |
-| `npm run preview`                                       | Preview a built app                                                                                    |
-| `npm run typecheck`                                     | Type-check both node and web targets (`typecheck:node` / `typecheck:web`)                              |
-| `npm test`                                              | Run the vitest suite (`tests/`)                                                                        |
-| `npm run test:e2e`                                      | Build the bundles, then run the Playwright Electron smoke (`e2e/`)                                     |
-| `npm run lint`                                          | ESLint v9 flat gate (`eslint.config.mjs`) — blocking in CI (`test.yml`)                                |
-| `npm run lint:fix`                                      | Autofix what ESLint can (import order), report the rest                                                |
-| `npm run format`                                        | Rewrite everything with Prettier (`.prettierrc.json`)                                                  |
-| `npm run format:check`                                  | Check formatting with Prettier; blocking in CI                                                         |
-| `npm run package`                                       | Build + package for the platform you are on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux) |
-| `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS)                                     |
-| `npm run icons`                                         | Regenerate `build/icon.png` from `assets/watchtower-logo.svg`                                          |
+| Command                                                 | What it does                                                                                            |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                                           | Run the app in development (electron-vite)                                                              |
+| `npm run build`                                         | Compile main, preload, and renderer bundles                                                             |
+| `npm run preview`                                       | Preview a built app                                                                                     |
+| `npm run typecheck`                                     | Type-check both node and web targets (`typecheck:node` / `typecheck:web`)                               |
+| `npm run typecheck:test`                                | Type-check the Vitest project with TypeScript 5.9                                                       |
+| `npm run lint:effect`                                   | Run Effect semantic diagnostics for node, web, and test projects, then check positive/negative fixtures |
+| `npm test`                                              | Run the vitest suite (`tests/`)                                                                         |
+| `npm run test:e2e`                                      | Build the bundles, then run the Playwright Electron smoke (`e2e/`)                                      |
+| `npm run lint`                                          | ESLint v9 flat gate (`eslint.config.mjs`) — blocking in CI (`test.yml`)                                 |
+| `npm run lint:fix`                                      | Autofix what ESLint can (import order), report the rest                                                 |
+| `npm run format`                                        | Rewrite everything with Prettier (`.prettierrc.json`)                                                   |
+| `npm run format:check`                                  | Check formatting with Prettier; blocking in CI                                                          |
+| `npm run package`                                       | Build + package for the platform you are on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux)  |
+| `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS)                                      |
+| `npm run icons`                                         | Regenerate `build/icon.png` from `assets/watchtower-logo.svg`                                           |
+
+`typecheck:node`, `typecheck:web`, and `typecheck:test` run TypeScript 5.9.3.
+`lint:effect` uses `@effect/tsgo` 0.53.2, whose embedded TypeScript-Go compiler
+is 7.0.2 through the `@typescript/native` alias. These are separate checks with
+different compiler versions.
+The native alias also installs a `tsc` executable, so bare `tsc` or `npx tsc`
+can select a different compiler than the named scripts. Use the scripts for
+the TypeScript 5.9 gate; they invoke `node_modules/typescript/bin/tsc` explicitly.
+
+The `@effect/language-service` entry in the
+tsconfig plugin list is the plugin identifier consumed by `@effect/tsgo`; the
+Effect diagnostics do not come from a separately installed npm package.
+The checked-in VS Code setting selects TypeScript 5.9.3 for editor typechecking.
+For Effect editor diagnostics, `@effect/tsgo` documents
+`npm exec -- effect-tsgo setup --typescript --vscode`; use Effect-tsgo as the
+single TypeScript language server instead of running it alongside another
+TypeScript-Go server.
 
 ## End-to-end tests
 

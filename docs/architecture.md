@@ -266,6 +266,10 @@ writer. Main and worker have separate in-memory metric registries. The worker
 forwards records to main through its existing event channel. No exporter or
 second logging sink is installed.
 
+Compatibility adapters for direct callers must name those callers and state
+when the adapter can be removed. Remove the adapter after its named callers use
+the native API.
+
 ### Application workflows and repository boundaries
 
 `src/main/application/` contains query and command workflows. They compose
@@ -324,11 +328,14 @@ tests check `EBADF` after close and before rename.
 HTTP callers consume status and an Effectful JSON decoder from one HttpClient
 implementation. The deadline covers response headers. Body decoding follows
 the status check, and caller cancellation applies to both phases. Retries cover
-transient request failures; status and decode fallbacks stay with their callers.
+transient request and successful-body transport failures together. JSON syntax
+and schema failures do not retry; status and decode fallbacks stay with callers.
 
 ESLint uses the official Effect plugin for subpath imports and a TypeScript
 resolver for repository import boundaries. The separate `lint:effect` gate
-uses official semantic diagnostics with positive and negative fixtures.
+uses official semantic diagnostics on the node, web, and test projects. Positive
+and negative fixtures check floating Effects and Effects returned from plain
+Vitest callbacks.
 Application runtime ownership remains a repository rule. Effect-aware tests use
 `@effect/vitest`; specialized virtual-clock windows and real-time hang bounds
 remain where they test cancellation or retries.

@@ -15,6 +15,7 @@
         "name": "@effect/language-service",
         "diagnosticSeverity": {
           "floatingEffect": "error",
+          "floatingEffectInVitest": "error",
           "missingEffectError": "error",
           "missingEffectContext": "error"
         }

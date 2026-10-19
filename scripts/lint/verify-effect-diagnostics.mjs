@@ -14,15 +14,19 @@ function diagnostics(project) {
 }
 
 const positive = diagnostics('tsconfig.effect-probe-positive.json')
-if (positive.error || positive.status !== 0 || /effect\(floatingEffect\)/.test(positive.stdout + positive.stderr)) {
+const positiveOutput = positive.stdout + positive.stderr
+if (positive.error || positive.status !== 0 || /effect\(floatingEffect(?:InVitest)?\)/.test(positiveOutput)) {
   process.stderr.write('Effect diagnostic positive fixture failed.\n')
   process.stderr.write(positive.stderr || positive.stdout || String(positive.error))
   process.exitCode = 1
 } else {
   const negative = diagnostics('tsconfig.effect-probe-negative.json')
   const output = negative.stdout + negative.stderr
-  if (negative.error || negative.status === 0 || !/error effect\(floatingEffect\)/.test(output)) {
-    process.stderr.write('Effect diagnostic negative fixture was not rejected by floatingEffect.\n')
+  const missingRules = ['floatingEffect', 'floatingEffectInVitest'].filter(
+    rule => !new RegExp(`error effect\\(${rule}\\)`).test(output),
+  )
+  if (negative.error || negative.status === 0 || missingRules.length > 0) {
+    process.stderr.write(`Effect diagnostic negative fixture did not report: ${missingRules.join(', ')}.\n`)
     process.stderr.write(negative.stderr || negative.stdout || String(negative.error))
     process.exitCode = 1
   }

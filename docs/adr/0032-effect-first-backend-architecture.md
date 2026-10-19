@@ -19,10 +19,11 @@ around the Effect SQL client. This leaves Effect's service composition,
 structured concurrency, resource scopes, typed failures, and deterministic
 testing available only in isolated parts of the backend.
 
-Watchtower pins `effect` and `@effect/sql-sqlite-node` to
-`4.0.0-rc.115`. The db-worker owns the SQLite connection and data plane on one
-dedicated thread (ADR 0023). `node:sqlite` is synchronous, so Effect fibers do
-not make an individual SQL statement non-blocking; the worker remains the
+At adoption, Watchtower pinned `effect` and `@effect/sql-sqlite-node` to
+`4.0.0-rc.115`. That version pin is historical; the stable ecosystem migration
+is recorded below. The db-worker owns the SQLite connection and data plane on
+one dedicated thread (ADR 0023). `node:sqlite` is synchronous, so Effect fibers
+do not make an individual SQL statement non-blocking; the worker remains the
 isolation boundary that keeps database work off Electron's main thread.
 
 ## Decision

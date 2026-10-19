@@ -176,7 +176,7 @@ describe('effect: interrupt + drain barrier (pain 4 — iterator.return() juggli
                   drained.push(event)
                   if (drained.length === 2) {
                     yield* Deferred.succeed(buffered, undefined)
-                    yield* Effect.never
+                    return yield* Effect.never
                   }
                 }),
               ),
