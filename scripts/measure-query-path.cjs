@@ -834,7 +834,7 @@ function watchNativeStatements() {
     return id
   }
   const record = (sql, connection, method, result, nativeSqlMs = 0) => {
-    const select = /^\s*(?:\/\*[\s\S]*?\*\/\s*)*SELECT\b/i.test(sql)
+    const select = /^\s*(?:\/\*[\s\S]*?\*\/\s*)*(?:SELECT|WITH)\b/i.test(sql)
     const materializedRows = select
       ? method === 'all'
         ? (result?.length ?? 0)
