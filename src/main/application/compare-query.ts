@@ -18,9 +18,11 @@ export const queryCompareView = Effect.fn('queryCompareView')(function* (
   input: CompareQueryInputs,
 ): Effect.fn.Return<ComparePayload, SqlError | Schema.SchemaError, LedgerQueries | PricingDiagnostics> {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const snapshot = yield* loadLedgerQuerySnapshotEffect(input)
+  const range = overviewDateRange(input.scope, now)
+  const readRange = input.scope.period === 'lifetime' && !input.scope.range ? undefined : range
+  const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const calculation = buildSessionSummariesFromSnapshotResult(snapshot, {
-    range: overviewDateRange(input.scope, now),
+    range,
     provider: input.scope.provider,
   })
   const payload = calculateComparePayload(calculation.summaries, snapshot.catalogue, input.pair)

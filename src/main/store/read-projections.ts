@@ -77,6 +77,14 @@ export type LedgerCallFactsRow = Omit<
   | 'editFailed'
 >
 
+/** Lifetime model identity needed for pricing diagnostics after range reads prune call facts. */
+export const ledgerLifetimeModelSchema = Schema.Struct({
+  sourceId: num,
+  model: Schema.String,
+})
+
+export type LedgerLifetimeModelRow = Schema.Schema.Type<typeof ledgerLifetimeModelSchema>
+
 /**
  * `getCallFacts` — the aggregation seam's `ledger_call` projection.
  *

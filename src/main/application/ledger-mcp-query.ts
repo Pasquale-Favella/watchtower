@@ -34,8 +34,9 @@ export const queryLedgerMcpScope = Effect.fn('queryLedgerMcpScope')(function* (
   LedgerQueries | PricingDiagnostics
 > {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const snapshot = yield* loadLedgerQuerySnapshotEffect(input)
   const range = overviewDateRange(input.scope, now)
+  const readRange = input.scope.period === 'lifetime' && !input.scope.range ? undefined : range
+  const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const scoped = queryScopeFromSnapshotResult(snapshot, { range, provider: input.scope.provider })
   const result = calculateLedgerMcpScope(scoped.scope, input.scope, range)
   const diagnostics = yield* PricingDiagnostics
@@ -51,8 +52,9 @@ export const queryLedgerMcpCalls = Effect.fn('queryLedgerMcpCalls')(function* (
   LedgerQueries | PricingDiagnostics
 > {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const snapshot = yield* loadLedgerQuerySnapshotEffect(input)
   const range = overviewDateRange(input.scope, now)
+  const readRange = input.scope.period === 'lifetime' && !input.scope.range ? undefined : range
+  const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const scoped = queryScopeFromSnapshotResult(snapshot, { range, provider: input.scope.provider })
   const result = calculateLedgerMcpCalls(scoped.scope, input, range)
   const diagnostics = yield* PricingDiagnostics

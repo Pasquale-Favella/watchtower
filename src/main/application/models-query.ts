@@ -16,9 +16,11 @@ export const queryModelsView = Effect.fn('queryModelsView')(function* (
   input: ScopedViewQueryInputs,
 ): Effect.fn.Return<ModelsPayload, SqlError | Schema.SchemaError, LedgerQueries | PricingDiagnostics> {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const snapshot = yield* loadLedgerQuerySnapshotEffect(input)
+  const range = overviewDateRange(input.scope, now)
+  const readRange = input.scope.period === 'lifetime' && !input.scope.range ? undefined : range
+  const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const calculation = buildSessionSummariesFromSnapshotResult(snapshot, {
-    range: overviewDateRange(input.scope, now),
+    range,
     provider: input.scope.provider,
   })
   const config: ModelsConfig = {

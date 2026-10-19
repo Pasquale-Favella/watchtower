@@ -17,7 +17,8 @@ import type { LedgerMcpStartupMode } from '../../shared/schemas/ledger-mcp.js'
 import type { PortInput } from '../../shared/schemas/port.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import type { ScanPricing } from '../pipeline/scan-pricing.js'
-import type { LedgerCallFactsRow } from './read-projections.js'
+import type { DateRange } from '../pipeline/types.js'
+import type { LedgerCallFactsRow, LedgerLifetimeModelRow } from './read-projections.js'
 
 /** Scan-derived fact writes and source removal. */
 export interface LedgerIngestPort {
@@ -34,6 +35,8 @@ export type LedgerRequestSnapshotData = {
   calls: LedgerCallFactsRow[]
   aliases: ModelAlias[]
   overrides: PriceOverride[]
+  /** Distinct lifetime identities used to keep pricing diagnostics independent of row pruning. */
+  lifetimeModels?: LedgerLifetimeModelRow[]
 }
 
 export interface LedgerQueriesPort {
@@ -43,7 +46,7 @@ export interface LedgerQueriesPort {
   getTurns(): Effect.Effect<LedgerTurnRow[], SqlError | Schema.SchemaError>
   getCalls(): Effect.Effect<LedgerCallRow[], SqlError | Schema.SchemaError>
   getCallFacts(): Effect.Effect<LedgerCallFactsRow[], SqlError | Schema.SchemaError>
-  getRequestSnapshotData(): Effect.Effect<LedgerRequestSnapshotData, SqlError | Schema.SchemaError>
+  getRequestSnapshotData(range?: DateRange): Effect.Effect<LedgerRequestSnapshotData, SqlError | Schema.SchemaError>
 }
 
 /** User settings that survive ledger clearing. */

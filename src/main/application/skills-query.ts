@@ -32,8 +32,9 @@ export const querySkillsView = Effect.fn('querySkillsView')(function* (
   LedgerQueries | LedgerConfig | AssistantSetup | PricingDiagnostics
 > {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const snapshot = yield* loadLedgerQuerySnapshotEffect(input)
   const dateRange = overviewDateRange(input.scope, now)
+  const readRange = input.scope.period === 'lifetime' && !input.scope.range ? undefined : dateRange
+  const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const aggregation = buildSessionSummariesFromSnapshotResult(snapshot, {
     range: dateRange,
     provider: input.scope.provider,

@@ -4,6 +4,7 @@ import { getShortModelName } from '../pipeline/model-names.js'
 import { buildSpawnPrSets, extractPrUrlsFromProviderCall } from '../pipeline/parser-calculations.js'
 import {
   calculateRepricedCostResult,
+  getModelCosts,
   type PricingCatalogue,
   type PricingConfigLookup,
   resolveModelNameAlias,
@@ -109,11 +110,21 @@ export function queryScopeFromSnapshotResult(snapshot: LedgerQuerySnapshot, scop
   const turns = snapshot.turns.filter(t => keepSource(t.sourceId))
   const calls: ScopedCall[] = []
   const unpricedModels = new Set<string>()
+  if (snapshot.lifetimeModels) {
+    for (const { sourceId, model } of snapshot.lifetimeModels) {
+      if (!keepSource(sourceId)) continue
+      const resolvedModel = snapshot.pricing.resolveAlias(model)
+      if (resolvedModel === model) continue
+      if (snapshot.pricing.findOverride(resolvedModel)) continue
+      if (getModelCosts(snapshot.catalogue, resolvedModel)) continue
+      unpricedModels.add(resolvedModel)
+    }
+  }
   for (const call of snapshot.calls) {
     if (!keepSource(call.sourceId)) continue
     const resolvedModel = snapshot.pricing.resolveAlias(call.model)
     const displayCost = resolveDisplayCost(call, resolvedModel, snapshot.pricing, snapshot.catalogue)
-    if (!displayCost.priced) unpricedModels.add(resolvedModel)
+    if (!snapshot.lifetimeModels && !displayCost.priced) unpricedModels.add(resolvedModel)
     calls.push({
       ...call,
       resolvedModel,

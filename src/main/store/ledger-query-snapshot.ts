@@ -7,6 +7,7 @@ import {
   type PricingConfigLookup,
 } from '../pipeline/pricing-calculation.js'
 import type { ProxyPathConfig } from '../pipeline/proxy-paths.js'
+import type { DateRange } from '../pipeline/types.js'
 import { LedgerQueries, type LedgerRequestSnapshotData } from './ledger-ports.js'
 import type { LedgerCallFactsRow } from './read-projections.js'
 
@@ -18,6 +19,7 @@ export type LedgerQuerySnapshot = {
   calls: readonly LedgerCallFactsRow[]
   aliases: readonly LedgerRequestSnapshotData['aliases'][number][]
   overrides: readonly LedgerRequestSnapshotData['overrides'][number][]
+  lifetimeModels?: readonly NonNullable<LedgerRequestSnapshotData['lifetimeModels']>[number][]
   pricing: PricingConfigLookup
   catalogue: PricingCatalogue
   proxyPaths: ProxyPathConfig
@@ -36,6 +38,7 @@ export function makeLedgerQuerySnapshot(input: LedgerQuerySnapshotInputs): Ledge
     calls: input.calls,
     aliases: input.aliases,
     overrides: input.overrides,
+    ...(input.lifetimeModels ? { lifetimeModels: input.lifetimeModels } : {}),
     pricing: createPricingConfigLookup(input.aliases, input.overrides),
     catalogue: input.catalogue,
     proxyPaths: Object.freeze({
@@ -46,11 +49,14 @@ export function makeLedgerQuerySnapshot(input: LedgerQuerySnapshotInputs): Ledge
 }
 
 /** Load decoded facts and explicitly captured application config for a request. */
-export const loadLedgerQuerySnapshotEffect = Effect.fn('LedgerQuerySnapshot.load')(function* (input: {
-  catalogue: PricingCatalogue
-  proxyPaths: ProxyPathConfig
-}) {
+export const loadLedgerQuerySnapshotEffect = Effect.fn('LedgerQuerySnapshot.load')(function* (
+  input: {
+    catalogue: PricingCatalogue
+    proxyPaths: ProxyPathConfig
+  },
+  range?: DateRange,
+) {
   const queries = yield* LedgerQueries
-  const data: LedgerRequestSnapshotData = yield* queries.getRequestSnapshotData()
+  const data: LedgerRequestSnapshotData = yield* queries.getRequestSnapshotData(range)
   return makeLedgerQuerySnapshot({ ...data, ...input })
 })

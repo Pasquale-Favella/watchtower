@@ -21,14 +21,16 @@ export const queryYieldView = Effect.fn('queryYieldView')(function* (
   LedgerQueries | PricingDiagnostics | RepositoryInspection
 > {
   const now = DateTime.toDateUtc(yield* DateTime.now)
-  const snapshot = yield* loadLedgerQuerySnapshotEffect(input)
+  const range = overviewDateRange(input.scope, now)
+  const readRange = input.scope.period === 'lifetime' && !input.scope.range ? undefined : range
+  const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
   const calculation = buildSessionSummariesFromSnapshotResult(snapshot, {
-    range: overviewDateRange(input.scope, now),
+    range,
     provider: input.scope.provider,
   })
-  const range = scopeDateRange(input.scope, now) ?? { start: new Date(0), end: now }
-  const groups = yield* inspectYieldProjects(groupSummariesIntoProjects(calculation.summaries), range)
-  const payload = calculateYieldPayload(groups, range)
+  const detectorRange = scopeDateRange(input.scope, now) ?? { start: new Date(0), end: now }
+  const groups = yield* inspectYieldProjects(groupSummariesIntoProjects(calculation.summaries), detectorRange)
+  const payload = calculateYieldPayload(groups, detectorRange)
   const diagnostics = yield* PricingDiagnostics
   yield* diagnostics.reportUnpricedModels(calculation.unpricedModels)
   return yield* Schema.decodeUnknownEffect(yieldPayloadSchema)(payload)
