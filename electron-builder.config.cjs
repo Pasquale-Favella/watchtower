@@ -1,3 +1,6 @@
+// electron-builder treats an empty CSC_LINK as a certificate path, not missing credentials.
+if (process.env.CSC_LINK?.trim() === '') delete process.env.CSC_LINK
+
 const signedMac = process.platform === 'darwin' && Boolean(process.env.CSC_LINK)
 
 if (
