@@ -1,23 +1,92 @@
+import Papa from 'papaparse'
+
 import type { ActiveCurrency } from '../shared/schemas/fx.js'
 
 export type ExportRow = Record<string, string | number | undefined>
 export type ExportFileContent = { readonly name: string; readonly contents: string }
 
-function escCsv(value: string): string {
-  const sanitized = /^[\t\r=+\-@]/.test(value) ? `'${value}` : value
-  return sanitized.includes(',') || sanitized.includes('"') || sanitized.includes('\n')
-    ? `"${sanitized.replace(/"/g, '""')}"`
-    : sanitized
+const CSV_FORMULA_PREFIX = /^[\t\r\n=+\-@\uFF1D\uFF0B\uFF0D\uFF20]/
+
+/** Canonical header line per CSV file, kept in one place so tables with no
+ * rows still export their headers instead of 0-byte files. A parity test
+ * pins these against the live row builders to catch key drift. */
+export const CSV_TABLE_HEADERS: Record<string, readonly string[] | ((code: string) => readonly string[])> = {
+  'daily.csv': code => [
+    'Date',
+    `Cost (${code})`,
+    `Saved (${code})`,
+    'API Calls',
+    'Sessions',
+    'Input Tokens',
+    'Output Tokens',
+    'Cache Read Tokens',
+    'Cache Write Tokens',
+  ],
+  'activity.csv': code => ['Activity', `Cost (${code})`, 'Share (%)', 'Turns'],
+  'models.csv': code => [
+    'Model',
+    `Cost (${code})`,
+    `Saved (${code})`,
+    'Share (%)',
+    'API Calls',
+    'Input Tokens',
+    'Output Tokens',
+    'Cache Read Tokens',
+    'Cache Write Tokens',
+  ],
+  'records.csv': [
+    'project',
+    'repoUrl',
+    'sessionId',
+    'timestamp',
+    'category',
+    'provider',
+    'model',
+    'inputTokens',
+    'outputTokens',
+    'reasoningTokens',
+    'cacheWriteTokens',
+    'cacheReadTokens',
+    'cost',
+    'savings',
+  ],
+  'projects.csv': code => [
+    'Project',
+    'repoUrl',
+    `Cost (${code})`,
+    `Saved (${code})`,
+    `Avg/Session (${code})`,
+    'Share (%)',
+    'API Calls',
+    'Sessions',
+  ],
+  'sessions.csv': code => [
+    'Project',
+    'repoUrl',
+    'Session ID',
+    'Started At',
+    `Cost (${code})`,
+    `Saved (${code})`,
+    'API Calls',
+    'Turns',
+    'model',
+  ],
+  'tools.csv': ['Tool', 'Calls', 'Share (%)'],
+  'mcp.csv': ['Server', 'Calls', 'Share (%)'],
+  'shell-commands.csv': ['Command', 'Calls', 'Share (%)'],
 }
 
-function rowsToCsv(rows: ExportRow[]): string {
-  if (rows.length === 0) return ''
-  const firstRow = rows[0]
-  if (!firstRow) return ''
-  const headers = Object.keys(firstRow)
-  const lines = [headers.map(escCsv).join(',')]
-  for (const row of rows) lines.push(headers.map(header => escCsv(String(row[header] ?? ''))).join(','))
-  return `${lines.join('\n')}\n`
+function rowsToCsv(rows: ExportRow[], headers?: readonly string[]): string {
+  const columnNames = rows.length > 0 ? Object.keys(rows[0]!) : (headers ?? [])
+  if (columnNames.length === 0) return ''
+  const csv = Papa.unparse(
+    {
+      fields: Array.from(columnNames),
+      data: rows.map(row => columnNames.map(header => String(row[header] ?? ''))),
+    },
+    { newline: '\n', escapeFormulae: CSV_FORMULA_PREFIX },
+  )
+  return csv.endsWith('\n') ? csv : `${csv}\n`
 }
 
 function buildReadme(currency: ActiveCurrency, generated: string): string {
@@ -81,7 +150,11 @@ export function buildCsvExportFilesFromRows(
   ]
   return [
     { name: 'README.txt', contents: buildReadme(currency, generated) },
-    ...tables.map(([name, rows]) => ({ name, contents: rowsToCsv(rows) })),
+    ...tables.map(([name, rows]) => {
+      const template = CSV_TABLE_HEADERS[name]
+      const headers = typeof template === 'function' ? template(currency.code) : template
+      return { name, contents: rowsToCsv(rows, headers) }
+    }),
   ]
 }
 

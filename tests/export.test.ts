@@ -6,7 +6,13 @@ import * as Effect from 'effect/Effect'
 import { describe, expect, it, vi } from 'vitest'
 
 import { queryExport } from '../src/main/application/export-query.js'
-import { buildCsvExportFilesFromRows, buildJsonExportFromRows } from '../src/main/export-calculation.js'
+import {
+  buildCsvExportFilesFromRows,
+  buildJsonExportFromRows,
+  CSV_TABLE_HEADERS,
+  type ExportRow,
+  type ExportRows,
+} from '../src/main/export-calculation.js'
 import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
 import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
@@ -67,8 +73,7 @@ async function exportPath(
   outputPath: string,
 ): Promise<string> {
   const result = await runtime.runPromise(queryExport(queryInput(kind, outputPath)))
-  if (!result.ok) throw new Error(result.error)
-  if (!result.path) throw new Error(`${kind.toUpperCase()} export did not return a path`)
+  if (!result.ok) throw new Error('error' in result ? result.error : 'Export cancelled')
   return result.path
 }
 
@@ -183,7 +188,7 @@ describe('pure export serialization', () => {
         'Project,repoUrl,Session ID,Started At,Cost (USD),Saved (USD),API Calls,Turns,model\n' +
         '/tmp/demo,,sess-0,2026-07-01T09:00:00.000Z,0.42,0,1,1,demo-model\n',
       'tools.csv': 'Tool,Calls,Share (%)\nbash,1,100\n',
-      'mcp.csv': '',
+      'mcp.csv': 'Server,Calls,Share (%)\n',
       'shell-commands.csv': 'Command,Calls,Share (%)\nls,1,100\n',
     })
 
@@ -270,6 +275,130 @@ describe('pure export serialization', () => {
     expect(
       buildCsvExportFilesFromRows(rows, USD, GENERATED).find(file => file.name === 'records.csv')?.contents,
     ).toContain('"\'=SUM(1,2)"')
+  })
+
+  it('quotes values containing a lone CR so row boundaries stay intact', () => {
+    const rows = buildExportSerializationRows()
+    const command = rows.shellCommands[0]
+    if (!command) throw new Error('fixture shell command missing')
+    command.Command = 'cr-only\rvalue'
+    expect(
+      buildCsvExportFilesFromRows(rows, USD, GENERATED).find(file => file.name === 'shell-commands.csv')?.contents,
+    ).toBe('Command,Calls,Share (%)\n"cr-only\rvalue",1,100\n')
+  })
+
+  it('neutralizes ASCII and full-width spreadsheet formula prefixes', () => {
+    const rows = buildExportSerializationRows()
+    rows.shellCommands = [
+      '\tTab',
+      '\rCR',
+      '\nLF',
+      '=1',
+      '+1',
+      '-1',
+      '@1',
+      '\uFF1D1',
+      '\uFF0B1',
+      '\uFF0D1',
+      '\uFF201',
+    ].map(Command => ({ Command, Calls: 1, 'Share (%)': 100 }))
+
+    expect(
+      buildCsvExportFilesFromRows(rows, USD, GENERATED).find(file => file.name === 'shell-commands.csv')?.contents,
+    ).toBe(
+      'Command,Calls,Share (%)\n' +
+        '"\'\tTab",1,100\n' +
+        '"\'\rCR",1,100\n' +
+        '"\'\nLF",1,100\n' +
+        '"\'=1",1,100\n' +
+        '"\'+1",1,100\n' +
+        '"\'-1",1,100\n' +
+        '"\'@1",1,100\n' +
+        '"\'＝1",1,100\n' +
+        '"\'＋1",1,100\n' +
+        '"\'－1",1,100\n' +
+        '"\'＠1",1,100\n',
+    )
+  })
+
+  it('quotes CSV delimiters and embedded line breaks while keeping LF records and stringifying cells', () => {
+    const rows = buildExportSerializationRows()
+    rows.shellCommands = [
+      { Command: 'comma,value', Calls: 3, 'Share (%)': 100 },
+      { Command: 'quote "value"', Calls: 4, 'Share (%)': 50 },
+      { Command: 'line\nbreak', Calls: 5, 'Share (%)': 25 },
+      { Command: 'cr-only\rvalue', Calls: -6, 'Share (%)': undefined },
+    ]
+
+    expect(
+      buildCsvExportFilesFromRows(rows, USD, GENERATED).find(file => file.name === 'shell-commands.csv')?.contents,
+    ).toBe(
+      'Command,Calls,Share (%)\n' +
+        '"comma,value",3,100\n' +
+        '"quote ""value""",4,50\n' +
+        '"line\nbreak",5,25\n' +
+        '"cr-only\rvalue","\'-6",\n',
+    )
+  })
+
+  it('keeps empty tables exporting their canonical headers instead of 0-byte files', () => {
+    const rows = { ...buildExportSerializationRows(), daily: [], tools: [], mcp: [], shellCommands: [] }
+    const files: Record<string, string> = Object.fromEntries(
+      buildCsvExportFilesFromRows(rows, USD, GENERATED).map(file => [file.name, file.contents] as const),
+    )
+    expect(files['daily.csv']).toBe(
+      'Date,Cost (USD),Saved (USD),API Calls,Sessions,Input Tokens,Output Tokens,Cache Read Tokens,Cache Write Tokens\n',
+    )
+    expect(files['tools.csv']).toBe('Tool,Calls,Share (%)\n')
+    expect(files['mcp.csv']).toBe('Server,Calls,Share (%)\n')
+    expect(files['shell-commands.csv']).toBe('Command,Calls,Share (%)\n')
+  })
+
+  it('applies the active currency to empty-table headers of another locale', () => {
+    const rows: ExportRows = {
+      daily: [],
+      activity: [],
+      models: [],
+      projects: [],
+      sessions: [],
+      records: [],
+      tools: [],
+      mcp: [],
+      shellCommands: [],
+    }
+    const jpy = { code: 'JPY', symbol: String.fromCharCode(165), rate: 150 } as const
+    const files: Record<string, string> = Object.fromEntries(
+      buildCsvExportFilesFromRows(rows, jpy, GENERATED).map(file => [file.name, file.contents] as const),
+    )
+    expect(files['daily.csv']).toContain('Date,Cost (JPY),Saved (JPY)')
+    expect(files['sessions.csv']).toBe(
+      'Project,repoUrl,Session ID,Started At,Cost (JPY),Saved (JPY),API Calls,Turns,model\n',
+    )
+    expect(files['mcp.csv']).toBe('Server,Calls,Share (%)\n')
+  })
+
+  it('keeps the canonical header templates aligned with the live row builders', () => {
+    const rows = buildExportSerializationRows()
+    const mcpRow: ExportRow = { Server: 'github', Calls: 1, 'Share (%)': 100 }
+    const checks: ReadonlyArray<[keyof ExportRows, string]> = [
+      ['daily', 'daily.csv'],
+      ['activity', 'activity.csv'],
+      ['models', 'models.csv'],
+      ['projects', 'projects.csv'],
+      ['sessions', 'sessions.csv'],
+      ['records', 'records.csv'],
+      ['tools', 'tools.csv'],
+      ['mcp', 'mcp.csv'],
+      ['shellCommands', 'shell-commands.csv'],
+    ]
+    for (const [table, file] of checks) {
+      const template = CSV_TABLE_HEADERS[file]
+      if (!template) throw new Error(`missing canonical headers for ${file}`)
+      const headers = typeof template === 'function' ? template('USD') : template
+      const firstRow = rows[table][0] ?? (table === 'mcp' ? mcpRow : undefined)
+      if (!firstRow) throw new Error(`fixture row missing for ${table}`)
+      expect(Object.keys(firstRow)).toEqual(headers)
+    }
   })
 })
 

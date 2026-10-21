@@ -25,11 +25,13 @@ import type { AcpMcpServer } from './agents/harnesses/types.js'
 import { registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
+import { exportCsvZip as exportCsvZipEffect } from './application/export-csv-zip.js'
 import { saveSkill } from './application/save-skill.js'
 import { BackgroundShell, type BackgroundShellHandle, backgroundShellLayer } from './background-shell.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { acquireElectronUpdates } from './electron-updates.js'
 import { initAppPaths, readAppPathsEffect } from './env.js'
+import { exportStamp } from './export-zip.js'
 import { makeMainRuntime } from './main-runtime.js'
 import {
   closeOperationalLog,
@@ -392,31 +394,44 @@ function registerIpc(db: DbWorkerClient): void {
   /** The full ISO 4217 currency list (162 codes) for the Settings selector. */
   handleLogged('currency:list', () => db.request('currency:list'))
 
-  /** CSV/JSON export in the selected display currency. The main process shows
-   * a folder picker when no destination is supplied; the worker computes and
-   * writes the files (it owns the ledger the export reads). */
-  async function runExport(kind: 'csv' | 'json', destination?: string): Promise<ExportResult> {
-    let target = destination
-    if (!target) {
-      if (kind === 'csv') {
-        const picked = await dialog.showOpenDialog({
-          title: 'Choose an export folder',
-          properties: ['openDirectory', 'createDirectory'],
-          buttonLabel: 'Export',
-        })
-        if (picked.canceled || picked.filePaths.length === 0) return { ok: false, error: 'cancelled' }
-        target = picked.filePaths[0]
-      } else {
-        const picked = await dialog.showSaveDialog({
-          title: 'Export JSON',
-          defaultPath: 'watchtower-export.json',
-          filters: [{ name: 'JSON', extensions: ['json'] }],
-        })
-        if (picked.canceled || !picked.filePath) return { ok: false, error: 'cancelled' }
-        target = picked.filePath
-      }
+  /** The natural place for a user-facing export artifact: Documents (or home
+   * when the platform lacks the Documents role). Only used as the DEFAULT in
+   * the save dialog — the user always confirms the final path. */
+  function defaultExportBase(): string {
+    try {
+      return app.getPath('documents')
+    } catch {
+      return homedir()
     }
-    return (await db.request(`export:${kind}`, target)) as ExportResult
+  }
+
+  function exportCsvZip(stamp: string): Promise<ExportResult> {
+    return mainRuntime.runPromise(
+      exportCsvZipEffect(stamp, {
+        defaultDirectory: defaultExportBase(),
+        showSaveDialog: defaultPath =>
+          dialog.showSaveDialog({
+            title: 'Export CSV',
+            defaultPath,
+            filters: [{ name: 'ZIP', extensions: ['zip'] }],
+          }),
+        requestCsvFolder: staging => db.request('export:csv', staging) as Promise<ExportResult>,
+      }),
+    )
+  }
+
+  /** Uses explicit destinations for scripted exports and dialogs for UI exports. */
+  async function runExport(kind: 'csv' | 'json', destination?: string): Promise<ExportResult> {
+    if (destination) return (await db.request(`export:${kind}`, destination)) as ExportResult
+    const stamp = exportStamp()
+    if (kind === 'csv') return exportCsvZip(stamp)
+    const picked = await dialog.showSaveDialog({
+      title: 'Export JSON',
+      defaultPath: 'watchtower-export.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+    if (picked.canceled || !picked.filePath) return { ok: false, cancelled: true }
+    return (await db.request('export:json', picked.filePath)) as ExportResult
   }
 
   handleLogged('export:csv', (_event, destination?: string): Promise<ExportResult> => runExport('csv', destination))
