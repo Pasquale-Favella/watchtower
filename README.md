@@ -36,8 +36,8 @@ Download the installer for your platform from the [latest release](https://githu
 |---|---|---|
 | **Windows** (x64) | [`Watchtower-win-x64.exe`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-win-x64.exe) | Run the installer (NSIS). |
 | **macOS** (Apple Silicon + Intel) | [`Watchtower-mac-universal.dmg`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-mac-universal.dmg) | Open the DMG, drag Watchtower into Applications. |
-| **Linux** (x64) | [`Watchtower-linux-x64.AppImage`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x64.AppImage) | `chmod +x Watchtower-linux-x64.AppImage && ./Watchtower-linux-x64.AppImage` |
-| **Linux** (Debian/Ubuntu) | [`Watchtower-linux-x64.deb`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x64.deb) | `sudo apt install ./Watchtower-linux-x64.deb` |
+| **Linux** (x64) | [`Watchtower-linux-x86_64.AppImage`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x86_64.AppImage) | `chmod +x Watchtower-linux-x86_64.AppImage && ./Watchtower-linux-x86_64.AppImage` |
+| **Linux** (Debian/Ubuntu) | [`Watchtower-linux-amd64.deb`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-amd64.deb) | `sudo apt install ./Watchtower-linux-amd64.deb` |
 
 Every release ships all three platforms. AppImage and `.deb` are the two Linux flavors; macOS ships one universal binary that runs on both Apple Silicon and Intel.
 

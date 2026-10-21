@@ -25,7 +25,9 @@ describe('update platform policy', () => {
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-update-policy-'))
     writeFileSync(join(directory, 'Uninstall Watchtower.exe'), '')
     const checkForUpdates = vi.fn().mockResolvedValue({ isUpdateAvailable: true, updateInfo: { version: '0.3.0' } })
-    library.updater = Object.assign(new EventEmitter(), { checkForUpdates })
+    const quitAndInstall = vi.fn()
+    const onInstallError = vi.fn()
+    library.updater = Object.assign(new EventEmitter(), { checkForUpdates, quitAndInstall })
     try {
       const source = await Effect.runPromise(
         acquireElectronUpdates({
@@ -34,7 +36,7 @@ describe('update platform policy', () => {
           appPath: directory,
           executablePath: join(directory, 'Watchtower.exe'),
           appImage: undefined,
-          onInstallError: vi.fn(),
+          onInstallError,
         }).pipe(Effect.provide(NodeFileSystem.layer)),
       )
       expect(source.driver).not.toBeNull()
@@ -51,6 +53,10 @@ describe('update platform policy', () => {
       unsubscribe()
       updater.emit('download-progress', { percent: 55 })
       expect(notify).toHaveBeenCalledExactlyOnceWith(45)
+      source.driver.install()
+      expect(quitAndInstall).toHaveBeenCalledExactlyOnceWith(true, true)
+      updater.emit('error', new Error('installer failed'))
+      expect(onInstallError).toHaveBeenCalledTimes(1)
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

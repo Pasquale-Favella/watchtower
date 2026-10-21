@@ -6,6 +6,10 @@ fetches and verifies an artifact; Restart to install closes the worker,
 database, harnesses, main runtime, and operational log before starting it.
 Closing Watchtower normally does not authorize installation.
 
+On Windows, Restart to install requests a silent NSIS update and relaunch,
+including for assisted initial installations. Windows may still request
+elevation when required. Initial installation keeps its existing setup wizard.
+
 The About view reads a transient Zustand store. That store owns its explicit
 hydration/request state machine and command guards; app-level IPC wiring feeds
 it for the lifetime of the app window, including while Settings is closed.
@@ -53,6 +57,8 @@ upload artifacts, `latest*.yml`, and blockmaps to the final release job.
 That job validates manifest versions and referenced artifacts, creates
 versionless artifact copies for existing download links, and publishes the
 complete release. Update manifests reference only versioned artifact names.
+The README's Linux download links use the builder's actual architecture suffixes,
+`x86_64` for AppImage and `amd64` for deb, matching the versionless copies.
 No publish token or certificate is embedded in the application.
 
 ## Required installed upgrade acceptance
@@ -73,6 +79,9 @@ service tests do not substitute for installed upgrade acceptance.
 - Verify Windows NSIS and Linux AppImage updates. Verify deb and unpacked
   directory fallbacks. On macOS, test the manual ad-hoc-to-Developer-ID
   migration, then N-to-N+1 with the same Developer ID on Intel and Apple Silicon.
+- For assisted Windows installations, confirm the update applies without
+  reopening the setup wizard and relaunches the app in its existing installation
+  directory. Verify per-user installs and per-machine installs requiring elevation.
 - Verify Windows publisher signatures and macOS code signatures, notarization,
   and launch behavior with Gatekeeper enabled.
 

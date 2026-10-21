@@ -4,6 +4,7 @@ import { releasePageUrl, REPO_URL } from '@/features/settings/updates'
 import {
   canRequestUpdate,
   selectUpdateActivity,
+  selectUpdateCommandVisible,
   selectUpdateError,
   selectUpdateStatus,
   useUpdatesStore,
@@ -40,22 +41,20 @@ export function AboutSection(): React.JSX.Element {
           <RefreshCcw className={activity === 'check' ? 'size-3.5 animate-spin' : 'size-3.5'} />
           {activity === 'check' ? 'Checking…' : 'Check for updates'}
         </Button>
-        {status?.installSupported &&
-          status.updateAvailable &&
-          (status.phase === 'available' || status.phase === 'error') && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!canRequestUpdate(machine, 'download')}
-              onClick={() => void download()}
-              className="text-[11px]"
-            >
-              <Download className="size-3.5" />
-              Download update
-            </Button>
-          )}
-        {status?.phase === 'ready' && (
+        {selectUpdateCommandVisible(machine, 'download') && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!canRequestUpdate(machine, 'download')}
+            onClick={() => void download()}
+            className="text-[11px]"
+          >
+            <Download className="size-3.5" />
+            Download update
+          </Button>
+        )}
+        {selectUpdateCommandVisible(machine, 'install') && (
           <Button
             type="button"
             size="sm"

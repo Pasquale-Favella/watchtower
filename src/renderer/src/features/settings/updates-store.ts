@@ -12,6 +12,21 @@ import type { UpdateStatus } from '../../../../shared/schemas/updates.js'
 
 type UpdateCommand = 'check' | 'download' | 'install'
 
+const phasePolicy: Record<
+  UpdateStatus['phase'],
+  { commands: readonly UpdateCommand[]; activity: UpdateCommand | null }
+> = {
+  idle: { commands: ['check'], activity: null },
+  unsupported: { commands: [], activity: null },
+  checking: { commands: [], activity: 'check' },
+  current: { commands: ['check'], activity: null },
+  available: { commands: ['check', 'download'], activity: null },
+  downloading: { commands: [], activity: 'download' },
+  ready: { commands: ['install'], activity: null },
+  installing: { commands: [], activity: 'install' },
+  error: { commands: ['check', 'download'], activity: null },
+}
+
 /** Main owns installation. This machine owns hydration and user requests. */
 type UpdatesMachine =
   | { state: 'uninitialized' }
@@ -33,35 +48,29 @@ export function selectUpdateStatus(machine: UpdatesMachine): UpdateStatus | null
 }
 
 export function selectUpdateError(machine: UpdatesMachine): string | null {
+  // Renderer hydration/IPC failures. Updater failures remain in status.message.
   return 'message' in machine ? machine.message : null
 }
 
 export function selectUpdateActivity(machine: UpdatesMachine): UpdateCommand | null {
   if (machine.state === 'requesting') return machine.command
-  switch (selectUpdateStatus(machine)?.phase) {
-    case 'checking':
-      return 'check'
-    case 'downloading':
-      return 'download'
-    case 'installing':
-      return 'install'
-    default:
-      return null
-  }
+  const status = selectUpdateStatus(machine)
+  return status ? phasePolicy[status.phase].activity : null
+}
+
+function isCommandAvailable(status: UpdateStatus | null, command: UpdateCommand): boolean {
+  if (!status?.installSupported) return false
+  return phasePolicy[status.phase].commands.includes(command) && (command !== 'download' || status.updateAvailable)
+}
+
+/** Keep an available action visible while its renderer request is pending. */
+export function selectUpdateCommandVisible(machine: UpdatesMachine, command: 'download' | 'install'): boolean {
+  return isCommandAvailable(selectUpdateStatus(machine), command)
 }
 
 export function canRequestUpdate(machine: UpdatesMachine, command: UpdateCommand): boolean {
   if (machine.state !== 'synced' && machine.state !== 'request-error') return false
-  const status = machine.status
-  if (!status.installSupported) return false
-  switch (command) {
-    case 'check':
-      return ['idle', 'current', 'available', 'error'].includes(status.phase)
-    case 'download':
-      return status.updateAvailable && (status.phase === 'available' || status.phase === 'error')
-    case 'install':
-      return status.phase === 'ready'
-  }
+  return isCommandAvailable(machine.status, command)
 }
 
 function newerStatus(current: UpdateStatus, incoming: UpdateStatus): UpdateStatus {

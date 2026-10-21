@@ -98,7 +98,7 @@ export const acquireElectronUpdates = Effect.fn('acquireElectronUpdates')(functi
           },
           install: () => {
             updater.once('error', options.onInstallError)
-            updater.quitAndInstall(false, true)
+            updater.quitAndInstall(true, true)
           },
         },
       }

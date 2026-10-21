@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   canRequestUpdate,
+  selectUpdateActivity,
+  selectUpdateCommandVisible,
   selectUpdateStatus,
   useUpdatesStore,
 } from '../src/renderer/src/features/settings/updates-store.js'
@@ -102,6 +104,8 @@ describe('Zustand update lifecycle', () => {
     await useUpdatesStore.getState().check()
     await useUpdatesStore.getState().download()
     useUpdatesStore.getState().onStatus(status('available', 2))
+    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'download')).toBe(true)
+    expect(canRequestUpdate(useUpdatesStore.getState().machine, 'download')).toBe(false)
     await useUpdatesStore.getState().download()
     expect(calls.downloadUpdate).not.toHaveBeenCalled()
     check.resolve(status('available', 2))
@@ -127,6 +131,8 @@ describe('Zustand update lifecycle', () => {
     useUpdatesStore.getState().onStatus(status('downloading', 3))
     useUpdatesStore.getState().onStatus({ ...status('downloading', 4), progress: 75 })
     useUpdatesStore.getState().onStatus(status('ready', 5))
+    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'install')).toBe(true)
+    expect(canRequestUpdate(useUpdatesStore.getState().machine, 'install')).toBe(false)
     useUpdatesStore.getState().onStatus(status('downloading', 3))
     download.resolve(status('downloading', 4))
     await pending
@@ -192,4 +198,21 @@ describe('Zustand update lifecycle', () => {
       expect(calls.installUpdate).not.toHaveBeenCalled()
     },
   )
+
+  it('uses one phase policy for command eligibility, visibility, and activity', () => {
+    useUpdatesStore.getState().onStatus(status('idle', 0))
+    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'download')).toBe(false)
+    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'install')).toBe(false)
+    useUpdatesStore.getState().onStatus(status('downloading', 1))
+    expect(selectUpdateActivity(useUpdatesStore.getState().machine)).toBe('download')
+    useUpdatesStore.getState().onStatus(status('error', 2))
+    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'download')).toBe(false)
+    useUpdatesStore.getState().onStatus({ ...status('error', 3), updateAvailable: true })
+    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'download')).toBe(true)
+    expect(canRequestUpdate(useUpdatesStore.getState().machine, 'download')).toBe(true)
+    expect(selectUpdateActivity(useUpdatesStore.getState().machine)).toBeNull()
+    useUpdatesStore.getState().onStatus({ ...status('ready', 4), installSupported: false })
+    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'install')).toBe(false)
+    expect(canRequestUpdate(useUpdatesStore.getState().machine, 'install')).toBe(false)
+  })
 })

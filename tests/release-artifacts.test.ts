@@ -22,6 +22,9 @@ function release() {
     writeFileSync(join(directory, name), 'artifact content')
     writeFileSync(join(directory, manifest), `version: 0.3.0\nfiles:\n  - url: ${name}\n    sha512: example\n`)
   }
+  for (const name of ['Watchtower-0.3.0-mac-universal.dmg', 'Watchtower-0.3.0-linux-amd64.deb']) {
+    writeFileSync(join(directory, name), 'artifact content')
+  }
   return directory
 }
 
@@ -30,6 +33,17 @@ afterEach(() => {
 })
 
 describe('complete release publication', () => {
+  it('produces an artifact for every direct README download link', () => {
+    const directory = release()
+    prepareReleaseArtifacts(directory, '0.3.0')
+    const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+    const links = [...readme.matchAll(/releases\/latest\/download\/([^\s)]+)/g)]
+    expect(links).toHaveLength(4)
+    for (const [, name] of links) {
+      expect(readFileSync(join(directory, decodeURIComponent(name)), 'utf8')).toBe('artifact content')
+    }
+  })
+
   it('preserves stable download aliases while manifests retain versioned URLs', () => {
     const directory = release()
     prepareReleaseArtifacts(directory, '0.3.0')
