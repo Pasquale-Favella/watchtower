@@ -2,9 +2,20 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 
-/** Preserve public download links without making updater URLs mutable. */
+/** Validate the complete release without creating duplicate download aliases. */
 function prepareReleaseArtifacts(directory, version) {
   const names = fs.readdirSync(directory)
+  const artifacts = [
+    'Watchtower-win-x64.exe',
+    'Watchtower-mac-universal.dmg',
+    'Watchtower-mac-universal.zip',
+    'Watchtower-linux-x86_64.AppImage',
+    'Watchtower-linux-amd64.deb',
+  ]
+  for (const artifact of artifacts) assert.ok(names.includes(artifact), `Missing release artifact: ${artifact}`)
+  for (const name of names.filter(name => /\.(exe|dmg|zip|AppImage|deb)$/.test(name))) {
+    assert.ok(artifacts.includes(name), `Unexpected release artifact: ${name}`)
+  }
   for (const manifest of ['latest.yml', 'latest-mac.yml', 'latest-linux.yml']) {
     assert.ok(names.includes(manifest), `Missing update manifest: ${manifest}`)
     const body = fs.readFileSync(path.join(directory, manifest), 'utf8')
@@ -14,14 +25,12 @@ function prepareReleaseArtifacts(directory, version) {
     for (const [, value] of urls) {
       const name = decodeURIComponent(value.trim().replace(/^['"]|['"]$/g, ''))
       assert.equal(path.basename(name), name, `Unexpected artifact URL: ${name}`)
-      assert.ok(name.startsWith(`Watchtower-${version}-`), `Unversioned update artifact: ${name}`)
+      assert.ok(artifacts.includes(name), `Unexpected update artifact: ${name}`)
       assert.ok(names.includes(name), `Missing update artifact: ${name}`)
     }
   }
-  for (const name of names) {
-    if (name.startsWith(`Watchtower-${version}-`) && /\.(exe|dmg|zip|AppImage|deb)$/.test(name)) {
-      fs.copyFileSync(path.join(directory, name), path.join(directory, name.replace(`-${version}-`, '-')))
-    }
+  for (const artifact of ['Watchtower-win-x64.exe', 'Watchtower-mac-universal.dmg', 'Watchtower-mac-universal.zip']) {
+    assert.ok(names.includes(`${artifact}.blockmap`), `Missing update blockmap: ${artifact}`)
   }
 }
 

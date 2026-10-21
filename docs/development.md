@@ -118,10 +118,15 @@ Notes:
 - Linux without a display needs a virtual server (`xvfb-run -a npm run
 test:e2e`); Windows and macOS run headed as-is. There is no headless mode:
   Electron always opens a real window (Linux fakes the display via xvfb).
-- CI runs the suite non-blocking via `.github/workflows/e2e.yml`
+- PR CI calls the suite non-blocking via `.github/workflows/e2e.yml`
   (Windows + Linux matrix, `xvfb-run` on Linux) — failures notify but never
   block the `test.yml` merge gate; promoting it into the gate is tracked in
   #135.
+- `test.yml` selects application checks from changed paths and calls `e2e.yml`
+  inside the same run. Runtime changes verify application directories;
+  packaging or dependency changes verify installers instead. Merging does
+  not repeat CI on protected `main`. A manual `test.yml` run executes all
+  checks. See [release and CI selection](releases.md#ci-selection).
 
 ### Adding a spec
 

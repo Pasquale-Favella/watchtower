@@ -1,35 +1,45 @@
 name: test
 
-# Typecheck + tests + lint — the merge-readiness gate (ADR 0015). Runs
-# standalone on every pull request and push to main, and is also reusable:
-# release.yml calls it on version tags so a release only builds code that
-# just passed tests.
-#
-# Builds never run here — installers are produced only on version tags, in
-# release.yml.
+# One PR workflow owns core checks and selects the relevant application checks.
+# Protected main requires PR checks, so merging does not repeat them.
+# Releases still call this workflow to verify the exact tagged commit.
 
 on:
   pull_request:
-  push:
-    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
   workflow_call:
 
-# No top-level concurrency block here: when this workflow is called as a
-# reusable workflow, its concurrency would be applied to the caller's job and
-# collide with the caller's own concurrency group, killing the job before it
-# starts. The caller (release.yml) owns cancellation for release runs.
+permissions:
+  contents: read
+
+# The prefix keeps this separate from the caller's release concurrency group.
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Select checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.changes.outputs.checks }}
+      runtime: ${{ steps.changes.outputs.runtime }}
+      installers: ${{ steps.changes.outputs.installers }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Classify changed files
+        id: changes
+        run: node scripts/ci-changes.cjs
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
   lint:
-    # Lint gate scaffold (#136, spins out of #123 W6/W11/W14 + Phase 1).
-    # `npm run lint` is BLOCKING (exit 1 on any error); the warn-first set
-    # (non-null assertions, import order, unused vars — see eslint.config.mjs)
-    # stays advisory until the follow-up promotes each to error with its own
-    # cleanup diff. `format:check` went BLOCKING with the one-time
-    # `prettier --write` cleanup pass that cleared the pre-Prettier tree
-    # (305 unformatted files at #136 scaffold time), mirroring how e2e.yml
-    # went blocking after #133/#134.
     name: Lint
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -40,11 +50,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+        if: needs.changes.outputs.checks == 'true'
       - run: npm run lint:effect
+        if: needs.changes.outputs.checks == 'true'
       - run: npm run format:check
 
   test:
     name: Typecheck + tests
+    needs: changes
+    if: needs.changes.outputs.checks == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -60,6 +74,8 @@ jobs:
 
   windows-process-regression:
     name: Windows process source regressions
+    needs: changes
+    if: needs.changes.outputs.checks == 'true'
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -76,3 +92,14 @@ jobs:
           tests/command-runner.test.ts
           tests/command-runner-start.test.ts
           tests/command-runner-fast-exit.test.ts
+
+  application:
+    name: Application checks
+    needs: [changes, lint, test, windows-process-regression]
+    if: >-
+      needs.changes.outputs.runtime == 'true' &&
+      github.event_name != 'push' &&
+      github.event.pull_request.draft != true
+    uses: ./.github/workflows/e2e.yml
+    with:
+      installers: ${{ needs.changes.outputs.installers == 'true' }}

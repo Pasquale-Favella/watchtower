@@ -12,8 +12,7 @@ const productName = productNameMatch[1].replace(/^['"]|['"]$/g, '')
 
 function artifactPattern(platform, arch, extension) {
   const escapedProductName = productName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const version = packageInfo.version.replaceAll('.', '\\.')
-  return new RegExp(`^${escapedProductName}-${version}-${platform}-${arch}\\.${extension}$`, 'i')
+  return new RegExp(`^${escapedProductName}-${platform}-${arch}\\.${extension}$`, 'i')
 }
 
 function parseOptions(args) {

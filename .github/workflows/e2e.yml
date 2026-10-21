@@ -1,58 +1,21 @@
 name: e2e
 
-# Playwright Electron end-to-end (tracks #133, built in #134). The general
-# navigation suite stays non-blocking while timing stabilises. The packaged
-# Linux/macOS acceptance job below is blocking for the platform claim (ADR 0015).
-#
-# No browser download needed: the specs drive the repo's own Electron binary.
+# Reused by test.yml inside the same PR run. Installer acceptance includes
+# packaged-app verification, so these two packaging paths are alternatives.
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - 'src/**'
-      - 'e2e/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'electron.vite.config.ts'
-      - 'playwright.config.ts'
-      - 'electron-builder.yml'
-      - 'electron-builder.config.cjs'
-      - 'build/**'
-      - 'scripts/verify-packaged.cjs'
-      - 'scripts/verify-installer-artifacts.cjs'
-      - '.github/workflows/e2e.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'e2e/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'electron.vite.config.ts'
-      - 'playwright.config.ts'
-      - 'electron-builder.yml'
-      - 'electron-builder.config.cjs'
-      - 'build/**'
-      - 'scripts/verify-packaged.cjs'
-      - 'scripts/verify-installer-artifacts.cjs'
-      - '.github/workflows/e2e.yml'
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      installers:
+        description: Build and verify installers instead of application directories
+        required: true
+        type: boolean
 
 permissions:
   contents: read
 
-# Superseded commits cancel instead of burning two OS runners each:
-# a push burst costs ~1 run, not N. Safe here because e2e.yml is never
-# called as a reusable workflow (unlike test.yml, see its header).
-concurrency:
-  group: e2e-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   e2e:
-    # Drafts are by definition not mergeable — skip them, run on ready PRs.
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -84,7 +47,7 @@ jobs:
             playwright-report/
 
   packaged:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: ${{ !inputs.installers }}
     name: packaged (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -120,7 +83,7 @@ jobs:
         run: node scripts/verify-packaged.cjs --executable dist/mac-universal/Watchtower.app/Contents/MacOS/Watchtower
 
   installers:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    if: inputs.installers
     name: installer acceptance (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60

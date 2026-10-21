@@ -3,9 +3,8 @@ productName: Watchtower
 directories:
   buildResources: build
   output: dist
-# Update manifests reference immutable versioned artifacts. The release job
-# also publishes versionless copies for existing README download links.
-artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+# GitHub updater URLs include the release tag, so each format needs one file.
+artifactName: ${productName}-${os}-${arch}.${ext}
 publish:
   provider: github
   owner: Pasquale-Favella
