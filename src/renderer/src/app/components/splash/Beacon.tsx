@@ -3,7 +3,7 @@ import { useGSAP } from '@gsap/react'
 import gsap from 'gsap'
 
 import { cn } from '@/shared/lib/utils'
-import { motionEnabled } from '@/shared/lib/motion'
+import { motionClass, motionEnabled } from '@/shared/lib/motion'
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
 
 import type { SplashProviderProgress } from '../../../../../shared/schemas/renderer.js'
@@ -16,9 +16,11 @@ export function Beacon({ providers, error }: { providers: SplashProviderProgress
   const root = useRef<HTMLDivElement>(null)
   const beam = useRef<HTMLDivElement>(null)
 
+  // Idle on a failed scan: with `error` set, no loop starts and the previous
+  // run's tweens are reverted, leaving the radar at rest.
   useGSAP(
     () => {
-      if (!motionEnabled()) return
+      if (error || !motionEnabled()) return
       const q = gsap.utils.selector(root)
       gsap.to(beam.current, { rotate: 360, duration: 3.6, ease: 'none', repeat: -1 })
       gsap.fromTo(
@@ -28,7 +30,7 @@ export function Beacon({ providers, error }: { providers: SplashProviderProgress
       )
       gsap.to(q('[data-radar=logo]'), { scale: 1.05, duration: 2.4, ease: 'sine.inOut', yoyo: true, repeat: -1 })
     },
-    { scope: root },
+    { scope: root, dependencies: [error], revertOnUpdate: true },
   )
 
   return (
@@ -38,7 +40,8 @@ export function Beacon({ providers, error }: { providers: SplashProviderProgress
       <div
         ref={beam}
         className={cn(
-          'absolute inset-0 rounded-full transition-opacity duration-500',
+          'absolute inset-0 rounded-full',
+          motionClass('', 'transition-opacity duration-500'),
           '[background:conic-gradient(from_0deg,transparent_0deg,transparent_290deg,color-mix(in_oklab,var(--primary)_32%,transparent)_360deg)]',
           error && 'opacity-0',
         )}

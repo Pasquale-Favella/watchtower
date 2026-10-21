@@ -110,6 +110,9 @@ const fileScanDuration = Effect.fnUntraced(function* (
 /** How many settled files pass between a provider's parse progress ticks. */
 const PROVIDER_TICK_EVERY = 10
 
+/** Files a provider's parse has settled so far, whatever their verdict. */
+const settledCount = (row: PerProviderPort): number => row.ported + row.unchanged + row.failed
+
 /**
  * Runs the full watchtower pipeline (discovery, parse, classify, price) and
  * returns the scan's METADATA — the ledger is written by the `onDelta`
@@ -160,7 +163,7 @@ export const runScan = Effect.fnUntraced(function* (
     // advance its count — bounded IPC chatter even on a cold multi-thousand-file
     // hydration.
     const reportProvider = (row: PerProviderPort): void => {
-      const processed = row.ported + row.unchanged + row.failed
+      const processed = settledCount(row)
       if (processed === 1 || processed % PROVIDER_TICK_EVERY === 0) {
         onProgress?.({ stage: 'parse', provider: row.provider, processed })
       }
@@ -239,7 +242,7 @@ export const runScan = Effect.fnUntraced(function* (
       unchangedFiles += row.unchanged
       failedFiles += row.failed
       // Settles the provider's splash row with its final file count.
-      onProgress?.({ stage: 'port-in', provider: row.provider, processed: row.ported + row.unchanged + row.failed })
+      onProgress?.({ stage: 'port-in', provider: row.provider, processed: settledCount(row) })
     }
 
     onProgress?.({ stage: 'port-in', processed: portedFiles })

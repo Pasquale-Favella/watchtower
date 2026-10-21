@@ -3,6 +3,8 @@ import { create } from 'zustand'
 import { fetchAnalytics, fetchScan, fetchScanActive, fetchScanStatus } from '@/shared/lib/api'
 
 import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
+import { SCAN_STAGE_ORDER } from '../../../../shared/schemas/scan.js'
+
 import type { ScanMetadata, ScanStage } from '../../../../shared/schemas/scan.js'
 
 /** Rows/blobs the last scan skipped because a declared field failed the
@@ -61,8 +63,6 @@ export interface ScanState {
   onError: (message: string) => void
   onIdle: () => void
 }
-
-const STAGE_ORDER: Record<ScanStage, number> = { pricing: 0, parse: 1, 'port-in': 2 }
 
 type RefreshListener = () => void
 const refreshListeners = new Set<RefreshListener>()
@@ -154,7 +154,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
     // `{ stage: 'pricing' }` event must not draw an empty provider entry.
     // Stage only moves forward: a provider's late parse tick never rewinds it.
     const current = get().stage
-    const nextStage = stage && (!current || STAGE_ORDER[stage] >= STAGE_ORDER[current]) ? stage : current
+    const nextStage = stage && (!current || SCAN_STAGE_ORDER[stage] >= SCAN_STAGE_ORDER[current]) ? stage : current
     if (!provider) {
       set({ scanning: true, stage: nextStage })
       return

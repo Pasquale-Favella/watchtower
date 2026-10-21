@@ -4,7 +4,7 @@ import gsap from 'gsap'
 import { Check } from 'lucide-react'
 
 import { cn } from '@/shared/lib/utils'
-import { motionEnabled } from '@/shared/lib/motion'
+import { motionClass, motionEnabled } from '@/shared/lib/motion'
 
 import type { SplashProviderProgress } from '../../../../../shared/schemas/renderer.js'
 import { Counter } from './Counter'
@@ -46,37 +46,36 @@ export function SourceNode({ progress, index }: { progress: SplashProviderProgre
   )
 
   return (
-    <div ref={ref}>
-      <div className="absolute size-0" style={{ left: `${x}%`, top: `${y}%` }}>
-        <span
-          data-node="dot"
-          className={cn(
-            'absolute -top-0.75 -left-0.75 size-1.5 rounded-full transition-colors duration-500',
-            done ? 'bg-primary' : 'bg-primary/60',
-          )}
-        />
+    <div ref={ref} className="absolute size-0" style={{ left: `${x}%`, top: `${y}%` }}>
+      <span
+        data-node="dot"
+        className={cn(
+          'absolute -top-0.75 -left-0.75 size-1.5 rounded-full',
+          motionClass('', 'transition-colors duration-500'),
+          done ? 'bg-primary' : 'bg-primary/60',
+        )}
+      />
+      <div
+        className={cn(
+          'absolute top-0 -translate-y-1/2 whitespace-nowrap',
+          onRight ? 'left-3 text-left' : 'right-3 text-right',
+        )}
+      >
         <div
-          className={cn(
-            'absolute top-0 -translate-y-1/2 whitespace-nowrap',
-            onRight ? 'left-3 text-left' : 'right-3 text-right',
-          )}
+          data-node="label"
+          className="leading-tight [text-shadow:0_0_6px_var(--background),0_0_6px_var(--background)]"
         >
+          <div className="text-foreground text-[11.5px] font-medium">{providerName(provider)}</div>
           <div
-            data-node="label"
-            className="leading-tight [text-shadow:0_0_6px_var(--background),0_0_6px_var(--background)]"
+            className={cn(
+              'text-muted-foreground flex items-center gap-1 text-[10.5px] tabular-nums',
+              onRight ? 'justify-start' : 'justify-end',
+            )}
           >
-            <div className="text-foreground text-[11.5px] font-medium">{providerName(provider)}</div>
-            <div
-              className={cn(
-                'text-muted-foreground flex items-center gap-1 text-[10.5px] tabular-nums',
-                onRight ? 'justify-start' : 'justify-end',
-              )}
-            >
-              <span>
-                <Counter value={processed} /> {processed === 1 ? 'file' : 'files'}
-              </span>
-              {done && <Check data-node="check" className="text-primary size-2.5" strokeWidth={3} />}
-            </div>
+            <span>
+              <Counter value={processed} /> {processed === 1 ? 'file' : 'files'}
+            </span>
+            {done && <Check data-node="check" className="text-primary size-2.5" strokeWidth={3} />}
           </div>
         </div>
       </div>

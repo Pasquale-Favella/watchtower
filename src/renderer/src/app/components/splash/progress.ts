@@ -1,4 +1,5 @@
 import type { SplashProviderProgress } from '../../../../../shared/schemas/renderer.js'
+import { SCAN_STAGE_ORDER } from '../../../../../shared/schemas/scan.js'
 import type { ScanStage } from '../../../../../shared/schemas/scan.js'
 
 export function providerName(id: string): string {
@@ -33,13 +34,14 @@ export function nodeAngle(index: number): number {
 /** 0 prices → 1 sessions → 2 dashboard (every detected provider settled). */
 export function stepIndex(stage: ScanStage | null, providers: SplashProviderProgress[]): number {
   if (providers.length > 0 && providers.every(p => p.done)) return 2
-  if (stage === 'parse' || stage === 'port-in' || providers.length > 0) return 1
+  if (stage !== null && SCAN_STAGE_ORDER[stage] >= SCAN_STAGE_ORDER.parse) return 1
+  if (providers.length > 0) return 1
   return 0
 }
 
 export function statusMessage(step: number, providers: SplashProviderProgress[]): string {
   if (step === 2) return 'Building your dashboard'
   if (step === 0) return 'Loading model prices'
-  const active = [...providers].reverse().find(p => !p.done)
+  const active = providers.findLast(p => !p.done)
   return active ? `Reading ${providerName(active.provider)} sessions` : 'Looking for code assistants'
 }

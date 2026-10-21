@@ -3,7 +3,8 @@ import { useGSAP } from '@gsap/react'
 import gsap from 'gsap'
 
 import { Button } from '@/shared/components/ui/button'
-import { motionEnabled } from '@/shared/lib/motion'
+import { motionClass, motionEnabled } from '@/shared/lib/motion'
+import { cn } from '@/shared/lib/utils'
 import { useScanStore } from '@/app/stores/scan-store'
 
 import { Beacon } from './Beacon'
@@ -87,7 +88,12 @@ export function Splash() {
         {!error && <Tally sources={providers.length} files={totalFiles} />}
 
         {error && (
-          <div className="border-border bg-card animate-in fade-in slide-in-from-bottom-1 mt-5 flex w-full flex-col items-center gap-2 rounded-md border px-3 py-2.5 text-center">
+          <div
+            className={cn(
+              'border-border bg-card mt-5 flex w-full flex-col items-center gap-2 rounded-md border px-3 py-2.5 text-center',
+              motionClass('', 'animate-in fade-in slide-in-from-bottom-1'),
+            )}
+          >
             <span className="text-destructive text-[11.5px]">{error}</span>
             <Button type="button" variant="outline" size="sm" onClick={() => void refresh()}>
               Retry

@@ -21,6 +21,9 @@ export type ScanOptions = Schema.Schema.Type<typeof scanOptionsSchema>
 export const scanStageSchema = Schema.Literals(['pricing', 'parse', 'port-in'])
 export type ScanStage = Schema.Schema.Type<typeof scanStageSchema>
 
+/** Pipeline order of the scan stages, for "has the scan reached stage X". */
+export const SCAN_STAGE_ORDER: Record<ScanStage, number> = { pricing: 0, parse: 1, 'port-in': 2 }
+
 export const scanProgressSchema = Schema.Struct({
   stage: writable(scanStageSchema),
   provider: writable(Schema.optional(Schema.String)),
