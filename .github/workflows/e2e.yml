@@ -147,6 +147,8 @@ jobs:
         run: npm run package:${{ matrix.platform }}
         # Reproduce the release workflow's environment when signing secrets are absent.
         env:
+          # Exercise ad-hoc signing on PRs too; this job never receives signing secrets.
+          CSC_FOR_PULL_REQUEST: 'true'
           CSC_LINK: ''
           CSC_KEY_PASSWORD: ''
           APPLE_ID: ''
