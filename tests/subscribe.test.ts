@@ -154,7 +154,7 @@ describe('subscribeToIpc (ADR 0011)', () => {
 
     listeners.onProgress!({ stage: 'parse', provider: 'openai', processed: 5, total: 9 })
     expect(useScanStore.getState().scanning).toBe(true)
-    expect(useScanStore.getState().progress).toEqual([{ provider: 'openai', processed: 5, total: 9, done: false }])
+    expect(useScanStore.getState().progress).toEqual([{ provider: 'openai', processed: 5, done: false }])
 
     listeners.onProgress!({ stage: 'port-in', provider: 'openai', processed: 9, total: 9 })
     expect(useScanStore.getState().progress[0]!.done).toBe(true)
@@ -173,7 +173,7 @@ describe('subscribeToIpc (ADR 0011)', () => {
     expect(useScanStore.getState().scanError).toBe('boom')
     expect(useScanStore.getState().scanning).toBe(false)
 
-    useScanStore.getState().onProgress('openai', 1, 1, false)
+    useScanStore.getState().onProgress({ stage: 'parse', provider: 'openai', processed: 1 })
     listeners.onIdle!()
     expect(useScanStore.getState().scanning).toBe(false)
     expect(useScanStore.getState().progress).toEqual([])

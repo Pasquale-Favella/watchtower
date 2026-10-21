@@ -31,15 +31,7 @@ export function subscribeToScanLifecycle(onSettled: () => void): Teardown {
       // Tripwire (ADR 0005): a malformed broadcast is dropped, never painted.
       const parsed = parseEvent(scanProgressMessageSchema, 'scan progress', progress)
       if (!parsed) return
-      useScanStore
-        .getState()
-        .onProgress(
-          parsed.provider ?? '',
-          parsed.processed ?? 0,
-          parsed.total ?? 0,
-          parsed.stage === 'port-in',
-          parsed.stage,
-        )
+      useScanStore.getState().onProgress(parsed)
     }),
     window.api.onError(message => useScanStore.getState().onError(message)),
     window.api.onChanged(message => {

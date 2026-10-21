@@ -5,7 +5,7 @@ import { fetchAnalytics, fetchScan, fetchScanActive, fetchScanStatus } from '@/s
 import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
 import { SCAN_STAGE_ORDER } from '../../../../shared/schemas/scan.js'
 
-import type { ScanMetadata, ScanStage } from '../../../../shared/schemas/scan.js'
+import type { ScanMetadata, ScanProgress, ScanStage } from '../../../../shared/schemas/scan.js'
 
 /** Rows/blobs the last scan skipped because a declared field failed the
  * extraction schema — the drift signal ADR 0003 says must be visible. */
@@ -59,7 +59,10 @@ export interface ScanState {
    * Reports what it found — the app window fires the first scan on
    * `unscanned`; other windows never do. */
   hydrate: () => Promise<'scanned' | 'unscanned' | 'failed'>
-  onProgress: (provider: string, processed: number, total: number, done: boolean, stage?: ScanStage) => void
+  /** Folds one `scan:progress` event into the store. Every event marks the
+   * shell as scanning; a provider-carrying event upserts that provider's row,
+   * settled once its `port-in` event lands. */
+  onProgress: (event: ScanProgress) => void
   onError: (message: string) => void
   onIdle: () => void
 }
@@ -148,13 +151,13 @@ export const useScanStore = create<ScanState>()((set, get) => ({
     const result = await fetchScanActive()
     if (result.ok && result.data) set({ scanning: true })
   },
-  onProgress: (provider, processed, total, done, stage) => {
+  onProgress: ({ stage, provider, processed = 0 }) => {
     // Parity with AppRoot's handler: every progress event marks the shell as
     // scanning, but only provider-carrying events paint a row — a bare
     // `{ stage: 'pricing' }` event must not draw an empty provider entry.
     // Stage only moves forward: a provider's late parse tick never rewinds it.
     const current = get().stage
-    const nextStage = stage && (!current || SCAN_STAGE_ORDER[stage] >= SCAN_STAGE_ORDER[current]) ? stage : current
+    const nextStage = !current || SCAN_STAGE_ORDER[stage] >= SCAN_STAGE_ORDER[current] ? stage : current
     if (!provider) {
       set({ scanning: true, stage: nextStage })
       return
@@ -162,7 +165,7 @@ export const useScanStore = create<ScanState>()((set, get) => ({
     // Insertion order is kept (an upsert replaces in place) so a splash row
     // never jumps position as its count ticks.
     const existing = get().progress
-    const entry = { provider, processed, total, done }
+    const entry = { provider, processed, done: stage === 'port-in' }
     const next = existing.some(p => p.provider === provider)
       ? existing.map(p => (p.provider === provider ? entry : p))
       : [...existing, entry]
