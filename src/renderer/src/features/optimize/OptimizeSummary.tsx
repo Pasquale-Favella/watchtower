@@ -106,7 +106,7 @@ export function OptimizeSummary({ payload }: OptimizeSummaryProps): React.JSX.El
         <Info className="mt-px size-3.5 shrink-0" aria-hidden="true" />
         <p className="max-w-[760px]">
           Findings describe observed patterns and modeled opportunities. Associated spend shows the supporting sessions'
-          cost; recoverable savings have not been established.
+          cost; it is not an estimate of avoidable cost.
           {summary.excludedSidechainSessions > 0 &&
             ' Delegated sessions stay in spend and are excluded from standalone behavior comparisons.'}
         </p>

@@ -458,6 +458,12 @@ export function detectDuplicateReads(steps: ScanStep[], dateRange?: DateRange, n
   }
 }
 
+function readEditImpact(ratio: number): Impact {
+  if (ratio < LOW_RATIO_HIGH_THRESHOLD) return 'high'
+  if (ratio < LOW_RATIO_MEDIUM_THRESHOLD) return 'medium'
+  return 'low'
+}
+
 export function detectLowReadEditRatio(steps: ScanStep[]): WasteFinding | null {
   let reads = 0
   let edits = 0
@@ -483,8 +489,7 @@ export function detectLowReadEditRatio(steps: ScanStep[]): WasteFinding | null {
   const ratio = reads / edits
   if (ratio >= HEALTHY_READ_EDIT_RATIO) return null
 
-  const impact: Impact =
-    ratio < LOW_RATIO_HIGH_THRESHOLD ? 'high' : ratio < LOW_RATIO_MEDIUM_THRESHOLD ? 'medium' : 'low'
+  const impact = readEditImpact(ratio)
   const tokensSaved = 0
 
   let trend: Trend | 'resolved' | null = null
@@ -536,7 +541,6 @@ function computeCacheBaseline(apiCalls: ApiCallMeta[]): number {
 
 export function detectCacheBloat(
   apiCalls: ApiCallMeta[],
-  _projects: ProjectSummary[],
   dateRange?: DateRange,
   now = new Date(),
 ): WasteFinding | null {
@@ -667,7 +671,7 @@ export function aggregateMcpCoverage(projects: ProjectSummary[]): McpServerCover
       unusedTools,
       invocations: acc.invocations,
       loadedSessions: acc.loadedSessions,
-      coverageRatio: acc.inventory.size === 0 ? 0 : toolsInvoked / acc.inventory.size,
+      coverageRatio: toolsInvoked / acc.inventory.size,
     })
   }
   result.sort((a, b) => b.toolsAvailable - a.toolsAvailable)
@@ -2014,17 +2018,15 @@ export function computeHealth(findings: WasteFinding[]): { score: number; grade:
   let penalty = 0
   for (const f of findings) penalty += HEALTH_WEIGHTS[f.impact] ?? 0
   const score = Math.max(0, 100 - Math.min(HEALTH_MAX_PENALTY, penalty))
-  const grade: HealthGrade =
-    score >= GRADE_A_MIN
-      ? 'A'
-      : score >= GRADE_B_MIN
-        ? 'B'
-        : score >= GRADE_C_MIN
-          ? 'C'
-          : score >= GRADE_D_MIN
-            ? 'D'
-            : 'F'
-  return { score, grade }
+  return { score, grade: gradeForScore(score) }
+}
+
+function gradeForScore(score: number): HealthGrade {
+  if (score >= GRADE_A_MIN) return 'A'
+  if (score >= GRADE_B_MIN) return 'B'
+  if (score >= GRADE_C_MIN) return 'C'
+  if (score >= GRADE_D_MIN) return 'D'
+  return 'F'
 }
 
 function urgencyScore(f: WasteFinding): number {
@@ -2205,7 +2207,7 @@ export function calculateOptimizePayload(
   add(detectLowReadEditRatio(scan.steps))
   add(detectJunkReads(scan.steps, dateRange ?? undefined, now))
   add(detectDuplicateReads(scan.steps, dateRange ?? undefined, now))
-  add(detectCacheBloat(scan.cacheEvents, behaviorProjects, dateRange ?? undefined, now))
+  add(detectCacheBloat(scan.cacheEvents, dateRange ?? undefined, now))
   add(detectCapabilityReliability(behaviorProjects))
   const lowWorth = findLowWorthCandidates(behaviorProjects)
   const lowWorthByKey = new Map(lowWorth.map(candidate => [candidate.key ?? candidate.sessionId, candidate]))

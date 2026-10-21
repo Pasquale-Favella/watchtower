@@ -144,11 +144,6 @@ export function FindingRow({ finding, defaultExpanded = false }: FindingRowProps
       {expanded && (
         <div className="flex flex-col gap-3 px-3.5 pt-0.5 pb-3" role="region" aria-label={`${finding.title} details`}>
           <FindingEvidence finding={finding} />
-          {finding.estimatedSavingsUSD !== null && (
-            <p className="text-muted-foreground text-[11px]">
-              Estimated avoidable cost: {formatUsd(finding.estimatedSavingsUSD)}
-            </p>
-          )}
           <FixBlock finding={finding} />
         </div>
       )}

@@ -553,13 +553,7 @@ describe('detectCacheBloat', () => {
       version: '',
       recent: false,
     }))
-    const projects = groupByProject([
-      makeSession(0, {
-        turns: [makeTurn(0, { calls: [makeCall(0, { cacheCreation: 100_000 })] })],
-        cacheWrite: 100_000,
-      }),
-    ])
-    const finding = detectCacheBloat(apiCalls, projects, undefined, NOW)
+    const finding = detectCacheBloat(apiCalls, undefined, NOW)
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('warmup-heavy')
     // The lower-quartile call is 20k. Session sums do not supply this baseline.
@@ -569,7 +563,7 @@ describe('detectCacheBloat', () => {
 
   it('stays quiet with few cache-creation samples', () => {
     const apiCalls = Array.from({ length: 5 }, () => ({ cacheCreationTokens: 100_000, version: '', recent: false }))
-    expect(detectCacheBloat(apiCalls, [], undefined, NOW)).toBeNull()
+    expect(detectCacheBloat(apiCalls, undefined, NOW)).toBeNull()
   })
 })
 
@@ -994,7 +988,7 @@ describe('Optimize populations and evidence', () => {
 
   it('does not flag identical cache-write calls using unrelated session totals', () => {
     const calls = Array.from({ length: 10 }, () => ({ cacheCreationTokens: 100_000, version: '' }))
-    expect(detectCacheBloat(calls, [])).toBeNull()
+    expect(detectCacheBloat(calls)).toBeNull()
   })
 
   it('reports explicit error and interruption observations without recovery estimates', () => {

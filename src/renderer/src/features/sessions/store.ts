@@ -6,6 +6,11 @@ import type { SessionDetail, SessionRow } from '../../../../shared/schemas/views
 import { type DataStatus, type ScopedDataSlice, scopedDataSlice } from '../../app/stores/data-store'
 import { subscribeToRefresh } from '../../app/stores/scan-store'
 
+/** Identity of an open-session request; the same id can exist in several sources. */
+export function sessionRequestKey(sessionId: string, sourceId?: number): string {
+  return JSON.stringify([sessionId, sourceId ?? null])
+}
+
 /** The sessions list, scope-keyed like the other section payloads. */
 export interface SessionsState extends ScopedDataSlice<SessionRow[]> {
   /** The open session's detail — keyed by id, not scope. (ADR 0011:
@@ -29,7 +34,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   sessionStatus: 'idle',
   sessionKey: null,
   loadSession: async (sessionId, sourceId) => {
-    const sessionKey = JSON.stringify([sessionId, sourceId ?? null])
+    const sessionKey = sessionRequestKey(sessionId, sourceId)
     set({ session: null, sessionError: null, sessionStatus: 'loading', sessionKey })
     const result = await fetchSession(sessionId, sourceId)
     if (get().sessionKey !== sessionKey) return

@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 
 import { navigateToSection } from '@/app/navigation'
 import type { SessionDetail } from '@/features/sessions/drilldown'
-import { useSessionsStore } from '@/features/sessions/store'
+import { sessionRequestKey, useSessionsStore } from '@/features/sessions/store'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
 import { Badge } from '@/shared/components/ui/badge'
@@ -158,7 +158,7 @@ export function SessionView(): React.JSX.Element {
   const storedError = useSessionsStore(s => s.sessionError)
   const sessionKey = useSessionsStore(s => s.sessionKey)
   const sessionStatus = useSessionsStore(s => s.sessionStatus)
-  const matchesRequest = sessionKey === JSON.stringify([sessionId, sourceId ?? null])
+  const matchesRequest = sessionId !== undefined && sessionKey === sessionRequestKey(sessionId, sourceId)
   const session = matchesRequest ? storedSession : null
   const error = matchesRequest
     ? (storedError ?? (sessionStatus === 'ready' && storedSession === null ? 'Session not found.' : null))

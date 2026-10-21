@@ -162,7 +162,7 @@ export function calculateYieldPayload(
             ? new Date(Math.min(attribution.window.end.getTime(), observedAt.getTime())).toISOString()
             : null,
         },
-        inspectionIssues: [...new Map(issues.map(issue => [issue.operation, issue])).values()],
+        inspectionIssues: [...new Map(issues.map(issue => [`${issue.operation}\0${issue.message}`, issue])).values()],
         commits: attribution.commits.map(commit => ({
           sha: commit.sha,
           timestamp: commit.timestamp.toISOString(),
