@@ -33,7 +33,13 @@ export function subscribeToScanLifecycle(onSettled: () => void): Teardown {
       if (!parsed) return
       useScanStore
         .getState()
-        .onProgress(parsed.provider ?? '', parsed.processed ?? 0, parsed.total ?? 0, parsed.stage === 'port-in')
+        .onProgress(
+          parsed.provider ?? '',
+          parsed.processed ?? 0,
+          parsed.total ?? 0,
+          parsed.stage === 'port-in',
+          parsed.stage,
+        )
     }),
     window.api.onError(message => useScanStore.getState().onError(message)),
     window.api.onChanged(message => {

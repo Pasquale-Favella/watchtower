@@ -89,6 +89,19 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
     expect(s.progress).toEqual([])
   })
 
+  it('onProgress keeps insertion order and only moves the stage forward', () => {
+    const store = useScanStore.getState()
+    store.onProgress('', 0, 0, false, 'pricing')
+    expect(useScanStore.getState().stage).toBe('pricing')
+    store.onProgress('openai', 1, 0, false, 'parse')
+    store.onProgress('cursor', 1, 0, false, 'parse')
+    store.onProgress('openai', 10, 0, true, 'port-in')
+    store.onProgress('cursor', 20, 0, false, 'parse')
+    const s = useScanStore.getState()
+    expect(s.progress.map(p => p.provider)).toEqual(['openai', 'cursor'])
+    expect(s.stage).toBe('port-in')
+  })
+
   it('onError surfaces the message and stops scanning', () => {
     useScanStore.getState().onError('boom')
     const s = useScanStore.getState()
@@ -102,6 +115,7 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
     const s = useScanStore.getState()
     expect(s.scanning).toBe(false)
     expect(s.progress).toEqual([])
+    expect(s.stage).toBeNull()
   })
 
   it('applyChange hydrates, sums unparsed, loads providers and bumps the shared tick', async () => {
