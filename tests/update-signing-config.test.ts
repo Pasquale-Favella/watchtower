@@ -12,6 +12,17 @@ function config(platform: string, env: Record<string, string> = {}) {
 }
 
 describe('release signing policy', () => {
+  it.each(['', ' \t '])('treats a blank CI certificate link %j as missing', CSC_LINK => {
+    const env = { CSC_LINK, CSC_KEY_PASSWORD: '' }
+    expect(config('darwin', env)).toMatchObject({
+      forceCodeSigning: false,
+      extraMetadata: { watchtowerSignedUpdates: false },
+      mac: { identity: '-', hardenedRuntime: false, notarize: false },
+    })
+    expect(env).not.toHaveProperty('CSC_LINK')
+    expect(env).toHaveProperty('CSC_KEY_PASSWORD', '')
+  })
+
   it('keeps ad-hoc macOS releases on manual updates', () => {
     expect(config('darwin')).toMatchObject({
       forceCodeSigning: false,

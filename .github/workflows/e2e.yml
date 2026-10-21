@@ -130,7 +130,7 @@ jobs:
         include:
           - os: windows-latest
             platform: win
-          - os: macos-14
+          - os: macos-latest
             platform: mac
           - os: ubuntu-latest
             platform: linux
@@ -145,5 +145,12 @@ jobs:
       - run: npm ci
       - name: Build installer artifacts
         run: npm run package:${{ matrix.platform }}
+        # Reproduce the release workflow's environment when signing secrets are absent.
+        env:
+          CSC_LINK: ''
+          CSC_KEY_PASSWORD: ''
+          APPLE_ID: ''
+          APPLE_APP_SPECIFIC_PASSWORD: ''
+          APPLE_TEAM_ID: ''
       - name: Verify installer artifacts
         run: node scripts/verify-installer-artifacts.cjs --platform ${{ matrix.platform }}

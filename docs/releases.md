@@ -42,6 +42,9 @@ With a certificate configured, `forceCodeSigning` prevents silent unsigned
 fallback. macOS also requires notarization credentials, enables hardened
 runtime, and notarizes the result. Local packaging uses the same CSC and Apple
 environment variables through `electron-builder.config.cjs`.
+Blank `CSC_LINK` values from missing CI secrets are removed before packaging
+so electron-builder uses the unsigned or ad-hoc fallback instead of importing
+an empty certificate path. Empty certificate passwords remain valid.
 
 Without credentials, macOS uses ad-hoc signing, hardened runtime is disabled,
 and package metadata disables in-app installation. Keep signing identity
