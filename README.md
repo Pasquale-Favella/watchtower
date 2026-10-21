@@ -8,7 +8,7 @@
 
 A local-first desktop dashboard that turns the session files your AI coding tools already write to disk into a clear picture of your token usage and spend, broken down by tool, model, project, and task.
 
-[![Version](https://img.shields.io/badge/version-0.2.6-1e3a8a?style=flat-square)](package.json)
+[![Version](https://img.shields.io/github/v/release/Pasquale-Favella/watchtower?style=flat-square&color=1e3a8a&label=version)](https://github.com/Pasquale-Favella/watchtower/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Windows | macOS | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)](electron-builder.yml)
 [![Local-first](https://img.shields.io/badge/privacy-local--first-success?style=flat-square)](#data--privacy)
