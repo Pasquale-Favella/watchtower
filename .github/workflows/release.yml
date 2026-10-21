@@ -50,6 +50,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Verify the release installer artifacts
+        run: node scripts/verify-installer-artifacts.cjs --platform ${{ matrix.target }}
       - name: Upload installers
         uses: actions/upload-artifact@v7
         with:
@@ -63,6 +65,7 @@ jobs:
             dist/latest*.yml
             dist/*.blockmap
           if-no-files-found: error
+          compression-level: 0
 
   release:
     name: Publish release
@@ -77,7 +80,7 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
-      - name: Validate update metadata and preserve download links
+      - name: Validate release artifacts and update metadata
         run: node scripts/prepare-release-artifacts.cjs artifacts
       - name: Attach installers to the release
         uses: softprops/action-gh-release@v3

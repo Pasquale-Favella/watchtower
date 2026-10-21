@@ -57,12 +57,39 @@ Do not disable the updater's signature or checksum checks to bypass failures.
 The tag must equal `v` followed by package.json's version. All three packaging
 jobs must succeed before publication. They run with `--publish never` and
 upload artifacts, `latest*.yml`, and blockmaps to the final release job.
-That job validates manifest versions and referenced artifacts, creates
-versionless artifact copies for existing download links, and publishes the
-complete release. Update manifests reference only versioned artifact names.
+Each packaging job verifies the actual installer artifacts before uploading
+them. The final job validates manifest versions, referenced artifacts and
+blockmaps, then publishes the complete release. Each format has exactly one
+artifact, named `Watchtower-<os>-<arch>.<ext>`. No download copies are created.
+The GitHub updater provider resolves filenames under `/releases/download/<tag>/`,
+so update URLs remain tied to a version even though filenames stay stable.
+This also preserves the README's `/releases/latest/download/` links.
 The README's Linux download links use the builder's actual architecture suffixes,
-`x86_64` for AppImage and `amd64` for deb, matching the versionless copies.
+`x86_64` for AppImage and `amd64` for deb.
+The first update from the previous versioned naming scheme may use a full
+download if the old differential blockmap cannot be found. electron-updater
+retains checksum verification for that download.
 No publish token or certificate is embedded in the application.
+
+## CI selection
+
+`test.yml` is the only automatic PR workflow. It keeps the required `Lint`
+and `Typecheck + tests` check names. Documentation-only changes run formatting;
+code and test changes also run typechecks, unit tests and Windows process
+regressions. Runtime changes additionally call `e2e.yml` within the same run.
+
+Ordinary runtime changes build and verify Linux and macOS application
+directories. Packaging, dependency, build-resource and workflow changes
+instead build and verify all installer formats. Installer acceptance already
+launches the packaged app, so the directory builds do not run again in that case.
+The general Linux/Windows Electron suite retains its existing advisory status.
+
+Protected `main` requires the PR checks, so merging does not start a second
+copy of CI. Use `workflow_dispatch` on `test.yml` to run full checks manually,
+including after an exceptional direct push. Superseded PR runs are cancelled.
+Tags still run core checks on the exact release commit, then build and verify
+the artifacts that will be published. Release builds are never replaced with
+artifacts from an earlier PR or an unsigned build.
 
 ## Required installed upgrade acceptance
 
