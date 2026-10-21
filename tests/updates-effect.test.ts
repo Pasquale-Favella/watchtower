@@ -1,245 +1,216 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
-import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
-import * as TestClock from 'effect/testing/TestClock'
-import { afterEach, describe, expect, it } from 'vitest'
+import * as Layer from 'effect/Layer'
+import * as ManagedRuntime from 'effect/ManagedRuntime'
+import { describe, expect, it, vi } from 'vitest'
 
-import { closeOperationalLog, initOperationalLog, OperationalLogLoggerLayer } from '../src/main/operational-log.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
-import {
-  createUpdateCheckerEffect,
-  fetchReleasesEffect,
-  type UpdateCheckerEffect,
-  UpdateFetchError,
-  type UpdateStatus,
-} from '../src/main/updates.js'
-import { runWithTestClockWindow } from './helpers/run-effect-test.js'
-import { runEffectTest } from './helpers/run-effect-test.js'
+import { AppUpdates, type UpdateDriver, UpdateError, updatesLayer } from '../src/main/updates.js'
+import type { UpdateStatus } from '../src/shared/schemas/updates.js'
 
-const CURRENT = '0.1.0'
-
-afterEach(() => {
-  closeOperationalLog()
-})
-
-function okFetch(body: unknown): typeof fetch {
-  return (async () =>
-    new Response(JSON.stringify(body), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    })) as typeof fetch
-}
-
-function statusFetch(status: number): typeof fetch {
-  return (async () => new Response('{}', { status })) as typeof fetch
-}
-
-function throwingFetch(message = 'offline'): typeof fetch {
-  return (async () => {
-    throw new Error(message)
-  }) as unknown as typeof fetch
-}
-
-const neverFetch = (() => new Promise<Response>(() => {})) as typeof fetch
-
-function makeChecker(version: string = CURRENT): Promise<UpdateCheckerEffect> {
-  return Effect.runPromise(createUpdateCheckerEffect({ currentVersion: version }))
-}
-
-function runCheck(checker: UpdateCheckerEffect, fetchImpl: typeof fetch): Promise<UpdateStatus> {
-  // `OperationalLogLoggerLayer` is what production installs in `MainLive`; this
-  // test builds its own graph, so it installs the `Logger` reference itself.
-  // Without it the `update.offline` record would go to Effect's default logger.
-  return Effect.runPromise(
-    checker
-      .check()
-      .pipe(Effect.provide(OperationalLogLoggerLayer), Effect.provide(HttpFetch.layerWithFetch(fetchImpl))),
-  )
-}
-
-function runFetchReleases(fetchImpl: typeof fetch): Promise<Array<{ tag_name?: string }>> {
-  return Effect.runPromise(fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(fetchImpl))))
-}
-
-function readOperationalLogLines(logDir: string): string[] {
-  const lines: string[] = []
-  for (const file of readdirSync(logDir).filter(f => f.startsWith('operational'))) {
-    const content = readFileSync(join(logDir, file), 'utf8')
-    for (const line of content.split('\n')) {
-      if (line.trim() !== '') {
-        lines.push(line)
-      }
-    }
+function fixture(overrides: Partial<UpdateDriver> = {}) {
+  const check = vi.fn(() => ({ version: '0.3.0', available: true }))
+  const download = vi.fn()
+  const install = vi.fn()
+  const unsubscribe = vi.fn()
+  let progress: (percent: number) => void = () => {}
+  const changed: UpdateStatus[] = []
+  const requestInstall = vi.fn()
+  const driver: UpdateDriver = {
+    check: Effect.sync(check),
+    download: Effect.sync(download),
+    install,
+    subscribeProgress: notify => {
+      progress = notify
+      return unsubscribe
+    },
+    ...overrides,
   }
-  return lines
+  const runtime = ManagedRuntime.make(
+    updatesLayer({
+      currentVersion: '0.2.6',
+      source: Effect.succeed({ driver, unavailableReason: null }),
+      onChange: status => changed.push(status),
+      requestInstall,
+    }).pipe(Layer.provide(NodeFileSystem.layer)),
+  )
+  return {
+    runtime,
+    check,
+    download,
+    install,
+    unsubscribe,
+    requestInstall,
+    changed,
+    progress: (value: number) => progress(value),
+    run: <A>(command: (updates: AppUpdates['Service']) => Effect.Effect<A>) =>
+      runtime.runPromise(Effect.flatMap(AppUpdates, command)),
+  }
 }
 
-describe('fetchReleasesEffect (Effect-native releases boundary)', () => {
-  it('passes through the releases array from a 200 response', async () => {
-    const releases = await runFetchReleases(okFetch([{ tag_name: 'v0.2.0' }]))
-    expect(releases).toEqual([{ tag_name: 'v0.2.0' }])
-  })
-
-  it('maps a non-2xx response to a typed UpdateFetchError', async () => {
-    const error = await Effect.runPromise(
-      fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(statusFetch(404))), Effect.flip),
-    )
-    expect(error).toBeInstanceOf(UpdateFetchError)
-    expect(error.reason).toBe('http')
-    expect(error.status).toBe(404)
-    expect(error.message).toBe('GitHub HTTP 404')
-  })
-
-  it('yields [] for non-array JSON', async () => {
-    const releases = await runFetchReleases(okFetch({ tag_name: 'v0.2.0' }))
-    expect(releases).toEqual([])
-  })
-
-  it('skips malformed release rows while retaining valid rows', async () => {
-    const releases = await runFetchReleases(okFetch([{ tag_name: 'v0.2.0' }, null, { tag_name: 2 }, {}]))
-    expect(releases).toEqual([{ tag_name: 'v0.2.0' }, {}])
-  })
-
-  it('maps a network rejection to a typed network error', async () => {
-    const error = await Effect.runPromise(
-      fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(throwingFetch())), Effect.flip),
-    )
-    expect(error).toBeInstanceOf(UpdateFetchError)
-    expect(error.reason).toBe('network')
-  })
-
-  it('times out via the Effect Clock (TestClock-controllable)', async () => {
-    const error = await runEffectTest(
-      Effect.gen(function* () {
-        return yield* runWithTestClockWindow(
-          fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(neverFetch))),
-          60_000,
-        ).pipe(Effect.flip)
-      }).pipe(Effect.provide(TestClock.layer())),
-    )
-    expect(error).toBeInstanceOf(UpdateFetchError)
-    expect(error.reason).toBe('timeout')
-  })
-})
-
-describe('createUpdateCheckerEffect (Effect-native check)', () => {
-  it('flags an update when a newer desktop release exists', async () => {
-    const checker = await makeChecker()
-    expect(await runCheck(checker, okFetch([{ tag_name: 'v0.2.0' }]))).toEqual({
-      currentVersion: CURRENT,
-      latestVersion: '0.2.0',
-      updateAvailable: true,
-      tag: 'v0.2.0',
-    })
-  })
-
-  it('reports up-to-date when the newest release equals the running version', async () => {
-    const checker = await makeChecker()
-    expect(await runCheck(checker, okFetch([{ tag_name: 'v0.1.0' }]))).toEqual({
-      currentVersion: CURRENT,
-      latestVersion: '0.1.0',
-      updateAvailable: false,
-      tag: null,
-    })
-  })
-
-  it('reports up-to-date (no tag link) when the newest release is older', async () => {
-    const checker = await makeChecker()
-    const status = await runCheck(checker, okFetch([{ tag_name: 'v0.0.9' }]))
-    expect(status).toMatchObject({ updateAvailable: false, latestVersion: '0.0.9', tag: null })
-  })
-
-  it('degrades to cached status on offline with the offline note — never fails', async () => {
-    const base = mkdtempSync(join(tmpdir(), 'watchtower-updates-effect-'))
+describe('scoped app updates', () => {
+  it('does no network work at boot and guards download/install before a check', async () => {
+    const f = fixture()
     try {
-      await initOperationalLog({ logDir: join(base, 'logs'), isPackaged: true })
-      const checker = await makeChecker()
-      const status = await runCheck(checker, throwingFetch())
-      expect(status).toEqual({
-        currentVersion: CURRENT,
-        latestVersion: null,
-        updateAvailable: false,
-        tag: null,
-      })
-      const lines = readOperationalLogLines(join(base, 'logs'))
-      expect(lines).toHaveLength(1)
-      const parsed = JSON.parse(lines[0]!) as Record<string, unknown>
-      expect(parsed).toMatchObject({ level: 'info', event: 'update.offline', op: 'updates:check', code: 'unavailable' })
+      expect(await f.run(u => u.status)).toMatchObject({ phase: 'idle', installSupported: true })
+      expect(await f.run(u => u.download)).toMatchObject({ phase: 'idle' })
+      expect(await f.run(u => u.install)).toMatchObject({ phase: 'idle' })
+      expect(f.check).not.toHaveBeenCalled()
+      expect(f.download).not.toHaveBeenCalled()
+      expect(f.requestInstall).not.toHaveBeenCalled()
     } finally {
-      closeOperationalLog()
-      rmSync(base, { recursive: true, force: true })
+      await f.runtime.dispose()
+    }
+    expect(f.unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('checks without downloading, reports progress, and requires explicit installation', async () => {
+    const finish = await Effect.runPromise(Deferred.make<undefined>())
+    const started = await Effect.runPromise(Deferred.make<undefined>())
+    const f = fixture({
+      download: Effect.gen(function* () {
+        yield* Deferred.succeed(started, undefined)
+        yield* Deferred.await(finish)
+      }),
+    })
+    try {
+      expect(await f.run(u => u.check)).toMatchObject({ phase: 'available', latestVersion: '0.3.0' })
+      expect(f.download).not.toHaveBeenCalled()
+      const downloading = f.run(u => u.download)
+      await Effect.runPromise(Deferred.await(started))
+      f.progress(42)
+      await f.runtime.runPromise(Effect.yieldNow)
+      expect(await f.run(u => u.status)).toMatchObject({ phase: 'downloading', progress: 42 })
+      expect(await f.run(u => u.install)).toMatchObject({ phase: 'downloading' })
+      await Effect.runPromise(Deferred.succeed(finish, undefined))
+      expect(await downloading).toMatchObject({ phase: 'ready', progress: 100 })
+      expect(f.requestInstall).not.toHaveBeenCalled()
+      expect(await f.run(u => u.check)).toMatchObject({ phase: 'ready' })
+      expect(await f.run(u => u.install)).toMatchObject({ phase: 'installing' })
+      await f.run(u => u.install)
+      expect(f.requestInstall).toHaveBeenCalledExactlyOnceWith(f.install)
+      expect(f.install).not.toHaveBeenCalled()
+      f.progress(99)
+      await f.runtime.runPromise(Effect.yieldNow)
+      expect(await f.run(u => u.status)).toMatchObject({ phase: 'installing', progress: 100 })
+    } finally {
+      await f.runtime.dispose()
     }
   })
 
-  it('recovers on the next check after a failure', async () => {
-    const checker = await makeChecker()
-    expect((await runCheck(checker, throwingFetch())).updateAvailable).toBe(false)
-    expect(await runCheck(checker, okFetch([{ tag_name: 'v0.2.0' }]))).toMatchObject({
-      updateAvailable: true,
-      latestVersion: '0.2.0',
-    })
-  })
-
-  it('dedupes concurrent checks into a single fetch', async () => {
-    const checker = await makeChecker()
-    let fetches = 0
-    const slow = (async () => {
-      fetches += 1
-      await new Promise(resolve => setTimeout(resolve, 20))
-      return new Response(JSON.stringify([{ tag_name: 'v0.2.0' }]), { status: 200 })
-    }) as unknown as typeof fetch
-    const [first, second] = await Effect.runPromise(
-      Effect.all([checker.check(), checker.check()], { concurrency: 2 }).pipe(
-        Effect.provide(HttpFetch.layerWithFetch(slow)),
-      ),
-    )
-    expect(first).toEqual(second)
-    expect(first).toMatchObject({ updateAvailable: true, latestVersion: '0.2.0' })
-    expect(fetches).toBe(1)
-  })
-
-  it('times out via TestClock and falls back to cached status', async () => {
-    const checker = await makeChecker()
-    const status = await runEffectTest(
-      Effect.gen(function* () {
-        return yield* runWithTestClockWindow(
-          checker.check().pipe(Effect.provide(HttpFetch.layerWithFetch(neverFetch))),
-          60_000,
-        )
-      }).pipe(Effect.provide(TestClock.layer())),
-    )
-    expect(status).toEqual({
-      currentVersion: CURRENT,
-      latestVersion: null,
-      updateAvailable: false,
-      tag: null,
-    })
-  })
-
-  it('fiber interruption propagates and leaves the checker usable', async () => {
-    const checker = await makeChecker()
-    let observedSignal: AbortSignal | undefined
-    const hanging = ((_: string, init: RequestInit = {}) => {
-      observedSignal = init.signal ?? undefined
-      return new Promise<Response>((_, reject) => {
-        init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
-      })
-    }) as typeof fetch
-    const exit = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(checker.check().pipe(Effect.provide(HttpFetch.layerWithFetch(hanging))))
-        yield* Effect.yieldNow
-        yield* Fiber.interrupt(fiber)
-        return yield* Fiber.await(fiber)
+  it('shares one check even when its original caller is interrupted', async () => {
+    const finish = await Effect.runPromise(Deferred.make<undefined>())
+    const started = await Effect.runPromise(Deferred.make<undefined>())
+    let checks = 0
+    const f = fixture({
+      check: Effect.gen(function* () {
+        checks++
+        yield* Deferred.succeed(started, undefined)
+        yield* Deferred.await(finish)
+        return { version: '0.3.0', available: true }
       }),
+    })
+    try {
+      await f.runtime.runPromise(
+        Effect.gen(function* () {
+          const updates = yield* AppUpdates
+          const first = yield* Effect.forkChild(updates.check)
+          yield* Deferred.await(started)
+          const second = yield* Effect.forkChild(updates.check)
+          yield* Effect.yieldNow
+          yield* Fiber.interrupt(first)
+          yield* Deferred.succeed(finish, undefined)
+          expect(yield* Fiber.join(second)).toMatchObject({ phase: 'available' })
+        }),
+      )
+      expect(checks).toBe(1)
+    } finally {
+      await f.runtime.dispose()
+    }
+  })
+
+  it('clears an old successful check on failure and can retry', async () => {
+    let checks = 0
+    const f = fixture({
+      check: Effect.suspend(() => {
+        checks++
+        if (checks === 2) return Effect.fail(new UpdateError({ code: 'check-failed' }))
+        return Effect.succeed({ version: '0.3.0', available: checks === 1 })
+      }),
+    })
+    try {
+      expect(await f.run(u => u.check)).toMatchObject({ phase: 'available' })
+      expect(await f.run(u => u.check)).toMatchObject({ phase: 'error', latestVersion: null, updateAvailable: false })
+      expect(await f.run(u => u.download)).toMatchObject({ phase: 'error' })
+      expect(await f.run(u => u.check)).toMatchObject({ phase: 'current', updateAvailable: false })
+    } finally {
+      await f.runtime.dispose()
+    }
+  })
+
+  it('does not allow failed verification to install and permits a fresh download', async () => {
+    let downloads = 0
+    const f = fixture({
+      download: Effect.suspend(() =>
+        ++downloads === 1 ? Effect.fail(new UpdateError({ code: 'download-failed' })) : Effect.void,
+      ),
+    })
+    try {
+      await f.run(u => u.check)
+      expect(await f.run(u => u.download)).toMatchObject({ phase: 'error', updateAvailable: true })
+      await f.run(u => u.install)
+      expect(f.requestInstall).not.toHaveBeenCalled()
+      expect(await f.run(u => u.download)).toMatchObject({ phase: 'ready' })
+    } finally {
+      await f.runtime.dispose()
+    }
+  })
+
+  it('shares downloads and cancels owned work on runtime disposal', async () => {
+    const started = await Effect.runPromise(Deferred.make<undefined>())
+    const cancelled = vi.fn()
+    let downloads = 0
+    const f = fixture({
+      download: Effect.gen(function* () {
+        downloads++
+        yield* Deferred.succeed(started, undefined)
+        return yield* Effect.never
+      }).pipe(Effect.onInterrupt(() => Effect.sync(cancelled))),
+    })
+    await f.run(u => u.check)
+    const first = f.run(u => u.download).catch(() => undefined)
+    const second = f.run(u => u.download).catch(() => undefined)
+    await Effect.runPromise(Deferred.await(started))
+    await f.runtime.dispose()
+    await Promise.all([first, second])
+    expect(downloads).toBe(1)
+    expect(cancelled).toHaveBeenCalledTimes(1)
+    expect(f.unsubscribe).toHaveBeenCalledTimes(1)
+    expect(f.requestInstall).not.toHaveBeenCalled()
+  })
+
+  it('provides a manual fallback without creating a driver', async () => {
+    const requestInstall = vi.fn()
+    const runtime = ManagedRuntime.make(
+      updatesLayer({
+        currentVersion: '0.2.6',
+        source: Effect.succeed({ driver: null, unavailableReason: 'Use the release page.' }),
+        onChange: vi.fn(),
+        requestInstall,
+      }).pipe(Layer.provide(NodeFileSystem.layer)),
     )
-    expect(Exit.isFailure(exit)).toBe(true)
-    expect(observedSignal?.aborted).toBe(true)
-    // The interrupted flight was cleared: the next check starts a fresh one.
-    expect(await runCheck(checker, okFetch([{ tag_name: 'v0.2.0' }]))).toMatchObject({ updateAvailable: true })
+    try {
+      const values = await runtime.runPromise(
+        Effect.gen(function* () {
+          const updates = yield* AppUpdates
+          return [yield* updates.status, yield* updates.check, yield* updates.download, yield* updates.install]
+        }),
+      )
+      for (const status of values) expect(status).toMatchObject({ phase: 'unsupported', installSupported: false })
+      expect(requestInstall).not.toHaveBeenCalled()
+    } finally {
+      await runtime.dispose()
+    }
   })
 })

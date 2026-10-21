@@ -177,5 +177,6 @@ Skills detection, Privacy & data**):
   repeated pattern in a window becomes a suggested-skill chip in the Coach
   section
 - **Privacy & data** shows database and cache sizes, offers a full data wipe
-  (config survives), and a manual "Check for updates" (never automatic, never
-  auto-installs)
+  (config survives), and explicit update check, download, and restart-to-install
+  controls. Unsupported installations offer a release-page link. See
+  [app updates](releases.md).

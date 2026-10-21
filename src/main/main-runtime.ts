@@ -131,12 +131,12 @@ export function makeMainRuntime(options: MainRuntimeOptions, overrides?: MainRun
 export function makeMainRuntime<Additional>(
   options: MainRuntimeOptions,
   overrides: MainRuntimeOverrides,
-  additional: Layer.Layer<Additional>,
+  additional: Layer.Layer<Additional, never, MainServices>,
 ): MainRuntime<Additional>
 export function makeMainRuntime<Additional>(
   options: MainRuntimeOptions,
   overrides: MainRuntimeOverrides = {},
-  additional?: Layer.Layer<Additional>,
+  additional?: Layer.Layer<Additional, never, MainServices>,
 ): MainRuntime<Additional> | MainRuntime {
   const main = makeMainLive(options, overrides)
   return additional ? ManagedRuntime.make(additional.pipe(Layer.provideMerge(main))) : ManagedRuntime.make(main)

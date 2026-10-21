@@ -121,7 +121,7 @@ export default tseslint.config(
   {
     // Build scripts and worker fixtures use CJS (`require` + `__dirname`) — the
     // `no-require-imports` rule from strict does not apply to them.
-    files: ['scripts/**/*', 'tests/fixtures/**/*.cjs'],
+    files: ['scripts/**/*', 'tests/fixtures/**/*.cjs', 'electron-builder.config.cjs'],
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
     },
@@ -130,6 +130,7 @@ export default tseslint.config(
   // ── Process-aware language options ──────────────────────────────────────
   {
     files: [
+      'electron-builder.config.cjs',
       'src/main/**/*.{ts,mts,cts}',
       'src/preload/**/*.ts',
       'scripts/**/*.?(c|m)js',

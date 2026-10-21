@@ -17,6 +17,7 @@ on:
       - 'electron.vite.config.ts'
       - 'playwright.config.ts'
       - 'electron-builder.yml'
+      - 'electron-builder.config.cjs'
       - 'build/**'
       - 'scripts/verify-packaged.cjs'
       - 'scripts/verify-installer-artifacts.cjs'
@@ -31,6 +32,7 @@ on:
       - 'electron.vite.config.ts'
       - 'playwright.config.ts'
       - 'electron-builder.yml'
+      - 'electron-builder.config.cjs'
       - 'build/**'
       - 'scripts/verify-packaged.cjs'
       - 'scripts/verify-installer-artifacts.cjs'
@@ -106,10 +108,10 @@ jobs:
       - run: npm run build
       - name: Package Linux application directory
         if: matrix.platform == 'linux'
-        run: npx electron-builder --linux --dir --publish never
+        run: npx electron-builder --config electron-builder.config.cjs --linux --dir --publish never
       - name: Package macOS universal application directory
         if: matrix.platform == 'mac'
-        run: npx electron-builder --mac --dir --universal --publish never
+        run: npx electron-builder --config electron-builder.config.cjs --mac --dir --universal --publish never
       - name: Verify packaged Linux application
         if: matrix.platform == 'linux'
         run: xvfb-run -a node scripts/verify-packaged.cjs --executable dist/linux-unpacked/watchtower-desktop

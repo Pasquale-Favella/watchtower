@@ -22,6 +22,10 @@ function expectCases(schema: CurrentSchema, cases: ReadonlyArray<ExpectedCase>):
 
 const validCurrency = { code: 'EUR', symbol: '€', rate: 0.9 }
 const validUpdateStatus = {
+  phase: 'available',
+  installSupported: true,
+  progress: null,
+  message: null,
   currentVersion: '1.2.3',
   latestVersion: '1.2.4',
   updateAvailable: true,

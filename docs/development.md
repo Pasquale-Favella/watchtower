@@ -191,7 +191,7 @@ src/
 │  ├─ *-calculation.ts      # pure section, export, and pricing calculations
 │  ├─ cadence.ts            # background scan / FX cadence policy
 │  ├─ fx.ts                 # Effect FX service and Frankfurter cache
-│  ├─ updates.ts            # manual update check (GitHub releases)
+│  ├─ updates.ts            # scoped check/download/install state machine
 │  ├─ agents/               # the Coach & Skills harness surface (ADRs 0016–0021)
 │  │  ├─ detect.ts          # harness discovery over the spec registry
 │  │  ├─ runtime.ts         # the HarnessRuntime seam (AI SDK + ACP provider)

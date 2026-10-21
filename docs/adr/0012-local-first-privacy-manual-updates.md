@@ -1,12 +1,16 @@
-# Local-first privacy: no telemetry, and updates are manual and informational only
+# Local-first privacy and user-initiated updates
 
 Status: accepted
 
 Watchtower reads only local files that the user's tools already wrote; the ledger lives in Electron's `userData` directory. **Nothing leaves the machine except, when enabled, the daily LiteLLM pricing fetch and the Frankfurter FX fetch.** There is no telemetry, no analytics, no account — and because there is no telemetry, the first-launch onboarding has no consent step (there is nothing to consent to).
 
-**Updates are manual-only and informational-only.** `src/main/updates.ts` is never touched except when the user clicks "Check for updates" in Settings › About: there is no background timer, no launch-time check, and no auto-download/install. The check is a plain, unauthenticated GitHub Releases read that sends no identifiers and no auth token; offline, an unpublished/private repo, or any other error is a silent no-op that reports "unable to check" and never blocks anything. A release tag convention (`desktop-v` prefix optional) is tolerated so it can be chosen later without a code change.
+**Updates require explicit user actions.** Issue #161 revises the original informational-only decision. Settings > About uses electron-updater to check GitHub Releases, download a compatible stable update, show progress, and restart to install. Checking does not download; downloading does not authorize installation. There is no launch-time check, background polling, forced restart, prerelease selection, or downgrade. A normal quit does not install a downloaded update. The shared main-process runtime owns update work and progress subscriptions; shutdown cancels downloads and closes app resources before the updater can start installation.
 
-**Why:** a telemetry dashboard for coding tools is a surveillance-prone category; "the app is the reader, your tools are the source of truth" only holds if the reader is trustworthy by construction. Manual-only updates keep the app's only network reachable from an explicit user click, and its only network traffic (pricing, FX) is data the user can switch off.
+The public GitHub provider has no credentials. Its staging identifier header is overwritten with an empty value and its raw library logger is disabled. Only fixed operation/error codes reach the local operational log. GitHub and its artifact hosts necessarily receive ordinary network connection metadata during an explicit request. No ledger facts, local paths, prompts, or account identifiers are included.
+
+Windows NSIS installations and Linux AppImage releases support in-app updates. macOS requires a release built with Developer ID signing and notarization. Ad-hoc macOS builds, Linux deb installations, development builds, and unpacked Windows directories expose the release-page fallback. Existing versions need one manual upgrade to receive the updater; moving an ad-hoc macOS installation to the first Developer ID release also requires a manual replacement.
+
+**Why:** explicit check, download, and installation controls preserve the original user-initiated network policy while removing repeated manual artifact installation on supported targets. The informational-only restriction no longer applies. Background checks and staged rollouts remain outside this decision.
 
 ---
 
