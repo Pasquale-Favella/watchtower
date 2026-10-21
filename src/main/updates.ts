@@ -62,6 +62,7 @@ export function updatesLayer(options: UpdatesOptions): Layer.Layer<AppUpdates, n
       const { driver, unavailableReason } = yield* options.source
       const state = yield* Ref.make<UpdateState>({
         status: {
+          revision: 0,
           currentVersion: options.currentVersion,
           latestVersion: null,
           updateAvailable: false,
@@ -77,9 +78,12 @@ export function updatesLayer(options: UpdatesOptions): Layer.Layer<AppUpdates, n
 
       const publish = Effect.fn('AppUpdates.publish')(function* (next: UpdateStatus) {
         const validated = yield* Schema.decodeUnknownEffect(updateStatusSchema)(next).pipe(Effect.orDie)
-        yield* Ref.update(state, current => ({ ...current, status: validated }))
-        yield* Effect.sync(() => options.onChange(validated))
-        return validated
+        const published = yield* Ref.modify(state, current => {
+          const status = { ...validated, revision: current.status.revision + 1 }
+          return [status, { ...current, status }]
+        })
+        yield* Effect.sync(() => options.onChange(published))
+        return published
       })
 
       if (driver) {
@@ -122,6 +126,7 @@ export function updatesLayer(options: UpdatesOptions): Layer.Layer<AppUpdates, n
               }
               const next: UpdateStatus = {
                 ...current.status,
+                revision: current.status.revision + 1,
                 phase: action === 'check' ? 'checking' : 'downloading',
                 progress: action === 'download' ? 0 : null,
                 message: null,

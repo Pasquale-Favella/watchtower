@@ -94,6 +94,11 @@ describe('scoped app updates', () => {
       f.progress(99)
       await f.runtime.runPromise(Effect.yieldNow)
       expect(await f.run(u => u.status)).toMatchObject({ phase: 'installing', progress: 100 })
+      let previousRevision = 0
+      for (const status of f.changed) {
+        expect(status.revision).toBeGreaterThan(previousRevision)
+        previousRevision = status.revision
+      }
     } finally {
       await f.runtime.dispose()
     }

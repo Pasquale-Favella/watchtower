@@ -287,6 +287,10 @@ export function fetchUpdateStatus(): Promise<ApiResult<UpdateStatus>> {
   return fetchPayload('update status', updateStatusSchema, () => window.api.getUpdateStatus())
 }
 
+export function openExternalUrl(url: string): Promise<ApiResult<void>> {
+  return fetchPayload('external link', Schema.Void, () => window.api.openExternal(url))
+}
+
 export function fetchDownloadUpdate(): Promise<ApiResult<UpdateStatus>> {
   return fetchPayload('update status', updateStatusSchema, () => window.api.downloadUpdate())
 }

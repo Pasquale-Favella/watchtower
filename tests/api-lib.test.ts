@@ -322,6 +322,7 @@ describe('renderer parse seam (ADR 0005)', () => {
     mockWindow({
       checkForUpdates: () =>
         Promise.resolve({
+          revision: 0,
           phase: 'idle',
           installSupported: true,
           progress: null,
@@ -351,6 +352,7 @@ describe('renderer parse seam (ADR 0005)', () => {
     expect(await fetchCheckForUpdates()).toEqual({
       ok: true,
       data: {
+        revision: 0,
         phase: 'idle',
         installSupported: true,
         progress: null,
@@ -402,6 +404,7 @@ describe('renderer parse seam (ADR 0005)', () => {
 
 describe('update IPC contracts', () => {
   const status = {
+    revision: 0,
     currentVersion: '0.2.6',
     latestVersion: '0.3.0',
     updateAvailable: true,

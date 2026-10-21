@@ -6,6 +6,12 @@ fetches and verifies an artifact; Restart to install closes the worker,
 database, harnesses, main runtime, and operational log before starting it.
 Closing Watchtower normally does not authorize installation.
 
+The About view reads a transient Zustand store. That store owns its explicit
+hydration/request state machine and command guards; app-level IPC wiring feeds
+it for the lifetime of the app window, including while Settings is closed.
+Main-process snapshots carry increasing revisions so late replies and progress
+events cannot replace newer state. The main process still owns installation.
+
 Windows NSIS installations and Linux AppImage support in-app updates. Linux
 deb installations use a package manager or manual replacement. Development
 builds and Windows application directories use the release-page fallback.

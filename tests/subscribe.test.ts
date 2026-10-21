@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
 import { setRouter } from '../src/renderer/src/app/navigation.js'
+import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
 import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
 import { useCoachSkillsStore } from '../src/renderer/src/features/coach-skills/store.js'
 import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
+import { useUpdatesStore } from '../src/renderer/src/features/settings/updates-store.js'
 
 /** Stub the preload surface: capture each on* callback for manual firing,
  * merging any extra (fetch) methods onto the same `window.api`. */
@@ -41,6 +42,10 @@ function captureApi(extra?: Record<string, unknown>): Record<string, (payload?: 
     },
     onCoachHarnessesChanged: (cb: (p: unknown) => void) => {
       listeners.onCoachHarnessesChanged = cb
+      return () => {}
+    },
+    onUpdateChanged: (cb: (p: unknown) => void) => {
+      listeners.onUpdateChanged = cb
       return () => {}
     },
     onNavigate: (cb: (p: unknown) => void) => {
@@ -90,6 +95,7 @@ const analytics = {
 }
 
 beforeEach(() => {
+  useUpdatesStore.setState(useUpdatesStore.getInitialState(), true)
   useScanStore.setState(useScanStore.getInitialState(), true)
   useSettingsStore.setState(useSettingsStore.getInitialState(), true)
   useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
@@ -101,6 +107,28 @@ afterEach(() => {
 })
 
 describe('subscribeToIpc (ADR 0011)', () => {
+  it('routes validated update events into the app-owned store and drops malformed snapshots', () => {
+    const listeners = captureApi()
+    const teardown = subscribeToIpc()
+    const status = {
+      revision: 1,
+      currentVersion: '0.2.6',
+      latestVersion: '0.3.0',
+      updateAvailable: true,
+      tag: 'v0.3.0',
+      phase: 'available',
+      installSupported: true,
+      progress: null,
+      message: null,
+    }
+    listeners.onUpdateChanged?.(status)
+    expect(useUpdatesStore.getState().machine).toEqual({ state: 'synced', status })
+    listeners.onUpdateChanged?.({ ...status, revision: -1 })
+    listeners.onUpdateChanged?.({ ...status, revision: 2, progress: 101 })
+    expect(useUpdatesStore.getState().machine).toEqual({ state: 'synced', status })
+    teardown()
+  })
+
   it('decodes Coach events and forwards only valid, stripped envelopes', () => {
     const listeners = captureApi()
     const onEvent = vi.spyOn(useCoachSkillsStore.getState(), 'onEvent').mockImplementation(() => {})
@@ -242,6 +270,10 @@ describe('subscribeToIpc (ADR 0011)', () => {
         listeners.onCoachHarnessesChanged = cb
         return unsub
       },
+      onUpdateChanged: (cb: (p: unknown) => void) => {
+        listeners.onUpdateChanged = cb
+        return unsub
+      },
       onNavigate: (cb: (p: unknown) => void) => {
         listeners.onNavigate = cb
         return unsub
@@ -249,7 +281,7 @@ describe('subscribeToIpc (ADR 0011)', () => {
     })
     const teardown = subscribeToIpc()
     teardown()
-    expect(unsub).toHaveBeenCalledTimes(9)
+    expect(unsub).toHaveBeenCalledTimes(10)
   })
 
   it('feeds a coach:harnesses-changed broadcast into the coach store, dropping malformed ones', () => {

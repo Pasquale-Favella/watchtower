@@ -3,6 +3,7 @@ import * as Schema from 'effect/Schema'
 const writable = Schema.mutableKey
 
 export const updateStatusSchema = Schema.Struct({
+  revision: writable(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   currentVersion: writable(Schema.String),
   latestVersion: writable(Schema.NullOr(Schema.String)),
   updateAvailable: writable(Schema.Boolean),
