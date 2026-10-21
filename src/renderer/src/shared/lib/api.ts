@@ -283,6 +283,29 @@ export function fetchCheckForUpdates(): Promise<ApiResult<UpdateStatus>> {
   return fetchPayload('update status', updateStatusSchema, () => window.api.checkForUpdates())
 }
 
+export function fetchUpdateStatus(): Promise<ApiResult<UpdateStatus>> {
+  return fetchPayload('update status', updateStatusSchema, () => window.api.getUpdateStatus())
+}
+
+export function openExternalUrl(url: string): Promise<ApiResult<void>> {
+  return fetchPayload('external link', Schema.Void, () => window.api.openExternal(url))
+}
+
+export function fetchDownloadUpdate(): Promise<ApiResult<UpdateStatus>> {
+  return fetchPayload('update status', updateStatusSchema, () => window.api.downloadUpdate())
+}
+
+export function fetchInstallUpdate(): Promise<ApiResult<UpdateStatus>> {
+  return fetchPayload('update status', updateStatusSchema, () => window.api.installUpdate())
+}
+
+export function onUpdateChanged(callback: (status: UpdateStatus) => void): () => void {
+  return window.api.onUpdateChanged(status => {
+    const parsed = parseEvent(updateStatusSchema, 'update status', status)
+    if (parsed) callback(parsed)
+  })
+}
+
 export function fetchCurrency(): Promise<ApiResult<ActiveCurrency>> {
   return fetchPayload('currency', activeCurrencySchema, () => window.api.getCurrency())
 }

@@ -1,4 +1,5 @@
-import { onAppNavigate, onCoachHarnessesChanged, parseEvent } from '@/shared/lib/api'
+import { useUpdatesStore } from '@/features/settings/updates-store'
+import { onAppNavigate, onCoachHarnessesChanged, onUpdateChanged, parseEvent } from '@/shared/lib/api'
 
 import { coachEventEnvelopeSchema } from '../../../../shared/schemas/agents.js'
 import { useCoachSkillsStore } from '../../features/coach-skills/store'
@@ -14,6 +15,7 @@ import { combine, subscribeToDataPlane } from './shared-wiring'
  * `lib/api.ts` touch `window`. */
 export function subscribeToIpc(): () => void {
   const unsubs: Array<() => void> = [subscribeToDataPlane()]
+  unsubs.push(onUpdateChanged(status => useUpdatesStore.getState().onStatus(status)))
 
   // A harness run streamed an event (ADR 0017): route it into the unified
   // Coach & Skills store so the thread accumulates text/tools/session live.

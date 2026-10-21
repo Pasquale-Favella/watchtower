@@ -22,6 +22,11 @@ function expectCases(schema: CurrentSchema, cases: ReadonlyArray<ExpectedCase>):
 
 const validCurrency = { code: 'EUR', symbol: '€', rate: 0.9 }
 const validUpdateStatus = {
+  revision: 0,
+  phase: 'available',
+  installSupported: true,
+  progress: null,
+  message: null,
   currentVersion: '1.2.3',
   latestVersion: '1.2.4',
   updateAvailable: true,
@@ -103,6 +108,10 @@ describe('leaf wire schemas retain the prior decoded contract', () => {
         output: { ...validUpdateStatus, latestVersion: null, tag: null },
       },
       { input: { ...validUpdateStatus, extra: true }, output: validUpdateStatus },
+      { input: { ...validUpdateStatus, revision: undefined }, rejects: true },
+      { input: { ...validUpdateStatus, revision: -1 }, rejects: true },
+      { input: { ...validUpdateStatus, revision: 1.5 }, rejects: true },
+      { input: { ...validUpdateStatus, revision: '1' }, rejects: true },
       { input: { ...validUpdateStatus, currentVersion: undefined }, rejects: true },
       { input: { ...validUpdateStatus, currentVersion: null }, rejects: true },
       { input: { ...validUpdateStatus, latestVersion: undefined }, rejects: true },

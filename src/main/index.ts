@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { existsSync } from 'fs'
@@ -19,6 +20,7 @@ import {
 } from '../shared/schemas/ledger-mcp.js'
 import type { OverviewScope } from '../shared/schemas/overview.js'
 import { skillsSaveRequestSchema, type SkillsSaveResult, type SkillsThresholds } from '../shared/schemas/skills.js'
+import type { UpdateStatus } from '../shared/schemas/updates.js'
 import type { AcpMcpServer } from './agents/harnesses/types.js'
 import { registerAgentsIpc } from './agents/ipc.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
@@ -26,6 +28,7 @@ import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
 import { saveSkill } from './application/save-skill.js'
 import { BackgroundShell, type BackgroundShellHandle, backgroundShellLayer } from './background-shell.js'
 import { DbWorkerClient } from './db-worker/client.js'
+import { acquireElectronUpdates } from './electron-updates.js'
 import { initAppPaths, readAppPathsEffect } from './env.js'
 import { makeMainRuntime } from './main-runtime.js'
 import {
@@ -35,7 +38,8 @@ import {
   logIpcError,
   safeLogOperationalEvent,
 } from './operational-log.js'
-import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus } from './updates.js'
+import { createQuitCoordinator } from './quit-coordinator.js'
+import { AppUpdates, updatesLayer } from './updates.js'
 
 /**
  * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the
@@ -46,7 +50,6 @@ import { createUpdateCheckerEffect, type UpdateCheckerEffect, type UpdateStatus 
  * unchanged: same channels, same payloads.
  */
 
-let updateChecker: UpdateCheckerEffect | null = null
 /** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
 let agentsCleanup: { reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
@@ -58,14 +61,29 @@ const mainRuntime = makeMainRuntime(
     onHarnessChange: rows => broadcast('coach:harnesses-changed', rows),
   },
   {},
-  backgroundShellLayer({
-    preloadPath: join(__dirname, '../preload/index.js'),
-    rendererUrl: process.env['ELECTRON_RENDERER_URL'],
-    rendererDir: join(__dirname, '../renderer'),
-    iconPath: app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(__dirname, '../../build/icon.png'),
-    createMainWindow: createWindow,
-    requestScan: () => void dbClient?.request('scan:start').catch(() => {}),
-  }),
+  Layer.merge(
+    backgroundShellLayer({
+      preloadPath: join(__dirname, '../preload/index.js'),
+      rendererUrl: process.env['ELECTRON_RENDERER_URL'],
+      rendererDir: join(__dirname, '../renderer'),
+      iconPath: app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(__dirname, '../../build/icon.png'),
+      createMainWindow: createWindow,
+      requestScan: () => void dbClient?.request('scan:start').catch(() => {}),
+    }),
+    updatesLayer({
+      currentVersion: app.getVersion(),
+      source: acquireElectronUpdates({
+        isPackaged: app.isPackaged,
+        platform: process.platform,
+        appPath: app.getAppPath(),
+        executablePath: process.execPath,
+        appImage: process.env['APPIMAGE'],
+        onInstallError: showUpdateInstallError,
+      }),
+      onChange: status => broadcast('updates:changed', status),
+      requestInstall: install => quitCoordinator.requestInstall(install),
+    }),
+  ),
 )
 /** App-level loopback-HTTP ledger sidecar: shared by Copilot, local external
  * MCP clients, and any future harness that rejects stdio. It remains lazy by
@@ -354,16 +372,16 @@ function registerIpc(db: DbWorkerClient): void {
    * package.json, which electron-builder also stamps into the packaged app. */
   handleLogged('app:version', () => app.getVersion())
 
-  /** Manual "Check for updates" (ADR 0012): forces one fresh read of the
-   * the Watchtower repo's GitHub Releases feed and reports whether a newer desktop
-   * version exists. Never downloads or installs, and there is no background
-   * schedule — this fires only when the user clicks the button. All failures
-   * (offline, private repo, timeout) degrade to an informational "unable to
-   * check" status rather than an error. */
-  handleLogged('updates:check', async (): Promise<UpdateStatus> => {
-    if (!updateChecker) throw new Error('update checker not initialised')
-    return mainRuntime.runPromise(updateChecker.check())
-  })
+  for (const [channel, command] of [
+    ['updates:status', 'status'],
+    ['updates:check', 'check'],
+    ['updates:download', 'download'],
+    ['updates:install', 'install'],
+  ] as const) {
+    handleLogged(channel, (): Promise<UpdateStatus> =>
+      mainRuntime.runPromise(Effect.flatMap(AppUpdates, updates => updates[command])),
+    )
+  }
 
   handleLogged('currency:get', () => db.request('currency:get'))
 
@@ -502,9 +520,6 @@ app.whenReady().then(async () => {
   )
   relayWorkerEvents(db)
   dbClient = db
-  // Built through the main runtime (ADR 0032): the checker's HttpFetch
-  // dependency is provided there, so the IPC handler just runs check().
-  updateChecker = await mainRuntime.runPromise(createUpdateCheckerEffect({ currentVersion: app.getVersion() }))
   registerIpc(db)
   backgroundShell = await mainRuntime.runPromise(BackgroundShell)
   createWindow()
@@ -555,25 +570,30 @@ app.on('window-all-closed', () => {
 
 // Wait for the owned resources before allowing Electron to exit. Repeated
 // quit requests during cleanup share this shutdown instead of closing early.
-let quitState: 'running' | 'closing' | 'closed' = 'running'
-app.on('before-quit', event => {
-  if (quitState === 'closed') return
-  // From here on a window close is a real close, not a hide-to-tray.
-  backgroundShell?.markQuitting()
-  event.preventDefault()
-  if (quitState === 'closing') return
-  quitState = 'closing'
-  const coachShutdown = mainRuntime
-    .runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.releaseAll()))
-    .finally(() => agentsCleanup?.dispose())
-    .finally(() => mainRuntime.dispose())
-  void Promise.allSettled([coachShutdown, dbClient?.shutdown()]).then(() => {
+function showUpdateInstallError(): void {
+  dialog.showErrorBox(
+    'Watchtower update',
+    'The update could not be installed. Download the latest release from https://github.com/Pasquale-Favella/watchtower/releases/latest and install it manually. Your local data is retained.',
+  )
+  app.exit(1)
+}
+
+const quitCoordinator = createQuitCoordinator({
+  markQuitting: () => backgroundShell?.markQuitting(),
+  cleanup: async () => {
+    const coachShutdown = mainRuntime
+      .runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.releaseAll()))
+      .finally(() => agentsCleanup?.dispose())
+      .finally(() => mainRuntime.dispose())
+    const results = await Promise.allSettled([coachShutdown, dbClient?.shutdown()])
     try {
       closeOperationalLog()
     } catch {
       /* best effort */
     }
-    quitState = 'closed'
-    app.quit()
-  })
+    if (results.some(result => result.status === 'rejected')) throw new Error('Shutdown failed')
+  },
+  quit: () => app.quit(),
+  installFailed: showUpdateInstallError,
 })
+app.on('before-quit', quitCoordinator.beforeQuit)

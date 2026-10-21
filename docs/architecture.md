@@ -350,7 +350,7 @@ inline in the code. The most relevant ones:
 - [ADR 0004: lifetime delta scans and the single `store:changed` refetch trigger; worker ownership follows ADR 0023](./adr/0004-lifetime-delta-scans-single-refetch-trigger.md)
 - [ADR 0005: sandboxed renderer, a typed IPC surface, a frozen wire contract, and a renderer-side tripwire](./adr/0005-sandboxed-renderer-ipc-tripwire.md)
 - [ADR 0009: USD-anchored store; currency conversion only at the display/export boundary](./adr/0009-usd-anchored-fx-boundary.md)
-- [ADR 0012: local-first privacy, no telemetry, manual informational updates](./adr/0012-local-first-privacy-manual-updates.md)
+- [ADR 0012: local-first privacy and user-initiated updates](./adr/0012-local-first-privacy-manual-updates.md)
 - [ADR 0015: cross-platform packaging and CI](./adr/0015-cross-platform-packaging-and-ci.md)
 - [ADR 0016: data-driven harness registry and the ACP runtime seam](./adr/0016-data-driven-harness-registry.md)
 - [ADR 0017: unified Coach & Skills section](./adr/0017-unified-coach-skills-section.md)

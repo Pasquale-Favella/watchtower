@@ -36,8 +36,8 @@ Download the installer for your platform from the [latest release](https://githu
 |---|---|---|
 | **Windows** (x64) | [`Watchtower-win-x64.exe`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-win-x64.exe) | Run the installer (NSIS). |
 | **macOS** (Apple Silicon + Intel) | [`Watchtower-mac-universal.dmg`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-mac-universal.dmg) | Open the DMG, drag Watchtower into Applications. |
-| **Linux** (x64) | [`Watchtower-linux-x64.AppImage`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x64.AppImage) | `chmod +x Watchtower-linux-x64.AppImage && ./Watchtower-linux-x64.AppImage` |
-| **Linux** (Debian/Ubuntu) | [`Watchtower-linux-x64.deb`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x64.deb) | `sudo apt install ./Watchtower-linux-x64.deb` |
+| **Linux** (x64) | [`Watchtower-linux-x86_64.AppImage`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-x86_64.AppImage) | `chmod +x Watchtower-linux-x86_64.AppImage && ./Watchtower-linux-x86_64.AppImage` |
+| **Linux** (Debian/Ubuntu) | [`Watchtower-linux-amd64.deb`](https://github.com/Pasquale-Favella/watchtower/releases/latest/download/Watchtower-linux-amd64.deb) | `sudo apt install ./Watchtower-linux-amd64.deb` |
 
 Every release ships all three platforms. AppImage and `.deb` are the two Linux flavors; macOS ships one universal binary that runs on both Apple Silicon and Intel.
 
@@ -114,7 +114,9 @@ That is **38 providers** in total. Each lives in a single file under `src/main/p
 
 Installers for **Windows (NSIS), macOS (DMG/zip, one universal binary for Apple Silicon and Intel), and Linux (AppImage/deb)** are built in CI only when a `v*` tag is pushed (ADR 0015). Typecheck, lint, and tests run on every PR and every push to `main` as the merge-readiness gate; a tag then builds all three installers and publishes them as a GitHub Release.
 
-Artifacts are currently **unsigned** by design: Windows shows a SmartScreen "unknown publisher" warning, and macOS users must right-click and choose Open the first time. Code signing is sign-ready; drop `CSC_LINK`/`CSC_KEY_PASSWORD` into CI secrets and builds sign themselves. macOS notarization needs a one-line config flip (`mac.notarize: true`) plus Apple secrets first (ADR 0015).
+Settings > About offers explicit update checks, downloads with progress, and **Restart to install** on installed Windows NSIS and Linux AppImage releases. Checking never downloads automatically, and a normal quit never installs an update. Other installations offer a release-page link. Existing versions need one manual upgrade to receive this flow.
+
+Signing is configured through CI secrets. Until certificates are provisioned, Windows artifacts remain unsigned and macOS artifacts use ad-hoc signing. In-app macOS updates require Developer ID signing and notarization; ad-hoc builds keep manual downloads. See [release configuration and upgrade acceptance](docs/releases.md).
 
 ## Documentation
 
@@ -126,6 +128,6 @@ Artifacts are currently **unsigned** by design: Windows shows a SmartScreen "unk
 
 - Watchtower **reads only local files** that your tools already wrote. It never intercepts, proxies, or modifies them (the Optimize section is read-only).
 - The ledger lives in Electron's `userData` directory (`ledger.db`), with the session cache next to it in `cache/`.
-- **Nothing leaves your machine** except, when enabled, the daily LiteLLM pricing fetch and the Frankfurter FX fetch. There is no telemetry, no analytics, no account, and no update auto-installer.
+- **Nothing leaves your machine** except, when enabled, the daily LiteLLM pricing fetch and the Frankfurter FX fetch. Update checks and downloads contact GitHub only after an explicit user action. There is no telemetry, no analytics, and no account.
 - A background scan that fails does so silently; your last-known data stays on screen.
 - Per-provider data locations honor each tool's own overrides where supported (for example `CLAUDE_CONFIG_DIR`, `CLAUDE_CONFIG_DIRS`, `CODEX_HOME`).

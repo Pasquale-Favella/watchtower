@@ -2,7 +2,6 @@ import type { IpcRendererEvent } from 'electron'
 import { contextBridge, ipcRenderer } from 'electron'
 
 import type { ActiveCurrency, CurrencyOption } from '../main/fx.js'
-import type { UpdateStatus } from '../main/updates.js'
 import type {
   CoachEventEnvelope,
   CoachHarnessesResult,
@@ -41,6 +40,7 @@ import type {
   SkillsThresholds,
 } from '../shared/schemas/skills.js'
 import type { SpendPayload } from '../shared/schemas/spend.js'
+import type { UpdateStatus } from '../shared/schemas/updates.js'
 import type {
   AnalyticalViews,
   DashboardViews,
@@ -165,6 +165,14 @@ const api = {
   refreshPricing: (): Promise<PricingRefreshResult> => ipcRenderer.invoke('pricing:refresh'),
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
   checkForUpdates: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
+  getUpdateStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:status'),
+  downloadUpdate: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:download'),
+  installUpdate: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:install'),
+  onUpdateChanged: (callback: (status: UpdateStatus) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, status: UpdateStatus): void => callback(status)
+    ipcRenderer.on('updates:changed', listener)
+    return () => ipcRenderer.removeListener('updates:changed', listener)
+  },
   /** Renderer tripwire forward (#130): a dropped subscription payload is
    * filed with its label + location only — never contents. Fire-and-forget
    * from the renderer's side; a rejected forward never breaks rendering. */

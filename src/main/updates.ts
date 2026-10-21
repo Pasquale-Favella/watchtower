@@ -1,247 +1,207 @@
-// Manual "Check for updates" for the Watchtower desktop app: on demand, it reads
-// the public GitHub releases feed of the Watchtower repo, finds the newest
-// release whose tag looks like a version, and semver-compares it to the
-// running version.
-//
-// Deliberately manual-only (ADR 0012): there is NO background timer, no
-// launch-time check, and no auto-download/install. The main process never
-// touches this module except when the user clicks "Check for updates" in
-// Settings' About area. Offline, a private/unpublished repo (the GitHub API
-// returns 404 for those), or any other error is a silent no-op that reports
-// "unable to check" — this informational network read never blocks anything.
-//
-// Privacy: a plain, unauthenticated GitHub read that carries no identifiers.
-// We deliberately send no app-identifying headers and no auth token — only the
-// runtime's default User-Agent (Node/Electron's "node") goes out. GitHub only
-// requires *some* User-Agent, which the default satisfies.
-
+import * as Context from 'effect/Context'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
-import * as Option from 'effect/Option'
+import type * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
+import * as Queue from 'effect/Queue'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 
-import type { UpdateStatus } from '../shared/schemas/updates.js'
-import { fetchJsonWithRetry, HttpFetch } from './pipeline/fetch-utils.js'
+import { type UpdateStatus, updateStatusSchema } from '../shared/schemas/updates.js'
 
-export type { UpdateStatus } from '../shared/schemas/updates.js'
-
-const RELEASES_URL = 'https://api.github.com/repos/Pasquale-Favella/watchtower/releases?per_page=15'
-const FETCH_TIMEOUT_MS = 15_000
-// Release tags are accepted as plain semver (`v0.2.0`, GitHub's conventional
-// format) or with a `desktop-v` prefix (`desktop-v0.2.0`), so
-// a tag convention can be chosen later without a code change.
-const RELEASE_TAG_RE = /^(?:desktop-)?v?(\d+\.\d+\.\d+)$/
-
-const githubReleaseSchema = Schema.Struct({ tag_name: Schema.optional(Schema.String) })
-type GitHubRelease = Schema.Schema.Type<typeof githubReleaseSchema>
-
-function baselineStatus(currentVersion: string): UpdateStatus {
-  return { currentVersion, latestVersion: null, updateAvailable: false, tag: null }
-}
-
-/** Numeric compare of two `major.minor.patch` strings: -1 / 0 / 1. Missing or
- * non-numeric parts count as 0. */
-export function compareSemver(a: string, b: string): number {
-  const pa = a.split('.')
-  const pb = b.split('.')
-  for (let i = 0; i < 3; i++) {
-    const x = Number(pa[i] ?? 0) || 0
-    const y = Number(pb[i] ?? 0) || 0
-    if (x !== y) return x < y ? -1 : 1
-  }
-  return 0
-}
-
-/** The newest desktop release among the feed (by semver, not feed order), or
- * null if none match the tag convention. */
-export function pickLatestDesktopVersion(releases: GitHubRelease[]): { version: string; tag: string } | null {
-  let best: { version: string; tag: string } | null = null
-  for (const release of releases) {
-    const tag = typeof release?.tag_name === 'string' ? release.tag_name : ''
-    const match = RELEASE_TAG_RE.exec(tag)
-    if (!match) continue
-    const version = match[1]!
-    if (!best || compareSemver(version, best.version) > 0) best = { version, tag }
-  }
-  return best
-}
-
-// --- Effect-native updates boundary (ADR 0032). The Promise adapters
-// (`fetchReleases`/`createUpdateChecker`) were removed once the main-process
-// update IPC consumed these effects through the main runtime; pure helpers
-// (`compareSemver`, `pickLatestDesktopVersion`) stay plain functions. ---
-
-/** Typed fetch failure for the Effect boundary: non-2xx (`http` with status),
- * network/abort (`network`), or Clock timeout (`timeout`). */
-export class UpdateFetchError extends Schema.TaggedError<UpdateFetchError>()('UpdateFetchError', {
-  reason: Schema.Literals(['http', 'network', 'timeout']),
-  message: Schema.String,
-  status: Schema.optional(Schema.Number),
+export class UpdateError extends Schema.TaggedError<UpdateError>()('UpdateError', {
+  code: Schema.Literals(['check-failed', 'download-failed', 'invalid-update']),
 }) {}
 
-function toUpdateFetchReason(reason: string): 'timeout' | 'network' {
-  if (reason === 'timeout') {
-    return 'timeout'
-  }
-  return 'network'
+/** The library adapter owns transport, checksums, signatures and cancellation. */
+export interface UpdateDriver {
+  readonly check: Effect.Effect<{ version: string; available: boolean }, UpdateError>
+  readonly download: Effect.Effect<void, UpdateError>
+  readonly subscribeProgress: (notify: (percent: number) => void) => () => void
+  readonly install: () => void
 }
 
-function describeUpdateErrorCause(cause: unknown): string {
-  if (cause instanceof Error) {
-    return cause.message
-  }
-  return String(cause)
+export interface UpdateSource {
+  readonly driver: UpdateDriver | null
+  readonly unavailableReason: string | null
 }
 
-function buildFreshStatus(currentVersion: string, latest: { version: string; tag: string } | null): UpdateStatus {
-  if (latest === null) {
-    return baselineStatus(currentVersion)
-  }
-  if (compareSemver(latest.version, currentVersion) > 0) {
-    return { currentVersion, latestVersion: latest.version, updateAvailable: true, tag: latest.tag }
-  }
-  return { currentVersion, latestVersion: latest.version, updateAvailable: false, tag: null }
+export interface UpdatesOptions {
+  readonly currentVersion: string
+  readonly source: Effect.Effect<UpdateSource, never, FileSystem.FileSystem>
+  readonly onChange: (status: UpdateStatus) => void
+  readonly requestInstall: (install: () => void) => void
 }
 
-interface UpdateCheckerState {
-  cached: UpdateStatus
-  flight: Deferred.Deferred<UpdateStatus> | null
-}
-
-interface UpdateCheckDecision {
-  isLeader: boolean
-  deferred: Deferred.Deferred<UpdateStatus>
-  prevCached: UpdateStatus
-}
-
-/** Effect-native releases read: the public GitHub releases feed over the
- * `HttpFetch` service — timeout via the Effect Clock (`FETCH_TIMEOUT_MS`,
- * TestClock controllable) and fiber interruption aborts the underlying
- * fetch, replacing manual `AbortController`+`setTimeout` plumbing. No auth,
- * no app-identifying headers (see the file header). Non-array JSON still
- * yields `[]`.
- *
- * Bounded transient retry (F15/A1) on request and body transport: the manual check used
- * to report "unable to check" off a single two-second blip. It stays
- * manual-only, still sends nothing, and still never blocks — the
- * `update.offline` degrade in `createUpdateCheckerEffect` is unchanged, it
- * just runs after the retries are spent. A 404 (private/unpublished repo) is
- * a real answer, not a transient failure, so the non-2xx arm below stays
- * outside the retry. */
-export const fetchReleasesEffect = Effect.fn('fetchReleasesEffect')(function* (): Effect.fn.Return<
-  GitHubRelease[],
-  UpdateFetchError,
-  HttpFetch
-> {
-  const response = yield* fetchJsonWithRetry(RELEASES_URL, {}, FETCH_TIMEOUT_MS).pipe(
-    Effect.mapError(
-      cause =>
-        new UpdateFetchError({
-          reason: toUpdateFetchReason(cause.reason),
-          message: cause.message,
-        }),
-    ),
-  )
-  if (!response.ok) {
-    return yield* new UpdateFetchError({
-      reason: 'http',
-      message: `GitHub HTTP ${response.status}`,
-      status: response.status,
-    })
+export class AppUpdates extends Context.Service<
+  AppUpdates,
+  {
+    readonly status: Effect.Effect<UpdateStatus>
+    readonly check: Effect.Effect<UpdateStatus>
+    readonly download: Effect.Effect<UpdateStatus>
+    readonly install: Effect.Effect<UpdateStatus>
   }
-  const releases = yield* Schema.decodeUnknownEffect(Schema.mutable(Schema.Array(Schema.Unknown)))(response.body).pipe(
-    Effect.orElseSucceed(() => []),
-  )
-  const decoded: GitHubRelease[] = []
-  for (const release of releases) {
-    const result = Schema.decodeUnknownOption(githubReleaseSchema)(release)
-    if (Option.isSome(result)) decoded.push(result.value)
-  }
-  return decoded
-})
+>()('watchtower/main/AppUpdates') {}
 
-export interface UpdateCheckerEffect {
-  /** Effect-based check (`checkUpdatesEffect` equivalent): every button click
-   * runs this; there is no background schedule. Concurrent checks share one
-   * flight, last-known status is cached, offline/error degrades to cached
-   * status with the `update.offline` informational note — never fails
-   * (interruption still propagates). */
-  readonly check: () => Effect.Effect<UpdateStatus, never, HttpFetch>
+interface UpdateState {
+  readonly status: UpdateStatus
+  readonly flight: Deferred.Deferred<UpdateStatus> | null
 }
 
-/** Effect-native update checker factory. Observable contract: concurrent
- * `check()` calls share one flight via a shared `Deferred`, the last-known
- * status is cached in a `Ref`, and any fetch failure degrades to the cached
- * status with the `update.offline` informational operational-log note (via
- * `Effect.logInfo` + `annotateLogs`, the one Effect logging path). Pure helpers
- * (`compareSemver`, `pickLatestDesktopVersion`) stay plain functions. */
-export const createUpdateCheckerEffect = Effect.fn('createUpdateCheckerEffect')(function* (opts: {
-  currentVersion: string
-}): Effect.fn.Return<UpdateCheckerEffect> {
-  const stateRef = yield* Ref.make<UpdateCheckerState>({
-    cached: baselineStatus(opts.currentVersion),
-    flight: null,
-  })
-  const currentVersion = opts.currentVersion
+interface UpdateDecision {
+  readonly deferred: Deferred.Deferred<UpdateStatus> | null
+  readonly start: boolean
+}
 
-  function check(): Effect.Effect<UpdateStatus, never, HttpFetch> {
-    return Effect.gen(function* () {
-      const myDeferred = yield* Deferred.make<UpdateStatus>()
-      const decision = yield* Ref.modify(stateRef, function claimFlight(state: UpdateCheckerState): readonly [
-        UpdateCheckDecision,
-        UpdateCheckerState,
-      ] {
-        if (state.flight === null) {
-          return [
-            { isLeader: true, deferred: myDeferred, prevCached: state.cached },
-            { cached: state.cached, flight: myDeferred },
-          ]
-        }
-        return [{ isLeader: false, deferred: state.flight, prevCached: state.cached }, state]
+export function updatesLayer(options: UpdatesOptions): Layer.Layer<AppUpdates, never, FileSystem.FileSystem> {
+  return Layer.effect(
+    AppUpdates,
+    Effect.gen(function* () {
+      const scope = yield* Effect.scope
+      const { driver, unavailableReason } = yield* options.source
+      const state = yield* Ref.make<UpdateState>({
+        status: {
+          revision: 0,
+          currentVersion: options.currentVersion,
+          latestVersion: null,
+          updateAvailable: false,
+          tag: null,
+          phase: driver ? 'idle' : 'unsupported',
+          installSupported: driver !== null,
+          progress: null,
+          message: unavailableReason,
+        },
+        flight: null,
       })
-      if (!decision.isLeader) {
-        return yield* Deferred.await(decision.deferred)
-      }
-      const prevCached = decision.prevCached
-      const leaderDeferred = decision.deferred
+      const status = Ref.get(state).pipe(Effect.map(state => state.status))
 
-      const computeFresh: Effect.Effect<UpdateStatus, never, HttpFetch> = Effect.gen(function* () {
-        const releases = yield* fetchReleasesEffect()
-        return buildFreshStatus(currentVersion, pickLatestDesktopVersion(releases))
-      }).pipe(
-        Effect.catch(() =>
+      const publish = Effect.fn('AppUpdates.publish')(function* (next: UpdateStatus) {
+        const validated = yield* Schema.decodeUnknownEffect(updateStatusSchema)(next).pipe(Effect.orDie)
+        const published = yield* Ref.modify(state, current => {
+          const status = { ...validated, revision: current.status.revision + 1 }
+          return [status, { ...current, status }]
+        })
+        yield* Effect.sync(() => options.onChange(published))
+        return published
+      })
+
+      if (driver) {
+        const progress = yield* Queue.sliding<number>(1)
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            driver.subscribeProgress(percent => {
+              Queue.offerUnsafe(progress, percent)
+            }),
+          ),
+          unsubscribe => Effect.sync(unsubscribe),
+        )
+        yield* Effect.forkScoped(
           Effect.gen(function* () {
-            yield* Effect.logInfo('update.offline').pipe(
-              Effect.annotateLogs({
-                event: 'update.offline',
-                context: 'main',
-                op: 'updates:check',
-                code: 'unavailable',
-              }),
-            )
-            return prevCached
+            while (true) {
+              const percent = yield* Queue.take(progress)
+              const current = yield* status
+              if (current.phase === 'downloading' && Number.isFinite(percent)) {
+                yield* publish({ ...current, progress: Math.min(100, Math.max(0, percent)) })
+              }
+            }
           }),
-        ),
-      )
+        )
+      }
 
-      return yield* computeFresh.pipe(
-        Effect.onExit(function (exit) {
-          if (Exit.isSuccess(exit)) {
-            return Effect.gen(function* () {
-              yield* Ref.update(stateRef, () => ({ cached: exit.value, flight: null }))
-              yield* Deferred.succeed(leaderDeferred, exit.value)
+      const run = Effect.fn('AppUpdates.run')(function* (action: 'check' | 'download') {
+        return yield* Effect.uninterruptibleMask(restore =>
+          Effect.gen(function* () {
+            if (!driver) return yield* status
+            const deferred = yield* Deferred.make<UpdateStatus>()
+            const decision = yield* Ref.modify(state, (current): readonly [UpdateDecision, UpdateState] => {
+              if (current.flight) return [{ deferred: current.flight, start: false }, current] as const
+              const phase = current.status.phase
+              if (
+                phase === 'ready' ||
+                phase === 'installing' ||
+                (action === 'download' && !current.status.updateAvailable)
+              ) {
+                return [{ deferred: null, start: false }, current]
+              }
+              const next: UpdateStatus = {
+                ...current.status,
+                revision: current.status.revision + 1,
+                phase: action === 'check' ? 'checking' : 'downloading',
+                progress: action === 'download' ? 0 : null,
+                message: null,
+              }
+              return [
+                { deferred, start: true },
+                { status: next, flight: deferred },
+              ] as const
             })
-          }
-          return Effect.gen(function* () {
-            yield* Ref.update(stateRef, s => ({ cached: s.cached, flight: null }))
-            yield* Deferred.done(leaderDeferred, exit)
-          })
-        }),
-      )
-    })
-  }
+            if (!decision.deferred) return yield* status
+            if (decision.start) {
+              const work = Effect.gen(function* () {
+                yield* Effect.sync(() => options.onChange(Ref.getUnsafe(state).status))
+                if (action === 'check') {
+                  const result = yield* driver.check
+                  const current = yield* status
+                  return yield* publish({
+                    ...current,
+                    latestVersion: result.version,
+                    updateAvailable: result.available,
+                    tag: result.available ? `v${result.version}` : null,
+                    phase: result.available ? 'available' : 'current',
+                    progress: null,
+                  })
+                }
+                yield* driver.download
+                const current = yield* status
+                return yield* publish({ ...current, phase: 'ready', progress: 100 })
+              }).pipe(
+                Effect.catch(error =>
+                  Effect.gen(function* () {
+                    yield* Effect.logWarning('update.failed').pipe(
+                      Effect.annotateLogs({
+                        event: 'update.failed',
+                        context: 'main',
+                        op: `updates:${action}`,
+                        code: error.code,
+                      }),
+                    )
+                    const current = yield* status
+                    return yield* publish({
+                      ...current,
+                      phase: 'error',
+                      progress: null,
+                      message:
+                        action === 'check'
+                          ? 'Unable to check for updates. Try again or open the release page.'
+                          : 'Download failed. Try again or open the release page.',
+                      ...(action === 'check' ? { updateAvailable: false, latestVersion: null, tag: null } : {}),
+                    })
+                  }),
+                ),
+                Effect.onExit(exit =>
+                  Effect.gen(function* () {
+                    yield* Ref.update(state, current => ({ ...current, flight: null }))
+                    if (Exit.isSuccess(exit)) yield* Deferred.succeed(deferred, exit.value)
+                    else yield* Deferred.failCause(deferred, exit.cause)
+                  }),
+                ),
+              )
+              yield* Effect.forkIn(Effect.interruptible(work), scope)
+            }
+            return yield* restore(Deferred.await(decision.deferred))
+          }),
+        )
+      })
 
-  return { check }
-})
+      const install = Effect.gen(function* () {
+        const current = yield* status
+        if (!driver || current.phase !== 'ready') return current
+        const next = yield* publish({ ...current, phase: 'installing', message: null })
+        yield* Effect.sync(() => options.requestInstall(driver.install))
+        return next
+      })
+      return AppUpdates.of({ status, check: run('check'), download: run('download'), install })
+    }),
+  )
+}

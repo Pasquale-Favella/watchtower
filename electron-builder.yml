@@ -3,9 +3,15 @@ productName: Watchtower
 directories:
   buildResources: build
   output: dist
-# Stable, version-less installer names (Watchtower-win-x64.exe, …) so the
-# README's releases/latest/download links always resolve to the newest build.
-artifactName: ${productName}-${os}-${arch}.${ext}
+# Update manifests reference immutable versioned artifacts. The release job
+# also publishes versionless copies for existing README download links.
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+publish:
+  provider: github
+  owner: Pasquale-Favella
+  repo: watchtower
+  private: false
+  releaseType: release
 files:
   - out/**
 # The tray icon (background shell): build/ itself isn't shipped, so the brand
@@ -50,15 +56,8 @@ mac:
   # config validation for every target.
   x64ArchFiles: "**/node_modules/{@openai/codex-darwin-*,@anthropic-ai/claude-agent-sdk-darwin-*}/**"
   category: public.app-category.developer-tools
-  # Free ad-hoc signing (ADR 0015): no paid Apple Developer ID, so no
-  # notarization. Packaging edits the Electron bundle and breaks its original
-  # signature, which Apple Silicon reports as "damaged and can't be opened".
-  # Ad-hoc ("-") re-seals the bundle so Gatekeeper shows the bypassable
-  # "unidentified developer" prompt instead. Hardened runtime only matters for
-  # notarization and trips library validation on ad-hoc builds, so it is off.
-  identity: "-"
-  hardenedRuntime: false
-  notarize: false
+  # electron-builder.config.cjs selects Developer ID signing + notarization
+  # when credentials exist, and ad-hoc signing otherwise.
 linux:
   target:
     - AppImage

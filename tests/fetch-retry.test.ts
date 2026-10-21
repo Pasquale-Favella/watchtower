@@ -47,7 +47,6 @@ import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
 import { PricingRefreshError, refreshPricingNowEffect } from '../src/main/pipeline/models.js'
 import { fetchVercelGatewayReportEffect, type ReportRow } from '../src/main/pipeline/providers/vercel-gateway.js'
 import type { DateRange } from '../src/main/pipeline/types.js'
-import { fetchReleasesEffect, UpdateFetchError } from '../src/main/updates.js'
 import type { CurrencyRate } from '../src/shared/schemas/ledger.js'
 
 const RANGE: DateRange = {
@@ -294,19 +293,6 @@ describe('response body transport participates in the shared retry policy', () =
     }),
   )
 
-  effectIt.effect('updates retry a partial body failure before returning a typed network error', () =>
-    Effect.gen(function* () {
-      const down = interruptedBodyFetch('network')
-      const error = yield* joinAfterAdvance(
-        fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(down.fetch)), Effect.flip),
-        RETRY_ENVELOPE_MS,
-      )
-      expect(down.calls()).toBe(1 + TRANSIENT_RETRY_RETRIES)
-      expect(error).toBeInstanceOf(UpdateFetchError)
-      expect(error.reason).toBe('network')
-    }),
-  )
-
   effectIt.effect('gateway retries a partial body failure and logs one fallback', () =>
     Effect.gen(function* () {
       const down = interruptedBodyFetch('network')
@@ -517,62 +503,6 @@ describe('refreshPricingNowEffect + transient retry', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Updates — `updates:check` reported "unable to check" for a single blip.
-// ---------------------------------------------------------------------------
-
-describe('fetchReleasesEffect + transient retry', () => {
-  it('a network failure retries twice, then raises the same typed network error', async () => {
-    const down = failingFetch('network')
-    const error = await Effect.runPromise(
-      joinAfterAdvance(
-        fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(down.fetch)), Effect.flip),
-        RETRY_ENVELOPE_MS,
-      ).pipe(Effect.provide(TestClock.layer())),
-    )
-    expect(down.calls()).toBe(1 + TRANSIENT_RETRY_RETRIES)
-    expect(error).toBeInstanceOf(UpdateFetchError)
-    expect(error.reason).toBe('network')
-  })
-
-  it('an abort retries ZERO times and propagates on the first attempt', async () => {
-    const down = failingFetch('abort')
-    const error = await Effect.runPromise(
-      fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(down.fetch)), Effect.flip),
-    )
-    expect(down.calls()).toBe(1)
-    expect(error).toBeInstanceOf(UpdateFetchError)
-  })
-
-  it('a 404 is a real answer, not a transient failure: one fetch, typed http error, no retry', async () => {
-    const missing = jsonFetch(404, {})
-    const error = await Effect.runPromise(
-      fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(missing.fetch)), Effect.flip),
-    )
-    expect(missing.calls()).toBe(1)
-    expect(error).toBeInstanceOf(UpdateFetchError)
-    expect(error.reason).toBe('http')
-    expect(error.status).toBe(404)
-  })
-
-  it('recovers inside the retry window: attempt 3 succeeds and the release list comes back', async () => {
-    let calls = 0
-    const flaky = (async () => {
-      calls += 1
-      if (calls < 3) throw new Error('blip')
-      return new Response(JSON.stringify([{ tag_name: 'v0.2.0' }]), { status: 200 })
-    }) as unknown as typeof fetch
-    const releases = await Effect.runPromise(
-      joinAfterAdvance(
-        fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(flaky))),
-        RETRY_ENVELOPE_MS,
-      ).pipe(Effect.provide(TestClock.layer())),
-    )
-    expect(calls).toBe(3)
-    expect(releases).toEqual([{ tag_name: 'v0.2.0' }])
-  })
-})
-
-// ---------------------------------------------------------------------------
 // Vercel gateway — session discovery answered `[]` plus one warn per blip.
 // ---------------------------------------------------------------------------
 
@@ -655,7 +585,6 @@ describe('fetchVercelGatewayReportEffect + transient retry', () => {
 //   tests/fx-effect.test.ts:167           timeoutMs 100  -> needs >=  900ms
 //   tests/pricing-effect.test.ts:188      timeoutMs 100  -> needs >=  900ms
 //   tests/vercel-gateway-effect.test.ts:124 default 8000 -> needs >= 24600ms
-//   (tests/updates-effect.test.ts:111,203 default 15000 -> 60000ms still holds)
 //
 // Nothing about the behaviour each pin asserts changed — a timeout still
 // degrades to the same fallback, persists nothing, and logs the same code —
@@ -698,19 +627,6 @@ describe('the timeout reason is retried, then degrades exactly as it did before'
     expect(hang.calls()).toBe(1 + TRANSIENT_RETRY_RETRIES)
     expect(error).toBeInstanceOf(PricingRefreshError)
     expect(error.reason).toBe('fetch')
-  })
-
-  it('updates: a hung fetch times out three times, then raises the typed timeout error', async () => {
-    const hang = hangingFetch()
-    const error = await Effect.runPromise(
-      joinAfterAdvance(
-        fetchReleasesEffect().pipe(Effect.provide(HttpFetch.layerWithFetch(hang.fetch)), Effect.flip),
-        60_000,
-      ).pipe(Effect.provide(TestClock.layer())),
-    )
-    expect(hang.calls()).toBe(1 + TRANSIENT_RETRY_RETRIES)
-    expect(error).toBeInstanceOf(UpdateFetchError)
-    expect(error.reason).toBe('timeout')
   })
 
   it('gateway: a hung fetch times out three times, then returns [] with ONE `timeout` warn', async () => {

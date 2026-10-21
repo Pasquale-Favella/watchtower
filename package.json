@@ -1,6 +1,6 @@
 {
   "name": "watchtower-desktop",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Desktop app for local code-assistant token and cost telemetry",
   "author": {
     "name": "Pasquale Favella",
@@ -25,10 +25,10 @@
     "format:check": "prettier --check .",
     "pricing:bundle": "node scripts/bundle-litellm.mjs",
     "icons": "node scripts/generate-icons.cjs",
-    "package": "electron-vite build && electron-builder --publish never",
-    "package:win": "electron-vite build && electron-builder --win --publish never",
-    "package:mac": "electron-vite build && electron-builder --mac --publish never",
-    "package:linux": "electron-vite build && electron-builder --linux --publish never",
+    "package": "electron-vite build && electron-builder --config electron-builder.config.cjs --publish never",
+    "package:win": "electron-vite build && electron-builder --config electron-builder.config.cjs --win --publish never",
+    "package:mac": "electron-vite build && electron-builder --config electron-builder.config.cjs --mac --publish never",
+    "package:linux": "electron-vite build && electron-builder --config electron-builder.config.cjs --linux --publish never",
     "postinstall": "node scripts/ensure-electron.cjs"
   },
   "dependencies": {
@@ -50,6 +50,7 @@
     "cmdk": "^1.1.1",
     "date-fns": "^4.4.0",
     "effect": "4.0.5",
+    "electron-updater": "6.8.9",
     "gsap": "^3.15.0",
     "lucide-react": "^0.468.0",
     "pi-acp": "^0.0.33",

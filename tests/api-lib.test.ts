@@ -14,7 +14,9 @@ import {
   fetchCurrencies,
   fetchCurrency,
   fetchDismissSkill,
+  fetchDownloadUpdate,
   fetchExport,
+  fetchInstallUpdate,
   fetchLedgerMcpConnection,
   fetchLedgerMcpStatus,
   fetchOptimize,
@@ -34,9 +36,11 @@ import {
   fetchSettings,
   fetchSkills,
   fetchSpend,
+  fetchUpdateStatus,
   fetchViews,
   fetchYield,
   onCoachHarnessesChanged,
+  onUpdateChanged,
   openCoachLoginTerminal,
   parsePayload,
   refreshCoachHarnesses,
@@ -317,7 +321,17 @@ describe('renderer parse seam (ADR 0005)', () => {
     const calls: unknown[][] = []
     mockWindow({
       checkForUpdates: () =>
-        Promise.resolve({ currentVersion: '1.0', latestVersion: null, updateAvailable: false, tag: null }),
+        Promise.resolve({
+          revision: 0,
+          phase: 'idle',
+          installSupported: true,
+          progress: null,
+          message: null,
+          currentVersion: '1.0',
+          latestVersion: null,
+          updateAvailable: false,
+          tag: null,
+        }),
       getCurrency: () => Promise.resolve({ code: 'EUR', symbol: '€', rate: 0.9 }),
       setCurrency: (code: string) => {
         calls.push(['setCurrency', code])
@@ -338,6 +352,11 @@ describe('renderer parse seam (ADR 0005)', () => {
     expect(await fetchCheckForUpdates()).toEqual({
       ok: true,
       data: {
+        revision: 0,
+        phase: 'idle',
+        installSupported: true,
+        progress: null,
+        message: null,
         currentVersion: '1.0',
         latestVersion: null,
         updateAvailable: false,
@@ -380,5 +399,51 @@ describe('renderer parse seam (ADR 0005)', () => {
     expect((await fetchCurrencies()).ok).toBe(false)
     expect((await fetchAppVersion()).ok).toBe(false)
     expect((await fetchExport('json')).ok).toBe(false)
+  })
+})
+
+describe('update IPC contracts', () => {
+  const status = {
+    revision: 0,
+    currentVersion: '0.2.6',
+    latestVersion: '0.3.0',
+    updateAvailable: true,
+    tag: 'v0.3.0',
+    phase: 'available',
+    installSupported: true,
+    progress: null,
+    message: null,
+  }
+  it.each([
+    ['getUpdateStatus', fetchUpdateStatus],
+    ['downloadUpdate', fetchDownloadUpdate],
+    ['installUpdate', fetchInstallUpdate],
+  ] as const)('validates %s responses', async (method, command) => {
+    const call = vi.fn().mockResolvedValue(status)
+    mockWindow({ [method]: call })
+    expect(await command()).toEqual({ ok: true, data: status })
+    expect(call).toHaveBeenCalledExactlyOnceWith()
+    call.mockResolvedValue({ ...status, phase: 'unknown' })
+    expect(await command()).toMatchObject({ ok: false })
+  })
+
+  it('validates status events, rejects malformed progress, and releases its subscription', () => {
+    let notify: (status: unknown) => void = () => {}
+    const unsubscribe = vi.fn()
+    mockWindow({
+      onUpdateChanged: (callback: typeof notify) => {
+        notify = callback
+        return unsubscribe
+      },
+    })
+    const callback = vi.fn()
+    const stop = onUpdateChanged(callback)
+    notify(status)
+    notify({ ...status, progress: Number.NaN })
+    notify({ ...status, progress: 101 })
+    notify({ ...status, phase: 'unknown' })
+    expect(callback).toHaveBeenCalledExactlyOnceWith(status)
+    stop()
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
   })
 })
