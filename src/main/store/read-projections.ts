@@ -154,7 +154,7 @@ export type LedgerLifetimeModelRow = Schema.Schema.Type<typeof ledgerLifetimeMod
  *   project                    tools.ts:172, :184
  *   working_directory          tools.ts:185
  *
- * DROPPED, with no reader anywhere in `src/main`:
+ * DROPPED from the default snapshot:
  *   call_key          a STORED generated column whose only job is the UNIQUE
  *                     constraint (store/ledger-initialization.ts). `tests/ledger.test.ts`
  *                     pins it on `getCalls()`, which is why the wide read stays.
@@ -162,10 +162,12 @@ export type LedgerLifetimeModelRow = Schema.Schema.Type<typeof ledgerLifetimeMod
  *                     comes from `ledger_session.project_path` (aggregate.ts:483).
  *   agent_type        nothing reads the call's agent type; `SessionSummary.agentType`
  *                     comes from `ledger_session.agent_type` (aggregate.ts:432).
- *   loc_added, loc_removed, interrupted, user_modified, tool_errors, edit_failed
- *                     `reconstructCall` (aggregate.ts:150-189) never copies these
- *                     onto the reconstructed `ParsedApiCall`, and no view reads
- *                     them; they are capture-only fields (pipeline/types.ts:150-160).
+ *   loc_added, loc_removed
+ *                     These remain capture-only fields.
+ *   interrupted, user_modified, tool_errors, edit_failed
+ *                     Optimize requests these through its focused diagnostics
+ *                     projection within the same request transaction. Other
+ *                     views keep the default narrow call rows.
  *
  * WHY THERE IS NO MATCHING `getTurnFacts`. The turn read is the other 97%-of-time
  * half of the query path (`read:getTurns` is 9.9 s of a 27.6 s `store:views` at
@@ -275,3 +277,26 @@ export const ledgerCallFactsRowSchema = ledgerCallFactsShape.pipe(
     toolSequence: 'tool_sequence_json',
   }),
 )
+
+/** Optimize opts into explicit call-result diagnostics without widening other views. */
+export const ledgerCallDiagnosticsRowSchema = Schema.Struct({
+  sourceId: num,
+  sessionId: Schema.String,
+  turnIndex: num,
+  callIndex: num,
+  interrupted: num,
+  userModified: num,
+  toolErrors: Schema.NullOr(Schema.Finite),
+  editFailed: Schema.NullOr(Schema.Finite),
+}).pipe(
+  Schema.encodeKeys({
+    sourceId: 'source_id',
+    sessionId: 'session_id',
+    turnIndex: 'turn_index',
+    callIndex: 'call_index',
+    userModified: 'user_modified',
+    toolErrors: 'tool_errors',
+    editFailed: 'edit_failed',
+  }),
+)
+export type LedgerCallDiagnosticsRow = Schema.Schema.Type<typeof ledgerCallDiagnosticsRowSchema>

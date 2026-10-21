@@ -9,7 +9,10 @@ import type { SessionSearchData, SessionSummaryData } from './session-read-proje
 /** Purpose-shaped reads for the worker's project and session routes. */
 export interface LedgerSessionReadsPort {
   getSessionSummaryData(): Effect.Effect<SessionSummaryData, SqlError | Schema.SchemaError>
-  getSessionDetailData(publicSessionId: string): Effect.Effect<LedgerRequestSnapshotData, SqlError | Schema.SchemaError>
+  getSessionDetailData(
+    publicSessionId: string,
+    sourceId?: number,
+  ): Effect.Effect<LedgerRequestSnapshotData, SqlError | Schema.SchemaError>
   getSessionSearchData(): Effect.Effect<SessionSearchData, SqlError | Schema.SchemaError>
 }
 

@@ -9,7 +9,7 @@ import {
 import type { ProxyPathConfig } from '../pipeline/proxy-paths.js'
 import type { DateRange } from '../pipeline/types.js'
 import { LedgerQueries, type LedgerRequestSnapshotData } from './ledger-ports.js'
-import type { LedgerCallFactsRow } from './read-projections.js'
+import type { LedgerCallDiagnosticsRow, LedgerCallFactsRow } from './read-projections.js'
 
 /** The immutable inputs captured for one request-level ledger calculation. */
 export type LedgerQuerySnapshot = {
@@ -17,6 +17,7 @@ export type LedgerQuerySnapshot = {
   sessions: readonly LedgerSessionRow[]
   turns: readonly LedgerTurnRow[]
   calls: readonly LedgerCallFactsRow[]
+  callDiagnostics?: readonly LedgerCallDiagnosticsRow[]
   aliases: readonly LedgerRequestSnapshotData['aliases'][number][]
   overrides: readonly LedgerRequestSnapshotData['overrides'][number][]
   lifetimeModels?: readonly NonNullable<LedgerRequestSnapshotData['lifetimeModels']>[number][]
@@ -36,6 +37,7 @@ export function makeLedgerQuerySnapshot(input: LedgerQuerySnapshotInputs): Ledge
     sessions: input.sessions,
     turns: input.turns,
     calls: input.calls,
+    ...(input.callDiagnostics ? { callDiagnostics: input.callDiagnostics } : {}),
     aliases: input.aliases,
     overrides: input.overrides,
     ...(input.lifetimeModels ? { lifetimeModels: input.lifetimeModels } : {}),
@@ -55,8 +57,11 @@ export const loadLedgerQuerySnapshotEffect = Effect.fn('LedgerQuerySnapshot.load
     proxyPaths: ProxyPathConfig
   },
   range?: DateRange,
+  includeCallDiagnostics = false,
 ) {
   const queries = yield* LedgerQueries
-  const data: LedgerRequestSnapshotData = yield* queries.getRequestSnapshotData(range)
+  const data: LedgerRequestSnapshotData = yield* includeCallDiagnostics
+    ? queries.getRequestSnapshotData(range, true)
+    : queries.getRequestSnapshotData(range)
   return makeLedgerQuerySnapshot({ ...data, ...input })
 })

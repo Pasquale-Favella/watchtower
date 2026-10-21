@@ -48,6 +48,8 @@ function oldPathSummaries(cachedFile: ReturnType<typeof buildFixtureCachedFile>)
   // '/workspace/demo-project', so the seam derives this key, path and display.
   summary.projectKey = '/workspace/demo-project'
   summary.projectPath = '/workspace/demo-project'
+  summary.sourceId = 1
+  summary.isSidechain = cachedFile.isSidechain ?? false
   const explicitLinks = new Set(turns.flatMap(turn => turn.prRefs ?? []))
   for (const link of cachedFile.prLinks ?? []) explicitLinks.add(link)
   if (explicitLinks.size) summary.prLinks = [...explicitLinks].sort()

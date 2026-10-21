@@ -19,7 +19,7 @@ export function sectionForPath(pathname: string): Section {
   return section ?? 'overview'
 }
 
-type Navigate = (to: string) => void
+type Navigate = (to: string, sourceId?: number) => void
 
 let navigate: Navigate | null = null
 
@@ -36,6 +36,8 @@ export function navigateToSection(section: Section): void {
 }
 
 /** Navigate to a session detail route. */
-export function navigateToSession(id: string): void {
-  if (navigate) navigate(ROUTES.sessionDetail(id))
+export function navigateToSession(id: string, sourceId?: number | null): void {
+  if (!navigate) return
+  if (sourceId == null) navigate(ROUTES.sessionDetail(id))
+  else navigate(ROUTES.sessionDetail(id), sourceId)
 }

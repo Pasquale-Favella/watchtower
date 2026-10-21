@@ -88,6 +88,7 @@ import {
   type SearchHit,
   searchHitSchema,
   type SessionDetail,
+  sessionDetailRequestSchema,
   sessionDetailSchema,
   type SessionRow,
   sessionRowSchema,
@@ -180,8 +181,12 @@ export function fetchSessions(filter?: {
   return fetchPayload('sessions', Schema.mutable(Schema.Array(sessionRowSchema)), () => window.api.getSessions(filter))
 }
 
-export function fetchSession(sessionId: string): Promise<ApiResult<SessionDetail | null>> {
-  return fetchPayload('session detail', Schema.NullOr(sessionDetailSchema), () => window.api.getSession(sessionId))
+export function fetchSession(sessionId: string, sourceId?: number): Promise<ApiResult<SessionDetail | null>> {
+  const request = parsePayload(sessionDetailRequestSchema, 'session detail request', { sessionId, sourceId })
+  if (!request.ok) return Promise.resolve(request)
+  return fetchPayload('session detail', Schema.NullOr(sessionDetailSchema), () =>
+    sourceId === undefined ? window.api.getSession(sessionId) : window.api.getSession(sessionId, sourceId),
+  )
 }
 
 export function fetchAnalytics(): Promise<ApiResult<AnalyticalViews | null>> {

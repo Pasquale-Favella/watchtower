@@ -18,7 +18,7 @@ import type { PortInput } from '../../shared/schemas/port.js'
 import type { SkillsDismissal } from '../../shared/schemas/skills.js'
 import type { ScanPricing } from '../pipeline/scan-pricing.js'
 import type { DateRange } from '../pipeline/types.js'
-import type { LedgerCallFactsRow, LedgerLifetimeModelRow } from './read-projections.js'
+import type { LedgerCallDiagnosticsRow, LedgerCallFactsRow, LedgerLifetimeModelRow } from './read-projections.js'
 
 /** Scan-derived fact writes and source removal. */
 export interface LedgerIngestPort {
@@ -33,6 +33,7 @@ export type LedgerRequestSnapshotData = {
   sessions: LedgerSessionRow[]
   turns: LedgerTurnRow[]
   calls: LedgerCallFactsRow[]
+  callDiagnostics?: LedgerCallDiagnosticsRow[]
   aliases: ModelAlias[]
   overrides: PriceOverride[]
   /** Distinct lifetime identities used to keep pricing diagnostics independent of row pruning. */
@@ -46,7 +47,10 @@ export interface LedgerQueriesPort {
   getTurns(): Effect.Effect<LedgerTurnRow[], SqlError | Schema.SchemaError>
   getCalls(): Effect.Effect<LedgerCallRow[], SqlError | Schema.SchemaError>
   getCallFacts(): Effect.Effect<LedgerCallFactsRow[], SqlError | Schema.SchemaError>
-  getRequestSnapshotData(range?: DateRange): Effect.Effect<LedgerRequestSnapshotData, SqlError | Schema.SchemaError>
+  getRequestSnapshotData(
+    range?: DateRange,
+    includeCallDiagnostics?: boolean,
+  ): Effect.Effect<LedgerRequestSnapshotData, SqlError | Schema.SchemaError>
 }
 
 /** User settings that survive ledger clearing. */

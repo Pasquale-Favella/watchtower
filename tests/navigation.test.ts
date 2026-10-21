@@ -1,6 +1,7 @@
+import { createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
+import * as Schema from 'effect/Schema'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { ROUTES, SECTIONS } from '../src/shared/schemas/navigation.js'
 import {
   navigateToSection,
   navigateToSession,
@@ -8,6 +9,8 @@ import {
   sectionForPath,
   setRouter,
 } from '../src/renderer/src/app/navigation.js'
+import { ROUTES, SECTIONS } from '../src/shared/schemas/navigation.js'
+import { sessionDetailSearchSchema } from '../src/shared/schemas/views.js'
 
 beforeEach(() => {
   setRouter(() => {})
@@ -70,5 +73,36 @@ describe('navigation (ADR 0014)', () => {
     })
     navigateToSession('abc')
     expect(calls).toEqual(['/sessions/abc'])
+  })
+
+  it('retains source search through TanStack navigation while legacy routes stay source-free', async () => {
+    const root = createRootRoute()
+    const detail = createRoute({
+      getParentRoute: () => root,
+      path: '/sessions/$sessionId',
+      validateSearch: Schema.decodeUnknownSync(sessionDetailSearchSchema),
+    })
+    const history = createMemoryHistory({ initialEntries: ['/sessions/duplicate?sourceId=2'] })
+    const router = createRouter({ routeTree: root.addChildren([detail]), history })
+    await router.load()
+    expect(router.state.matches.at(-1)?.search).toEqual({ sourceId: 2 })
+    let navigation = Promise.resolve()
+    setRouter((to, sourceId) => {
+      navigation = router.navigate({ to, search: sourceId === undefined ? {} : { sourceId } })
+    })
+    for (const sourceId of [1, 2]) {
+      navigateToSession('duplicate', sourceId)
+      await navigation
+      expect(router.state.location.pathname).toBe('/sessions/duplicate')
+      expect(router.state.location.search).toEqual({ sourceId })
+      expect(router.state.matches.at(-1)?.search).toEqual({ sourceId })
+    }
+    navigateToSession('duplicate')
+    await navigation
+    expect(router.state.location.search).toEqual({})
+  })
+
+  it.each([0, -1, 1.5, Infinity, NaN, '2', null])('rejects malformed source search %s', sourceId => {
+    expect(() => Schema.decodeUnknownSync(sessionDetailSearchSchema)({ sourceId })).toThrow()
   })
 })

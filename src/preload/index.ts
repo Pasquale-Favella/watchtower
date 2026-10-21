@@ -121,7 +121,10 @@ const api = {
   getProjects: (): Promise<ProjectRow[]> => ipcRenderer.invoke('store:projects'),
   getSessions: (filter?: { project?: string; since?: string; until?: string }): Promise<SessionRow[]> =>
     ipcRenderer.invoke('store:sessions', filter),
-  getSession: (sessionId: string): Promise<SessionDetail | null> => ipcRenderer.invoke('store:session', sessionId),
+  getSession: (sessionId: string, sourceId?: number): Promise<SessionDetail | null> =>
+    sourceId === undefined
+      ? ipcRenderer.invoke('store:session', sessionId)
+      : ipcRenderer.invoke('store:session', sessionId, sourceId),
   getAnalytics: (): Promise<AnalyticalViews | null> => ipcRenderer.invoke('store:analytics'),
   getOverview: (scope: OverviewScope): Promise<OverviewPayload | null> => ipcRenderer.invoke('overview:query', scope),
   getSessionRows: (scope: OverviewScope): Promise<SessionRow[]> => ipcRenderer.invoke('sessions:view', scope),

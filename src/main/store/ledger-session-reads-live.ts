@@ -129,13 +129,17 @@ export const LedgerSessionReadsLive = Layer.effect(
 
     const getSessionDetailData = Effect.fn('LedgerSessionReads.getSessionDetailData')(function* (
       publicSessionId: string,
+      sourceId?: number,
     ) {
+      const params = sourceId === undefined ? [publicSessionId] : [publicSessionId, sourceId]
+      const sourceFilter = sourceId === undefined ? '' : ' AND source_id = ?'
+      const scoped = (statement: string): string => statement.replace('session_id = ?', `session_id = ?${sourceFilter}`)
       const rawRows = yield* sql.withTransaction(
         Effect.gen(function* () {
-          const sources = yield* sql.unsafe(SELECT_DETAIL_SOURCES, [publicSessionId])
-          const sessions = yield* sql.unsafe(SELECT_DETAIL_SESSIONS, [publicSessionId])
-          const turns = yield* sql.unsafe(SELECT_DETAIL_TURNS, [publicSessionId])
-          const calls = yield* sql.unsafe(SELECT_DETAIL_CALL_FACTS, [publicSessionId])
+          const sources = yield* sql.unsafe(scoped(SELECT_DETAIL_SOURCES), params)
+          const sessions = yield* sql.unsafe(scoped(SELECT_DETAIL_SESSIONS), params)
+          const turns = yield* sql.unsafe(scoped(SELECT_DETAIL_TURNS), params)
+          const calls = yield* sql.unsafe(scoped(SELECT_DETAIL_CALL_FACTS), params)
           const aliases = yield* sql.unsafe(SELECT_MODEL_ALIASES)
           const overrides = yield* sql.unsafe(SELECT_PRICE_OVERRIDES)
           return { sources, sessions, turns, calls, aliases, overrides }

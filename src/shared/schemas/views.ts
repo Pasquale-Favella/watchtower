@@ -124,6 +124,13 @@ export const searchHitSchema = Schema.Struct({
 })
 export type SearchHit = Schema.Schema.Type<typeof searchHitSchema>
 
+export const sessionSourceIdSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
+export const sessionDetailRequestSchema = Schema.Struct({
+  sessionId: Schema.String,
+  sourceId: Schema.optional(sessionSourceIdSchema),
+})
+export const sessionDetailSearchSchema = Schema.Struct({ sourceId: sessionDetailRequestSchema.fields.sourceId })
+
 export const sessionDetailCallSchema = Schema.Struct({
   provider: writable(Schema.String),
   model: writable(Schema.String),

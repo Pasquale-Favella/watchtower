@@ -99,12 +99,12 @@ function input(): ScopedViewQueryInputs {
 }
 
 describe('Yield calculation', () => {
-  it('keeps classification decisions literal and cost/session percentages rounded to tenths', () => {
+  it('keeps outcome categories mutually exclusive and cost/session percentages rounded to tenths', () => {
     const started = session()
-    expect(categorizeYieldSession(started, [], true)).toEqual({ category: 'ambiguous', commitCount: 0 })
-    expect(categorizeYieldSession(started, [], false)).toEqual({ category: 'abandoned', commitCount: 0 })
-    expect(categorizeYieldSession(session({ firstTimestamp: '' }), [], false)).toEqual({
-      category: 'abandoned',
+    expect(categorizeYieldSession(started, [], true)).toMatchObject({ category: 'ambiguous', commitCount: 0 })
+    expect(categorizeYieldSession(started, [], false)).toMatchObject({ category: 'unmatched', commitCount: 0 })
+    expect(categorizeYieldSession(session({ firstTimestamp: '' }), [], false)).toMatchObject({
+      category: 'unknown',
       commitCount: 0,
     })
 
@@ -118,12 +118,12 @@ describe('Yield calculation', () => {
       ],
       { start: new Date(0), end: NOW },
     )
-    expect(payload.summary.abandoned).toEqual({ costUSD: 3, sessions: 2, costPercent: 100, sessionPercent: 100 })
+    expect(payload.summary.unmatched).toEqual({ costUSD: 3, sessions: 2, costPercent: 100, sessionPercent: 100 })
     expect(payload.summary.productiveToRevertedCostRatio).toBeNull()
     expect(payload.details.map(detail => detail.project)).toEqual(['one', 'two'])
   })
 
-  it('uses the tightest matching session window and applies the reverted-majority threshold', () => {
+  it('uses the tightest matching session window and preserves mixed revert evidence', () => {
     const broad = session({
       sessionId: 'broad',
       firstTimestamp: '2026-10-05T09:30:00.000Z',
@@ -148,7 +148,7 @@ describe('Yield calculation', () => {
         ],
         false,
       ),
-    ).toEqual({ category: 'reverted', commitCount: 2 })
+    ).toMatchObject({ category: 'mixed', commitCount: 2 })
     expect(
       categorizeYieldSession(
         session(),
@@ -159,7 +159,48 @@ describe('Yield calculation', () => {
         ],
         false,
       ),
-    ).toEqual({ category: 'productive', commitCount: 3 })
+    ).toMatchObject({ category: 'mixed', commitCount: 3 })
+  })
+
+  it('distinguishes missing evidence, pending commits and complete reverts', () => {
+    const commit = { sha: '1234567', timestamp: new Date('2026-10-05T10:15:00Z'), inMain: true, wasReverted: false }
+    expect(categorizeYieldSession(session(), [commit], false, false).category).toBe('unknown')
+    expect(categorizeYieldSession(session(), [{ ...commit, inMain: null }], false).category).toBe('unknown')
+    expect(categorizeYieldSession(session(), [{ ...commit, wasReverted: null }], false).category).toBe('unknown')
+    expect(categorizeYieldSession(session(), [{ ...commit, inMain: false, wasReverted: null }], false).category).toBe(
+      'unmerged',
+    )
+    expect(categorizeYieldSession(session(), [{ ...commit, wasReverted: true }], false).category).toBe('reverted')
+    expect(categorizeYieldSession(session({ firstTimestamp: 'invalid' }), [], false).category).toBe('unknown')
+    expect(categorizeYieldSession(session({ lastTimestamp: '2026-10-05T09:00:00Z' }), [], false).category).toBe(
+      'unknown',
+    )
+  })
+
+  it('preserves source identity, exclusive spending totals and the observation boundary', () => {
+    const commit = { sha: '1234567', timestamp: new Date('2026-10-05T10:15:00Z'), inMain: true, wasReverted: false }
+    const payload = calculateYieldPayload(
+      [
+        { sessions: [session({ sourceId: 1 }), session({ sourceId: 2 })], commits: [commit], projectNames: [] },
+        {
+          sessions: [session({ sourceId: 3 })],
+          commits: [{ ...commit, timestamp: new Date('2026-10-05T13:00:00Z') }],
+          projectNames: [],
+        },
+        { sessions: [session({ sourceId: 4 })], commits: [], projectNames: [], inspected: false },
+      ],
+      { start: new Date('2026-10-05T00:00:00Z'), end: new Date('2026-10-06T00:00:00Z') },
+      NOW,
+    )
+    expect(new Set(payload.details.map(detail => detail.key)).size).toBe(4)
+    expect(payload.summary.productive.sessions).toBe(1)
+    expect(payload.summary.ambiguous.sessions).toBe(1)
+    expect(payload.summary.unmatched.sessions).toBe(1)
+    expect(payload.summary.unknown.sessions).toBe(1)
+    const buckets = ['productive', 'reverted', 'mixed', 'unmatched', 'unmerged', 'ambiguous', 'unknown'] as const
+    expect(buckets.reduce((sum, key) => sum + payload.summary[key].costUSD, 0)).toBe(payload.summary.total.costUSD)
+    expect(payload.summary.total).toEqual({ costUSD: 8, sessions: 4 })
+    expect(payload.costBasis).toBe('scoped-session-spend')
   })
 })
 
@@ -288,16 +329,16 @@ describe('queryYieldView', () => {
       `commits:/workspace/demo-project:${NOW.toISOString()}`,
     ])
     expect(payload.period.end).toBe(NOW.toISOString())
-    expect(payload.summary).toEqual({
+    expect(payload.summary).toMatchObject({
       productive: { costUSD: 0, sessions: 0, costPercent: 0, sessionPercent: 0 },
       reverted: { costUSD: 0, sessions: 0, costPercent: 0, sessionPercent: 0 },
-      abandoned: { costUSD: 0.42, sessions: 1, costPercent: 100, sessionPercent: 100 },
+      unmatched: { costUSD: 0.42, sessions: 1, costPercent: 100, sessionPercent: 100 },
       ambiguous: { costUSD: 0, sessions: 0, costPercent: 0, sessionPercent: 0 },
       total: { costUSD: 0.42, sessions: 1 },
       productiveToRevertedCostRatio: null,
     })
-    expect(payload.details).toEqual([
-      { sessionId: 'sess-0', project: 'demo-project', costUSD: 0.42, category: 'abandoned', commitCount: 0 },
+    expect(payload.details).toMatchObject([
+      { sessionId: 'sess-0', project: 'demo-project', costUSD: 0.42, category: 'unmatched', commitCount: 0 },
     ])
     expect(reports).toHaveLength(1)
   })

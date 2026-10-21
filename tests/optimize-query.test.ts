@@ -88,12 +88,15 @@ describe('queryOptimizeView', () => {
                     {
                       ...buildFixtureCachedCall(index),
                       provider: 'claude',
+                      toolErrors: 2,
+                      editFailed: 1,
+                      interrupted: true,
                       tools: ['mcp__filesystem__list'],
                       toolSequence: [
                         [
-                          { tool: 'Read', file: 'C:\\workspace\\node_modules\\generated.ts' },
-                          { tool: 'Read', file: 'C:\\workspace\\node_modules\\generated.ts' },
-                          { tool: 'Read', file: 'C:\\workspace\\node_modules\\generated.ts' },
+                          { tool: 'Read', file: 'C:\\workspace\\dist\\generated.ts' },
+                          { tool: 'Read', file: 'C:\\workspace\\dist\\generated.ts' },
+                          { tool: 'Read', file: 'C:\\workspace\\dist\\generated.ts' },
                           { tool: 'mcp__filesystem__list' },
                         ],
                       ],
@@ -143,40 +146,85 @@ describe('queryOptimizeView', () => {
     expect(setups[0]?.directories.length).toBeGreaterThan(0)
     expect(result.summary.sessions).toBeGreaterThan(0)
     expect(reports).toHaveLength(1)
-    expect(result.summary).toMatchObject({ sessions: 2, calls: 2, costRateUSD: 0.00245 })
+    for (const id of ['tool-failures', 'interrupted-calls']) {
+      expect(result.findings.find(f => f.id === id)).toMatchObject({
+        basis: 'observed',
+        quantity: { value: 2, unit: 'calls' },
+        estimatedSavingsUSD: null,
+      })
+    }
+    expect(result.summary).toMatchObject({ sessions: 2, calls: 2, potentialSavingsCostUSD: null, healthGrade: null })
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         id: 'mcp-deferral-off',
-        title: 'MCP tool deferral appears inactive',
         severity: 'medium',
-        trend: null,
-        tokensSaved: 4000,
+        estimatedSavingsUSD: null,
+        tokensSaved: null,
+        findingClass: 'setup',
+        basis: 'modeled',
+        associatedSpendUSD: null,
       }),
     )
-    expect(result.findings.find(finding => finding.id === 'mcp-deferral-off')?.estimatedSavingsUSD).toBeCloseTo(9.8)
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         id: 'unused-agents',
-        title: '1 custom agent you never use',
         severity: 'low',
-        trend: null,
-        tokensSaved: 80,
-        estimatedSavingsUSD: 0.196,
-        fix: {
-          type: 'command',
-          label: 'Archive unused agent:',
-          text: 'mv ~/.claude/agents/unused-agent.md ~/.claude/agents/.archived/',
-        },
+        estimatedSavingsUSD: null,
+        title: '1 current custom agent without observed use',
+        quantity: { value: 1, unit: 'definitions' },
+        affectedSessions: [],
+        associatedSpendUSD: null,
       }),
     )
     expect(result.findings).toContainEqual(
       expect.objectContaining({
         id: 'build-folder-reads',
         severity: 'medium',
-        trend: 'active',
-        tokensSaved: 3600,
-        estimatedSavingsUSD: 8.82,
+        trend: null,
+        tokensSaved: null,
+        quantity: { value: 6, unit: 'reads' },
+        basis: 'observed',
+        estimatedSavingsUSD: null,
       }),
     )
+  })
+
+  it('skips Claude setup inspection for a Codex-only Scope', async () => {
+    const { runtime } = openLedgerFixture()
+    runtime.runSync(
+      Effect.flatMap(LedgerIngest, ingest =>
+        ingest.portIn({
+          provider: 'codex',
+          envFingerprint: 'codex-only',
+          filePath: '/codex/session.jsonl',
+          verdict: 'new',
+          cachedFile: buildFixtureCachedFile({
+            turns: [
+              buildFixtureCachedTurn(0, 'inspect', {
+                calls: [{ ...buildFixtureCachedCall(0), provider: 'codex' }],
+              }),
+            ],
+          }),
+        }),
+      ),
+    )
+    const result = await runtime.runPromise(
+      queryOptimizeView({ ...input, scope: { period: 'lifetime', provider: 'codex' } }).pipe(
+        Effect.provideService(
+          AssistantSetup,
+          AssistantSetup.of({
+            getOptimizeSetup: () => Effect.die('Codex Scope must not inspect Claude configuration'),
+            getSkillInventory: () => Effect.succeed([]),
+          }),
+        ),
+        Effect.provideService(PricingDiagnostics, PricingDiagnostics.of({ reportUnpricedModels: () => Effect.void })),
+      ),
+    )
+    expect(result.summary).toMatchObject({
+      sessions: 1,
+      healthGrade: null,
+      setupCoverage: { eligibleSessions: 0, observedSessions: 0 },
+    })
+    expect(result.findings.some(f => f.id.startsWith('unused-'))).toBe(false)
   })
 })

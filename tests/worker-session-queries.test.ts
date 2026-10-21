@@ -224,6 +224,41 @@ afterEach(() => {
 })
 
 describe('worker project and session queries', () => {
+  it('opens either source of a duplicate public ID and never falls back when the source is absent', async () => {
+    await withWorker(async (context, owner) => {
+      seedSessions(owner)
+      const facts = await owner.runtime.runPromise(Effect.flatMap(LedgerQueries, queries => queries.getSessions()))
+      const alpha = facts.find(session => session.project === 'alpha')
+      const beta = facts.find(session => session.project === 'beta')
+      if (!alpha || !beta) throw new Error('Missing source fixtures')
+      expect(alpha.sourceId).not.toBe(beta.sourceId)
+      for (const expected of [alpha, beta]) {
+        const detail = await context.dispatch('store:session', ['duplicate-session', expected.sourceId])
+        expect(detail).toMatchObject({
+          project: expected.project,
+          workingDirectory: expected.workingDirectory,
+          apiCalls: 1,
+        })
+        const data = await owner.runtime.runPromise(
+          Effect.flatMap(LedgerSessionReads, reads =>
+            reads.getSessionDetailData('duplicate-session', expected.sourceId),
+          ),
+        )
+        for (const rows of [data.sessions, data.turns, data.calls])
+          expect(rows.every(row => row.sourceId === expected.sourceId)).toBe(true)
+        expect(data.sources.map(source => source.id)).toEqual([expected.sourceId])
+      }
+      expect(await context.dispatch('store:session', ['duplicate-session', 999999])).toBeNull()
+      expect(await context.dispatch('store:session', ['duplicate-session'])).toMatchObject({ project: 'alpha' })
+    })
+  })
+
+  it.each([0, -1, 1.5, Infinity, NaN, '2', null])('rejects an invalid explicit session source %s', async sourceId => {
+    await withWorker(async context => {
+      await expect(context.dispatch('store:session', ['duplicate-session', sourceId])).rejects.toThrow()
+    })
+  })
+
   it.each(routes)('$op dispatches one focused read through LedgerSessionReads', async route => {
     await withWorker(async (context, owner) => {
       seedSessions(owner)

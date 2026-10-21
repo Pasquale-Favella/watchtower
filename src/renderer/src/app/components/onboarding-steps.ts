@@ -55,7 +55,7 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
   {
     id: 'optimize',
     title: 'Optimize',
-    body: 'Waste, reverts, abandoned work and fixes — an A–F setup-health grade with copy-paste fixes for the worst offenders. Read-only by design.',
+    body: 'Review usage patterns, delivery evidence and suggested fixes. Findings explain their assumptions and associated spend. Copy suggestions for review without changing your setup.',
     icon: Lightbulb,
   },
   {

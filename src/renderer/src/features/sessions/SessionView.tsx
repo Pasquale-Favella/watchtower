@@ -1,18 +1,19 @@
-import { useEffect, useState } from 'react'
-import type { MouseEvent } from 'react'
+import { useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, GitBranch, Link2, Tag } from 'lucide-react'
-import { useParams } from '@tanstack/react-router'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/shared/components/ui/card'
-import { Button } from '@/shared/components/ui/button'
-import { Badge } from '@/shared/components/ui/badge'
-import { cn } from '@/shared/lib/utils'
-import { formatUsd } from '@/shared/lib/models'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { Skeleton } from '@/shared/components/ui/skeleton'
-import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
-import { useSessionsStore } from '@/features/sessions/store'
+import type { MouseEvent } from 'react'
+import { useEffect, useState } from 'react'
+
 import { navigateToSection } from '@/app/navigation'
 import type { SessionDetail } from '@/features/sessions/drilldown'
+import { useSessionsStore } from '@/features/sessions/store'
+import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
+import { Badge } from '@/shared/components/ui/badge'
+import { Button } from '@/shared/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { formatUsd } from '@/shared/lib/models'
+import { cn } from '@/shared/lib/utils'
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -152,13 +153,21 @@ function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Ele
 
 export function SessionView(): React.JSX.Element {
   const { sessionId } = useParams({ strict: false })
-  const session = useSessionsStore(s => s.session)
-  const error = useSessionsStore(s => s.sessionError)
+  const { sourceId } = useSearch({ from: '/dashboard/sessions/$sessionId' })
+  const storedSession = useSessionsStore(s => s.session)
+  const storedError = useSessionsStore(s => s.sessionError)
+  const sessionKey = useSessionsStore(s => s.sessionKey)
+  const sessionStatus = useSessionsStore(s => s.sessionStatus)
+  const matchesRequest = sessionKey === JSON.stringify([sessionId, sourceId ?? null])
+  const session = matchesRequest ? storedSession : null
+  const error = matchesRequest
+    ? (storedError ?? (sessionStatus === 'ready' && storedSession === null ? 'Session not found.' : null))
+    : null
   const loadSession = useSessionsStore(s => s.loadSession)
 
   useEffect(() => {
-    if (sessionId) void loadSession(sessionId)
-  }, [sessionId, loadSession])
+    if (sessionId) void loadSession(sessionId, sourceId)
+  }, [sessionId, sourceId, loadSession])
 
   // Owns its max-w-[1180px] column like every other section view (ADR 0014);
   // the router no longer wraps session detail in a width container. The

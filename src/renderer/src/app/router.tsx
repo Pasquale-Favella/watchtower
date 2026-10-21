@@ -1,18 +1,21 @@
-import { createMemoryHistory, createRoute, createRootRoute, createRouter } from '@tanstack/react-router'
+import { createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
+import * as Schema from 'effect/Schema'
 
-import { AppRoot } from './AppRoot'
-import { setRouter } from './navigation'
-import { DashboardLayout } from './components/dashboard-layout'
+import { CoachSkillsView } from '@/features/coach-skills/CoachSkillsView'
+import { CompareView } from '@/features/compare/CompareView'
+import { ModelsView } from '@/features/models/ModelsView'
+import { OptimizeView } from '@/features/optimize/OptimizeView'
 import { OverviewView } from '@/features/overview/OverviewView'
+import { PullRequestsView } from '@/features/pull-requests/PullRequestsView'
 import { SessionsView } from '@/features/sessions/SessionsView'
 import { SessionView } from '@/features/sessions/SessionView'
-import { PullRequestsView } from '@/features/pull-requests/PullRequestsView'
-import { SpendView } from '@/features/spend/SpendView'
-import { OptimizeView } from '@/features/optimize/OptimizeView'
-import { ModelsView } from '@/features/models/ModelsView'
-import { CompareView } from '@/features/compare/CompareView'
-import { CoachSkillsView } from '@/features/coach-skills/CoachSkillsView'
 import { SettingsView } from '@/features/settings/SettingsView'
+import { SpendView } from '@/features/spend/SpendView'
+
+import { sessionDetailSearchSchema } from '../../../shared/schemas/views.js'
+import { AppRoot } from './AppRoot'
+import { DashboardLayout } from './components/dashboard-layout'
+import { setRouter } from './navigation'
 
 // Code-based route tree on memory history (ADR 0014): created once at module
 // scope so StrictMode's double-render shares one router. The root route is
@@ -30,6 +33,7 @@ const sessionsRoute = createRoute({ getParentRoute: () => dashboardRoute, path: 
 const sessionDetailRoute = createRoute({
   getParentRoute: () => dashboardRoute,
   path: '/sessions/$sessionId',
+  validateSearch: Schema.decodeUnknownSync(sessionDetailSearchSchema),
   component: SessionView,
 })
 const pullRequestsRoute = createRoute({
@@ -71,8 +75,8 @@ export const router = createRouter({
 
 // Navigation goes through app/navigation.ts (module-level, works during the
 // splash) instead of importing the router there — keeps it headless-testable.
-setRouter(to => {
-  void router.navigate({ to })
+setRouter((to, sourceId) => {
+  void router.navigate({ to, search: sourceId === undefined ? {} : { sourceId } })
 })
 
 declare module '@tanstack/react-router' {

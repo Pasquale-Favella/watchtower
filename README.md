@@ -52,7 +52,7 @@ Every release ships all three platforms. AppImage and `.deb` are the two Linux f
 | **Sessions** | `2` | Every working session, searchable and filterable; click any row to drill into a turn-by-turn timeline with per-call usage |
 | **Pull Requests** | `3` | Spend attributed to each PR from real git history, so the cost of shipped work is trustworthy |
 | **Spend** | `4` | Daily spend stacked by model and by project, plus a Sankey flow showing where money moves from models to projects |
-| **Optimize** | `5` | Sixteen waste detectors with copy-paste fixes, an A+ to F setup-health grade, and a Yield tab for productive vs. reverted/abandoned spend |
+| **Optimize** | `5` | Usage findings with evidence and assumptions, copyable suggestions, setup coverage, and delivery outcomes with associated spend |
 | **Models** | `6` | Per-model cost, tokens, and calls, broken down by task and audited down to the token, with inline quick-add pricing for unpriced models |
 | **Compare** | `7` | Pick two models and see one-shot rate, retry rate, cost per call, and cache-hit rate side by side |
 | **Coach & Skills** | `8` | A chat with your own coding-agent CLI about your usage — ask anything and the harness answers from the same ledger the dashboard shows, or craft a SKILL.md together by talking (suggested-skill chips start the conversation) |

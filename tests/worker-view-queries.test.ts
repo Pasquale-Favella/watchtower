@@ -41,6 +41,7 @@ import { buildAnalyticalViewsFromSnapshot, buildDashboardViewsFromSnapshot } fro
 import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
 import { calculateYieldPayload } from '../src/main/yield-calculation.js'
 import { sessionRowSchema } from '../src/shared/schemas/views.js'
+import { yieldPayloadSchema } from '../src/shared/schemas/yield.js'
 import { DEFAULT_SKILLS_THRESHOLDS } from '../src/shared/skills-defaults.js'
 import {
   buildFixtureCachedCall,
@@ -146,6 +147,19 @@ function expectedQueryInputs(owner: WorkerOwner): { snapshot: LedgerQuerySnapsho
   return { snapshot, now: new Date() }
 }
 
+function expectViewPayload(operation: ViewOperation, actual: unknown, expected: unknown, observedBefore: number): void {
+  if (operation !== 'optimize:yield') {
+    expect(actual).toEqual(expected)
+    return
+  }
+  const payload = Schema.decodeUnknownSync(yieldPayloadSchema)(actual)
+  const reference = Schema.decodeUnknownSync(yieldPayloadSchema)(expected)
+  const observedMillis = Date.parse(payload.observedAt)
+  expect(observedMillis).toBeGreaterThanOrEqual(observedBefore)
+  expect(observedMillis).toBeLessThanOrEqual(Date.now())
+  expect(payload).toEqual({ ...reference, observedAt: payload.observedAt })
+}
+
 async function expectedPayload(operation: ViewOperation, owner: WorkerOwner) {
   const { snapshot, now } = expectedQueryInputs(owner)
   const summaries = buildSessionSummariesFromSnapshotResult(snapshot, {
@@ -215,8 +229,13 @@ async function expectedPayload(operation: ViewOperation, owner: WorkerOwner) {
     }
     case 'optimize:yield': {
       const range = scopeDateRange(scope, now) ?? { start: new Date(0), end: now }
-      const groups = await owner.runtime.runPromise(inspectYieldProjects(projects, range))
-      return calculateYieldPayload(groups, range)
+      const evidenceRange = {
+        start: range.start,
+        end: new Date(Math.min(range.end.getTime() + 60 * 60 * 1000, now.getTime())),
+        observedAt: now,
+      }
+      const groups = await owner.runtime.runPromise(inspectYieldProjects(projects, evidenceRange))
+      return calculateYieldPayload(groups, range, now, evidenceRange)
     }
   }
 }
@@ -341,7 +360,9 @@ describe('worker view queries', () => {
       const overrides = vi.spyOn(config, 'getPriceOverrides')
       const dismissalRead = vi.spyOn(config, 'getSkillDismissals')
 
-      await expect(context.dispatch(operation, [scope])).resolves.toEqual(expected)
+      const observedBefore = Date.now()
+      const actual = await context.dispatch(operation, [scope])
+      expectViewPayload(operation, actual, expected, observedBefore)
       expect(snapshot).toHaveBeenCalledTimes(
         projectedOperations.has(operation) || overviewOperations.has(operation) ? 0 : 1,
       )
@@ -350,6 +371,7 @@ describe('worker view queries', () => {
       if (!projectedOperations.has(operation)) {
         const expectedRange = overviewDateRange(scope, new Date())
         if (overviewOperations.has(operation)) expect(overviewProjection).toHaveBeenCalledWith(expectedRange)
+        else if (operation === 'optimize:view') expect(snapshot).toHaveBeenCalledWith(expectedRange, true)
         else expect(snapshot).toHaveBeenCalledWith(expectedRange)
       }
       expect(aliases).not.toHaveBeenCalled()
@@ -368,6 +390,7 @@ describe('worker view queries', () => {
         await context.dispatch(operation, [{ period: 'lifetime' }])
 
         if (overviewOperations.has(operation)) expect(overview).toHaveBeenCalledExactlyOnceWith(undefined)
+        else if (operation === 'optimize:view') expect(snapshot).toHaveBeenCalledExactlyOnceWith(undefined, true)
         else expect(snapshot).toHaveBeenCalledExactlyOnceWith(undefined)
       })
     },
@@ -389,8 +412,9 @@ describe('worker view queries', () => {
       )
       const expected = await expectedPayload(operation, owner)
 
+      const observedBefore = Date.now()
       const next = await context.dispatch(operation, [scope])
-      expect(next).toEqual(expected)
+      expectViewPayload(operation, next, expected, observedBefore)
       expect(next).not.toEqual(first)
     })
   })

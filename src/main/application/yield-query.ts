@@ -28,8 +28,13 @@ export const queryYieldView = Effect.fn('queryYieldView')(function* (
     provider: input.scope.provider,
   })
   const detectorRange = scopeDateRange(input.scope, now) ?? { start: new Date(0), end: now }
-  const groups = yield* inspectYieldProjects(groupSummariesIntoProjects(calculation.summaries), detectorRange)
-  const payload = calculateYieldPayload(groups, detectorRange)
+  const evidenceRange = {
+    start: detectorRange.start,
+    end: new Date(Math.min(detectorRange.end.getTime() + 60 * 60 * 1000, now.getTime())),
+    observedAt: now,
+  }
+  const groups = yield* inspectYieldProjects(groupSummariesIntoProjects(calculation.summaries), evidenceRange)
+  const payload = calculateYieldPayload(groups, detectorRange, now, evidenceRange)
   const diagnostics = yield* PricingDiagnostics
   yield* diagnostics.reportUnpricedModels(calculation.unpricedModels)
   return yield* Schema.decodeUnknownEffect(yieldPayloadSchema)(payload)
