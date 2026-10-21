@@ -66,7 +66,7 @@ test('every section renders without errors', async () => {
         await window.screenshot({ path: 'test-results/optimize-outcomes.png', fullPage: true })
         await window.getByRole('tab', { name: 'Reverts', exact: true }).click()
         await expect(window.getByRole('heading', { name: 'Sessions with reverted changes' })).toBeVisible()
-        await window.getByRole('tab', { name: /^Fixes/ }).click()
+        await window.getByRole('tab', { name: /^Waste/ }).click()
         await expect(window.getByRole('heading', { name: 'Review opportunities' })).toBeVisible()
       }
     }

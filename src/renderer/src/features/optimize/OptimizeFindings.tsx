@@ -8,8 +8,8 @@ import { cn } from '@/shared/lib/utils'
 import type { OptimizeFinding, WasteAction } from '../../../../shared/schemas/optimize.js'
 
 type FindingProps = { finding: OptimizeFinding }
-type FindingRowProps = FindingProps & { showFix: boolean }
-type OptimizeFindingsProps = { findings: OptimizeFinding[]; showFix?: boolean }
+type FindingRowProps = FindingProps & { defaultExpanded?: boolean }
+type OptimizeFindingsProps = { findings: OptimizeFinding[] }
 
 const GROUPS = [
   { value: 'setup', label: 'Setup', description: 'Review your current configuration and its observed usage.' },
@@ -112,8 +112,8 @@ function FixBlock({ finding }: FindingProps): React.JSX.Element {
   )
 }
 
-function FindingRow({ finding, showFix }: FindingRowProps): React.JSX.Element {
-  const [expanded, setExpanded] = useState(showFix)
+export function FindingRow({ finding, defaultExpanded = false }: FindingRowProps): React.JSX.Element {
+  const [expanded, setExpanded] = useState(defaultExpanded)
   return (
     <div className="border-border border-b last:border-b-0">
       <button
@@ -156,7 +156,7 @@ function FindingRow({ finding, showFix }: FindingRowProps): React.JSX.Element {
   )
 }
 
-export function OptimizeFindings({ findings, showFix = false }: OptimizeFindingsProps): React.JSX.Element {
+export function OptimizeFindings({ findings }: OptimizeFindingsProps): React.JSX.Element {
   if (findings.length === 0)
     return (
       <p className="text-muted-foreground py-6 text-center text-[12px]">
@@ -177,7 +177,7 @@ export function OptimizeFindings({ findings, showFix = false }: OptimizeFindings
               <p className="text-muted-foreground text-[10.5px]">{group.description}</p>
             </div>
             {rows.map(finding => (
-              <FindingRow key={finding.id} finding={finding} showFix={showFix} />
+              <FindingRow key={finding.id} finding={finding} />
             ))}
           </section>
         )

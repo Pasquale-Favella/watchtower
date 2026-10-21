@@ -268,6 +268,10 @@ function isFirstPartyBaseUrl(value: string): boolean {
   }
 }
 
+function stepSessionKey(step: ScanStep): string {
+  return step.sessionKey ?? `${step.sourceId ?? step.project}:${step.sessionId}`
+}
+
 // ============================================================================
 // Scan-data collection (a store walk over the ledger, not a JSONL scan)
 // ============================================================================
@@ -340,7 +344,7 @@ export function detectJunkReads(steps: ScanStep[], dateRange?: DateRange, now = 
     const filePath = step.filePath
     if (!filePath || /(?:^|\/)(?:AGENTS|SKILL)\.md$/i.test(filePath) || !JUNK_PATTERN.test(filePath)) continue
     totalJunkReads++
-    affectedSessionKeys.add(step.sessionKey ?? `${step.sourceId ?? step.project}:${step.sessionId}`)
+    affectedSessionKeys.add(stepSessionKey(step))
     if (step.recent) recentJunkReads++
     for (const dir of JUNK_DIRS) {
       if (filePath.includes(`/${dir}/`)) {
@@ -400,7 +404,7 @@ export function detectDuplicateReads(steps: ScanStep[], dateRange?: DateRange, n
   for (const step of steps) {
     const file = step.filePath
     if (!file) continue
-    const key = step.sessionKey ?? `${step.sourceId ?? step.project}:${step.sessionId}`
+    const key = stepSessionKey(step)
     const seen = seenFiles.get(key) ?? new Set<string>()
     seenFiles.set(key, seen)
     if (EDIT_TOOL_NAMES.has(step.name) || step.name === 'Write' || step.name === 'FileWriteTool') {
@@ -461,7 +465,7 @@ export function detectLowReadEditRatio(steps: ScanStep[]): WasteFinding | null {
   let recentReads = 0
   const sessionCounts = new Map<string, { reads: number; edits: number }>()
   for (const step of steps) {
-    const key = step.sessionKey ?? `${step.sourceId ?? step.project}:${step.sessionId}`
+    const key = stepSessionKey(step)
     const counts = sessionCounts.get(key) ?? { reads: 0, edits: 0 }
     sessionCounts.set(key, counts)
     if (READ_TOOL_NAMES.has(step.name)) {
@@ -1703,7 +1707,7 @@ export function findLowWorthCandidates(projects: ProjectSummary[]): LowWorthCand
 
   for (const project of projects) {
     for (const session of project.sessions) {
-      if (session.isSidechain || session.parentSessionId) continue
+      if (!isHumanSession(session)) continue
       if (session.totalCostUSD < WORTH_IT_MIN_COST_USD) continue
       if (sessionDeliveryCommand(session)) continue
 
@@ -1787,7 +1791,7 @@ export function findContextBloatCandidates(projects: ProjectSummary[]): ContextB
 
   for (const project of projects) {
     const sessions = project.sessions
-      .filter(s => !s.isSidechain && !s.parentSessionId)
+      .filter(isHumanSession)
       .sort((a, b) => new Date(a.firstTimestamp).getTime() - new Date(b.firstTimestamp).getTime())
     const previousByProvider = new Map<string, { inputTokens: number; timestampMs: number }>()
 
@@ -1906,7 +1910,7 @@ export function detectSessionOutliers(
   const outliers: Outlier[] = []
 
   for (const project of projects) {
-    const sessions = project.sessions.filter(s => s.totalCostUSD > 0 && !s.isSidechain && !s.parentSessionId)
+    const sessions = project.sessions.filter(s => s.totalCostUSD > 0 && isHumanSession(s))
     if (sessions.length < MIN_SESSIONS_FOR_OUTLIER) continue
 
     const cohorts = new Map<string, { sessions: SessionSummary[]; cost: number; tokens: number }>()

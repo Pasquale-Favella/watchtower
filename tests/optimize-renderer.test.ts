@@ -3,8 +3,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
 import { DeliveryEvidence } from '../src/renderer/src/features/optimize/DeliveryOutcomes.js'
-import { OptimizeFindings } from '../src/renderer/src/features/optimize/OptimizeFindings.js'
-import type { OptimizeFinding } from '../src/shared/schemas/optimize.js'
+import { FindingRow, OptimizeFindings } from '../src/renderer/src/features/optimize/OptimizeFindings.js'
+import { OptimizeSummary } from '../src/renderer/src/features/optimize/OptimizeSummary.js'
+import type { OptimizeFinding, OptimizePayload } from '../src/shared/schemas/optimize.js'
 import { calculateYieldPayload } from '../src/main/yield-calculation.js'
 import { buildFixtureReport } from './fixtures/report.js'
 
@@ -89,13 +90,48 @@ describe('Optimize evidence presentation', () => {
         destination: 'prompt',
       },
     }
-    const markup = renderToStaticMarkup(createElement(OptimizeFindings, { findings: [finding], showFix: true }))
-    expect(markup).toContain('For review')
-    expect(markup).toContain('Modeled 1.2K tokens')
+    const list = renderToStaticMarkup(createElement(OptimizeFindings, { findings: [finding] }))
+    expect(list).toContain('For review')
+    expect(list).toContain('Modeled 1.2K tokens')
+    expect(list).toContain('Associated spend')
+    expect(list).not.toContain('Copy suggestion')
+
+    const markup = renderToStaticMarkup(createElement(FindingRow, { finding, defaultExpanded: true }))
     expect(markup).toContain('Task complexity is unknown.')
-    expect(markup).toContain('Associated spend')
     expect(markup).toContain('Copy suggestion')
     expect(markup).toContain('Open supporting session sess-0')
     expect(markup).not.toMatch(/estimated avoidable cost|potential savings|tokens saved/i)
+  })
+
+  it('summarises findings, spend, coverage and setup health at a glance', () => {
+    const payload: OptimizePayload = {
+      period: { start: null, end: null },
+      summary: {
+        healthScore: 72,
+        healthGrade: 'C',
+        findingCount: 3,
+        periodCostUSD: 12.5,
+        sessions: 9,
+        calls: 90,
+        potentialSavingsTokens: null,
+        potentialSavingsCostUSD: null,
+        potentialSavingsPercent: null,
+        setupCoverage: { eligibleSessions: 8, observedSessions: 5 },
+        behaviorSessions: 7,
+        excludedSidechainSessions: 2,
+      },
+      findings: [],
+    }
+    const markup = renderToStaticMarkup(createElement(OptimizeSummary, { payload }))
+    expect(markup).toContain('Review opportunities')
+    expect(markup).toContain('2 delegated excluded from comparisons')
+    expect(markup).toContain('role="progressbar"')
+    expect(markup).toContain('72/100')
+    expect(markup).toContain('MCP inventory observed in 5 of 8 eligible sessions')
+
+    const ungraded = { ...payload, summary: { ...payload.summary, healthGrade: null, healthScore: null } }
+    const ungradedMarkup = renderToStaticMarkup(createElement(OptimizeSummary, { payload: ungraded }))
+    expect(ungradedMarkup).toContain('Insufficient setup evidence')
+    expect(ungradedMarkup).not.toContain('role="progressbar"')
   })
 })

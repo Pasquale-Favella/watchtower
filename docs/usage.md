@@ -91,6 +91,8 @@ missing.
 Waste groups findings into setup recommendations, habits, and information
 for review. Each finding distinguishes observed counts from modeled quantities,
 states its assumptions, and links to supporting sessions where available.
+Expanding a finding also shows a copyable suggestion. Copying one does not
+mark it applied or effective, and Watchtower does not edit setup files.
 Associated spend shows those sessions' scoped cost. It does not establish
 recoverable savings, so unsupported savings totals stay unavailable.
 
@@ -113,10 +115,8 @@ one-hour allowance after the last recorded call. It is a heuristic. Research,
 reviews, work in progress, delayed commits, and rewritten history can have
 no matched delivery evidence. A missing repository or failed inspection stays
 unknown. Outcome amounts are associated session spending, not proven losses.
-
-Fixes shows copyable suggestions with the same supporting evidence. Copying
-one does not mark it applied or effective. Watchtower does not edit setup
-files, fetch repositories, or call a hosting service to verify PR delivery.
+Watchtower does not fetch repositories or call a hosting service to verify PR
+delivery.
 
 ### Models
 
