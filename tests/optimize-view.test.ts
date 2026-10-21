@@ -9,8 +9,8 @@ import { AssistantSetup } from '../src/main/application/assistant-setup.js'
 import { queryOptimizeView } from '../src/main/application/optimize-query.js'
 import {
   aggregateMcpCoverage,
+  calculateOptimizePayload,
   computeHealth,
-  computeInputCostRate,
   computeTrend,
   detectCacheBloat,
   detectCapabilityReliability,
@@ -20,6 +20,7 @@ import {
   detectGhostCommands,
   detectGhostSkills,
   detectJunkReads,
+  detectLowCacheReuse,
   detectLowReadEditRatio,
   detectLowWorthSessions,
   detectMcpAlwaysLoadHygiene,
@@ -32,16 +33,13 @@ import {
   type FindingId,
   findLowWorthCandidates,
   formatTokens,
-  type WasteAction,
 } from '../src/main/optimize-calculation.js'
-import { buildSessionSummary, cachedTurnToClassified } from '../src/main/pipeline/parser.js'
 import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
 import type {
   ClassifiedTurn,
   ParsedApiCall,
   ProjectSummary,
   SessionSummary,
-  TokenUsage,
   ToolCall,
 } from '../src/main/pipeline/types.js'
 import type { OptimizeSetup } from '../src/main/setup-facts.js'
@@ -316,13 +314,13 @@ function optPort(runtime: OptimizeRuntime, files: CachedFile[]): void {
 }
 
 describe('queryOptimizeView', () => {
-  it('returns an empty A-grade payload for an empty ledger', async () => {
+  it('returns unknown setup health and savings for an empty ledger', async () => {
     const { runtime } = openLedgerFixture()
     const payload = await optimizeView(runtime, { period: 'lifetime' }, tempHome())
     expect(payload.findings).toEqual([])
     expect(payload.summary).toMatchObject({
-      healthScore: 100,
-      healthGrade: 'A',
+      healthScore: null,
+      healthGrade: null,
       findingCount: 0,
       sessions: 0,
       calls: 0,
@@ -335,9 +333,9 @@ describe('queryOptimizeView', () => {
       sessionId: 'sess-o0',
       cost: 5,
       toolSequence: [
-        [{ tool: 'Read', file: '/tmp/demo/node_modules/a/index.js' }],
+        [{ tool: 'Read', file: '/tmp/demo/build/a/index.js' }],
         [{ tool: 'Read', file: '/tmp/demo/dist/b.js' }],
-        [{ tool: 'Read', file: '/tmp/demo/node_modules/c/lib.js' }],
+        [{ tool: 'Read', file: '/tmp/demo/coverage/c/lib.js' }],
       ],
     })
     const { runtime } = openLedgerFixture()
@@ -347,9 +345,12 @@ describe('queryOptimizeView', () => {
     const junk = payload.findings.find(f => f.id === 'build-folder-reads')
     expect(junk).toBeDefined()
     expect(junk!.severity).toBe('low')
-    expect(junk!.tokensSaved).toBe(3 * 600)
+    expect(junk!.tokensSaved).toBeNull()
+    expect(junk!.quantity).toEqual({ value: 3, unit: 'reads' })
+    expect(junk!.estimatedSavingsUSD).toBeNull()
+    expect(junk!.associatedSpendUSD).toBe(5)
     expect(payload.summary.findingCount).toBeGreaterThanOrEqual(1)
-    expect(payload.summary.potentialSavingsTokens).toBeGreaterThan(0)
+    expect(payload.summary.potentialSavingsTokens).toBeNull()
     expect(payload.summary.periodCostUSD).toBe(5)
   })
 
@@ -403,7 +404,7 @@ describe('computeHealth', () => {
 })
 
 describe('computeTrend', () => {
-  it('classifies active vs improving vs resolved', () => {
+  it('distinguishes insufficient evidence from active, improving and resolved trends', () => {
     expect(
       computeTrend({
         recentCount: 0,
@@ -412,7 +413,7 @@ describe('computeTrend', () => {
         baselineWindowMs: 1000,
         hasRecentActivity: true,
       }),
-    ).toBe('active')
+    ).toBeNull()
     expect(
       computeTrend({
         recentCount: 0,
@@ -422,7 +423,7 @@ describe('computeTrend', () => {
         hasRecentActivity: true,
       }),
     ).toBe('resolved')
-    // No recent activity keeps the finding active (no signal to downgrade).
+    // Without recent activity there is no comparison to make.
     expect(
       computeTrend({
         recentCount: 0,
@@ -431,7 +432,7 @@ describe('computeTrend', () => {
         baselineWindowMs: 1000,
         hasRecentActivity: false,
       }),
-    ).toBe('active')
+    ).toBeNull()
     // Recent rate well below half the baseline rate reads as improving.
     expect(
       computeTrend({
@@ -445,34 +446,29 @@ describe('computeTrend', () => {
   })
 })
 
-describe('computeInputCostRate', () => {
-  it('returns 0 for empty or free input', () => {
-    expect(computeInputCostRate([])).toBe(0)
+describe('Optimize accounting', () => {
+  it('keeps overlapping diagnostics separate from potential financial savings', () => {
     const session = makeSession(0, {
-      turns: [makeTurn(0, { calls: [makeCall(0, { cost: 0 })] })],
-      cost: 0,
-      input: 1000,
+      turns: [makeTurn(0, { calls: [makeCall(0, { cost: 12, input: 100_000, output: 1 })], hasEdits: false })],
+      categories: ALL_ZERO_CATEGORIES(),
     })
-    expect(computeInputCostRate(groupByProject([session]))).toBe(0)
-  })
-
-  it('estimates input cost per token from 70% of total spend', () => {
-    const session = makeSession(0, {
-      turns: [makeTurn(0, { calls: [makeCall(0, { cost: 10, input: 1000, output: 0 })] })],
-      cost: 10,
-      input: 1000,
-    })
-    // 70% of $10 across 1000 input+read+write tokens.
-    expect(computeInputCostRate(groupByProject([session]))).toBeCloseTo(0.007)
+    const payload = calculateOptimizePayload(groupByProject([session]), { period: 'lifetime' }, optimizeSetup(), NOW)
+    expect(payload.summary.potentialSavingsCostUSD).toBeNull()
+    expect(payload.summary.potentialSavingsPercent).toBeNull()
+    expect(payload.summary.potentialSavingsTokens).toBeNull()
+    expect(payload.findings.length).toBeGreaterThan(0)
+    expect(payload.findings.every(f => f.estimatedSavingsUSD === null && f.tokensSaved === null)).toBe(true)
+    expect(payload.findings.find(f => f.id === 'low-worth-sessions')?.associatedSpendUSD).toBe(12)
+    expect(payload.summary).not.toHaveProperty('costRateUSD')
   })
 })
 
 describe('detectJunkReads', () => {
-  it('flags reads into build/dependency folders once past the threshold', () => {
+  it('flags reads into generated folders once past the threshold', () => {
     const steps = [
-      { name: 'Read', filePath: '/tmp/demo/node_modules/a/index.js', sessionId: 's', project: 'p', recent: false },
+      { name: 'Read', filePath: '/tmp/demo/build/a/index.js', sessionId: 's', project: 'p', recent: false },
       { name: 'Read', filePath: '/tmp/demo/dist/b.js', sessionId: 's', project: 'p', recent: false },
-      { name: 'Read', filePath: '/tmp/demo/node_modules/c/lib.js', sessionId: 's', project: 'p', recent: false },
+      { name: 'Read', filePath: '/tmp/demo/coverage/c/lib.js', sessionId: 's', project: 'p', recent: false },
     ]
     const finding = detectJunkReads(steps, undefined, NOW)
     expect(finding).not.toBeNull()
@@ -483,7 +479,7 @@ describe('detectJunkReads', () => {
 
   it('stays quiet under the minimum count', () => {
     const steps = [
-      { name: 'Read', filePath: '/tmp/demo/node_modules/a/index.js', sessionId: 's', project: 'p', recent: false },
+      { name: 'Read', filePath: '/tmp/demo/build/a/index.js', sessionId: 's', project: 'p', recent: false },
       { name: 'Read', filePath: '/tmp/demo/dist/b.js', sessionId: 's', project: 'p', recent: false },
     ]
     expect(detectJunkReads(steps, undefined, NOW)).toBeNull()
@@ -491,12 +487,12 @@ describe('detectJunkReads', () => {
 
   it('normalizes Windows backslash paths', () => {
     const steps = [
-      { name: 'Read', filePath: 'C:/demo/node_modules/a/index.js', sessionId: 's', project: 'p', recent: false },
+      { name: 'Read', filePath: 'C:/demo/build/a/index.js', sessionId: 's', project: 'p', recent: false },
       { name: 'Read', filePath: 'C:/demo/dist/b.js', sessionId: 's', project: 'p', recent: false },
-      { name: 'Read', filePath: 'C:/demo/node_modules/c/lib.js', sessionId: 's', project: 'p', recent: false },
+      { name: 'Read', filePath: 'C:/demo/coverage/c/lib.js', sessionId: 's', project: 'p', recent: false },
     ]
     const finding = detectJunkReads(steps, undefined, NOW)
-    expect(finding?.explanation).toContain('node_modules/')
+    expect(finding?.explanation).toContain('build/')
   })
 })
 
@@ -519,7 +515,7 @@ describe('detectDuplicateReads', () => {
   it('ignores junk-dir files when counting duplicates', () => {
     const steps = Array.from({ length: 6 }, () => ({
       name: 'Read' as const,
-      filePath: '/tmp/demo/node_modules/pkg/index.js',
+      filePath: '/tmp/demo/dist/pkg/index.js',
       sessionId: 's',
       project: 'p',
       recent: false,
@@ -551,24 +547,23 @@ describe('detectLowReadEditRatio', () => {
 })
 
 describe('detectCacheBloat', () => {
-  it('flags sessions whose warmup is far above the baseline', () => {
-    const apiCalls = Array.from({ length: 10 }, () => ({ cacheCreationTokens: 100_000, version: '', recent: false }))
-    const projects = groupByProject([
-      makeSession(0, {
-        turns: [makeTurn(0, { calls: [makeCall(0, { cacheCreation: 100_000 })] })],
-        cacheWrite: 100_000,
-      }),
-    ])
-    const finding = detectCacheBloat(apiCalls, projects, undefined, NOW)
+  it('compares positive-write calls with a positive-write call baseline', () => {
+    const apiCalls = Array.from({ length: 10 }, (_, i) => ({
+      cacheCreationTokens: i < 4 ? 20_000 : 100_000,
+      version: '',
+      recent: false,
+    }))
+    const finding = detectCacheBloat(apiCalls, undefined, NOW)
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('warmup-heavy')
-    // baseline = 50_000 default; median 100_000 > 1.4 * 50_000 = 70_000.
-    expect(finding!.tokensSaved).toBe((100_000 - 50_000) * 10)
+    // The lower-quartile call is 20k. Session sums do not supply this baseline.
+    expect(finding!.tokensSaved).toBe((100_000 - 20_000) * 10)
+    expect(finding!.fix).toMatchObject({ destination: 'prompt' })
   })
 
   it('stays quiet with few cache-creation samples', () => {
     const apiCalls = Array.from({ length: 5 }, () => ({ cacheCreationTokens: 100_000, version: '', recent: false }))
-    expect(detectCacheBloat(apiCalls, [], undefined, NOW)).toBeNull()
+    expect(detectCacheBloat(apiCalls, undefined, NOW)).toBeNull()
   })
 })
 
@@ -800,7 +795,7 @@ describe('ghost detectors (agents / skills / commands)', () => {
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('unused-agents')
     expect(finding!.explanation).toContain('architect')
-    expect(finding!.fix.type).toBe('command')
+    expect(finding!.fix.type).toBe('paste')
   })
 
   it('detectGhostSkills flags defined skills that were never invoked', () => {
@@ -825,6 +820,32 @@ describe('ghost detectors (agents / skills / commands)', () => {
 })
 
 describe('deferral-gap detectors', () => {
+  it.each([undefined, 'false'])('requires review before changing a tool-search setting of %s', deferSetting => {
+    const projects = groupByProject(
+      [0, 1].map(index =>
+        makeSession(index, {
+          turns: [makeTurn(index, { calls: [makeCall(index)] })],
+          apiCalls: 1,
+        }),
+      ),
+    )
+    const finding = detectMcpDeferralOff(
+      readSteps(projects),
+      projects,
+      optimizeSetup({
+        configured: ['filesystem'],
+        deferSetting,
+      }),
+    )
+    expect(finding?.fix).toMatchObject({ type: 'paste', destination: 'prompt' })
+    expect(finding?.explanation).toContain('do not establish that deferral was disabled')
+    if (finding?.fix.type === 'paste') {
+      expect(finding.fix.text).toContain('installed Claude Code version')
+      expect(finding.fix.text).not.toContain('export ENABLE_TOOL_SEARCH')
+      expect(finding.fix.text).not.toContain('Remove the')
+    }
+  })
+
   it('detectMcpDeferralOff reports inactive tool deferral for configured servers', () => {
     const session = makeSession(0, {
       turns: [makeTurn(0, { calls: [makeCall(0, {})] })],
@@ -881,5 +902,150 @@ describe('deferral-gap detectors', () => {
     )
     expect(finding).not.toBeNull()
     expect(finding!.id).toBe('mcp-defer-threshold')
+  })
+})
+
+describe('Optimize populations and evidence', () => {
+  function payloadFor(sessions: SessionSummary[], scope: OverviewScope = { period: 'lifetime' }): OptimizePayload {
+    const setup = {
+      ...optimizeSetup(),
+      agents: ['unseen-agent'],
+      skills: ['unseen-skill'],
+      commands: ['unseen-command'],
+    }
+    return calculateOptimizePayload(groupByProject(sessions), scope, setup, NOW)
+  }
+
+  it('does not inspect Claude definitions against Codex-only activity', () => {
+    const session = makeSession(0, { turns: [makeTurn(0, { calls: [makeCall(0, { provider: 'codex' })] })] })
+    const payload = payloadFor([session], { period: 'lifetime', provider: 'codex' })
+    expect(payload.findings.filter(f => f.id.startsWith('unused-'))).toEqual([])
+    expect(payload.summary.setupCoverage).toEqual({ eligibleSessions: 0, observedSessions: 0 })
+    expect(payload.summary.healthGrade).toBeNull()
+  })
+
+  it('keeps sidechain spend but excludes it from human behavior diagnostics', () => {
+    const session = makeSession(0, {
+      turns: [makeTurn(0, { calls: [makeCall(0, { cost: 20, input: 300_000, output: 1 })], hasEdits: false })],
+      categories: ALL_ZERO_CATEGORIES(),
+    })
+    const payload = payloadFor([{ ...session, isSidechain: true }])
+    expect(payload.summary).toMatchObject({
+      periodCostUSD: 20,
+      sessions: 1,
+      behaviorSessions: 0,
+      excludedSidechainSessions: 1,
+    })
+    expect(payload.findings.some(f => f.id === 'low-worth-sessions' || f.id === 'context-heavy-sessions')).toBe(false)
+    expect(payload.findings.find(f => f.id === 'unused-agents')).toMatchObject({
+      associatedSpendUSD: null,
+      affectedSessions: [],
+    })
+  })
+
+  it('keeps the source identity of affected sessions with identical public ids', () => {
+    const turns = [makeTurn(0, { calls: [makeCall(0, { cost: 8 })], hasEdits: false })]
+    const sessions = [1, 2].map(sourceId => ({
+      ...makeSession(0, { turns, categories: ALL_ZERO_CATEGORIES() }),
+      sourceId,
+    }))
+    const finding = payloadFor(sessions).findings.find(f => f.id === 'low-worth-sessions')!
+    expect(finding.affectedSessions.map(s => s.key)).toEqual(['1:sess-0', '2:sess-0'])
+    expect(finding.associatedSpendUSD).toBe(16)
+  })
+
+  it('does not turn writes of new files into evidence of too few reads', () => {
+    const steps = Array.from({ length: 20 }, () => ({
+      name: 'Write',
+      filePath: '/src/new.ts',
+      project: 'p',
+      sessionId: 's',
+      recent: false,
+    }))
+    expect(detectLowReadEditRatio(steps)).toBeNull()
+  })
+
+  it('permits dependency source and required instruction reads', () => {
+    const steps = ['node_modules/effect/AGENTS.md', 'node_modules/effect/src/Effect.ts', 'node_modules/x/SKILL.md'].map(
+      file => ({ name: 'Read', filePath: `/p/${file}`, project: 'p', sessionId: 's', recent: false }),
+    )
+    expect(detectJunkReads(steps)).toBeNull()
+  })
+
+  it('resets reread evidence after a recorded edit to the same file', () => {
+    const read = { name: 'Read', filePath: '/p/src/a.ts', project: 'p', sessionId: 's', recent: false }
+    const steps = Array.from({ length: 10 }, () => [read, { ...read, name: 'Edit' }]).flat()
+    expect(detectDuplicateReads(steps)).toBeNull()
+    expect(detectDuplicateReads(Array.from({ length: 6 }, () => read))).not.toBeNull()
+  })
+
+  it('does not infer cache reuse from missing all-zero counters', () => {
+    const session = makeSession(0, { turns: [], apiCalls: 20, input: 100_000, cacheRead: 0, cacheWrite: 0 })
+    expect(detectLowCacheReuse(groupByProject([session]))).toBeNull()
+    const finding = detectLowCacheReuse(groupByProject([{ ...session, totalCacheWriteTokens: 20_000 }]))
+    expect(finding).toMatchObject({ id: 'low-cache-reuse', quantity: { value: 20, unit: 'calls' } })
+  })
+
+  it('does not flag identical cache-write calls using unrelated session totals', () => {
+    const calls = Array.from({ length: 10 }, () => ({ cacheCreationTokens: 100_000, version: '' }))
+    expect(detectCacheBloat(calls)).toBeNull()
+  })
+
+  it('reports explicit error and interruption observations without recovery estimates', () => {
+    const call = { ...makeCall(0, { cost: 4 }), toolErrors: 2, editFailed: 1, interrupted: true }
+    const session = makeSession(0, { turns: [makeTurn(0, { calls: [call] })] })
+    const payload = payloadFor([session])
+    for (const id of ['tool-failures', 'interrupted-calls']) {
+      expect(payload.findings.find(f => f.id === id)).toMatchObject({
+        basis: 'observed',
+        quantity: { value: 1, unit: 'calls' },
+        estimatedSavingsUSD: null,
+        associatedSpendUSD: 4,
+      })
+    }
+  })
+})
+
+describe('Optimize comparability and coverage', () => {
+  it('uses raw cache-token volume without a universal cache price discount', () => {
+    const session = makeSession(0, {
+      turns: [makeTurn(0, { calls: [makeCall(0, { input: 0, output: 1000, cacheRead: 100_000 })] })],
+    })
+    expect(findContextBloatCandidates(groupByProject([session]))[0]).toMatchObject({
+      effectiveInputTokens: 100_000,
+      ratio: 100,
+    })
+  })
+
+  it('does not compare a costly session with peers from a different provider', () => {
+    const sessions = ['claude', 'claude', 'codex'].map((provider, i) =>
+      makeSession(i, {
+        turns: [makeTurn(i, { calls: [makeCall(i, { provider, cost: i === 2 ? 20 : 1 })] })],
+      }),
+    )
+    expect(detectSessionOutliers(groupByProject(sessions))).toBeNull()
+  })
+
+  it('keeps behavioral and current-definition findings out of observed setup health', () => {
+    const sessions = [0, 1].map(i =>
+      makeSession(i, {
+        turns: [makeTurn(i, { calls: [makeCall(i, { cost: 12, input: 100_000, output: 1 })], hasEdits: false })],
+        categories: ALL_ZERO_CATEGORIES(),
+        mcpInventory: ['mcp__example__inspect'],
+      }),
+    )
+    const payload = calculateOptimizePayload(
+      groupByProject(sessions),
+      { period: 'lifetime' },
+      { ...optimizeSetup(), agents: ['unseen'] },
+      NOW,
+    )
+    expect(payload.summary).toMatchObject({
+      healthScore: 100,
+      healthGrade: 'A',
+      setupCoverage: { eligibleSessions: 2, observedSessions: 2 },
+    })
+    expect(payload.findings.find(f => f.id === 'low-worth-sessions')?.findingClass).toBe('information')
+    expect(payload.findings.find(f => f.id === 'unused-agents')?.affectedSessions).toEqual([])
   })
 })

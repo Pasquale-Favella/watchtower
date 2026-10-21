@@ -86,65 +86,93 @@ function makeLiveInspection(runner: CommandRunner['Service']): RepositoryInspect
   const getMainBranch = Effect.fn('RepositoryInspection.getMainBranch')(function* (
     directory: string,
   ): Effect.fn.Return<string, RepositoryInspectionError> {
+    const refs = yield* runGit(['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes'], directory)
+    const available = new Set(refs.split('\n').filter(Boolean))
     const remoteHead = yield* runGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], directory).pipe(
       Effect.catchTag('RepositoryInspectionError', () => Effect.succeed('')),
     )
-    if (remoteHead) {
-      const branch = remoteHead.replace('refs/remotes/origin/', '')
-      if (SAFE_REF_PATTERN.test(branch)) return branch
+    if (remoteHead.startsWith('refs/remotes/') && SAFE_REF_PATTERN.test(remoteHead) && available.has(remoteHead)) {
+      return remoteHead
     }
-
-    const branches = yield* runGit(['branch', '-a'], directory)
-    if (branches.includes('main')) return 'main'
-    if (branches.includes('master')) return 'master'
-    return 'main'
+    for (const ref of [
+      'refs/heads/main',
+      'refs/heads/master',
+      'refs/remotes/origin/main',
+      'refs/remotes/origin/master',
+    ]) {
+      if (available.has(ref)) return ref
+    }
+    return yield* Effect.fail(inspectionError('main-reference', 'No local main reference is available'))
   })
 
   const getCommitFacts = Effect.fn('RepositoryInspection.getCommitFacts')(function* (
     directory: string,
     range: InspectionRange,
-    mainBranch: string,
+    mainBranch: string | null,
   ): Effect.fn.Return<readonly CommitInfo[], RepositoryInspectionError> {
+    if (mainBranch !== null && !SAFE_REF_PATTERN.test(mainBranch)) {
+      return yield* Effect.fail(inspectionError('main-reference', 'Invalid main reference'))
+    }
     const log = yield* runGit(
       [
         'log',
         '--all',
-        `--since=${range.start.toISOString()}`,
+        `--since-as-filter=${range.start.toISOString()}`,
         `--until=${range.end.toISOString()}`,
-        '--format=%H|%aI|%s',
+        '--format=%H|%cI',
       ],
       directory,
     )
     if (!log) return []
-
-    const mainOutput = yield* runGit(['log', mainBranch, '--format=%H'], directory).pipe(
-      Effect.catchTag('RepositoryInspectionError', () => Effect.succeed('')),
-    )
-    const mainCommits = new Set(mainOutput.split('\n').filter(Boolean))
-    const revertOutput = yield* runGit(
-      ['log', '--all', '--grep=^This reverts commit', '--format=%B%x1e'],
-      directory,
-    ).pipe(Effect.catchTag('RepositoryInspectionError', () => Effect.succeed('')))
+    const issues: { operation: string; message: string }[] = []
+    const until = `--until=${(range.observedAt ?? range.end).toISOString()}`
+    const mainOutput =
+      mainBranch === null
+        ? null
+        : yield* runGit(['log', mainBranch, until, '--format=%H'], directory).pipe(
+            Effect.catchTag('RepositoryInspectionError', () => {
+              issues.push({ operation: 'main-membership', message: 'Main commit membership could not be inspected.' })
+              return Effect.succeed(null)
+            }),
+          )
+    const mainCommits = mainOutput === null ? null : new Set(mainOutput.split('\n').filter(Boolean))
+    const revertOutput =
+      mainBranch === null
+        ? null
+        : yield* runGit(['log', mainBranch, until, '--grep=^This reverts commit', '--format=%B%x1e'], directory).pipe(
+            Effect.catchTag('RepositoryInspectionError', () => {
+              issues.push({ operation: 'revert-history', message: 'Main revert history could not be inspected.' })
+              return Effect.succeed(null)
+            }),
+          )
     const revertedShas = new Set<string>()
-    const revertPattern = /This reverts commit ([0-9a-f]{7,40})/g
-    for (const match of revertOutput.matchAll(revertPattern)) {
-      const sha = match[1]
-      if (sha) revertedShas.add(sha.toLowerCase())
+    for (const match of (revertOutput ?? '').matchAll(/This reverts commit ([0-9a-f]{7,40})/g)) {
+      if (match[1]) revertedShas.add(match[1].toLowerCase())
     }
-
-    return log
-      .split('\n')
-      .filter(Boolean)
-      .map(line => {
-        const [sha = '', timestamp = ''] = line.split('|')
-        const normalizedSha = sha.toLowerCase()
-        return {
-          sha,
-          timestamp: new Date(timestamp),
-          inMain: mainCommits.has(sha),
-          wasReverted: revertedShas.has(normalizedSha) || revertedShas.has(normalizedSha.slice(0, 7)),
-        }
+    const facts: CommitInfo[] = []
+    for (const line of log.split('\n').filter(Boolean)) {
+      const [sha = '', timestamp = ''] = line.split('|')
+      const parsedTimestamp = new Date(timestamp)
+      if (!/^[0-9a-f]{7,40}$/i.test(sha) || !Number.isFinite(parsedTimestamp.getTime())) {
+        return yield* Effect.fail(inspectionError('commit-history', 'Git returned invalid commit evidence'))
+      }
+      if (
+        parsedTimestamp < range.start ||
+        parsedTimestamp > range.end ||
+        parsedTimestamp > (range.observedAt ?? range.end)
+      )
+        continue
+      const normalizedSha = sha.toLowerCase()
+      facts.push({
+        sha,
+        timestamp: parsedTimestamp,
+        inMain: mainCommits?.has(sha) ?? null,
+        wasReverted:
+          revertOutput === null ? null : [...revertedShas].some(reverted => normalizedSha.startsWith(reverted)),
+        ...(issues.length > 0 ? { inspectionIssues: issues } : {}),
       })
+    }
+    return facts
   })
 
   return { resolveIdentity, getMainBranch, getCommitFacts }

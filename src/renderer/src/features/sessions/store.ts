@@ -1,8 +1,15 @@
 import { create } from 'zustand'
+
 import { fetchSession, fetchSessionRows } from '@/shared/lib/api'
-import { scopedDataSlice, type DataStatus, type ScopedDataSlice } from '../../app/stores/data-store'
-import { subscribeToRefresh } from '../../app/stores/scan-store'
+
 import type { SessionDetail, SessionRow } from '../../../../shared/schemas/views.js'
+import { type DataStatus, type ScopedDataSlice, scopedDataSlice } from '../../app/stores/data-store'
+import { subscribeToRefresh } from '../../app/stores/scan-store'
+
+/** Identity of an open-session request; the same id can exist in several sources. */
+export function sessionRequestKey(sessionId: string, sourceId?: number): string {
+  return JSON.stringify([sessionId, sourceId ?? null])
+}
 
 /** The sessions list, scope-keyed like the other section payloads. */
 export interface SessionsState extends ScopedDataSlice<SessionRow[]> {
@@ -11,7 +18,8 @@ export interface SessionsState extends ScopedDataSlice<SessionRow[]> {
   session: SessionDetail | null
   sessionError: string | null
   sessionStatus: DataStatus
-  loadSession: (sessionId: string) => Promise<void>
+  sessionKey: string | null
+  loadSession: (sessionId: string, sourceId?: number) => Promise<void>
   clearSession: () => void
 }
 
@@ -24,13 +32,16 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   session: null,
   sessionError: null,
   sessionStatus: 'idle',
-  loadSession: async sessionId => {
-    set({ session: null, sessionError: null, sessionStatus: 'loading' })
-    const result = await fetchSession(sessionId)
+  sessionKey: null,
+  loadSession: async (sessionId, sourceId) => {
+    const sessionKey = sessionRequestKey(sessionId, sourceId)
+    set({ session: null, sessionError: null, sessionStatus: 'loading', sessionKey })
+    const result = await fetchSession(sessionId, sourceId)
+    if (get().sessionKey !== sessionKey) return
     if (result.ok) set({ session: result.data, sessionStatus: 'ready' })
     else set({ sessionError: result.error, sessionStatus: 'ready' })
   },
-  clearSession: () => set({ session: null, sessionError: null, sessionStatus: 'idle' }),
+  clearSession: () => set({ session: null, sessionError: null, sessionStatus: 'idle', sessionKey: null }),
 }))
 
 subscribeToRefresh(() => {

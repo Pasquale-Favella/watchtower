@@ -314,20 +314,14 @@ async function main() {
       await expect(window.getByText('Pull request spend', { exact: true })).toBeVisible({ timeout: 30000 })
       await window.getByRole('button', { name: 'Optimize', exact: true }).click()
       await expect(window.getByText('Setup health', { exact: true })).toBeVisible({ timeout: 30000 })
+      await window.getByRole('tab', { name: 'Outcomes', exact: true }).click()
+      await expect(window.getByRole('heading', { name: 'Delivery evidence', exact: true })).toBeVisible({
+        timeout: 30000,
+      })
       await window.getByRole('tab', { name: 'Reverts', exact: true }).click()
-      await expect(
-        window
-          .getByText('No reverted sessions in this range yet.', { exact: true })
-          .or(window.locator('b').filter({ hasText: /^Reverted$/ }))
-          .first(),
-      ).toBeVisible({ timeout: 30000 })
-      await window.getByRole('tab', { name: 'Abandoned', exact: true }).click()
-      await expect(
-        window
-          .getByText('No abandoned sessions in this range yet.', { exact: true })
-          .or(window.locator('b').filter({ hasText: /^Abandoned$/ }))
-          .first(),
-      ).toBeVisible({ timeout: 30000 })
+      await expect(window.getByRole('heading', { name: 'Sessions with reverted changes' })).toBeVisible({
+        timeout: 30000,
+      })
       await window.getByRole('button', { name: 'Coach & Skills', exact: true }).click()
       await expect(window.getByPlaceholder('Ask anything or say “craft a skill for …”')).toBeVisible({ timeout: 30000 })
       const migratedPayloads = await window.evaluate(async () => {

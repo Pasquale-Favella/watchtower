@@ -68,6 +68,7 @@ describe('RepositoryInspectionLive', () => {
     directories.push(directory)
     const fake = runner(args => {
       if (args[0] === 'rev-parse') return { stdout: 'true\n.git' }
+      if (args[0] === 'for-each-ref') return { stdout: 'refs/remotes/origin/feature/main' }
       if (args[0] === 'symbolic-ref') return { stdout: 'refs/remotes/origin/feature/main' }
       if (args[0] === 'log') return { stdout: '' }
       throw new Error(`unexpected git args: ${args.join(' ')}`)
@@ -86,17 +87,17 @@ describe('RepositoryInspectionLive', () => {
     )
 
     expect(identity.key.toLowerCase()).toBe(join(directory, '.git').toLowerCase())
-    expect(branch).toBe('feature/main')
+    expect(branch).toBe('refs/remotes/origin/feature/main')
     expect(facts).toEqual([])
     expect(fake.calls.every(call => call.options?.windowsHide === true)).toBe(true)
-    expect(fake.calls.map(call => call.args[0])).toEqual(['rev-parse', 'symbolic-ref', 'log'])
-    expect(fake.releases).toBe(3)
+    expect(fake.calls.map(call => call.args[0])).toEqual(['rev-parse', 'for-each-ref', 'symbolic-ref', 'log'])
+    expect(fake.releases).toBe(4)
   })
 
   it('rejects an option-looking remote HEAD branch and falls back to local branch discovery', async () => {
     const fake = runner(args => {
       if (args[0] === 'symbolic-ref') return { stdout: 'refs/remotes/origin/--all' }
-      if (args[0] === 'branch') return { stdout: '* feature\n  main' }
+      if (args[0] === 'for-each-ref') return { stdout: 'refs/heads/feature\nrefs/heads/main' }
       throw new Error(`unexpected git args: ${args.join(' ')}`)
     })
     const live = RepositoryInspectionLive.pipe(Layer.provide(fake.layer))
@@ -104,22 +105,79 @@ describe('RepositoryInspectionLive', () => {
       Effect.flatMap(RepositoryInspection, service => service.getMainBranch('checkout')).pipe(Effect.provide(live)),
     )
 
-    expect(branch).toBe('main')
+    expect(branch).toBe('refs/heads/main')
     expect(fake.calls.map(call => call.args)).toEqual([
+      ['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes'],
       ['symbolic-ref', 'refs/remotes/origin/HEAD'],
-      ['branch', '-a'],
     ])
     expect(fake.releases).toBe(2)
+  })
+
+  it('does not mistake a feature branch containing main for a default branch', async () => {
+    const fake = runner(args => {
+      if (args[0] === 'for-each-ref') return { stdout: 'refs/heads/feature/main-fix' }
+      if (args[0] === 'symbolic-ref') return { stdout: '', exitCode: 1 }
+      throw new Error('unexpected command')
+    })
+    const live = RepositoryInspectionLive.pipe(Layer.provide(fake.layer))
+    const failure = await Effect.runPromise(
+      Effect.flatMap(RepositoryInspection, service => Effect.flip(service.getMainBranch('checkout'))).pipe(
+        Effect.provide(live),
+      ),
+    )
+    expect(failure).toBeInstanceOf(RepositoryInspectionError)
+    expect(failure.operation).toBe('main-reference')
+  })
+
+  it('retains the exact remote default reference when no local branch exists', async () => {
+    const fake = runner(args => {
+      if (args[0] === 'for-each-ref') return { stdout: 'refs/remotes/origin/trunk' }
+      if (args[0] === 'symbolic-ref') return { stdout: 'refs/remotes/origin/trunk' }
+      throw new Error('unexpected command')
+    })
+    const live = RepositoryInspectionLive.pipe(Layer.provide(fake.layer))
+    const ref = await Effect.runPromise(
+      Effect.flatMap(RepositoryInspection, service => service.getMainBranch('checkout')).pipe(Effect.provide(live)),
+    )
+    expect(ref).toBe('refs/remotes/origin/trunk')
+  })
+
+  it('bounds future facts and restricts revert inspection to the resolved main reference', async () => {
+    const fake = runner(args => {
+      if (args[1] === '--all')
+        return { stdout: '0123456789abcdef|2026-10-05T11:00:00Z\nabcdef0123456789|2026-10-06T11:00:00Z' }
+      if (args.includes('--format=%H')) return { stdout: '0123456789abcdef' }
+      return { stdout: 'This reverts commit 0123456.' }
+    })
+    const live = RepositoryInspectionLive.pipe(Layer.provide(fake.layer))
+    const facts = await Effect.runPromise(
+      Effect.flatMap(RepositoryInspection, service =>
+        service.getCommitFacts(
+          'checkout',
+          {
+            start: new Date(0),
+            end: new Date('2026-10-06T23:00:00Z'),
+            observedAt: new Date('2026-10-05T12:00:00Z'),
+          },
+          'refs/remotes/origin/trunk',
+        ),
+      ).pipe(Effect.provide(live)),
+    )
+    expect(facts).toHaveLength(1)
+    expect(facts[0]).toMatchObject({ inMain: true, wasReverted: true })
+    expect(fake.calls[2]?.args).toContain('refs/remotes/origin/trunk')
+    expect(fake.calls[2]?.args).not.toContain('--all')
+    expect(fake.calls[2]?.args).toContain('--until=2026-10-05T12:00:00.000Z')
   })
 
   it('keeps commit facts when main-branch and revert-history inspection fail operationally', async () => {
     const fake = runner(args => {
       if (args[0] !== 'log') throw new Error(`unexpected git args: ${args.join(' ')}`)
-      if (args[1] === '--all' && args[2]?.startsWith('--since=')) {
+      if (args[1] === '--all' && args[2]?.startsWith('--since-as-filter=')) {
         return { stdout: '0123456789abcdef|2026-10-05T11:00:00.000Z|change' }
       }
       if (args[1] === 'main') return { stdout: '', exitCode: 1 }
-      if (args[1] === '--all' && args[2]?.startsWith('--grep=')) return { stdout: '', exitCode: 1 }
+      if (args.some(arg => arg.startsWith('--grep='))) return { stdout: '', exitCode: 1 }
       throw new Error(`unexpected git args: ${args.join(' ')}`)
     })
     const live = RepositoryInspectionLive.pipe(Layer.provide(fake.layer))
@@ -133,8 +191,12 @@ describe('RepositoryInspectionLive', () => {
       {
         sha: '0123456789abcdef',
         timestamp: new Date('2026-10-05T11:00:00.000Z'),
-        inMain: false,
-        wasReverted: false,
+        inMain: null,
+        wasReverted: null,
+        inspectionIssues: [
+          { operation: 'main-membership', message: 'Main commit membership could not be inspected.' },
+          { operation: 'revert-history', message: 'Main revert history could not be inspected.' },
+        ],
       },
     ])
     expect(fake.calls).toHaveLength(3)

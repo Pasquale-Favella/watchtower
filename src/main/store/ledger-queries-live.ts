@@ -14,7 +14,11 @@ import type { DateRange } from '../pipeline/types.js'
 import { SELECT_MODEL_ALIASES, SELECT_PRICE_OVERRIDES } from './ledger-config-live.js'
 import { LedgerQueries } from './ledger-ports.js'
 import { decodeRows } from './ledger-repository-codec.js'
-import { ledgerCallFactsRowSchema, ledgerLifetimeModelSchema } from './read-projections.js'
+import {
+  ledgerCallDiagnosticsRowSchema,
+  ledgerCallFactsRowSchema,
+  ledgerLifetimeModelSchema,
+} from './read-projections.js'
 import { candidateTimestampBounds, selectScopedSessionRows } from './scoped-snapshot-sql.js'
 
 const SELECT_SOURCES = `
@@ -138,6 +142,16 @@ const SELECT_SESSIONS = `SELECT ${SESSION_COLUMNS.join(', ')} FROM ledger_sessio
 const SELECT_TURNS = `SELECT ${TURN_COLUMNS.join(', ')} FROM ledger_turn`
 const SELECT_CALLS = `SELECT ${CALL_COLUMNS.join(', ')} FROM ledger_call`
 const SELECT_CALL_FACTS = `SELECT ${CALL_FACT_COLUMNS.join(', ')} FROM ledger_call`
+const CALL_DIAGNOSTIC_COLUMNS = [
+  'source_id',
+  'session_id',
+  'turn_index',
+  'call_index',
+  'interrupted',
+  'user_modified',
+  'tool_errors',
+  'edit_failed',
+] as const
 
 const ORDER_SESSIONS = ' ORDER BY session_id ASC, rowid ASC'
 const ORDER_TURNS = ' ORDER BY session_id ASC, turn_index ASC, rowid ASC'
@@ -203,7 +217,10 @@ export const LedgerQueriesLive = Layer.effect(
     /** One request-level read unit for view inputs. Materialize all selected
      * rows inside the transaction, then decode after it commits so large
      * schema passes never hold the SQLite transaction open. */
-    const getRequestSnapshotData = Effect.fn('LedgerQueries.getRequestSnapshotData')(function* (range?: DateRange) {
+    const getRequestSnapshotData = Effect.fn('LedgerQueries.getRequestSnapshotData')(function* (
+      range?: DateRange,
+      includeCallDiagnostics = false,
+    ) {
       const bounded = range !== undefined
       const [since, until] = bounded ? candidateTimestampBounds(range) : ['', '']
       const sessionsQuery = bounded
@@ -216,16 +233,20 @@ export const LedgerQueriesLive = Layer.effect(
         ? selectScopedSessionRows(CALL_FACT_COLUMNS, 'ledger_call') + ORDER_SCOPED_CALLS
         : SELECT_CALL_FACTS + ORDER_CALLS
       const params = bounded ? [since, until] : []
+      const diagnosticsQuery = bounded
+        ? selectScopedSessionRows(CALL_DIAGNOSTIC_COLUMNS, 'ledger_call') + ORDER_SCOPED_CALLS
+        : `SELECT ${CALL_DIAGNOSTIC_COLUMNS.join(', ')} FROM ledger_call` + ORDER_CALLS
       const rawRows = yield* sql.withTransaction(
         Effect.gen(function* () {
           const sources = yield* sql.unsafe(SELECT_SOURCES)
           const sessions = yield* sql.unsafe(sessionsQuery, params)
           const turns = yield* sql.unsafe(turnsQuery, params)
           const calls = yield* sql.unsafe(callsQuery, params)
+          const callDiagnostics = includeCallDiagnostics ? yield* sql.unsafe(diagnosticsQuery, params) : undefined
           const lifetimeModels = bounded ? yield* sql.unsafe(SELECT_LIFETIME_MODELS) : []
           const aliases = yield* sql.unsafe(SELECT_MODEL_ALIASES)
           const overrides = yield* sql.unsafe(SELECT_PRICE_OVERRIDES)
-          return { sources, sessions, turns, calls, lifetimeModels, aliases, overrides }
+          return { sources, sessions, turns, calls, callDiagnostics, lifetimeModels, aliases, overrides }
         }),
       )
 
@@ -233,10 +254,22 @@ export const LedgerQueriesLive = Layer.effect(
       const sessions = yield* decodeRows(ledgerSessionRowSchema)(rawRows.sessions)
       const turns = yield* decodeRows(ledgerTurnRowSchema)(rawRows.turns)
       const calls = yield* decodeRows(ledgerCallFactsRowSchema)(rawRows.calls)
+      const callDiagnostics = rawRows.callDiagnostics
+        ? yield* decodeRows(ledgerCallDiagnosticsRowSchema)(rawRows.callDiagnostics)
+        : undefined
       const lifetimeModels = bounded ? yield* decodeRows(ledgerLifetimeModelSchema)(rawRows.lifetimeModels) : undefined
       const aliases = yield* decodeRows(modelAliasRowSchema)(rawRows.aliases)
       const overrides = yield* decodeRows(priceOverrideRowSchema)(rawRows.overrides)
-      return { sources, sessions, turns, calls, aliases, overrides, ...(lifetimeModels ? { lifetimeModels } : {}) }
+      return {
+        sources,
+        sessions,
+        turns,
+        calls,
+        aliases,
+        overrides,
+        ...(callDiagnostics ? { callDiagnostics } : {}),
+        ...(lifetimeModels ? { lifetimeModels } : {}),
+      }
     })
     return LedgerQueries.of({
       getSources,

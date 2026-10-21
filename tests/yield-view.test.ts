@@ -66,7 +66,15 @@ describe('queryYieldView (ADR 0008)', () => {
     const { runtime } = openLedgerFixture()
     const payload = await yieldView(runtime, { period: 'lifetime' })
     expect(payload.summary.total).toEqual({ costUSD: 0, sessions: 0 })
-    for (const bucket of ['productive', 'reverted', 'abandoned', 'ambiguous'] as const) {
+    for (const bucket of [
+      'productive',
+      'reverted',
+      'mixed',
+      'unmatched',
+      'unmerged',
+      'ambiguous',
+      'unknown',
+    ] as const) {
       expect(payload.summary[bucket]).toEqual({ costUSD: 0, sessions: 0, costPercent: 0, sessionPercent: 0 })
     }
     expect(payload.details).toEqual([])
@@ -91,7 +99,7 @@ describe('queryYieldView (ADR 0008)', () => {
       ])
 
       expect(payload.summary.productive).toMatchObject({ costUSD: 5, sessions: 1 })
-      expect(payload.summary.abandoned.sessions).toBe(0)
+      expect(payload.summary.unmatched.sessions).toBe(0)
       expect(payload.details[0]).toMatchObject({ sessionId: 'sess-prod', category: 'productive', commitCount: 1 })
     } finally {
       await rm(repoDir, { recursive: true, force: true })
@@ -104,7 +112,7 @@ describe('queryYieldView (ADR 0008)', () => {
       initRepo(repoDir)
       commitAt(repoDir, 'file.txt', 'feature\n', 'feat: shipped', '2026-01-01T10:30:00Z')
       const featureSha = git(repoDir, ['rev-parse', 'HEAD'])
-      revertAt(repoDir, 'file.txt', 'original\n', featureSha, '2026-01-01T11:00:00Z')
+      revertAt(repoDir, 'file.txt', 'original\n', featureSha, '2026-01-01T13:00:00Z')
 
       const payload = await nativeYieldPayload([
         {
@@ -130,7 +138,7 @@ describe('queryYieldView (ADR 0008)', () => {
       initRepo(repoDir)
       commitAt(repoDir, 'file.txt', 'feature\n', 'feat: shipped', '2026-01-01T10:30:00Z')
       const shortSha = git(repoDir, ['rev-parse', '--short=7', 'HEAD'])
-      revertAt(repoDir, 'file.txt', 'original\n', shortSha, '2026-01-01T11:00:00Z')
+      revertAt(repoDir, 'file.txt', 'original\n', shortSha, '2026-01-01T13:00:00Z')
 
       const payload = await nativeYieldPayload([
         {
@@ -149,8 +157,8 @@ describe('queryYieldView (ADR 0008)', () => {
     }
   })
 
-  it('classifies a session with no commits in its window as abandoned', async () => {
-    const repoDir = await mkdtemp(join(tmpdir(), 'yield-abandon-'))
+  it('classifies a session with no commits in its window as unmatched', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'yield-unmatched-'))
     try {
       initRepo(repoDir)
       commitAt(repoDir, 'file.txt', 'hello\n', 'feat: unrelated', '2026-01-01T16:00:00Z')
@@ -166,8 +174,8 @@ describe('queryYieldView (ADR 0008)', () => {
         },
       ])
 
-      expect(payload.summary.abandoned).toMatchObject({ costUSD: 12, sessions: 1 })
-      expect(payload.details[0]).toMatchObject({ sessionId: 'sess-aban', category: 'abandoned', commitCount: 0 })
+      expect(payload.summary.unmatched).toMatchObject({ costUSD: 12, sessions: 1 })
+      expect(payload.details[0]).toMatchObject({ sessionId: 'sess-aban', category: 'unmatched', commitCount: 0 })
     } finally {
       await rm(repoDir, { recursive: true, force: true })
     }
@@ -283,8 +291,8 @@ describe('queryYieldView (ADR 0008)', () => {
 
       const productive = payload.details.filter(d => d.category === 'productive')
       expect(productive.map(d => d.sessionId)).toEqual(['sub-a'])
-      expect(productive[0]!.commitCount).toBe(1)
-      expect(payload.details.find(d => d.sessionId === 'sub-b')!.category).toBe('ambiguous')
+      expect(productive[0]?.commitCount).toBe(1)
+      expect(payload.details.find(d => d.sessionId === 'sub-b')?.category).toBe('ambiguous')
     } finally {
       await rm(repoDir, { recursive: true, force: true })
     }
@@ -292,6 +300,84 @@ describe('queryYieldView (ADR 0008)', () => {
 })
 
 // ── Application Yield query ───────────────────────────────────────────────
+
+describe('Yield evidence boundaries', () => {
+  it('reports unavailable Git evidence as unknown without exposing filesystem errors', async () => {
+    const payload = await nativeYieldPayload([
+      {
+        sessionId: 'unknown',
+        project: 'research',
+        workingDirectory: join(tmpdir(), 'missing-yield-repository'),
+        firstTimestamp: tightWindow.firstTimestamp,
+        lastTimestamp: tightWindow.lastTimestamp,
+        cost: 9,
+      },
+    ])
+    expect(payload.summary.unknown).toMatchObject({ costUSD: 9, sessions: 1 })
+    expect(payload.summary.unmatched.sessions).toBe(0)
+    expect(payload.details[0]).toMatchObject({ reasonCode: 'inspection-unavailable', commits: [] })
+    expect(JSON.stringify(payload.details[0]?.inspectionIssues)).not.toContain(tmpdir())
+  })
+
+  it('keeps feature-branch spending in the unmerged bucket', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'yield-unmerged-'))
+    try {
+      initRepo(repoDir)
+      commitAt(repoDir, 'base.txt', 'base', 'base', '2025-12-31T10:00:00Z')
+      git(repoDir, ['checkout', '-b', 'feature'])
+      commitAt(repoDir, 'feature.txt', 'feature', 'feature', '2026-01-01T10:30:00Z')
+      const payload = await nativeYieldPayload([
+        {
+          sessionId: 'pending',
+          project: 'app',
+          workingDirectory: repoDir,
+          firstTimestamp: tightWindow.firstTimestamp,
+          lastTimestamp: tightWindow.lastTimestamp,
+          cost: 4,
+        },
+      ])
+      expect(payload.summary.unmerged).toMatchObject({ costUSD: 4, sessions: 1 })
+      expect(payload.details[0]?.commits[0]).toMatchObject({ inMain: false, wasReverted: false })
+    } finally {
+      await rm(repoDir, { recursive: true, force: true })
+    }
+  })
+
+  it('matches delivery after midnight without widening the selected spending', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'yield-midnight-'))
+    try {
+      initRepo(repoDir)
+      const sessionStart = new Date(2026, 0, 1, 23, 45)
+      const commitTime = new Date(2026, 0, 2, 0, 15)
+      commitAt(repoDir, 'file.txt', 'delivery', 'delayed commit', commitTime.toISOString())
+      const { runtime } = openLedgerFixture()
+      yieldPort(runtime, [
+        yieldCachedFile(0, {
+          sessionId: 'selected',
+          workingDirectory: repoDir,
+          iso: sessionStart.toISOString(),
+          cost: 4,
+        }),
+        yieldCachedFile(1, {
+          sessionId: 'next-day',
+          workingDirectory: repoDir,
+          iso: new Date(2026, 0, 2, 10).toISOString(),
+          cost: 7,
+        }),
+      ])
+      const payload = await yieldView(runtime, {
+        period: 'lifetime',
+        range: { since: '2026-01-01', until: '2026-01-01' },
+      })
+      expect(payload.summary.productive).toMatchObject({ costUSD: 4, sessions: 1 })
+      expect(payload.summary.total.costUSD).toBe(4)
+      expect(payload.details[0]?.commits[0]?.timestamp).toBe(commitTime.toISOString())
+      expect(new Date(payload.attribution.evidenceEnd).getDate()).toBe(2)
+    } finally {
+      await rm(repoDir, { recursive: true, force: true })
+    }
+  })
+})
 
 const LEDGER_NOW = new Date('2026-07-15T12:00:00Z')
 
@@ -406,7 +492,7 @@ describe('queryYieldView', () => {
         range: { since: '2026-07-12', until: '2026-07-14' },
       })
       expect(payload.summary.productive).toMatchObject({ costUSD: 1, sessions: 1 })
-      expect(payload.summary.abandoned.sessions).toBe(0)
+      expect(payload.summary.unmatched.sessions).toBe(0)
       expect(payload.details[0]).toMatchObject({ sessionId: 'sess-yprod', category: 'productive', commitCount: 1 })
     } finally {
       await rm(repoDir, { recursive: true, force: true })
@@ -436,7 +522,7 @@ describe('queryYieldView', () => {
       const payload = await yieldView(runtime, { period: 'lifetime', range: RANGE })
 
       expect(payload.details).toHaveLength(1)
-      expect(payload.details[0]!.sessionId).toBe('sess-in')
+      expect(payload.details[0]?.sessionId).toBe('sess-in')
       expect(payload.summary.total).toMatchObject({ costUSD: 5, sessions: 1 })
     } finally {
       await rm(repoDir, { recursive: true, force: true })

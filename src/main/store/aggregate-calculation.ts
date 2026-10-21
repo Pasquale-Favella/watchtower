@@ -1,4 +1,4 @@
-import type { LedgerSessionRow, LedgerTurnRow } from '../../shared/schemas/ledger.js'
+import type { LedgerCallRow, LedgerSessionRow, LedgerTurnRow } from '../../shared/schemas/ledger.js'
 import { canonicalSessionProject } from '../canonical-session-project.js'
 import { getShortModelName } from '../pipeline/model-names.js'
 import { buildSpawnPrSets, extractPrUrlsFromProviderCall } from '../pipeline/parser-calculations.js'
@@ -40,14 +40,15 @@ export const DEFAULT_RANGE_DAYS = 30
  *  `file:line` for every kept one is on `ledgerCallFactsRowSchema`
  *  (`./read-projections.ts`). `LedgerQueries.getCalls` remains the wide read — the
  *  fallback, and the measurement harness's baseline. */
-export type ScopedCall = LedgerCallFactsRow & {
-  /** `model` after a configured `model_alias` rewrite (identity for display/grouping). */
-  resolvedModel: string
-  /** Query-time cost mirroring the Models lens: a Price override on the
-   * effective model wins, else an aliased call reprices at its target's
-   * rates, else the stored base cost stands. */
-  displayCostUSD: number
-}
+export type ScopedCall = LedgerCallFactsRow &
+  Partial<Pick<LedgerCallRow, 'interrupted' | 'userModified' | 'toolErrors' | 'editFailed'>> & {
+    /** `model` after a configured `model_alias` rewrite (identity for display/grouping). */
+    resolvedModel: string
+    /** Query-time cost mirroring the Models lens: a Price override on the
+     * effective model wins, else an aliased call reprices at its target's
+     * rates, else the stored base cost stands. */
+    displayCostUSD: number
+  }
 
 export interface LedgerScope {
   sessions: LedgerSessionRow[]
@@ -180,6 +181,10 @@ function reconstructCall(row: ScopedCall): ParsedApiCall {
     cacheCreationOneHourTokens: row.cacheCreationOneHourTokens > 0 ? row.cacheCreationOneHourTokens : undefined,
     toolSequence: row.toolSequence.length > 0 ? row.toolSequence : undefined,
   }
+  if (row.interrupted) call.interrupted = true
+  if (row.userModified) call.userModified = true
+  if (row.toolErrors) call.toolErrors = row.toolErrors
+  if (row.editFailed) call.editFailed = row.editFailed
   if (row.resolvedModel !== row.model) call.rawModel = row.model
   if (row.savingsUSD > 0) {
     call.savingsUSD = row.savingsUSD
@@ -404,6 +409,8 @@ export function assembleSession(
   }
 
   const summary: SessionSummary = {
+    sourceId: session.sourceId,
+    isSidechain: session.isSidechain === 1,
     sessionId: session.sessionId,
     project: session.project ?? '',
     firstTimestamp: firstTs || inRange[0]?.timestamp || '',

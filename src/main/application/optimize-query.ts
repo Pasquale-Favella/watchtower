@@ -15,6 +15,10 @@ import type { ScopedViewQueryInputs } from './view-queries.js'
 
 export type OptimizeQueryInputs = ScopedViewQueryInputs & { readonly homeDir?: string }
 
+function diagnosticKey(row: { sourceId: number; sessionId: string; turnIndex: number; callIndex: number }): string {
+  return `${row.sourceId}:${row.sessionId}:${row.turnIndex}:${row.callIndex}`
+}
+
 export const queryOptimizeView = Effect.fn('queryOptimizeView')(function* (
   input: OptimizeQueryInputs,
 ): Effect.fn.Return<
@@ -24,8 +28,13 @@ export const queryOptimizeView = Effect.fn('queryOptimizeView')(function* (
 > {
   const now = DateTime.toDateUtc(yield* DateTime.now)
   const { range, readRange } = overviewQueryRanges(input.scope, now)
-  const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange)
-  const result = buildSessionSummariesFromSnapshotResult(snapshot, {
+  const snapshot = yield* loadLedgerQuerySnapshotEffect(input, readRange, true)
+  const callDiagnostics = new Map(snapshot.callDiagnostics?.map(row => [diagnosticKey(row), row]))
+  const enrichedSnapshot = {
+    ...snapshot,
+    calls: snapshot.calls.map(call => ({ ...call, ...callDiagnostics.get(diagnosticKey(call)) })),
+  }
+  const result = buildSessionSummariesFromSnapshotResult(enrichedSnapshot, {
     range,
     provider: input.scope.provider,
   })
@@ -33,7 +42,9 @@ export const queryOptimizeView = Effect.fn('queryOptimizeView')(function* (
   yield* diagnostics.reportUnpricedModels(result.unpricedModels)
   const projects = groupSummariesIntoProjects(result.summaries)
   const setup =
-    projects.length === 0
+    projects.length === 0 ||
+    (input.scope.provider !== undefined && input.scope.provider !== 'claude') ||
+    !result.summaries.some(s => s.turns.some(t => t.assistantCalls.some(c => c.provider === 'claude')))
       ? {
           home: input.homeDir ?? '',
           mcpConfigs: new Map(),

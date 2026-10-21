@@ -126,6 +126,7 @@ export function ledgerQueryRequest(
       const sessionId = args[0] as string
       return querySessionDetail({
         sessionId,
+        sourceId: args[1] as number | undefined,
         catalogue: captureModelPricingCatalogue(),
         proxyPaths: captureProxyPaths(),
       })

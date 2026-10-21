@@ -88,26 +88,35 @@ missing.
 
 ### Optimize
 
-Sixteen store-driven detectors scan your sessions for waste and rank findings
-by urgency:
+Waste groups findings into setup recommendations, habits, and information
+for review. Each finding distinguishes observed counts from modeled quantities,
+states its assumptions, and links to supporting sessions where available.
+Expanding a finding also shows a copyable suggestion. Copying one does not
+mark it applied or effective, and Watchtower does not edit setup files.
+Associated spend shows those sessions' scoped cost. It does not establish
+recoverable savings, so unsupported savings totals stay unavailable.
 
-| Detector                                                                                                     | What it catches                                                          |
-| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| `redundant-rereads`, `read-edit-ratio`, `build-folder-reads`                                                 | Re-reading the same files, editing without reading, junk directory reads |
-| `warmup-heavy`                                                                                               | Excessive cache warm-up on short sessions                                |
-| `mcp-low-coverage`, `mcp-project-scope`, `mcp-deferral-off`, `mcp-alwaysload-hygiene`, `mcp-defer-threshold` | MCP servers paying overhead without being used                           |
-| `retry-heavy-capabilities`                                                                                   | Tools or capabilities with unusually high retry rates                    |
-| `unused-agents`, `unused-skills`, `unused-commands`                                                          | Definitions that are never invoked                                       |
-| `low-worth-sessions`, `context-heavy-sessions`, `cost-outliers`                                              | Sessions that spent heavily with little to show                          |
+The findings cover file reads, read/edit behavior, cache warmup and reuse,
+MCP configuration and usage, definition usage, rework signals, expensive
+sessions, explicit tool failures, and interrupted calls. Claude-specific
+setup checks require Claude observations. Delegated sessions retain their
+spend and are excluded from standalone behavior comparisons. Setup health
+uses eligible setup findings and shows insufficient evidence when coverage
+cannot support a grade.
 
-Each finding includes an estimated token or dollar saving and a ready-to-paste
-fix.
+Outcomes runs local Git inspection when opened. It shows session spending
+with matched main changes, reverted changes, mixed evidence, unmerged changes,
+unmatched sessions, ambiguous attribution, or unknown inspection. Expand a row
+for the matched SHAs, attribution window, and inspection details. Reverts
+includes mixed sessions so surviving work remains visible.
 
-> [!NOTE]
-> The Optimize section is **read-only by design**: it diagnoses and advises
-> but never edits your setup. The **Yield** tab runs live git queries (only
-> when opened) to classify session spend as _productive_, _reverted_,
-> _abandoned_, or _ambiguous_ using timestamp-window attribution.
+Commit attribution uses the tightest containing session window, with a
+one-hour allowance after the last recorded call. It is a heuristic. Research,
+reviews, work in progress, delayed commits, and rewritten history can have
+no matched delivery evidence. A missing repository or failed inspection stays
+unknown. Outcome amounts are associated session spending, not proven losses.
+Watchtower does not fetch repositories or call a hosting service to verify PR
+delivery.
 
 ### Models
 

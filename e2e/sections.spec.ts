@@ -36,7 +36,7 @@ const MARKERS: Record<SectionName, (window: Page) => Locator[]> = {
   ],
   'Pull requests': window => [window.getByText('Attributed pull requests'), window.getByText(/PR links are captured/)],
   Spend: window => [window.getByText('Daily spend by model'), window.getByText('No model spend in this range yet.')],
-  // Tab labels carry live values (`Waste $1.23`), so match the prefix.
+  // Readiness is independent of the number or type of findings.
   Optimize: window => [window.getByRole('tab', { name: /^Waste/ })],
   Models: window => [window.getByRole('tab', { name: 'By model' })],
   Compare: window => [
@@ -55,6 +55,20 @@ test('every section renders without errors', async () => {
     for (const nav of SECTIONS) {
       await window.getByRole('button', { name: nav, exact: true }).click()
       await waitForAnyVisible(MARKERS[nav](window))
+      if (nav === 'Optimize') {
+        await window.getByRole('tab', { name: 'Outcomes', exact: true }).click()
+        await expect(window.getByRole('heading', { name: 'Delivery evidence', exact: true })).toBeVisible()
+        await expect(window.getByRole('group', { name: 'Filter delivery outcomes' })).toBeVisible()
+        await window.getByRole('button', { name: /^Unknown/ }).click()
+        await expect(window.getByRole('button', { name: /^Unknown/ })).toHaveAttribute('aria-pressed', 'true')
+        await window.getByRole('button', { name: /^All outcomes/ }).click()
+        await window.locator('details').first().locator('summary').click()
+        await window.screenshot({ path: 'test-results/optimize-outcomes.png', fullPage: true })
+        await window.getByRole('tab', { name: 'Reverts', exact: true }).click()
+        await expect(window.getByRole('heading', { name: 'Sessions with reverted changes' })).toBeVisible()
+        await window.getByRole('tab', { name: /^Waste/ }).click()
+        await expect(window.getByRole('heading', { name: 'Review opportunities' })).toBeVisible()
+      }
     }
 
     await expectSingleMainWindow(app)

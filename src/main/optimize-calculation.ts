@@ -26,28 +26,8 @@ export type {
   WasteAction,
 } from '../shared/schemas/optimize.js'
 
-/** The Optimize section's scoped payload (ADR 0008) — a read-only setup-health
- * grade, findings ranked by severity and trend, and clipboard-copyable fix
- * snippets. Exactly the same period / custom-range / provider scope as every
- * other section (shared `inScope`), then the 16 store-driven detectors run
- * against the scoped sessions.
- *
- * Deliberate design decisions, documented in code:
- * - 3 Claude-config detectors (unused-MCP-from-config, bloated CLAUDE.md,
- *   bash-limit) are ABSENT, not stubbed, per ADR 0008 ÔÇö they depend on the
- *   `~/.claude/` config-source store-side decision that is still open.
- * - tool input is not persisted per call, so the read/ratio/ghost detectors
- *   walk `toolSequence` (tool name + `file_path`) and the parser's
- *   per-call `subagentTypes`/`skills` instead of raw tool_use inputs;
- * - the Claude Code version is not persisted per call, so detectCacheBloat
- *   and the deferral-gap detectors run without the version note / version
- *   gate (they degrade to the generic cause text);
- * - file paths are normalized to `/` so the junk/duplicate-read dir patterns
- *   match Windows paths too;
- * - user messages are capped at 500 chars for the ghost-command suggestion
- *   matcher (the ledger does not persist raw prompts);
- * - `now` is threaded through for deterministic, injectable recency/trends.
- */
+/** Query-time Optimize diagnostics. Quantities describe observations or explicit
+ * models; a pattern alone does not establish avoidable spend. */
 
 // ============================================================================
 // Token-estimation + threshold constants
@@ -83,8 +63,6 @@ const MCP_PROFILE_HOT_INVOCATION_SHARE = 0.8
 const MCP_PROFILE_MIN_COLD_LOADED_SESSIONS = 2
 const MCP_PROFILE_HIGH_IMPACT_TOKENS = 200_000
 const MCP_PROFILE_PREVIEW = 3
-const CACHE_WRITE_MULTIPLIER = 1.25
-const CACHE_READ_DISCOUNT = 0.1
 const GHOST_AGENTS_HIGH_THRESHOLD = 5
 const GHOST_AGENTS_MEDIUM_THRESHOLD = 2
 const GHOST_SKILLS_HIGH_THRESHOLD = 10
@@ -108,7 +86,6 @@ const CONTEXT_BLOAT_GROWTH_MAX_GAP_MS = 7 * 24 * 60 * 60 * 1000
 const CONTEXT_BLOAT_RATIO_DISPLAY_CAP = 1000
 const WORTH_IT_MIN_COST_USD = 2
 const WORTH_IT_NO_EDIT_MIN_COST_USD = 3
-const WORTH_IT_NO_EDIT_RECOVERY_FRACTION = 0.5
 const WORTH_IT_MIN_RETRIES = 3
 const WORTH_IT_RETRY_WITH_EDIT_MIN_RETRIES = 2
 const WORTH_IT_PREVIEW = 5
@@ -119,7 +96,6 @@ const WORTH_IT_HIGH_TOTAL_COST_USD = 50
 const CAPABILITY_RELIABILITY_MIN_EDIT_TURNS = 5
 const CAPABILITY_RELIABILITY_MIN_RETRY_TURNS = 3
 const CAPABILITY_RELIABILITY_MIN_RETRY_RATE = 0.5
-const CAPABILITY_RELIABILITY_RECOVERY_FRACTION = 0.5
 const CAPABILITY_RELIABILITY_PREVIEW = 5
 const CAPABILITY_RELIABILITY_LOW_MAX_CANDIDATES = 1
 const CAPABILITY_RELIABILITY_LOW_MAX_TOKENS = 50_000
@@ -134,7 +110,6 @@ const DEFERRAL_OFF_MIN_MCP_SESSIONS = 2
 const DEFERRAL_OFF_HIGH_IMPACT_TOKENS = 200_000
 const ALWAYSLOAD_MAX_CALLS_PER_SESSION = 0.2
 const ALWAYSLOAD_HIGH_IMPACT_TOKENS = 200_000
-const ALWAYSLOAD_STARTUP_CAP_SECONDS = 5
 const DEFER_THRESHOLD_CONTEXT_WINDOW_TOKENS = 200_000
 const DEFER_THRESHOLD_DEFAULT_PERCENT = 10
 const DEFER_THRESHOLD_MAX_PERCENT = 100
@@ -161,8 +136,6 @@ const DEFAULT_TREND_PERIOD_MS = DEFAULT_TREND_PERIOD_DAYS * 24 * 60 * 60 * 1000
 const IMPROVING_THRESHOLD = 0.5
 
 const JUNK_DIRS = [
-  'node_modules',
-  '.git',
   'dist',
   'build',
   '__pycache__',
@@ -172,8 +145,6 @@ const JUNK_DIRS = [
   'coverage',
   '.cache',
   '.tsbuildinfo',
-  '.venv',
-  'venv',
   '.svn',
   '.hg',
 ]
@@ -181,19 +152,21 @@ const JUNK_PATTERN = new RegExp(`/(?:${JUNK_DIRS.join('|')})/`)
 
 const TOP_ITEMS_PREVIEW = 3
 const GHOST_NAMES_PREVIEW = 5
-const GHOST_CLEANUP_COMMANDS_LIMIT = 10
 const OPTIMIZE_TEXT_CAP = 500
 
 const READ_TOOL_NAMES = new Set(['Read', 'Grep', 'Glob', 'FileReadTool', 'GrepTool', 'GlobTool'])
-const EDIT_TOOL_NAMES = new Set(['Edit', 'Write', 'FileEditTool', 'FileWriteTool', 'NotebookEdit'])
+const EDIT_TOOL_NAMES = new Set(['Edit', 'FileEditTool', 'NotebookEdit'])
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface WasteFinding extends Omit<OptimizeFinding, 'severity' | 'trend' | 'estimatedSavingsUSD'> {
+interface WasteFinding extends Pick<OptimizeFinding, 'id' | 'title' | 'explanation' | 'fix'> {
   impact: Impact
-  trend?: Trend
+  trend?: Trend | null
+  tokensSaved: number
+  affectedSessionKeys?: Set<string>
+  quantity?: OptimizeFinding['quantity']
 }
 
 /** Flattened tool-call view of the scoped sessions: each `toolSequence` step
@@ -203,6 +176,8 @@ type ScanStep = {
   name: string
   filePath?: string
   sessionId: string
+  sourceId?: number
+  sessionKey?: string
   project: string
   recent: boolean
 }
@@ -212,6 +187,7 @@ type ScanStep = {
 type ApiCallMeta = {
   cacheCreationTokens: number
   version: string
+  sessionKey?: string
   recent?: boolean
 }
 
@@ -292,6 +268,10 @@ function isFirstPartyBaseUrl(value: string): boolean {
   }
 }
 
+function stepSessionKey(step: ScanStep): string {
+  return step.sessionKey ?? `${step.sourceId ?? step.project}:${step.sessionId}`
+}
+
 // ============================================================================
 // Scan-data collection (a store walk over the ledger, not a JSONL scan)
 // ============================================================================
@@ -319,7 +299,12 @@ function collectScanData(projects: ProjectSummary[], recentCutoffMs: number): Sc
         for (const call of turn.assistantCalls) {
           const recent = new Date(call.timestamp).getTime() >= recentCutoffMs
           if (call.usage.cacheCreationInputTokens > 0) {
-            cacheEvents.push({ cacheCreationTokens: call.usage.cacheCreationInputTokens, version: '', recent })
+            cacheEvents.push({
+              cacheCreationTokens: call.usage.cacheCreationInputTokens,
+              version: '',
+              recent,
+              sessionKey: sessionEvidenceKey(session),
+            })
           }
           for (const sub of call.subagentTypes ?? []) if (sub) subagentTypes.add(sub)
           for (const skill of call.skills ?? []) if (skill.trim()) skills.add(skill.trim())
@@ -329,6 +314,8 @@ function collectScanData(projects: ProjectSummary[], recentCutoffMs: number): Sc
                 name: step.tool,
                 filePath: step.file ? normalizeSlashes(step.file) : undefined,
                 sessionId: session.sessionId,
+                sourceId: session.sourceId,
+                sessionKey: sessionEvidenceKey(session),
                 project: project.project,
                 recent,
               })
@@ -350,12 +337,14 @@ export function detectJunkReads(steps: ScanStep[], dateRange?: DateRange, now = 
   const dirCounts = new Map<string, number>()
   let totalJunkReads = 0
   let recentJunkReads = 0
+  const affectedSessionKeys = new Set<string>()
 
   for (const step of steps) {
     if (!isReadTool(step.name)) continue
     const filePath = step.filePath
-    if (!filePath || !JUNK_PATTERN.test(filePath)) continue
+    if (!filePath || /(?:^|\/)(?:AGENTS|SKILL)\.md$/i.test(filePath) || !JUNK_PATTERN.test(filePath)) continue
     totalJunkReads++
+    affectedSessionKeys.add(stepSessionKey(step))
     if (step.recent) recentJunkReads++
     for (const dir of JUNK_DIRS) {
       if (filePath.includes(`/${dir}/`)) {
@@ -385,8 +374,9 @@ export function detectJunkReads(steps: ScanStep[], dateRange?: DateRange, now = 
 
   return {
     id: 'build-folder-reads',
-    title: 'Claude is reading build/dependency folders',
-    explanation: `Claude read into ${dirList} (${totalJunkReads} reads). These are generated or dependency directories, not your code. Tell Claude in CLAUDE.md to avoid them.`,
+    affectedSessionKeys,
+    title: 'Review reads of generated folders',
+    explanation: `Observed ${totalJunkReads} reads in commonly generated folders: ${dirList}. These reads can be necessary to investigate build behavior. Review their purpose before excluding files.`,
     impact:
       totalJunkReads > JUNK_READS_HIGH_THRESHOLD
         ? 'high'
@@ -396,43 +386,40 @@ export function detectJunkReads(steps: ScanStep[], dateRange?: DateRange, now = 
     tokensSaved,
     fix: {
       type: 'paste',
-      destination: 'claude-md',
-      label: 'Append to your project CLAUDE.md:',
-      text: `Do not read or search files under these directories unless I explicitly ask: ${dirsToAvoid}.`,
+      destination: 'prompt',
+      label: 'Review generated file access with your assistant:',
+      text: `Before reading generated files under ${dirsToAvoid}, explain which evidence is needed and prefer source files when they answer the question.`,
     },
     trend,
   }
 }
 
 export function detectDuplicateReads(steps: ScanStep[], dateRange?: DateRange, now = new Date()): WasteFinding | null {
-  const sessionFiles = new Map<string, Map<string, { count: number; recent: number }>>()
-
-  for (const step of steps) {
-    if (!isReadTool(step.name)) continue
-    const filePath = step.filePath
-    if (!filePath || JUNK_PATTERN.test(filePath)) continue
-    const key = `${step.project}:${step.sessionId}`
-    if (!sessionFiles.has(key)) sessionFiles.set(key, new Map())
-    const fm = sessionFiles.get(key)!
-    const entry = fm.get(filePath) ?? { count: 0, recent: 0 }
-    entry.count++
-    if (step.recent) entry.recent++
-    fm.set(filePath, entry)
-  }
-
+  const seenFiles = new Map<string, Set<string>>()
+  const affectedSessionKeys = new Set<string>()
   let totalDuplicates = 0
   let recentDuplicates = 0
   const fileDupes = new Map<string, number>()
 
-  for (const fm of sessionFiles.values()) {
-    for (const [file, entry] of fm) {
-      if (entry.count <= 1) continue
-      const extra = entry.count - 1
-      totalDuplicates += extra
-      if (entry.recent > 1) recentDuplicates += entry.recent - 1
-      const name = fileBasename(file)
-      fileDupes.set(name, (fileDupes.get(name) ?? 0) + extra)
+  for (const step of steps) {
+    const file = step.filePath
+    if (!file) continue
+    const key = stepSessionKey(step)
+    const seen = seenFiles.get(key) ?? new Set<string>()
+    seenFiles.set(key, seen)
+    if (EDIT_TOOL_NAMES.has(step.name) || step.name === 'Write' || step.name === 'FileWriteTool') {
+      seen.delete(file)
+      continue
     }
+    if (!isReadTool(step.name) || JUNK_PATTERN.test(file)) continue
+    if (seen.has(file)) {
+      totalDuplicates++
+      affectedSessionKeys.add(key)
+      if (step.recent) recentDuplicates++
+      const name = fileBasename(file)
+      fileDupes.set(name, (fileDupes.get(name) ?? 0) + 1)
+    }
+    seen.add(file)
   }
 
   if (totalDuplicates < MIN_DUPLICATE_READS_TO_FLAG) return null
@@ -451,8 +438,9 @@ export function detectDuplicateReads(steps: ScanStep[], dateRange?: DateRange, n
 
   return {
     id: 'redundant-rereads',
-    title: 'Claude is re-reading the same files',
-    explanation: `${totalDuplicates} redundant re-reads across sessions. Top repeats: ${worst}. Each re-read loads the same content into context again.`,
+    affectedSessionKeys,
+    title: 'Files read repeatedly without intervening edits',
+    explanation: `${totalDuplicates} repeated reads within sessions without an intervening recorded edit. Top repeats: ${worst}. Search, partial reads, external changes and verification may justify rereads; file contents and read ranges are not captured.`,
     impact:
       totalDuplicates > DUPLICATE_READS_HIGH_THRESHOLD
         ? 'high'
@@ -463,11 +451,17 @@ export function detectDuplicateReads(steps: ScanStep[], dateRange?: DateRange, n
     fix: {
       type: 'paste',
       destination: 'prompt',
-      label: 'Point Claude at exact locations in your prompt, for example:',
+      label: 'Point your assistant at exact locations, for example:',
       text: 'In <file> lines <start>-<end>, look at the <function> function.',
     },
     trend,
   }
+}
+
+function readEditImpact(ratio: number): Impact {
+  if (ratio < LOW_RATIO_HIGH_THRESHOLD) return 'high'
+  if (ratio < LOW_RATIO_MEDIUM_THRESHOLD) return 'medium'
+  return 'low'
 }
 
 export function detectLowReadEditRatio(steps: ScanStep[]): WasteFinding | null {
@@ -475,12 +469,18 @@ export function detectLowReadEditRatio(steps: ScanStep[]): WasteFinding | null {
   let edits = 0
   let recentEdits = 0
   let recentReads = 0
+  const sessionCounts = new Map<string, { reads: number; edits: number }>()
   for (const step of steps) {
+    const key = stepSessionKey(step)
+    const counts = sessionCounts.get(key) ?? { reads: 0, edits: 0 }
+    sessionCounts.set(key, counts)
     if (READ_TOOL_NAMES.has(step.name)) {
       reads++
+      counts.reads++
       if (step.recent) recentReads++
     } else if (EDIT_TOOL_NAMES.has(step.name)) {
       edits++
+      counts.edits++
       if (step.recent) recentEdits++
     }
   }
@@ -489,29 +489,35 @@ export function detectLowReadEditRatio(steps: ScanStep[]): WasteFinding | null {
   const ratio = reads / edits
   if (ratio >= HEALTHY_READ_EDIT_RATIO) return null
 
-  const impact: Impact =
-    ratio < LOW_RATIO_HIGH_THRESHOLD ? 'high' : ratio < LOW_RATIO_MEDIUM_THRESHOLD ? 'medium' : 'low'
-  const extraReadsNeeded = Math.max(Math.round(edits * HEALTHY_READ_EDIT_RATIO) - reads, 0)
-  const tokensSaved = extraReadsNeeded * AVG_TOKENS_PER_READ
+  const impact = readEditImpact(ratio)
+  const tokensSaved = 0
 
-  let trend: Trend | 'resolved' = 'active'
-  if (recentEdits >= MIN_EDITS_FOR_RATIO) {
+  let trend: Trend | 'resolved' | null = null
+  if (recentEdits >= MIN_EDITS_FOR_RATIO && edits - recentEdits >= MIN_EDITS_FOR_RATIO) {
     const recentRatio = recentReads / recentEdits
+    const baselineRatio = (reads - recentReads) / (edits - recentEdits)
     if (recentRatio >= HEALTHY_READ_EDIT_RATIO) trend = 'resolved'
-    else if (recentRatio > ratio * (1 / IMPROVING_THRESHOLD)) trend = 'improving'
+    else if (recentRatio > baselineRatio * (1 / IMPROVING_THRESHOLD)) trend = 'improving'
+    else trend = 'active'
   }
   if (trend === 'resolved') return null
 
   return {
     id: 'read-edit-ratio',
-    title: 'Claude edits more than it reads',
-    explanation: `Claude made ${reads} reads and ${edits} edits (ratio ${ratio.toFixed(1)}:1). A healthy ratio is ${HEALTHY_READ_EDIT_RATIO}+ reads per edit. Editing without reading leads to retries and wasted tokens.`,
+    affectedSessionKeys: new Set(
+      [...sessionCounts]
+        .filter(([, c]) => c.edits > 0 && c.reads / c.edits < HEALTHY_READ_EDIT_RATIO)
+        .map(([key]) => key),
+    ),
+    quantity: { value: ratio, unit: 'ratio' },
+    title: 'Low recorded read-to-edit ratio',
+    explanation: `Observed ${reads} reads/searches and ${edits} existing-file edits, a ratio of ${ratio.toFixed(1)}:1. New-file writes are excluded. The review threshold is ${HEALTHY_READ_EDIT_RATIO}:1; this does not establish a causal link to retries or an ideal ratio for every task.`,
     impact,
     tokensSaved,
     fix: {
       type: 'paste',
-      destination: 'claude-md',
-      label: 'Add to your CLAUDE.md:',
+      destination: 'prompt',
+      label: 'Discuss the file-reading approach with your assistant:',
       text: 'Before editing any file, read it first. Before modifying a function, grep for all callers. Research before you edit.',
     },
     trend,
@@ -522,22 +528,19 @@ export function detectLowReadEditRatio(steps: ScanStep[]): WasteFinding | null {
 // Cache-warmup detector
 // ============================================================================
 
-const DEFAULT_CACHE_BASELINE_TOKENS = 50_000
 const CACHE_BASELINE_QUANTILE = 0.25
 const CACHE_BLOAT_MULTIPLIER = 1.4
 
-function computeBudgetAwareCacheBaseline(projects: ProjectSummary[]): number {
-  const sessions = projects.flatMap(p => p.sessions)
-  if (sessions.length === 0) return DEFAULT_CACHE_BASELINE_TOKENS
-  const cacheWrites = sessions.map(s => s.totalCacheWriteTokens).filter(n => n > 0)
-  if (cacheWrites.length < MIN_API_CALLS_FOR_CACHE) return DEFAULT_CACHE_BASELINE_TOKENS
-  const sorted = cacheWrites.sort((a, b) => a - b)
-  return sorted[Math.floor(sorted.length * CACHE_BASELINE_QUANTILE)] || DEFAULT_CACHE_BASELINE_TOKENS
+function computeCacheBaseline(apiCalls: ApiCallMeta[]): number {
+  const sorted = apiCalls
+    .map(c => c.cacheCreationTokens)
+    .filter(n => n > 0)
+    .sort((a, b) => a - b)
+  return sorted[Math.floor(sorted.length * CACHE_BASELINE_QUANTILE)] ?? 0
 }
 
 export function detectCacheBloat(
   apiCalls: ApiCallMeta[],
-  projects: ProjectSummary[],
   dateRange?: DateRange,
   now = new Date(),
 ): WasteFinding | null {
@@ -545,7 +548,8 @@ export function detectCacheBloat(
 
   const sorted = apiCalls.map(c => c.cacheCreationTokens).sort((a, b) => a - b)
   const median = sorted[Math.floor(sorted.length / 2)]
-  const baseline = computeBudgetAwareCacheBaseline(projects)
+  const baseline = computeCacheBaseline(apiCalls)
+  if (baseline <= 0) return null
   const bloatThreshold = baseline * CACHE_BLOAT_MULTIPLIER
 
   if (median < bloatThreshold) return null
@@ -563,16 +567,18 @@ export function detectCacheBloat(
 
   return {
     id: 'warmup-heavy',
-    title: 'Session warmup is unusually large',
-    explanation: `Median cache_creation per call is ${formatTokens(median)} tokens, about ${formatTokens(excess)} above your baseline of ${formatTokens(baseline)}.`,
+    affectedSessionKeys: new Set(
+      apiCalls.filter(c => c.cacheCreationTokens > bloatThreshold && c.sessionKey).map(c => c.sessionKey!),
+    ),
+    title: 'Cache writes vary substantially across calls',
+    explanation: `Median cache creation per positive-write call is ${formatTokens(median)} tokens, ${formatTokens(excess)} above the lower-quartile baseline of ${formatTokens(baseline)} tokens per positive-write call. Different tasks and models can explain this variation; this is a peer diagnostic, not measured excess.`,
     impact: excess > CACHE_EXCESS_HIGH_THRESHOLD ? 'high' : 'medium',
     tokensSaved,
     fix: {
       type: 'paste',
-      destination: 'shell-config',
-      label:
-        'Check for recent Claude Code updates or heavy MCP/skill additions. As a workaround (not officially supported), add to ~/.zshrc or ~/.bashrc:',
-      text: "export ANTHROPIC_CUSTOM_HEADERS='User-Agent: claude-cli/2.1.98 (external, sdk-cli)'",
+      destination: 'prompt',
+      label: 'Review cache-write variation:',
+      text: 'Compare high cache-write calls with lower-write calls for task size, model, context changes and tool definitions. Check the installed provider documentation before changing cache settings.',
     },
     trend,
   }
@@ -665,7 +671,7 @@ export function aggregateMcpCoverage(projects: ProjectSummary[]): McpServerCover
       unusedTools,
       invocations: acc.invocations,
       loadedSessions: acc.loadedSessions,
-      coverageRatio: acc.inventory.size === 0 ? 0 : toolsInvoked / acc.inventory.size,
+      coverageRatio: toolsInvoked / acc.inventory.size,
     })
   }
   result.sort((a, b) => b.toolsAvailable - a.toolsAvailable)
@@ -691,30 +697,31 @@ export function estimateMcpSchemaCost(
 
   for (const project of projects) {
     for (const session of project.sessions) {
-      let loaded = false
+      const loadedServers = new Set<string>()
       for (const fqn of session.mcpInventory ?? []) {
-        const seg = fqn.split('__')[1]
-        if (seg && serverSet.has(seg)) {
-          loaded = true
-          break
-        }
+        const server = fqn.split('__')[1]
+        if (server && serverSet.has(server)) loadedServers.add(server)
       }
-      if (!loaded) continue
+      const sessionSchemaTokens = [...loadedServers].reduce(
+        (sum, server) => sum + (unusedToolCountsByServer[server] ?? 0) * TOKENS_PER_MCP_TOOL,
+        0,
+      )
+      if (sessionSchemaTokens === 0) continue
 
       for (const turn of session.turns) {
         for (const call of turn.assistantCalls) {
           if (call.usage.cacheCreationInputTokens > 0) {
-            cacheWriteTokens += Math.min(totalUnusedSchemaTokens, call.usage.cacheCreationInputTokens)
+            cacheWriteTokens += Math.min(sessionSchemaTokens, call.usage.cacheCreationInputTokens)
           }
           if (call.usage.cacheReadInputTokens > 0) {
-            cacheReadTokens += Math.min(totalUnusedSchemaTokens, call.usage.cacheReadInputTokens)
+            cacheReadTokens += Math.min(sessionSchemaTokens, call.usage.cacheReadInputTokens)
           }
         }
       }
     }
   }
 
-  const effectiveInputTokens = cacheWriteTokens * CACHE_WRITE_MULTIPLIER + cacheReadTokens * CACHE_READ_DISCOUNT
+  const effectiveInputTokens = cacheWriteTokens + cacheReadTokens
   return { cacheWriteTokens, cacheReadTokens, effectiveInputTokens }
 }
 
@@ -735,7 +742,6 @@ export function detectMcpToolCoverage(
   flagged.sort((a, b) => b.toolsAvailable - b.toolsInvoked - (a.toolsAvailable - a.toolsInvoked))
 
   const lines: string[] = []
-  const removeCommands: string[] = []
   const unusedCountsByServer: Record<string, number> = {}
   const flaggedServers: string[] = []
 
@@ -746,7 +752,6 @@ export function detectMcpToolCoverage(
     lines.push(
       `${c.server}: ${c.toolsInvoked}/${c.toolsAvailable} tools used (${pct}% coverage) across ${c.loadedSessions} session${c.loadedSessions === 1 ? '' : 's'}`,
     )
-    removeCommands.push(`claude mcp remove '${c.server}'`)
   }
 
   const cost = estimateMcpSchemaCost(unusedCountsByServer, projects, flaggedServers)
@@ -760,20 +765,23 @@ export function detectMcpToolCoverage(
 
   return {
     id: 'mcp-low-coverage',
+    affectedSessionKeys: new Set(
+      projects
+        .flatMap(p => p.sessions)
+        .filter(s => flaggedServers.some(server => sessionLoadedMcpServer(s, server)))
+        .map(sessionEvidenceKey),
+    ),
     title: `${flagged.length} MCP server${flagged.length === 1 ? '' : 's'} with low tool coverage`,
     explanation:
-      `Schema for unused tools is loaded into the system prompt every session and ` +
-      `carried in the cached prefix on every turn. ` +
+      `Observed tool inventories include tools without recorded invocations. Inventory does not prove full prompt exposure. ` +
       `${lines.join('; ')}.`,
     impact,
     tokensSaved,
     fix: {
-      type: 'command',
-      label:
-        flagged.length === 1
-          ? 'Remove the underused server, or trim its tools in your MCP config:'
-          : 'Remove underused servers, or trim their tools in your MCP config:',
-      text: removeCommands.join('\n'),
+      type: 'paste',
+      destination: 'prompt',
+      label: 'Review MCP tool exposure before changing configuration:',
+      text: `Review ${flaggedServers.join(', ')} for project needs, discovery behavior and tool permissions. Consider project scoping or tool filtering only after checking which workflows depend on each server.`,
     },
   }
 }
@@ -863,7 +871,7 @@ function estimateMcpProfileColdSchemaCost(
     }
   }
 
-  const effectiveInputTokens = cacheWriteTokens * CACHE_WRITE_MULTIPLIER + cacheReadTokens * CACHE_READ_DISCOUNT
+  const effectiveInputTokens = cacheWriteTokens + cacheReadTokens
   return { cacheWriteTokens, cacheReadTokens, effectiveInputTokens }
 }
 
@@ -999,6 +1007,15 @@ export function detectMcpProfileAdvisor(
 
   return {
     id: 'mcp-project-scope',
+    affectedSessionKeys: new Set(
+      projects
+        .flatMap(p =>
+          p.sessions.filter(s =>
+            candidates.some(c => c.coldProjectKeys.has(projectProfileKey(p)) && sessionLoadedMcpServer(s, c.server)),
+          ),
+        )
+        .map(sessionEvidenceKey),
+    ),
     title: `${candidates.length} MCP server${candidates.length === 1 ? '' : 's'} should be project-scoped`,
     explanation:
       `These MCP servers look useful in a small set of projects but are loaded into other projects where they are not invoked. ` +
@@ -1017,7 +1034,7 @@ export function detectMcpProfileAdvisor(
             .slice(0, 3)
             .map(p => p.projectPath)
             .join(', ')
-          return `- Keep ${candidate.server} available for ${hot}; remove or project-scope it away from ${cold}. Re-add it only in projects that actually need it.`
+          return `- Review project scoping for ${candidate.server}. Recorded use is concentrated in ${hot}; ${cold} have inventory exposure without invocations. Check occasional and unobserved workflows before changing availability.`
         }),
       ].join('\n'),
     },
@@ -1072,20 +1089,19 @@ function turnEffectiveTokenTotal(turn: ProjectSummary['sessions'][number]['turns
         sum +
         call.usage.inputTokens +
         call.usage.outputTokens +
-        call.usage.cacheCreationInputTokens * CACHE_WRITE_MULTIPLIER +
-        call.usage.cacheReadInputTokens * CACHE_READ_DISCOUNT,
+        call.usage.cacheCreationInputTokens +
+        call.usage.cacheReadInputTokens,
       0,
     ),
   )
 }
 
 function reliabilityTurnKey(
-  project: ProjectSummary,
   session: ProjectSummary['sessions'][number],
   turn: ProjectSummary['sessions'][number]['turns'][number],
   turnIndex: number,
 ): string {
-  return `${project.projectPath || project.project}:${session.sessionId}:${turn.timestamp}:${turnIndex}`
+  return `${sessionEvidenceKey(session)}:${turn.timestamp}:${turnIndex}`
 }
 
 function getReliabilityAccumulator(
@@ -1134,9 +1150,8 @@ function findCapabilityReliabilityCandidates(projects: ProjectSummary[]): Array<
         if (capabilities.size === 0) continue
 
         const turnTokens = turnEffectiveTokenTotal(turn)
-        const turnKey = reliabilityTurnKey(project, session, turn, turnIndex)
-        const recoverableTokens =
-          turn.retries > 0 ? Math.round(turnTokens * CAPABILITY_RELIABILITY_RECOVERY_FRACTION) : 0
+        const turnKey = reliabilityTurnKey(session, turn, turnIndex)
+        const recoverableTokens = turn.retries > 0 ? turnTokens : 0
 
         for (const ref of capabilities.values()) {
           const acc = getReliabilityAccumulator(stats, ref)
@@ -1215,8 +1230,8 @@ export function detectCapabilityReliability(projects: ProjectSummary[]): WasteFi
         const hasFlaggedCapability = Array.from(capabilities.keys()).some(key => candidateKeys.has(key))
         if (!hasFlaggedCapability) continue
 
-        const key = reliabilityTurnKey(project, session, turn, turnIndex)
-        const tokens = Math.round(turnEffectiveTokenTotal(turn) * CAPABILITY_RELIABILITY_RECOVERY_FRACTION)
+        const key = reliabilityTurnKey(session, turn, turnIndex)
+        const tokens = turnEffectiveTokenTotal(turn)
         uniqueRetryTurnSavings.set(key, Math.max(uniqueRetryTurnSavings.get(key) ?? 0, tokens))
       }
     }
@@ -1258,6 +1273,20 @@ export function detectCapabilityReliability(projects: ProjectSummary[]): WasteFi
 
   return {
     id: 'retry-heavy-capabilities',
+    quantity: { value: uniqueRetryTurnSavings.size, unit: 'turns' },
+    affectedSessionKeys: new Set(
+      projects
+        .flatMap(p => p.sessions)
+        .filter(s =>
+          s.turns.some(
+            t =>
+              t.hasEdits &&
+              t.retries > 0 &&
+              [...collectReliabilityCapabilities(t).keys()].some(key => candidateKeys.has(key)),
+          ),
+        )
+        .map(sessionEvidenceKey),
+    ),
     title: `${candidates.length} ${candidates.length === 1 ? noun : pluralNoun} ${verb} with retry-heavy edits`,
     explanation: `Edit turns using these capabilities are retry-heavy: ${list}${extra}. This is a correlation report, not proof of causation; compare the retry-heavy turns with one-shot turns before changing MCP scope or skill instructions.`,
     impact,
@@ -1265,7 +1294,7 @@ export function detectCapabilityReliability(projects: ProjectSummary[]): WasteFi
     fix: {
       type: 'paste',
       destination: 'prompt',
-      label: 'Ask Claude to audit the retry-heavy capability before changing config:',
+      label: 'Ask your assistant to review the retry-heavy capability before changing config:',
       text: `Investigate these retry-correlated capabilities: ${names}. Compare edit turns with retries against one-shot edit turns, identify whether the MCP server or skill actually caused rework, then propose a scoped MCP config or skill-instruction change with session evidence. Do not remove a capability solely because it appears in this report.`,
     },
   }
@@ -1290,61 +1319,31 @@ function attributeDeferralOffCause(
   envSettings: Map<string, DeferralEnvHit | null>,
   home: string,
 ): { cause: string; fix: WasteAction } {
-  if (enableToolSearch && isEnvValueFalse(enableToolSearch.value)) {
-    return {
-      cause: `Cause: ${ENABLE_TOOL_SEARCH_VAR}=${enableToolSearch.value} is set in ${enableToolSearch.scope} (${shortHomePath(enableToolSearch.path, home)}), forcing all tool definitions upfront.`,
-      fix: {
-        type: 'paste',
-        destination: 'prompt',
-        label: 'Ask Claude to remove the stale override:',
-        text: `Remove the ${ENABLE_TOOL_SEARCH_VAR}=${enableToolSearch.value} setting from ${enableToolSearch.path}. Tool search is on by default on first-party endpoints, so deleting the override re-enables MCP tool deferral.`,
-      },
-    }
-  }
-  const baseUrl = envSettings.get(ANTHROPIC_BASE_URL_VAR) ?? null
-  if (baseUrl && !isFirstPartyBaseUrl(baseUrl.value)) {
-    return {
-      cause: `Cause: ${ANTHROPIC_BASE_URL_VAR} points at a non-first-party host in ${baseUrl.scope} (${shortHomePath(baseUrl.path, home)}). Tool deferral silently auto-disables behind proxies because most don't forward tool_reference blocks; whether this proxy can is unknown.`,
-      fix: {
-        type: 'paste',
-        destination: 'shell-config',
-        label: `Verify your proxy forwards tool_reference blocks first (an explicit override fails on proxies that don't), then force tool search back on with:`,
-        text: `export ${ENABLE_TOOL_SEARCH_VAR}=true`,
-      },
-    }
-  }
-  const vertex = envSettings.get(CLAUDE_CODE_USE_VERTEX_VAR) ?? null
-  if (vertex && !isEnvValueFalse(vertex.value)) {
-    return {
-      cause: `Cause: ${CLAUDE_CODE_USE_VERTEX_VAR} is set in ${vertex.scope} (${shortHomePath(vertex.path, home)}), and tool search is disabled by default on Vertex AI.`,
-      fix: {
-        type: 'paste',
-        destination: 'shell-config',
-        label: 'Opt in to tool search on Vertex (disabled by default there):',
-        text: `export ${ENABLE_TOOL_SEARCH_VAR}=true`,
-      },
-    }
-  }
-  // The desktop report does not persist the Claude Code version per call, so
-  // the "every observed version predates v2.1.7" cause is skipped.
+  const observations: string[] = []
   if (enableToolSearch) {
-    return {
-      cause: `Cause: none determinable ÔÇö ${ENABLE_TOOL_SEARCH_VAR}=${enableToolSearch.value} is already set in ${enableToolSearch.scope} (${shortHomePath(enableToolSearch.path, home)}), yet transcripts show no deferral activity.`,
-      fix: {
-        type: 'paste',
-        destination: 'prompt',
-        label: 'The override is already on; ask Claude to investigate why deferral is still inactive:',
-        text: `${ENABLE_TOOL_SEARCH_VAR}=${enableToolSearch.value} is set in ${enableToolSearch.path}, but sessions show no ToolSearch calls and no deferred-tool inventory. Check whether requests pass through a proxy that strips tool_reference blocks and whether the running Claude Code version supports tool search.`,
-      },
-    }
+    observations.push(
+      `${ENABLE_TOOL_SEARCH_VAR}=${enableToolSearch.value} is currently set in ${enableToolSearch.scope} (${shortHomePath(enableToolSearch.path, home)}).`,
+    )
   }
+  const baseUrl = envSettings.get(ANTHROPIC_BASE_URL_VAR)
+  if (baseUrl && !isFirstPartyBaseUrl(baseUrl.value))
+    observations.push(
+      'Current configuration uses a custom endpoint. Its tool-discovery compatibility has not been inspected.',
+    )
+  const vertex = envSettings.get(CLAUDE_CODE_USE_VERTEX_VAR)
+  if (vertex && !isEnvValueFalse(vertex.value))
+    observations.push(
+      'A Vertex setting is present in current configuration. Supported discovery behavior depends on the installed integration.',
+    )
+  if (observations.length === 0) observations.push('No tool-search override is visible in current configuration.')
+  const cause = `${observations.join(' ')} Missing transcript signals do not establish that deferral was disabled or that enabling it would help.`
   return {
-    cause: `Cause: none determinable from config ÔÇö no disabling override, proxy, or Vertex setting found.`,
+    cause,
     fix: {
       type: 'paste',
-      destination: 'shell-config',
-      label: 'Deferral is on by default on first-party endpoints; to force it explicitly, add:',
-      text: `export ${ENABLE_TOOL_SEARCH_VAR}=true`,
+      destination: 'prompt',
+      label: 'Review tool discovery support before changing settings:',
+      text: `Check the installed Claude Code version, effective project settings, endpoint compatibility and tool availability before changing ${ENABLE_TOOL_SEARCH_VAR}. ${observations.join(' ')} Confirm that discovery is supported and appropriate for this workflow. Do not force a setting or remove an override solely because no ToolSearch calls or deferred inventory were captured.`,
     },
   }
 }
@@ -1399,18 +1398,16 @@ export function detectMcpDeferralOff(
   const callRateText = callRate.toFixed(1)
 
   const evidence =
-    `~${formatTokens(perSessionSchemaTokens)} tokens of MCP tool schema ` +
-    `(${servers.size} server${servers.size === 1 ? '' : 's'} at ~${formatTokens(perServerSchemaTokens)} tokens/server) sit in the prompt prefix of ` +
-    `${affectedSessions} session${affectedSessions === 1 ? '' : 's'} at ` +
-    `${callRateText} MCP call${callRateText === '1.0' ? '' : 's'}/session, with zero ToolSearch calls ` +
-    `and no deferred-tool inventory observed ÔÇö tool deferral appears inactive. ` +
-    `Deferral would move ~all of that schema out of the prefix.`
+    `Current configuration and selected transcripts suggest reviewing ${servers.size} MCP server${servers.size === 1 ? '' : 's'}. ` +
+    `${affectedSessions} selected Claude session${affectedSessions === 1 ? '' : 's'} have no recorded ToolSearch or deferred-tool inventory, ` +
+    `with ${callRateText} MCP calls/session. A rough schema model is ${formatTokens(perSessionSchemaTokens)} tokens per session, ` +
+    `using ${formatTokens(perServerSchemaTokens)} tokens/server. Actual prompt exposure and historical configuration are unknown.`
 
   const { cause, fix } = attributeDeferralOffCause(enableToolSearch, setup.envSettings, home)
 
   return {
     id: 'mcp-deferral-off',
-    title: 'MCP tool deferral appears inactive',
+    title: 'Review MCP tool deferral configuration',
     explanation: `${evidence} ${cause}`,
     impact: tokensSaved >= DEFERRAL_OFF_HIGH_IMPACT_TOKENS ? 'high' : 'medium',
     tokensSaved,
@@ -1459,7 +1456,7 @@ export function detectMcpAlwaysLoadHygiene(
       `${entry.original}: ${invocations} call${invocations === 1 ? '' : 's'} across ${totalSessions} session${totalSessions === 1 ? '' : 's'}`,
     )
     fixLines.push(
-      `- Remove "alwaysLoad": true from ${entry.original} in ${entry.alwaysLoadPaths.map(p => shortHomePath(p, home)).join(', ')}.`,
+      `- Review the alwaysLoad pin for ${entry.original} in ${entry.alwaysLoadPaths.map(p => shortHomePath(p, home)).join(', ')}. Check tool discovery, startup needs and occasional workflows before changing it.`,
     )
   }
   if (lines.length === 0) return null
@@ -1468,15 +1465,14 @@ export function detectMcpAlwaysLoadHygiene(
     id: 'mcp-alwaysload-hygiene',
     title: `${lines.length} alwaysLoad MCP server${lines.length === 1 ? '' : 's'} rarely used`,
     explanation:
-      `These servers are pinned with alwaysLoad, so their tool schemas sit in every session's prefix ` +
-      `despite deferral being available, and session startup blocks on each server's connection ` +
-      `(up to ${ALWAYSLOAD_STARTUP_CAP_SECONDS}s). Usage doesn't justify the pin: ${lines.join('; ')}.`,
+      `These servers are currently pinned with alwaysLoad and have sparse recorded invocations in the selected Claude sessions: ${lines.join('; ')}. ` +
+      `Current pins do not establish historical prompt exposure or whether occasional workflows need them.`,
     impact: tokensSaved >= ALWAYSLOAD_HIGH_IMPACT_TOKENS ? 'high' : 'medium',
     tokensSaved,
     fix: {
       type: 'paste',
       destination: 'prompt',
-      label: 'Ask Claude to unpin the rarely-used servers (tool search still discovers their tools on demand):',
+      label: 'Review current pins before changing availability:',
       text: fixLines.join('\n'),
     },
   }
@@ -1520,21 +1516,21 @@ export function detectMcpDeferThreshold(projects: ProjectSummary[], setup: Optim
 
   return {
     id: 'mcp-defer-threshold',
-    title: 'MCP tool search auto threshold never triggers',
+    title: 'Review the current MCP tool search threshold',
     explanation:
       `${ENABLE_TOOL_SEARCH_VAR}=${setting.value} is set in ${setting.scope} (${shortHomePath(setting.path, home)}), ` +
       `deferring MCP tool definitions only when they exceed ${percent}% of the ${formatTokens(DEFER_THRESHOLD_CONTEXT_WINDOW_TOKENS)}-token context window ` +
       `(~${formatTokens(thresholdTokens)} tokens). Your estimated ~${formatTokens(defsPerSession)} tokens of definitions per session fit under that, ` +
-      `so every tool still loads upfront in all ${totalSessions} session${totalSessions === 1 ? '' : 's'}.`,
+      `so this model suggests reviewing the current threshold. Actual context-window size, serialized definitions and historical loading behavior are unknown.`,
     impact: tokensSaved >= DEFER_THRESHOLD_MEDIUM_IMPACT_TOKENS ? 'medium' : 'low',
     tokensSaved,
     fix: {
       type: 'paste',
       destination: 'prompt',
-      label: 'Ask Claude to tighten the auto threshold:',
+      label: 'Review the current auto threshold against the installed Claude version:',
       text: removeOverride
-        ? `Remove the ${ENABLE_TOOL_SEARCH_VAR}=${setting.value} override from ${setting.path}; the default auto threshold (${DEFER_THRESHOLD_DEFAULT_PERCENT}%) already defers this volume of tool definitions.`
-        : `In ${setting.path}, change ${ENABLE_TOOL_SEARCH_VAR}=${setting.value} to ${ENABLE_TOOL_SEARCH_VAR}=auto:${recommendedPercent} so ~${formatTokens(defsPerSession)} tokens of MCP tool definitions per session are deferred instead of loaded upfront.`,
+        ? `Review ${ENABLE_TOOL_SEARCH_VAR}=${setting.value} in ${setting.path}. Compare the installed version's default threshold and actual tool-definition size before deciding whether to remove this override.`
+        : `Review ${ENABLE_TOOL_SEARCH_VAR}=${setting.value} in ${setting.path}. A model based on assumed definition size suggests auto:${recommendedPercent}; verify the installed version's syntax, context window and tool discovery behavior before changing it.`,
     },
   }
 }
@@ -1557,8 +1553,8 @@ export function detectGhostAgents(subagentTypes: Iterable<string>, defined: stri
 
   return {
     id: 'unused-agents',
-    title: `${ghosts.length} custom agent${ghosts.length > 1 ? 's' : ''} you never use`,
-    explanation: `Defined in ~/.claude/agents/ but never invoked in this period: ${list}. Each adds ~${TOKENS_PER_AGENT_DEF} tokens to the Task tool schema on every session.`,
+    title: `${ghosts.length} current custom agent${ghosts.length > 1 ? 's' : ''} without observed use`,
+    explanation: `Currently defined in ~/.claude/agents/ without recorded invocations in the selected Claude sessions: ${list}. Current definitions may not have existed during those sessions; prompt exposure is unknown.`,
     impact:
       ghosts.length >= GHOST_AGENTS_HIGH_THRESHOLD
         ? 'high'
@@ -1567,12 +1563,10 @@ export function detectGhostAgents(subagentTypes: Iterable<string>, defined: stri
           : 'low',
     tokensSaved,
     fix: {
-      type: 'command',
-      label: `Archive unused agent${ghosts.length > 1 ? 's' : ''}:`,
-      text: ghosts
-        .slice(0, GHOST_CLEANUP_COMMANDS_LIMIT)
-        .map(name => `mv ~/.claude/agents/${name}.md ~/.claude/agents/.archived/`)
-        .join('\n'),
+      type: 'paste',
+      destination: 'prompt',
+      label: 'Review current agents before making changes:',
+      text: `Review these current agents without observed use: ${ghosts.join(', ')}. Check whether they were available during the selected sessions and whether occasional or unobserved workflows still need them. Suggest changes for review.`,
     },
   }
 }
@@ -1591,8 +1585,8 @@ export function detectGhostSkills(skills: Iterable<string>, defined: string[]): 
 
   return {
     id: 'unused-skills',
-    title: `${ghosts.length} skill${ghosts.length > 1 ? 's' : ''} you never use`,
-    explanation: `In ~/.claude/skills/ but not invoked this period: ${list}. Each adds ~${TOKENS_PER_SKILL_DEF} tokens of metadata to every session.`,
+    title: `${ghosts.length} current skill${ghosts.length > 1 ? 's' : ''} without observed use`,
+    explanation: `Currently defined in ~/.claude/skills/ without recorded invocations in the selected Claude sessions: ${list}. Definition history and actual prompt exposure are unknown.`,
     impact:
       ghosts.length >= GHOST_SKILLS_HIGH_THRESHOLD
         ? 'high'
@@ -1601,12 +1595,10 @@ export function detectGhostSkills(skills: Iterable<string>, defined: string[]): 
           : 'low',
     tokensSaved,
     fix: {
-      type: 'command',
-      label: `Archive unused skill${ghosts.length > 1 ? 's' : ''}:`,
-      text: ghosts
-        .slice(0, GHOST_CLEANUP_COMMANDS_LIMIT)
-        .map(name => `mv ~/.claude/skills/${name} ~/.claude/skills/.archived/`)
-        .join('\n'),
+      type: 'paste',
+      destination: 'prompt',
+      label: 'Review current skills before making changes:',
+      text: `Review these current skills without observed use: ${ghosts.join(', ')}. Check whether they were available during the selected sessions and whether occasional or unobserved workflows still need them. Suggest changes for review.`,
     },
   }
 }
@@ -1635,17 +1627,15 @@ export function detectGhostCommands(userMessages: string[], defined: string[]): 
 
   return {
     id: 'unused-commands',
-    title: `${ghosts.length} slash command${ghosts.length > 1 ? 's' : ''} you never use`,
-    explanation: `In ~/.claude/commands/ but not referenced this period: ${list}. Each adds ~${TOKENS_PER_COMMAND_DEF} tokens of definition per session.`,
+    title: `${ghosts.length} current slash command${ghosts.length > 1 ? 's' : ''} without observed use`,
+    explanation: `Currently defined in ~/.claude/commands/ without recorded references in selected Claude sessions: ${list}. Command matching uses capped user messages, so missing references do not establish non-use.`,
     impact: ghosts.length >= GHOST_COMMANDS_MEDIUM_THRESHOLD ? 'medium' : 'low',
     tokensSaved,
     fix: {
-      type: 'command',
-      label: `Archive unused command${ghosts.length > 1 ? 's' : ''}:`,
-      text: ghosts
-        .slice(0, GHOST_CLEANUP_COMMANDS_LIMIT)
-        .map(name => `mv ~/.claude/commands/${name}.md ~/.claude/commands/.archived/`)
-        .join('\n'),
+      type: 'paste',
+      destination: 'prompt',
+      label: 'Review current commands before making changes:',
+      text: `Review these current commands without observed use: ${ghosts.join(', ')}. Check whether they were available during the selected sessions and whether occasional or unobserved workflows still need them. Suggest changes for review.`,
     },
   }
 }
@@ -1661,11 +1651,7 @@ function sessionTokenTotal(session: SessionSummary): number {
 }
 
 function sessionEffectiveContextTokens(session: SessionSummary): number {
-  return (
-    session.totalInputTokens +
-    session.totalCacheReadTokens * CACHE_READ_DISCOUNT +
-    session.totalCacheWriteTokens * CACHE_WRITE_MULTIPLIER
-  )
+  return session.totalInputTokens + session.totalCacheReadTokens + session.totalCacheWriteTokens
 }
 
 function formatContextRatio(ratio: number): string {
@@ -1715,22 +1701,6 @@ function sessionRetryCount(session: SessionSummary): number {
   return session.turns.reduce((sum, turn) => sum + turn.retries, 0)
 }
 
-function sessionTotalTurns(session: SessionSummary): number {
-  if (hasCategoryBreakdownData(session)) {
-    return Object.values(session.categoryBreakdown).reduce((sum, c) => sum + c.turns, 0)
-  }
-  return session.turns.length
-}
-
-function estimateLowWorthRecoverableTokens(session: SessionSummary, editTurns: number, retries: number): number {
-  const tokens = sessionTokenTotal(session)
-  if (editTurns === 0) return Math.round(tokens * WORTH_IT_NO_EDIT_RECOVERY_FRACTION)
-  const totalTurns = sessionTotalTurns(session)
-  if (totalTurns === 0) return 0
-  const fraction = Math.min(1, Math.max(0, retries / totalTurns))
-  return Math.round(tokens * fraction)
-}
-
 export const LOW_WORTH_OPENER =
   'Before continuing, name the deliverable in one sentence (PR title, file changed, command output you expect). Stop and check with me if (a) you spend more than 10 minutes without an edit, or (b) the same approach fails twice. Do not retry past two attempts on any single fix.'
 export const CONTEXT_HEAVY_OPENER =
@@ -1741,6 +1711,7 @@ export function findLowWorthCandidates(projects: ProjectSummary[]): LowWorthCand
 
   for (const project of projects) {
     for (const session of project.sessions) {
+      if (!isHumanSession(session)) continue
       if (session.totalCostUSD < WORTH_IT_MIN_COST_USD) continue
       if (sessionDeliveryCommand(session)) continue
 
@@ -1764,9 +1735,10 @@ export function findLowWorthCandidates(projects: ProjectSummary[]): LowWorthCand
       candidates.push({
         project: project.project,
         sessionId: session.sessionId,
+        key: sessionEvidenceKey(session),
         date: session.firstTimestamp.slice(0, 10),
         cost: session.totalCostUSD,
-        tokens: estimateLowWorthRecoverableTokens(session, editTurns, retries),
+        tokens: sessionTokenTotal(session),
         reasons,
       })
     }
@@ -1805,14 +1777,14 @@ export function detectLowWorthSessions(projects: ProjectSummary[]): WasteFinding
 
   return {
     id: 'low-worth-sessions',
-    title: `${candidates.length} possibly low-worth expensive session${candidates.length === 1 ? '' : 's'}`,
+    title: `${candidates.length} expensive session${candidates.length === 1 ? '' : 's'} to review`,
     explanation: `Sessions with meaningful spend but weak delivery signals: ${list}${extra}. This is a review candidate, not proof of waste: Watchtower flags missing edit turns, repeated retries, and sessions without git delivery commands so you can decide whether the work was worth its cost before it becomes a habit.`,
     impact,
     tokensSaved,
     fix: {
       type: 'paste',
       destination: 'session-opener',
-      label: 'Paste at the start of your NEXT expensive thread (one-time, do not add to CLAUDE.md):',
+      label: 'Use once at the start of a session. Review before making a persistent instruction:',
       text: LOW_WORTH_OPENER,
     },
   }
@@ -1822,17 +1794,20 @@ export function findContextBloatCandidates(projects: ProjectSummary[]): ContextB
   const candidates: ContextBloatCandidate[] = []
 
   for (const project of projects) {
-    const sessions = [...project.sessions].sort(
-      (a, b) => new Date(a.firstTimestamp).getTime() - new Date(b.firstTimestamp).getTime(),
-    )
-    let previousInputTokens: number | null = null
-    let previousTimestampMs: number | null = null
+    const sessions = project.sessions
+      .filter(isHumanSession)
+      .sort((a, b) => new Date(a.firstTimestamp).getTime() - new Date(b.firstTimestamp).getTime())
+    const previousByProvider = new Map<string, { inputTokens: number; timestampMs: number }>()
 
     for (const session of sessions) {
       const inputTokens = sessionEffectiveContextTokens(session)
       const outputTokens = session.totalOutputTokens
       const ratio = inputTokens / Math.max(outputTokens, 1)
       const currentMs = new Date(session.firstTimestamp).getTime()
+      const provider = session.turns[0]?.assistantCalls[0]?.provider ?? 'unknown'
+      const previous = previousByProvider.get(provider)
+      const previousInputTokens = previous?.inputTokens ?? null
+      const previousTimestampMs = previous?.timestampMs ?? null
       const gapMs = previousTimestampMs !== null ? currentMs - previousTimestampMs : null
       const growthRatio =
         previousInputTokens !== null &&
@@ -1842,8 +1817,7 @@ export function findContextBloatCandidates(projects: ProjectSummary[]): ContextB
           ? inputTokens / previousInputTokens
           : null
 
-      previousInputTokens = inputTokens
-      previousTimestampMs = currentMs
+      previousByProvider.set(provider, { inputTokens, timestampMs: currentMs })
 
       if (inputTokens < CONTEXT_BLOAT_MIN_INPUT_TOKENS) continue
       if (ratio < CONTEXT_BLOAT_MIN_RATIO) continue
@@ -1852,6 +1826,7 @@ export function findContextBloatCandidates(projects: ProjectSummary[]): ContextB
         project: project.project,
         sessionId: session.sessionId,
         date: session.firstTimestamp.slice(0, 10),
+        key: sessionEvidenceKey(session),
         effectiveInputTokens: inputTokens,
         outputTokens,
         ratio,
@@ -1875,7 +1850,9 @@ export function detectContextBloat(
   projects: ProjectSummary[],
   excludedSessionIds?: ReadonlySet<string>,
 ): WasteFinding | null {
-  const candidates = findContextBloatCandidates(projects).filter(c => !excludedSessionIds?.has(c.sessionId))
+  const candidates = findContextBloatCandidates(projects).filter(
+    c => !excludedSessionIds?.has(c.key ?? c.sessionId) && !excludedSessionIds?.has(c.sessionId),
+  )
   if (candidates.length === 0) return null
 
   const preview = candidates.slice(0, CONTEXT_BLOAT_PREVIEW)
@@ -1885,7 +1862,7 @@ export function detectContextBloat(
         c.growthRatio !== null && c.growthRatio >= CONTEXT_BLOAT_GROWTH_RATIO
           ? `, ${c.growthRatio.toFixed(1)}x previous session input`
           : ''
-      return `${c.project}/${c.sessionId} on ${c.date}: ${formatTokens(c.effectiveInputTokens)} effective input/cache vs ${formatTokens(c.outputTokens)} output (${formatContextRatio(c.ratio)}:1${growth})`
+      return `${c.project}/${c.sessionId} on ${c.date}: ${formatTokens(c.effectiveInputTokens)} input/cache vs ${formatTokens(c.outputTokens)} output (${formatContextRatio(c.ratio)}:1${growth})`
     })
     .join('; ')
   const extra = candidates.length > preview.length ? `; +${candidates.length - preview.length} more` : ''
@@ -1907,13 +1884,13 @@ export function detectContextBloat(
   return {
     id: 'context-heavy-sessions',
     title: `${candidates.length} context-heavy session${candidates.length === 1 ? '' : 's'}`,
-    explanation: `Effective input/cache tokens swamp output in these sessions: ${list}${extra}. This can come from stale context carryover, inherently context-heavy work, or abandoned runs that loaded too much context; starting fresh with only the current goal and relevant files can cut repeated prompt overhead.`,
+    explanation: `Recorded input/cache token volume exceeds output in these sessions: ${list}${extra}. This can come from stale context carryover, inherently context-heavy work, or unfinished runs that loaded substantial context; starting fresh with only the current goal and relevant files can cut repeated prompt overhead.`,
     impact,
     tokensSaved,
     fix: {
       type: 'paste',
       destination: 'session-opener',
-      label: 'Paste at the start of your NEXT expensive thread (one-time, do not add to CLAUDE.md):',
+      label: 'Use once at the start of a session. Review before making a persistent instruction:',
       text: CONTEXT_HEAVY_OPENER,
     },
   }
@@ -1926,6 +1903,7 @@ export function detectSessionOutliers(
   type Outlier = {
     project: string
     sessionId: string
+    key: string
     date: string
     cost: number
     avgCost: number
@@ -1936,30 +1914,41 @@ export function detectSessionOutliers(
   const outliers: Outlier[] = []
 
   for (const project of projects) {
-    const sessions = project.sessions.filter(s => s.totalCostUSD > 0)
+    const sessions = project.sessions.filter(s => s.totalCostUSD > 0 && isHumanSession(s))
     if (sessions.length < MIN_SESSIONS_FOR_OUTLIER) continue
 
-    const totalCost = sessions.reduce((sum, s) => sum + s.totalCostUSD, 0)
-    const totalTokens = sessions.reduce((sum, s) => sum + sessionTokenTotal(s), 0)
+    const cohorts = new Map<string, { sessions: SessionSummary[]; cost: number; tokens: number }>()
     for (const session of sessions) {
-      const avgCost = (totalCost - session.totalCostUSD) / (sessions.length - 1)
-      const avgTokens = (totalTokens - sessionTokenTotal(session)) / (sessions.length - 1)
-      if (avgCost <= 0) continue
-
-      const ratio = session.totalCostUSD / avgCost
-      if (ratio <= SESSION_OUTLIER_MULTIPLIER) continue
-      if (session.totalCostUSD < MIN_SESSION_OUTLIER_COST_USD) continue
-      if (excludedSessionIds?.has(session.sessionId)) continue
-
-      outliers.push({
-        project: project.project,
-        sessionId: session.sessionId,
-        date: session.firstTimestamp.slice(0, 10),
-        cost: session.totalCostUSD,
-        avgCost,
-        ratio,
-        tokenExcess: Math.max(0, sessionTokenTotal(session) - avgTokens),
-      })
+      const providers = new Set(session.turns.flatMap(turn => turn.assistantCalls.map(call => call.provider)))
+      if (providers.size !== 1) continue
+      const key = JSON.stringify([[...providers][0], (session.totalEstimatedCostUSD ?? 0) > 0])
+      const cohort = cohorts.get(key) ?? { sessions: [], cost: 0, tokens: 0 }
+      cohort.sessions.push(session)
+      cohort.cost += session.totalCostUSD
+      cohort.tokens += sessionTokenTotal(session)
+      cohorts.set(key, cohort)
+    }
+    for (const cohort of cohorts.values()) {
+      if (cohort.sessions.length < MIN_SESSIONS_FOR_OUTLIER) continue
+      for (const session of cohort.sessions) {
+        const peerCount = cohort.sessions.length - 1
+        const avgCost = (cohort.cost - session.totalCostUSD) / peerCount
+        const avgTokens = (cohort.tokens - sessionTokenTotal(session)) / peerCount
+        if (avgCost <= 0) continue
+        const ratio = session.totalCostUSD / avgCost
+        if (ratio <= SESSION_OUTLIER_MULTIPLIER || session.totalCostUSD < MIN_SESSION_OUTLIER_COST_USD) continue
+        if (excludedSessionIds?.has(sessionEvidenceKey(session)) || excludedSessionIds?.has(session.sessionId)) continue
+        outliers.push({
+          project: project.project,
+          sessionId: session.sessionId,
+          key: sessionEvidenceKey(session),
+          date: session.firstTimestamp.slice(0, 10),
+          cost: session.totalCostUSD,
+          avgCost,
+          ratio,
+          tokenExcess: Math.max(0, sessionTokenTotal(session) - avgTokens),
+        })
+      }
     }
   }
 
@@ -1976,14 +1965,16 @@ export function detectSessionOutliers(
 
   return {
     id: 'cost-outliers',
+    quantity: { value: outliers.length, unit: 'sessions' },
+    affectedSessionKeys: new Set(outliers.map(o => o.key)),
     title: `${outliers.length} high-cost session outlier${outliers.length === 1 ? '' : 's'}`,
-    explanation: `Sessions costing more than ${SESSION_OUTLIER_MULTIPLIER}x their peer-session average in the same project: ${list}${extra}. These usually come from broad prompts, runaway loops, or context-heavy work that should be split into smaller sessions.`,
+    explanation: `Sessions costing more than ${SESSION_OUTLIER_MULTIPLIER}x their same-provider and same cost-provenance peer-session average in the same project: ${list}${extra}. Task complexity, duration, model and pricing can explain differences. Peers are not matched by task, so review the evidence before changing behavior.`,
     impact: outliers.length >= 3 || totalExcessCost >= 10 ? 'high' : 'medium',
     tokensSaved,
     fix: {
       type: 'paste',
       destination: 'session-opener',
-      label: 'Paste at the start of your NEXT expensive thread (one-time, do not add to CLAUDE.md):',
+      label: 'Use once at the start of a session. Review before making a persistent instruction:',
       text: 'Before making changes, summarize the smallest viable plan. Keep context narrow, avoid broad searches, and stop after the first working patch so I can review before continuing.',
     },
   }
@@ -2006,7 +1997,7 @@ function findYoungProjectFirstSessionIds(projects: ProjectSummary[]): Set<string
       }
     }
 
-    if (firstSession) firstSessionIds.add(firstSession.sessionId)
+    if (firstSession) firstSessionIds.add(sessionEvidenceKey(firstSession))
   }
 
   return firstSessionIds
@@ -2027,17 +2018,15 @@ export function computeHealth(findings: WasteFinding[]): { score: number; grade:
   let penalty = 0
   for (const f of findings) penalty += HEALTH_WEIGHTS[f.impact] ?? 0
   const score = Math.max(0, 100 - Math.min(HEALTH_MAX_PENALTY, penalty))
-  const grade: HealthGrade =
-    score >= GRADE_A_MIN
-      ? 'A'
-      : score >= GRADE_B_MIN
-        ? 'B'
-        : score >= GRADE_C_MIN
-          ? 'C'
-          : score >= GRADE_D_MIN
-            ? 'D'
-            : 'F'
-  return { score, grade }
+  return { score, grade: gradeForScore(score) }
+}
+
+function gradeForScore(score: number): HealthGrade {
+  if (score >= GRADE_A_MIN) return 'A'
+  if (score >= GRADE_B_MIN) return 'B'
+  if (score >= GRADE_C_MIN) return 'C'
+  if (score >= GRADE_D_MIN) return 'D'
+  return 'F'
 }
 
 function urgencyScore(f: WasteFinding): number {
@@ -2053,11 +2042,11 @@ type TrendInputs = {
   hasRecentActivity: boolean
 }
 
-export function computeTrend(inputs: TrendInputs): Trend | 'resolved' {
+export function computeTrend(inputs: TrendInputs): Trend | 'resolved' | null {
   const { recentCount, recentWindowMs, baselineCount, baselineWindowMs, hasRecentActivity } = inputs
-  if (baselineCount === 0) return 'active'
+  if (baselineCount === 0 || baselineWindowMs <= 0 || recentWindowMs <= 0) return null
   if (recentCount === 0 && hasRecentActivity) return 'resolved'
-  if (!hasRecentActivity) return 'active'
+  if (!hasRecentActivity) return null
   const baselineRate = baselineCount / baselineWindowMs
   const recentRate = recentCount / Math.max(recentWindowMs, 1)
   if (recentRate < baselineRate * IMPROVING_THRESHOLD) return 'improving'
@@ -2070,7 +2059,7 @@ function sessionTrend(
   dateRange: DateRange | undefined,
   hasRecentActivity: boolean,
   now = new Date(),
-): Trend | 'resolved' {
+): Trend | 'resolved' | null {
   const nowMs = now.getTime()
   const baselineCount = totalItemCount - recentItemCount
   const periodStart = dateRange ? dateRange.start.getTime() : nowMs - DEFAULT_TREND_PERIOD_MS
@@ -2086,35 +2075,106 @@ function sessionTrend(
 }
 
 // ============================================================================
-// Cost estimation
-// ============================================================================
-
-const INPUT_COST_RATIO = 0.7
-const DEFAULT_COST_PER_TOKEN = 0
-
-export function computeInputCostRate(projects: ProjectSummary[]): number {
-  const sessions = projects.flatMap(p => p.sessions)
-  const totalCost = sessions.reduce((s, sess) => s + sess.totalCostUSD, 0)
-  const totalTokens = sessions.reduce(
-    (s, sess) => s + sess.totalInputTokens + sess.totalCacheReadTokens + sess.totalCacheWriteTokens,
-    0,
-  )
-  if (totalTokens === 0 || totalCost === 0) return DEFAULT_COST_PER_TOKEN
-  return (totalCost * INPUT_COST_RATIO) / totalTokens
-}
-
-// ============================================================================
 // Scope + main entry point
 // ============================================================================
 
 export type { DateRange }
 export { scopeDateRange }
 
-/** Run the 16 ported detectors over the scoped projects and produce the
- * section's read-only payload. Order-sensitive exclusions:
- * low-worth → context-bloat → outliers, each later detector excluding sessions
- * already named by an earlier one. The ledger-backed path scopes at the SQL
- * read and groups through the canonical aggregation calculation. */
+function selectSessions(projects: ProjectSummary[], include: (session: SessionSummary) => boolean): ProjectSummary[] {
+  return projects.map(p => ({ ...p, sessions: p.sessions.filter(include) })).filter(p => p.sessions.length > 0)
+}
+
+function sessionEvidenceKey(session: SessionSummary): string {
+  return `${session.sourceId ?? session.projectKey ?? session.project}:${session.sessionId}`
+}
+
+function isHumanSession(session: SessionSummary): boolean {
+  return !session.isSidechain && !session.parentSessionId
+}
+
+/** A nonzero cache counter establishes that the transcript captures caching.
+ * All-zero counters cannot distinguish missing instrumentation from no caching. */
+export function detectLowCacheReuse(projects: ProjectSummary[]): WasteFinding | null {
+  const affected: SessionSummary[] = []
+  let calls = 0
+  for (const session of projects.flatMap(p => p.sessions)) {
+    if (session.apiCalls < MIN_API_CALLS_FOR_CACHE) continue
+    const cacheTokens = session.totalCacheReadTokens + session.totalCacheWriteTokens
+    const inputTokens = session.totalInputTokens + cacheTokens
+    if (cacheTokens <= 0 || inputTokens <= 0) continue
+    if (session.totalCacheReadTokens / inputTokens >= 0.1) continue
+    affected.push(session)
+    calls += session.apiCalls
+  }
+  if (affected.length === 0) return null
+  return {
+    id: 'low-cache-reuse',
+    title: 'Low observed cache reuse',
+    explanation: `${affected.length} sessions with at least ${MIN_API_CALLS_FOR_CACHE} calls and recorded cache activity reused less than 10% of input/cache tokens. Prompt changes, short contexts, provider cache policy and task requirements can explain this. All-zero counters are excluded because capture may be unavailable.`,
+    impact: 'low',
+    tokensSaved: 0,
+    quantity: { value: calls, unit: 'calls' },
+    affectedSessionKeys: new Set(affected.map(sessionEvidenceKey)),
+    fix: {
+      type: 'paste',
+      destination: 'prompt',
+      label: 'Investigate cache behavior:',
+      text: 'Review prompt-prefix stability, model changes and tool-definition changes. Check the installed provider documentation for cache eligibility and retention before changing settings.',
+    },
+  }
+}
+
+function detectRecordedFailures(projects: ProjectSummary[], interruption: boolean): WasteFinding | null {
+  const affected: SessionSummary[] = []
+  let calls = 0
+  for (const session of projects.flatMap(p => p.sessions)) {
+    const matchingCalls = session.turns
+      .flatMap(t => t.assistantCalls)
+      .filter(c => (interruption ? c.interrupted : (c.toolErrors ?? 0) > 0 || (c.editFailed ?? 0) > 0)).length
+    if (matchingCalls === 0) continue
+    calls += matchingCalls
+    affected.push(session)
+  }
+  if (calls === 0) return null
+  return {
+    id: interruption ? 'interrupted-calls' : 'tool-failures',
+    title: interruption ? 'Calls with recorded interruptions' : 'Calls with recorded tool failures',
+    explanation: `${calls} calls in ${affected.length} sessions contain ${interruption ? 'an explicit interruption flag' : 'tool-error or failed-edit metadata'}. This is observed execution evidence. Interruptions may be deliberate, and errors may be expected probes. Associated session spend includes successful work and is not recoverable waste.`,
+    impact: 'low',
+    tokensSaved: 0,
+    quantity: { value: calls, unit: 'calls' },
+    affectedSessionKeys: new Set(affected.map(sessionEvidenceKey)),
+    fix: {
+      type: 'paste',
+      destination: 'prompt',
+      label: 'Review the affected session before changing the workflow:',
+      text: 'Review recorded failures and interruptions. Separate expected probes and deliberate stops from repeated avoidable failures, then address the specific failing tool or edit.',
+    },
+  }
+}
+
+const SETUP_FINDING_IDS = new Set<OptimizeFinding['id']>([
+  'mcp-low-coverage',
+  'mcp-project-scope',
+  'mcp-deferral-off',
+  'mcp-alwaysload-hygiene',
+  'mcp-defer-threshold',
+  'unused-agents',
+  'unused-skills',
+  'unused-commands',
+])
+const CURRENT_CONFIG_FINDING_IDS = new Set<OptimizeFinding['id']>([
+  'mcp-deferral-off',
+  'mcp-alwaysload-hygiene',
+  'mcp-defer-threshold',
+  'unused-agents',
+  'unused-skills',
+  'unused-commands',
+])
+
+/** All financial totals are observed scoped costs. Potential savings remain
+ * unknown until a supported counterfactual and disjoint allocation exist. */
 export function calculateOptimizePayload(
   projects: ProjectSummary[],
   scope: OverviewScope,
@@ -2123,101 +2183,190 @@ export function calculateOptimizePayload(
 ): OptimizePayload {
   const dateRange = scopeDateRange(scope, now)
   const recentCutoffMs = now.getTime() - RECENT_WINDOW_MS
-
   const sessions = projects.flatMap(p => p.sessions)
-  const periodCostUSD = projects.reduce((s, p) => s + p.totalCostUSD, 0)
-  const calls = projects.reduce((s, p) => s + p.totalApiCalls, 0)
-
-  const empty: OptimizePayload = {
-    period: { start: dateRange?.start.toISOString() ?? null, end: dateRange?.end.toISOString() ?? null },
-    summary: {
-      healthScore: 100,
-      healthGrade: 'A',
-      findingCount: 0,
-      periodCostUSD,
-      sessions: sessions.length,
-      calls,
-      potentialSavingsTokens: 0,
-      potentialSavingsCostUSD: 0,
-      potentialSavingsPercent: null,
-      costRateUSD: 0,
-    },
-    findings: [],
-  }
-  if (projects.length === 0) return empty
-
-  const costRate = computeInputCostRate(projects)
-  const scan = collectScanData(projects, recentCutoffMs)
-  const mcpCoverage = aggregateMcpCoverage(projects)
-
-  const findings: WasteFinding[] = []
-  const lowWorthSessionIds = new Set(findLowWorthCandidates(projects).map(c => c.sessionId))
-  const contextBloatVisibleIds = new Set(
-    findContextBloatCandidates(projects)
-      .filter(c => !lowWorthSessionIds.has(c.sessionId))
-      .map(c => c.sessionId),
+  const behaviorProjects = selectSessions(projects, isHumanSession)
+  const behaviorSessions = behaviorProjects.flatMap(p => p.sessions)
+  const claudeProjects = selectSessions(
+    projects,
+    s => isClaudeSession(s) && (!scope.provider || scope.provider === 'claude'),
   )
-  const firstSessionIds = findYoungProjectFirstSessionIds(projects)
-  const outlierExclusions = new Set([...lowWorthSessionIds, ...contextBloatVisibleIds, ...firstSessionIds])
+  const claudeSessions = claudeProjects.flatMap(p => p.sessions)
+  const scan = collectScanData(behaviorProjects, recentCutoffMs)
+  const claudeScan = collectScanData(claudeProjects, recentCutoffMs)
+  const coverage = aggregateMcpCoverage(claudeProjects)
+  const setupObservedSessions = claudeSessions.filter(s => (s.mcpInventory?.length ?? 0) > 0)
+  const findings: WasteFinding[] = []
+  const evidenceById = new Map<OptimizeFinding['id'], SessionSummary[]>()
 
-  const syncDetectors: Array<() => WasteFinding | null> = [
-    () => detectCacheBloat(scan.cacheEvents, projects, dateRange ?? undefined, now),
-    () => detectLowReadEditRatio(scan.steps),
-    () => detectJunkReads(scan.steps, dateRange ?? undefined, now),
-    () => detectDuplicateReads(scan.steps, dateRange ?? undefined, now),
-    () => detectMcpToolCoverage(projects, mcpCoverage),
-    () => detectMcpProfileAdvisor(projects, mcpCoverage),
-    () => detectMcpDeferralOff(scan.steps, projects, setup),
-    () => detectMcpAlwaysLoadHygiene(projects, setup, mcpCoverage),
-    () => detectMcpDeferThreshold(projects, setup),
-    () => detectCapabilityReliability(projects),
-    () => detectLowWorthSessions(projects),
-    () => detectContextBloat(projects, lowWorthSessionIds),
-    () => detectSessionOutliers(projects, outlierExclusions),
-  ]
-  for (const detect of syncDetectors) {
-    const finding = detect()
-    if (finding) findings.push(finding)
+  function add(finding: WasteFinding | null, evidence: SessionSummary[] = []): void {
+    if (!finding) return
+    findings.push(finding)
+    evidenceById.set(finding.id, evidence)
   }
 
-  const ghostResults = [
-    detectGhostAgents(scan.subagentTypes, setup.agents),
-    detectGhostSkills(scan.skills, setup.skills),
-    detectGhostCommands(scan.userMessages, setup.commands),
-  ]
-  for (const f of ghostResults) if (f) findings.push(f)
+  add(detectLowReadEditRatio(scan.steps))
+  add(detectJunkReads(scan.steps, dateRange ?? undefined, now))
+  add(detectDuplicateReads(scan.steps, dateRange ?? undefined, now))
+  add(detectCacheBloat(scan.cacheEvents, dateRange ?? undefined, now))
+  add(detectCapabilityReliability(behaviorProjects))
+  const lowWorth = findLowWorthCandidates(behaviorProjects)
+  const lowWorthByKey = new Map(lowWorth.map(candidate => [candidate.key ?? candidate.sessionId, candidate]))
+  const lowWorthIds = new Set(lowWorthByKey.keys())
+  const contextCandidates = findContextBloatCandidates(behaviorProjects).filter(
+    c => !lowWorthIds.has(c.key ?? c.sessionId),
+  )
+  const contextIds = new Set(contextCandidates.map(c => c.key ?? c.sessionId))
+  const exclusions = new Set([...lowWorthIds, ...contextIds, ...findYoungProjectFirstSessionIds(behaviorProjects)])
+  add(
+    detectLowWorthSessions(behaviorProjects),
+    behaviorSessions.filter(s => lowWorthIds.has(sessionEvidenceKey(s))),
+  )
+  add(
+    detectContextBloat(behaviorProjects, lowWorthIds),
+    behaviorSessions.filter(s => contextIds.has(sessionEvidenceKey(s))),
+  )
+  add(detectSessionOutliers(behaviorProjects, exclusions))
+  add(detectLowCacheReuse(projects))
+  add(detectRecordedFailures(projects, false))
+  add(detectRecordedFailures(projects, true))
+
+  if (claudeSessions.length > 0) {
+    add(detectMcpToolCoverage(claudeProjects, coverage))
+    add(detectMcpProfileAdvisor(claudeProjects, coverage))
+    add(detectMcpDeferralOff(claudeScan.steps, claudeProjects, setup))
+    add(detectMcpAlwaysLoadHygiene(claudeProjects, setup, coverage))
+    add(detectMcpDeferThreshold(claudeProjects, setup))
+    add(detectGhostAgents(claudeScan.subagentTypes, setup.agents))
+    add(detectGhostSkills(claudeScan.skills, setup.skills))
+    add(detectGhostCommands(claudeScan.userMessages, setup.commands))
+  }
 
   findings.sort((a, b) => urgencyScore(b) - urgencyScore(a))
-  const { score, grade } = computeHealth(findings)
-
-  const potentialSavingsTokens = findings.reduce((s, f) => s + f.tokensSaved, 0)
-  const potentialSavingsCostUSD = potentialSavingsTokens * costRate
-  const potentialSavingsPercent =
-    periodCostUSD > 0 ? Math.round((potentialSavingsCostUSD / periodCostUSD) * 1000) / 10 : null
+  // Inventories establish setup observability. Current filesystem configuration
+  // alone cannot establish the historical setup of selected sessions.
+  const health =
+    setupObservedSessions.length >= MCP_COVERAGE_MIN_SESSIONS &&
+    setupObservedSessions.length >= claudeSessions.length / 2
+      ? computeHealth(findings.filter(f => SETUP_FINDING_IDS.has(f.id) && !CURRENT_CONFIG_FINDING_IDS.has(f.id)))
+      : null
 
   return {
     period: { start: dateRange?.start.toISOString() ?? null, end: dateRange?.end.toISOString() ?? null },
     summary: {
-      healthScore: score,
-      healthGrade: grade,
+      healthScore: health?.score ?? null,
+      healthGrade: health?.grade ?? null,
       findingCount: findings.length,
-      periodCostUSD,
+      periodCostUSD: projects.reduce((sum, p) => sum + p.totalCostUSD, 0),
       sessions: sessions.length,
-      calls,
-      potentialSavingsTokens,
-      potentialSavingsCostUSD,
-      potentialSavingsPercent,
-      costRateUSD: costRate,
+      calls: projects.reduce((sum, p) => sum + p.totalApiCalls, 0),
+      potentialSavingsTokens: null,
+      potentialSavingsCostUSD: null,
+      potentialSavingsPercent: null,
+      setupCoverage: { eligibleSessions: claudeSessions.length, observedSessions: setupObservedSessions.length },
+      behaviorSessions: behaviorSessions.length,
+      excludedSidechainSessions: sessions.length - behaviorSessions.length,
     },
-    findings: findings.map(f => ({
-      id: f.id,
-      title: f.title,
-      explanation: f.explanation,
-      severity: f.impact,
-      trend: f.trend ?? null,
-      tokensSaved: f.tokensSaved,
-      estimatedSavingsUSD: f.tokensSaved * costRate,
-      fix: f.fix,
-    })),
+    findings: findings.map((f): OptimizeFinding => {
+      const affectedKeys = f.affectedSessionKeys
+      const affected = affectedKeys
+        ? sessions.filter(s => affectedKeys.has(sessionEvidenceKey(s)))
+        : (evidenceById.get(f.id) ?? [])
+      const currentConfig = CURRENT_CONFIG_FINDING_IDS.has(f.id)
+      const modeled =
+        !f.quantity &&
+        ![
+          'low-worth-sessions',
+          'context-heavy-sessions',
+          'unused-agents',
+          'unused-skills',
+          'unused-commands',
+          'build-folder-reads',
+          'redundant-rereads',
+        ].includes(f.id)
+      let quantity = f.quantity ?? { value: f.tokensSaved, unit: 'tokens' as const }
+      if (f.id === 'build-folder-reads' || f.id === 'redundant-rereads')
+        quantity = { value: f.tokensSaved / AVG_TOKENS_PER_READ, unit: 'reads' }
+      if (f.id === 'low-worth-sessions' || f.id === 'context-heavy-sessions')
+        quantity = { value: affected.length, unit: 'sessions' }
+      if (f.id.startsWith('unused-')) {
+        const divisor = f.id === 'unused-commands' ? TOKENS_PER_COMMAND_DEF : TOKENS_PER_AGENT_DEF
+        quantity = { value: f.tokensSaved / divisor, unit: 'definitions' }
+      }
+      const assumptions = [
+        'Associated spend is the full scoped cost of sessions with supporting evidence, not an estimate of avoidable cost.',
+        'Findings can overlap. Their quantities and associated spend must not be added together.',
+      ]
+      if (currentConfig)
+        assumptions.push('Configuration is inspected now. Definition history and past prompt exposure are unavailable.')
+      if (modeled) assumptions.push('Token quantity is a diagnostic model, not measured savings.')
+      if (modeled && f.id.startsWith('mcp-'))
+        assumptions.push(
+          'MCP schema estimates assume 400 tokens per tool and, without inventory, 5 tools per server. Actual definitions and historical configuration are not captured.',
+        )
+      if (f.id === 'warmup-heavy')
+        assumptions.push(
+          'The baseline is the lower quartile of positive cache-write calls in this Scope. This does not compare matched tasks or models.',
+        )
+      if (f.id === 'read-edit-ratio')
+        assumptions.push(
+          'The 4:1 review threshold is a heuristic. Writes of new files are excluded and no savings are inferred.',
+        )
+      if (f.id === 'low-worth-sessions')
+        assumptions.push(
+          'Research and planning can be valuable without edits or captured Git commands. Missing commands do not prove missing delivery.',
+        )
+      if (f.id === 'context-heavy-sessions')
+        assumptions.push(
+          'Input/cache volume is observed without price weighting. The input-to-output threshold is a heuristic and task complexity is unknown.',
+        )
+      if (f.id === 'tool-failures' || f.id === 'interrupted-calls')
+        assumptions.push(
+          'Only explicit recorded flags are counted. Missing tool-result capture is unknown; absence of a finding does not establish error-free execution.',
+        )
+      if (f.id === 'low-cache-reuse')
+        assumptions.push(
+          'All-zero cache counters are unknown and excluded. Nonzero counters establish cache capture; the 10% threshold is diagnostic.',
+        )
+      const findingClass = SETUP_FINDING_IDS.has(f.id)
+        ? 'setup'
+        : [
+              'cost-outliers',
+              'low-worth-sessions',
+              'context-heavy-sessions',
+              'low-cache-reuse',
+              'tool-failures',
+              'interrupted-calls',
+              'warmup-heavy',
+            ].includes(f.id)
+          ? 'information'
+          : 'habit'
+      return {
+        id: f.id,
+        title: f.title,
+        explanation: f.explanation,
+        severity: f.impact,
+        trend: f.trend ?? null,
+        findingClass,
+        basis: modeled ? 'modeled' : 'observed',
+        quantity,
+        assumptions,
+        affectedSessions: affected.map(s => ({
+          key: sessionEvidenceKey(s),
+          sourceId: s.sourceId ?? null,
+          sessionId: s.sessionId,
+          project: s.project,
+          costUSD: s.totalCostUSD,
+          reasons: [
+            f.id === 'low-worth-sessions'
+              ? (lowWorthByKey.get(sessionEvidenceKey(s))?.reasons.join(', ') ?? f.title)
+              : f.title,
+          ],
+        })),
+        associatedSpendUSD: affected.length > 0 ? affected.reduce((sum, s) => sum + s.totalCostUSD, 0) : null,
+        tokensSaved: null,
+        estimatedSavingsUSD: null,
+        fix: f.fix,
+      }
+    }),
   }
 }

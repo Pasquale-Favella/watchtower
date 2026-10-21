@@ -84,6 +84,21 @@ The append-only local record of app lifecycle and errors, containing no
 prompts and no ledger facts.
 _Avoid_: telemetry, diagnostics bundle, console log
 
+**Associated spend**:
+The spending within Scope for sessions supporting a finding or delivery outcome.
+It does not establish how much of that spending was avoidable.
+_Avoid_: wasted money, lost spend, savings
+
+**Delivery outcome**:
+The available evidence linking a session's work to changes on the inspected
+main reference, including unknown or unmatched evidence.
+_Avoid_: productivity verdict, abandonment
+
+**Modeled opportunity**:
+A pattern whose possible improvement depends on stated assumptions rather than
+a measured reduction in spending.
+_Avoid_: realized savings, guaranteed savings
+
 ## Rules
 
 - The README's platform claim (Windows | macOS | Linux) is the product

@@ -1,4 +1,4 @@
-import type { Impact, HealthGrade } from '../../../../shared/schemas/optimize.js'
+import type { HealthGrade, Impact } from '../../../../shared/schemas/optimize.js'
 
 /** Accent-tinted dot color for each severity (ADR 0008). */
 export function impactDot(impact: Impact): string {
@@ -25,6 +25,20 @@ export function healthClass(grade: HealthGrade): string {
       return 'text-warning'
     case 'F':
       return 'text-destructive'
+  }
+}
+
+/** Health grade → background color token for score bars. */
+export function healthBar(grade: HealthGrade): string {
+  switch (grade) {
+    case 'A':
+    case 'B':
+      return 'bg-success'
+    case 'C':
+    case 'D':
+      return 'bg-warning'
+    case 'F':
+      return 'bg-destructive'
   }
 }
 

@@ -327,7 +327,9 @@ function registerIpc(db: DbWorkerClient): void {
     return true
   })
 
-  handleLogged('store:session', (_event, sessionId: string) => db.request('store:session', sessionId))
+  handleLogged('store:session', (_event, sessionId: string, sourceId?: number) =>
+    sourceId === undefined ? db.request('store:session', sessionId) : db.request('store:session', sessionId, sourceId),
+  )
 
   handleLogged('store:analytics', () => db.request('store:analytics'))
 

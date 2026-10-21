@@ -39,11 +39,20 @@ export interface HarnessInfo {
   authStatus?: HarnessAuthStatus
 }
 
+/** Windows worker environments retain key casing and have case-sensitive property access. */
+export function executablePathEnv(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== 'win32') return environment.PATH ?? ''
+  return environment.PATH ?? Object.entries(environment).find(([key]) => key.toLowerCase() === 'path')?.[1] ?? ''
+}
+
 /** Cross-platform PATH lookup: probe every dir with the platform's executable
  *  extensions ('' / .exe / .cmd / .bat on Windows). */
 export function which(
   cmd: string,
-  pathEnv: string = process.env.PATH ?? '',
+  pathEnv: string = executablePathEnv(),
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   const dirs = pathEnv.split(pathDelimiter).filter(Boolean)

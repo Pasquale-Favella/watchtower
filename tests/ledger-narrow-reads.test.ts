@@ -11,11 +11,10 @@
  *     returns 29 of `getCalls`'s 38 columns, and the nine it drops are absent
  *     from the row — asserted by key set, and made non-vacuous by asserting the
  *     WIDE read still carries all nine with the values port-in wrote.
- *  2. **Nothing reads a dropped column.** Not "we believe so": the consumer
- *     files are scanned on disk and the assertion is that the dropped field
- *     names appear nowhere in them. A sibling test flips the same scanner
- *     against a probe that DOES contain two of them, so a scan that found
- *     nothing for the wrong reason cannot pass.
+ *  2. **Dropped fields have explicit consumers.** The consumer inventory is
+ *     scanned on disk. Optimize can consume its optional focused diagnostics;
+ *     the default snapshot still excludes those fields. A sibling test checks
+ *     the scanner against a probe containing dropped fields.
  *  3. **A consumer needing a dropped field still gets it.** `getCalls` is the
  *     fallback and the measurement baseline; it is unchanged, and
  *     `tests/ledger.test.ts:209` independently pins `callKey` on it.
@@ -358,7 +357,7 @@ describe("the purpose-shaped call read selects exactly the aggregation seam's co
   })
 })
 
-describe('no consumer of the seam reads a dropped column', () => {
+describe('dropped columns require explicit focused consumers', () => {
   /** Every `RECEIVER.field` occurrence of a dropped name, as `file:receiver`.
    *  Pinning the inventory rather than asserting "no hits" is what makes this a
    *  proof: `projectPath` and `agentType` DO appear in the consumer set, always
@@ -378,7 +377,7 @@ describe('no consumer of the seam reads a dropped column', () => {
     return found
   }
 
-  it('every occurrence of a dropped name is on a session/project/summary row, never a call row', () => {
+  it('pins existing identity readers and the opted-in Optimize diagnostics', () => {
     expect(droppedFieldReceivers()).toEqual({
       callKey: [],
       projectPath: [
@@ -396,10 +395,22 @@ describe('no consumer of the seam reads a dropped column', () => {
       agentType: ['src/main/store/aggregate-calculation.ts:session', 'src/main/store/aggregate-calculation.ts:summary'],
       locAdded: [],
       locRemoved: [],
-      interrupted: [],
-      userModified: [],
-      toolErrors: [],
-      editFailed: [],
+      interrupted: [
+        'src/main/optimize-calculation.ts:c',
+        'src/main/store/aggregate-calculation.ts:call',
+        'src/main/store/aggregate-calculation.ts:row',
+      ],
+      userModified: ['src/main/store/aggregate-calculation.ts:call', 'src/main/store/aggregate-calculation.ts:row'],
+      toolErrors: [
+        'src/main/optimize-calculation.ts:c',
+        'src/main/store/aggregate-calculation.ts:call',
+        'src/main/store/aggregate-calculation.ts:row',
+      ],
+      editFailed: [
+        'src/main/optimize-calculation.ts:c',
+        'src/main/store/aggregate-calculation.ts:call',
+        'src/main/store/aggregate-calculation.ts:row',
+      ],
     })
   })
 
@@ -700,6 +711,8 @@ const SCOPE_TURNS: unknown = [
 
 const SUMMARIES: unknown = [
   {
+    sourceId: 1,
+    isSidechain: false,
     sessionId: 'sess-0',
     project: 'demo-project',
     firstTimestamp: '2026-07-01T09:00:00.000Z',

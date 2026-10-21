@@ -158,6 +158,7 @@ export type ParsedApiCall = {
   /// Count of this call's tool results flagged `is_error` (Claude tool_result
   /// blocks). Bash stderr alone is NOT counted (warnings go there). Omitted at 0.
   toolErrors?: number
+  editFailed?: number
 }
 
 export type ToolCall = {
@@ -196,6 +197,8 @@ export type SessionSourceMetadata = {
 }
 
 export type SessionSummary = {
+  sourceId?: number
+  isSidechain?: boolean
   sessionId: string
   project: string
   /// Canonical grouping key for the uniform project identity (#102): the
