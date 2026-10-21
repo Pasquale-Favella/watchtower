@@ -63,30 +63,42 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
   })
 
   it('onProgress upserts the per-provider entry and marks scanning', () => {
-    useScanStore.getState().onProgress('openai', 10, 100, false)
-    useScanStore.getState().onProgress('cursor', 5, 50, false)
-    useScanStore.getState().onProgress('openai', 40, 100, false)
+    useScanStore.getState().onProgress({ stage: 'parse', provider: 'openai', processed: 10 })
+    useScanStore.getState().onProgress({ stage: 'parse', provider: 'cursor', processed: 5 })
+    useScanStore.getState().onProgress({ stage: 'parse', provider: 'openai', processed: 40 })
     const s = useScanStore.getState()
     expect(s.scanning).toBe(true)
     expect(s.progress).toHaveLength(2)
     expect(s.progress.find(p => p.provider === 'openai')).toEqual({
       provider: 'openai',
       processed: 40,
-      total: 100,
       done: false,
     })
   })
 
-  it('onProgress marks a port-in stage as done', () => {
-    useScanStore.getState().onProgress('openai', 100, 100, true)
+  it('onProgress settles a provider on its port-in event', () => {
+    useScanStore.getState().onProgress({ stage: 'port-in', provider: 'openai', processed: 100 })
     expect(useScanStore.getState().progress[0]!.done).toBe(true)
   })
 
   it('onProgress with no provider only marks scanning (parity with AppRoot)', () => {
-    useScanStore.getState().onProgress('', 0, 0, false)
+    useScanStore.getState().onProgress({ stage: 'pricing' })
     const s = useScanStore.getState()
     expect(s.scanning).toBe(true)
     expect(s.progress).toEqual([])
+  })
+
+  it('onProgress keeps insertion order and only moves the stage forward', () => {
+    const store = useScanStore.getState()
+    store.onProgress({ stage: 'pricing' })
+    expect(useScanStore.getState().stage).toBe('pricing')
+    store.onProgress({ stage: 'parse', provider: 'openai', processed: 1 })
+    store.onProgress({ stage: 'parse', provider: 'cursor', processed: 1 })
+    store.onProgress({ stage: 'port-in', provider: 'openai', processed: 10 })
+    store.onProgress({ stage: 'parse', provider: 'cursor', processed: 20 })
+    const s = useScanStore.getState()
+    expect(s.progress.map(p => p.provider)).toEqual(['openai', 'cursor'])
+    expect(s.stage).toBe('port-in')
   })
 
   it('onError surfaces the message and stops scanning', () => {
@@ -97,11 +109,12 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
   })
 
   it('onIdle clears the non-blocking progress indicator', () => {
-    useScanStore.getState().onProgress('openai', 1, 1, false)
+    useScanStore.getState().onProgress({ stage: 'parse', provider: 'openai', processed: 1 })
     useScanStore.getState().onIdle()
     const s = useScanStore.getState()
     expect(s.scanning).toBe(false)
     expect(s.progress).toEqual([])
+    expect(s.stage).toBeNull()
   })
 
   it('applyChange hydrates, sums unparsed, loads providers and bumps the shared tick', async () => {

@@ -14,7 +14,6 @@ export interface DateRange {
 export interface SplashProviderProgress {
   provider: string
   processed?: number
-  total?: number
   done: boolean
 }
 

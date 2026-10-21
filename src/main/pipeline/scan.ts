@@ -107,6 +107,12 @@ const fileScanDuration = Effect.fnUntraced(function* (
   yield* oplog.incrementCounter(SCAN_DURATION_COUNTER, duration, { op: 'scan', outcome })
 })
 
+/** How many settled files pass between a provider's parse progress ticks. */
+const PROVIDER_TICK_EVERY = 10
+
+/** Files a provider's parse has settled so far, whatever their verdict. */
+const settledCount = (row: PerProviderPort): number => row.ported + row.unchanged + row.failed
+
 /**
  * Runs the full watchtower pipeline (discovery, parse, classify, price) and
  * returns the scan's METADATA — the ledger is written by the `onDelta`
@@ -152,6 +158,17 @@ export const runScan = Effect.fnUntraced(function* (
 
     let aborted = false
 
+    // Per-provider parse ticks feed the splash's live provider list: the first
+    // settled file announces a provider, then every PROVIDER_TICK_EVERY files
+    // advance its count — bounded IPC chatter even on a cold multi-thousand-file
+    // hydration.
+    const reportProvider = (row: PerProviderPort): void => {
+      const processed = settledCount(row)
+      if (processed === 1 || processed % PROVIDER_TICK_EVERY === 0) {
+        onProgress?.({ stage: 'parse', provider: row.provider, processed })
+      }
+    }
+
     // Delta counting and ledger ingestion stay in the parser's fiber.
     const countingDelta: DeltaHandler | undefined = onDelta
       ? Effect.fnUntraced(function* (delta): Effect.fn.Return<void, Error> {
@@ -164,11 +181,13 @@ export const runScan = Effect.fnUntraced(function* (
             // failed files are counted but never forwarded: scan metadata knows
             // them, the ledger never ports a failed file
             row.failed++
+            reportProvider(row)
             return
           }
           if (delta.verdict === 'unchanged') row.unchanged++
           else row.ported++
           yield* onDelta(delta, pricing)
+          reportProvider(row)
         })
       : undefined
 
@@ -222,6 +241,8 @@ export const runScan = Effect.fnUntraced(function* (
       portedFiles += row.ported
       unchangedFiles += row.unchanged
       failedFiles += row.failed
+      // Settles the provider's splash row with its final file count.
+      onProgress?.({ stage: 'port-in', provider: row.provider, processed: settledCount(row) })
     }
 
     onProgress?.({ stage: 'port-in', processed: portedFiles })
