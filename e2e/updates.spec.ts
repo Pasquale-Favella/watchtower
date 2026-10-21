@@ -103,12 +103,14 @@ test('real updater verifies downloads and rejects a mismatched checksum', async 
         const path = require('node:path') as typeof import('node:path')
         const cache = path.join(app.getPath('userData'), 'update-transport-cache')
         fs.mkdirSync(cache, { recursive: true })
-        app.setPath('cache', cache)
         const results = []
         for (const kind of ['valid', 'corrupt']) {
           const configPath = path.join(cache, `${kind}.yml`)
           fs.writeFileSync(configPath, `updaterCacheDirName: transport-${kind}\n`)
           const updater = new NsisUpdater()
+          // electron-updater uses its app adapter's base cache, independently
+          // of Electron's cache path. Confine the real downloader to this profile.
+          Object.defineProperty(Reflect.get(updater, 'app'), 'baseCachePath', { value: cache })
           updater.updateConfigPath = configPath
           updater.forceDevUpdateConfig = true
           updater.autoDownload = false
