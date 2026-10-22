@@ -6,12 +6,7 @@ import { Button } from '@/shared/components/ui/button'
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
 
-import {
-  selectExportFormat,
-  selectExporting,
-  selectExportMessage,
-  useExportStore,
-} from './export-store'
+import { selectExportFormat, selectExporting, selectExportMessage, useExportStore } from './export-store'
 
 export function ExportPane() {
   const machine = useExportStore(state => state.machine)
@@ -51,8 +46,8 @@ export function ExportPane() {
         )}
       </Card>
       <p className="text-muted-foreground text-[11px]">
-        CSV packs one CSV per table (daily, activity, models, records, projects, sessions, tools, mcp, shell-commands
-        — plus a README) into a single ZIP file you name in the save dialog. JSON writes one file (schema
+        CSV packs one CSV per table (daily, activity, models, records, projects, sessions, tools, mcp, shell-commands —
+        plus a README) into a single ZIP file you name in the save dialog. JSON writes one file (schema
         watchtower.export.v1).
       </p>
     </div>

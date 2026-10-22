@@ -213,7 +213,7 @@ describe('export file ownership and overwrite checks', () => {
     const target = join(root, 'usage')
     await writeCsvWithLivePort(target, [
       { name: 'README.txt', contents: 'plain readme' },
-      { name: 'daily.csv', contents: "Date,Cost (USD)\n" },
+      { name: 'daily.csv', contents: 'Date,Cost (USD)\n' },
     ])
     expect(readFileSync(join(root, 'usage', 'daily.csv'), 'utf-8').charCodeAt(0)).toBe(0xfeff)
     expect(readFileSync(join(root, 'usage', 'README.txt'), 'utf-8')).toBe('plain readme')
